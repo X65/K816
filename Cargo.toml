@@ -32,7 +32,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 indexmap = "2.7"
 logos = "0.16"
 pretty = "0.12"
-rustc-hash = "1.1"
+rustc-hash = "2.1"
 thiserror = "2.0"
 assert_cmd = "2.0"
 predicates = "3.1"

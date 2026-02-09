@@ -1,0 +1,9 @@
+var base = 0x200
+var offset = 4
+
+main {
+  a=base+offset
+  a=base-offset
+  a=base+3
+  a=base-2
+}

@@ -1,0 +1,14 @@
+var vec = 0x2000
+
+func target {
+  return
+}
+
+main {
+  goto target
+  < goto target
+  goto (vec)
+  call target
+  far target
+  far goto target
+}

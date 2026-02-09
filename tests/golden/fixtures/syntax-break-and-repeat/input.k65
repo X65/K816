@@ -1,0 +1,8 @@
+main {
+  {
+    x++
+    < break
+    != repeat
+    break
+  } always
+}

@@ -1,0 +1,17 @@
+main {
+#if 1
+  a=1
+#else
+  a=2
+#endif
+
+  data {
+#if !0
+    3 4
+#elif 0
+    5
+#else
+    6
+#endif
+  }
+}

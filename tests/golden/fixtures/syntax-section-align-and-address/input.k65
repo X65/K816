@@ -1,0 +1,15 @@
+func aligned {
+  align 256 + 8
+  return
+}
+
+naked fixed {
+  address 0x4000
+  return_i
+}
+
+main {
+  align 128
+  aligned
+  fixed
+}

@@ -1,0 +1,14 @@
+[ FACTOR = 3 ]
+
+data ramp_up {
+  for i=0..4 eval [ i * FACTOR ]
+}
+
+data ramp_down {
+  for j=4..0 eval [ j ]
+}
+
+main {
+  a=ramp_up
+  a=ramp_down
+}

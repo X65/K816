@@ -1,0 +1,14 @@
+var base = 0x200
+var next
+var many1, many2, many3
+var arr[4], arr2[2]
+var with_addr[3] = 0x300
+var verbose ?
+
+main {
+  a=base
+  a=next
+  a=arr
+  a=arr2
+  a=with_addr
+}

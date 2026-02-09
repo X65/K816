@@ -1,0 +1,11 @@
+[
+  A = (1 ?< 2) ?> 3,
+  B = obj.member,
+  C = obj.method(1, 2),
+  D = arr[1],
+  E = arr[1, 2]
+]
+
+main {
+  a=[A]
+}

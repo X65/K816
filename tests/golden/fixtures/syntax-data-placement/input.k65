@@ -1,0 +1,26 @@
+data aligned {
+  align 16
+  1 2 3 4
+}
+
+data aligned_offs {
+  align 256 + 8
+  5 6 7 8
+}
+
+data fixed_addr {
+  address 0x5000
+  9 10
+}
+
+data no_cross {
+  nocross
+  11 12 13
+}
+
+main {
+  a=aligned
+  a=aligned_offs
+  a=fixed_addr
+  a=no_cross
+}

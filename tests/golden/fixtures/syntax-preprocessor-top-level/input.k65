@@ -1,0 +1,11 @@
+#if 1
+var enabled = 0x10
+#elif 1
+var never_used = 0x11
+#else
+var also_never = 0x12
+#endif
+
+main {
+  a=enabled
+}

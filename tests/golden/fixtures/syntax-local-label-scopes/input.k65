@@ -1,0 +1,16 @@
+func one {
+  .loop:
+  x++
+  != goto .loop
+}
+
+func two {
+  .loop:
+  y++
+  != goto .loop
+}
+
+main {
+  one
+  two
+}

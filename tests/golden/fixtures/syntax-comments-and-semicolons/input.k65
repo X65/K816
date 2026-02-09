@@ -1,0 +1,8 @@
+/* block comment */
+var zp = 0x80; // line comment
+
+main {
+  ;
+  a=0;
+  x=a; y=a;;
+}

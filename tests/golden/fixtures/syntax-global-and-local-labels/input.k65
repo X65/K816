@@ -1,0 +1,12 @@
+func labels {
+  start:
+  .loop:
+  x++
+  x?10
+  != goto .loop
+  goto start
+}
+
+main {
+  labels
+}

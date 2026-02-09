@@ -1,0 +1,8 @@
+bank legacy
+func legacy_func {
+  return
+}
+
+main {
+  legacy_func
+}

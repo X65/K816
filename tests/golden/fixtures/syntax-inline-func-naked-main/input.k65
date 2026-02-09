@@ -1,0 +1,18 @@
+inline inl {
+  x++
+}
+
+func normal {
+  inl
+  return
+}
+
+naked no_auto_rts {
+  inl
+  goto normal
+}
+
+main {
+  normal
+  no_auto_rts
+}

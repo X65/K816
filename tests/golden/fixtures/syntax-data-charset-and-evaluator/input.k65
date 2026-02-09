@@ -1,0 +1,10 @@
+data text_data {
+  charset " ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  evaluator [ SCALE = 2 ]
+  "HELLO" 0
+  [SCALE]
+}
+
+main {
+  a=text_data
+}

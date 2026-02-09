@@ -1,0 +1,13 @@
+var mem = 0x40
+
+main {
+  a+1
+  a-mem
+  a&0x0F
+  a|mem
+  a^mem
+  a?mem
+  a&?mem
+  x+1
+  y-1
+}

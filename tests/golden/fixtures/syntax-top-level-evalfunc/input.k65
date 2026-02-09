@@ -1,0 +1,11 @@
+evalfunc muladd(x, y, z) [ x * y + z ]
+evalfunc clamp_to_byte(v) { v ?< 255 ?> 0 }
+
+data computed {
+  [ muladd(2, 3, 4) ]
+  [ clamp_to_byte(300) ]
+}
+
+main {
+  a=computed
+}

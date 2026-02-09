@@ -1,0 +1,15 @@
+segment boot
+func boot_func {
+  return
+}
+
+segment aux
+func aux_func {
+  return
+}
+
+segment boot
+main {
+  boot_func
+  aux_func
+}

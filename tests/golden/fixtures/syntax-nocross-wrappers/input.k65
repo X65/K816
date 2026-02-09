@@ -1,0 +1,18 @@
+var mem = 0x80
+
+main {
+  nocross {
+    a=mem
+    x++
+  } !=
+
+  nocross data {
+    1 2 3
+  }
+
+  nocross data {
+    nocross {
+      4 5
+    }
+  }
+}

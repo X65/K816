@@ -1,0 +1,9 @@
+[package]
+name = "k816-fmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+k816-core = { path = "../core" }
+pretty.workspace = true

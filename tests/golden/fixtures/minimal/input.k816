@@ -1,0 +1,16 @@
+bank rom
+
+far func far_target {
+  nop
+}
+
+func near_target {
+  nop
+}
+
+main {
+  call far_target
+  call near_target
+  lda #[1 + 2]
+  lda far far_target
+}

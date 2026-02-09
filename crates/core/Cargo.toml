@@ -1,0 +1,16 @@
+[package]
+name = "k816-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ariadne.workspace = true
+chumsky.workspace = true
+indexmap.workspace = true
+k816-assets = { path = "../assets" }
+k816-eval = { path = "../eval" }
+logos.workspace = true
+rustc-hash.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "k816-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

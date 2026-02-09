@@ -1,14 +1,14 @@
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
+use k816_isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
 use k816_o65::{
-    O65Object, Relocation, RelocationKind, Section, SectionChunk, SourceLocation, Symbol,
-    SymbolDefinition,
+    FunctionDisassembly, O65Object, Relocation, RelocationKind, Section, SectionChunk,
+    SourceLocation, Symbol, SymbolDefinition,
 };
 
 use crate::diag::Diagnostic;
 use crate::hir::{AddressValue, Op, OperandOp, Program};
-use crate::isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
 use crate::span::{SourceMap, Span};
 
 #[derive(Debug, Clone)]
@@ -34,6 +34,13 @@ struct Fixup {
     span: Span,
 }
 
+#[derive(Debug)]
+struct FunctionInstructionSite {
+    segment: String,
+    function: String,
+    offset: u32,
+}
+
 pub fn emit_object(
     program: &Program,
     source_map: &SourceMap,
@@ -43,6 +50,8 @@ pub fn emit_object(
     let mut labels: FxHashMap<String, (String, u32, Span)> = FxHashMap::default();
     let mut fixups = Vec::new();
     let mut current_segment = "default".to_string();
+    let mut current_function: Option<String> = None;
+    let mut function_instruction_sites = Vec::new();
 
     segments
         .entry(current_segment.clone())
@@ -65,6 +74,12 @@ pub fn emit_object(
                         fixed_cursor: None,
                         nocross_boundary: None,
                     });
+            }
+            Op::FunctionStart(name) => {
+                current_function = Some(name.clone());
+            }
+            Op::FunctionEnd => {
+                current_function = None;
             }
             Op::Label(name) => {
                 let segment = segments
@@ -159,17 +174,36 @@ pub fn emit_object(
                 let width = operand_width(encoding.mode);
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
 
+                let opcode_offset = segment.section_offset;
                 append_bytes(segment, &[encoding.opcode], op.span, &mut diagnostics);
                 let operand_offset = segment.section_offset;
+
+                if let Some(function) = &current_function {
+                    function_instruction_sites.push(FunctionInstructionSite {
+                        segment: current_segment.clone(),
+                        function: function.clone(),
+                        offset: opcode_offset,
+                    });
+                }
 
                 match &instruction.operand {
                     None => {}
                     Some(OperandOp::Immediate(value)) => {
-                        append_bytes(segment, &[*value as u8], op.span, &mut diagnostics);
+                        if let Ok(raw) = u32::try_from(*value) {
+                            emit_literal(segment, raw, width, op.span, &mut diagnostics);
+                        } else {
+                            diagnostics.push(Diagnostic::error(
+                                op.span,
+                                "immediate value cannot be negative",
+                            ));
+                        }
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
                         AddressValue::Literal(literal) => {
-                            if encoding.mode == AddressingMode::Relative8 {
+                            if matches!(
+                                encoding.mode,
+                                AddressingMode::Relative8 | AddressingMode::Relative16
+                            ) {
                                 diagnostics.push(Diagnostic::error(
                                     op.span,
                                     "relative branch operands must be labels, not numeric literals",
@@ -184,7 +218,10 @@ pub fn emit_object(
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
                                 width: width as u8,
-                                kind: if encoding.mode == AddressingMode::Relative8 {
+                                kind: if matches!(
+                                    encoding.mode,
+                                    AddressingMode::Relative8 | AddressingMode::Relative16
+                                ) {
                                     RelocationKind::Relative
                                 } else {
                                     RelocationKind::Absolute
@@ -264,11 +301,34 @@ pub fn emit_object(
         });
     }
 
+    let mut grouped_disassembly: IndexMap<(String, String), Vec<u32>> = IndexMap::new();
+    for site in function_instruction_sites {
+        if skip_default_empty && site.segment == "default" {
+            continue;
+        }
+        grouped_disassembly
+            .entry((site.segment, site.function))
+            .or_default()
+            .push(site.offset);
+    }
+
+    let function_disassembly = grouped_disassembly
+        .into_iter()
+        .map(
+            |((section, function), instruction_offsets)| FunctionDisassembly {
+                section,
+                function,
+                instruction_offsets,
+            },
+        )
+        .collect();
+
     Ok(EmitObjectOutput {
         object: O65Object {
             sections,
             symbols,
             relocations,
+            function_disassembly,
             listing: listing_blocks.join("\n\n"),
         },
     })

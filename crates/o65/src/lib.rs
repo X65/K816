@@ -3,14 +3,22 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 1;
+const PAYLOAD_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
     pub sections: IndexMap<String, Section>,
     pub symbols: Vec<Symbol>,
     pub relocations: Vec<Relocation>,
+    pub function_disassembly: Vec<FunctionDisassembly>,
     pub listing: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FunctionDisassembly {
+    pub section: String,
+    pub function: String,
+    pub instruction_offsets: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -111,6 +119,7 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
     write_u32(&mut out, object.sections.len() as u32);
     write_u32(&mut out, object.symbols.len() as u32);
     write_u32(&mut out, object.relocations.len() as u32);
+    write_u32(&mut out, object.function_disassembly.len() as u32);
     write_string(&mut out, &object.listing)?;
 
     for (name, section) in &object.sections {
@@ -164,6 +173,15 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
         write_string(&mut out, &reloc.symbol)?;
     }
 
+    for function in &object.function_disassembly {
+        write_string(&mut out, &function.section)?;
+        write_string(&mut out, &function.function)?;
+        write_u32(&mut out, function.instruction_offsets.len() as u32);
+        for offset in &function.instruction_offsets {
+            write_u32(&mut out, *offset);
+        }
+    }
+
     Ok(out)
 }
 
@@ -212,13 +230,18 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
 fn decode_payload(payload: &[u8]) -> Result<O65Object> {
     let mut rd = Reader::new(payload);
     let version = rd.read_u16()?;
-    if version != PAYLOAD_VERSION {
+    if !(1..=PAYLOAD_VERSION).contains(&version) {
         bail!("unsupported object payload version: {version}");
     }
 
     let section_count = rd.read_u32()? as usize;
     let symbol_count = rd.read_u32()? as usize;
     let reloc_count = rd.read_u32()? as usize;
+    let function_disassembly_count = if version >= 2 {
+        rd.read_u32()? as usize
+    } else {
+        0
+    };
     let listing = rd.read_string()?;
 
     let mut sections = IndexMap::new();
@@ -298,6 +321,22 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         });
     }
 
+    let mut function_disassembly = Vec::with_capacity(function_disassembly_count);
+    for _ in 0..function_disassembly_count {
+        let section = rd.read_string()?;
+        let function = rd.read_string()?;
+        let offset_count = rd.read_u32()? as usize;
+        let mut instruction_offsets = Vec::with_capacity(offset_count);
+        for _ in 0..offset_count {
+            instruction_offsets.push(rd.read_u32()?);
+        }
+        function_disassembly.push(FunctionDisassembly {
+            section,
+            function,
+            instruction_offsets,
+        });
+    }
+
     if !rd.is_eof() {
         bail!("payload has trailing bytes");
     }
@@ -306,6 +345,7 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         sections,
         symbols,
         relocations,
+        function_disassembly,
         listing,
     })
 }
@@ -361,6 +401,27 @@ fn validate_object(object: &O65Object) -> Result<()> {
                 end,
                 reloc.section
             );
+        }
+    }
+
+    for function in &object.function_disassembly {
+        let section = object.sections.get(&function.section).ok_or_else(|| {
+            anyhow::anyhow!(
+                "function disassembly '{}' references unknown section '{}'",
+                function.function,
+                function.section
+            )
+        })?;
+
+        for offset in &function.instruction_offsets {
+            if !section_contains_instruction_start(section, *offset)? {
+                bail!(
+                    "function disassembly '{}' offset {:#X} is outside section '{}'",
+                    function.function,
+                    offset,
+                    function.section
+                );
+            }
         }
     }
 
@@ -420,6 +481,24 @@ fn section_contains_point(section: &Section, point: u32) -> Result<bool> {
             return Ok(true);
         }
     }
+    Ok(false)
+}
+
+fn section_contains_instruction_start(section: &Section, offset: u32) -> Result<bool> {
+    for chunk in &section.chunks {
+        let end = chunk
+            .offset
+            .checked_add(
+                u32::try_from(chunk.bytes.len())
+                    .context("section chunk length does not fit in u32")?,
+            )
+            .ok_or_else(|| anyhow::anyhow!("section chunk range overflow"))?;
+
+        if offset >= chunk.offset && offset < end {
+            return Ok(true);
+        }
+    }
+
     Ok(false)
 }
 
@@ -567,6 +646,11 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
             }],
+            function_disassembly: vec![FunctionDisassembly {
+                section: "default".to_string(),
+                function: "main".to_string(),
+                instruction_offsets: vec![0],
+            }],
             listing: "[default]\n000000: EA 00 00\n".to_string(),
         };
 
@@ -579,6 +663,7 @@ mod tests {
         );
         assert_eq!(decoded.symbols.len(), 1);
         assert_eq!(decoded.relocations.len(), 1);
+        assert_eq!(decoded.function_disassembly.len(), 1);
         assert_eq!(decoded.listing, object.listing);
     }
 
@@ -607,6 +692,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -638,6 +724,7 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
             }],
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 

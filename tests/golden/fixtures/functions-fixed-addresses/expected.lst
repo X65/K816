@@ -8,3 +8,17 @@
 
 [fixed_hi]
 000020: EA 6B
+
+
+[disasm obj#0 fixed_lo::fixed_lo_fn]
+000010: EA          nop
+000011: 6B          rtl
+
+[disasm obj#0 fixed_hi::fixed_hi_fn]
+000020: EA          nop
+000021: 6B          rtl
+
+[disasm obj#0 default::main]
+000000: 22 10 00 00 jsl $000010
+000004: 22 20 00 00 jsl $000020
+000008: 60          rts

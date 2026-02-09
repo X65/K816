@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
+use k816_isa65816::{decode_instruction, format_instruction};
 use k816_o65::{O65Object, RelocationKind, SourceLocation};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -397,20 +398,31 @@ pub fn link_objects_with_options(
                 RelocationKind::Absolute => {
                     write_value(&mut mem.bytes[rel_idx..end_idx], target.addr, reloc.width)?
                 }
-                RelocationKind::Relative => {
-                    if reloc.width != 1 {
-                        bail!("relative relocation width must be 1 byte");
+                RelocationKind::Relative => match reloc.width {
+                    1 => {
+                        let delta = target.addr as i64 - (site_addr as i64 + 1);
+                        if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
+                            bail!(
+                                "relative relocation to '{}' out of range at {:#X}",
+                                reloc.symbol,
+                                site_addr
+                            );
+                        }
+                        mem.bytes[rel_idx] = delta as i8 as u8;
                     }
-                    let delta = target.addr as i64 - (site_addr as i64 + 1);
-                    if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
-                        bail!(
-                            "relative relocation to '{}' out of range at {:#X}",
-                            reloc.symbol,
-                            site_addr
-                        );
+                    2 => {
+                        let delta = target.addr as i64 - (site_addr as i64 + 2);
+                        if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
+                            bail!(
+                                "relative relocation to '{}' out of range at {:#X}",
+                                reloc.symbol,
+                                site_addr
+                            );
+                        }
+                        mem.bytes[rel_idx..end_idx].copy_from_slice(&(delta as i16).to_le_bytes());
                     }
-                    mem.bytes[rel_idx] = delta as i8 as u8;
-                }
+                    _ => bail!("relative relocation width must be 1 or 2 bytes"),
+                },
             }
         }
     }
@@ -418,18 +430,24 @@ pub fn link_objects_with_options(
     let (output_kind, bytes) = render_link_output(config, &memory_map)?;
 
     let mut listing_blocks = Vec::new();
-    for key in section_order {
-        let Some(chunks) = placed_by_section.get(&key) else {
+    for key in &section_order {
+        let segment_name = &key.1;
+        let Some(chunks) = placed_by_section.get(key) else {
             continue;
         };
 
         if chunks.is_empty() {
-            listing_blocks.push(format_empty_listing_block(&key.1));
+            listing_blocks.push(format_empty_listing_block(segment_name));
             continue;
         }
 
-        listing_blocks.push(format_section_listing(&key.1, chunks, &memory_map)?);
+        listing_blocks.push(format_section_listing(segment_name, chunks, &memory_map)?);
     }
+    listing_blocks.extend(format_function_disassembly_listings(
+        objects,
+        &placed_by_section,
+        &memory_map,
+    )?);
 
     Ok(LinkOutput {
         bytes,
@@ -948,6 +966,103 @@ fn format_section_listing(
     Ok(out)
 }
 
+fn format_function_disassembly_listings(
+    objects: &[O65Object],
+    placed_by_section: &HashMap<(usize, String), Vec<PlacedChunk>>,
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<Vec<String>> {
+    let mut blocks = Vec::new();
+    for (object_index, object) in objects.iter().enumerate() {
+        for function in &object.function_disassembly {
+            if function.instruction_offsets.is_empty() {
+                continue;
+            }
+
+            let key = (object_index, function.section.clone());
+            let Some(placements) = placed_by_section.get(&key) else {
+                continue;
+            };
+
+            blocks.push(format_function_disassembly_block(
+                object_index,
+                function,
+                placements,
+                memory_map,
+            )?);
+        }
+    }
+
+    Ok(blocks)
+}
+
+fn format_function_disassembly_block(
+    object_index: usize,
+    function: &k816_o65::FunctionDisassembly,
+    placements: &[PlacedChunk],
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<String> {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "[disasm obj#{object_index} {}::{}]\n",
+        function.section, function.function
+    ));
+
+    for offset in &function.instruction_offsets {
+        let (memory_name, address) =
+            resolve_reloc_site(placements, *offset, 1).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "disassembly site {:#X} is outside section '{}'",
+                    offset,
+                    function.section
+                )
+            })?;
+
+        let memory = memory_map.get(memory_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "internal linker error: memory '{}' missing for disassembly",
+                memory_name
+            )
+        })?;
+
+        if address < memory.spec.start {
+            bail!("disassembly address underflows memory range");
+        }
+
+        let index = (address - memory.spec.start) as usize;
+        let decode_slice = &memory.bytes[index..];
+        let decoded = decode_instruction(decode_slice).map_err(|err| {
+            anyhow::anyhow!(
+                "failed to decode instruction at {address:#X} ({}::{}): {err}",
+                function.section,
+                function.function
+            )
+        })?;
+        let len = decoded.len();
+        let end = index.saturating_add(len);
+        if end > memory.bytes.len() {
+            bail!(
+                "decoded instruction at {address:#X} extends outside memory '{}'",
+                memory_name
+            );
+        }
+
+        let raw = &memory.bytes[index..end];
+        let hex = raw
+            .iter()
+            .map(|byte| format!("{byte:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format_instruction(&decoded, address);
+        out.push_str(&format!("{address:06X}: {hex:<11} {text}\n"));
+    }
+
+    if out.ends_with('\n') {
+        out.pop();
+    }
+
+    Ok(out)
+}
+
 fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'a SegmentRule> {
     if let Some(rule) = config
         .segments
@@ -1050,6 +1165,7 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
             }],
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1083,6 +1199,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1117,6 +1234,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1142,6 +1260,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1178,6 +1297,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1246,6 +1366,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1284,6 +1405,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 
@@ -1326,6 +1448,7 @@ mod tests {
             sections,
             symbols: Vec::new(),
             relocations: Vec::new(),
+            function_disassembly: Vec::new(),
             listing: String::new(),
         };
 

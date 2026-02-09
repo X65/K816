@@ -1,3 +1,19 @@
 [rom]
 000000: EA 6B EA 60 22 00 00 00 20 02 00 A9 03 AF 00 00
 000010: 00 60
+
+
+[disasm obj#0 rom::far_target]
+000000: EA          nop
+000001: 6B          rtl
+
+[disasm obj#0 rom::near_target]
+000002: EA          nop
+000003: 60          rts
+
+[disasm obj#0 rom::main]
+000004: 22 00 00 00 jsl $000000
+000008: 20 02 00    jsr $0002
+00000B: A9 03       lda #$03
+00000D: AF 00 00 00 lda $000000
+000011: 60          rts

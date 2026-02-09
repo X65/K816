@@ -1,9 +1,12 @@
 use indexmap::IndexMap;
+use k816_isa65816::{
+    AddressingMode, OperandShape, decode_instruction, format_instruction, operand_width,
+    select_encoding,
+};
 use rustc_hash::FxHashMap;
 
 use crate::diag::Diagnostic;
 use crate::hir::{AddressValue, Op, OperandOp, Program};
-use crate::isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -28,12 +31,21 @@ struct Fixup {
     span: Span,
 }
 
+#[derive(Debug)]
+struct FunctionInstructionSite {
+    segment: String,
+    function: String,
+    offset: usize,
+}
+
 pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
     let mut labels: FxHashMap<String, (String, usize)> = FxHashMap::default();
     let mut fixups = Vec::new();
     let mut current_segment = "default".to_string();
+    let mut current_function: Option<String> = None;
+    let mut function_instruction_sites = Vec::new();
     segments
         .entry(current_segment.clone())
         .or_insert(SegmentState {
@@ -51,6 +63,12 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                         bytes: Vec::new(),
                         nocross_boundary: None,
                     });
+            }
+            Op::FunctionStart(name) => {
+                current_function = Some(name.clone());
+            }
+            Op::FunctionEnd => {
+                current_function = None;
             }
             Op::Label(name) => {
                 let segment = segments
@@ -145,19 +163,50 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
 
                 let width = operand_width(encoding.mode);
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
+                let opcode_offset = segment.bytes.len();
                 segment.bytes.push(encoding.opcode);
                 let operand_offset = segment.bytes.len();
+
+                if let Some(function) = &current_function {
+                    function_instruction_sites.push(FunctionInstructionSite {
+                        segment: current_segment.clone(),
+                        function: function.clone(),
+                        offset: opcode_offset,
+                    });
+                }
 
                 match &instruction.operand {
                     None => {}
                     Some(OperandOp::Immediate(value)) => {
-                        segment.bytes.push(*value as u8);
+                        if let Ok(raw) = u32::try_from(*value) {
+                            write_literal(
+                                &mut segment.bytes,
+                                raw,
+                                width,
+                                op.span,
+                                &mut diagnostics,
+                            );
+                        } else {
+                            diagnostics.push(Diagnostic::error(
+                                op.span,
+                                "immediate value cannot be negative",
+                            ));
+                        }
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
                         AddressValue::Literal(literal) => {
                             if encoding.mode == AddressingMode::Relative8 {
                                 let site_addr = operand_offset;
                                 write_relative_literal(
+                                    &mut segment.bytes,
+                                    *literal,
+                                    site_addr,
+                                    op.span,
+                                    &mut diagnostics,
+                                );
+                            } else if encoding.mode == AddressingMode::Relative16 {
+                                let site_addr = operand_offset;
+                                write_relative16_literal(
                                     &mut segment.bytes,
                                     *literal,
                                     site_addr,
@@ -235,7 +284,46 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             continue;
         }
 
-        if fixup.width == 2 && label_segment != &fixup.segment {
+        if fixup.mode == AddressingMode::Relative16 {
+            if label_segment != &fixup.segment {
+                diagnostics.push(
+                    Diagnostic::error(
+                        fixup.span,
+                        format!(
+                            "relative branch from segment '{}' to '{}' is not supported",
+                            fixup.segment, label_segment
+                        ),
+                    )
+                    .with_help("branch targets must stay in the same segment"),
+                );
+                continue;
+            }
+
+            let site_addr = fixup.offset;
+            let delta = *label_addr as i64 - (site_addr as i64 + 2);
+            if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
+                diagnostics.push(Diagnostic::error(
+                    fixup.span,
+                    format!(
+                        "relative branch to '{}' out of range from {site_addr:#X}",
+                        fixup.label
+                    ),
+                ));
+                continue;
+            }
+
+            let segment = segments
+                .get_mut(&fixup.segment)
+                .expect("fixup segment should exist during patching");
+            let rel = (delta as i16).to_le_bytes();
+            segment.bytes[fixup.offset..fixup.offset + 2].copy_from_slice(&rel);
+            continue;
+        }
+
+        if fixup.width == 2
+            && fixup.mode != AddressingMode::Relative16
+            && label_segment != &fixup.segment
+        {
             diagnostics.push(
                 Diagnostic::error(
                     fixup.span,
@@ -281,6 +369,11 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
         listing_blocks.push(format_listing_block(segment_name, &state.bytes));
         output_banks.insert(segment_name.clone(), state.bytes.clone());
     }
+    listing_blocks.extend(format_disassembly_blocks(
+        &segments,
+        &function_instruction_sites,
+        skip_default_empty,
+    ));
 
     Ok(EmitOutput {
         banks: output_banks,
@@ -333,6 +426,24 @@ fn write_relative_literal(
         return;
     }
     bytes.push(delta as i8 as u8);
+}
+
+fn write_relative16_literal(
+    bytes: &mut Vec<u8>,
+    target: u32,
+    site_addr: usize,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let delta = target as i64 - (site_addr as i64 + 2);
+    if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
+        diagnostics.push(Diagnostic::error(
+            span,
+            format!("relative16 target {target:#X} out of range"),
+        ));
+        return;
+    }
+    bytes.extend_from_slice(&(delta as i16).to_le_bytes());
 }
 
 fn write_literal(
@@ -435,6 +546,77 @@ fn format_listing_block(bank_name: &str, bytes: &[u8]) -> String {
             .collect::<Vec<_>>()
             .join(" ");
         out.push_str(&format!("{address:06X}: {hex}\n"));
+    }
+
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn format_disassembly_blocks(
+    segments: &IndexMap<String, SegmentState>,
+    sites: &[FunctionInstructionSite],
+    skip_default_empty: bool,
+) -> Vec<String> {
+    let mut grouped: IndexMap<(String, String), Vec<usize>> = IndexMap::new();
+    for site in sites {
+        if skip_default_empty && site.segment == "default" {
+            continue;
+        }
+        grouped
+            .entry((site.segment.clone(), site.function.clone()))
+            .or_default()
+            .push(site.offset);
+    }
+
+    let mut blocks = Vec::new();
+    for ((segment_name, function_name), offsets) in grouped {
+        let Some(segment) = segments.get(&segment_name) else {
+            continue;
+        };
+        blocks.push(format_disassembly_block(
+            &segment_name,
+            &function_name,
+            &segment.bytes,
+            &offsets,
+        ));
+    }
+
+    blocks
+}
+
+fn format_disassembly_block(
+    segment_name: &str,
+    function_name: &str,
+    bytes: &[u8],
+    offsets: &[usize],
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("[disasm {segment_name}::{function_name}]\n"));
+
+    for &offset in offsets {
+        if offset >= bytes.len() {
+            continue;
+        }
+
+        match decode_instruction(&bytes[offset..]) {
+            Ok(decoded) => {
+                let len = decoded.len();
+                let end = (offset + len).min(bytes.len());
+                let raw = &bytes[offset..end];
+                let hex = raw
+                    .iter()
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let text = format_instruction(&decoded, offset as u32);
+                out.push_str(&format!("{offset:06X}: {hex:<11} {text}\n"));
+            }
+            Err(_) => {
+                out.push_str(&format!("{offset:06X}: ??         <decode-error>\n"));
+            }
+        }
     }
 
     if out.ends_with('\n') {

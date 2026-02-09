@@ -6,7 +6,6 @@ pub mod emit;
 pub mod emit_object;
 pub mod eval_expand;
 pub mod hir;
-pub mod isa65816;
 pub mod lexer;
 pub mod lower;
 pub mod normalize_hla;

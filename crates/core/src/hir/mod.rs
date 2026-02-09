@@ -8,6 +8,8 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub enum Op {
     SelectSegment(String),
+    FunctionStart(String),
+    FunctionEnd,
     Label(String),
     Instruction(InstructionOp),
     EmitBytes(Vec<u8>),

@@ -69,6 +69,7 @@ pub fn lower(
                     }
                 }
 
+                ops.push(Spanned::new(Op::FunctionStart(scope.clone()), label_span));
                 ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
                 for stmt in block.body.iter().skip(body_start) {
                     lower_stmt(
@@ -100,6 +101,7 @@ pub fn lower(
                         item.span,
                     ));
                 }
+                ops.push(Spanned::new(Op::FunctionEnd, item.span));
 
                 if block.kind == BlockKind::Main && block.is_far {
                     diagnostics.push(
@@ -147,7 +149,10 @@ fn lower_named_data_block(
     for entry in &block.entries {
         match &entry.node {
             NamedDataEntry::Segment(segment) => {
-                ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), entry.span));
+                ops.push(Spanned::new(
+                    Op::SelectSegment(segment.name.clone()),
+                    entry.span,
+                ));
             }
             NamedDataEntry::Address(value) => {
                 ops.push(Spanned::new(Op::Address(*value), entry.span));
@@ -159,7 +164,9 @@ fn lower_named_data_block(
                 ops.push(Spanned::new(Op::Nocross(*value), entry.span));
             }
             NamedDataEntry::Bytes(values) | NamedDataEntry::LegacyBytes(values) => {
-                if let Some(bytes) = evaluate_byte_exprs(values, None, sema, entry.span, diagnostics) {
+                if let Some(bytes) =
+                    evaluate_byte_exprs(values, None, sema, entry.span, diagnostics)
+                {
                     ops.push(Spanned::new(Op::EmitBytes(bytes), entry.span));
                 }
             }

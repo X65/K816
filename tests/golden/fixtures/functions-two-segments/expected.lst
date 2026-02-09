@@ -4,3 +4,12 @@
 
 [code_b]
 000002: EA 60
+
+
+[disasm obj#0 code_a::func_a]
+000000: EA          nop
+000001: 60          rts
+
+[disasm obj#0 code_b::func_b]
+000002: EA          nop
+000003: 60          rts

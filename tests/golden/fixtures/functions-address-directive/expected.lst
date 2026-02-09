@@ -1,3 +1,17 @@
 [default]
 000010: EA 60
 004000: EA 60 20 10 00 20 00 40 60
+
+
+[disasm obj#0 default::func_a]
+000010: EA          nop
+000011: 60          rts
+
+[disasm obj#0 default::func_b]
+004000: EA          nop
+004001: 60          rts
+
+[disasm obj#0 default::main]
+004002: 20 10 00    jsr $0010
+004005: 20 00 40    jsr $4000
+004008: 60          rts

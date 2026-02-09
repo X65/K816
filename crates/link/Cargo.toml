@@ -8,6 +8,7 @@ license.workspace = true
 anyhow.workspace = true
 ariadne.workspace = true
 indexmap.workspace = true
+k816-isa65816 = { path = "../isa65816" }
 k816-o65 = { path = "../o65" }
 ron.workspace = true
 serde.workspace = true

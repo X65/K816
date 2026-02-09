@@ -11,6 +11,7 @@ chumsky.workspace = true
 indexmap.workspace = true
 k816-assets = { path = "../assets" }
 k816-eval = { path = "../eval" }
+k816-isa65816 = { path = "../isa65816" }
 k816-o65 = { path = "../o65" }
 logos.workspace = true
 rustc-hash.workspace = true

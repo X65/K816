@@ -456,6 +456,7 @@ dependencies = [
  "indexmap",
  "k816-assets",
  "k816-eval",
+ "k816-isa65816",
  "k816-o65",
  "logos",
  "rustc-hash",
@@ -490,12 +491,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "k816-isa65816"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "k816-link"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "ariadne",
  "indexmap",
+ "k816-isa65816",
  "k816-o65",
  "ron",
  "serde",

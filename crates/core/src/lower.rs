@@ -403,6 +403,26 @@ fn lower_hla_stmt(
             ctx.do_loop_targets.push(loop_label.clone());
             ops.push(Spanned::new(Op::Label(loop_label), span));
         }
+        HlaStmt::DoCloseNFlagClear => {
+            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+                diagnostics.push(
+                    Diagnostic::error(span, "HLA do/while close without matching '{'")
+                        .with_help("open loop with a standalone '{' line before the condition"),
+                );
+                return;
+            };
+            emit_branch_to_label("bpl", &loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaStmt::DoCloseNFlagSet => {
+            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+                diagnostics.push(
+                    Diagnostic::error(span, "HLA do/while close without matching '{'")
+                        .with_help("open loop with a standalone '{' line before the condition"),
+                );
+                return;
+            };
+            emit_branch_to_label("bmi", &loop_target, scope, sema, span, diagnostics, ops);
+        }
         HlaStmt::DoCloseWithOp { op } => {
             let Some(loop_target) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
@@ -411,12 +431,8 @@ fn lower_hla_stmt(
                 );
                 return;
             };
-            lower_hla_condition_branch(
-                &HlaCondition {
-                    lhs: HlaRegister::A,
-                    op: *op,
-                    rhs: None,
-                },
+            lower_hla_postfix_close_op_branch(
+                *op,
                 &loop_target,
                 span,
                 scope,
@@ -463,6 +479,47 @@ fn lower_hla_stmt(
                 );
                 return;
             };
+        }
+    }
+}
+
+fn lower_hla_postfix_close_op_branch(
+    op: HlaCompareOp,
+    loop_target: &str,
+    span: Span,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    ctx: &mut LowerContext,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    match op {
+        HlaCompareOp::Eq => {
+            emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaCompareOp::Ne => {
+            emit_branch_to_label("bne", loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaCompareOp::Lt => {
+            emit_branch_to_label("bcc", loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaCompareOp::Ge => {
+            emit_branch_to_label("bcs", loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaCompareOp::Le => {
+            emit_branch_to_label("bcc", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaCompareOp::Gt => {
+            let Some(skip_label) =
+                fresh_local_label("postfix_gt_skip", ctx, scope, span, diagnostics)
+            else {
+                return;
+            };
+            emit_branch_to_label("beq", &skip_label, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bcc", &skip_label, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bra", loop_target, scope, sema, span, diagnostics, ops);
+            ops.push(Spanned::new(Op::Label(skip_label), span));
         }
     }
 }
@@ -956,5 +1013,68 @@ mod tests {
                 index_x: false
             }
         ));
+    }
+
+    #[test]
+    fn lowers_postfix_n_flag_close_without_cmp() {
+        let source = "var ready = 0x1234\nmain {\n  {\n    a=ready\n  } n-?\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(mnemonics.windows(2).any(|pair| pair == ["lda", "bpl"]));
+        assert!(!mnemonics.contains(&"cmp"));
+    }
+
+    #[test]
+    fn lowers_postfix_le_to_two_direct_branches() {
+        let source = "main {\n  {\n    x++\n  } <=\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(mnemonics.windows(2).any(|pair| pair == ["bcc", "beq"]));
+        assert!(!mnemonics.contains(&"cmp"));
+    }
+
+    #[test]
+    fn lowers_postfix_gt_to_three_branch_sequence() {
+        let source = "main {\n  {\n    x++\n  } >\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(mnemonics.windows(3).any(|seq| seq == ["beq", "bcc", "bra"]));
+        assert!(!mnemonics.contains(&"cmp"));
     }
 }

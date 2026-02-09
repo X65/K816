@@ -125,6 +125,8 @@ pub enum HlaStmt {
     WaitLoopWhileNFlagClear { symbol: String },
     ConditionSeed { lhs: HlaRegister, rhs: Expr },
     DoOpen,
+    DoCloseNFlagClear,
+    DoCloseNFlagSet,
     DoCloseWithOp { op: HlaCompareOp },
     DoClose { condition: HlaCondition },
     DoCloseAlways,

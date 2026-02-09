@@ -212,6 +212,8 @@ fn collect_parser_warnings(file: &File, bank_spans: &[Span]) -> Vec<Diagnostic> 
             continue;
         };
 
+        collect_hla_postfix_efficiency_warnings(block, &mut warnings);
+
         if block.kind != BlockKind::Func || !block.body.is_empty() {
             continue;
         }
@@ -224,6 +226,43 @@ fn collect_parser_warnings(file: &File, bank_spans: &[Span]) -> Vec<Diagnostic> 
     }
 
     warnings
+}
+
+fn collect_hla_postfix_efficiency_warnings(block: &CodeBlock, warnings: &mut Vec<Diagnostic>) {
+    for (index, stmt) in block.body.iter().enumerate() {
+        let Stmt::Hla(HlaStmt::DoCloseWithOp { op }) = &stmt.node else {
+            continue;
+        };
+
+        // `a?rhs` + `} OP` is normalized into compare-based close semantics.
+        // Warn only for pure postfix closes that branch on existing flags.
+        let has_condition_seed = index > 0
+            && matches!(
+                block.body[index - 1].node,
+                Stmt::Hla(HlaStmt::ConditionSeed { .. })
+            );
+        if has_condition_seed {
+            continue;
+        }
+
+        match op {
+            HlaCompareOp::Le => warnings.push(
+                Diagnostic::warning(
+                    stmt.span,
+                    "postfix `} <=` expands to two branch instructions and may be inefficient",
+                )
+                .with_help("expansion is `BCC target` + `BEQ target`"),
+            ),
+            HlaCompareOp::Gt => warnings.push(
+                Diagnostic::warning(
+                    stmt.span,
+                    "postfix `} >` expands to three branch instructions and may be inefficient",
+                )
+                .with_help("expansion is `BEQ skip` + `BCC skip` + `BRA target`"),
+            ),
+            _ => {}
+        }
+    }
 }
 
 pub fn parse_expression_fragment(
@@ -895,7 +934,7 @@ where
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
     let hla_do_close_suffix = hla_condition_parser()
         .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
-        .or(hla_legacy_n_flag_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
+        .or(hla_legacy_n_flag_close_stmt_parser())
         .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
         .or(
             chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
@@ -1661,8 +1700,8 @@ where
         .or(just(TokenKind::Gt).to(HlaCompareOp::Gt))
 }
 
-fn hla_legacy_n_flag_op_parser<'src, I>()
--> impl chumsky::Parser<'src, I, HlaCompareOp, ParseExtra<'src>> + Clone
+fn hla_legacy_n_flag_close_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1670,10 +1709,10 @@ where
         .ignore_then(
             just(TokenKind::Minus)
                 .then_ignore(just(TokenKind::Question))
-                .to(HlaCompareOp::Ge)
+                .to(Stmt::Hla(HlaStmt::DoCloseNFlagClear))
                 .or(just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
-                    .to(HlaCompareOp::Lt)),
+                    .to(Stmt::Hla(HlaStmt::DoCloseNFlagSet))),
         )
 }
 
@@ -2234,10 +2273,40 @@ mod tests {
         assert!(matches!(block.body[1].node, Stmt::Instruction(_)));
         assert!(matches!(
             block.body[2].node,
-            Stmt::Hla(HlaStmt::DoCloseWithOp {
-                op: HlaCompareOp::Ge
-            })
+            Stmt::Hla(HlaStmt::DoCloseNFlagClear)
         ));
+    }
+
+    #[test]
+    fn parses_hla_do_close_with_legacy_n_plus_suffix() {
+        let source = "main {\n  {\n    a=READY\n  } n+?\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+
+        assert!(matches!(block.body[0].node, Stmt::Hla(HlaStmt::DoOpen)));
+        assert!(matches!(block.body[1].node, Stmt::Instruction(_)));
+        assert!(matches!(
+            block.body[2].node,
+            Stmt::Hla(HlaStmt::DoCloseNFlagSet)
+        ));
+    }
+
+    #[test]
+    fn warns_for_inefficient_postfix_le_and_gt_without_condition_seed() {
+        let source = "main {\n  {\n    x++\n  } <=\n  {\n    y++\n  } >\n}\n";
+        let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
+        assert_eq!(parsed.warnings.len(), 2);
+        assert!(parsed.warnings[0].message.contains("`} <=`"));
+        assert!(parsed.warnings[1].message.contains("`} >`"));
+    }
+
+    #[test]
+    fn does_not_warn_for_postfix_ops_with_condition_seed() {
+        let source = "main {\n  {\n    a?0\n  } <=\n}\n";
+        let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
+        assert!(parsed.warnings.is_empty());
     }
 
     #[test]

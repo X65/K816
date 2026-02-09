@@ -17,6 +17,8 @@ Primary operator-coverage fixture:
 - `syntax-one-letter-operators-legacy`
 - `syntax-wait-loop-bit`
 - `syntax-wait-loop-lda`
+- `syntax-postfix-le-efficiency-warning`
+- `syntax-postfix-gt-efficiency-warning`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.
 

@@ -216,6 +216,8 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
             format!("{lhs}?{}", format_expr(rhs))
         }
         HlaStmt::DoOpen => "{".to_string(),
+        HlaStmt::DoCloseNFlagClear => "} n-?".to_string(),
+        HlaStmt::DoCloseNFlagSet => "} n+?".to_string(),
         HlaStmt::DoCloseWithOp { op } => format!("}} {}", format_hla_op(*op)),
         HlaStmt::DoClose { condition } => format!("}} {}", format_hla_condition(condition)),
         HlaStmt::DoCloseAlways => "} always".to_string(),

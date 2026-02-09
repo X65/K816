@@ -1,0 +1,9 @@
+Warning: postfix `} <=` expands to two branch instructions and may be inefficient
+   ╭─[ /home/smoku/devel/X65/k816/tests/golden/fixtures/syntax-postfix-le-efficiency-warning/input.k65:4:3 ]
+   │
+ 4 │   } <=
+   │   ──┬─  
+   │     ╰─── primary location
+   │ 
+   │ Help: expansion is `BCC target` + `BEQ target`
+───╯

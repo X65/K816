@@ -1,16 +1,13 @@
 [default]
-000000: E8 C9 00 D0 FB C8 C9 00 F0 FB A9 00 80 FC A9 01
-000010: 60
+000000: E8 D0 FD C8 F0 FD A9 00 80 FC A9 01 60
 
 
 [disasm obj#0 default::main]
 000000: E8          inx
-000001: C9 00       cmp #$00
-000003: D0 FB       bne $000000
-000005: C8          iny
-000006: C9 00       cmp #$00
-000008: F0 FB       beq $000005
-00000A: A9 00       lda #$00
-00000C: 80 FC       bra $00000A
-00000E: A9 01       lda #$01
-000010: 60          rts
+000001: D0 FD       bne $000000
+000003: C8          iny
+000004: F0 FD       beq $000003
+000006: A9 00       lda #$00
+000008: 80 FC       bra $000006
+00000A: A9 01       lda #$01
+00000C: 60          rts

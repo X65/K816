@@ -1,6 +1,4 @@
-use crate::ast::{
-    Expr, File, HlaCondition, HlaRegister, HlaStmt, Item, NamedDataBlock, NamedDataEntry, Stmt,
-};
+use crate::ast::{Expr, File, HlaCondition, HlaStmt, Item, NamedDataBlock, NamedDataEntry, Stmt};
 use crate::diag::Diagnostic;
 use crate::span::Spanned;
 
@@ -133,13 +131,9 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
             rhs: rhs.clone(),
         },
         HlaStmt::DoOpen => HlaStmt::DoOpen,
-        HlaStmt::DoCloseWithOp { op } => HlaStmt::DoClose {
-            condition: normalize_condition(&HlaCondition {
-                lhs: HlaRegister::A,
-                op: *op,
-                rhs: None,
-            }),
-        },
+        HlaStmt::DoCloseNFlagClear => HlaStmt::DoCloseNFlagClear,
+        HlaStmt::DoCloseNFlagSet => HlaStmt::DoCloseNFlagSet,
+        HlaStmt::DoCloseWithOp { op } => HlaStmt::DoCloseWithOp { op: *op },
         HlaStmt::DoClose { condition } => HlaStmt::DoClose {
             condition: normalize_condition(condition),
         },

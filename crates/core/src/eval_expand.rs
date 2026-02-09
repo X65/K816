@@ -172,6 +172,8 @@ fn expand_hla_stmt(
             rhs: expand_expr(rhs, span, source_id, diagnostics),
         },
         HlaStmt::DoOpen => HlaStmt::DoOpen,
+        HlaStmt::DoCloseNFlagClear => HlaStmt::DoCloseNFlagClear,
+        HlaStmt::DoCloseNFlagSet => HlaStmt::DoCloseNFlagSet,
         HlaStmt::DoCloseWithOp { op } => HlaStmt::DoCloseWithOp { op: *op },
         HlaStmt::DoClose { condition } => HlaStmt::DoClose {
             condition: expand_hla_condition(condition, span, source_id, diagnostics),

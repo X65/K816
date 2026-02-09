@@ -14,6 +14,7 @@ pub struct FunctionMeta {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VarMeta {
     pub address: u32,
+    pub size: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,9 +111,24 @@ fn collect_var(
     let Some(address) = eval_var_address(var, *next_auto_addr, span, diagnostics) else {
         return;
     };
+    let Some(size) = eval_var_size(var, span, diagnostics) else {
+        return;
+    };
+    let Some(next_addr) = address.checked_add(size) else {
+        diagnostics.push(Diagnostic::error(
+            span,
+            format!(
+                "var allocation for '{}' overflows address space (start={address:#X}, size={size})",
+                var.name
+            ),
+        ));
+        return;
+    };
 
-    *next_auto_addr = address.saturating_add(1);
-    model.vars.insert(var.name.clone(), VarMeta { address });
+    *next_auto_addr = next_addr;
+    model
+        .vars
+        .insert(var.name.clone(), VarMeta { address, size });
 }
 
 fn eval_var_address(
@@ -153,6 +169,48 @@ fn eval_var_address(
     }
 }
 
+fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -> Option<u32> {
+    let Some(array_len) = &var.array_len else {
+        return Some(1);
+    };
+
+    match array_len {
+        Expr::Number(value) => {
+            if *value <= 0 {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("var array length must be positive: {value}"),
+                ));
+                return None;
+            }
+            match u32::try_from(*value) {
+                Ok(size) => Some(size),
+                Err(_) => {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("var array length is out of range: {value}"),
+                    ));
+                    None
+                }
+            }
+        }
+        Expr::Ident(name) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("var array length '{name}' must be a numeric literal"),
+            ));
+            None
+        }
+        Expr::EvalText(_) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "internal error: eval text should be expanded before semantic analysis",
+            ));
+            None
+        }
+    }
+}
+
 fn is_symbol_available(symbol: &str, model: &SemanticModel) -> bool {
     !model.functions.contains_key(symbol) && !model.vars.contains_key(symbol)
 }
@@ -170,9 +228,13 @@ mod tests {
         let sema = analyze(&file).expect("analyze");
 
         assert_eq!(sema.vars.get("top").expect("top").address, 0);
+        assert_eq!(sema.vars.get("top").expect("top").size, 1);
         assert_eq!(sema.vars.get("in_a").expect("in_a").address, 1);
+        assert_eq!(sema.vars.get("in_a").expect("in_a").size, 1);
         assert_eq!(sema.vars.get("in_b").expect("in_b").address, 2);
+        assert_eq!(sema.vars.get("in_b").expect("in_b").size, 1);
         assert_eq!(sema.vars.get("tail").expect("tail").address, 3);
+        assert_eq!(sema.vars.get("tail").expect("tail").size, 1);
     }
 
     #[test]
@@ -184,6 +246,43 @@ mod tests {
         assert_eq!(sema.vars.get("first").expect("first").address, 0);
         assert_eq!(sema.vars.get("reset").expect("reset").address, 0x100);
         assert_eq!(sema.vars.get("next").expect("next").address, 0x101);
+    }
+
+    #[test]
+    fn array_length_advances_allocator() {
+        let source = "var header[4]\nvar next\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.vars.get("header").expect("header").address, 0);
+        assert_eq!(sema.vars.get("header").expect("header").size, 4);
+        assert_eq!(sema.vars.get("next").expect("next").address, 4);
+        assert_eq!(sema.vars.get("next").expect("next").size, 1);
+    }
+
+    #[test]
+    fn explicit_array_address_sets_next_auto_address_after_full_size() {
+        let source = "var first\nvar tiles[3] = 0x100\nvar tail\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.vars.get("first").expect("first").address, 0);
+        assert_eq!(sema.vars.get("tiles").expect("tiles").address, 0x100);
+        assert_eq!(sema.vars.get("tiles").expect("tiles").size, 3);
+        assert_eq!(sema.vars.get("tail").expect("tail").address, 0x103);
+    }
+
+    #[test]
+    fn array_length_must_be_positive_literal() {
+        let source = "var bad[0]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("array length must be positive"))
+        );
     }
 
     #[test]

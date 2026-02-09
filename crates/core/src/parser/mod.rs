@@ -292,6 +292,11 @@ impl Parser {
             .span
             .start;
         let name = self.expect_ident("expected variable name")?;
+        let array_len = if matches!(self.current_kind(), Some(TokenKind::Eval(_))) {
+            Some(self.parse_bracket_expr("invalid var array length expression")?)
+        } else {
+            None
+        };
         let initializer = if self.at_kind(&TokenKind::Eq) {
             self.bump();
             Some(self.parse_expr()?.node)
@@ -299,7 +304,32 @@ impl Parser {
             None
         };
         let span = Span::new(self.source_id, start, self.prev_end());
-        Ok(Spanned::new(VarDecl { name, initializer }, span))
+        Ok(Spanned::new(
+            VarDecl {
+                name,
+                array_len,
+                initializer,
+            },
+            span,
+        ))
+    }
+
+    fn parse_bracket_expr(&mut self, message: &str) -> Result<Expr, Diagnostic> {
+        let token = self
+            .bump()
+            .ok_or_else(|| Diagnostic::error(self.current_span(), message))?;
+        let span = token.span;
+        let text = match token.kind {
+            TokenKind::Eval(value) => value,
+            _ => return Err(Diagnostic::error(span, message)),
+        };
+
+        parse_expression_fragment(self.source_id, &text)
+            .map(|expr| expr.node)
+            .map_err(|err| {
+                Diagnostic::error(span, format!("{message}: {}", err.message))
+                    .with_label(span, format!("inside brackets: [{text}]"))
+            })
     }
 
     fn parse_stmt(&mut self) -> Result<Spanned<Stmt>, Diagnostic> {
@@ -522,5 +552,19 @@ mod tests {
     fn parses_expression_fragment() {
         let expr = parse_expression_fragment(SourceId(0), "0x10").expect("parse");
         assert!(matches!(expr.node, Expr::Number(16)));
+    }
+
+    #[test]
+    fn parses_var_array_length() {
+        let source = "var tiles[16]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::Var(var) = &file.items[0].node else {
+            panic!("expected var item");
+        };
+
+        assert!(matches!(var.array_len, Some(Expr::Number(16))));
+        assert!(var.initializer.is_none());
     }
 }

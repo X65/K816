@@ -22,6 +22,7 @@ pub struct BankDecl {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub name: String,
+    pub array_len: Option<Expr>,
     pub initializer: Option<Expr>,
 }
 

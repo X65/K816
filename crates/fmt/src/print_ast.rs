@@ -13,17 +13,7 @@ pub fn format_ast(file: &File) -> String {
 fn format_item(out: &mut String, item: &Item, indent: usize) {
     match item {
         Item::Bank(bank) => line(out, indent, format!("bank {}", bank.name)),
-        Item::Var(var) => {
-            if let Some(expr) = &var.initializer {
-                line(
-                    out,
-                    indent,
-                    format!("var {} = {}", var.name, format_expr(expr)),
-                );
-            } else {
-                line(out, indent, format!("var {}", var.name));
-            }
-        }
+        Item::Var(var) => line(out, indent, format_var(var)),
         Item::DataBlock(block) => {
             line(out, indent, "data {".to_string());
             for command in &block.commands {
@@ -66,17 +56,7 @@ fn format_item(out: &mut String, item: &Item, indent: usize) {
 fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
     match stmt {
         Stmt::Label(label) => line(out, indent, format!("{}:", label.name)),
-        Stmt::Var(var) => {
-            if let Some(expr) = &var.initializer {
-                line(
-                    out,
-                    indent,
-                    format!("var {} = {}", var.name, format_expr(expr)),
-                );
-            } else {
-                line(out, indent, format!("var {}", var.name));
-            }
-        }
+        Stmt::Var(var) => line(out, indent, format_var(var)),
         Stmt::DataBlock(block) => {
             line(out, indent, "data {".to_string());
             for command in &block.commands {
@@ -110,6 +90,20 @@ fn format_instruction(instr: &Instruction) -> String {
             }
         }
     }
+}
+
+fn format_var(var: &k816_core::ast::VarDecl) -> String {
+    let mut out = format!("var {}", var.name);
+    if let Some(array_len) = &var.array_len {
+        out.push('[');
+        out.push_str(&format_expr(array_len));
+        out.push(']');
+    }
+    if let Some(expr) = &var.initializer {
+        out.push_str(" = ");
+        out.push_str(&format_expr(expr));
+    }
+    out
 }
 
 fn format_data_command(command: &DataCommand) -> String {

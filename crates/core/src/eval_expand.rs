@@ -93,6 +93,10 @@ fn expand_var(
 ) -> VarDecl {
     VarDecl {
         name: var.name.clone(),
+        array_len: var
+            .array_len
+            .as_ref()
+            .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
         initializer: var
             .initializer
             .as_ref()

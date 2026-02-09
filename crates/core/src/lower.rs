@@ -60,9 +60,7 @@ pub fn lower(
             Item::Statement(stmt) => {
                 lower_stmt(stmt, item.span, None, sema, fs, &mut diagnostics, &mut ops);
             }
-            Item::Var(_) => {
-                // Placeholder: full var allocation is part of a later milestone.
-            }
+            Item::Var(_) => {}
         }
     }
 
@@ -89,7 +87,7 @@ fn lower_stmt(
             }
         }
         Stmt::Instruction(instruction) => {
-            if let Some(op) = lower_instruction(instruction, scope, span, diagnostics) {
+            if let Some(op) = lower_instruction(instruction, scope, sema, span, diagnostics) {
                 ops.push(Spanned::new(Op::Instruction(op), span));
             }
         }
@@ -121,7 +119,7 @@ fn lower_stmt(
         Stmt::Bytes(values) => {
             let mut bytes = Vec::with_capacity(values.len());
             for value in values {
-                match eval_to_number(value, scope, span, diagnostics) {
+                match eval_to_number(value, scope, sema, span, diagnostics) {
                     Some(number) => match u8::try_from(number) {
                         Ok(byte) => bytes.push(byte),
                         Err(_) => diagnostics.push(Diagnostic::error(
@@ -145,13 +143,14 @@ fn lower_stmt(
 fn lower_instruction(
     instruction: &Instruction,
     scope: Option<&str>,
+    sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<InstructionOp> {
     let operand = match &instruction.operand {
         None => None,
         Some(Operand::Immediate(expr)) => {
-            let value = eval_to_number(expr, scope, span, diagnostics)?;
+            let value = eval_to_number(expr, scope, sema, span, diagnostics)?;
             Some(OperandOp::Immediate(value))
         }
         Some(Operand::Value { expr, force_far }) => match expr {
@@ -170,13 +169,14 @@ fn lower_instruction(
                     }
                 }
             }
-            Expr::Ident(name) => {
-                let resolved = resolve_symbol(name, scope, span, diagnostics)?;
-                Some(OperandOp::Address {
-                    value: AddressValue::Label(resolved),
-                    force_far: *force_far,
-                })
-            }
+            Expr::Ident(name) => Some(resolve_operand_ident(
+                name,
+                scope,
+                sema,
+                span,
+                diagnostics,
+                *force_far,
+            )?),
             Expr::EvalText(_) => {
                 diagnostics.push(Diagnostic::error(
                     span,
@@ -196,12 +196,23 @@ fn lower_instruction(
 fn eval_to_number(
     expr: &Expr,
     scope: Option<&str>,
+    sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
     match expr {
         Expr::Number(value) => Some(*value),
         Expr::Ident(name) => {
+            if sema.vars.contains_key(name) {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!(
+                        "address symbol '{name}' cannot be used in .byte; expected numeric literal"
+                    ),
+                ));
+                return None;
+            }
+
             let resolved = resolve_symbol(name, scope, span, diagnostics)?;
             diagnostics.push(Diagnostic::error(
                 span,
@@ -217,6 +228,43 @@ fn eval_to_number(
             None
         }
     }
+}
+
+fn resolve_operand_ident(
+    name: &str,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    force_far: bool,
+) -> Option<OperandOp> {
+    if name.starts_with('.') {
+        let resolved = resolve_symbol(name, scope, span, diagnostics)?;
+        return Some(OperandOp::Address {
+            value: AddressValue::Label(resolved),
+            force_far,
+        });
+    }
+
+    if let Some(var) = sema.vars.get(name) {
+        return Some(OperandOp::Address {
+            value: AddressValue::Literal(var.address),
+            force_far,
+        });
+    }
+
+    if sema.functions.contains_key(name) {
+        return Some(OperandOp::Address {
+            value: AddressValue::Label(name.to_string()),
+            force_far,
+        });
+    }
+
+    diagnostics.push(
+        Diagnostic::error(span, format!("unknown symbol '{name}'"))
+            .with_hint("declare a var/function or use a local label inside a code block"),
+    );
+    None
 }
 
 fn resolve_symbol(
@@ -236,4 +284,57 @@ fn resolve_symbol(
         return Some(format!("{scope}::.{}", local));
     }
     Some(symbol.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir::OperandOp;
+    use crate::parser::parse;
+    use crate::sema::analyze;
+    use crate::span::SourceId;
+    use k816_assets::StdAssetFS;
+
+    #[test]
+    fn resolves_var_operand_to_literal_address() {
+        let source = "var target = 0x1234\nmain {\n  lda target\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        match operand {
+            OperandOp::Address { value, force_far } => {
+                assert!(!force_far);
+                assert!(matches!(value, AddressValue::Literal(0x1234)));
+            }
+            _ => panic!("expected address operand"),
+        }
+    }
+
+    #[test]
+    fn reports_unknown_identifier_in_instruction_operand() {
+        let source = "main {\n  lda missing\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("unknown symbol 'missing'"))
+        );
+    }
 }

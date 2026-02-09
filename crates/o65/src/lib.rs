@@ -77,6 +77,8 @@ pub struct Relocation {
 pub enum RelocationKind {
     Absolute,
     Relative,
+    LowByte,
+    HighByte,
 }
 
 pub fn write_object(path: &std::path::Path, object: &O65Object) -> Result<()> {
@@ -178,6 +180,8 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
         out.push(match reloc.kind {
             RelocationKind::Absolute => 0,
             RelocationKind::Relative => 1,
+            RelocationKind::LowByte => 2,
+            RelocationKind::HighByte => 3,
         });
         write_string(&mut out, &reloc.symbol)?;
     }
@@ -329,6 +333,8 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         let kind = match rd.read_u8()? {
             0 => RelocationKind::Absolute,
             1 => RelocationKind::Relative,
+            2 => RelocationKind::LowByte,
+            3 => RelocationKind::HighByte,
             other => bail!("invalid relocation kind: {other}"),
         };
         let symbol = rd.read_string()?;
@@ -414,6 +420,16 @@ fn validate_object(object: &O65Object) -> Result<()> {
     for reloc in &object.relocations {
         if reloc.width == 0 {
             bail!("relocation in section '{}' has zero width", reloc.section);
+        }
+        if matches!(
+            reloc.kind,
+            RelocationKind::LowByte | RelocationKind::HighByte
+        ) && reloc.width != 1
+        {
+            bail!(
+                "low/high-byte relocation in section '{}' must have width 1",
+                reloc.section
+            );
         }
 
         let section = object.sections.get(&reloc.section).ok_or_else(|| {

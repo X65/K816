@@ -1,0 +1,14 @@
+[default]
+000111: 60 60
+
+
+[fixed_hi]
+000020: 11 01
+
+
+[data obj#0 fixed_hi::vectors]
+000020: <2 bytes of data>
+
+[disasm obj#0 default::main]
+000111: 60          rts
+000112: 60          rts

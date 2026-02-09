@@ -13,9 +13,26 @@ pub enum Op {
     Label(String),
     Instruction(InstructionOp),
     EmitBytes(Vec<u8>),
+    EmitRelocBytes {
+        bytes: Vec<u8>,
+        relocations: Vec<ByteRelocation>,
+    },
     Align(u16),
     Address(u32),
     Nocross(u16),
+}
+
+#[derive(Debug, Clone)]
+pub struct ByteRelocation {
+    pub offset: u32,
+    pub kind: ByteRelocationKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteRelocationKind {
+    LowByte,
+    HighByte,
 }
 
 #[derive(Debug, Clone)]

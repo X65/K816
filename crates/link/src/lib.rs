@@ -507,6 +507,18 @@ pub fn link_objects_with_options(
                     }
                     _ => bail!("relative relocation width must be 1 or 2 bytes"),
                 },
+                RelocationKind::LowByte => {
+                    if reloc.width != 1 {
+                        bail!("low-byte relocation width must be 1");
+                    }
+                    mem.bytes[rel_idx] = (target.addr & 0xFF) as u8;
+                }
+                RelocationKind::HighByte => {
+                    if reloc.width != 1 {
+                        bail!("high-byte relocation width must be 1");
+                    }
+                    mem.bytes[rel_idx] = ((target.addr >> 8) & 0xFF) as u8;
+                }
             }
         }
     }

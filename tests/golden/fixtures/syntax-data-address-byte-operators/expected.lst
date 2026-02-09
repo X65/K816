@@ -1,0 +1,10 @@
+[default]
+000000: 7F 45 23 46 23 45 23 AD 00 00 60
+
+
+[data obj#0 default::bytes]
+000000: <7 bytes of data>
+
+[disasm obj#0 default::main]
+000007: AD 00 00    lda $0000
+00000A: 60          rts

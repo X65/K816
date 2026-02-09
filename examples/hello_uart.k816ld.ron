@@ -31,6 +31,16 @@
       optional: false,
       segment: Some("INFO"),
     ),
+    (
+      id: "VECTORS",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(0xFFE0),
+      offset: None,
+      optional: false,
+      segment: Some("VECTORS"),
+    ),
   ],
   symbols: [],
   output: (

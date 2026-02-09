@@ -6,7 +6,7 @@ use k816_isa65816::{
 use rustc_hash::FxHashMap;
 
 use crate::diag::Diagnostic;
-use crate::hir::{AddressValue, Op, OperandOp, Program};
+use crate::hir::{AddressValue, ByteRelocationKind, Op, OperandOp, Program};
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -25,10 +25,15 @@ struct SegmentState {
 struct Fixup {
     segment: String,
     offset: usize,
-    width: usize,
-    mode: AddressingMode,
+    kind: FixupKind,
     label: String,
     span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum FixupKind {
+    Instruction { width: usize, mode: AddressingMode },
+    ByteRelocation(ByteRelocationKind),
 }
 
 #[derive(Debug)]
@@ -127,6 +132,39 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                     .expect("current segment must exist during emit");
                 apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
                 segment.bytes.extend(bytes);
+            }
+            Op::EmitRelocBytes { bytes, relocations } => {
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
+                let emit_offset = segment.bytes.len();
+                segment.bytes.extend(bytes);
+                for relocation in relocations {
+                    let Ok(rel_offset) = usize::try_from(relocation.offset) else {
+                        diagnostics.push(Diagnostic::error(
+                            op.span,
+                            "byte relocation offset does not fit in usize",
+                        ));
+                        continue;
+                    };
+                    if rel_offset >= bytes.len() {
+                        diagnostics.push(Diagnostic::error(
+                            op.span,
+                            format!(
+                                "byte relocation offset {rel_offset} is outside emitted byte range"
+                            ),
+                        ));
+                        continue;
+                    }
+                    fixups.push(Fixup {
+                        segment: current_segment.clone(),
+                        offset: emit_offset + rel_offset,
+                        kind: FixupKind::ByteRelocation(relocation.kind),
+                        label: relocation.label.clone(),
+                        span: op.span,
+                    });
+                }
             }
             Op::Instruction(instruction) => {
                 let segment = segments
@@ -228,8 +266,10 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                             fixups.push(Fixup {
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
-                                width,
-                                mode: encoding.mode,
+                                kind: FixupKind::Instruction {
+                                    width,
+                                    mode: encoding.mode,
+                                },
                                 label: label.clone(),
                                 span: op.span,
                             });
@@ -249,7 +289,24 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             continue;
         };
 
-        if fixup.mode == AddressingMode::Relative8 {
+        let FixupKind::Instruction { width, mode } = fixup.kind else {
+            let value = *label_addr as u32;
+            let segment = segments
+                .get_mut(&fixup.segment)
+                .expect("fixup segment should exist during patching");
+            match fixup.kind {
+                FixupKind::ByteRelocation(ByteRelocationKind::LowByte) => {
+                    segment.bytes[fixup.offset] = (value & 0xFF) as u8;
+                }
+                FixupKind::ByteRelocation(ByteRelocationKind::HighByte) => {
+                    segment.bytes[fixup.offset] = ((value >> 8) & 0xFF) as u8;
+                }
+                FixupKind::Instruction { .. } => unreachable!(),
+            }
+            continue;
+        };
+
+        if mode == AddressingMode::Relative8 {
             if label_segment != &fixup.segment {
                 diagnostics.push(
                     Diagnostic::error(
@@ -284,7 +341,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             continue;
         }
 
-        if fixup.mode == AddressingMode::Relative16 {
+        if mode == AddressingMode::Relative16 {
             if label_segment != &fixup.segment {
                 diagnostics.push(
                     Diagnostic::error(
@@ -320,10 +377,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             continue;
         }
 
-        if fixup.width == 2
-            && fixup.mode != AddressingMode::Relative16
-            && label_segment != &fixup.segment
-        {
+        if width == 2 && mode != AddressingMode::Relative16 && label_segment != &fixup.segment {
             diagnostics.push(
                 Diagnostic::error(
                     fixup.span,
@@ -345,7 +399,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             &mut segment.bytes,
             fixup.offset,
             value,
-            fixup.width,
+            width,
             fixup.span,
             &mut diagnostics,
         );

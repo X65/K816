@@ -7,7 +7,9 @@ use crate::ast::{
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
-use crate::hir::{AddressValue, InstructionOp, Op, OperandOp, Program};
+use crate::hir::{
+    AddressValue, ByteRelocation, ByteRelocationKind, InstructionOp, Op, OperandOp, Program,
+};
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
 
@@ -15,6 +17,11 @@ use crate::span::{Span, Spanned};
 struct LowerContext {
     next_label: usize,
     do_loop_targets: Vec<String>,
+}
+
+struct EvaluatedBytes {
+    bytes: Vec<u8>,
+    relocations: Vec<ByteRelocation>,
 }
 
 impl LowerContext {
@@ -33,6 +40,7 @@ pub fn lower(
     let mut diagnostics = Vec::new();
     let mut ops = Vec::new();
     let mut top_level_ctx = LowerContext::default();
+    let mut current_segment = "default".to_string();
 
     for item in &file.items {
         match &item.node {
@@ -41,18 +49,27 @@ pub fn lower(
                     Op::SelectSegment(segment.name.clone()),
                     item.span,
                 ));
+                current_segment = segment.name.clone();
             }
             Item::DataBlock(block) => match lower_data_block(block, fs) {
                 Ok(mut lowered) => ops.append(&mut lowered),
                 Err(mut errs) => diagnostics.append(&mut errs),
             },
             Item::NamedDataBlock(block) => {
-                lower_named_data_block(block, sema, fs, &mut diagnostics, &mut ops);
+                lower_named_data_block(
+                    block,
+                    sema,
+                    fs,
+                    &current_segment,
+                    &mut diagnostics,
+                    &mut ops,
+                );
             }
             Item::CodeBlock(block) => {
                 let mut block_ctx = LowerContext::default();
                 let scope = block.name.clone();
                 let label_span = block.name_span.unwrap_or(item.span);
+                let mut block_segment = current_segment.clone();
                 // Allow `segment ...` at the top of a code block to control where the
                 // function/main entry label is emitted.
                 let mut body_start = 0usize;
@@ -64,6 +81,7 @@ pub fn lower(
                                 Op::SelectSegment(segment.name.clone()),
                                 stmt.span,
                             ));
+                            block_segment = segment.name.clone();
                             body_start += 1;
                         }
                         _ => break,
@@ -79,6 +97,7 @@ pub fn lower(
                         Some(scope.as_str()),
                         sema,
                         fs,
+                        &mut block_segment,
                         &mut block_ctx,
                         &mut diagnostics,
                         &mut ops,
@@ -103,6 +122,12 @@ pub fn lower(
                     ));
                 }
                 ops.push(Spanned::new(Op::FunctionEnd, item.span));
+                if block_segment != current_segment {
+                    ops.push(Spanned::new(
+                        Op::SelectSegment(current_segment.clone()),
+                        item.span,
+                    ));
+                }
 
                 if block.kind == BlockKind::Main && block.is_far {
                     diagnostics.push(
@@ -118,6 +143,7 @@ pub fn lower(
                     None,
                     sema,
                     fs,
+                    &mut current_segment,
                     &mut top_level_ctx,
                     &mut diagnostics,
                     &mut ops,
@@ -138,6 +164,7 @@ fn lower_named_data_block(
     block: &NamedDataBlock,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    outer_segment: &str,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
@@ -145,6 +172,7 @@ fn lower_named_data_block(
         return;
     };
     let mut label_emitted = false;
+    let mut block_segment = outer_segment.to_string();
 
     for entry in &block.entries {
         if !label_emitted
@@ -156,7 +184,15 @@ fn lower_named_data_block(
                     | NamedDataEntry::Nocross(_)
             )
         {
-            lower_named_data_entry(&entry.node, entry.span, sema, fs, diagnostics, ops);
+            lower_named_data_entry(
+                &entry.node,
+                entry.span,
+                sema,
+                fs,
+                &mut block_segment,
+                diagnostics,
+                ops,
+            );
             continue;
         }
 
@@ -165,11 +201,25 @@ fn lower_named_data_block(
             label_emitted = true;
         }
 
-        lower_named_data_entry(&entry.node, entry.span, sema, fs, diagnostics, ops);
+        lower_named_data_entry(
+            &entry.node,
+            entry.span,
+            sema,
+            fs,
+            &mut block_segment,
+            diagnostics,
+            ops,
+        );
     }
 
     if !label_emitted {
         ops.push(Spanned::new(Op::Label(name), block.name_span));
+    }
+    if block_segment != outer_segment {
+        ops.push(Spanned::new(
+            Op::SelectSegment(outer_segment.to_string()),
+            block.name_span,
+        ));
     }
 }
 
@@ -178,12 +228,14 @@ fn lower_named_data_entry(
     span: Span,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    current_segment: &mut String,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
     match entry {
         NamedDataEntry::Segment(segment) => {
             ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), span));
+            *current_segment = segment.name.clone();
         }
         NamedDataEntry::Address(value) => {
             ops.push(Spanned::new(Op::Address(*value), span));
@@ -195,8 +247,16 @@ fn lower_named_data_entry(
             ops.push(Spanned::new(Op::Nocross(*value), span));
         }
         NamedDataEntry::Bytes(values) | NamedDataEntry::LegacyBytes(values) => {
-            if let Some(bytes) = evaluate_byte_exprs(values, None, sema, span, diagnostics) {
-                ops.push(Spanned::new(Op::EmitBytes(bytes), span));
+            if let Some(evaluated) = evaluate_byte_exprs(values, None, sema, span, diagnostics) {
+                let op = if evaluated.relocations.is_empty() {
+                    Op::EmitBytes(evaluated.bytes)
+                } else {
+                    Op::EmitRelocBytes {
+                        bytes: evaluated.bytes,
+                        relocations: evaluated.relocations,
+                    }
+                };
+                ops.push(Spanned::new(op, span));
             }
         }
         NamedDataEntry::String(value) => {
@@ -227,6 +287,7 @@ fn lower_stmt(
     scope: Option<&str>,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    current_segment: &mut String,
     ctx: &mut LowerContext,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
@@ -234,6 +295,7 @@ fn lower_stmt(
     match stmt {
         Stmt::Segment(segment) => {
             ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), span));
+            *current_segment = segment.name.clone();
         }
         Stmt::Label(label) => {
             if let Some(resolved) = resolve_symbol(&label.name, scope, span, diagnostics) {
@@ -292,8 +354,16 @@ fn lower_stmt(
             ));
         }
         Stmt::Bytes(values) => {
-            if let Some(bytes) = evaluate_byte_exprs(values, scope, sema, span, diagnostics) {
-                ops.push(Spanned::new(Op::EmitBytes(bytes), span));
+            if let Some(evaluated) = evaluate_byte_exprs(values, scope, sema, span, diagnostics) {
+                let op = if evaluated.relocations.is_empty() {
+                    Op::EmitBytes(evaluated.bytes)
+                } else {
+                    Op::EmitRelocBytes {
+                        bytes: evaluated.bytes,
+                        relocations: evaluated.relocations,
+                    }
+                };
+                ops.push(Spanned::new(op, span));
             }
         }
         Stmt::DataBlock(block) => match lower_data_block(block, fs) {
@@ -630,21 +700,151 @@ fn evaluate_byte_exprs(
     sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<Vec<u8>> {
+) -> Option<EvaluatedBytes> {
     let mut bytes = Vec::with_capacity(values.len());
-    for value in values {
-        match eval_to_number(value, scope, sema, span, diagnostics) {
-            Some(number) => match u8::try_from(number) {
+    let mut relocations = Vec::new();
+
+    for (index, value) in values.iter().enumerate() {
+        if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
+            match u8::try_from(number) {
                 Ok(byte) => bytes.push(byte),
-                Err(_) => diagnostics.push(Diagnostic::error(
+                Err(_) => {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("byte literal out of range: {number}"),
+                    ));
+                    return None;
+                }
+            }
+            continue;
+        }
+
+        if matches!(
+            value,
+            Expr::Unary {
+                op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
+                ..
+            }
+        ) {
+            if let Some((kind, label)) =
+                resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
+            {
+                bytes.push(0);
+                relocations.push(ByteRelocation {
+                    offset: u32::try_from(index).expect("byte expression index should fit in u32"),
+                    kind,
+                    label,
+                });
+                continue;
+            }
+
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    "low/high-byte expression must be a constant or plain symbol reference",
+                )
+                .with_help("supported symbolic forms are '&<label' and '&>label'"),
+            );
+            return None;
+        }
+
+        let Some(number) = eval_to_number(value, scope, sema, span, diagnostics) else {
+            return None;
+        };
+        match u8::try_from(number) {
+            Ok(byte) => bytes.push(byte),
+            Err(_) => {
+                diagnostics.push(Diagnostic::error(
                     span,
                     format!("byte literal out of range: {number}"),
-                )),
-            },
-            None => return None,
+                ));
+                return None;
+            }
         }
     }
-    Some(bytes)
+
+    Some(EvaluatedBytes { bytes, relocations })
+}
+
+fn eval_to_number_strict(
+    expr: &Expr,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    match expr {
+        Expr::Number(value) => Some(*value),
+        Expr::Ident(name) => sema.vars.get(name).map(|var| i64::from(var.address)),
+        Expr::EvalText(_) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "internal error: eval text should be expanded before lowering",
+            ));
+            None
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let lhs = eval_to_number_strict(lhs, sema, span, diagnostics)?;
+            let rhs = eval_to_number_strict(rhs, sema, span, diagnostics)?;
+            match op {
+                ExprBinaryOp::Add => lhs.checked_add(rhs),
+                ExprBinaryOp::Sub => lhs.checked_sub(rhs),
+            }
+            .or_else(|| {
+                diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                None
+            })
+        }
+        Expr::Unary { op, expr } => {
+            let value = eval_to_number_strict(expr, sema, span, diagnostics)?;
+            match op {
+                ExprUnaryOp::LowByte => Some(value & 0xFF),
+                ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
+            }
+        }
+    }
+}
+
+fn resolve_symbolic_byte_relocation(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(ByteRelocationKind, String)> {
+    let Expr::Unary { op, expr } = expr else {
+        return None;
+    };
+
+    let kind = match op {
+        ExprUnaryOp::LowByte => ByteRelocationKind::LowByte,
+        ExprUnaryOp::HighByte => ByteRelocationKind::HighByte,
+    };
+
+    let Expr::Ident(symbol) = expr.as_ref() else {
+        return None;
+    };
+
+    if sema.vars.contains_key(symbol) || looks_like_constant_ident(symbol) {
+        return None;
+    }
+
+    let resolved = resolve_symbol(symbol, scope, span, diagnostics)?;
+    Some((kind, resolved))
+}
+
+fn looks_like_constant_ident(value: &str) -> bool {
+    let mut has_alpha = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphabetic() {
+            has_alpha = true;
+            if !ch.is_ascii_uppercase() {
+                return false;
+            }
+        } else if !(ch.is_ascii_digit() || ch == '_') {
+            return false;
+        }
+    }
+    has_alpha
 }
 
 fn lower_instruction_and_push(
@@ -1076,5 +1276,155 @@ mod tests {
 
         assert!(mnemonics.windows(3).any(|seq| seq == ["beq", "bcc", "bra"]));
         assert!(!mnemonics.contains(&"cmp"));
+    }
+
+    #[test]
+    fn segment_inside_named_data_block_restores_outer_segment() {
+        let source =
+            "segment fixed_lo\ndata vectors {\n  segment fixed_hi\n  1\n}\ndata tail {\n  2\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let fixed_hi_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::SelectSegment(name) if name == "fixed_hi"))
+            .expect("fixed_hi segment select");
+        let fixed_lo_indices = program
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, op)| {
+                matches!(&op.node, Op::SelectSegment(name) if name == "fixed_lo").then_some(idx)
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            fixed_lo_indices.len() >= 2,
+            "expected top-level + restore selects"
+        );
+        assert!(fixed_lo_indices[1] > fixed_hi_index);
+
+        let tail_label_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Label(name) if name == "tail"))
+            .expect("tail label");
+        assert!(fixed_lo_indices[1] < tail_label_index);
+    }
+
+    #[test]
+    fn segment_inside_code_block_restores_outer_segment() {
+        let source = "segment fixed_lo\nmain {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let fixed_hi_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::SelectSegment(name) if name == "fixed_hi"))
+            .expect("fixed_hi segment select");
+        let function_end_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::FunctionEnd))
+            .expect("function end");
+        let restore_index = program
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, op)| {
+                matches!(&op.node, Op::SelectSegment(name) if name == "fixed_lo").then_some(idx)
+            })
+            .find(|idx| *idx > function_end_index)
+            .expect("restore segment fixed_lo after function");
+        let tail_label_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Label(name) if name == "tail"))
+            .expect("tail label");
+
+        assert!(fixed_hi_index < function_end_index);
+        assert!(function_end_index < restore_index);
+        assert!(restore_index < tail_label_index);
+    }
+
+    #[test]
+    fn segment_inside_func_block_restores_outer_segment() {
+        let source = "segment fixed_lo\nfunc worker {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let fixed_hi_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::SelectSegment(name) if name == "fixed_hi"))
+            .expect("fixed_hi segment select");
+        let function_end_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::FunctionEnd))
+            .expect("function end");
+        let restore_index = program
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, op)| {
+                matches!(&op.node, Op::SelectSegment(name) if name == "fixed_lo").then_some(idx)
+            })
+            .find(|idx| *idx > function_end_index)
+            .expect("restore segment fixed_lo after function");
+        let tail_label_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Label(name) if name == "tail"))
+            .expect("tail label");
+
+        assert!(fixed_hi_index < function_end_index);
+        assert!(function_end_index < restore_index);
+        assert!(restore_index < tail_label_index);
+    }
+
+    #[test]
+    fn segment_inside_naked_block_restores_outer_segment() {
+        let source = "segment fixed_lo\nnaked worker {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let fixed_hi_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::SelectSegment(name) if name == "fixed_hi"))
+            .expect("fixed_hi segment select");
+        let function_end_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::FunctionEnd))
+            .expect("function end");
+        let restore_index = program
+            .ops
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, op)| {
+                matches!(&op.node, Op::SelectSegment(name) if name == "fixed_lo").then_some(idx)
+            })
+            .find(|idx| *idx > function_end_index)
+            .expect("restore segment fixed_lo after naked block");
+        let tail_label_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Label(name) if name == "tail"))
+            .expect("tail label");
+
+        assert!(fixed_hi_index < function_end_index);
+        assert!(function_end_index < restore_index);
+        assert!(restore_index < tail_label_index);
     }
 }

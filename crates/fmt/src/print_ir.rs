@@ -1,4 +1,4 @@
-use k816_core::hir::{AddressValue, Op, OperandOp, Program};
+use k816_core::hir::{AddressValue, ByteRelocationKind, Op, OperandOp, Program};
 
 pub fn format_ir(program: &Program) -> String {
     let mut out = String::new();
@@ -18,6 +18,24 @@ pub fn format_ir(program: &Program) -> String {
                     .collect::<Vec<_>>()
                     .join(" ");
                 out.push_str(&format!("emit {data}\n"));
+            }
+            Op::EmitRelocBytes { bytes, relocations } => {
+                let data = bytes
+                    .iter()
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push_str(&format!("emit {data}\n"));
+                for relocation in relocations {
+                    let kind = match relocation.kind {
+                        ByteRelocationKind::LowByte => "lo",
+                        ByteRelocationKind::HighByte => "hi",
+                    };
+                    out.push_str(&format!(
+                        "  reloc {kind} +{} {}\n",
+                        relocation.offset, relocation.label
+                    ));
+                }
             }
             Op::Instruction(instr) => {
                 out.push_str(&instr.mnemonic);

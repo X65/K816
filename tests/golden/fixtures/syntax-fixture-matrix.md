@@ -19,6 +19,8 @@ Primary operator-coverage fixture:
 - `syntax-wait-loop-lda`
 - `syntax-postfix-le-efficiency-warning`
 - `syntax-postfix-gt-efficiency-warning`
+- `syntax-data-address-byte-operators`
+- `syntax-data-address-byte-main-symbol`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.
 

@@ -2,6 +2,12 @@ var UART_READY = $FFE0
 var UART_DATA  = $FFE1
 var API_OP = $FFF1
 
+data VECTORS {
+  segment VECTORS
+  $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 $00 $00 $00 $00
+  $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 &<main &>main $00 $00
+}
+
 main {
   x = #0
   {

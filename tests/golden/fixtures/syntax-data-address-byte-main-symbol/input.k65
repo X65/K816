@@ -1,0 +1,10 @@
+data vectors {
+  segment fixed_hi
+  &<main &>main
+}
+
+segment default
+main {
+  address 0x0111
+  return
+}

@@ -8,7 +8,7 @@ use k816_o65::{
 };
 
 use crate::diag::Diagnostic;
-use crate::hir::{AddressValue, Op, OperandOp, Program};
+use crate::hir::{AddressValue, ByteRelocationKind, Op, OperandOp, Program};
 use crate::span::{SourceMap, Span};
 
 #[derive(Debug, Clone)]
@@ -145,6 +145,38 @@ pub fn emit_object(
                     });
                 }
                 append_bytes(segment, bytes, op.span, &mut diagnostics);
+            }
+            Op::EmitRelocBytes { bytes, relocations } => {
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+
+                apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
+                let emit_offset = segment.section_offset;
+                append_bytes(segment, bytes, op.span, &mut diagnostics);
+                for relocation in relocations {
+                    if relocation.offset >= bytes.len() as u32 {
+                        diagnostics.push(Diagnostic::error(
+                            op.span,
+                            format!(
+                                "byte relocation offset {} is outside emitted byte range",
+                                relocation.offset
+                            ),
+                        ));
+                        continue;
+                    }
+                    fixups.push(Fixup {
+                        segment: current_segment.clone(),
+                        offset: emit_offset + relocation.offset,
+                        width: 1,
+                        kind: match relocation.kind {
+                            ByteRelocationKind::LowByte => RelocationKind::LowByte,
+                            ByteRelocationKind::HighByte => RelocationKind::HighByte,
+                        },
+                        label: relocation.label.clone(),
+                        span: op.span,
+                    });
+                }
             }
             Op::Instruction(instruction) => {
                 let segment = segments

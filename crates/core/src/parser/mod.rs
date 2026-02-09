@@ -651,12 +651,45 @@ where
             }
         });
 
+    let legacy_address_byte_expr = just(TokenKind::Amp).ignore_then(
+        just(TokenKind::Lt)
+            .ignore_then(expr_parser())
+            .map(|expr| {
+                vec![Expr::Unary {
+                    op: ExprUnaryOp::LowByte,
+                    expr: Box::new(expr),
+                }]
+            })
+            .or(just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
+                vec![Expr::Unary {
+                    op: ExprUnaryOp::HighByte,
+                    expr: Box::new(expr),
+                }]
+            }))
+            .or(just(TokenKind::Amp)
+                .ignore_then(ident_parser())
+                .map(|name| {
+                    vec![
+                        Expr::Unary {
+                            op: ExprUnaryOp::LowByte,
+                            expr: Box::new(Expr::Ident(name.clone())),
+                        },
+                        Expr::Unary {
+                            op: ExprUnaryOp::HighByte,
+                            expr: Box::new(Expr::Ident(name)),
+                        },
+                    ]
+                })),
+    );
+
     let legacy_bytes_entry = number_parser()
+        .map(|value| vec![Expr::Number(value)])
+        .or(legacy_address_byte_expr)
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
-        .map(|values| {
-            NamedDataEntry::LegacyBytes(values.into_iter().map(Expr::Number).collect::<Vec<_>>())
+        .map(|chunks| {
+            NamedDataEntry::LegacyBytes(chunks.into_iter().flatten().collect::<Vec<_>>())
         });
 
     let eval_bytes_entry =
@@ -665,22 +698,6 @@ where
             .at_least(1)
             .collect::<Vec<_>>()
             .map(NamedDataEntry::Bytes);
-
-    let amp_amp_entry = just(TokenKind::Amp)
-        .then_ignore(just(TokenKind::Amp))
-        .ignore_then(ident_parser())
-        .map(|name| {
-            NamedDataEntry::Bytes(vec![
-                Expr::Unary {
-                    op: ExprUnaryOp::LowByte,
-                    expr: Box::new(Expr::Ident(name.clone())),
-                },
-                Expr::Unary {
-                    op: ExprUnaryOp::HighByte,
-                    expr: Box::new(Expr::Ident(name)),
-                },
-            ])
-        });
 
     let args = data_arg_parser()
         .separated_by(just(TokenKind::Comma))
@@ -717,7 +734,6 @@ where
         .or(convert_entry)
         .or(legacy_bytes_entry)
         .or(eval_bytes_entry)
-        .or(amp_amp_entry)
         .or(label_ignored_entry)
         .or(legacy_directive_ignored_entry)
         .boxed()
@@ -1762,6 +1778,7 @@ where
         let atom = chumsky::select! {
             TokenKind::Number(value) => Expr::Number(value),
             TokenKind::Ident(value) => Expr::Ident(value),
+            TokenKind::Main => Expr::Ident("main".to_string()),
             TokenKind::Eval(value) => parse_eval_expr_token(&value),
         }
         .or(just(TokenKind::LParen)
@@ -2328,6 +2345,37 @@ mod tests {
         assert!(matches!(
             block.entries[4].node,
             NamedDataEntry::Convert { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_main_symbol_in_legacy_address_byte_entries() {
+        let source = "data vectors {\n  &<main &>main\n}\nmain {\n  return\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 2);
+
+        let Item::NamedDataBlock(block) = &file.items[0].node else {
+            panic!("expected named data block");
+        };
+        assert_eq!(block.entries.len(), 1);
+
+        let NamedDataEntry::LegacyBytes(values) = &block.entries[0].node else {
+            panic!("expected legacy bytes entry");
+        };
+        assert_eq!(values.len(), 2);
+        assert!(matches!(
+            &values[0],
+            Expr::Unary {
+                op: ExprUnaryOp::LowByte,
+                expr
+            } if matches!(expr.as_ref(), Expr::Ident(name) if name == "main")
+        ));
+        assert!(matches!(
+            &values[1],
+            Expr::Unary {
+                op: ExprUnaryOp::HighByte,
+                expr
+            } if matches!(expr.as_ref(), Expr::Ident(name) if name == "main")
         ));
     }
 

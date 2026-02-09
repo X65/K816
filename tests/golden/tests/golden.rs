@@ -9,3 +9,8 @@ fn minimal_fixture() {
 fn vars_basic_fixture() {
     run_fixture("vars-basic").expect("fixture should compile and match expected outputs");
 }
+
+#[test]
+fn vars_array_fixture() {
+    run_fixture("vars-array").expect("fixture should compile and match expected outputs");
+}

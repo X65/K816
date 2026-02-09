@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 2;
+const PAYLOAD_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -11,6 +11,7 @@ pub struct O65Object {
     pub symbols: Vec<Symbol>,
     pub relocations: Vec<Relocation>,
     pub function_disassembly: Vec<FunctionDisassembly>,
+    pub data_string_fragments: Vec<DataStringFragment>,
     pub listing: String,
 }
 
@@ -19,6 +20,13 @@ pub struct FunctionDisassembly {
     pub section: String,
     pub function: String,
     pub instruction_offsets: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DataStringFragment {
+    pub section: String,
+    pub offset: u32,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -120,6 +128,7 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
     write_u32(&mut out, object.symbols.len() as u32);
     write_u32(&mut out, object.relocations.len() as u32);
     write_u32(&mut out, object.function_disassembly.len() as u32);
+    write_u32(&mut out, object.data_string_fragments.len() as u32);
     write_string(&mut out, &object.listing)?;
 
     for (name, section) in &object.sections {
@@ -182,6 +191,12 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
         }
     }
 
+    for fragment in &object.data_string_fragments {
+        write_string(&mut out, &fragment.section)?;
+        write_u32(&mut out, fragment.offset);
+        write_string(&mut out, &fragment.text)?;
+    }
+
     Ok(out)
 }
 
@@ -238,6 +253,11 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
     let symbol_count = rd.read_u32()? as usize;
     let reloc_count = rd.read_u32()? as usize;
     let function_disassembly_count = if version >= 2 {
+        rd.read_u32()? as usize
+    } else {
+        0
+    };
+    let data_string_fragment_count = if version >= 3 {
         rd.read_u32()? as usize
     } else {
         0
@@ -337,6 +357,18 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         });
     }
 
+    let mut data_string_fragments = Vec::with_capacity(data_string_fragment_count);
+    for _ in 0..data_string_fragment_count {
+        let section = rd.read_string()?;
+        let offset = rd.read_u32()?;
+        let text = rd.read_string()?;
+        data_string_fragments.push(DataStringFragment {
+            section,
+            offset,
+            text,
+        });
+    }
+
     if !rd.is_eof() {
         bail!("payload has trailing bytes");
     }
@@ -346,6 +378,7 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         symbols,
         relocations,
         function_disassembly,
+        data_string_fragments,
         listing,
     })
 }
@@ -422,6 +455,46 @@ fn validate_object(object: &O65Object) -> Result<()> {
                     function.section
                 );
             }
+        }
+    }
+
+    for fragment in &object.data_string_fragments {
+        let section = object.sections.get(&fragment.section).ok_or_else(|| {
+            anyhow::anyhow!(
+                "data string fragment at offset {:#X} references unknown section '{}'",
+                fragment.offset,
+                fragment.section
+            )
+        })?;
+
+        let text_len: u32 = fragment
+            .text
+            .len()
+            .try_into()
+            .context("data string fragment length does not fit in u32")?;
+        let end = fragment.offset.checked_add(text_len).ok_or_else(|| {
+            anyhow::anyhow!(
+                "data string fragment at offset {:#X} overflows section '{}'",
+                fragment.offset,
+                fragment.section
+            )
+        })?;
+
+        if text_len == 0 {
+            if !section_contains_point(section, fragment.offset)? {
+                bail!(
+                    "data string fragment at offset {:#X} is outside section '{}'",
+                    fragment.offset,
+                    fragment.section
+                );
+            }
+        } else if !section_contains_range(section, fragment.offset, end)? {
+            bail!(
+                "data string fragment range {:#X}..{:#X} is outside section '{}'",
+                fragment.offset,
+                end,
+                fragment.section
+            );
         }
     }
 
@@ -651,6 +724,11 @@ mod tests {
                 function: "main".to_string(),
                 instruction_offsets: vec![0],
             }],
+            data_string_fragments: vec![DataStringFragment {
+                section: "default".to_string(),
+                offset: 0,
+                text: "EA".to_string(),
+            }],
             listing: "[default]\n000000: EA 00 00\n".to_string(),
         };
 
@@ -664,6 +742,7 @@ mod tests {
         assert_eq!(decoded.symbols.len(), 1);
         assert_eq!(decoded.relocations.len(), 1);
         assert_eq!(decoded.function_disassembly.len(), 1);
+        assert_eq!(decoded.data_string_fragments.len(), 1);
         assert_eq!(decoded.listing, object.listing);
     }
 
@@ -693,6 +772,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -725,6 +805,7 @@ mod tests {
                 symbol: "target".to_string(),
             }],
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 

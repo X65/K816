@@ -9,6 +9,13 @@
 00FC10: 6C 65 20 66 6F 72 20 58 36 35 20 52 49 41
 
 
+[data obj#0 default::text]
+000218: "Hello, World!"
+000225: <3 bytes of data>
+
+[data obj#0 INFO::INFO]
+00FC00: "Hello UART example for X65 RIA"
+
 [disasm obj#0 default::main]
 000200: A2 00       ldx #$00
 000202: AD E0 FF    lda $FFE0

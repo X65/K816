@@ -141,59 +141,83 @@ fn lower_named_data_block(
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    if let Some(name) = resolve_symbol(&block.name, None, block.name_span, diagnostics) {
-        ops.push(Spanned::new(Op::Label(name), block.name_span));
-    } else {
+    let Some(name) = resolve_symbol(&block.name, None, block.name_span, diagnostics) else {
         return;
-    }
+    };
+    let mut label_emitted = false;
 
     for entry in &block.entries {
-        match &entry.node {
-            NamedDataEntry::Segment(segment) => {
-                ops.push(Spanned::new(
-                    Op::SelectSegment(segment.name.clone()),
-                    entry.span,
-                ));
-            }
-            NamedDataEntry::Address(value) => {
-                ops.push(Spanned::new(Op::Address(*value), entry.span));
-            }
-            NamedDataEntry::Align(value) => {
-                ops.push(Spanned::new(Op::Align(*value), entry.span));
-            }
-            NamedDataEntry::Nocross(value) => {
-                ops.push(Spanned::new(Op::Nocross(*value), entry.span));
-            }
-            NamedDataEntry::Bytes(values) | NamedDataEntry::LegacyBytes(values) => {
-                if let Some(bytes) =
-                    evaluate_byte_exprs(values, None, sema, entry.span, diagnostics)
-                {
-                    ops.push(Spanned::new(Op::EmitBytes(bytes), entry.span));
-                }
-            }
-            NamedDataEntry::String(value) => {
-                ops.push(Spanned::new(
-                    Op::EmitBytes(value.as_bytes().to_vec()),
-                    entry.span,
-                ));
-            }
-            NamedDataEntry::Convert { kind, args } => {
-                let data_block = DataBlock {
-                    commands: vec![Spanned::new(
-                        DataCommand::Convert {
-                            kind: kind.clone(),
-                            args: args.clone(),
-                        },
-                        entry.span,
-                    )],
-                };
-                match lower_data_block(&data_block, fs) {
-                    Ok(mut lowered) => ops.append(&mut lowered),
-                    Err(mut errs) => diagnostics.append(&mut errs),
-                }
-            }
-            NamedDataEntry::Ignored => {}
+        if !label_emitted
+            && matches!(
+                entry.node,
+                NamedDataEntry::Segment(_)
+                    | NamedDataEntry::Address(_)
+                    | NamedDataEntry::Align(_)
+                    | NamedDataEntry::Nocross(_)
+            )
+        {
+            lower_named_data_entry(&entry.node, entry.span, sema, fs, diagnostics, ops);
+            continue;
         }
+
+        if !label_emitted {
+            ops.push(Spanned::new(Op::Label(name.clone()), block.name_span));
+            label_emitted = true;
+        }
+
+        lower_named_data_entry(&entry.node, entry.span, sema, fs, diagnostics, ops);
+    }
+
+    if !label_emitted {
+        ops.push(Spanned::new(Op::Label(name), block.name_span));
+    }
+}
+
+fn lower_named_data_entry(
+    entry: &NamedDataEntry,
+    span: Span,
+    sema: &SemanticModel,
+    fs: &dyn AssetFS,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    match entry {
+        NamedDataEntry::Segment(segment) => {
+            ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), span));
+        }
+        NamedDataEntry::Address(value) => {
+            ops.push(Spanned::new(Op::Address(*value), span));
+        }
+        NamedDataEntry::Align(value) => {
+            ops.push(Spanned::new(Op::Align(*value), span));
+        }
+        NamedDataEntry::Nocross(value) => {
+            ops.push(Spanned::new(Op::Nocross(*value), span));
+        }
+        NamedDataEntry::Bytes(values) | NamedDataEntry::LegacyBytes(values) => {
+            if let Some(bytes) = evaluate_byte_exprs(values, None, sema, span, diagnostics) {
+                ops.push(Spanned::new(Op::EmitBytes(bytes), span));
+            }
+        }
+        NamedDataEntry::String(value) => {
+            ops.push(Spanned::new(Op::EmitBytes(value.as_bytes().to_vec()), span));
+        }
+        NamedDataEntry::Convert { kind, args } => {
+            let data_block = DataBlock {
+                commands: vec![Spanned::new(
+                    DataCommand::Convert {
+                        kind: kind.clone(),
+                        args: args.clone(),
+                    },
+                    span,
+                )],
+            };
+            match lower_data_block(&data_block, fs) {
+                Ok(mut lowered) => ops.append(&mut lowered),
+                Err(mut errs) => diagnostics.append(&mut errs),
+            }
+        }
+        NamedDataEntry::Ignored => {}
     }
 }
 
@@ -835,5 +859,61 @@ mod tests {
                 ..
             } if name == "missing"
         ));
+    }
+
+    #[test]
+    fn named_data_label_is_emitted_after_leading_segment_directive() {
+        let source = "data info {\n  segment INFO\n  \"A\"\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let segment_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::SelectSegment(name) if name == "INFO"))
+            .expect("segment select for INFO");
+        let label_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Label(name) if name == "info"))
+            .expect("label for info");
+        let emit_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::EmitBytes(bytes) if bytes == &[b'A']))
+            .expect("emit for data payload");
+
+        assert!(segment_index < label_index);
+        assert!(label_index < emit_index);
+    }
+
+    #[test]
+    fn named_data_label_is_emitted_after_leading_align_directive() {
+        let source = "data bytes {\n  align 16\n  1\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let align_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Align(16)))
+            .expect("align directive");
+        let label_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::Label(name) if name == "bytes"))
+            .expect("label for bytes");
+        let emit_index = program
+            .ops
+            .iter()
+            .position(|op| matches!(&op.node, Op::EmitBytes(bytes) if bytes == &[1]))
+            .expect("data byte emission");
+
+        assert!(align_index < label_index);
+        assert!(label_index < emit_index);
     }
 }

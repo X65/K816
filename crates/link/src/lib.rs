@@ -527,6 +527,7 @@ pub fn link_objects_with_options(
 
         listing_blocks.push(format_section_listing(segment_name, chunks, &memory_map)?);
     }
+    listing_blocks.extend(format_data_symbol_listings(objects, &placed_by_section)?);
     listing_blocks.extend(format_function_disassembly_listings(
         objects,
         &placed_by_section,
@@ -1059,6 +1060,316 @@ fn format_section_listing(
     Ok(out)
 }
 
+fn format_data_symbol_listings(
+    objects: &[O65Object],
+    placed_by_section: &HashMap<(usize, String), Vec<PlacedChunk>>,
+) -> Result<Vec<String>> {
+    let mut blocks = Vec::new();
+
+    for (object_index, object) in objects.iter().enumerate() {
+        let mut data_symbols = object
+            .symbols
+            .iter()
+            .filter(|symbol| is_named_data_symbol(symbol))
+            .collect::<Vec<_>>();
+        data_symbols.sort_by(|lhs, rhs| {
+            let lhs_location = lhs
+                .definition
+                .as_ref()
+                .and_then(|definition| definition.source.as_ref())
+                .map(|source| (source.line, source.column))
+                .unwrap_or((u32::MAX, u32::MAX));
+            let rhs_location = rhs
+                .definition
+                .as_ref()
+                .and_then(|definition| definition.source.as_ref())
+                .map(|source| (source.line, source.column))
+                .unwrap_or((u32::MAX, u32::MAX));
+
+            lhs_location
+                .cmp(&rhs_location)
+                .then_with(|| lhs.name.cmp(&rhs.name))
+        });
+
+        for symbol in data_symbols {
+            let definition = symbol.definition.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("internal linker error: data symbol without definition")
+            })?;
+            let key = (object_index, definition.section.clone());
+            let placements = placed_by_section.get(&key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "internal linker error: placements missing for data section '{}'",
+                    definition.section
+                )
+            })?;
+            let byte_count = data_symbol_byte_count(object, symbol)?;
+
+            blocks.push(format_data_symbol_listing_block(
+                object_index,
+                object,
+                &definition.section,
+                &symbol.name,
+                definition.offset,
+                byte_count,
+                placements,
+            )?);
+        }
+    }
+
+    Ok(blocks)
+}
+
+fn is_named_data_symbol(symbol: &k816_o65::Symbol) -> bool {
+    let Some(definition) = symbol.definition.as_ref() else {
+        return false;
+    };
+    let Some(source) = definition.source.as_ref() else {
+        return false;
+    };
+
+    source.line_text.trim_start().starts_with("data ")
+}
+
+fn is_top_level_code_block_symbol(symbol: &k816_o65::Symbol) -> bool {
+    let Some(definition) = symbol.definition.as_ref() else {
+        return false;
+    };
+    let Some(source) = definition.source.as_ref() else {
+        return false;
+    };
+
+    let line = source.line_text.trim_start();
+    if !line.contains('{') {
+        return false;
+    }
+
+    let header = line.split('{').next().unwrap_or(line).trim();
+    if header.is_empty() {
+        return false;
+    }
+
+    let mut saw_func = false;
+    let mut last_token = None;
+    for token in header.split_whitespace() {
+        if token == "func" {
+            saw_func = true;
+        }
+        last_token = Some(token);
+    }
+
+    saw_func || last_token == Some("main")
+}
+
+fn data_symbol_byte_count(object: &O65Object, symbol: &k816_o65::Symbol) -> Result<u32> {
+    let definition = symbol
+        .definition
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("internal linker error: data symbol without definition"))?;
+    let source = definition.source.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "internal linker error: data symbol '{}' missing source location",
+            symbol.name
+        )
+    })?;
+    let section = object.sections.get(&definition.section).ok_or_else(|| {
+        anyhow::anyhow!(
+            "data symbol '{}' references unknown section '{}'",
+            symbol.name,
+            definition.section
+        )
+    })?;
+
+    let mut section_end = 0_u32;
+    for chunk in &section.chunks {
+        let len = u32::try_from(chunk.bytes.len())
+            .context("section chunk length for data listing does not fit in u32")?;
+        let chunk_end = chunk
+            .offset
+            .checked_add(len)
+            .ok_or_else(|| anyhow::anyhow!("section chunk range overflow in data listing"))?;
+        section_end = section_end.max(chunk_end);
+    }
+
+    let current_key = (
+        definition.offset,
+        source.line,
+        source.column,
+        symbol.name.as_str(),
+    );
+    let mut next_key = (section_end, u32::MAX, u32::MAX, "\u{10FFFF}");
+    for candidate in &object.symbols {
+        let Some(candidate_definition) = candidate.definition.as_ref() else {
+            continue;
+        };
+        let Some(candidate_source) = candidate_definition.source.as_ref() else {
+            continue;
+        };
+        if candidate_definition.section != definition.section {
+            continue;
+        }
+        if !is_named_data_symbol(candidate) && !is_top_level_code_block_symbol(candidate) {
+            continue;
+        }
+
+        let candidate_key = (
+            candidate_definition.offset,
+            candidate_source.line,
+            candidate_source.column,
+            candidate.name.as_str(),
+        );
+        if candidate_key > current_key && candidate_key < next_key {
+            next_key = candidate_key;
+        }
+    }
+
+    next_key.0.checked_sub(definition.offset).ok_or_else(|| {
+        anyhow::anyhow!(
+            "data symbol '{}' has invalid range in section '{}'",
+            symbol.name,
+            definition.section
+        )
+    })
+}
+
+#[derive(Debug)]
+enum DataSymbolPart {
+    Literal { offset: u32, text: String },
+    Bytes { offset: u32, len: u32 },
+}
+
+fn build_data_symbol_parts(
+    object: &O65Object,
+    section: &str,
+    start_offset: u32,
+    byte_count: u32,
+) -> Result<Vec<DataSymbolPart>> {
+    if byte_count == 0 {
+        return Ok(vec![DataSymbolPart::Bytes {
+            offset: start_offset,
+            len: 0,
+        }]);
+    }
+
+    let end_offset = start_offset
+        .checked_add(byte_count)
+        .ok_or_else(|| anyhow::anyhow!("data symbol range overflow"))?;
+    let mut parts = Vec::new();
+    let mut cursor = start_offset;
+    let mut fragments = object
+        .data_string_fragments
+        .iter()
+        .filter(|fragment| fragment.section == section)
+        .collect::<Vec<_>>();
+    fragments.sort_by_key(|fragment| fragment.offset);
+
+    for fragment in fragments {
+        if fragment.offset < start_offset || fragment.offset >= end_offset {
+            continue;
+        }
+        if fragment.offset < cursor {
+            continue;
+        }
+
+        if fragment.offset > cursor {
+            parts.push(DataSymbolPart::Bytes {
+                offset: cursor,
+                len: fragment.offset - cursor,
+            });
+        }
+
+        let text_len: u32 = fragment
+            .text
+            .len()
+            .try_into()
+            .context("data string fragment length does not fit in u32")?;
+        let fragment_end = fragment
+            .offset
+            .checked_add(text_len)
+            .ok_or_else(|| anyhow::anyhow!("data string fragment range overflow"))?;
+        if fragment_end > end_offset {
+            break;
+        }
+
+        parts.push(DataSymbolPart::Literal {
+            offset: fragment.offset,
+            text: fragment.text.clone(),
+        });
+        cursor = fragment_end;
+    }
+
+    if cursor < end_offset {
+        parts.push(DataSymbolPart::Bytes {
+            offset: cursor,
+            len: end_offset - cursor,
+        });
+    }
+
+    Ok(parts)
+}
+
+fn escape_data_literal_for_listing(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn format_data_symbol_listing_block(
+    object_index: usize,
+    object: &O65Object,
+    section: &str,
+    symbol: &str,
+    start_offset: u32,
+    byte_count: u32,
+    placements: &[PlacedChunk],
+) -> Result<String> {
+    let parts = build_data_symbol_parts(object, section, start_offset, byte_count)?;
+
+    let mut out = String::new();
+    out.push_str(&format!("[data obj#{object_index} {section}::{symbol}]\n"));
+    for part in parts {
+        match part {
+            DataSymbolPart::Literal { offset, text } => {
+                let address = resolve_symbol_addr(placements, offset).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "data symbol '{}' offset {:#X} is outside section '{}'",
+                        symbol,
+                        offset,
+                        section
+                    )
+                })?;
+                out.push_str(&format!(
+                    "{address:06X}: \"{}\"\n",
+                    escape_data_literal_for_listing(&text)
+                ));
+            }
+            DataSymbolPart::Bytes { offset, len } => {
+                let address = resolve_symbol_addr(placements, offset).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "data symbol '{}' offset {:#X} is outside section '{}'",
+                        symbol,
+                        offset,
+                        section
+                    )
+                })?;
+                out.push_str(&format!("{address:06X}: <{len} bytes of data>\n"));
+            }
+        }
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    Ok(out)
+}
+
 fn format_function_disassembly_listings(
     objects: &[O65Object],
     placed_by_section: &HashMap<(usize, String), Vec<PlacedChunk>>,
@@ -1247,7 +1558,10 @@ fn format_empty_listing_block(name: &str) -> String {
 mod tests {
     use super::*;
     use indexmap::IndexMap;
-    use k816_o65::{Relocation, RelocationKind, Section, SectionChunk, Symbol, SymbolDefinition};
+    use k816_o65::{
+        DataStringFragment, Relocation, RelocationKind, Section, SectionChunk, SourceLocation,
+        Symbol, SymbolDefinition,
+    };
 
     fn object_with_single_section(section: &str, bytes: Vec<u8>) -> O65Object {
         let mut sections = IndexMap::new();
@@ -1266,6 +1580,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         }
     }
@@ -1281,6 +1596,31 @@ mod tests {
             optional: false,
             segment: segment.map(std::string::ToString::to_string),
             legacy_bank: None,
+        }
+    }
+
+    fn symbol_with_source(
+        name: &str,
+        section: &str,
+        offset: u32,
+        line: u32,
+        column: u32,
+        line_text: &str,
+    ) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            global: true,
+            definition: Some(SymbolDefinition {
+                section: section.to_string(),
+                offset,
+                source: Some(SourceLocation {
+                    file: "fixture.k65".to_string(),
+                    line,
+                    column,
+                    column_end: column + 1,
+                    line_text: line_text.to_string(),
+                }),
+            }),
         }
     }
 
@@ -1317,6 +1657,7 @@ mod tests {
                 symbol: "target".to_string(),
             }],
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1349,6 +1690,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1589,6 +1931,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1629,6 +1972,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1655,6 +1999,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1692,6 +2037,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1765,6 +2111,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1831,6 +2178,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1870,6 +2218,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1913,6 +2262,7 @@ mod tests {
             symbols: Vec::new(),
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
             listing: String::new(),
         };
 
@@ -1921,5 +2271,121 @@ mod tests {
             err.to_string()
                 .contains("xex output supports 16-bit load addresses")
         );
+    }
+
+    #[test]
+    fn listing_includes_named_data_symbol_addresses() {
+        let mut object = object_with_single_section("default", vec![0xAA, 0xBB, 0xCC]);
+        object.symbols = vec![symbol_with_source(
+            "text",
+            "default",
+            1,
+            1,
+            1,
+            "data text {",
+        )];
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        assert!(linked.listing.contains("[data obj#0 default::text]"));
+        assert!(linked.listing.contains("000001: <2 bytes of data>"));
+    }
+
+    #[test]
+    fn listing_skips_non_data_symbols_by_source_line() {
+        let mut object = object_with_single_section("default", vec![0xAA, 0xBB, 0xCC]);
+        object.symbols = vec![
+            symbol_with_source("main", "default", 0, 1, 1, "main {"),
+            symbol_with_source("main::.loop", "default", 1, 2, 3, ".loop:"),
+        ];
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        assert!(!linked.listing.contains("[data obj#0"));
+    }
+
+    #[test]
+    fn listing_skips_symbols_without_source_metadata() {
+        let mut object = object_with_single_section("default", vec![0xAA]);
+        object.symbols = vec![Symbol {
+            name: "text".to_string(),
+            global: true,
+            definition: Some(SymbolDefinition {
+                section: "default".to_string(),
+                offset: 0,
+                source: None,
+            }),
+        }];
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        assert!(!linked.listing.contains("[data obj#0"));
+    }
+
+    #[test]
+    fn listing_orders_data_symbols_by_source_location_then_name() {
+        let mut object = object_with_single_section("default", vec![0x10, 0x20, 0x30, 0x40]);
+        object.symbols = vec![
+            symbol_with_source("zeta", "default", 3, 20, 1, "data zeta {"),
+            symbol_with_source("gamma", "default", 1, 10, 4, "data gamma {"),
+            symbol_with_source("alpha", "default", 0, 10, 4, "data alpha {"),
+            symbol_with_source("beta", "default", 2, 10, 6, "data beta {"),
+        ];
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        let alpha_pos = linked
+            .listing
+            .find("[data obj#0 default::alpha]")
+            .expect("alpha block");
+        let gamma_pos = linked
+            .listing
+            .find("[data obj#0 default::gamma]")
+            .expect("gamma block");
+        let beta_pos = linked
+            .listing
+            .find("[data obj#0 default::beta]")
+            .expect("beta block");
+        let zeta_pos = linked
+            .listing
+            .find("[data obj#0 default::zeta]")
+            .expect("zeta block");
+
+        assert!(alpha_pos < gamma_pos);
+        assert!(gamma_pos < beta_pos);
+        assert!(beta_pos < zeta_pos);
+    }
+
+    #[test]
+    fn listing_computes_data_length_until_next_top_level_code_block() {
+        let mut object = object_with_single_section("default", vec![0x01, 0x02, 0x03, 0x04]);
+        object.symbols = vec![
+            symbol_with_source("bytes", "default", 0, 1, 1, "data bytes {"),
+            symbol_with_source("here", "default", 3, 4, 1, "here:"),
+            symbol_with_source("main", "default", 4, 6, 1, "main {"),
+        ];
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        assert!(linked.listing.contains("000000: <4 bytes of data>"));
+    }
+
+    #[test]
+    fn listing_renders_string_literal_parts_inside_data_symbol() {
+        let mut object = object_with_single_section(
+            "default",
+            vec![
+                b'H', b'e', b'l', b'l', b'o', b',', b' ', b'W', b'o', b'r', b'l', b'd', b'!', 0x0D,
+                0x0A, 0x00, 0x60,
+            ],
+        );
+        object.symbols = vec![
+            symbol_with_source("text", "default", 0, 1, 1, "data text {"),
+            symbol_with_source("main", "default", 16, 6, 1, "main {"),
+        ];
+        object.data_string_fragments = vec![DataStringFragment {
+            section: "default".to_string(),
+            offset: 0,
+            text: "Hello, World!".to_string(),
+        }];
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        assert!(linked.listing.contains("000000: \"Hello, World!\""));
+        assert!(linked.listing.contains("00000D: <3 bytes of data>"));
     }
 }

@@ -3,8 +3,8 @@ use rustc_hash::FxHashMap;
 
 use k816_isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
 use k816_o65::{
-    FunctionDisassembly, O65Object, Relocation, RelocationKind, Section, SectionChunk,
-    SourceLocation, Symbol, SymbolDefinition,
+    DataStringFragment, FunctionDisassembly, O65Object, Relocation, RelocationKind, Section,
+    SectionChunk, SourceLocation, Symbol, SymbolDefinition,
 };
 
 use crate::diag::Diagnostic;
@@ -52,6 +52,7 @@ pub fn emit_object(
     let mut current_segment = "default".to_string();
     let mut current_function: Option<String> = None;
     let mut function_instruction_sites = Vec::new();
+    let mut data_string_fragments = Vec::new();
 
     segments
         .entry(current_segment.clone())
@@ -135,6 +136,14 @@ pub fn emit_object(
                     .expect("current segment must exist during emit");
 
                 apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
+                let emit_offset = segment.section_offset;
+                if let Some(text) = string_literal_text_for_emit(bytes, source_map, op.span) {
+                    data_string_fragments.push(DataStringFragment {
+                        section: current_segment.clone(),
+                        offset: emit_offset,
+                        text,
+                    });
+                }
                 append_bytes(segment, bytes, op.span, &mut diagnostics);
             }
             Op::Instruction(instruction) => {
@@ -322,6 +331,11 @@ pub fn emit_object(
             },
         )
         .collect();
+    data_string_fragments.sort_by(|lhs, rhs| {
+        lhs.section
+            .cmp(&rhs.section)
+            .then_with(|| lhs.offset.cmp(&rhs.offset))
+    });
 
     Ok(EmitObjectOutput {
         object: O65Object {
@@ -329,6 +343,7 @@ pub fn emit_object(
             symbols,
             relocations,
             function_disassembly,
+            data_string_fragments,
             listing: listing_blocks.join("\n\n"),
         },
     })
@@ -564,6 +579,19 @@ fn source_location_for_span(source_map: &SourceMap, span: Span) -> Option<Source
         column_end: column_end as u32,
         line_text,
     })
+}
+
+fn string_literal_text_for_emit(
+    bytes: &[u8],
+    source_map: &SourceMap,
+    span: Span,
+) -> Option<String> {
+    let source = source_location_for_span(source_map, span)?;
+    if !source.line_text.trim_start().starts_with('"') {
+        return None;
+    }
+
+    std::str::from_utf8(bytes).ok().map(|text| text.to_string())
 }
 
 #[cfg(test)]

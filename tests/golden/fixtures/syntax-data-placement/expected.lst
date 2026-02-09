@@ -16,13 +16,25 @@
 0050F2: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 005102: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
 005112: 00 00 00 00 00 00 00 00 05 06 07 08
-005000: 09 0A 0B 0C 0D AD 12 50 AD 16 50 AD 00 50 AD 02
+005000: 09 0A 0B 0C 0D AD 12 50 AD 1A 51 AD 00 50 AD 02
 005010: 50 60
 
 
+[data obj#0 default::aligned]
+005012: <264 bytes of data>
+
+[data obj#0 default::aligned_offs]
+00511A: <4 bytes of data>
+
+[data obj#0 default::fixed_addr]
+005000: <2 bytes of data>
+
+[data obj#0 default::no_cross]
+005002: <3 bytes of data>
+
 [disasm obj#0 default::main]
 005005: AD 12 50    lda $5012
-005008: AD 16 50    lda $5016
+005008: AD 1A 51    lda $511A
 00500B: AD 00 50    lda $5000
 00500E: AD 02 50    lda $5002
 005011: 60          rts

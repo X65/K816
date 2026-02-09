@@ -2,6 +2,9 @@
 000000: AD 00 00 60
 
 
+[data obj#0 default::text_data]
+000000: <4 bytes of data>
+
 [disasm obj#0 default::main]
 000000: AD 00 00    lda $0000
 000003: 60          rts

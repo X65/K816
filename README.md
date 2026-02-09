@@ -15,3 +15,24 @@ K816 aims to combine a familiar, readable, C-like source format with the control
 - Provide deterministic, reproducible output suitable for golden testing.
 - Provide a formatter to keep sources consistently styled.
 - Keep the toolchain small, fast, and well-suited to modern Rust development workflows.
+
+## Quick Taste
+
+Want to get a feel for K65-style code? This is the vibe:
+
+```k65
+var SCREEN = $0400
+
+main {
+  x = #0
+  {
+    a = hello, x
+    z-? { SCREEN, x = a x++ }
+  } z-?
+}
+
+data text_data {
+  charset ".ABCDEFGHIJKLMNOPQRSTUVWXYZ..... "
+  hello: "HELLO WORLD" $00
+}
+```

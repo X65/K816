@@ -106,7 +106,12 @@ pub fn desugar_hla_syntax(source: &str) -> String {
         }
 
         if let Some((dest, rhs)) = parse_store_from_a_assignment(code_trimmed) {
-            out_lines.push(format!("{indent}lda {rhs}"));
+            let load_rhs = if is_eval_fragment(&rhs) {
+                format!("#{rhs}")
+            } else {
+                rhs
+            };
+            out_lines.push(format!("{indent}lda {load_rhs}"));
             if let Some(comment) = comment {
                 out_lines.push(format!("{indent}sta {dest} {comment}"));
             } else {
@@ -205,6 +210,10 @@ fn parse_store_from_a_assignment(code: &str) -> Option<(String, String)> {
     Some((dest.to_string(), rhs.to_string()))
 }
 
+fn is_eval_fragment(value: &str) -> bool {
+    value.len() >= 2 && value.starts_with('[') && value.ends_with(']')
+}
+
 fn parse_string_literal(code: &str) -> Option<String> {
     if !(code.starts_with('"') && code.ends_with('"') && code.len() >= 2) {
         return None;
@@ -283,8 +292,8 @@ mod tests {
 
     #[test]
     fn desugars_hello_uart_hla_constructs() {
-        let source = "main {\n  x = #0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = #$FF\n}\n\ndata text {\n  \"Hello, World!\"\n  $0D $0A $00\n}\n\ndata INFO {\n  segment INFO\n  \"Hello UART example for X65 RIA\"\n}\n";
-        let expected = "main {\n  ldx #0\n  .__k816_loop_0:\n    .__k816_wait_1:\n    lda UART_READY\n    bpl .__k816_wait_1\n    lda text,x\n    sta UART_DATA\n    inx\n  cmp #0\n  bne .__k816_loop_0\n  lda #$FF\n  sta API_OP\n}\n\ntext:\n  .byte $48, $65, $6C, $6C, $6F, $2C, $20, $57, $6F, $72, $6C, $64, $21\n  .byte $0D, $0A, $00\n\nINFO:\n  segment INFO\n  .byte $48, $65, $6C, $6C, $6F, $20, $55, $41, $52, $54, $20, $65, $78, $61, $6D, $70, $6C, $65, $20, $66, $6F, $72, $20, $58, $36, $35, $20, $52, $49, $41\n";
+        let source = "main {\n  x = #0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = [$FF]\n}\n\ndata text {\n  \"Hello, World!\"\n  $0D $0A $00\n}\n\ndata INFO {\n  segment INFO\n  \"Hello UART example for X65 RIA\"\n}\n";
+        let expected = "main {\n  ldx #0\n  .__k816_loop_0:\n    .__k816_wait_1:\n    lda UART_READY\n    bpl .__k816_wait_1\n    lda text,x\n    sta UART_DATA\n    inx\n  cmp #0\n  bne .__k816_loop_0\n  lda #[$FF]\n  sta API_OP\n}\n\ntext:\n  .byte $48, $65, $6C, $6C, $6F, $2C, $20, $57, $6F, $72, $6C, $64, $21\n  .byte $0D, $0A, $00\n\nINFO:\n  segment INFO\n  .byte $48, $65, $6C, $6C, $6F, $20, $55, $41, $52, $54, $20, $65, $78, $61, $6D, $70, $6C, $65, $20, $66, $6F, $72, $20, $58, $36, $35, $20, $52, $49, $41\n";
         assert_eq!(desugar_hla_syntax(source), expected);
     }
 }

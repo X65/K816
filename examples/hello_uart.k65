@@ -9,7 +9,7 @@ main {
     UART_DATA = a = text,x
     x++
   } a?0 !=
-  API_OP = a = #$FF         // Halt CPU
+  API_OP = a = [$FF]        // Halt CPU
 }
 
 data text {

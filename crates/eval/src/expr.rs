@@ -47,6 +47,7 @@ impl<'a> Lexer<'a> {
         let c = self.bytes[self.pos] as char;
         match c {
             '0'..='9' => self.lex_number(),
+            '$' => self.lex_dollar_hex(),
             'a'..='z' | 'A'..='Z' | '_' => self.lex_ident(),
             '+' => {
                 self.pos += 1;
@@ -111,26 +112,7 @@ impl<'a> Lexer<'a> {
     fn lex_number(&mut self) -> Result<Token, EvalError> {
         let start = self.pos;
         if self.starts_with("0x") || self.starts_with("0X") {
-            self.pos += 2;
-            let hex_start = self.pos;
-            while self.pos < self.bytes.len() {
-                let c = self.bytes[self.pos] as char;
-                if c.is_ascii_hexdigit() {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            }
-            if self.pos == hex_start {
-                return Err(EvalError::InvalidNumber {
-                    literal: self.input[start..self.pos].to_string(),
-                });
-            }
-            let literal = &self.input[start + 2..self.pos];
-            let value = i64::from_str_radix(literal, 16).map_err(|_| EvalError::InvalidNumber {
-                literal: self.input[start..self.pos].to_string(),
-            })?;
-            return Ok(Token::Number(value));
+            return self.lex_prefixed_hex(start, 2);
         }
 
         while self.pos < self.bytes.len() {
@@ -148,6 +130,34 @@ impl<'a> Lexer<'a> {
             .map_err(|_| EvalError::InvalidNumber {
                 literal: literal.to_string(),
             })?;
+        Ok(Token::Number(value))
+    }
+
+    fn lex_dollar_hex(&mut self) -> Result<Token, EvalError> {
+        let start = self.pos;
+        self.lex_prefixed_hex(start, 1)
+    }
+
+    fn lex_prefixed_hex(&mut self, start: usize, prefix_len: usize) -> Result<Token, EvalError> {
+        self.pos += prefix_len;
+        let hex_start = self.pos;
+        while self.pos < self.bytes.len() {
+            let c = self.bytes[self.pos] as char;
+            if c.is_ascii_hexdigit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.pos == hex_start {
+            return Err(EvalError::InvalidNumber {
+                literal: self.input[start..self.pos].to_string(),
+            });
+        }
+        let literal = &self.input[hex_start..self.pos];
+        let value = i64::from_str_radix(literal, 16).map_err(|_| EvalError::InvalidNumber {
+            literal: self.input[start..self.pos].to_string(),
+        })?;
         Ok(Token::Number(value))
     }
 
@@ -410,5 +420,22 @@ mod tests {
     #[test]
     fn shifts_and_bitwise() {
         assert_eq!(evaluate("(1 << 4) | 3").expect("eval"), 19);
+    }
+
+    #[test]
+    fn parses_dollar_prefixed_hex_literals() {
+        assert_eq!(evaluate("$FF").expect("eval"), 255);
+        assert_eq!(evaluate("$0d + $0A").expect("eval"), 23);
+    }
+
+    #[test]
+    fn rejects_invalid_dollar_hex_literal() {
+        let err = evaluate("$").expect_err("expected invalid number");
+        assert_eq!(
+            err,
+            EvalError::InvalidNumber {
+                literal: "$".to_string()
+            }
+        );
     }
 }

@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
 
-const MAGIC: &[u8; 8] = b"K816O65\0";
-const VERSION: u16 = 4;
+const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
+const O65_MODE_RELOCATABLE: u16 = 0x0000;
+const PAYLOAD_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -75,10 +76,38 @@ pub fn read_object(path: &std::path::Path) -> Result<O65Object> {
 
 pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
     validate_object(object)?;
+    let payload = encode_payload(object)?;
+    let text_len: u16 = payload
+        .len()
+        .try_into()
+        .context("encoded object payload exceeds o65 text segment limit (64 KiB)")?;
 
+    let mut out = Vec::with_capacity(26 + payload.len());
+    out.extend_from_slice(O65_MAGIC);
+    write_u16(&mut out, O65_MODE_RELOCATABLE);
+
+    // Standard o65 header fields. We keep memory bases/sizes at zero because
+    // placement is resolved by the linker from our relocatable payload.
+    write_u16(&mut out, 0); // tbase
+    write_u16(&mut out, text_len); // tlen
+    write_u16(&mut out, 0); // dbase
+    write_u16(&mut out, 0); // dlen
+    write_u16(&mut out, 0); // bbase
+    write_u16(&mut out, 0); // blen
+    write_u16(&mut out, 0); // zbase
+    write_u16(&mut out, 0); // zlen
+    write_u16(&mut out, 0); // stack
+
+    // End of o65 options list.
+    out.push(0);
+    out.extend_from_slice(&payload);
+
+    Ok(out)
+}
+
+fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    out.extend_from_slice(MAGIC);
-    write_u16(&mut out, VERSION);
+    write_u16(&mut out, PAYLOAD_VERSION);
     write_u32(&mut out, object.sections.len() as u32);
     write_u32(&mut out, object.symbols.len() as u32);
     write_u32(&mut out, object.relocations.len() as u32);
@@ -140,13 +169,51 @@ pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
 
 pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
     let mut rd = Reader::new(bytes);
-    let magic = rd.read_exact(8)?;
-    if magic != MAGIC {
+    let magic = rd.read_exact(5)?;
+    if magic != O65_MAGIC {
         bail!("invalid object magic");
     }
+
+    let _mode = rd.read_u16()?;
+    let _tbase = rd.read_u16()?;
+    let text_len = rd.read_u16()?;
+    let _dbase = rd.read_u16()?;
+    let data_len = rd.read_u16()?;
+    let _bbase = rd.read_u16()?;
+    let _blen = rd.read_u16()?;
+    let _zbase = rd.read_u16()?;
+    let _zlen = rd.read_u16()?;
+    let _stack = rd.read_u16()?;
+
+    loop {
+        let option_len = rd.read_u8()?;
+        if option_len == 0 {
+            break;
+        }
+        if option_len == 1 {
+            bail!("invalid o65 option length: 1");
+        }
+        rd.read_exact(usize::from(option_len - 1))?;
+    }
+
+    let mut payload = rd.read_exact(usize::from(text_len))?.to_vec();
+    if data_len > 0 {
+        payload.extend_from_slice(rd.read_exact(usize::from(data_len))?);
+    }
+    if !rd.is_eof() {
+        bail!("object has trailing bytes");
+    }
+
+    let object = decode_payload(&payload)?;
+    validate_object(&object)?;
+    Ok(object)
+}
+
+fn decode_payload(payload: &[u8]) -> Result<O65Object> {
+    let mut rd = Reader::new(payload);
     let version = rd.read_u16()?;
-    if version != VERSION {
-        bail!("unsupported object version: {version}");
+    if version != PAYLOAD_VERSION {
+        bail!("unsupported object payload version: {version}");
     }
 
     let section_count = rd.read_u32()? as usize;
@@ -232,17 +299,15 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
     }
 
     if !rd.is_eof() {
-        bail!("object has trailing bytes");
+        bail!("payload has trailing bytes");
     }
 
-    let object = O65Object {
+    Ok(O65Object {
         sections,
         symbols,
         relocations,
         listing,
-    };
-    validate_object(&object)?;
-    Ok(object)
+    })
 }
 
 fn validate_object(object: &O65Object) -> Result<()> {
@@ -458,6 +523,18 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encoded_object_uses_o65_magic() {
+        let bytes = encode_object(&O65Object::default()).expect("encode");
+        assert_eq!(&bytes[..5], O65_MAGIC);
+    }
+
+    #[test]
+    fn rejects_invalid_magic() {
+        let err = decode_object(b"K816O65").expect_err("expected magic error");
+        assert!(err.to_string().contains("invalid object magic"));
+    }
 
     #[test]
     fn object_roundtrip() {

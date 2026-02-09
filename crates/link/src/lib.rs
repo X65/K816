@@ -89,6 +89,7 @@ pub struct OutputSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub enum OutputKind {
     RawBinary,
+    Xex,
 }
 
 #[derive(Debug, Clone)]
@@ -417,23 +418,7 @@ pub fn link_objects_with_options(
         }
     }
 
-    let mut binaries = IndexMap::new();
-    for mem in &config.memory {
-        let state = memory_map.get(&mem.name).ok_or_else(|| {
-            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
-        })?;
-
-        let out_name = mem
-            .out_file
-            .clone()
-            .unwrap_or_else(|| format!("{}.bin", mem.name.to_ascii_lowercase()));
-
-        let mut compact = Vec::new();
-        for (start, end) in used_runs(&state.used) {
-            compact.extend_from_slice(&state.bytes[start..end]);
-        }
-        binaries.insert(out_name, compact);
-    }
+    let binaries = render_link_binaries(config, &memory_map)?;
 
     let mut listing_blocks = Vec::new();
     for key in section_order {
@@ -822,6 +807,158 @@ fn used_runs(used: &[bool]) -> Vec<(usize, usize)> {
     out
 }
 
+fn render_link_binaries(
+    config: &LinkerConfig,
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<IndexMap<String, Vec<u8>>> {
+    if config.outputs.is_empty() {
+        return render_legacy_raw_outputs(config, memory_map);
+    }
+
+    let mut binaries = IndexMap::new();
+    for output in &config.outputs {
+        let file_name = output
+            .default_file
+            .clone()
+            .unwrap_or_else(|| default_output_file_name(output));
+
+        let bytes = match output.kind {
+            OutputKind::RawBinary => render_configured_raw_output(output, config, memory_map)?,
+            OutputKind::Xex => render_xex_output(config, memory_map)?,
+        };
+
+        binaries.insert(file_name, bytes);
+    }
+
+    Ok(binaries)
+}
+
+fn render_legacy_raw_outputs(
+    config: &LinkerConfig,
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<IndexMap<String, Vec<u8>>> {
+    let mut binaries = IndexMap::new();
+    for mem in &config.memory {
+        let state = memory_map.get(&mem.name).ok_or_else(|| {
+            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
+        })?;
+
+        let out_name = mem
+            .out_file
+            .clone()
+            .unwrap_or_else(|| format!("{}.bin", mem.name.to_ascii_lowercase()));
+        binaries.insert(out_name, compact_memory_runs(state));
+    }
+    Ok(binaries)
+}
+
+fn render_configured_raw_output(
+    output: &OutputSpec,
+    config: &LinkerConfig,
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<Vec<u8>> {
+    if let Some(mem) = config.memory.iter().find(|mem| mem.name == output.name) {
+        let state = memory_map.get(&mem.name).ok_or_else(|| {
+            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
+        })?;
+        return Ok(compact_memory_runs(state));
+    }
+
+    if config.memory.len() == 1 {
+        let mem = &config.memory[0];
+        let state = memory_map.get(&mem.name).ok_or_else(|| {
+            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
+        })?;
+        return Ok(compact_memory_runs(state));
+    }
+
+    bail!(
+        "raw output '{}' is ambiguous: set output name to a memory area ({})",
+        output.name,
+        config
+            .memory
+            .iter()
+            .map(|mem| mem.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+fn compact_memory_runs(state: &MemoryState) -> Vec<u8> {
+    let mut compact = Vec::new();
+    for (start, end) in used_runs(&state.used) {
+        compact.extend_from_slice(&state.bytes[start..end]);
+    }
+    compact
+}
+
+fn render_xex_output(
+    config: &LinkerConfig,
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<Vec<u8>> {
+    let mut xex = Vec::new();
+    let mut wrote_header = false;
+
+    for mem in &config.memory {
+        let state = memory_map.get(&mem.name).ok_or_else(|| {
+            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
+        })?;
+
+        for (start, end) in used_runs(&state.used) {
+            if !wrote_header {
+                xex.extend_from_slice(&0xFFFFu16.to_le_bytes());
+                wrote_header = true;
+            }
+
+            let run_start: u32 = start
+                .try_into()
+                .context("used run start does not fit in u32")?;
+            let run_end_exclusive: u32 =
+                end.try_into().context("used run end does not fit in u32")?;
+
+            let start_addr = state
+                .spec
+                .start
+                .checked_add(run_start)
+                .ok_or_else(|| anyhow::anyhow!("xex run start address overflow"))?;
+            let end_addr_exclusive = state
+                .spec
+                .start
+                .checked_add(run_end_exclusive)
+                .ok_or_else(|| anyhow::anyhow!("xex run end address overflow"))?;
+            let end_addr = end_addr_exclusive
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("xex run end underflow"))?;
+
+            let start16 = u16::try_from(start_addr).with_context(|| {
+                format!(
+                    "xex output supports 16-bit load addresses, got start {start_addr:#X} in memory '{}'",
+                    mem.name
+                )
+            })?;
+            let end16 = u16::try_from(end_addr).with_context(|| {
+                format!(
+                    "xex output supports 16-bit load addresses, got end {end_addr:#X} in memory '{}'",
+                    mem.name
+                )
+            })?;
+
+            xex.extend_from_slice(&start16.to_le_bytes());
+            xex.extend_from_slice(&end16.to_le_bytes());
+            xex.extend_from_slice(&state.bytes[start..end]);
+        }
+    }
+
+    Ok(xex)
+}
+
+fn default_output_file_name(output: &OutputSpec) -> String {
+    match output.kind {
+        OutputKind::RawBinary => format!("{}.bin", output.name),
+        OutputKind::Xex => format!("{}.xex", output.name),
+    }
+}
+
 fn format_section_listing(
     segment: &str,
     chunks: &[PlacedChunk],
@@ -1094,5 +1231,89 @@ mod tests {
 
         let err = link_objects(&[object], &config).expect_err("expected no-fit error");
         assert!(err.to_string().contains("no free range found"));
+    }
+
+    #[test]
+    fn emits_xex_blocks_from_used_runs() {
+        let mut config = default_stub_config();
+        config.outputs = vec![OutputSpec {
+            name: "xex".to_string(),
+            kind: OutputKind::Xex,
+            default_file: Some("game.xex".to_string()),
+        }];
+
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![
+                    SectionChunk {
+                        offset: 0,
+                        address: Some(0x0200),
+                        bytes: vec![0xAA],
+                    },
+                    SectionChunk {
+                        offset: 1,
+                        address: Some(0x0210),
+                        bytes: vec![0xBB, 0xCC],
+                    },
+                ],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let linked = link_objects(&[object], &config).expect("link");
+        let xex = linked.binaries.get("game.xex").expect("xex output");
+        assert_eq!(
+            xex,
+            &vec![
+                0xFF, 0xFF, // XEX header
+                0x00, 0x02, 0x00, 0x02, 0xAA, // block at $0200
+                0x10, 0x02, 0x11, 0x02, 0xBB, 0xCC, // block at $0210-$0211
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_xex_addresses_above_16bit() {
+        let mut config = default_stub_config();
+        config.memory[0].start = 0x1_0000;
+        config.memory[0].size = 0x100;
+        config.outputs = vec![OutputSpec {
+            name: "xex".to_string(),
+            kind: OutputKind::Xex,
+            default_file: Some("game.xex".to_string()),
+        }];
+
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: Some(0x1_0000),
+                    bytes: vec![0xAA],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = link_objects(&[object], &config).expect_err("expected xex address error");
+        assert!(
+            err.to_string()
+                .contains("xex output supports 16-bit load addresses")
+        );
     }
 }

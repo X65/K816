@@ -57,7 +57,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 {
                     diagnostics.push(
                         Diagnostic::error(op.span, format!("duplicate label '{name}'"))
-                            .with_hint("rename one of the labels"),
+                            .with_help("rename one of the labels"),
                     );
                 }
             }
@@ -69,7 +69,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 let bank = banks
                     .get_mut(&current_bank)
                     .expect("current bank must exist during emit");
-                while bank.bytes.len() % usize::from(*align) != 0 {
+                while !bank.bytes.len().is_multiple_of(usize::from(*align)) {
                     bank.bytes.push(0);
                 }
             }
@@ -184,7 +184,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                         fixup.label, fixup.bank
                     ),
                 )
-                .with_hint("use far function calls or far operand to cross banks"),
+                .with_help("use far function calls or far operand to cross banks"),
             );
             continue;
         }

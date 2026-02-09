@@ -139,7 +139,7 @@ fn expand_expr(
                 Err(err) => {
                     diagnostics.push(
                         Diagnostic::error(span, format!("eval expansion failed: {err}"))
-                            .with_hint("check the expression inside [...]"),
+                            .with_help("check the expression inside [...]"),
                     );
                     return Expr::Number(0);
                 }

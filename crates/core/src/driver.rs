@@ -58,7 +58,7 @@ pub fn compile_source_with_fs(
 }
 
 fn fail_with_rendered(source_map: &SourceMap, diagnostics: Vec<Diagnostic>) -> CompileError {
-    let rendered = render_diagnostics(&source_map, &diagnostics);
+    let rendered = render_diagnostics(source_map, &diagnostics);
     CompileError {
         diagnostics,
         rendered,

@@ -92,7 +92,7 @@ pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnosti
             Err(_) => {
                 diagnostics.push(
                     Diagnostic::error(span, "unexpected token")
-                        .with_hint("remove or fix this token"),
+                        .with_help("remove or fix this token"),
                 );
             }
         }

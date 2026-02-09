@@ -53,7 +53,7 @@ pub fn lower(
                 if block.kind == BlockKind::Main && block.is_far {
                     diagnostics.push(
                         Diagnostic::error(item.span, "main block cannot be declared far")
-                            .with_hint("remove 'far' from main or use 'func'"),
+                            .with_help("remove 'far' from main or use 'func'"),
                     );
                 }
             }
@@ -95,7 +95,7 @@ fn lower_stmt(
             let Some(meta) = sema.functions.get(&call.target) else {
                 diagnostics.push(
                     Diagnostic::error(span, format!("unknown function '{}'", call.target))
-                        .with_hint("declare the function before calling it"),
+                        .with_help("declare the function before calling it"),
                 );
                 return;
             };
@@ -262,7 +262,7 @@ fn resolve_operand_ident(
 
     diagnostics.push(
         Diagnostic::error(span, format!("unknown symbol '{name}'"))
-            .with_hint("declare a var/function or use a local label inside a code block"),
+            .with_help("declare a var/function or use a local label inside a code block"),
     );
     None
 }

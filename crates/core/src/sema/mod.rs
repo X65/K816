@@ -78,7 +78,7 @@ fn collect_function(
     if !is_symbol_available(&block.name, model) {
         diagnostics.push(
             Diagnostic::error(span, format!("duplicate symbol '{}'", block.name))
-                .with_hint("rename one of the blocks to keep symbols unique"),
+                .with_help("rename one of the blocks to keep symbols unique"),
         );
         return;
     }
@@ -103,7 +103,7 @@ fn collect_var(
     if !is_symbol_available(&var.name, model) {
         diagnostics.push(
             Diagnostic::error(span, format!("duplicate symbol '{}'", var.name))
-                .with_hint("rename one of the vars/functions to keep symbols unique"),
+                .with_help("rename one of the vars/functions to keep symbols unique"),
         );
         return;
     }

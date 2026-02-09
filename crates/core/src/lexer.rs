@@ -92,8 +92,9 @@ pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnosti
                 });
             }
             Err(_) => {
+                let token = format_token_for_message(lexer.slice());
                 diagnostics.push(
-                    Diagnostic::error(span, "unexpected token")
+                    Diagnostic::error(span, format!("unexpected token {token}"))
                         .with_help("remove or fix this token"),
                 );
             }
@@ -152,6 +153,11 @@ fn parse_string(lex: &mut logos::Lexer<TokenKind>) -> String {
     out
 }
 
+fn format_token_for_message(token: &str) -> String {
+    let escaped: String = token.chars().flat_map(char::escape_default).collect();
+    format!("'{escaped}'")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +170,12 @@ mod tests {
                 .iter()
                 .any(|token| matches!(token.kind, TokenKind::Eval(_)))
         );
+    }
+
+    #[test]
+    fn reports_unrecognized_token_text() {
+        let diagnostics = lex(SourceId(0), "&").expect_err("expected lex error");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].message, "unexpected token '&'");
     }
 }

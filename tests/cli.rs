@@ -21,6 +21,7 @@ fn help_flag_prints_help() {
         .success()
         .stdout(contains("High-level assembler for the WDC 65816"))
         .stdout(contains("Usage: k816"))
+        .stdout(contains("--listing"))
         .stdout(contains("compile"))
         .stdout(contains("link"));
 }
@@ -63,6 +64,27 @@ fn compile_and_link_subcommands_work() {
 }
 
 #[test]
+fn compile_subcommand_rejects_link_only_options() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-compile-link-only-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg("compile")
+        .arg(&input)
+        .arg("--listing")
+        .assert()
+        .failure()
+        .stderr(contains("link-only option"));
+}
+
+#[test]
 fn build_command_defaults_to_xex_output() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -81,6 +103,71 @@ fn build_command_defaults_to_xex_output() {
     assert!(out_file.exists());
     let xex = std::fs::read(&out_file).expect("failed to read xex output");
     assert!(xex.starts_with(&[0xFF, 0xFF]));
+}
+
+#[test]
+fn build_command_accepts_output_option_for_linked_artifact() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-build-output-option-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    let out_file = root.join("custom-output.bin");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg(&input).arg("-o").arg(&out_file).assert().success();
+
+    assert!(out_file.exists());
+}
+
+#[test]
+fn build_command_writes_auto_listing_when_requested() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-build-listing-auto-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg(&input).arg("--listing").assert().success();
+
+    let out_file = root.join("demo.xex");
+    let listing_file = root.join("demo.lst");
+    assert!(out_file.exists());
+    assert!(listing_file.exists());
+}
+
+#[test]
+fn build_command_writes_listing_to_explicit_path_when_requested() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-build-listing-explicit-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    let listing_file = root.join("custom.lst");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg(&input)
+        .arg("--listing")
+        .arg(&listing_file)
+        .assert()
+        .success();
+
+    let out_file = root.join("demo.xex");
+    assert!(out_file.exists());
+    assert!(listing_file.exists());
 }
 
 #[test]

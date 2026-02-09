@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{env, io::IsTerminal};
 
-use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -17,6 +17,45 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
+    #[command(flatten)]
+    compile_options: CompilePhaseOptions,
+
+    #[command(flatten)]
+    link_options: LinkPhaseOptions,
+
+    #[command(flatten)]
+    output_option: OutputOption,
+
+    /// Input source file.
+    #[arg(value_name = "INPUT")]
+    input: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Args)]
+struct CompilePhaseOptions {}
+
+impl CompilePhaseOptions {
+    fn validate_for_link_subcommand(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Args)]
+struct OutputOption {
+    /// Output file path.
+    /// In `compile`, this is the object output path.
+    /// In `link` and shortcut mode, this is the linked artifact path.
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT_FILE",
+        global = true
+    )]
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Args)]
+struct LinkPhaseOptions {
     /// Linker config file in RON format.
     #[arg(short = 'T', long = "config", value_name = "CONFIG", global = true)]
     config: Option<PathBuf>,
@@ -30,9 +69,43 @@ struct Cli {
     )]
     output_format: Option<CliOutputFormat>,
 
-    /// Input source file.
-    #[arg(value_name = "INPUT")]
-    input: Option<PathBuf>,
+    /// Optional listing output path for linked output.
+    /// When passed without value, writes <output>.lst.
+    #[arg(
+        long = "listing",
+        value_name = "LISTING_FILE",
+        num_args = 0..=1,
+        default_missing_value = "__auto__",
+        global = true
+    )]
+    listing: Option<String>,
+}
+
+impl LinkPhaseOptions {
+    fn validate_for_compile_subcommand(&self) -> anyhow::Result<()> {
+        let mut used = Vec::new();
+        if self.config.is_some() {
+            used.push("--config");
+        }
+        if self.output_format.is_some() {
+            used.push("--output-format");
+        }
+        if self.listing.is_some() {
+            used.push("--listing");
+        }
+        if used.is_empty() {
+            return Ok(());
+        }
+
+        let verb = if used.len() == 1 { "is" } else { "are" };
+        let plural = if used.len() == 1 { "" } else { "s" };
+        anyhow::bail!(
+            "{} {} link-only option{}; use `k816 <input.k65> ...` for compile+link shortcut or `k816 link ...`",
+            used.join(", "),
+            verb,
+            plural
+        );
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -48,9 +121,6 @@ struct CompileArgs {
     /// Input source file (.k65).
     #[arg(value_name = "INPUT")]
     input: PathBuf,
-    /// Output object file path.
-    #[arg(short = 'o', long = "output", value_name = "OBJECT_FILE")]
-    output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -58,17 +128,6 @@ struct LinkArgs {
     /// Input object files (.o65).
     #[arg(value_name = "OBJECT_FILE", required = true)]
     objects: Vec<PathBuf>,
-    /// Output file path for the linked artifact.
-    #[arg(short = 'o', long = "output", value_name = "OUTPUT_FILE")]
-    output: Option<PathBuf>,
-    /// Optional listing output path. When passed without value, writes <output>.lst.
-    #[arg(
-        long = "listing",
-        value_name = "LISTING_FILE",
-        num_args = 0..=1,
-        default_missing_value = "__auto__"
-    )]
-    listing: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -98,14 +157,21 @@ fn main() {
 fn run() -> anyhow::Result<()> {
     let Cli {
         command,
-        config,
-        output_format,
+        compile_options,
+        link_options,
+        output_option,
         input,
     } = Cli::parse();
 
     match command {
-        Some(Commands::Compile(args)) => compile_command(args),
-        Some(Commands::Link(args)) => link_command(args, config, output_format),
+        Some(Commands::Compile(args)) => {
+            link_options.validate_for_compile_subcommand()?;
+            compile_command(args, compile_options, output_option.output)
+        }
+        Some(Commands::Link(args)) => {
+            compile_options.validate_for_link_subcommand()?;
+            link_command(args, link_options, output_option.output)
+        }
         None => {
             let Some(input_path) = input else {
                 print_banner();
@@ -115,7 +181,12 @@ fn run() -> anyhow::Result<()> {
                 println!();
                 return Ok(());
             };
-            build_command(input_path, config, output_format)
+            build_command(
+                input_path,
+                compile_options,
+                link_options,
+                output_option.output,
+            )
         }
     }
 }
@@ -267,40 +338,46 @@ fn write_link_output(
     Ok(())
 }
 
-fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
+fn compile_command(
+    args: CompileArgs,
+    _options: CompilePhaseOptions,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
     let object = compile_source_file(&args.input)?;
-    let out_path = args
-        .output
-        .unwrap_or_else(|| default_object_path_for_input(&args.input));
+    let out_path = output.unwrap_or_else(|| default_object_path_for_input(&args.input));
     k816_o65::write_object(&out_path, &object)?;
     Ok(())
 }
 
 fn link_command(
     args: LinkArgs,
-    config_path: Option<PathBuf>,
-    output_format: Option<CliOutputFormat>,
+    options: LinkPhaseOptions,
+    output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let mut objects = Vec::with_capacity(args.objects.len());
     for object_path in &args.objects {
         objects.push(k816_o65::read_object(object_path)?);
     }
 
-    let mut config = if let Some(path) = config_path.as_deref() {
+    let mut config = if let Some(path) = options.config.as_deref() {
         k816_link::load_config(path)?
     } else {
         k816_link::default_stub_config()
     };
 
-    let output_path = if let Some(path) = args.output {
+    let output_path = if let Some(path) = output {
         path
-    } else if let Some(path) = resolve_config_output_path(&config, config_path.as_deref()) {
+    } else if let Some(path) = resolve_config_output_path(&config, options.config.as_deref()) {
         path
     } else {
         anyhow::bail!("output file must be provided via linker config output.file or -o");
     };
 
-    config.output.kind = resolve_output_kind(config.output.kind, Some(&output_path), output_format);
+    config.output.kind = resolve_output_kind(
+        config.output.kind,
+        Some(&output_path),
+        options.output_format,
+    );
 
     let linked = k816_link::link_objects_with_options(
         &objects,
@@ -310,17 +387,20 @@ fn link_command(
         },
     )?;
 
-    let listing_path = resolve_listing_path(&output_path, args.listing.as_deref());
+    let listing_path = resolve_listing_path(&output_path, options.listing.as_deref());
     write_link_output(&output_path, listing_path.as_deref(), &linked)
 }
 
 fn build_command(
     input_path: PathBuf,
-    config_path: Option<PathBuf>,
-    output_format: Option<CliOutputFormat>,
+    _compile_options: CompilePhaseOptions,
+    link_options: LinkPhaseOptions,
+    output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let object = compile_source_file(&input_path)?;
-    let resolved_config_path = config_path.or_else(|| discover_adjacent_config_path(&input_path));
+    let resolved_config_path = link_options
+        .config
+        .or_else(|| discover_adjacent_config_path(&input_path));
     let mut config = if let Some(path) = resolved_config_path.as_deref() {
         k816_link::load_config(path)?
     } else {
@@ -330,7 +410,7 @@ fn build_command(
     let output_kind = resolve_output_kind(
         config.output.kind,
         config_output_path.as_deref(),
-        output_format,
+        link_options.output_format,
     );
     config.output.kind = output_kind;
     let linked = k816_link::link_objects_with_options(
@@ -340,7 +420,9 @@ fn build_command(
             color: stderr_supports_color(),
         },
     )?;
-    let output_path =
-        config_output_path.unwrap_or_else(|| default_build_output_path(&input_path, linked.kind));
-    write_link_output(&output_path, None, &linked)
+    let output_path = output
+        .or(config_output_path)
+        .unwrap_or_else(|| default_build_output_path(&input_path, linked.kind));
+    let listing_path = resolve_listing_path(&output_path, link_options.listing.as_deref());
+    write_link_output(&output_path, listing_path.as_deref(), &linked)
 }

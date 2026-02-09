@@ -48,16 +48,20 @@ struct LinkArgs {
     /// Linker config file in RON format.
     #[arg(short = 'T', long = "config", value_name = "CONFIG")]
     config: Option<PathBuf>,
-    /// Output base path (without extension) for emitted binaries/listing.
-    #[arg(short = 'o', long = "output", value_name = "OUT_BASE")]
+    /// Output file path for the linked artifact.
+    #[arg(short = 'o', long = "output", value_name = "OUTPUT_FILE")]
     output: Option<PathBuf>,
+    /// Optional listing output path. When passed without value, writes <output>.lst.
+    #[arg(
+        long = "listing",
+        value_name = "LISTING_FILE",
+        num_args = 0..=1,
+        default_missing_value = "__auto__"
+    )]
+    listing: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct OutputBase {
-    parent: PathBuf,
-    stem: String,
-}
+const LISTING_AUTO_SENTINEL: &str = "__auto__";
 
 fn main() {
     if let Err(err) = run() {
@@ -144,79 +148,51 @@ fn default_object_path_for_input(input_path: &Path) -> PathBuf {
     parent.join(format!("{stem}.o65"))
 }
 
-fn output_base_from_input(input_path: &Path) -> OutputBase {
+fn default_build_output_path(input_path: &Path, kind: k816_link::OutputKind) -> PathBuf {
     let stem = input_path
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .unwrap_or("out")
-        .to_string();
-    let parent = input_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    OutputBase { parent, stem }
+        .unwrap_or("out");
+    let ext = match kind {
+        k816_link::OutputKind::RawBinary => "bin",
+        k816_link::OutputKind::Xex => "xex",
+    };
+    let parent = input_path.parent().unwrap_or(Path::new("."));
+    parent.join(format!("{stem}.{ext}"))
 }
 
-fn output_base_from_path(path: &Path) -> OutputBase {
-    let stem = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("out")
-        .to_string();
-    let parent = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    OutputBase { parent, stem }
+fn resolve_config_output_path(
+    config: &k816_link::LinkerConfig,
+    config_path: Option<&Path>,
+) -> Option<PathBuf> {
+    let file = config.output.file.as_deref()?;
+    let file_path = PathBuf::from(file);
+    if file_path.is_absolute() {
+        return Some(file_path);
+    }
+
+    let base = config_path.and_then(Path::parent).unwrap_or(Path::new("."));
+    Some(base.join(file_path))
 }
 
-fn output_base_from_object_path(object_path: &Path) -> OutputBase {
-    let stem = object_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("out")
-        .to_string();
-    let parent = object_path.parent().unwrap_or(Path::new(".")).to_path_buf();
-    OutputBase { parent, stem }
+fn resolve_listing_path(output_path: &Path, listing_arg: Option<&str>) -> Option<PathBuf> {
+    match listing_arg {
+        None => None,
+        Some(LISTING_AUTO_SENTINEL) => Some(output_path.with_extension("lst")),
+        Some(path) => Some(PathBuf::from(path)),
+    }
 }
 
 fn write_link_output(
-    base: &OutputBase,
+    output_path: &Path,
+    listing_path: Option<&Path>,
     linked: &k816_link::LinkOutput,
-    keep_config_names: bool,
 ) -> anyhow::Result<()> {
-    if linked.binaries.is_empty() {
-        anyhow::bail!("linker produced no output binaries");
+    std::fs::write(output_path, &linked.bytes)?;
+    if let Some(path) = listing_path {
+        std::fs::write(path, &linked.listing)?;
     }
-
-    if linked.binaries.len() == 1 && !keep_config_names {
-        let (_, bytes) = linked
-            .binaries
-            .first()
-            .expect("single output should be present");
-        let path = base.parent.join(format!("{}.bin", base.stem));
-        std::fs::write(path, bytes)?;
-    } else {
-        for (name, bytes) in &linked.binaries {
-            let path = if keep_config_names {
-                base.parent.join(format!("{}.{}", base.stem, name))
-            } else {
-                base.parent
-                    .join(format!("{}.{}", base.stem, sanitize_filename(name)))
-            };
-            std::fs::write(path, bytes)?;
-        }
-    }
-
-    let listing_path = base.parent.join(format!("{}.lst", base.stem));
-    std::fs::write(listing_path, &linked.listing)?;
     Ok(())
-}
-
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
@@ -234,8 +210,9 @@ fn link_command(args: LinkArgs) -> anyhow::Result<()> {
         objects.push(k816_o65::read_object(object_path)?);
     }
 
-    let config = if let Some(config_path) = args.config {
-        k816_link::load_config(&config_path)?
+    let config_path = args.config.clone();
+    let config = if let Some(path) = config_path.as_deref() {
+        k816_link::load_config(path)?
     } else {
         k816_link::default_stub_config()
     };
@@ -247,11 +224,15 @@ fn link_command(args: LinkArgs) -> anyhow::Result<()> {
         },
     )?;
 
-    let base = args
-        .output
-        .map(|path| output_base_from_path(&path))
-        .unwrap_or_else(|| output_base_from_object_path(&args.objects[0]));
-    write_link_output(&base, &linked, true)
+    let output_path = if let Some(path) = args.output {
+        path
+    } else if let Some(path) = resolve_config_output_path(&config, config_path.as_deref()) {
+        path
+    } else {
+        anyhow::bail!("output file must be provided via linker config output.file or -o");
+    };
+    let listing_path = resolve_listing_path(&output_path, args.listing.as_deref());
+    write_link_output(&output_path, listing_path.as_deref(), &linked)
 }
 
 fn build_command(input_path: PathBuf) -> anyhow::Result<()> {
@@ -264,6 +245,6 @@ fn build_command(input_path: PathBuf) -> anyhow::Result<()> {
             color: stderr_supports_color(),
         },
     )?;
-    let base = output_base_from_input(&input_path);
-    write_link_output(&base, &linked, false)
+    let output_path = default_build_output_path(&input_path, linked.kind);
+    write_link_output(&output_path, None, &linked)
 }

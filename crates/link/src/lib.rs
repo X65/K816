@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
-use indexmap::IndexMap;
 use k816_o65::{O65Object, RelocationKind, SourceLocation};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -8,6 +7,7 @@ use std::fmt;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LinkerConfig {
     #[serde(default = "default_format")]
     pub format: String,
@@ -18,8 +18,7 @@ pub struct LinkerConfig {
     pub segments: Vec<SegmentRule>,
     #[serde(default)]
     pub symbols: Vec<LinkSymbol>,
-    #[serde(default)]
-    pub outputs: Vec<OutputSpec>,
+    pub output: OutputSpec,
     #[serde(default)]
     pub entry: Option<String>,
 }
@@ -29,6 +28,7 @@ fn default_format() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryArea {
     pub name: String,
     pub start: u32,
@@ -36,8 +36,6 @@ pub struct MemoryArea {
     pub kind: MemoryKind,
     #[serde(default)]
     pub fill: Option<u8>,
-    #[serde(default)]
-    pub out_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -79,14 +77,14 @@ pub enum SymbolValue {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OutputSpec {
-    pub name: String,
     pub kind: OutputKind,
     #[serde(default)]
-    pub default_file: Option<String>,
+    pub file: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum OutputKind {
     RawBinary,
     Xex,
@@ -94,7 +92,8 @@ pub enum OutputKind {
 
 #[derive(Debug, Clone)]
 pub struct LinkOutput {
-    pub binaries: IndexMap<String, Vec<u8>>,
+    pub bytes: Vec<u8>,
+    pub kind: OutputKind,
     pub listing: String,
 }
 
@@ -172,7 +171,6 @@ pub fn default_stub_config() -> LinkerConfig {
             size: 0x1_0000,
             kind: MemoryKind::ReadWrite,
             fill: Some(0),
-            out_file: Some("main.bin".to_string()),
         }],
         segments: vec![SegmentRule {
             name: "DEFAULT".to_string(),
@@ -186,11 +184,10 @@ pub fn default_stub_config() -> LinkerConfig {
             legacy_bank: None,
         }],
         symbols: Vec::new(),
-        outputs: vec![OutputSpec {
-            name: "main".to_string(),
+        output: OutputSpec {
             kind: OutputKind::RawBinary,
-            default_file: Some("main.bin".to_string()),
-        }],
+            file: None,
+        },
         entry: None,
     }
 }
@@ -418,7 +415,7 @@ pub fn link_objects_with_options(
         }
     }
 
-    let binaries = render_link_binaries(config, &memory_map)?;
+    let (output_kind, bytes) = render_link_output(config, &memory_map)?;
 
     let mut listing_blocks = Vec::new();
     for key in section_order {
@@ -435,7 +432,8 @@ pub fn link_objects_with_options(
     }
 
     Ok(LinkOutput {
-        binaries,
+        bytes,
+        kind: output_kind,
         listing: listing_blocks.join("\n\n"),
     })
 }
@@ -807,81 +805,42 @@ fn used_runs(used: &[bool]) -> Vec<(usize, usize)> {
     out
 }
 
-fn render_link_binaries(
+fn render_link_output(
     config: &LinkerConfig,
     memory_map: &HashMap<String, MemoryState>,
-) -> Result<IndexMap<String, Vec<u8>>> {
-    if config.outputs.is_empty() {
-        return render_legacy_raw_outputs(config, memory_map);
-    }
-
-    let mut binaries = IndexMap::new();
-    for output in &config.outputs {
-        let file_name = output
-            .default_file
-            .clone()
-            .unwrap_or_else(|| default_output_file_name(output));
-
-        let bytes = match output.kind {
-            OutputKind::RawBinary => render_configured_raw_output(output, config, memory_map)?,
-            OutputKind::Xex => render_xex_output(config, memory_map)?,
-        };
-
-        binaries.insert(file_name, bytes);
-    }
-
-    Ok(binaries)
+) -> Result<(OutputKind, Vec<u8>)> {
+    let bytes = match config.output.kind {
+        OutputKind::RawBinary => render_raw_output(config, memory_map)?,
+        OutputKind::Xex => render_xex_output(config, memory_map)?,
+    };
+    Ok((config.output.kind, bytes))
 }
 
-fn render_legacy_raw_outputs(
+fn render_raw_output(
     config: &LinkerConfig,
     memory_map: &HashMap<String, MemoryState>,
-) -> Result<IndexMap<String, Vec<u8>>> {
-    let mut binaries = IndexMap::new();
+) -> Result<Vec<u8>> {
+    let mut used_states = Vec::new();
+    let mut used_names = Vec::new();
+
     for mem in &config.memory {
         let state = memory_map.get(&mem.name).ok_or_else(|| {
             anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
         })?;
-
-        let out_name = mem
-            .out_file
-            .clone()
-            .unwrap_or_else(|| format!("{}.bin", mem.name.to_ascii_lowercase()));
-        binaries.insert(out_name, compact_memory_runs(state));
-    }
-    Ok(binaries)
-}
-
-fn render_configured_raw_output(
-    output: &OutputSpec,
-    config: &LinkerConfig,
-    memory_map: &HashMap<String, MemoryState>,
-) -> Result<Vec<u8>> {
-    if let Some(mem) = config.memory.iter().find(|mem| mem.name == output.name) {
-        let state = memory_map.get(&mem.name).ok_or_else(|| {
-            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
-        })?;
-        return Ok(compact_memory_runs(state));
+        if state.used.iter().any(|used| *used) {
+            used_states.push(state);
+            used_names.push(mem.name.clone());
+        }
     }
 
-    if config.memory.len() == 1 {
-        let mem = &config.memory[0];
-        let state = memory_map.get(&mem.name).ok_or_else(|| {
-            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
-        })?;
-        return Ok(compact_memory_runs(state));
+    match used_states.as_slice() {
+        [] => Ok(Vec::new()),
+        [state] => Ok(compact_memory_runs(state)),
+        _ => bail!(
+            "raw binary output is ambiguous: data placed in multiple memory areas ({})",
+            used_names.join(", ")
+        ),
     }
-
-    bail!(
-        "raw output '{}' is ambiguous: set output name to a memory area ({})",
-        output.name,
-        config
-            .memory
-            .iter()
-            .map(|mem| mem.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
 }
 
 fn compact_memory_runs(state: &MemoryState) -> Vec<u8> {
@@ -950,13 +909,6 @@ fn render_xex_output(
     }
 
     Ok(xex)
-}
-
-fn default_output_file_name(output: &OutputSpec) -> String {
-    match output.kind {
-        OutputKind::RawBinary => format!("{}.bin", output.name),
-        OutputKind::Xex => format!("{}.xex", output.name),
-    }
 }
 
 fn format_section_listing(
@@ -1063,6 +1015,7 @@ fn format_empty_listing_block(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indexmap::IndexMap;
     use k816_o65::{Relocation, RelocationKind, Section, SectionChunk, Symbol, SymbolDefinition};
 
     #[test]
@@ -1101,8 +1054,8 @@ mod tests {
         };
 
         let linked = link_objects(&[object], &default_stub_config()).expect("link");
-        let main = linked.binaries.get("main.bin").expect("main output");
-        assert_eq!(main, &vec![0xEA, 0x02, 0x00]);
+        assert_eq!(linked.kind, OutputKind::RawBinary);
+        assert_eq!(linked.bytes, vec![0xEA, 0x02, 0x00]);
     }
 
     #[test]
@@ -1134,8 +1087,7 @@ mod tests {
         };
 
         let linked = link_objects(&[object], &default_stub_config()).expect("link");
-        let main = linked.binaries.get("main.bin").expect("main output");
-        assert_eq!(main, &vec![0xAA, 0xBB]);
+        assert_eq!(linked.bytes, vec![0xAA, 0xBB]);
         assert!(linked.listing.contains("000020: AA"));
         assert!(linked.listing.contains("000021: BB"));
     }
@@ -1234,13 +1186,80 @@ mod tests {
     }
 
     #[test]
+    fn raw_binary_rejects_multiple_used_memory_areas() {
+        let mut config = default_stub_config();
+        config.memory.push(MemoryArea {
+            name: "AUX".to_string(),
+            start: 0x8000,
+            size: 0x1000,
+            kind: MemoryKind::ReadWrite,
+            fill: Some(0),
+        });
+        config.segments = vec![
+            SegmentRule {
+                name: "DEFAULT".to_string(),
+                load: "MAIN".to_string(),
+                run: None,
+                align: Some(1),
+                start: None,
+                offset: None,
+                optional: false,
+                segment: Some("default".to_string()),
+                legacy_bank: None,
+            },
+            SegmentRule {
+                name: "AUX".to_string(),
+                load: "AUX".to_string(),
+                run: None,
+                align: Some(1),
+                start: None,
+                offset: None,
+                optional: false,
+                segment: Some("aux".to_string()),
+                legacy_bank: None,
+            },
+        ];
+
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xAA],
+                }],
+            },
+        );
+        sections.insert(
+            "aux".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xBB],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = link_objects(&[object], &config).expect_err("expected ambiguity error");
+        assert!(err.to_string().contains("raw binary output is ambiguous"));
+    }
+
+    #[test]
     fn emits_xex_blocks_from_used_runs() {
         let mut config = default_stub_config();
-        config.outputs = vec![OutputSpec {
-            name: "xex".to_string(),
+        config.output = OutputSpec {
             kind: OutputKind::Xex,
-            default_file: Some("game.xex".to_string()),
-        }];
+            file: None,
+        };
 
         let mut sections = IndexMap::new();
         sections.insert(
@@ -1269,7 +1288,8 @@ mod tests {
         };
 
         let linked = link_objects(&[object], &config).expect("link");
-        let xex = linked.binaries.get("game.xex").expect("xex output");
+        assert_eq!(linked.kind, OutputKind::Xex);
+        let xex = &linked.bytes;
         assert_eq!(
             xex,
             &vec![
@@ -1285,11 +1305,10 @@ mod tests {
         let mut config = default_stub_config();
         config.memory[0].start = 0x1_0000;
         config.memory[0].size = 0x100;
-        config.outputs = vec![OutputSpec {
-            name: "xex".to_string(),
+        config.output = OutputSpec {
             kind: OutputKind::Xex,
-            default_file: Some("game.xex".to_string()),
-        }];
+            file: None,
+        };
 
         let mut sections = IndexMap::new();
         sections.insert(

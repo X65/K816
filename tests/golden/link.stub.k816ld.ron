@@ -8,7 +8,6 @@
       size: 65536,
       kind: ReadWrite,
       fill: Some(0),
-      out_file: Some("expected.bin"),
     ),
   ],
   segments: [
@@ -44,6 +43,9 @@
     ),
   ],
   symbols: [],
-  outputs: [],
+  output: (
+    kind: RawBinary,
+    file: Some("expected.bin"),
+  ),
   entry: None,
 )

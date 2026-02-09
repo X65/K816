@@ -8,6 +8,7 @@ use crate::diag::{Diagnostic, RenderOptions, render_diagnostics_with_options};
 use crate::emit::emit;
 use crate::emit_object::emit_object;
 use crate::eval_expand::expand_file;
+use crate::hla_syntax::desugar_hla_syntax;
 use crate::lower::lower;
 use crate::parser::parse;
 use crate::sema::analyze;
@@ -89,10 +90,11 @@ pub fn compile_source_with_fs_and_options(
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
 ) -> Result<CompileOutput, CompileError> {
+    let source_text = desugar_hla_syntax(source_text);
     let mut source_map = SourceMap::default();
-    let source_id = source_map.add_source(source_name, source_text);
+    let source_id = source_map.add_source(source_name, &source_text);
 
-    let ast = parse(source_id, source_text)
+    let ast = parse(source_id, &source_text)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
     let ast = expand_file(&ast, source_id)
@@ -132,10 +134,11 @@ pub fn compile_source_to_object_with_fs_and_options(
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
 ) -> Result<CompileObjectOutput, CompileError> {
+    let source_text = desugar_hla_syntax(source_text);
     let mut source_map = SourceMap::default();
-    let source_id = source_map.add_source(source_name, source_text);
+    let source_id = source_map.add_source(source_name, &source_text);
 
-    let ast = parse(source_id, source_text)
+    let ast = parse(source_id, &source_text)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
     let ast = expand_file(&ast, source_id)

@@ -5,7 +5,9 @@ pub enum AddressingMode {
     Implied,
     Immediate8,
     Absolute,
+    AbsoluteIndexedX,
     AbsoluteLong,
+    Relative8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -15,6 +17,7 @@ pub enum OperandShape {
     Address {
         literal: Option<u32>,
         force_far: bool,
+        indexed_x: bool,
     },
 }
 
@@ -44,6 +47,74 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
         "rtl" => expect_none(mnemonic, operand, 0x6B),
         "jsr" => expect_address(mnemonic, operand, false, 0x20, 0x00),
         "jsl" => expect_address(mnemonic, operand, true, 0x00, 0x22),
+        "ldx" => match operand {
+            OperandShape::Immediate(value) => {
+                if (0..=0xFF).contains(&value) {
+                    Ok(Encoding {
+                        opcode: 0xA2,
+                        mode: AddressingMode::Immediate8,
+                    })
+                } else {
+                    Err(EncodeError::ImmediateOutOfRange)
+                }
+            }
+            _ => Err(EncodeError::InvalidOperand {
+                mnemonic: mnemonic.to_string(),
+            }),
+        },
+        "inx" => expect_none(mnemonic, operand, 0xE8),
+        "sta" => match operand {
+            OperandShape::Address {
+                literal,
+                force_far,
+                indexed_x,
+            } => {
+                if indexed_x {
+                    if force_far || literal.is_some_and(|value| value > 0xFFFF) {
+                        return Ok(Encoding {
+                            opcode: 0x9F,
+                            mode: AddressingMode::AbsoluteLong,
+                        });
+                    }
+                    return Ok(Encoding {
+                        opcode: 0x9D,
+                        mode: AddressingMode::AbsoluteIndexedX,
+                    });
+                }
+
+                if force_far || literal.is_some_and(|value| value > 0xFFFF) {
+                    return Ok(Encoding {
+                        opcode: 0x8F,
+                        mode: AddressingMode::AbsoluteLong,
+                    });
+                }
+
+                Ok(Encoding {
+                    opcode: 0x8D,
+                    mode: AddressingMode::Absolute,
+                })
+            }
+            _ => Err(EncodeError::InvalidOperand {
+                mnemonic: mnemonic.to_string(),
+            }),
+        },
+        "cmp" => match operand {
+            OperandShape::Immediate(value) => {
+                if (0..=0xFF).contains(&value) {
+                    Ok(Encoding {
+                        opcode: 0xC9,
+                        mode: AddressingMode::Immediate8,
+                    })
+                } else {
+                    Err(EncodeError::ImmediateOutOfRange)
+                }
+            }
+            _ => Err(EncodeError::InvalidOperand {
+                mnemonic: mnemonic.to_string(),
+            }),
+        },
+        "bne" => expect_relative(mnemonic, operand, 0xD0),
+        "bpl" => expect_relative(mnemonic, operand, 0x10),
         "lda" => match operand {
             OperandShape::Immediate(value) => {
                 if (0..=0xFF).contains(&value) {
@@ -55,7 +126,29 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                     Err(EncodeError::ImmediateOutOfRange)
                 }
             }
-            OperandShape::Address { literal, force_far } => {
+            OperandShape::Address {
+                literal,
+                force_far,
+                indexed_x,
+            } => {
+                if indexed_x {
+                    if force_far {
+                        return Ok(Encoding {
+                            opcode: 0xBF,
+                            mode: AddressingMode::AbsoluteLong,
+                        });
+                    }
+                    if literal.is_some_and(|value| value > 0xFFFF) {
+                        return Ok(Encoding {
+                            opcode: 0xBF,
+                            mode: AddressingMode::AbsoluteLong,
+                        });
+                    }
+                    return Ok(Encoding {
+                        opcode: 0xBD,
+                        mode: AddressingMode::AbsoluteIndexedX,
+                    });
+                }
                 if force_far {
                     return Ok(Encoding {
                         opcode: 0xAF,
@@ -88,7 +181,9 @@ pub fn operand_width(mode: AddressingMode) -> usize {
         AddressingMode::Implied => 0,
         AddressingMode::Immediate8 => 1,
         AddressingMode::Absolute => 2,
+        AddressingMode::AbsoluteIndexedX => 2,
         AddressingMode::AbsoluteLong => 3,
+        AddressingMode::Relative8 => 1,
     }
 }
 
@@ -146,6 +241,26 @@ fn expect_address(
     }
 }
 
+fn expect_relative(
+    mnemonic: &str,
+    operand: OperandShape,
+    opcode: u8,
+) -> Result<Encoding, EncodeError> {
+    match operand {
+        OperandShape::Address {
+            force_far: false,
+            indexed_x: false,
+            ..
+        } => Ok(Encoding {
+            opcode,
+            mode: AddressingMode::Relative8,
+        }),
+        _ => Err(EncodeError::InvalidOperand {
+            mnemonic: mnemonic.to_string(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +272,7 @@ mod tests {
             OperandShape::Address {
                 literal: Some(1),
                 force_far: true,
+                indexed_x: false,
             },
         )
         .expect_err("must fail");

@@ -67,10 +67,19 @@ pub struct Instruction {
     pub operand: Option<Operand>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexRegister {
+    X,
+}
+
 #[derive(Debug, Clone)]
 pub enum Operand {
     Immediate(Expr),
-    Value { expr: Expr, force_far: bool },
+    Value {
+        expr: Expr,
+        force_far: bool,
+        index: Option<IndexRegister>,
+    },
 }
 
 #[derive(Debug, Clone)]

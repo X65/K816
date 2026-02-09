@@ -1,6 +1,6 @@
 use crate::ast::{
     BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, Instruction, Item,
-    LabelDecl, Operand, SegmentDecl, Stmt, VarDecl,
+    IndexRegister, LabelDecl, Operand, SegmentDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -409,12 +409,29 @@ where
             .map(|expr| Some(Operand::Immediate(expr))))
         .or(just(TokenKind::Far)
             .or_not()
-            .then(expr_parser())
-            .map(|(force_far, expr)| {
-                Some(Operand::Value {
+            .then(
+                expr_parser().then(
+                    just(TokenKind::Comma)
+                        .ignore_then(ident_parser())
+                        .or_not(),
+                ),
+            )
+            .try_map(|(force_far, (expr, index)), span| {
+                let index = match index {
+                    None => None,
+                    Some(value) if value.eq_ignore_ascii_case("x") => Some(IndexRegister::X),
+                    Some(value) => {
+                        return Err(Rich::custom(
+                            span,
+                            format!("unsupported index register '{value}', expected 'x'"),
+                        ));
+                    }
+                };
+                Ok(Some(Operand::Value {
                     expr,
                     force_far: force_far.is_some(),
-                })
+                    index,
+                }))
             }));
 
     let instruction = mnemonic

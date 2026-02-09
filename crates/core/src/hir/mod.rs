@@ -28,6 +28,7 @@ pub enum OperandOp {
     Address {
         value: AddressValue,
         force_far: bool,
+        index_x: bool,
     },
 }
 

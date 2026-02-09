@@ -7,6 +7,7 @@ pub mod emit_object;
 pub mod eval_expand;
 pub mod hir;
 pub mod isa65816;
+pub mod hla_syntax;
 pub mod lexer;
 pub mod lower;
 pub mod parser;

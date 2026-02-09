@@ -135,6 +135,7 @@ fn lower_stmt(
                     operand: Some(OperandOp::Address {
                         value: AddressValue::Label(target),
                         force_far: meta.is_far,
+                        index_x: false,
                     }),
                 }),
                 span,
@@ -180,7 +181,13 @@ fn lower_instruction(
             let value = eval_to_number(expr, scope, sema, span, diagnostics)?;
             Some(OperandOp::Immediate(value))
         }
-        Some(Operand::Value { expr, force_far }) => match expr {
+        Some(Operand::Value {
+            expr,
+            force_far,
+            index,
+        }) => {
+            let index_x = index.is_some();
+            match expr {
             Expr::Number(value) => {
                 let address = u32::try_from(*value).map_err(|_| {
                     Diagnostic::error(span, format!("address cannot be negative: {value}"))
@@ -189,6 +196,7 @@ fn lower_instruction(
                     Ok(address) => Some(OperandOp::Address {
                         value: AddressValue::Literal(address),
                         force_far: *force_far,
+                        index_x,
                     }),
                     Err(diag) => {
                         diagnostics.push(diag);
@@ -203,6 +211,7 @@ fn lower_instruction(
                 span,
                 diagnostics,
                 *force_far,
+                index_x,
             )?),
             Expr::EvalText(_) => {
                 diagnostics.push(Diagnostic::error(
@@ -211,6 +220,7 @@ fn lower_instruction(
                 ));
                 return None;
             }
+        }
         },
     };
 
@@ -264,12 +274,14 @@ fn resolve_operand_ident(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
     force_far: bool,
+    index_x: bool,
 ) -> Option<OperandOp> {
     if name.starts_with('.') {
         let resolved = resolve_symbol(name, scope, span, diagnostics)?;
         return Some(OperandOp::Address {
             value: AddressValue::Label(resolved),
             force_far,
+            index_x,
         });
     }
 
@@ -277,6 +289,7 @@ fn resolve_operand_ident(
         return Some(OperandOp::Address {
             value: AddressValue::Literal(var.address),
             force_far,
+            index_x,
         });
     }
 
@@ -284,14 +297,15 @@ fn resolve_operand_ident(
         return Some(OperandOp::Address {
             value: AddressValue::Label(name.to_string()),
             force_far,
+            index_x,
         });
     }
 
-    diagnostics.push(
-        Diagnostic::error(span, format!("unknown symbol '{name}'"))
-            .with_help("declare a var/function or use a local label inside a code block"),
-    );
-    None
+    Some(OperandOp::Address {
+        value: AddressValue::Label(name.to_string()),
+        force_far,
+        index_x,
+    })
 }
 
 fn resolve_symbol(
@@ -342,8 +356,13 @@ mod tests {
             .expect("lda operand");
 
         match operand {
-            OperandOp::Address { value, force_far } => {
+            OperandOp::Address {
+                value,
+                force_far,
+                index_x,
+            } => {
                 assert!(!force_far);
+                assert!(!index_x);
                 assert!(matches!(value, AddressValue::Literal(0x1234)));
             }
             _ => panic!("expected address operand"),
@@ -351,17 +370,28 @@ mod tests {
     }
 
     #[test]
-    fn reports_unknown_identifier_in_instruction_operand() {
+    fn keeps_unresolved_identifier_as_label_operand() {
         let source = "main {\n  lda missing\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
-
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("unknown symbol 'missing'"))
-        );
+        let program = lower(&file, &sema, &fs).expect("lower");
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::Label(name),
+                ..
+            } if name == "missing"
+        ));
     }
 }

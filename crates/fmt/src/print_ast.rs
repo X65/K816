@@ -84,11 +84,19 @@ fn format_instruction(instr: &Instruction) -> String {
     match &instr.operand {
         None => instr.mnemonic.clone(),
         Some(Operand::Immediate(expr)) => format!("{} #{}", instr.mnemonic, format_expr(expr)),
-        Some(Operand::Value { expr, force_far }) => {
+        Some(Operand::Value {
+            expr,
+            force_far,
+            index,
+        }) => {
+            let mut value = format_expr(expr);
+            if index.is_some() {
+                value.push_str(",x");
+            }
             if *force_far {
-                format!("{} far {}", instr.mnemonic, format_expr(expr))
+                format!("{} far {}", instr.mnemonic, value)
             } else {
-                format!("{} {}", instr.mnemonic, format_expr(expr))
+                format!("{} {}", instr.mnemonic, value)
             }
         }
     }

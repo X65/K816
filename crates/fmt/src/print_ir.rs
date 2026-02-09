@@ -23,13 +23,20 @@ pub fn format_ir(program: &Program) -> String {
                     out.push(' ');
                     match operand {
                         OperandOp::Immediate(value) => out.push_str(&format!("#{value}")),
-                        OperandOp::Address { value, force_far } => {
+                        OperandOp::Address {
+                            value,
+                            force_far,
+                            index_x,
+                        } => {
                             if *force_far {
                                 out.push_str("far ");
                             }
                             match value {
                                 AddressValue::Literal(value) => out.push_str(&value.to_string()),
                                 AddressValue::Label(name) => out.push_str(name),
+                            }
+                            if *index_x {
+                                out.push_str(",x");
                             }
                         }
                     }

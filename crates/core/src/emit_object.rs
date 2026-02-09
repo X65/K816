@@ -8,7 +8,7 @@ use k816_o65::{
 
 use crate::diag::Diagnostic;
 use crate::hir::{AddressValue, Op, OperandOp, Program};
-use crate::isa65816::{OperandShape, operand_width, select_encoding};
+use crate::isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
 use crate::span::{SourceMap, Span};
 
 #[derive(Debug, Clone)]
@@ -130,14 +130,20 @@ pub fn emit_object(
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
-                    Some(OperandOp::Address { value, force_far }) => match value {
+                    Some(OperandOp::Address {
+                        value,
+                        force_far,
+                        index_x,
+                    }) => match value {
                         AddressValue::Literal(literal) => OperandShape::Address {
                             literal: Some(*literal),
                             force_far: *force_far,
+                            indexed_x: *index_x,
                         },
                         AddressValue::Label(_) => OperandShape::Address {
                             literal: None,
                             force_far: *force_far,
+                            indexed_x: *index_x,
                         },
                     },
                 };
@@ -163,7 +169,14 @@ pub fn emit_object(
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
                         AddressValue::Literal(literal) => {
-                            emit_literal(segment, *literal, width, op.span, &mut diagnostics)
+                            if encoding.mode == AddressingMode::Relative8 {
+                                diagnostics.push(Diagnostic::error(
+                                    op.span,
+                                    "relative branch operands must be labels, not numeric literals",
+                                ));
+                            } else {
+                                emit_literal(segment, *literal, width, op.span, &mut diagnostics)
+                            }
                         }
                         AddressValue::Label(label) => {
                             emit_zeroes(segment, width, op.span, &mut diagnostics);
@@ -171,7 +184,11 @@ pub fn emit_object(
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
                                 width: width as u8,
-                                kind: RelocationKind::Absolute,
+                                kind: if encoding.mode == AddressingMode::Relative8 {
+                                    RelocationKind::Relative
+                                } else {
+                                    RelocationKind::Absolute
+                                },
                                 label: label.clone(),
                                 span: op.span,
                             });

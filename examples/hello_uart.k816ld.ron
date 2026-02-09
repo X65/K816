@@ -1,9 +1,11 @@
 (
+  format: "o65-link",
+  target: Some("hello_uart"),
   memory: [
     (
       name: "MAIN",
       start: 0,
-      size: 2,
+      size: 65536,
       kind: ReadWrite,
       fill: Some(0),
       out_file: Some("expected.bin"),
@@ -25,10 +27,13 @@
       load: "MAIN",
       run: None,
       align: Some(1),
-      start: 0xFC00,
+      start: Some(0xFC00),
       offset: None,
       optional: false,
       segment: None,
     ),
   ],
+  symbols: [],
+  outputs: [],
+  entry: None,
 )

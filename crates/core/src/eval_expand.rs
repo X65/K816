@@ -117,9 +117,14 @@ fn expand_instruction(
         Operand::Immediate(expr) => {
             Operand::Immediate(expand_expr(expr, span, source_id, diagnostics))
         }
-        Operand::Value { expr, force_far } => Operand::Value {
+        Operand::Value {
+            expr,
+            force_far,
+            index,
+        } => Operand::Value {
             expr: expand_expr(expr, span, source_id, diagnostics),
             force_far: *force_far,
+            index: *index,
         },
     });
 

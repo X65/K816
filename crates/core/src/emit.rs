@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 
 use crate::diag::Diagnostic;
 use crate::hir::{AddressValue, Op, OperandOp, Program};
-use crate::isa65816::{OperandShape, operand_width, select_encoding};
+use crate::isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
 use crate::span::Span;
 
 #[derive(Debug, Clone)]
@@ -23,6 +23,7 @@ struct Fixup {
     segment: String,
     offset: usize,
     width: usize,
+    mode: AddressingMode,
     label: String,
     span: Span,
 }
@@ -116,14 +117,20 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
-                    Some(OperandOp::Address { value, force_far }) => match value {
+                    Some(OperandOp::Address {
+                        value,
+                        force_far,
+                        index_x,
+                    }) => match value {
                         AddressValue::Literal(literal) => OperandShape::Address {
                             literal: Some(*literal),
                             force_far: *force_far,
+                            indexed_x: *index_x,
                         },
                         AddressValue::Label(_) => OperandShape::Address {
                             literal: None,
                             force_far: *force_far,
+                            indexed_x: *index_x,
                         },
                     },
                 };
@@ -147,19 +154,33 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                         segment.bytes.push(*value as u8);
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
-                        AddressValue::Literal(literal) => write_literal(
-                            &mut segment.bytes,
-                            *literal,
-                            width,
-                            op.span,
-                            &mut diagnostics,
-                        ),
+                        AddressValue::Literal(literal) => {
+                            if encoding.mode == AddressingMode::Relative8 {
+                                let site_addr = operand_offset;
+                                write_relative_literal(
+                                    &mut segment.bytes,
+                                    *literal,
+                                    site_addr,
+                                    op.span,
+                                    &mut diagnostics,
+                                );
+                            } else {
+                                write_literal(
+                                    &mut segment.bytes,
+                                    *literal,
+                                    width,
+                                    op.span,
+                                    &mut diagnostics,
+                                );
+                            }
+                        }
                         AddressValue::Label(label) => {
                             segment.bytes.resize(segment.bytes.len() + width, 0);
                             fixups.push(Fixup {
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
                                 width,
+                                mode: encoding.mode,
                                 label: label.clone(),
                                 span: op.span,
                             });
@@ -178,6 +199,41 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             ));
             continue;
         };
+
+        if fixup.mode == AddressingMode::Relative8 {
+            if label_segment != &fixup.segment {
+                diagnostics.push(
+                    Diagnostic::error(
+                        fixup.span,
+                        format!(
+                            "relative branch from segment '{}' to '{}' is not supported",
+                            fixup.segment, label_segment
+                        ),
+                    )
+                    .with_help("branch targets must stay in the same segment"),
+                );
+                continue;
+            }
+
+            let site_addr = fixup.offset;
+            let delta = *label_addr as isize - (site_addr as isize + 1);
+            if delta < i8::MIN as isize || delta > i8::MAX as isize {
+                diagnostics.push(Diagnostic::error(
+                    fixup.span,
+                    format!(
+                        "relative branch to '{}' out of range from {site_addr:#X}",
+                        fixup.label
+                    ),
+                ));
+                continue;
+            }
+
+            let segment = segments
+                .get_mut(&fixup.segment)
+                .expect("fixup segment should exist during patching");
+            segment.bytes[fixup.offset] = delta as i8 as u8;
+            continue;
+        }
 
         if fixup.width == 2 && label_segment != &fixup.segment {
             diagnostics.push(
@@ -259,6 +315,24 @@ fn apply_nocross_if_needed(
         let pad = boundary - offset_in_window;
         segment.bytes.resize(segment.bytes.len() + pad, 0);
     }
+}
+
+fn write_relative_literal(
+    bytes: &mut Vec<u8>,
+    target: u32,
+    site_addr: usize,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let delta = target as i64 - (site_addr as i64 + 1);
+    if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
+        diagnostics.push(Diagnostic::error(
+            span,
+            format!("relative branch target {target:#X} out of range"),
+        ));
+        return;
+    }
+    bytes.push(delta as i8 as u8);
 }
 
 fn write_literal(

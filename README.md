@@ -1,6 +1,6 @@
 # K816
 
-K816 is a high-level assembler for the WDC 65816 microprocessor, written in Rust.
+K816 is a high-level assembler (HLA) for the WDC 65816 microprocessor.
 
 It is a direct port of **K65**: <https://github.com/Krzysiek-K/k65>
 

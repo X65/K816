@@ -7,7 +7,7 @@ pub struct Program {
 
 #[derive(Debug, Clone)]
 pub enum Op {
-    SelectBank(String),
+    SelectSegment(String),
     Label(String),
     Instruction(InstructionOp),
     EmitBytes(Vec<u8>),

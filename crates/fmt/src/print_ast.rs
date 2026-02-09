@@ -12,7 +12,7 @@ pub fn format_ast(file: &File) -> String {
 
 fn format_item(out: &mut String, item: &Item, indent: usize) {
     match item {
-        Item::Bank(bank) => line(out, indent, format!("bank {}", bank.name)),
+        Item::Segment(segment) => line(out, indent, format!("segment {}", segment.name)),
         Item::Var(var) => line(out, indent, format_var(var)),
         Item::DataBlock(block) => {
             line(out, indent, "data {".to_string());

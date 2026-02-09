@@ -8,6 +8,8 @@ use crate::span::{SourceId, Span};
 #[logos(skip(r"//[^\r\n]*", allow_greedy = true))]
 #[logos(skip(r"/\*([^*]|\*+[^*/])*\*+/"))]
 pub enum TokenKind {
+    #[token("segment")]
+    Segment,
     #[token("bank")]
     Bank,
     #[token("var")]

@@ -4,7 +4,7 @@ pub fn format_ir(program: &Program) -> String {
     let mut out = String::new();
     for op in &program.ops {
         match &op.node {
-            Op::SelectBank(name) => out.push_str(&format!("bank {name}\n")),
+            Op::SelectSegment(name) => out.push_str(&format!("segment {name}\n")),
             Op::Label(name) => out.push_str(&format!("label {name}\n")),
             Op::Align(value) => out.push_str(&format!("align {value}\n")),
             Op::Address(value) => out.push_str(&format!("address {value}\n")),

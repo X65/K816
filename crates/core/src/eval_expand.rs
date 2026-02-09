@@ -29,7 +29,7 @@ fn expand_item(
         Item::Var(var) => Item::Var(expand_var(var, span, source_id, diagnostics)),
         Item::CodeBlock(block) => Item::CodeBlock(expand_code_block(block, source_id, diagnostics)),
         Item::Statement(stmt) => Item::Statement(expand_stmt(stmt, span, source_id, diagnostics)),
-        Item::Bank(bank) => Item::Bank(bank.clone()),
+        Item::Segment(segment) => Item::Segment(segment.clone()),
         Item::DataBlock(block) => Item::DataBlock(block.clone()),
     }
 }

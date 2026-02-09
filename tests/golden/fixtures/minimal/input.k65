@@ -1,4 +1,4 @@
-bank rom
+segment rom
 
 far func far_target {
   nop

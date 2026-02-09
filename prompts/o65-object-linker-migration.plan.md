@@ -16,6 +16,12 @@ This plan reflects current repository state as of latest CLI changes.
 - `ld65` configuration model reference (section 5):
   - <https://cc65.github.io/doc/ld65.html#s5>
 
+## Directive Terminology
+
+- Source-level region selection uses `segment` (cc65-inspired) as canonical directive.
+- Legacy `bank` syntax is treated as compatibility alias during transition.
+- Linker config uses `SegmentRule.segment` as canonical field; legacy `bank` key remains accepted for compatibility.
+
 ## Latest Findings (Current State)
 
 ### Implemented already

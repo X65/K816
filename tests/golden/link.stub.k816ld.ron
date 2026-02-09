@@ -20,7 +20,7 @@
       start: None,
       offset: None,
       optional: false,
-      bank: None,
+      segment: None,
     ),
   ],
   symbols: [],

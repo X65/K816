@@ -14,14 +14,14 @@ pub struct EmitObjectOutput {
 }
 
 #[derive(Debug)]
-struct BankState {
+struct SegmentState {
     bytes: Vec<u8>,
     nocross_boundary: Option<u16>,
 }
 
 #[derive(Debug)]
 struct Fixup {
-    bank: String,
+    segment: String,
     offset: usize,
     width: usize,
     kind: RelocationKind,
@@ -31,30 +31,34 @@ struct Fixup {
 
 pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
-    let mut banks: IndexMap<String, BankState> = IndexMap::new();
+    let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
     let mut labels: FxHashMap<String, (String, usize)> = FxHashMap::default();
     let mut fixups = Vec::new();
-    let mut current_bank = "default".to_string();
-    banks.entry(current_bank.clone()).or_insert(BankState {
+    let mut current_segment = "default".to_string();
+    segments
+        .entry(current_segment.clone())
+        .or_insert(SegmentState {
         bytes: Vec::new(),
         nocross_boundary: None,
     });
 
     for op in &program.ops {
         match &op.node {
-            Op::SelectBank(name) => {
-                current_bank = name.clone();
-                banks.entry(current_bank.clone()).or_insert(BankState {
+            Op::SelectSegment(name) => {
+                current_segment = name.clone();
+                segments
+                    .entry(current_segment.clone())
+                    .or_insert(SegmentState {
                     bytes: Vec::new(),
                     nocross_boundary: None,
                 });
             }
             Op::Label(name) => {
-                let bank = banks
-                    .get(&current_bank)
-                    .expect("current bank must exist during emit");
+                let segment = segments
+                    .get(&current_segment)
+                    .expect("current segment must exist during emit");
                 if labels
-                    .insert(name.clone(), (current_bank.clone(), bank.bytes.len()))
+                    .insert(name.clone(), (current_segment.clone(), segment.bytes.len()))
                     .is_some()
                 {
                     diagnostics.push(
@@ -68,49 +72,49 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
                     diagnostics.push(Diagnostic::error(op.span, "align value must be non-zero"));
                     continue;
                 }
-                let bank = banks
-                    .get_mut(&current_bank)
-                    .expect("current bank must exist during emit");
-                while !bank.bytes.len().is_multiple_of(usize::from(*align)) {
-                    bank.bytes.push(0);
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                while !segment.bytes.len().is_multiple_of(usize::from(*align)) {
+                    segment.bytes.push(0);
                 }
             }
             Op::Address(address) => {
-                let bank = banks
-                    .get_mut(&current_bank)
-                    .expect("current bank must exist during emit");
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
                 let address = *address as usize;
-                if bank.bytes.len() > address {
+                if segment.bytes.len() > address {
                     diagnostics.push(Diagnostic::error(
                         op.span,
                         format!(
                             "address {address:#X} is behind current position {:#X}",
-                            bank.bytes.len()
+                            segment.bytes.len()
                         ),
                     ));
                     continue;
                 }
-                while bank.bytes.len() < address {
-                    bank.bytes.push(0);
+                while segment.bytes.len() < address {
+                    segment.bytes.push(0);
                 }
             }
             Op::Nocross(boundary) => {
-                let bank = banks
-                    .get_mut(&current_bank)
-                    .expect("current bank must exist during emit");
-                bank.nocross_boundary = Some(*boundary);
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                segment.nocross_boundary = Some(*boundary);
             }
             Op::EmitBytes(bytes) => {
-                let bank = banks
-                    .get_mut(&current_bank)
-                    .expect("current bank must exist during emit");
-                apply_nocross_if_needed(bank, bytes.len(), op.span, &mut diagnostics);
-                bank.bytes.extend(bytes);
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
+                segment.bytes.extend(bytes);
             }
             Op::Instruction(instruction) => {
-                let bank = banks
-                    .get_mut(&current_bank)
-                    .expect("current bank must exist during emit");
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
@@ -135,27 +139,27 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
                 };
 
                 let width = operand_width(encoding.mode);
-                apply_nocross_if_needed(bank, 1 + width, op.span, &mut diagnostics);
-                bank.bytes.push(encoding.opcode);
-                let operand_offset = bank.bytes.len();
+                apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
+                segment.bytes.push(encoding.opcode);
+                let operand_offset = segment.bytes.len();
 
                 match &instruction.operand {
                     None => {}
                     Some(OperandOp::Immediate(value)) => {
-                        bank.bytes.push(*value as u8);
+                        segment.bytes.push(*value as u8);
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
                         AddressValue::Literal(literal) => write_literal(
-                            &mut bank.bytes,
+                            &mut segment.bytes,
                             *literal,
                             width,
                             op.span,
                             &mut diagnostics,
                         ),
                         AddressValue::Label(label) => {
-                            bank.bytes.resize(bank.bytes.len() + width, 0);
+                            segment.bytes.resize(segment.bytes.len() + width, 0);
                             fixups.push(Fixup {
-                                bank: current_bank.clone(),
+                                segment: current_segment.clone(),
                                 offset: operand_offset,
                                 width,
                                 kind: RelocationKind::Absolute,
@@ -182,20 +186,20 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
         return Err(diagnostics);
     }
 
-    let skip_default_empty = banks.len() > 1
-        && banks
+    let skip_default_empty = segments.len() > 1
+        && segments
             .get("default")
             .is_some_and(|state| state.bytes.is_empty());
 
     let mut listing_blocks = Vec::new();
     let mut sections = IndexMap::new();
-    for (bank_name, state) in &banks {
-        if skip_default_empty && bank_name == "default" {
+    for (segment_name, state) in &segments {
+        if skip_default_empty && segment_name == "default" {
             continue;
         }
-        listing_blocks.push(format_listing_block(bank_name, &state.bytes));
+        listing_blocks.push(format_listing_block(segment_name, &state.bytes));
         sections.insert(
-            bank_name.clone(),
+            segment_name.clone(),
             Section {
                 bytes: state.bytes.clone(),
             },
@@ -203,15 +207,15 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
     }
 
     let mut symbols = Vec::new();
-    for (name, (bank, offset)) in &labels {
-        if skip_default_empty && bank == "default" {
+    for (name, (segment, offset)) in &labels {
+        if skip_default_empty && segment == "default" {
             continue;
         }
         symbols.push(Symbol {
             name: name.clone(),
             global: true,
             definition: Some(SymbolDefinition {
-                section: bank.clone(),
+                section: segment.clone(),
                 offset: *offset as u32,
             }),
         });
@@ -220,11 +224,11 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
 
     let mut relocations = Vec::new();
     for fixup in &fixups {
-        if skip_default_empty && fixup.bank == "default" {
+        if skip_default_empty && fixup.segment == "default" {
             continue;
         }
         relocations.push(Relocation {
-            section: fixup.bank.clone(),
+            section: fixup.segment.clone(),
             offset: fixup.offset as u32,
             width: fixup.width as u8,
             kind: fixup.kind,
@@ -243,12 +247,12 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
 }
 
 fn apply_nocross_if_needed(
-    bank: &mut BankState,
+    segment: &mut SegmentState,
     next_size: usize,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let Some(boundary) = bank.nocross_boundary.take() else {
+    let Some(boundary) = segment.nocross_boundary.take() else {
         return;
     };
     let boundary = usize::from(boundary);
@@ -264,10 +268,10 @@ fn apply_nocross_if_needed(
         return;
     }
 
-    let offset_in_window = bank.bytes.len() % boundary;
+    let offset_in_window = segment.bytes.len() % boundary;
     if offset_in_window + next_size > boundary {
         let pad = boundary - offset_in_window;
-        bank.bytes.resize(bank.bytes.len() + pad, 0);
+        segment.bytes.resize(segment.bytes.len() + pad, 0);
     }
 }
 

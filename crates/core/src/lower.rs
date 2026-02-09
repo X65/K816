@@ -17,8 +17,8 @@ pub fn lower(
 
     for item in &file.items {
         match &item.node {
-            Item::Bank(bank) => {
-                ops.push(Spanned::new(Op::SelectBank(bank.name.clone()), item.span));
+            Item::Segment(segment) => {
+                ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), item.span));
             }
             Item::DataBlock(block) => match lower_data_block(block, fs) {
                 Ok(mut lowered) => ops.append(&mut lowered),

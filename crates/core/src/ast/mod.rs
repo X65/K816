@@ -7,7 +7,7 @@ pub struct File {
 
 #[derive(Debug, Clone)]
 pub enum Item {
-    Bank(BankDecl),
+    Segment(SegmentDecl),
     Var(VarDecl),
     DataBlock(DataBlock),
     CodeBlock(CodeBlock),
@@ -15,7 +15,7 @@ pub enum Item {
 }
 
 #[derive(Debug, Clone)]
-pub struct BankDecl {
+pub struct SegmentDecl {
     pub name: String,
 }
 

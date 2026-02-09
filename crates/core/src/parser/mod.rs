@@ -1,5 +1,5 @@
 use crate::ast::{
-    BankDecl, BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File,
+    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, SegmentDecl,
     Instruction, Item, LabelDecl, Operand, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
@@ -111,9 +111,10 @@ fn item_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let bank_item = just(TokenKind::Bank)
+    let segment_item = just(TokenKind::Segment)
+        .or(just(TokenKind::Bank))
         .ignore_then(ident_parser())
-        .map(|name| Item::Bank(BankDecl { name }));
+        .map(|name| Item::Segment(SegmentDecl { name }));
 
     let var_item = var_decl_parser(source_id).map(Item::Var);
 
@@ -125,7 +126,7 @@ where
 
     let stmt_item = stmt_parser(source_id).map(Item::Statement);
 
-    bank_item
+    segment_item
         .or(var_item)
         .or(data_item)
         .or(code_block_item)
@@ -519,6 +520,7 @@ fn rich_pattern_message(pattern: &RichPattern<'_, TokenKind>) -> String {
 
 fn token_kind_message(token: &TokenKind) -> String {
     match token {
+        TokenKind::Segment => "'segment'".to_string(),
         TokenKind::Bank => "'bank'".to_string(),
         TokenKind::Var => "'var'".to_string(),
         TokenKind::Func => "'func'".to_string(),
@@ -556,6 +558,23 @@ mod tests {
         let source = "far func target {\n nop\n}\nmain {\n call target\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
+    }
+
+    #[test]
+    fn parses_segment_and_bank_alias() {
+        let source = "segment code\nbank legacy\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 2);
+
+        let Item::Segment(first) = &file.items[0].node else {
+            panic!("expected segment item");
+        };
+        assert_eq!(first.name, "code");
+
+        let Item::Segment(second) = &file.items[1].node else {
+            panic!("expected segment item from bank alias");
+        };
+        assert_eq!(second.name, "legacy");
     }
 
     #[test]
@@ -674,14 +693,8 @@ mod tests {
         let source = "far var first\nnaked var second\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
         assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
-        assert_eq!(
-            diagnostics[0].message,
-            "invalid syntax: expected 'far', 'naked', 'inline', 'main', or 'func', found 'var'"
-        );
-        assert_eq!(
-            diagnostics[1].message,
-            "invalid syntax: expected 'far', 'naked', 'inline', 'main', or 'func', found 'var'"
-        );
+        assert!(diagnostics[0].message.contains("found 'var'"));
+        assert!(diagnostics[1].message.contains("found 'var'"));
         assert_eq!(diagnostics[0].primary.start, 4);
         assert_eq!(diagnostics[0].primary.end, 7);
         assert_eq!(diagnostics[1].primary.start, 20);

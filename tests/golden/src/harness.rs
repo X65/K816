@@ -29,7 +29,7 @@ pub fn run_fixture(name: &str) -> Result<()> {
 }
 
 fn compare_binaries(fixture_dir: &Path, banks: &indexmap::IndexMap<String, Vec<u8>>) -> Result<()> {
-    let mut expected_per_bank = Vec::new();
+    let mut expected_per_segment = Vec::new();
     for entry in std::fs::read_dir(fixture_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -40,15 +40,15 @@ fn compare_binaries(fixture_dir: &Path, banks: &indexmap::IndexMap<String, Vec<u
             && file_name.ends_with(".bin")
             && file_name != "expected.bin"
         {
-            let bank = file_name
+            let segment = file_name
                 .trim_start_matches("expected.")
                 .trim_end_matches(".bin")
                 .to_string();
-            expected_per_bank.push((bank, path));
+            expected_per_segment.push((segment, path));
         }
     }
 
-    if expected_per_bank.is_empty() {
+    if expected_per_segment.is_empty() {
         let expected_path = fixture_dir.join("expected.bin");
         let expected = std::fs::read(&expected_path)
             .with_context(|| format!("failed to read '{}'", expected_path.display()))?;
@@ -66,15 +66,15 @@ fn compare_binaries(fixture_dir: &Path, banks: &indexmap::IndexMap<String, Vec<u
         return Ok(());
     }
 
-    for (bank, path) in expected_per_bank {
+    for (segment, path) in expected_per_segment {
         let expected =
             std::fs::read(&path).with_context(|| format!("failed to read '{}'", path.display()))?;
         let actual = banks
-            .get(&bank)
-            .ok_or_else(|| anyhow!("missing output bank '{bank}'"))?;
+            .get(&segment)
+            .ok_or_else(|| anyhow!("missing output segment '{segment}'"))?;
         if *actual != expected {
             return Err(anyhow!(
-                "binary mismatch for bank '{bank}': expected {} bytes, got {} bytes",
+                "binary mismatch for segment '{segment}': expected {} bytes, got {} bytes",
                 expected.len(),
                 actual.len()
             ));

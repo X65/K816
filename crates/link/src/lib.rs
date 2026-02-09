@@ -59,7 +59,9 @@ pub struct SegmentRule {
     #[serde(default)]
     pub optional: bool,
     #[serde(default)]
-    pub bank: Option<String>,
+    pub segment: Option<String>,
+    #[serde(default, rename = "bank")]
+    pub legacy_bank: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,7 +106,7 @@ struct MemoryState {
 
 #[derive(Debug, Clone)]
 struct PlacedSection {
-    bank: String,
+    segment: String,
     memory_name: String,
     base_addr: u32,
     len: usize,
@@ -113,7 +115,7 @@ struct PlacedSection {
 #[derive(Debug, Clone)]
 struct ResolvedSymbol {
     addr: u32,
-    bank: String,
+    segment: String,
 }
 
 pub fn load_config(path: &Path) -> Result<LinkerConfig> {
@@ -143,7 +145,8 @@ pub fn default_stub_config() -> LinkerConfig {
             start: None,
             offset: None,
             optional: false,
-            bank: None,
+            segment: None,
+            legacy_bank: None,
         }],
         symbols: Vec::new(),
         outputs: vec![OutputSpec {
@@ -179,22 +182,22 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
     let mut placed: HashMap<(usize, String), PlacedSection> = HashMap::new();
     let mut placement_order: Vec<(usize, String)> = Vec::new();
     for (obj_idx, object) in objects.iter().enumerate() {
-        for (bank, section) in &object.sections {
+        for (segment, section) in &object.sections {
             if section.bytes.is_empty() {
                 placed.insert(
-                    (obj_idx, bank.clone()),
+                    (obj_idx, segment.clone()),
                     PlacedSection {
-                        bank: bank.clone(),
-                        memory_name: select_segment_rule(config, bank)?.load.clone(),
+                        segment: segment.clone(),
+                        memory_name: select_segment_rule(config, segment)?.load.clone(),
                         base_addr: 0,
                         len: 0,
                     },
                 );
-                placement_order.push((obj_idx, bank.clone()));
+                placement_order.push((obj_idx, segment.clone()));
                 continue;
             }
 
-            let rule = select_segment_rule(config, bank)?;
+            let rule = select_segment_rule(config, segment)?;
             let mem = memory_map
                 .get_mut(&rule.load)
                 .ok_or_else(|| anyhow::anyhow!("segment '{}' references unknown memory '{}'", rule.name, rule.load))?;
@@ -216,7 +219,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             if base < mem.spec.start {
                 bail!(
                     "section '{}' placement underflows memory '{}'",
-                    bank,
+                    segment,
                     mem.spec.name
                 );
             }
@@ -226,7 +229,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             if rel_end > mem.bytes.len() {
                 bail!(
                     "section '{}' does not fit memory '{}' (start={base:#X}, len={:#X})",
-                    bank,
+                    segment,
                     mem.spec.name,
                     section.bytes.len()
                 );
@@ -236,7 +239,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
                 if mem.used[idx] {
                     bail!(
                         "section '{}' overlaps previously allocated bytes in memory '{}'",
-                        bank,
+                        segment,
                         mem.spec.name
                     );
                 }
@@ -250,15 +253,15 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             mem.cursor = mem.cursor.max(base.saturating_add(section.bytes.len() as u32));
 
             placed.insert(
-                (obj_idx, bank.clone()),
+                (obj_idx, segment.clone()),
                 PlacedSection {
-                    bank: bank.clone(),
+                    segment: segment.clone(),
                     memory_name: mem.spec.name.clone(),
                     base_addr: base,
                     len: section.bytes.len(),
                 },
             );
-            placement_order.push((obj_idx, bank.clone()));
+            placement_order.push((obj_idx, segment.clone()));
         }
     }
 
@@ -283,7 +286,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
 
             let resolved = ResolvedSymbol {
                 addr: placed_section.base_addr.saturating_add(def.offset),
-                bank: placed_section.bank.clone(),
+                segment: placed_section.segment.clone(),
             };
             if symbols.insert(symbol.name.clone(), resolved).is_some() {
                 bail!("duplicate global symbol '{}'", symbol.name);
@@ -295,7 +298,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
         let value = match &link_symbol.value {
             SymbolValue::Absolute(addr) => ResolvedSymbol {
                 addr: *addr,
-                bank: "__absolute__".to_string(),
+                segment: "__absolute__".to_string(),
             },
             SymbolValue::Import(name) => symbols
                 .get(name)
@@ -316,11 +319,14 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
                 .ok_or_else(|| anyhow::anyhow!("undefined symbol '{}'", reloc.symbol))?
                 .clone();
 
-            if reloc.kind == RelocationKind::Absolute && reloc.width == 2 && src_section.bank != target.bank {
+            if reloc.kind == RelocationKind::Absolute
+                && reloc.width == 2
+                && src_section.segment != target.segment
+            {
                 bail!(
-                    "16-bit relocation from bank '{}' to '{}' requires far addressing",
-                    src_section.bank,
-                    target.bank
+                    "16-bit relocation from segment '{}' to '{}' requires far addressing",
+                    src_section.segment,
+                    target.segment
                 );
             }
 
@@ -379,7 +385,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             continue;
         };
         if section.len == 0 {
-            listing_blocks.push(format_empty_listing_block(&section.bank));
+            listing_blocks.push(format_empty_listing_block(&section.segment));
             continue;
         }
         let mem = memory_map
@@ -388,7 +394,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
         let rel_start = (section.base_addr - mem.spec.start) as usize;
         let rel_end = rel_start + section.len;
         listing_blocks.push(format_listing_block(
-            &section.bank,
+            &section.segment,
             &mem.bytes[rel_start..rel_end],
         ));
     }
@@ -397,18 +403,30 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
     Ok(LinkOutput { binaries, listing })
 }
 
-fn select_segment_rule<'a>(config: &'a LinkerConfig, bank: &str) -> Result<&'a SegmentRule> {
+fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'a SegmentRule> {
     if let Some(rule) = config
         .segments
         .iter()
-        .find(|rule| rule.bank.as_deref() == Some(bank))
+        .find(|rule| rule.segment_name() == Some(segment))
     {
         return Ok(rule);
     }
-    if let Some(rule) = config.segments.iter().find(|rule| rule.bank.is_none()) {
+    if let Some(rule) = config
+        .segments
+        .iter()
+        .find(|rule| rule.segment_name().is_none())
+    {
         return Ok(rule);
     }
-    bail!("no segment rule found for bank '{bank}'");
+    bail!("no segment rule found for segment '{segment}'");
+}
+
+impl SegmentRule {
+    fn segment_name(&self) -> Option<&str> {
+        self.segment
+            .as_deref()
+            .or(self.legacy_bank.as_deref())
+    }
 }
 
 fn align_up(value: u32, align: u32) -> u32 {

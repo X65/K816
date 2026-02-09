@@ -61,7 +61,7 @@ pub enum TokenKind {
     #[regex(r#""([^"\\]|\\.)*""#, parse_string)]
     String(String),
 
-    #[regex(r"0x[0-9a-fA-F]+|[0-9]+", parse_number)]
+    #[regex(r"0x[0-9a-fA-F]+|\$[0-9a-fA-F]+|[0-9]+", parse_number)]
     Number(i64),
 
     #[regex(r"[A-Za-z_.][A-Za-z0-9_.]*", parse_ident)]
@@ -110,6 +110,9 @@ pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnosti
 fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {
     let slice = lex.slice();
     if let Some(hex) = slice.strip_prefix("0x") {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    if let Some(hex) = slice.strip_prefix('$') {
         return i64::from_str_radix(hex, 16).ok();
     }
     slice.parse::<i64>().ok()

@@ -26,8 +26,22 @@ pub fn lower(
             },
             Item::CodeBlock(block) => {
                 let scope = block.name.clone();
+                // Allow `segment ...` at the top of a code block to control where the
+                // function/main entry label is emitted.
+                let mut body_start = 0usize;
+                while body_start < block.body.len() {
+                    let stmt = &block.body[body_start];
+                    match &stmt.node {
+                        Stmt::Segment(segment) => {
+                            ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), stmt.span));
+                            body_start += 1;
+                        }
+                        _ => break,
+                    }
+                }
+
                 ops.push(Spanned::new(Op::Label(scope.clone()), item.span));
-                for stmt in &block.body {
+                for stmt in block.body.iter().skip(body_start) {
                     lower_stmt(
                         &stmt.node,
                         stmt.span,
@@ -81,6 +95,9 @@ fn lower_stmt(
     ops: &mut Vec<Spanned<Op>>,
 ) {
     match stmt {
+        Stmt::Segment(segment) => {
+            ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), span));
+        }
         Stmt::Label(label) => {
             if let Some(resolved) = resolve_symbol(&label.name, scope, span, diagnostics) {
                 ops.push(Spanned::new(Op::Label(resolved), span));
@@ -136,6 +153,9 @@ fn lower_stmt(
             Ok(mut lowered) => ops.append(&mut lowered),
             Err(mut errs) => diagnostics.append(&mut errs),
         },
+        Stmt::Address(address) => {
+            ops.push(Spanned::new(Op::Address(*address), span));
+        }
         Stmt::Var(_) | Stmt::Empty => {}
     }
 }

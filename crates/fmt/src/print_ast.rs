@@ -55,6 +55,7 @@ fn format_item(out: &mut String, item: &Item, indent: usize) {
 
 fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
     match stmt {
+        Stmt::Segment(segment) => line(out, indent, format!("segment {}", segment.name)),
         Stmt::Label(label) => line(out, indent, format!("{}:", label.name)),
         Stmt::Var(var) => line(out, indent, format_var(var)),
         Stmt::DataBlock(block) => {
@@ -64,6 +65,7 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             }
             line(out, indent, "}".to_string());
         }
+        Stmt::Address(value) => line(out, indent, format!("address {value}")),
         Stmt::Instruction(instr) => line(out, indent, format_instruction(instr)),
         Stmt::Call(call) => line(out, indent, format!("call {}", call.target)),
         Stmt::Bytes(values) => {

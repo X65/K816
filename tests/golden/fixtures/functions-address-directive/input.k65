@@ -1,0 +1,14 @@
+func func_a {
+  address $0010
+  nop
+}
+
+func func_b {
+  address $0020
+  nop
+}
+
+main {
+  call func_a
+  call func_b
+}

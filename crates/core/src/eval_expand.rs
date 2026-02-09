@@ -64,6 +64,7 @@ fn expand_stmt(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Stmt {
     match stmt {
+        Stmt::Segment(segment) => Stmt::Segment(segment.clone()),
         Stmt::Var(var) => Stmt::Var(expand_var(var, span, source_id, diagnostics)),
         Stmt::Instruction(instruction) => Stmt::Instruction(expand_instruction(
             instruction,
@@ -79,6 +80,7 @@ fn expand_stmt(
             Stmt::Bytes(expanded)
         }
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
+        Stmt::Address(value) => Stmt::Address(*value),
         Stmt::Label(label) => Stmt::Label(label.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
         Stmt::Empty => Stmt::Empty,

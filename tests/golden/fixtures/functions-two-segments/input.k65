@@ -1,0 +1,11 @@
+segment code_a
+
+func func_a {
+  nop
+}
+
+segment code_b
+
+func func_b {
+  nop
+}

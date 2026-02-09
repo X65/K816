@@ -44,9 +44,11 @@ pub struct CodeBlock {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    Segment(SegmentDecl),
     Label(LabelDecl),
     Var(VarDecl),
     DataBlock(DataBlock),
+    Address(u32),
     Instruction(Instruction),
     Call(CallStmt),
     Bytes(Vec<Expr>),

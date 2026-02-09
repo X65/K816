@@ -1,0 +1,17 @@
+segment fixed_lo
+
+far func fixed_lo_fn {
+  nop
+}
+
+far func fixed_hi_fn {
+  segment fixed_hi
+  nop
+}
+
+segment default
+
+main {
+  call fixed_lo_fn
+  call fixed_hi_fn
+}

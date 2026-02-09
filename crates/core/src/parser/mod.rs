@@ -342,11 +342,24 @@ fn stmt_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
+    let segment_stmt = just(TokenKind::Segment)
+        .or(just(TokenKind::Bank))
+        .ignore_then(ident_parser())
+        .map(|name| Stmt::Segment(SegmentDecl { name }));
+
     let var_stmt = var_decl_parser(source_id).map(Stmt::Var);
 
     let data_stmt = just(TokenKind::Data)
         .ignore_then(data_block_parser(source_id))
         .map(Stmt::DataBlock);
+
+    let address_stmt = just(TokenKind::Address)
+        .ignore_then(number_parser())
+        .try_map(|value, span| {
+            u32::try_from(value)
+                .map(Stmt::Address)
+                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+        });
 
     let call_stmt = just(TokenKind::Call)
         .ignore_then(ident_parser())
@@ -401,8 +414,10 @@ where
         .then(operand)
         .map(|(mnemonic, operand)| Stmt::Instruction(Instruction { mnemonic, operand }));
 
-    var_stmt
+    segment_stmt
+        .or(var_stmt)
         .or(data_stmt)
+        .or(address_stmt)
         .or(call_stmt)
         .or(label_stmt)
         .or(byte_stmt)
@@ -657,6 +672,35 @@ mod tests {
             args,
             &vec![DataArg::Str("tiles".to_string()), DataArg::Int(3)]
         );
+    }
+
+    #[test]
+    fn parses_address_statement_inside_code_block() {
+        let source = "func f {\n address $4000\n nop\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 2);
+        assert!(matches!(block.body[0].node, Stmt::Address(0x4000)));
+    }
+
+    #[test]
+    fn parses_segment_statement_inside_code_block() {
+        let source = "func f {\n segment fixed_hi\n nop\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 2);
+        let Stmt::Segment(segment) = &block.body[0].node else {
+            panic!("expected segment statement");
+        };
+        assert_eq!(segment.name, "fixed_hi");
     }
 
     #[test]

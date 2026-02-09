@@ -13,6 +13,26 @@
   ],
   segments: [
     (
+      name: "FIXED_LO",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(16),
+      offset: None,
+      optional: false,
+      segment: Some("fixed_lo"),
+    ),
+    (
+      name: "FIXED_HI",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(32),
+      offset: None,
+      optional: false,
+      segment: Some("fixed_hi"),
+    ),
+    (
       name: "DEFAULT",
       load: "MAIN",
       run: None,

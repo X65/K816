@@ -1,0 +1,7 @@
+var ready = $1234
+
+main {
+  {
+    a=ready
+  } n-?
+}

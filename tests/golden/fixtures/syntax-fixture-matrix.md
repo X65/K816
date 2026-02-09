@@ -15,6 +15,8 @@ Key focus areas:
 Primary operator-coverage fixture:
 
 - `syntax-one-letter-operators-legacy`
+- `syntax-wait-loop-bit`
+- `syntax-wait-loop-lda`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.
 

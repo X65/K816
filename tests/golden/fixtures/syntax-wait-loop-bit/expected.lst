@@ -1,0 +1,8 @@
+[default]
+000000: 2C 34 12 10 FB 60
+
+
+[disasm obj#0 default::main]
+000000: 2C 34 12    bit $1234
+000003: 10 FB       bpl $000000
+000005: 60          rts

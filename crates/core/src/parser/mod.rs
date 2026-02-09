@@ -895,6 +895,7 @@ where
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
     let hla_do_close_suffix = hla_condition_parser()
         .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
+        .or(hla_legacy_n_flag_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
         .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
         .or(
             chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
@@ -1660,6 +1661,22 @@ where
         .or(just(TokenKind::Gt).to(HlaCompareOp::Gt))
 }
 
+fn hla_legacy_n_flag_op_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, HlaCompareOp, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("n") => () }
+        .ignore_then(
+            just(TokenKind::Minus)
+                .then_ignore(just(TokenKind::Question))
+                .to(HlaCompareOp::Ge)
+                .or(just(TokenKind::Plus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to(HlaCompareOp::Lt)),
+        )
+}
+
 fn hla_condition_seed_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
@@ -2202,6 +2219,24 @@ mod tests {
         assert!(matches!(
             block.body[6].node,
             Stmt::Hla(HlaStmt::StoreFromA { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_hla_do_close_with_legacy_n_flag_suffix() {
+        let source = "main {\n  {\n    a=READY\n  } n-?\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+
+        assert!(matches!(block.body[0].node, Stmt::Hla(HlaStmt::DoOpen)));
+        assert!(matches!(block.body[1].node, Stmt::Instruction(_)));
+        assert!(matches!(
+            block.body[2].node,
+            Stmt::Hla(HlaStmt::DoCloseWithOp {
+                op: HlaCompareOp::Ge
+            })
         ));
     }
 

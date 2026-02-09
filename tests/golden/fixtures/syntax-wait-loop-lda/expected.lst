@@ -1,0 +1,9 @@
+[default]
+000000: AD 34 12 C9 00 10 F9 60
+
+
+[disasm obj#0 default::main]
+000000: AD 34 12    lda $1234
+000003: C9 00       cmp #$00
+000005: 10 F9       bpl $000000
+000007: 60          rts

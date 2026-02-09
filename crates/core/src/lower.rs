@@ -372,15 +372,15 @@ fn lower_hla_stmt(
             };
             ops.push(Spanned::new(Op::Label(wait_label.clone()), span));
 
-            let load_instruction = Instruction {
-                mnemonic: "lda".to_string(),
+            let bit_instruction = Instruction {
+                mnemonic: "bit".to_string(),
                 operand: Some(Operand::Value {
                     expr: Expr::Ident(symbol.clone()),
                     force_far: false,
                     index: None,
                 }),
             };
-            if !lower_instruction_and_push(&load_instruction, scope, sema, span, diagnostics, ops) {
+            if !lower_instruction_and_push(&bit_instruction, scope, sema, span, diagnostics, ops) {
                 return;
             }
 
@@ -796,7 +796,7 @@ fn resolve_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::OperandOp;
+    use crate::hir::{AddressValue, OperandOp};
     use crate::parser::parse;
     use crate::sema::analyze;
     use crate::span::SourceId;
@@ -915,5 +915,46 @@ mod tests {
 
         assert!(align_index < label_index);
         assert!(label_index < emit_index);
+    }
+
+    #[test]
+    fn lowers_wait_loop_legacy_bit_pattern_to_bit_and_bpl() {
+        let source = "var ready = 0x1234\nmain {\n  { a&?ready } n-?\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(mnemonics.windows(2).any(|pair| pair == ["bit", "bpl"]));
+        assert!(!mnemonics.contains(&"lda"));
+
+        let bit_operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "bit" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("bit operand");
+
+        assert!(matches!(
+            bit_operand,
+            OperandOp::Address {
+                value: AddressValue::Literal(0x1234),
+                force_far: false,
+                index_x: false
+            }
+        ));
     }
 }

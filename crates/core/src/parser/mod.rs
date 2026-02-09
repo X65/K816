@@ -1,6 +1,6 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, SegmentDecl,
-    Instruction, Item, LabelDecl, Operand, Stmt, VarDecl,
+    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, Instruction, Item,
+    LabelDecl, Operand, SegmentDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -188,17 +188,18 @@ where
         .then(body)
         .map(
             move |((name, name_span), body): ((String, SimpleSpan), Vec<Spanned<Stmt>>)| {
-            let range = name_span.into_range();
-            CodeBlock {
-                name,
-                name_span: Some(Span::new(source_id, range.start, range.end)),
-                kind: BlockKind::Func,
-                is_far: false,
-                is_naked: false,
-                is_inline: false,
-                body,
-            }
-        });
+                let range = name_span.into_range();
+                CodeBlock {
+                    name,
+                    name_span: Some(Span::new(source_id, range.start, range.end)),
+                    kind: BlockKind::Func,
+                    is_far: false,
+                    is_naked: false,
+                    is_inline: false,
+                    body,
+                }
+            },
+        );
 
     modifiers
         .then(main.or(func))

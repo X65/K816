@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::{env, io::IsTerminal};
 
 use clap::{CommandFactory, Parser, Subcommand};
 
@@ -105,9 +106,33 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
     }
 
     let source = std::fs::read_to_string(input_path)?;
-    let output = k816_core::compile_source_to_object(&input_path.display().to_string(), &source)
-        .map_err(|error| anyhow::anyhow!(error.rendered))?;
+    let output = k816_core::compile_source_to_object_with_options(
+        &input_path.display().to_string(),
+        &source,
+        k816_core::CompileRenderOptions {
+            color: stderr_supports_color(),
+        },
+    )
+    .map_err(|error| anyhow::anyhow!(error.rendered))?;
     Ok(output.object)
+}
+
+fn stderr_supports_color() -> bool {
+    if env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+
+    if let Some(force) = env::var_os("CLICOLOR_FORCE") {
+        return force != "0";
+    }
+
+    if let Some(choice) = env::var_os("CLICOLOR") {
+        if choice == "0" {
+            return false;
+        }
+    }
+
+    std::io::stderr().is_terminal()
 }
 
 fn default_object_path_for_input(input_path: &Path) -> PathBuf {
@@ -170,7 +195,8 @@ fn write_link_output(
             let path = if keep_config_names {
                 base.parent.join(format!("{}.{}", base.stem, name))
             } else {
-                base.parent.join(format!("{}.{}", base.stem, sanitize_filename(name)))
+                base.parent
+                    .join(format!("{}.{}", base.stem, sanitize_filename(name)))
             };
             std::fs::write(path, bytes)?;
         }
@@ -213,7 +239,13 @@ fn link_command(args: LinkArgs) -> anyhow::Result<()> {
     } else {
         k816_link::default_stub_config()
     };
-    let linked = k816_link::link_objects(&objects, &config)?;
+    let linked = k816_link::link_objects_with_options(
+        &objects,
+        &config,
+        k816_link::LinkRenderOptions {
+            color: stderr_supports_color(),
+        },
+    )?;
 
     let base = args
         .output
@@ -225,7 +257,13 @@ fn link_command(args: LinkArgs) -> anyhow::Result<()> {
 fn build_command(input_path: PathBuf) -> anyhow::Result<()> {
     let object = compile_source_file(&input_path)?;
     let config = k816_link::default_stub_config();
-    let linked = k816_link::link_objects(&[object], &config)?;
+    let linked = k816_link::link_objects_with_options(
+        &[object],
+        &config,
+        k816_link::LinkRenderOptions {
+            color: stderr_supports_color(),
+        },
+    )?;
     let base = output_base_from_input(&input_path);
     write_link_output(&base, &linked, false)
 }

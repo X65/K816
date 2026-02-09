@@ -133,11 +133,38 @@ fn plain_severity_name(severity: Severity) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderOptions {
+    pub color: bool,
+}
+
+impl RenderOptions {
+    pub const fn plain() -> Self {
+        Self { color: false }
+    }
+
+    pub const fn colored() -> Self {
+        Self { color: true }
+    }
+}
+
 pub fn render_diagnostic(source_map: &SourceMap, diagnostic: &Diagnostic) -> String {
+    render_diagnostic_with_options(source_map, diagnostic, RenderOptions::plain())
+}
+
+pub fn render_diagnostic_with_options(
+    source_map: &SourceMap,
+    diagnostic: &Diagnostic,
+    options: RenderOptions,
+) -> String {
     let primary_file = source_map.must_get(diagnostic.primary.source_id);
     let primary_span = (diagnostic.primary.source_id, diagnostic.primary.as_range());
     let mut report = Report::build(report_kind(diagnostic.severity), primary_span.clone())
-        .with_config(Config::default().with_index_type(IndexType::Byte))
+        .with_config(
+            Config::default()
+                .with_index_type(IndexType::Byte)
+                .with_color(options.color),
+        )
         .with_message(diagnostic.message.clone())
         .with_label(
             Label::new(primary_span)
@@ -189,9 +216,17 @@ pub fn render_diagnostic(source_map: &SourceMap, diagnostic: &Diagnostic) -> Str
 }
 
 pub fn render_diagnostics(source_map: &SourceMap, diagnostics: &[Diagnostic]) -> String {
+    render_diagnostics_with_options(source_map, diagnostics, RenderOptions::plain())
+}
+
+pub fn render_diagnostics_with_options(
+    source_map: &SourceMap,
+    diagnostics: &[Diagnostic],
+    options: RenderOptions,
+) -> String {
     diagnostics
         .iter()
-        .map(|diag| render_diagnostic(source_map, diag))
+        .map(|diag| render_diagnostic_with_options(source_map, diag, options))
         .collect::<Vec<_>>()
         .join("\n")
 }

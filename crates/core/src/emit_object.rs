@@ -57,12 +57,14 @@ pub fn emit_object(
         match &op.node {
             Op::SelectSegment(name) => {
                 current_segment = name.clone();
-                segments.entry(current_segment.clone()).or_insert(SegmentState {
-                    chunks: Vec::new(),
-                    section_offset: 0,
-                    fixed_cursor: None,
-                    nocross_boundary: None,
-                });
+                segments
+                    .entry(current_segment.clone())
+                    .or_insert(SegmentState {
+                        chunks: Vec::new(),
+                        section_offset: 0,
+                        fixed_cursor: None,
+                        nocross_boundary: None,
+                    });
             }
             Op::Label(name) => {
                 let segment = segments
@@ -549,12 +551,20 @@ mod tests {
         assert_eq!(symbols.len(), 2);
         assert_eq!(symbols[0].name, "func_a");
         assert_eq!(
-            symbols[0].definition.as_ref().expect("func_a definition").offset,
+            symbols[0]
+                .definition
+                .as_ref()
+                .expect("func_a definition")
+                .offset,
             0
         );
         assert_eq!(symbols[1].name, "func_b");
         assert_eq!(
-            symbols[1].definition.as_ref().expect("func_b definition").offset,
+            symbols[1]
+                .definition
+                .as_ref()
+                .expect("func_b definition")
+                .offset,
             2
         );
     }

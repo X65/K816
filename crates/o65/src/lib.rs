@@ -162,7 +162,11 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
         for _ in 0..chunk_count {
             let offset = rd.read_u32()?;
             let has_address = rd.read_u8()? != 0;
-            let address = if has_address { Some(rd.read_u32()?) } else { None };
+            let address = if has_address {
+                Some(rd.read_u32()?)
+            } else {
+                None
+            };
             let bytes = rd.read_bytes()?;
             chunks.push(SectionChunk {
                 offset,
@@ -251,10 +255,13 @@ fn validate_object(object: &O65Object) -> Result<()> {
             continue;
         };
 
-        let section = object
-            .sections
-            .get(&definition.section)
-            .ok_or_else(|| anyhow::anyhow!("symbol '{}' references unknown section '{}'", symbol.name, definition.section))?;
+        let section = object.sections.get(&definition.section).ok_or_else(|| {
+            anyhow::anyhow!(
+                "symbol '{}' references unknown section '{}'",
+                symbol.name,
+                definition.section
+            )
+        })?;
 
         if !section_contains_point(section, definition.offset)? {
             bail!(
@@ -271,15 +278,16 @@ fn validate_object(object: &O65Object) -> Result<()> {
             bail!("relocation in section '{}' has zero width", reloc.section);
         }
 
-        let section = object
-            .sections
-            .get(&reloc.section)
-            .ok_or_else(|| anyhow::anyhow!("relocation references unknown section '{}'", reloc.section))?;
+        let section = object.sections.get(&reloc.section).ok_or_else(|| {
+            anyhow::anyhow!("relocation references unknown section '{}'", reloc.section)
+        })?;
 
         let end = reloc
             .offset
             .checked_add(u32::from(reloc.width))
-            .ok_or_else(|| anyhow::anyhow!("relocation range overflow in section '{}'", reloc.section))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("relocation range overflow in section '{}'", reloc.section)
+            })?;
 
         if !section_contains_range(section, reloc.offset, end)? {
             bail!(
@@ -307,12 +315,15 @@ fn validate_section(section_name: &str, section: &Section) -> Result<()> {
             );
         }
 
-        let len = u32::try_from(chunk.bytes.len())
-            .context("section chunk length does not fit in u32")?;
-        let chunk_end = chunk
-            .offset
-            .checked_add(len)
-            .ok_or_else(|| anyhow::anyhow!("section '{}' chunk {} range overflows u32", section_name, index))?;
+        let len =
+            u32::try_from(chunk.bytes.len()).context("section chunk length does not fit in u32")?;
+        let chunk_end = chunk.offset.checked_add(len).ok_or_else(|| {
+            anyhow::anyhow!(
+                "section '{}' chunk {} range overflows u32",
+                section_name,
+                index
+            )
+        })?;
 
         if let Some(prev_end) = prev_end {
             if chunk.offset < prev_end {
@@ -334,7 +345,10 @@ fn section_contains_point(section: &Section, point: u32) -> Result<bool> {
     for chunk in &section.chunks {
         let end = chunk
             .offset
-            .checked_add(u32::try_from(chunk.bytes.len()).context("section chunk length does not fit in u32")?)
+            .checked_add(
+                u32::try_from(chunk.bytes.len())
+                    .context("section chunk length does not fit in u32")?,
+            )
             .ok_or_else(|| anyhow::anyhow!("section chunk range overflow"))?;
 
         if point >= chunk.offset && point <= end {
@@ -348,7 +362,10 @@ fn section_contains_range(section: &Section, start: u32, end: u32) -> Result<boo
     for chunk in &section.chunks {
         let chunk_end = chunk
             .offset
-            .checked_add(u32::try_from(chunk.bytes.len()).context("section chunk length does not fit in u32")?)
+            .checked_add(
+                u32::try_from(chunk.bytes.len())
+                    .context("section chunk length does not fit in u32")?,
+            )
             .ok_or_else(|| anyhow::anyhow!("section chunk range overflow"))?;
 
         if start >= chunk.offset && end <= chunk_end {
@@ -479,7 +496,10 @@ mod tests {
         let bytes = encode_object(&object).expect("encode");
         let decoded = decode_object(&bytes).expect("decode");
         assert_eq!(decoded.sections["default"].chunks.len(), 1);
-        assert_eq!(decoded.sections["default"].chunks[0].bytes, vec![0xEA, 0x00, 0x00]);
+        assert_eq!(
+            decoded.sections["default"].chunks[0].bytes,
+            vec![0xEA, 0x00, 0x00]
+        );
         assert_eq!(decoded.symbols.len(), 1);
         assert_eq!(decoded.relocations.len(), 1);
         assert_eq!(decoded.listing, object.listing);

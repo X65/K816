@@ -18,7 +18,10 @@ pub fn lower(
     for item in &file.items {
         match &item.node {
             Item::Segment(segment) => {
-                ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), item.span));
+                ops.push(Spanned::new(
+                    Op::SelectSegment(segment.name.clone()),
+                    item.span,
+                ));
             }
             Item::DataBlock(block) => match lower_data_block(block, fs) {
                 Ok(mut lowered) => ops.append(&mut lowered),
@@ -34,7 +37,10 @@ pub fn lower(
                     let stmt = &block.body[body_start];
                     match &stmt.node {
                         Stmt::Segment(segment) => {
-                            ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), stmt.span));
+                            ops.push(Spanned::new(
+                                Op::SelectSegment(segment.name.clone()),
+                                stmt.span,
+                            ));
                             body_start += 1;
                         }
                         _ => break,

@@ -36,9 +36,9 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
     segments
         .entry(current_segment.clone())
         .or_insert(SegmentState {
-        bytes: Vec::new(),
-        nocross_boundary: None,
-    });
+            bytes: Vec::new(),
+            nocross_boundary: None,
+        });
 
     for op in &program.ops {
         match &op.node {
@@ -47,9 +47,9 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 segments
                     .entry(current_segment.clone())
                     .or_insert(SegmentState {
-                    bytes: Vec::new(),
-                    nocross_boundary: None,
-                });
+                        bytes: Vec::new(),
+                        nocross_boundary: None,
+                    });
             }
             Op::Label(name) => {
                 let segment = segments

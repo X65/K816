@@ -97,6 +97,21 @@ pub struct LinkOutput {
     pub listing: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkRenderOptions {
+    pub color: bool,
+}
+
+impl LinkRenderOptions {
+    pub const fn plain() -> Self {
+        Self { color: false }
+    }
+
+    pub const fn colored() -> Self {
+        Self { color: true }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct MemoryState {
     spec: MemoryArea,
@@ -180,6 +195,14 @@ pub fn default_stub_config() -> LinkerConfig {
 }
 
 pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<LinkOutput> {
+    link_objects_with_options(objects, config, LinkRenderOptions::plain())
+}
+
+pub fn link_objects_with_options(
+    objects: &[O65Object],
+    config: &LinkerConfig,
+    options: LinkRenderOptions,
+) -> Result<LinkOutput> {
     if config.memory.is_empty() {
         bail!("linker config must contain at least one memory area");
     }
@@ -239,7 +262,9 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
     }
 
     for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_some()) {
-        let base = chunk.fixed_addr.expect("filtered fixed chunk must have address");
+        let base = chunk
+            .fixed_addr
+            .expect("filtered fixed chunk must have address");
         place_chunk(
             chunk,
             base,
@@ -247,6 +272,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             &mut memory_map,
             &mut placed_by_section,
             true,
+            options,
         )?;
     }
 
@@ -259,6 +285,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             &mut memory_map,
             &mut placed_by_section,
             false,
+            options,
         )?;
     }
 
@@ -322,10 +349,7 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
         for reloc in &object.relocations {
             let section_key = (obj_idx, reloc.section.clone());
             let placements = placed_by_section.get(&section_key).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "relocation references unknown section '{}'",
-                    reloc.section
-                )
+                anyhow::anyhow!("relocation references unknown section '{}'", reloc.section)
             })?;
 
             let (site_memory_name, site_addr) =
@@ -355,7 +379,10 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             }
 
             let mem = memory_map.get_mut(site_memory_name).ok_or_else(|| {
-                anyhow::anyhow!("internal linker error: memory '{}' missing", site_memory_name)
+                anyhow::anyhow!(
+                    "internal linker error: memory '{}' missing",
+                    site_memory_name
+                )
             })?;
 
             if site_addr < mem.spec.start {
@@ -392,9 +419,9 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
 
     let mut binaries = IndexMap::new();
     for mem in &config.memory {
-        let state = memory_map
-            .get(&mem.name)
-            .ok_or_else(|| anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name))?;
+        let state = memory_map.get(&mem.name).ok_or_else(|| {
+            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
+        })?;
 
         let out_name = mem
             .out_file
@@ -428,7 +455,10 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
     })
 }
 
-fn choose_reloc_base(chunk: &PlannedChunk, memory_map: &mut HashMap<String, MemoryState>) -> Result<u32> {
+fn choose_reloc_base(
+    chunk: &PlannedChunk,
+    memory_map: &mut HashMap<String, MemoryState>,
+) -> Result<u32> {
     let mem = memory_map
         .get_mut(&chunk.memory_name)
         .ok_or_else(|| anyhow::anyhow!("unknown memory area '{}'", chunk.memory_name))?;
@@ -442,9 +472,9 @@ fn choose_reloc_base(chunk: &PlannedChunk, memory_map: &mut HashMap<String, Memo
     base = align_up(base, chunk.align);
 
     if let Some(offset) = chunk.offset {
-        base = base
-            .checked_add(offset)
-            .ok_or_else(|| anyhow::anyhow!("segment placement overflow in memory '{}'", mem.spec.name))?;
+        base = base.checked_add(offset).ok_or_else(|| {
+            anyhow::anyhow!("segment placement overflow in memory '{}'", mem.spec.name)
+        })?;
     }
 
     if chunk.start.is_some() {
@@ -507,13 +537,16 @@ fn place_chunk(
     memory_map: &mut HashMap<String, MemoryState>,
     placed_by_section: &mut HashMap<(usize, String), Vec<PlacedChunk>>,
     fixed: bool,
+    options: LinkRenderOptions,
 ) -> Result<()> {
     let anchor = find_anchor_context(objects, chunk);
 
     let section = objects
         .get(chunk.obj_idx)
         .and_then(|object| object.sections.get(&chunk.segment))
-        .ok_or_else(|| anyhow::anyhow!("internal linker error: missing section '{}'", chunk.segment))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("internal linker error: missing section '{}'", chunk.segment)
+        })?;
     let source_chunk = section.chunks.get(chunk.chunk_idx).ok_or_else(|| {
         anyhow::anyhow!(
             "internal linker error: missing chunk {} in section '{}'",
@@ -540,14 +573,12 @@ fn place_chunk(
         let kind = if fixed { "fixed" } else { "relocatable" };
         let detail = format!(
             "{kind} chunk for segment '{}' at {:#X}..{:#X} is outside memory '{}' ({:#X}..{:#X})",
-            chunk.segment,
-            base,
-            end,
-            mem.spec.name,
-            mem.spec.start,
-            mem_end
+            chunk.segment, base, end, mem.spec.name, mem.spec.start, mem_end
         );
-        bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+        bail!(
+            "{}",
+            decorate_with_anchor(&detail, anchor.as_ref(), options)
+        );
     }
 
     let rel_start = (base - mem.spec.start) as usize;
@@ -558,12 +589,12 @@ fn place_chunk(
     if rel_end > mem.bytes.len() {
         let detail = format!(
             "segment '{}' chunk placement exceeds memory '{}': start={:#X}, len={:#X}",
-            chunk.segment,
-            mem.spec.name,
-            base,
-            chunk.len
+            chunk.segment, mem.spec.name, base, chunk.len
         );
-        bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+        bail!(
+            "{}",
+            decorate_with_anchor(&detail, anchor.as_ref(), options)
+        );
     }
 
     if let Some(conflict) = mem.used[rel_start..rel_end].iter().position(|used| *used) {
@@ -571,24 +602,22 @@ fn place_chunk(
         if fixed {
             let detail = format!(
                 "fixed chunk for segment '{}' at {:#X}..{:#X} overlaps existing placement near {:#X} in memory '{}'",
-                chunk.segment,
-                base,
-                end,
-                overlap_addr,
-                mem.spec.name
+                chunk.segment, base, end, overlap_addr, mem.spec.name
             );
-            bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+            bail!(
+                "{}",
+                decorate_with_anchor(&detail, anchor.as_ref(), options)
+            );
         }
 
         let detail = format!(
             "relocatable chunk for segment '{}' cannot be placed at {:#X}..{:#X}; overlap near {:#X} in memory '{}'",
-            chunk.segment,
-            base,
-            end,
-            overlap_addr,
-            mem.spec.name
+            chunk.segment, base, end, overlap_addr, mem.spec.name
         );
-        bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+        bail!(
+            "{}",
+            decorate_with_anchor(&detail, anchor.as_ref(), options)
+        );
     }
 
     mem.bytes[rel_start..rel_end].copy_from_slice(&source_chunk.bytes);
@@ -639,7 +668,11 @@ fn find_anchor_context(objects: &[O65Object], chunk: &PlannedChunk) -> Option<An
     })
 }
 
-fn decorate_with_anchor(message: &str, anchor: Option<&AnchorContext>) -> String {
+fn decorate_with_anchor(
+    message: &str,
+    anchor: Option<&AnchorContext>,
+    options: LinkRenderOptions,
+) -> String {
     let Some(anchor) = anchor else {
         return message.to_string();
     };
@@ -648,7 +681,7 @@ fn decorate_with_anchor(message: &str, anchor: Option<&AnchorContext>) -> String
         return format!("{message}\nfunction '{}'", anchor.symbol_name);
     };
 
-    let context = render_anchor_context(message, anchor, source);
+    let context = render_anchor_context(message, anchor, source, options);
     if context.is_empty() {
         format!(
             "{message}\nfunction '{}' at {}:{}:{}",
@@ -659,7 +692,12 @@ fn decorate_with_anchor(message: &str, anchor: Option<&AnchorContext>) -> String
     }
 }
 
-fn render_anchor_context(message: &str, anchor: &AnchorContext, source: &SourceLocation) -> String {
+fn render_anchor_context(
+    message: &str,
+    anchor: &AnchorContext,
+    source: &SourceLocation,
+    options: LinkRenderOptions,
+) -> String {
     let file_id = source.file.clone();
     let line_len = source.line_text.len();
     let mut start = source.column.saturating_sub(1) as usize;
@@ -687,7 +725,7 @@ fn render_anchor_context(message: &str, anchor: &AnchorContext, source: &SourceL
         .with_config(
             Config::default()
                 .with_index_type(IndexType::Byte)
-                .with_color(false),
+                .with_color(options.color),
         )
         .with_message(message.to_string())
         .with_label(
@@ -793,9 +831,12 @@ fn format_section_listing(
     out.push_str(&format!("[{segment}]\n"));
 
     for chunk in chunks {
-        let mem = memory_map
-            .get(&chunk.memory_name)
-            .ok_or_else(|| anyhow::anyhow!("internal linker error: memory '{}' missing", chunk.memory_name))?;
+        let mem = memory_map.get(&chunk.memory_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "internal linker error: memory '{}' missing",
+                chunk.memory_name
+            )
+        })?;
 
         let rel_start = (chunk.base_addr - mem.spec.start) as usize;
         let rel_end = rel_start + chunk.len as usize;
@@ -863,8 +904,7 @@ fn write_value(slot: &mut [u8], value: u32, width: u8) -> Result<()> {
             slot[0] = v;
         }
         2 => {
-            let v =
-                u16::try_from(value).context("absolute relocation does not fit in 16 bits")?;
+            let v = u16::try_from(value).context("absolute relocation does not fit in 16 bits")?;
             slot.copy_from_slice(&v.to_le_bytes());
         }
         3 => {
@@ -1016,7 +1056,8 @@ mod tests {
             listing: String::new(),
         };
 
-        let err = link_objects(&[object], &default_stub_config()).expect_err("expected range error");
+        let err =
+            link_objects(&[object], &default_stub_config()).expect_err("expected range error");
         assert!(err.to_string().contains("outside memory"));
     }
 

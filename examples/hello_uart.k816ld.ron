@@ -1,0 +1,34 @@
+(
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 2,
+      kind: ReadWrite,
+      fill: Some(0),
+      out_file: Some("expected.bin"),
+    ),
+  ],
+  segments: [
+    (
+      name: "DEFAULT",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+    (
+      name: "INFO",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: 0xFC00,
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+)

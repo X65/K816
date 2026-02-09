@@ -49,6 +49,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+indexmap.workspace = true
 k816-core = { path = "crates/core" }
 
 [dev-dependencies]

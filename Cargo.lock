@@ -422,6 +422,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "indexmap",
  "k816-core",
  "predicates",
 ]

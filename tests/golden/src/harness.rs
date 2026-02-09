@@ -7,6 +7,52 @@ struct PipelineOutput {
     warnings: String,
 }
 
+#[derive(Clone, Copy)]
+enum ExpectedBinary {
+    Bin,
+    Xex,
+}
+
+impl ExpectedBinary {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bin => "expected.bin",
+            Self::Xex => "expected.xex",
+        }
+    }
+
+    fn kind(self) -> k816_link::OutputKind {
+        match self {
+            Self::Bin => k816_link::OutputKind::RawBinary,
+            Self::Xex => k816_link::OutputKind::Xex,
+        }
+    }
+
+    fn path(self, fixture_dir: &Path) -> std::path::PathBuf {
+        fixture_dir.join(self.label())
+    }
+}
+
+fn detect_expected_binary(fixture_dir: &Path) -> Result<Option<ExpectedBinary>> {
+    let has_bin = fixture_dir.join("expected.bin").exists();
+    let has_xex = fixture_dir.join("expected.xex").exists();
+
+    if has_bin && has_xex {
+        return Err(anyhow!(
+            "fixture '{}' must not contain both expected.bin and expected.xex",
+            fixture_dir.display()
+        ));
+    }
+
+    Ok(if has_xex {
+        Some(ExpectedBinary::Xex)
+    } else if has_bin {
+        Some(ExpectedBinary::Bin)
+    } else {
+        None
+    })
+}
+
 pub fn run_case(case: &str) -> Result<()> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let (fixture_dir, input_path, source_name) = resolve_paths(manifest_dir, case)?;
@@ -14,18 +60,26 @@ pub fn run_case(case: &str) -> Result<()> {
     let source = std::fs::read_to_string(&input_path)
         .with_context(|| format!("failed to read fixture input '{}'", input_path.display()))?;
 
+    let expected_binary = detect_expected_binary(&fixture_dir)?;
     let expected_error_path = fixture_dir.join("expected.err");
-    let expected_bin_path = fixture_dir.join("expected.bin");
+    let expected_listing_path = fixture_dir.join("expected.lst");
     if expected_error_path.exists() {
         let expected_error = read_non_empty_text(&expected_error_path, "expected.err")?;
 
-        let pipeline_result = compile_and_link(&fixture_dir, &input_path, &source_name, &source);
+        let pipeline_result = compile_and_link(
+            &fixture_dir,
+            &input_path,
+            &source_name,
+            &source,
+            expected_binary.map(ExpectedBinary::kind),
+        );
 
-        if expected_bin_path.exists() {
+        if let Some(expected_binary) = expected_binary {
             if contains_error_marker(&expected_error) {
                 return Err(anyhow!(
-                    "fixture '{}' has both expected.bin and expected.err, but expected.err must contain warnings only (no error diagnostics)",
-                    fixture_dir.display()
+                    "fixture '{}' has both {} and expected.err, but expected.err must contain warnings only (no error diagnostics)",
+                    fixture_dir.display(),
+                    expected_binary.label()
                 ));
             }
 
@@ -41,7 +95,7 @@ pub fn run_case(case: &str) -> Result<()> {
             if !pipeline.warnings.trim().is_empty() {
                 println!("{}", pipeline.warnings.trim_end());
             }
-            compare_binaries(&fixture_dir, &pipeline.linked.bytes)?;
+            compare_binary_output(&fixture_dir, expected_binary, &pipeline.linked)?;
             compare_listing(&fixture_dir, &pipeline.linked.listing)?;
             return Ok(());
         }
@@ -56,12 +110,32 @@ pub fn run_case(case: &str) -> Result<()> {
             Err(err) => err,
         };
 
+        if expected_listing_path.exists() {
+            return Err(anyhow!(
+                "fixture '{}' has '{}', but listing comparison is only supported for successful link outputs",
+                fixture_dir.display(),
+                expected_listing_path.display()
+            ));
+        }
+
         similar_asserts::assert_eq!(expected_error.trim_end(), err.to_string().trim_end());
         return Ok(());
     }
 
-    let pipeline = compile_and_link(&fixture_dir, &input_path, &source_name, &source)?;
-    compare_binaries(&fixture_dir, &pipeline.linked.bytes)?;
+    let Some(expected_binary) = expected_binary else {
+        return Err(anyhow!(
+            "fixture '{}' must provide either expected.bin or expected.xex",
+            fixture_dir.display()
+        ));
+    };
+    let pipeline = compile_and_link(
+        &fixture_dir,
+        &input_path,
+        &source_name,
+        &source,
+        Some(expected_binary.kind()),
+    )?;
+    compare_binary_output(&fixture_dir, expected_binary, &pipeline.linked)?;
     compare_listing(&fixture_dir, &pipeline.linked.listing)?;
     Ok(())
 }
@@ -103,6 +177,7 @@ fn compile_and_link(
     input_path: &Path,
     source_name: &str,
     source: &str,
+    expected_output_kind: Option<k816_link::OutputKind>,
 ) -> Result<PipelineOutput> {
     let compiled = k816_core::compile_source_to_object(source_name, source)
         .map_err(|error| anyhow!("{}", error.rendered))?;
@@ -117,20 +192,37 @@ fn compile_and_link(
     } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.k816ld.ron")
     };
-    let config = k816_link::load_config(&config_path)?;
+    let mut config = k816_link::load_config(&config_path)?;
+    if let Some(kind) = expected_output_kind {
+        config.output.kind = kind;
+    }
     let linked = k816_link::link_objects(&[compiled.object], &config)?;
     Ok(PipelineOutput { linked, warnings })
 }
 
-fn compare_binaries(fixture_dir: &Path, bytes: &[u8]) -> Result<()> {
-    let expected_path = fixture_dir.join("expected.bin");
-    let expected = read_non_empty_bytes(&expected_path, "expected.bin")?;
-    if bytes != expected {
+fn compare_binary_output(
+    fixture_dir: &Path,
+    expected_binary: ExpectedBinary,
+    linked: &k816_link::LinkOutput,
+) -> Result<()> {
+    if linked.kind != expected_binary.kind() {
         return Err(anyhow!(
-            "binary mismatch in fixture '{}': expected {} bytes, got {} bytes",
+            "linked output kind mismatch in fixture '{}': expected {:?}, got {:?}",
+            fixture_dir.display(),
+            expected_binary.kind(),
+            linked.kind
+        ));
+    }
+
+    let expected_path = expected_binary.path(fixture_dir);
+    let expected = read_non_empty_bytes(&expected_path, expected_binary.label())?;
+    if linked.bytes != expected {
+        return Err(anyhow!(
+            "{} mismatch in fixture '{}': expected {} bytes, got {} bytes",
+            expected_binary.label(),
             fixture_dir.display(),
             expected.len(),
-            bytes.len(),
+            linked.bytes.len(),
         ));
     }
     Ok(())

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{env, io::IsTerminal};
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -10,12 +10,25 @@ use clap::{CommandFactory, Parser, Subcommand};
     about = "High-level assembler for the WDC 65816",
     long_about = None,
     override_usage = "k816 [COMMAND] [INPUT]",
-    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.k816ld.ron\n  k816 --help"
+    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.k816ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.k816ld.ron\n  k816 --help"
 )]
 struct Cli {
     /// Optional explicit subcommand.
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Linker config file in RON format.
+    #[arg(short = 'T', long = "config", value_name = "CONFIG", global = true)]
+    config: Option<PathBuf>,
+
+    /// Output binary format override (`raw` or `xex`).
+    #[arg(
+        long = "output-format",
+        value_name = "FORMAT",
+        value_enum,
+        global = true
+    )]
+    output_format: Option<CliOutputFormat>,
 
     /// Input source file.
     #[arg(value_name = "INPUT")]
@@ -45,9 +58,6 @@ struct LinkArgs {
     /// Input object files (.o65).
     #[arg(value_name = "OBJECT_FILE", required = true)]
     objects: Vec<PathBuf>,
-    /// Linker config file in RON format.
-    #[arg(short = 'T', long = "config", value_name = "CONFIG")]
-    config: Option<PathBuf>,
     /// Output file path for the linked artifact.
     #[arg(short = 'o', long = "output", value_name = "OUTPUT_FILE")]
     output: Option<PathBuf>,
@@ -61,6 +71,21 @@ struct LinkArgs {
     listing: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliOutputFormat {
+    Raw,
+    Xex,
+}
+
+impl CliOutputFormat {
+    fn output_kind(self) -> k816_link::OutputKind {
+        match self {
+            Self::Raw => k816_link::OutputKind::RawBinary,
+            Self::Xex => k816_link::OutputKind::Xex,
+        }
+    }
+}
+
 const LISTING_AUTO_SENTINEL: &str = "__auto__";
 
 fn main() {
@@ -71,13 +96,18 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let Cli {
+        command,
+        config,
+        output_format,
+        input,
+    } = Cli::parse();
 
-    match cli.command {
+    match command {
         Some(Commands::Compile(args)) => compile_command(args),
-        Some(Commands::Link(args)) => link_command(args),
+        Some(Commands::Link(args)) => link_command(args, config, output_format),
         None => {
-            let Some(input_path) = cli.input else {
+            let Some(input_path) = input else {
                 print_banner();
                 println!();
                 let mut command = Cli::command();
@@ -85,7 +115,7 @@ fn run() -> anyhow::Result<()> {
                 println!();
                 return Ok(());
             };
-            build_command(input_path)
+            build_command(input_path, config, output_format)
         }
     }
 }
@@ -178,6 +208,45 @@ fn resolve_config_output_path(
     Some(base.join(file_path))
 }
 
+fn discover_adjacent_config_path(input_path: &Path) -> Option<PathBuf> {
+    let legacy = input_path.with_extension("k816ld.ron");
+    if legacy.exists() {
+        return Some(legacy);
+    }
+
+    let short = input_path.with_extension("k816.ron");
+    if short.exists() {
+        return Some(short);
+    }
+
+    None
+}
+
+fn output_kind_from_extension(path: &Path) -> Option<k816_link::OutputKind> {
+    let ext = path.extension()?.to_str()?;
+    if ext.eq_ignore_ascii_case("bin") {
+        return Some(k816_link::OutputKind::RawBinary);
+    }
+    if ext.eq_ignore_ascii_case("xex") {
+        return Some(k816_link::OutputKind::Xex);
+    }
+    None
+}
+
+fn resolve_output_kind(
+    configured_kind: k816_link::OutputKind,
+    output_path: Option<&Path>,
+    output_format: Option<CliOutputFormat>,
+) -> k816_link::OutputKind {
+    if let Some(format) = output_format {
+        return format.output_kind();
+    }
+
+    output_path
+        .and_then(output_kind_from_extension)
+        .unwrap_or(configured_kind)
+}
+
 fn resolve_listing_path(output_path: &Path, listing_arg: Option<&str>) -> Option<PathBuf> {
     match listing_arg {
         None => None,
@@ -207,25 +276,21 @@ fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn link_command(args: LinkArgs) -> anyhow::Result<()> {
+fn link_command(
+    args: LinkArgs,
+    config_path: Option<PathBuf>,
+    output_format: Option<CliOutputFormat>,
+) -> anyhow::Result<()> {
     let mut objects = Vec::with_capacity(args.objects.len());
     for object_path in &args.objects {
         objects.push(k816_o65::read_object(object_path)?);
     }
 
-    let config_path = args.config.clone();
-    let config = if let Some(path) = config_path.as_deref() {
+    let mut config = if let Some(path) = config_path.as_deref() {
         k816_link::load_config(path)?
     } else {
         k816_link::default_stub_config()
     };
-    let linked = k816_link::link_objects_with_options(
-        &objects,
-        &config,
-        k816_link::LinkRenderOptions {
-            color: stderr_supports_color(),
-        },
-    )?;
 
     let output_path = if let Some(path) = args.output {
         path
@@ -234,13 +299,40 @@ fn link_command(args: LinkArgs) -> anyhow::Result<()> {
     } else {
         anyhow::bail!("output file must be provided via linker config output.file or -o");
     };
+
+    config.output.kind = resolve_output_kind(config.output.kind, Some(&output_path), output_format);
+
+    let linked = k816_link::link_objects_with_options(
+        &objects,
+        &config,
+        k816_link::LinkRenderOptions {
+            color: stderr_supports_color(),
+        },
+    )?;
+
     let listing_path = resolve_listing_path(&output_path, args.listing.as_deref());
     write_link_output(&output_path, listing_path.as_deref(), &linked)
 }
 
-fn build_command(input_path: PathBuf) -> anyhow::Result<()> {
+fn build_command(
+    input_path: PathBuf,
+    config_path: Option<PathBuf>,
+    output_format: Option<CliOutputFormat>,
+) -> anyhow::Result<()> {
     let object = compile_source_file(&input_path)?;
-    let config = k816_link::default_stub_config();
+    let resolved_config_path = config_path.or_else(|| discover_adjacent_config_path(&input_path));
+    let mut config = if let Some(path) = resolved_config_path.as_deref() {
+        k816_link::load_config(path)?
+    } else {
+        k816_link::default_stub_config()
+    };
+    let config_output_path = resolve_config_output_path(&config, resolved_config_path.as_deref());
+    let output_kind = resolve_output_kind(
+        config.output.kind,
+        config_output_path.as_deref(),
+        output_format,
+    );
+    config.output.kind = output_kind;
     let linked = k816_link::link_objects_with_options(
         &[object],
         &config,
@@ -248,6 +340,7 @@ fn build_command(input_path: PathBuf) -> anyhow::Result<()> {
             color: stderr_supports_color(),
         },
     )?;
-    let output_path = default_build_output_path(&input_path, linked.kind);
+    let output_path =
+        config_output_path.unwrap_or_else(|| default_build_output_path(&input_path, linked.kind));
     write_link_output(&output_path, None, &linked)
 }

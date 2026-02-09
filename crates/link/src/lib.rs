@@ -19,6 +19,7 @@ pub struct LinkerConfig {
     pub segments: Vec<SegmentRule>,
     #[serde(default)]
     pub symbols: Vec<LinkSymbol>,
+    #[serde(default)]
     pub output: OutputSpec,
     #[serde(default)]
     pub entry: Option<String>,
@@ -26,6 +27,10 @@ pub struct LinkerConfig {
 
 fn default_format() -> String {
     "o65-link".to_string()
+}
+
+fn default_output_kind() -> OutputKind {
+    OutputKind::Xex
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -80,9 +85,19 @@ pub enum SymbolValue {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputSpec {
+    #[serde(default = "default_output_kind")]
     pub kind: OutputKind,
     #[serde(default)]
     pub file: Option<String>,
+}
+
+impl Default for OutputSpec {
+    fn default() -> Self {
+        Self {
+            kind: default_output_kind(),
+            file: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -185,10 +200,7 @@ pub fn default_stub_config() -> LinkerConfig {
             legacy_bank: None,
         }],
         symbols: Vec::new(),
-        output: OutputSpec {
-            kind: OutputKind::RawBinary,
-            file: None,
-        },
+        output: OutputSpec::default(),
         entry: None,
     }
 }
@@ -838,7 +850,7 @@ fn render_raw_output(
     config: &LinkerConfig,
     memory_map: &HashMap<String, MemoryState>,
 ) -> Result<Vec<u8>> {
-    let mut used_states = Vec::new();
+    let mut used_states: Vec<(&str, &MemoryState)> = Vec::new();
     let mut used_names = Vec::new();
 
     for mem in &config.memory {
@@ -846,14 +858,23 @@ fn render_raw_output(
             anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
         })?;
         if state.used.iter().any(|used| *used) {
-            used_states.push(state);
+            used_states.push((&mem.name, state));
             used_names.push(mem.name.clone());
         }
     }
 
     match used_states.as_slice() {
         [] => Ok(Vec::new()),
-        [state] => Ok(compact_memory_runs(state)),
+        [(name, state)] => {
+            let runs = used_runs(&state.used);
+            if runs.len() > 1 {
+                bail!(
+                    "raw binary output is ambiguous: data placed in multiple ranges in memory area '{}'",
+                    name
+                );
+            }
+            Ok(compact_memory_runs(state))
+        }
         _ => bail!(
             "raw binary output is ambiguous: data placed in multiple memory areas ({})",
             used_names.join(", ")
@@ -1067,7 +1088,15 @@ fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'
     if let Some(rule) = config
         .segments
         .iter()
-        .find(|rule| rule.segment_name() == Some(segment))
+        .find(|rule| rule.matches_named_segment(segment))
+    {
+        return Ok(rule);
+    }
+
+    if let Some(rule) = config
+        .segments
+        .iter()
+        .find(|rule| rule.matches_rule_name(segment))
     {
         return Ok(rule);
     }
@@ -1086,6 +1115,15 @@ fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'
 impl SegmentRule {
     fn segment_name(&self) -> Option<&str> {
         self.segment.as_deref().or(self.legacy_bank.as_deref())
+    }
+
+    fn matches_named_segment(&self, segment: &str) -> bool {
+        self.segment_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(segment))
+    }
+
+    fn matches_rule_name(&self, segment: &str) -> bool {
+        self.segment_name().is_none() && self.name.eq_ignore_ascii_case(segment)
     }
 }
 
@@ -1169,9 +1207,80 @@ mod tests {
             listing: String::new(),
         };
 
-        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        let mut config = default_stub_config();
+        config.output = OutputSpec {
+            kind: OutputKind::RawBinary,
+            file: None,
+        };
+        let linked = link_objects(&[object], &config).expect("link");
         assert_eq!(linked.kind, OutputKind::RawBinary);
         assert_eq!(linked.bytes, vec![0xEA, 0x02, 0x00]);
+    }
+
+    #[test]
+    fn default_stub_config_emits_xex() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xEA],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            function_disassembly: Vec::new(),
+            listing: String::new(),
+        };
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        assert_eq!(linked.kind, OutputKind::Xex);
+        assert_eq!(linked.bytes, vec![0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xEA]);
+    }
+
+    #[test]
+    fn linker_config_defaults_output_kind_to_xex_when_unspecified() {
+        let config: LinkerConfig = ron::from_str(
+            r#"(
+  format: "o65-link",
+  target: Some("defaults"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    (
+      name: "DEFAULT",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+  symbols: [],
+  output: (
+    file: None,
+  ),
+  entry: None,
+)"#,
+        )
+        .expect("config should parse");
+
+        assert_eq!(config.output.kind, OutputKind::Xex);
     }
 
     #[test]
@@ -1203,7 +1312,12 @@ mod tests {
             listing: String::new(),
         };
 
-        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        let mut config = default_stub_config();
+        config.output = OutputSpec {
+            kind: OutputKind::RawBinary,
+            file: None,
+        };
+        let linked = link_objects(&[object], &config).expect("link");
         assert_eq!(linked.bytes, vec![0xAA, 0xBB]);
         assert!(linked.listing.contains("000020: AA"));
         assert!(linked.listing.contains("000021: BB"));
@@ -1308,6 +1422,10 @@ mod tests {
     #[test]
     fn raw_binary_rejects_multiple_used_memory_areas() {
         let mut config = default_stub_config();
+        config.output = OutputSpec {
+            kind: OutputKind::RawBinary,
+            file: None,
+        };
         config.memory.push(MemoryArea {
             name: "AUX".to_string(),
             start: 0x8000,
@@ -1353,6 +1471,72 @@ mod tests {
         );
         sections.insert(
             "aux".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xBB],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            function_disassembly: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = link_objects(&[object], &config).expect_err("expected ambiguity error");
+        assert!(err.to_string().contains("raw binary output is ambiguous"));
+    }
+
+    #[test]
+    fn raw_binary_rejects_multiple_segment_runs_in_single_memory_area() {
+        let mut config = default_stub_config();
+        config.output = OutputSpec {
+            kind: OutputKind::RawBinary,
+            file: None,
+        };
+        config.segments = vec![
+            SegmentRule {
+                name: "DEFAULT".to_string(),
+                load: "MAIN".to_string(),
+                run: None,
+                align: Some(1),
+                start: Some(0x0200),
+                offset: None,
+                optional: false,
+                segment: Some("default".to_string()),
+                legacy_bank: None,
+            },
+            SegmentRule {
+                name: "INFO".to_string(),
+                load: "MAIN".to_string(),
+                run: None,
+                align: Some(1),
+                start: Some(0xFC00),
+                offset: None,
+                optional: false,
+                segment: Some("info".to_string()),
+                legacy_bank: None,
+            },
+        ];
+
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xAA],
+                }],
+            },
+        );
+        sections.insert(
+            "info".to_string(),
             Section {
                 chunks: vec![SectionChunk {
                     offset: 0,

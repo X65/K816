@@ -47,6 +47,28 @@ pub enum TokenKind {
     Comma,
     #[token(":")]
     Colon,
+    #[token("++")]
+    PlusPlus,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("&")]
+    Amp,
+    #[token("?")]
+    Question,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    BangEq,
+    #[token("<=")]
+    LtEq,
+    #[token(">=")]
+    GtEq,
+    #[token("<")]
+    Lt,
+    #[token(">")]
+    Gt,
     #[token("#")]
     Hash,
     #[token("=")]
@@ -174,8 +196,8 @@ mod tests {
 
     #[test]
     fn reports_unrecognized_token_text() {
-        let diagnostics = lex(SourceId(0), "&").expect_err("expected lex error");
+        let diagnostics = lex(SourceId(0), "@").expect_err("expected lex error");
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].message, "unexpected token '&'");
+        assert_eq!(diagnostics[0].message, "unexpected token '@'");
     }
 }

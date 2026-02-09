@@ -1,4 +1,7 @@
-use crate::ast::{CodeBlock, Expr, File, Instruction, Item, Operand, Stmt, VarDecl};
+use crate::ast::{
+    CodeBlock, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
+    NamedDataEntry, Operand, Stmt, VarDecl,
+};
 use crate::diag::Diagnostic;
 use crate::parser::parse_expression_fragment;
 use crate::span::{SourceId, Span, Spanned};
@@ -31,6 +34,9 @@ fn expand_item(
         Item::Statement(stmt) => Item::Statement(expand_stmt(stmt, span, source_id, diagnostics)),
         Item::Segment(segment) => Item::Segment(segment.clone()),
         Item::DataBlock(block) => Item::DataBlock(block.clone()),
+        Item::NamedDataBlock(block) => {
+            Item::NamedDataBlock(expand_named_data_block(block, source_id, diagnostics))
+        }
     }
 }
 
@@ -82,9 +88,126 @@ fn expand_stmt(
         }
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
         Stmt::Address(value) => Stmt::Address(*value),
+        Stmt::Align(value) => Stmt::Align(*value),
+        Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Label(label) => Stmt::Label(label.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
+        Stmt::Hla(stmt) => Stmt::Hla(expand_hla_stmt(stmt, span, source_id, diagnostics)),
         Stmt::Empty => Stmt::Empty,
+    }
+}
+
+fn expand_named_data_block(
+    block: &NamedDataBlock,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> NamedDataBlock {
+    let mut entries = Vec::with_capacity(block.entries.len());
+    for entry in &block.entries {
+        entries.push(Spanned::new(
+            expand_named_data_entry(&entry.node, entry.span, source_id, diagnostics),
+            entry.span,
+        ));
+    }
+
+    NamedDataBlock {
+        name: block.name.clone(),
+        name_span: block.name_span,
+        entries,
+    }
+}
+
+fn expand_named_data_entry(
+    entry: &NamedDataEntry,
+    span: Span,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> NamedDataEntry {
+    match entry {
+        NamedDataEntry::Segment(segment) => NamedDataEntry::Segment(segment.clone()),
+        NamedDataEntry::Address(value) => NamedDataEntry::Address(*value),
+        NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
+        NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
+        NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(
+            values
+                .iter()
+                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
+                .collect(),
+        ),
+        NamedDataEntry::LegacyBytes(values) => NamedDataEntry::LegacyBytes(
+            values
+                .iter()
+                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
+                .collect(),
+        ),
+        NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
+        NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
+            kind: kind.clone(),
+            args: args.clone(),
+        },
+    }
+}
+
+fn expand_hla_stmt(
+    stmt: &HlaStmt,
+    span: Span,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HlaStmt {
+    match stmt {
+        HlaStmt::XAssignImmediate { rhs } => HlaStmt::XAssignImmediate {
+            rhs: expand_expr(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::XIncrement => HlaStmt::XIncrement,
+        HlaStmt::StoreFromA { dest, rhs } => HlaStmt::StoreFromA {
+            dest: dest.clone(),
+            rhs: expand_hla_rhs(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::WaitLoopWhileNFlagClear { symbol } => HlaStmt::WaitLoopWhileNFlagClear {
+            symbol: symbol.clone(),
+        },
+        HlaStmt::ConditionSeed { lhs, rhs } => HlaStmt::ConditionSeed {
+            lhs: *lhs,
+            rhs: expand_expr(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::DoOpen => HlaStmt::DoOpen,
+        HlaStmt::DoCloseWithOp { op } => HlaStmt::DoCloseWithOp { op: *op },
+        HlaStmt::DoClose { condition } => HlaStmt::DoClose {
+            condition: expand_hla_condition(condition, span, source_id, diagnostics),
+        },
+    }
+}
+
+fn expand_hla_rhs(
+    rhs: &HlaRhs,
+    span: Span,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HlaRhs {
+    match rhs {
+        HlaRhs::Immediate(expr) => {
+            HlaRhs::Immediate(expand_expr(expr, span, source_id, diagnostics))
+        }
+        HlaRhs::Value { expr, index } => HlaRhs::Value {
+            expr: expand_expr(expr, span, source_id, diagnostics),
+            index: *index,
+        },
+    }
+}
+
+fn expand_hla_condition(
+    condition: &HlaCondition,
+    span: Span,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HlaCondition {
+    HlaCondition {
+        lhs: condition.lhs,
+        op: condition.op,
+        rhs: condition
+            .rhs
+            .as_ref()
+            .map(|rhs| expand_expr(rhs, span, source_id, diagnostics)),
     }
 }
 

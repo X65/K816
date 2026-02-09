@@ -113,6 +113,10 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                 mnemonic: mnemonic.to_string(),
             }),
         },
+        "beq" => expect_relative(mnemonic, operand, 0xF0),
+        "bcc" => expect_relative(mnemonic, operand, 0x90),
+        "bcs" => expect_relative(mnemonic, operand, 0xB0),
+        "bmi" => expect_relative(mnemonic, operand, 0x30),
         "bne" => expect_relative(mnemonic, operand, 0xD0),
         "bpl" => expect_relative(mnemonic, operand, 0x10),
         "lda" => match operand {

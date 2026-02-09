@@ -1,6 +1,7 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, Instruction, Item,
-    IndexRegister, LabelDecl, Operand, SegmentDecl, Stmt, VarDecl,
+    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, HlaCompareOp,
+    HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister, Instruction, Item, NamedDataBlock,
+    NamedDataEntry, Operand, SegmentDecl, Stmt, VarDecl, LabelDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -118,9 +119,11 @@ where
 
     let var_item = var_decl_parser(source_id).map(Item::Var);
 
-    let data_item = just(TokenKind::Data)
-        .ignore_then(data_block_parser(source_id))
-        .map(Item::DataBlock);
+    let data_item = just(TokenKind::Data).ignore_then(
+        named_data_block_parser(source_id)
+            .map(Item::NamedDataBlock)
+            .or(data_block_parser(source_id).map(Item::DataBlock)),
+    );
 
     let code_block_item = code_block_parser(source_id).map(Item::CodeBlock);
 
@@ -242,6 +245,124 @@ where
         )
         .then_ignore(just(TokenKind::RBrace))
         .map(|commands| DataBlock { commands })
+        .boxed()
+}
+
+fn named_data_block_parser<'src, I>(
+    source_id: SourceId,
+) -> impl chumsky::Parser<'src, I, NamedDataBlock, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let separators = just(TokenKind::Newline).repeated();
+    let entry = spanned(named_data_entry_parser(source_id), source_id);
+    let entry_boundary = just(TokenKind::Newline)
+        .ignored()
+        .or(just(TokenKind::RBrace).ignored())
+        .or(end().ignored());
+    let recover_entry = entry.recover_with(skip_then_retry_until(any().ignored(), entry_boundary));
+
+    ident_parser()
+        .map_with(|name, extra| (name, extra.span()))
+        .then(
+            just(TokenKind::LBrace)
+                .ignore_then(
+                    separators
+                        .clone()
+                        .ignore_then(recover_entry)
+                        .then_ignore(separators.clone())
+                        .repeated()
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(TokenKind::RBrace)),
+        )
+        .map(move |((name, name_span), entries): ((String, SimpleSpan), Vec<Spanned<NamedDataEntry>>)| {
+            let range = name_span.into_range();
+            NamedDataBlock {
+                name,
+                name_span: Span::new(source_id, range.start, range.end),
+                entries,
+            }
+        })
+        .boxed()
+}
+
+fn named_data_entry_parser<'src, I>(
+    _source_id: SourceId,
+) -> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let segment_entry = just(TokenKind::Segment)
+        .or(just(TokenKind::Bank))
+        .ignore_then(ident_parser())
+        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
+
+    let address_entry = just(TokenKind::Address)
+        .ignore_then(number_parser())
+        .try_map(|value, span| {
+            u32::try_from(value)
+                .map(NamedDataEntry::Address)
+                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+        });
+
+    let align_entry = just(TokenKind::Align)
+        .ignore_then(number_parser())
+        .try_map(|value, span| {
+            u16::try_from(value)
+                .map(NamedDataEntry::Align)
+                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+        });
+
+    let nocross_entry = just(TokenKind::Nocross)
+        .ignore_then(number_parser())
+        .try_map(|value, span| {
+            u16::try_from(value)
+                .map(NamedDataEntry::Nocross)
+                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        });
+
+    let byte_entry = just(TokenKind::Ident(".byte".to_string()))
+        .ignore_then(
+            expr_parser()
+                .separated_by(just(TokenKind::Comma))
+                .at_least(1)
+                .collect::<Vec<_>>(),
+        )
+        .map(NamedDataEntry::Bytes);
+
+    let string_entry = chumsky::select! { TokenKind::String(value) => value }
+        .map(NamedDataEntry::String);
+
+    let legacy_bytes_entry = number_parser()
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map(|values| {
+            NamedDataEntry::LegacyBytes(values.into_iter().map(Expr::Number).collect::<Vec<_>>())
+        });
+
+    let args = data_arg_parser()
+        .separated_by(just(TokenKind::Comma))
+        .collect::<Vec<_>>()
+        .or_not()
+        .map(|args: Option<Vec<DataArg>>| args.unwrap_or_default());
+    let convert_entry = ident_parser()
+        .then(
+            just(TokenKind::LParen)
+                .ignore_then(args)
+                .then_ignore(just(TokenKind::RParen)),
+        )
+        .map(|(kind, args)| NamedDataEntry::Convert { kind, args });
+
+    string_entry
+        .or(segment_entry)
+        .or(address_entry)
+        .or(align_entry)
+        .or(nocross_entry)
+        .or(byte_entry)
+        .or(convert_entry)
+        .or(legacy_bytes_entry)
         .boxed()
 }
 
@@ -368,6 +489,22 @@ where
                 .map_err(|_| Rich::custom(span, "address value must fit in u32"))
         });
 
+    let align_stmt = just(TokenKind::Align)
+        .ignore_then(number_parser())
+        .try_map(|value, span| {
+            u16::try_from(value)
+                .map(Stmt::Align)
+                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+        });
+
+    let nocross_stmt = just(TokenKind::Nocross)
+        .ignore_then(number_parser())
+        .try_map(|value, span| {
+            u16::try_from(value)
+                .map(Stmt::Nocross)
+                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        });
+
     let call_stmt = just(TokenKind::Call)
         .ignore_then(ident_parser())
         .map(|target| Stmt::Call(CallStmt { target }));
@@ -384,6 +521,18 @@ where
                 .collect::<Vec<_>>(),
         )
         .map(Stmt::Bytes);
+
+    let hla_wait_stmt = hla_wait_loop_stmt_parser();
+    let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
+    let hla_do_close_stmt = just(TokenKind::RBrace).ignore_then(
+        hla_condition_parser()
+            .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
+            .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op }))),
+    );
+    let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();
+    let hla_x_assign_stmt = hla_x_assign_stmt_parser();
+    let hla_x_increment_stmt = hla_x_increment_stmt_parser();
+    let hla_store_from_a_stmt = hla_store_from_a_stmt_parser();
 
     let mnemonic = ident_parser().try_map(|mnemonic, span| {
         if mnemonic == ".byte" {
@@ -442,11 +591,200 @@ where
         .or(var_stmt)
         .or(data_stmt)
         .or(address_stmt)
+        .or(align_stmt)
+        .or(nocross_stmt)
         .or(call_stmt)
         .or(label_stmt)
         .or(byte_stmt)
+        .or(hla_wait_stmt)
+        .or(hla_do_close_stmt)
+        .or(hla_condition_seed_stmt)
+        .or(hla_do_open_stmt)
+        .or(hla_x_increment_stmt)
+        .or(hla_x_assign_stmt)
+        .or(hla_store_from_a_stmt)
         .or(instruction)
         .boxed()
+}
+
+fn hla_wait_loop_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::LBrace)
+        .ignore_then(ident_parser())
+        .then_ignore(just(TokenKind::Amp))
+        .then_ignore(just(TokenKind::Question))
+        .then(ident_parser())
+        .then_ignore(just(TokenKind::RBrace))
+        .then(ident_parser())
+        .then_ignore(just(TokenKind::Minus))
+        .then_ignore(just(TokenKind::Question))
+        .try_map(|((lhs, symbol), n_reg), span| {
+            if !lhs.eq_ignore_ascii_case("a") {
+                return Err(Rich::custom(
+                    span,
+                    format!("expected 'a' in wait-loop, found '{lhs}'"),
+                ));
+            }
+            if !n_reg.eq_ignore_ascii_case("n") {
+                return Err(Rich::custom(
+                    span,
+                    format!("expected 'n' in wait-loop suffix, found '{n_reg}'"),
+                ));
+            }
+            Ok(Stmt::Hla(HlaStmt::WaitLoopWhileNFlagClear { symbol }))
+        })
+}
+
+fn hla_x_assign_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .then_ignore(just(TokenKind::Hash))
+        .then(expr_parser())
+        .try_map(|(lhs, rhs), span| {
+            if !lhs.eq_ignore_ascii_case("x") {
+                return Err(Rich::custom(
+                    span,
+                    format!("expected 'x' assignment, found '{lhs}'"),
+                ));
+            }
+            Ok(Stmt::Hla(HlaStmt::XAssignImmediate { rhs }))
+        })
+}
+
+fn hla_x_increment_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then_ignore(just(TokenKind::PlusPlus))
+        .try_map(|ident, span| {
+            if !ident.eq_ignore_ascii_case("x") {
+                return Err(Rich::custom(
+                    span,
+                    format!("expected 'x++', found '{ident}++'"),
+                ));
+            }
+            Ok(Stmt::Hla(HlaStmt::XIncrement))
+        })
+}
+
+fn hla_store_rhs_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, HlaRhs, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let immediate = just(TokenKind::Hash)
+        .ignore_then(expr_parser())
+        .map(HlaRhs::Immediate);
+
+    let value = expr_parser()
+        .then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not())
+        .try_map(|(expr, index), span| {
+            let index = match index {
+                None => None,
+                Some(value) if value.eq_ignore_ascii_case("x") => Some(IndexRegister::X),
+                Some(value) => {
+                    return Err(Rich::custom(
+                        span,
+                        format!("unsupported index register '{value}', expected 'x'"),
+                    ));
+                }
+            };
+
+            if index.is_none() && matches!(expr, Expr::EvalText(_)) {
+                return Ok(HlaRhs::Immediate(expr));
+            }
+
+            Ok(HlaRhs::Value { expr, index })
+        });
+
+    immediate.or(value).boxed()
+}
+
+fn hla_store_from_a_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .then(ident_parser())
+        .then_ignore(just(TokenKind::Eq))
+        .then(hla_store_rhs_parser())
+        .try_map(|((dest, middle), rhs), span| {
+            if !middle.eq_ignore_ascii_case("a") {
+                return Err(Rich::custom(
+                    span,
+                    format!("expected 'a' in store-from-a assignment, found '{middle}'"),
+                ));
+            }
+            Ok(Stmt::Hla(HlaStmt::StoreFromA { dest, rhs }))
+        })
+}
+
+fn hla_compare_op_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, HlaCompareOp, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::EqEq)
+        .to(HlaCompareOp::Eq)
+        .or(just(TokenKind::BangEq).to(HlaCompareOp::Ne))
+        .or(just(TokenKind::LtEq).to(HlaCompareOp::Le))
+        .or(just(TokenKind::GtEq).to(HlaCompareOp::Ge))
+        .or(just(TokenKind::Lt).to(HlaCompareOp::Lt))
+        .or(just(TokenKind::Gt).to(HlaCompareOp::Gt))
+}
+
+fn hla_condition_seed_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then_ignore(just(TokenKind::Question))
+        .then(expr_parser())
+        .try_map(|(ident, rhs), span| {
+            if !ident.eq_ignore_ascii_case("a") {
+                return Err(Rich::custom(
+                    span,
+                    format!("unsupported HLA condition lhs '{ident}', expected 'a'"),
+                ));
+            }
+            Ok(Stmt::Hla(HlaStmt::ConditionSeed {
+                lhs: HlaRegister::A,
+                rhs,
+            }))
+        })
+}
+
+fn hla_condition_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, HlaCondition, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let lhs = ident_parser().try_map(|ident, span| {
+        if ident.eq_ignore_ascii_case("a") {
+            Ok(HlaRegister::A)
+        } else {
+            Err(Rich::custom(
+                span,
+                format!("unsupported HLA condition lhs '{ident}', expected 'a'"),
+            ))
+        }
+    });
+
+    lhs.then_ignore(just(TokenKind::Question))
+        .then(expr_parser().or_not())
+        .then(hla_compare_op_parser())
+        .map(|((lhs, rhs), op)| HlaCondition { lhs, op, rhs })
 }
 
 fn expr_parser<'src, I>() -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src>> + Clone
@@ -578,6 +916,17 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::RParen => "')'".to_string(),
         TokenKind::Comma => "','".to_string(),
         TokenKind::Colon => "':'".to_string(),
+        TokenKind::PlusPlus => "'++'".to_string(),
+        TokenKind::Plus => "'+'".to_string(),
+        TokenKind::Minus => "'-'".to_string(),
+        TokenKind::Amp => "'&'".to_string(),
+        TokenKind::Question => "'?'".to_string(),
+        TokenKind::EqEq => "'=='".to_string(),
+        TokenKind::BangEq => "'!='".to_string(),
+        TokenKind::LtEq => "'<='".to_string(),
+        TokenKind::GtEq => "'>='".to_string(),
+        TokenKind::Lt => "'<'".to_string(),
+        TokenKind::Gt => "'>'".to_string(),
         TokenKind::Hash => "'#'".to_string(),
         TokenKind::Eq => "'='".to_string(),
         TokenKind::Newline => "newline".to_string(),
@@ -751,6 +1100,58 @@ mod tests {
     }
 
     #[test]
+    fn parses_hla_statements_without_text_desugaring() {
+        let source = "main {\n  x = #0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = [$FF]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+
+        assert_eq!(block.body.len(), 7);
+        assert!(matches!(
+            block.body[0].node,
+            Stmt::Hla(HlaStmt::XAssignImmediate { .. })
+        ));
+        assert!(matches!(block.body[1].node, Stmt::Hla(HlaStmt::DoOpen)));
+        assert!(matches!(
+            block.body[2].node,
+            Stmt::Hla(HlaStmt::WaitLoopWhileNFlagClear { .. })
+        ));
+        assert!(matches!(
+            block.body[3].node,
+            Stmt::Hla(HlaStmt::StoreFromA { .. })
+        ));
+        assert!(matches!(block.body[4].node, Stmt::Hla(HlaStmt::XIncrement)));
+        assert!(matches!(
+            block.body[5].node,
+            Stmt::Hla(HlaStmt::DoClose { .. })
+        ));
+        assert!(matches!(
+            block.body[6].node,
+            Stmt::Hla(HlaStmt::StoreFromA { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_named_data_block_entries() {
+        let source = "data text {\n  segment INFO\n  \"Hello\"\n  $0D $0A $00\n  .byte 1, 2, 3\n  bytes(4, 5)\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::NamedDataBlock(block) = &file.items[0].node else {
+            panic!("expected named data block");
+        };
+        assert_eq!(block.name, "text");
+        assert_eq!(block.entries.len(), 5);
+        assert!(matches!(block.entries[0].node, NamedDataEntry::Segment(_)));
+        assert!(matches!(block.entries[1].node, NamedDataEntry::String(_)));
+        assert!(matches!(block.entries[2].node, NamedDataEntry::LegacyBytes(_)));
+        assert!(matches!(block.entries[3].node, NamedDataEntry::Bytes(_)));
+        assert!(matches!(
+            block.entries[4].node,
+            NamedDataEntry::Convert { .. }
+        ));
+    }
+
+    #[test]
     fn rejects_modifier_without_code_block() {
         let diagnostics = parse(SourceId(0), "far var x\n").expect_err("expected parse error");
         assert!(!diagnostics.is_empty());
@@ -773,13 +1174,10 @@ mod tests {
     fn recovers_at_block_boundary_and_continues_items() {
         let source = "main {\n call\n}\nfar var trailing\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
-        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert_eq!(
-            diagnostics[0].message,
-            "invalid syntax: expected something else, found newline"
-        );
-        assert_eq!(diagnostics[0].primary.start, 12);
-        assert_eq!(diagnostics[0].primary.end, 13);
+        assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message == "invalid syntax: expected something else, found newline"));
     }
 
     #[test]

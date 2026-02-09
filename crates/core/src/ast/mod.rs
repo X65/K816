@@ -10,6 +10,7 @@ pub enum Item {
     Segment(SegmentDecl),
     Var(VarDecl),
     DataBlock(DataBlock),
+    NamedDataBlock(NamedDataBlock),
     CodeBlock(CodeBlock),
     Statement(Stmt),
 }
@@ -50,9 +51,12 @@ pub enum Stmt {
     Var(VarDecl),
     DataBlock(DataBlock),
     Address(u32),
+    Align(u16),
+    Nocross(u16),
     Instruction(Instruction),
     Call(CallStmt),
     Bytes(Vec<Expr>),
+    Hla(HlaStmt),
     Empty,
 }
 
@@ -82,6 +86,49 @@ pub enum Operand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaRegister {
+    A,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaCompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Clone)]
+pub struct HlaCondition {
+    pub lhs: HlaRegister,
+    pub op: HlaCompareOp,
+    pub rhs: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
+pub enum HlaRhs {
+    Immediate(Expr),
+    Value {
+        expr: Expr,
+        index: Option<IndexRegister>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum HlaStmt {
+    XAssignImmediate { rhs: Expr },
+    XIncrement,
+    StoreFromA { dest: String, rhs: HlaRhs },
+    WaitLoopWhileNFlagClear { symbol: String },
+    ConditionSeed { lhs: HlaRegister, rhs: Expr },
+    DoOpen,
+    DoCloseWithOp { op: HlaCompareOp },
+    DoClose { condition: HlaCondition },
+}
+
 #[derive(Debug, Clone)]
 pub struct CallStmt {
     pub target: String,
@@ -92,6 +139,25 @@ pub enum Expr {
     Number(i64),
     Ident(String),
     EvalText(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedDataBlock {
+    pub name: String,
+    pub name_span: Span,
+    pub entries: Vec<Spanned<NamedDataEntry>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum NamedDataEntry {
+    Segment(SegmentDecl),
+    Address(u32),
+    Align(u16),
+    Nocross(u16),
+    Bytes(Vec<Expr>),
+    LegacyBytes(Vec<Expr>),
+    String(String),
+    Convert { kind: String, args: Vec<DataArg> },
 }
 
 #[derive(Debug, Clone)]

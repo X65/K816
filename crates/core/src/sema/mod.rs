@@ -58,6 +58,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 &mut model,
                 &mut diagnostics,
             ),
+            Item::NamedDataBlock(_) => {}
             _ => {}
         }
     }

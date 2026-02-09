@@ -1,5 +1,6 @@
 use k816_core::ast::{
-    BlockKind, DataArg, DataCommand, Expr, File, Instruction, Item, Operand, Stmt,
+    BlockKind, DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt,
+    Instruction, Item, NamedDataEntry, Operand, Stmt,
 };
 
 pub fn format_ast(file: &File) -> String {
@@ -18,6 +19,13 @@ fn format_item(out: &mut String, item: &Item, indent: usize) {
             line(out, indent, "data {".to_string());
             for command in &block.commands {
                 line(out, indent + 2, format_data_command(&command.node));
+            }
+            line(out, indent, "}".to_string());
+        }
+        Item::NamedDataBlock(block) => {
+            line(out, indent, format!("data {} {{", block.name));
+            for entry in &block.entries {
+                line(out, indent + 2, format_named_data_entry(&entry.node));
             }
             line(out, indent, "}".to_string());
         }
@@ -66,6 +74,8 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             line(out, indent, "}".to_string());
         }
         Stmt::Address(value) => line(out, indent, format!("address {value}")),
+        Stmt::Align(value) => line(out, indent, format!("align {value}")),
+        Stmt::Nocross(value) => line(out, indent, format!("nocross {value}")),
         Stmt::Instruction(instr) => line(out, indent, format_instruction(instr)),
         Stmt::Call(call) => line(out, indent, format!("call {}", call.target)),
         Stmt::Bytes(values) => {
@@ -76,6 +86,7 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                 .join(", ");
             line(out, indent, format!(".byte {values}"));
         }
+        Stmt::Hla(stmt) => line(out, indent, format_hla_stmt(stmt)),
         Stmt::Empty => line(out, indent, String::new()),
     }
 }
@@ -144,6 +155,90 @@ fn format_expr(expr: &Expr) -> String {
         Expr::Number(value) => value.to_string(),
         Expr::Ident(value) => value.clone(),
         Expr::EvalText(value) => format!("[{value}]"),
+    }
+}
+
+fn format_named_data_entry(entry: &NamedDataEntry) -> String {
+    match entry {
+        NamedDataEntry::Segment(segment) => format!("segment {}", segment.name),
+        NamedDataEntry::Address(value) => format!("address {value}"),
+        NamedDataEntry::Align(value) => format!("align {value}"),
+        NamedDataEntry::Nocross(value) => format!("nocross {value}"),
+        NamedDataEntry::Bytes(values) => {
+            let values = values
+                .iter()
+                .map(format_expr)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(".byte {values}")
+        }
+        NamedDataEntry::LegacyBytes(values) => values
+            .iter()
+            .map(format_expr)
+            .collect::<Vec<_>>()
+            .join(" "),
+        NamedDataEntry::String(value) => format!("\"{}\"", value.replace('\"', "\\\"")),
+        NamedDataEntry::Convert { kind, args } => {
+            let args = args
+                .iter()
+                .map(format_data_arg)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{kind}({args})")
+        }
+    }
+}
+
+fn format_hla_stmt(stmt: &HlaStmt) -> String {
+    match stmt {
+        HlaStmt::XAssignImmediate { rhs } => format!("x = #{}", format_expr(rhs)),
+        HlaStmt::XIncrement => "x++".to_string(),
+        HlaStmt::StoreFromA { dest, rhs } => format!("{dest} = a = {}", format_hla_rhs(rhs)),
+        HlaStmt::WaitLoopWhileNFlagClear { symbol } => format!("{{ a&?{symbol} }} n-?"),
+        HlaStmt::ConditionSeed { lhs, rhs } => {
+            let lhs = match lhs {
+                k816_core::ast::HlaRegister::A => "a",
+            };
+            format!("{lhs}?{}", format_expr(rhs))
+        }
+        HlaStmt::DoOpen => "{".to_string(),
+        HlaStmt::DoCloseWithOp { op } => format!("}} {}", format_hla_op(*op)),
+        HlaStmt::DoClose { condition } => format!("}} {}", format_hla_condition(condition)),
+    }
+}
+
+fn format_hla_rhs(rhs: &HlaRhs) -> String {
+    match rhs {
+        HlaRhs::Immediate(expr) => format!("#{}", format_expr(expr)),
+        HlaRhs::Value { expr, index } => {
+            let mut value = format_expr(expr);
+            if index.is_some() {
+                value.push_str(",x");
+            }
+            value
+        }
+    }
+}
+
+fn format_hla_condition(condition: &HlaCondition) -> String {
+    let lhs = match condition.lhs {
+        k816_core::ast::HlaRegister::A => "a",
+    };
+    let op = format_hla_op(condition.op);
+    match &condition.rhs {
+        Some(rhs) => format!("{lhs}?{} {op}", format_expr(rhs)),
+        None => format!("{lhs}?{op}"),
+    }
+}
+
+fn format_hla_op(op: HlaCompareOp) -> &'static str {
+    match op {
+        HlaCompareOp::Eq => "==",
+        HlaCompareOp::Ne => "!=",
+        HlaCompareOp::Lt => "<",
+        HlaCompareOp::Le => "<=",
+        HlaCompareOp::Gt => ">",
+        HlaCompareOp::Ge => ">=",
     }
 }
 

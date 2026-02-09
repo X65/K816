@@ -1,4 +1,20 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use clap::{CommandFactory, Parser};
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "k816",
+    version,
+    about = "High-level assembler for the WDC 65816",
+    long_about = None,
+    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 --help"
+)]
+struct Cli {
+    /// Input source file.
+    #[arg(value_name = "INPUT")]
+    input: Option<PathBuf>,
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -8,13 +24,28 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    let Some(input_path) = args.next() else {
-        eprintln!("Usage: k816 <input.k816>");
-        std::process::exit(2);
+    let cli = Cli::parse();
+
+    let Some(input_path) = cli.input else {
+        print_banner();
+        println!();
+        let mut command = Cli::command();
+        command.print_help()?;
+        println!();
+        return Ok(());
     };
 
-    let input_path = PathBuf::from(input_path);
+    compile_input(input_path)
+}
+
+fn print_banner() {
+    println!("K816 HLA, version {}.", env!("CARGO_PKG_VERSION"));
+    println!("Port of K65 by Krzysztof Kluczek.");
+    println!("License: 0BSD - free to use, copy, modify, and distribute.");
+    println!("Provided AS IS, without warranty or liability.");
+}
+
+fn compile_input(input_path: PathBuf) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(&input_path)?;
     let output = k816_core::compile_source(&input_path.display().to_string(), &source)
         .map_err(|error| anyhow::anyhow!(error.rendered))?;
@@ -23,7 +54,7 @@ fn run() -> anyhow::Result<()> {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("out");
-    let parent = input_path.parent().unwrap_or(std::path::Path::new("."));
+    let parent = input_path.parent().unwrap_or(Path::new("."));
 
     if output.banks.len() == 1 {
         let (_, bytes) = output

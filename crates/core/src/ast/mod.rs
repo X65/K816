@@ -127,6 +127,8 @@ pub enum HlaStmt {
     DoOpen,
     DoCloseWithOp { op: HlaCompareOp },
     DoClose { condition: HlaCondition },
+    DoCloseAlways,
+    DoCloseNever,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +141,27 @@ pub enum Expr {
     Number(i64),
     Ident(String),
     EvalText(String),
+    Binary {
+        op: ExprBinaryOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    Unary {
+        op: ExprUnaryOp,
+        expr: Box<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExprBinaryOp {
+    Add,
+    Sub,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExprUnaryOp {
+    LowByte,
+    HighByte,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +181,7 @@ pub enum NamedDataEntry {
     LegacyBytes(Vec<Expr>),
     String(String),
     Convert { kind: String, args: Vec<DataArg> },
+    Ignored,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +195,7 @@ pub enum DataCommand {
     Address(u32),
     Nocross(u16),
     Convert { kind: String, args: Vec<DataArg> },
+    Ignored,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

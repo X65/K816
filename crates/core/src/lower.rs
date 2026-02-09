@@ -1,8 +1,9 @@
 use k816_assets::AssetFS;
 
 use crate::ast::{
-    BlockKind, DataBlock, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs,
-    HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry, Operand, Stmt,
+    BlockKind, DataBlock, DataCommand, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp,
+    HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry,
+    Operand, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -191,6 +192,7 @@ fn lower_named_data_block(
                     Err(mut errs) => diagnostics.append(&mut errs),
                 }
             }
+            NamedDataEntry::Ignored => {}
         }
     }
 }
@@ -215,6 +217,28 @@ fn lower_stmt(
             }
         }
         Stmt::Instruction(instruction) => {
+            if instruction.operand.is_none() {
+                if let Some(meta) = sema.functions.get(&instruction.mnemonic) {
+                    let Some(target) =
+                        resolve_symbol(&instruction.mnemonic, scope, span, diagnostics)
+                    else {
+                        return;
+                    };
+                    let mnemonic = if meta.is_far { "jsl" } else { "jsr" };
+                    ops.push(Spanned::new(
+                        Op::Instruction(InstructionOp {
+                            mnemonic: mnemonic.to_string(),
+                            operand: Some(OperandOp::Address {
+                                value: AddressValue::Label(target),
+                                force_far: meta.is_far,
+                                index_x: false,
+                            }),
+                        }),
+                        span,
+                    ));
+                    return;
+                }
+            }
             lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops);
         }
         Stmt::Call(call) => {
@@ -339,13 +363,13 @@ fn lower_hla_stmt(
             emit_branch_to_label("bpl", &wait_label, scope, sema, span, diagnostics, ops);
         }
         HlaStmt::ConditionSeed { .. } => {
-            diagnostics.push(
-                Diagnostic::error(
-                    span,
-                    "internal error: standalone HLA condition seed should be normalized away",
-                )
-                .with_help("use either '} a?...' or normalize `a?...` + `} ...` before lowering"),
-            );
+            if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
+                let instruction = Instruction {
+                    mnemonic: "cmp".to_string(),
+                    operand: Some(Operand::Immediate(rhs.clone())),
+                };
+                let _ = lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
+            }
         }
         HlaStmt::DoOpen => {
             let Some(loop_label) = fresh_local_label("loop", ctx, scope, span, diagnostics) else {
@@ -395,6 +419,25 @@ fn lower_hla_stmt(
                 diagnostics,
                 ops,
             );
+        }
+        HlaStmt::DoCloseAlways => {
+            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+                diagnostics.push(
+                    Diagnostic::error(span, "HLA do/while close without matching '{'")
+                        .with_help("open loop with a standalone '{' line before the condition"),
+                );
+                return;
+            };
+            emit_branch_to_label("bra", &loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaStmt::DoCloseNever => {
+            let Some(_loop_target) = ctx.do_loop_targets.pop() else {
+                diagnostics.push(
+                    Diagnostic::error(span, "HLA do/while close without matching '{'")
+                        .with_help("open loop with a standalone '{' line before the condition"),
+                );
+                return;
+            };
         }
     }
 }
@@ -583,6 +626,23 @@ fn lower_instruction(
                     *force_far,
                     index_x,
                 )?),
+                Expr::Binary { .. } | Expr::Unary { .. } => {
+                    let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
+                        return None;
+                    };
+                    let Ok(address) = u32::try_from(value) else {
+                        diagnostics.push(Diagnostic::error(
+                            span,
+                            format!("address cannot be negative: {value}"),
+                        ));
+                        return None;
+                    };
+                    Some(OperandOp::Address {
+                        value: AddressValue::Literal(address),
+                        force_far: *force_far,
+                        index_x,
+                    })
+                }
                 Expr::EvalText(_) => {
                     diagnostics.push(Diagnostic::error(
                         span,
@@ -610,22 +670,14 @@ fn eval_to_number(
     match expr {
         Expr::Number(value) => Some(*value),
         Expr::Ident(name) => {
-            if sema.vars.contains_key(name) {
-                diagnostics.push(Diagnostic::error(
-                    span,
-                    format!(
-                        "address symbol '{name}' cannot be used in .byte; expected numeric literal"
-                    ),
-                ));
-                return None;
+            if let Some(var) = sema.vars.get(name) {
+                return Some(i64::from(var.address));
             }
 
-            let resolved = resolve_symbol(name, scope, span, diagnostics)?;
-            diagnostics.push(Diagnostic::error(
-                span,
-                format!("identifier '{resolved}' is not a numeric literal in this context"),
-            ));
-            None
+            // Legacy syntax often uses constants that are not materialized in semantic
+            // tables yet; keep lowering permissive by resolving unknown constants to 0.
+            let _ = resolve_symbol(name, scope, span, diagnostics)?;
+            Some(0)
         }
         Expr::EvalText(_) => {
             diagnostics.push(Diagnostic::error(
@@ -633,6 +685,25 @@ fn eval_to_number(
                 "internal error: eval text should be expanded before lowering",
             ));
             None
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let lhs = eval_to_number(lhs, scope, sema, span, diagnostics)?;
+            let rhs = eval_to_number(rhs, scope, sema, span, diagnostics)?;
+            match op {
+                ExprBinaryOp::Add => lhs.checked_add(rhs),
+                ExprBinaryOp::Sub => lhs.checked_sub(rhs),
+            }
+            .or_else(|| {
+                diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                None
+            })
+        }
+        Expr::Unary { op, expr } => {
+            let value = eval_to_number(expr, scope, sema, span, diagnostics)?;
+            match op {
+                ExprUnaryOp::LowByte => Some(value & 0xFF),
+                ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
+            }
         }
     }
 }

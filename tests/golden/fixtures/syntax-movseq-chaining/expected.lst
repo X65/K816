@@ -1,0 +1,6 @@
+[default]
+000000: 60
+
+
+[disasm obj#0 default::main]
+000000: 60          rts

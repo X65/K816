@@ -140,6 +140,7 @@ fn format_data_command(command: &DataCommand) -> String {
                 .join(", ");
             format!("{kind}({args})")
         }
+        DataCommand::Ignored => "<ignored>".to_string(),
     }
 }
 
@@ -155,6 +156,20 @@ fn format_expr(expr: &Expr) -> String {
         Expr::Number(value) => value.to_string(),
         Expr::Ident(value) => value.clone(),
         Expr::EvalText(value) => format!("[{value}]"),
+        Expr::Binary { op, lhs, rhs } => {
+            let op = match op {
+                k816_core::ast::ExprBinaryOp::Add => "+",
+                k816_core::ast::ExprBinaryOp::Sub => "-",
+            };
+            format!("{} {op} {}", format_expr(lhs), format_expr(rhs))
+        }
+        Expr::Unary { op, expr } => {
+            let op = match op {
+                k816_core::ast::ExprUnaryOp::LowByte => "&<",
+                k816_core::ast::ExprUnaryOp::HighByte => "&>",
+            };
+            format!("{op}{}", format_expr(expr))
+        }
     }
 }
 
@@ -186,6 +201,7 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
                 .join(", ");
             format!("{kind}({args})")
         }
+        NamedDataEntry::Ignored => "<ignored>".to_string(),
     }
 }
 
@@ -204,6 +220,8 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
         HlaStmt::DoOpen => "{".to_string(),
         HlaStmt::DoCloseWithOp { op } => format!("}} {}", format_hla_op(*op)),
         HlaStmt::DoClose { condition } => format!("}} {}", format_hla_condition(condition)),
+        HlaStmt::DoCloseAlways => "} always".to_string(),
+        HlaStmt::DoCloseNever => "} never".to_string(),
     }
 }
 

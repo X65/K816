@@ -1,0 +1,9 @@
+[default]
+000000: A9 00 AA A8 60
+
+
+[disasm obj#0 default::main]
+000000: A9 00       lda #$00
+000002: AA          tax
+000003: A8          tay
+000004: 60          rts

@@ -47,14 +47,26 @@ pub enum TokenKind {
     Comma,
     #[token(":")]
     Colon,
+    #[token(";")]
+    Semi,
     #[token("++")]
     PlusPlus,
     #[token("+")]
     Plus,
     #[token("-")]
     Minus,
+    #[token("*")]
+    Star,
+    #[token("%")]
+    Percent,
     #[token("&")]
     Amp,
+    #[token("|")]
+    Pipe,
+    #[token("^")]
+    Caret,
+    #[token("!")]
+    Bang,
     #[token("?")]
     Question,
     #[token("==")]
@@ -83,7 +95,7 @@ pub enum TokenKind {
     #[regex(r#""([^"\\]|\\.)*""#, parse_string)]
     String(String),
 
-    #[regex(r"0x[0-9a-fA-F]+|\$[0-9a-fA-F]+|[0-9]+", parse_number)]
+    #[regex(r"%[01]+|0b[01]+|0x[0-9a-fA-F]+|\$[0-9a-fA-F]+|[0-9]+", parse_number)]
     Number(i64),
 
     #[regex(r"[A-Za-z_.][A-Za-z0-9_.]*", parse_ident)]
@@ -132,6 +144,12 @@ pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnosti
 
 fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {
     let slice = lex.slice();
+    if let Some(bin) = slice.strip_prefix('%') {
+        return i64::from_str_radix(bin, 2).ok();
+    }
+    if let Some(bin) = slice.strip_prefix("0b") {
+        return i64::from_str_radix(bin, 2).ok();
+    }
     if let Some(hex) = slice.strip_prefix("0x") {
         return i64::from_str_radix(hex, 16).ok();
     }
@@ -199,5 +217,12 @@ mod tests {
         let diagnostics = lex(SourceId(0), "@").expect_err("expected lex error");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].message, "unexpected token '@'");
+    }
+
+    #[test]
+    fn lexes_percent_prefixed_binary_literal() {
+        let tokens = lex(SourceId(0), "%01001010").expect("lex");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].kind, TokenKind::Number(0x4A)));
     }
 }

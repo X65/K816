@@ -1,0 +1,14 @@
+[default]
+000000: E8 E0 0A D0 FB 4C 00 00 60 20 00 00 60
+
+
+[disasm obj#0 default::labels]
+000000: E8          inx
+000001: E0 0A       cpx #$0A
+000003: D0 FB       bne $000000
+000005: 4C 00 00    jmp $0000
+000008: 60          rts
+
+[disasm obj#0 default::main]
+000009: 20 00 00    jsr $0000
+00000C: 60          rts

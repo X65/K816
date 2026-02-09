@@ -59,6 +59,7 @@ fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
             kind: kind.clone(),
             args: args.clone(),
         },
+        NamedDataEntry::Ignored => NamedDataEntry::Ignored,
     }
 }
 
@@ -137,6 +138,8 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         HlaStmt::DoClose { condition } => HlaStmt::DoClose {
             condition: normalize_condition(condition),
         },
+        HlaStmt::DoCloseAlways => HlaStmt::DoCloseAlways,
+        HlaStmt::DoCloseNever => HlaStmt::DoCloseNever,
     }
 }
 

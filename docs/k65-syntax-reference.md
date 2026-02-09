@@ -38,6 +38,14 @@ Legacy docs describe constants primarily via evaluator expressions (`[ ... ]`), 
 ]
 ```
 
+### Numeric Literals
+
+K65/k816 accepts these common numeric literal formats:
+
+- Decimal: `42`
+- Hexadecimal: `0x2A` or `$2A`
+- Binary: `0b101010` or `%101010`
+
 ### Labels
 
 - Global labels: `label:`

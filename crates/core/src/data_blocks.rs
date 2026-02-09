@@ -68,6 +68,7 @@ pub fn lower_data_block(
                     )),
                 }
             }
+            DataCommand::Ignored => {}
         }
     }
 

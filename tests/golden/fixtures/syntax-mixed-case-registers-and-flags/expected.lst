@@ -1,0 +1,13 @@
+[default]
+000000: A9 00 AA A0 00 38 D8 78 B8 60
+
+
+[disasm obj#0 default::main]
+000000: A9 00       lda #$00
+000002: AA          tax
+000003: A0 00       ldy #$00
+000005: 38          sec
+000006: D8          cld
+000007: 78          sei
+000008: B8          clv
+000009: 60          rts

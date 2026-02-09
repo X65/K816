@@ -1,0 +1,8 @@
+[default]
+000000: E8 80 FD 60
+
+
+[disasm obj#0 default::main]
+000000: E8          inx
+000001: 80 FD       bra $000000
+000003: 60          rts

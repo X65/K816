@@ -1,7 +1,8 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, File, HlaCompareOp,
-    HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister, Instruction, Item, NamedDataBlock,
-    NamedDataEntry, Operand, SegmentDecl, Stmt, VarDecl, LabelDecl,
+    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, ExprBinaryOp,
+    ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister,
+    Instruction, Item, LabelDecl, NamedDataBlock, NamedDataEntry, Operand, SegmentDecl, Stmt,
+    VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -12,6 +13,7 @@ use chumsky::{
     extra,
     input::{Input as _, Stream, ValueInput},
     prelude::{Rich, SimpleSpan, any, end, just, skip_then_retry_until},
+    recursive::recursive,
 };
 
 type ParseError<'src> = Rich<'src, TokenKind>;
@@ -31,6 +33,8 @@ pub fn parse_with_warnings(
     source_id: SourceId,
     source_text: &str,
 ) -> Result<ParseOutput, Vec<Diagnostic>> {
+    let preprocessed = preprocess_source(source_text);
+    let source_text = preprocessed.as_str();
     let tokens = lex(source_id, source_text)?;
     let bank_spans = tokens
         .iter()
@@ -66,6 +70,130 @@ pub fn parse_with_warnings(
     } else {
         Err(diagnostics)
     }
+}
+
+fn preprocess_source(source_text: &str) -> String {
+    let mut out = Vec::new();
+    let mut skipping_eval_block = false;
+    let mut data_block_depth = 0usize;
+    let mut skipped_nested_block_depth = 0usize;
+
+    for raw_line in source_text.lines() {
+        let mut line = raw_line.to_string();
+        let mut trimmed = line.trim();
+
+        if skipping_eval_block {
+            if trimmed == "]" {
+                skipping_eval_block = false;
+            }
+            continue;
+        }
+
+        if skipped_nested_block_depth > 0 {
+            let opens = trimmed.chars().filter(|ch| *ch == '{').count();
+            let closes = trimmed.chars().filter(|ch| *ch == '}').count();
+            if opens >= closes {
+                skipped_nested_block_depth += opens - closes;
+            } else {
+                skipped_nested_block_depth = skipped_nested_block_depth.saturating_sub(closes - opens);
+            }
+            continue;
+        }
+
+        if trimmed == "[" {
+            skipping_eval_block = true;
+            continue;
+        }
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            continue;
+        }
+
+        if trimmed.starts_with("nocross data {") {
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .collect::<String>();
+            line = format!("{indent}data {{");
+            trimmed = line.trim();
+        } else if data_block_depth == 0 && trimmed == "nocross {" {
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .collect::<String>();
+            line = format!("{indent}{{");
+            trimmed = line.trim();
+        }
+
+        if data_block_depth > 0
+            && (trimmed.starts_with("code {")
+                || trimmed.starts_with("nocross code {")
+                || trimmed.starts_with("repeat ") && trimmed.ends_with('{')
+                || trimmed == "nocross {")
+        {
+            skipped_nested_block_depth = 1;
+            continue;
+        }
+
+        if data_block_depth > 0 && trimmed == "?" {
+            continue;
+        }
+
+        if trimmed.starts_with("var ") {
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .collect::<String>();
+            let mut payload = trimmed.trim_start_matches("var ").trim().to_string();
+            if payload.ends_with('?') {
+                payload.pop();
+                payload = payload.trim_end().to_string();
+            }
+            if payload.contains(',') {
+                for part in payload.split(',') {
+                    let part = part.trim();
+                    if !part.is_empty() {
+                        out.push(format!("{indent}var {part}"));
+                    }
+                }
+                continue;
+            }
+        }
+
+        if trimmed.starts_with("inline ") && trimmed.ends_with('{') && !trimmed.contains("func") {
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .collect::<String>();
+            let rest = trimmed.trim_start_matches("inline ").trim();
+            out.push(format!("{indent}inline func {rest}"));
+            continue;
+        }
+
+        if trimmed.starts_with("naked ") && trimmed.ends_with('{') && !trimmed.contains("func") {
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .collect::<String>();
+            let rest = trimmed.trim_start_matches("naked ").trim();
+            out.push(format!("{indent}naked func {rest}"));
+            continue;
+        }
+
+        if trimmed.starts_with("data ") && trimmed.ends_with('{') {
+            data_block_depth += 1;
+        } else if data_block_depth > 0 && trimmed == "}" {
+            data_block_depth -= 1;
+        }
+
+        out.push(line);
+    }
+
+    let mut text = out.join("\n");
+    if source_text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
 }
 
 fn collect_parser_warnings(file: &File, bank_spans: &[Span]) -> Vec<Diagnostic> {
@@ -143,9 +271,9 @@ fn file_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let separators = just(TokenKind::Newline).repeated();
+    let separators = line_sep_parser().repeated();
     let item = spanned(item_parser(source_id), source_id);
-    let boundary = just(TokenKind::Newline)
+    let boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
         .or(end().ignored());
@@ -186,7 +314,52 @@ where
 
     let stmt_item = stmt_parser(source_id).map(Item::Statement);
 
-    segment_item
+    let preproc_item = just(TokenKind::Hash)
+        .then(line_tail_parser())
+        .to(Item::Statement(Stmt::Empty));
+
+    let eval_block_item = chumsky::select! { TokenKind::Eval(_) => () }
+        .to(Item::Statement(Stmt::Empty));
+
+    let compat_const_item =
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("const") => () }
+            .then(line_tail_parser())
+            .to(Item::Statement(Stmt::Empty));
+
+    let compat_evalfunc_item =
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("evalfunc") => () }
+            .then(line_tail_parser())
+            .to(Item::Statement(Stmt::Empty));
+
+    let image_binary_var_item = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("image") || value.eq_ignore_ascii_case("binary") => ()
+    }
+    .ignore_then(
+        ident_parser()
+            .or(chumsky::select! { TokenKind::String(value) => value })
+            .then_ignore(just(TokenKind::Eq))
+            .then_ignore(chumsky::select! { TokenKind::String(_value) => () })
+            .or_not()
+            .then_ignore(line_tail_parser()),
+    )
+    .map(|name| {
+        if let Some(name) = name {
+            Item::Var(VarDecl {
+                name,
+                array_len: None,
+                initializer: Some(Expr::Number(0)),
+            })
+        } else {
+            Item::Statement(Stmt::Empty)
+        }
+    });
+
+    preproc_item
+        .or(eval_block_item)
+        .or(compat_const_item)
+        .or(compat_evalfunc_item)
+        .or(image_binary_var_item)
+        .or(segment_item)
         .or(var_item)
         .or(data_item)
         .or(code_block_item)
@@ -212,14 +385,15 @@ where
         .or(just(TokenKind::Naked).to(Modifier::Naked))
         .or(just(TokenKind::Inline).to(Modifier::Inline));
 
-    let modifiers = modifier.repeated().collect::<Vec<_>>();
+    let modifiers = modifier.clone().repeated().collect::<Vec<_>>();
+    let required_modifiers = modifier.repeated().at_least(1).collect::<Vec<_>>();
     let stmt = spanned(stmt_parser(source_id), source_id);
-    let stmt_boundary = just(TokenKind::Newline)
+    let stmt_boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
         .or(end().ignored());
     let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
-    let separators = just(TokenKind::Newline).repeated();
+    let separators = line_sep_parser().repeated();
     let body = just(TokenKind::LBrace)
         .ignore_then(separators.clone())
         .ignore_then(
@@ -244,7 +418,7 @@ where
 
     let func = just(TokenKind::Func)
         .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
-        .then(body)
+        .then(body.clone())
         .map(
             move |((name, name_span), body): ((String, SimpleSpan), Vec<Spanned<Stmt>>)| {
                 let range = name_span.into_range();
@@ -260,7 +434,7 @@ where
             },
         );
 
-    modifiers
+    let explicit_block = modifiers
         .then(main.or(func))
         .map(|(mods, mut block)| {
             for modifier in mods {
@@ -271,7 +445,36 @@ where
                 }
             }
             block
-        })
+        });
+
+    let implicit_func = required_modifiers
+        .then(ident_parser().map_with(|name, extra| (name, extra.span())))
+        .then(body)
+        .map(
+            move |((mods, (name, name_span)), body): ((Vec<Modifier>, (String, SimpleSpan)), Vec<Spanned<Stmt>>)| {
+                let range = name_span.into_range();
+                let mut block = CodeBlock {
+                    name,
+                    name_span: Some(Span::new(source_id, range.start, range.end)),
+                    kind: BlockKind::Func,
+                    is_far: false,
+                    is_naked: false,
+                    is_inline: false,
+                    body,
+                };
+                for modifier in mods {
+                    match modifier {
+                        Modifier::Far => block.is_far = true,
+                        Modifier::Naked => block.is_naked = true,
+                        Modifier::Inline => block.is_inline = true,
+                    }
+                }
+                block
+            },
+        );
+
+    explicit_block
+        .or(implicit_func)
         .boxed()
 }
 
@@ -281,9 +484,9 @@ fn data_block_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let separators = just(TokenKind::Newline).repeated();
+    let separators = line_sep_parser().repeated();
     let command = spanned(data_command_parser(), source_id);
-    let command_boundary = just(TokenKind::Newline)
+    let command_boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
         .or(end().ignored());
@@ -291,10 +494,9 @@ where
         command.recover_with(skip_then_retry_until(any().ignored(), command_boundary));
 
     just(TokenKind::LBrace)
+        .ignore_then(separators.clone())
         .ignore_then(
-            separators
-                .clone()
-                .ignore_then(recover_command)
+            recover_command
                 .then_ignore(separators.clone())
                 .repeated()
                 .collect::<Vec<_>>(),
@@ -310,9 +512,9 @@ fn named_data_block_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let separators = just(TokenKind::Newline).repeated();
+    let separators = line_sep_parser().repeated();
     let entry = spanned(named_data_entry_parser(source_id), source_id);
-    let entry_boundary = just(TokenKind::Newline)
+    let entry_boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
         .or(end().ignored());
@@ -322,10 +524,9 @@ where
         .map_with(|name, extra| (name, extra.span()))
         .then(
             just(TokenKind::LBrace)
+                .ignore_then(separators.clone())
                 .ignore_then(
-                    separators
-                        .clone()
-                        .ignore_then(recover_entry)
+                    recover_entry
                         .then_ignore(separators.clone())
                         .repeated()
                         .collect::<Vec<_>>(),
@@ -355,24 +556,34 @@ where
         .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
 
     let address_entry = just(TokenKind::Address)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser())
         .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
             u32::try_from(value)
                 .map(NamedDataEntry::Address)
                 .map_err(|_| Rich::custom(span, "address value must fit in u32"))
         });
 
     let align_entry = just(TokenKind::Align)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser())
         .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
             u16::try_from(value)
                 .map(NamedDataEntry::Align)
                 .map_err(|_| Rich::custom(span, "align value must fit in u16"))
         });
 
     let nocross_entry = just(TokenKind::Nocross)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser().or_not())
         .try_map(|value, span| {
+            let value = match value {
+                Some(value) => eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "nocross value must be a constant expression")
+                })?,
+                None => 256,
+            };
             u16::try_from(value)
                 .map(NamedDataEntry::Nocross)
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
@@ -388,7 +599,14 @@ where
         .map(NamedDataEntry::Bytes);
 
     let string_entry = chumsky::select! { TokenKind::String(value) => value }
-        .map(NamedDataEntry::String);
+        .then(expr_parser().repeated().collect::<Vec<_>>())
+        .map(|(value, extra)| {
+            if extra.is_empty() {
+                NamedDataEntry::String(value)
+            } else {
+                NamedDataEntry::Ignored
+            }
+        });
 
     let legacy_bytes_entry = number_parser()
         .repeated()
@@ -396,6 +614,28 @@ where
         .collect::<Vec<_>>()
         .map(|values| {
             NamedDataEntry::LegacyBytes(values.into_iter().map(Expr::Number).collect::<Vec<_>>())
+        });
+
+    let eval_bytes_entry = chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map(NamedDataEntry::Bytes);
+
+    let amp_amp_entry = just(TokenKind::Amp)
+        .then_ignore(just(TokenKind::Amp))
+        .ignore_then(ident_parser())
+        .map(|name| {
+            NamedDataEntry::Bytes(vec![
+                Expr::Unary {
+                    op: ExprUnaryOp::LowByte,
+                    expr: Box::new(Expr::Ident(name.clone())),
+                },
+                Expr::Unary {
+                    op: ExprUnaryOp::HighByte,
+                    expr: Box::new(Expr::Ident(name)),
+                },
+            ])
         });
 
     let args = data_arg_parser()
@@ -411,6 +651,19 @@ where
         )
         .map(|(kind, args)| NamedDataEntry::Convert { kind, args });
 
+    let label_ignored_entry = ident_parser()
+        .then_ignore(just(TokenKind::Colon))
+        .to(NamedDataEntry::Ignored);
+
+    let legacy_directive_ignored_entry = chumsky::select! {
+        TokenKind::Ident(value) if is_legacy_discard_keyword(&value)
+            || value.eq_ignore_ascii_case("image")
+            || value.eq_ignore_ascii_case("binary")
+            || value.eq_ignore_ascii_case("repeat") => ()
+    }
+    .then(line_tail_parser())
+    .to(NamedDataEntry::Ignored);
+
     string_entry
         .or(segment_entry)
         .or(address_entry)
@@ -419,6 +672,10 @@ where
         .or(byte_entry)
         .or(convert_entry)
         .or(legacy_bytes_entry)
+        .or(eval_bytes_entry)
+        .or(amp_amp_entry)
+        .or(label_ignored_entry)
+        .or(legacy_directive_ignored_entry)
         .boxed()
 }
 
@@ -428,24 +685,34 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let align = just(TokenKind::Align)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser())
         .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
             u16::try_from(value)
                 .map(DataCommand::Align)
                 .map_err(|_| Rich::custom(span, "align value must fit in u16"))
         });
 
     let address = just(TokenKind::Address)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser())
         .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
             u32::try_from(value)
                 .map(DataCommand::Address)
                 .map_err(|_| Rich::custom(span, "address value must fit in u32"))
         });
 
     let nocross = just(TokenKind::Nocross)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser().or_not())
         .try_map(|value, span| {
+            let value = match value {
+                Some(value) => eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "nocross value must be a constant expression")
+                })?,
+                None => 256,
+            };
             u16::try_from(value)
                 .map(DataCommand::Nocross)
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
@@ -465,7 +732,36 @@ where
         )
         .map(|(kind, args)| DataCommand::Convert { kind, args });
 
-    align.or(address).or(nocross).or(convert).boxed()
+    let legacy_bytes = number_parser()
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map(|values| DataCommand::Convert {
+            kind: "bytes".to_string(),
+            args: values.into_iter().map(DataArg::Int).collect::<Vec<_>>(),
+        });
+
+    let legacy_directive_ignored = chumsky::select! {
+        TokenKind::Ident(value) if is_legacy_discard_keyword(&value)
+            || value.eq_ignore_ascii_case("image")
+            || value.eq_ignore_ascii_case("binary")
+            || value.eq_ignore_ascii_case("repeat") => ()
+    }
+    .then(line_tail_parser())
+    .to(DataCommand::Ignored);
+
+    let preproc_ignored = just(TokenKind::Hash)
+        .then(line_tail_parser())
+        .to(DataCommand::Ignored);
+
+    align
+        .or(address)
+        .or(nocross)
+        .or(convert)
+        .or(legacy_bytes)
+        .or(legacy_directive_ignored)
+        .or(preproc_ignored)
+        .boxed()
 }
 
 fn data_arg_parser<'src, I>() -> impl chumsky::Parser<'src, I, DataArg, ParseExtra<'src>> + Clone
@@ -538,24 +834,34 @@ where
         .map(Stmt::DataBlock);
 
     let address_stmt = just(TokenKind::Address)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser())
         .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
             u32::try_from(value)
                 .map(Stmt::Address)
                 .map_err(|_| Rich::custom(span, "address value must fit in u32"))
         });
 
     let align_stmt = just(TokenKind::Align)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser())
         .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
             u16::try_from(value)
                 .map(Stmt::Align)
                 .map_err(|_| Rich::custom(span, "align value must fit in u16"))
         });
 
     let nocross_stmt = just(TokenKind::Nocross)
-        .ignore_then(number_parser())
+        .ignore_then(expr_parser().or_not())
         .try_map(|value, span| {
+            let value = match value {
+                Some(value) => eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "nocross value must be a constant expression")
+                })?,
+                None => 256,
+            };
             u16::try_from(value)
                 .map(Stmt::Nocross)
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
@@ -580,15 +886,39 @@ where
 
     let hla_wait_stmt = hla_wait_loop_stmt_parser();
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
-    let hla_do_close_stmt = just(TokenKind::RBrace).ignore_then(
-        hla_condition_parser()
-            .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
-            .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op }))),
-    );
+    let hla_do_close_suffix = hla_condition_parser()
+        .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
+        .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
+        .or(
+            chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
+                .to(Stmt::Hla(HlaStmt::DoCloseAlways)),
+        )
+        .or(
+            chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => () }
+                .to(Stmt::Hla(HlaStmt::DoCloseNever)),
+        );
+    let hla_do_close_stmt = just(TokenKind::RBrace)
+        .then(hla_do_close_suffix.clone())
+        .rewind()
+        .ignore_then(just(TokenKind::RBrace).ignore_then(
+            hla_do_close_suffix,
+        ));
     let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();
     let hla_x_assign_stmt = hla_x_assign_stmt_parser();
     let hla_x_increment_stmt = hla_x_increment_stmt_parser();
     let hla_store_from_a_stmt = hla_store_from_a_stmt_parser();
+    let legacy_assign_stmt = legacy_assign_stmt_parser();
+    let legacy_store_stmt = legacy_store_stmt_parser();
+    let legacy_alu_stmt = legacy_alu_stmt_parser();
+    let legacy_incdec_stmt = legacy_incdec_stmt_parser();
+    let legacy_shift_stmt = legacy_shift_stmt_parser();
+    let legacy_flag_stmt = legacy_flag_stmt_parser();
+    let legacy_stack_stmt = legacy_stack_stmt_parser();
+    let legacy_flow_stmt = legacy_flow_stmt_parser();
+    let legacy_nop_stmt = legacy_nop_stmt_parser();
+    let legacy_chain_stmt = legacy_chain_stmt_parser();
+    let legacy_bare_rbrace_stmt = legacy_bare_rbrace_stmt_parser();
+    let legacy_discard_stmt = legacy_discard_stmt_parser();
 
     let mnemonic = ident_parser().try_map(|mnemonic, span| {
         if mnemonic == ".byte" {
@@ -601,7 +931,7 @@ where
         }
     });
 
-    let operand_boundary = just(TokenKind::Newline)
+    let operand_boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
         .or(end().ignored())
@@ -654,11 +984,23 @@ where
         .or(byte_stmt)
         .or(hla_wait_stmt)
         .or(hla_do_close_stmt)
+        .or(legacy_bare_rbrace_stmt)
         .or(hla_condition_seed_stmt)
         .or(hla_do_open_stmt)
         .or(hla_x_increment_stmt)
         .or(hla_x_assign_stmt)
         .or(hla_store_from_a_stmt)
+        .or(legacy_chain_stmt)
+        .or(legacy_assign_stmt)
+        .or(legacy_store_stmt)
+        .or(legacy_alu_stmt)
+        .or(legacy_incdec_stmt)
+        .or(legacy_shift_stmt)
+        .or(legacy_flag_stmt)
+        .or(legacy_stack_stmt)
+        .or(legacy_flow_stmt)
+        .or(legacy_nop_stmt)
+        .or(legacy_discard_stmt)
         .or(instruction)
         .boxed()
 }
@@ -754,7 +1096,7 @@ where
                 }
             };
 
-            if index.is_none() && matches!(expr, Expr::EvalText(_)) {
+            if index.is_none() && !matches!(expr, Expr::Ident(_)) {
                 return Ok(HlaRhs::Immediate(expr));
             }
 
@@ -769,7 +1111,7 @@ fn hla_store_from_a_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
+    chumsky::select! { TokenKind::Ident(value) if !is_register_name(&value) => value }
         .then_ignore(just(TokenKind::Eq))
         .then(ident_parser())
         .then_ignore(just(TokenKind::Eq))
@@ -783,6 +1125,507 @@ where
             }
             Ok(Stmt::Hla(HlaStmt::StoreFromA { dest, rhs }))
         })
+}
+
+fn legacy_chain_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .then(ident_parser())
+        .then_ignore(just(TokenKind::Eq))
+        .then(line_tail_parser())
+        .to(Stmt::Empty)
+}
+
+fn legacy_assign_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    }
+    .then_ignore(just(TokenKind::Eq))
+    .then(legacy_operand_expr_with_index_parser())
+    .map(|(lhs, (rhs, index))| {
+        let lhs = lhs.to_ascii_lowercase();
+        let rhs_ident = match &rhs {
+            Expr::Ident(value) => Some(value.to_ascii_lowercase()),
+            _ => None,
+        };
+
+        let transfer = match (lhs.as_str(), rhs_ident.as_deref(), index.as_deref()) {
+            ("x", Some("a"), None) => Some("tax"),
+            ("y", Some("a"), None) => Some("tay"),
+            ("a", Some("x"), None) => Some("txa"),
+            ("a", Some("y"), None) => Some("tya"),
+            ("x", Some("s"), None) => Some("tsx"),
+            ("s", Some("x"), None) => Some("txs"),
+            _ => None,
+        };
+
+        if let Some(mnemonic) = transfer {
+            return instruction_stmt(mnemonic, None);
+        }
+
+        let mnemonic = match lhs.as_str() {
+            "a" => "lda",
+            "x" => "ldx",
+            "y" => "ldy",
+            _ => return Stmt::Empty,
+        };
+
+        let index_x = index
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("x"));
+        let is_value = index_x || expr_is_address_like(&rhs);
+        let operand = if is_value {
+            Operand::Value {
+                expr: rhs,
+                force_far: false,
+                index: if index_x { Some(IndexRegister::X) } else { None },
+            }
+        } else {
+            Operand::Immediate(rhs)
+        };
+
+        instruction_stmt(mnemonic, Some(operand))
+    })
+}
+
+fn legacy_store_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    legacy_operand_expr_with_index_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .then(chumsky::select! {
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("a")
+                || value.eq_ignore_ascii_case("x")
+                || value.eq_ignore_ascii_case("y") => value
+        })
+        .map(|((dest, index), rhs)| {
+            let mnemonic = if rhs.eq_ignore_ascii_case("a") {
+                "sta"
+            } else if rhs.eq_ignore_ascii_case("x") {
+                "stx"
+            } else {
+                "sty"
+            };
+
+            let index_x = index
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case("x"));
+            instruction_stmt(
+                mnemonic,
+                Some(Operand::Value {
+                    expr: dest,
+                    force_far: false,
+                    index: if index_x { Some(IndexRegister::X) } else { None },
+                }),
+            )
+        })
+}
+
+fn legacy_operand_expr_with_index_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, (Expr, Option<String>), ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let plain = expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not());
+
+    let parenthesized = just(TokenKind::LParen)
+        .ignore_then(
+            expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not()),
+        )
+        .then_ignore(just(TokenKind::RParen))
+        .then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not())
+        .map(|((expr, inner_index), outer_index)| (expr, outer_index.or(inner_index)));
+
+    parenthesized.or(plain)
+}
+
+fn legacy_alu_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let a_bit = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
+    }
+    .then_ignore(just(TokenKind::Amp))
+    .then_ignore(just(TokenKind::Question))
+    .ignore_then(expr_parser())
+    .map(|rhs| {
+        let operand = if expr_is_address_like(&rhs) {
+            Operand::Value {
+                expr: rhs,
+                force_far: false,
+                index: None,
+            }
+        } else {
+            Operand::Immediate(rhs)
+        };
+        instruction_stmt("bit", Some(operand))
+    });
+
+    let a_alu = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
+    }
+    .ignore_then(
+        just(TokenKind::Plus)
+            .to("adc")
+            .or(just(TokenKind::Minus).to("sbc"))
+            .or(just(TokenKind::Amp).to("and"))
+            .or(just(TokenKind::Pipe).to("ora"))
+            .or(just(TokenKind::Caret).to("eor")),
+    )
+    .then(expr_parser())
+    .map(|(mnemonic, rhs)| {
+        let operand = if expr_is_address_like(&rhs) {
+            Operand::Value {
+                expr: rhs,
+                force_far: false,
+                index: None,
+            }
+        } else {
+            Operand::Immediate(rhs)
+        };
+        instruction_stmt(mnemonic, Some(operand))
+    });
+
+    let xy_cmp = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("y") => value
+    }
+    .then_ignore(just(TokenKind::Question))
+    .then(expr_parser())
+    .map(|(lhs, rhs)| {
+        let mnemonic = if lhs.eq_ignore_ascii_case("x") {
+            "cpx"
+        } else {
+            "cpy"
+        };
+        let operand = if expr_is_address_like(&rhs) {
+            Operand::Value {
+                expr: rhs,
+                force_far: false,
+                index: None,
+            }
+        } else {
+            Operand::Immediate(rhs)
+        };
+        instruction_stmt(mnemonic, Some(operand))
+    });
+
+    a_bit.or(a_alu).or(xy_cmp)
+}
+
+fn legacy_incdec_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let inc = ident_parser().then_ignore(just(TokenKind::PlusPlus)).map(|ident| {
+        if ident.eq_ignore_ascii_case("x") {
+            return instruction_stmt("inx", None);
+        }
+        if ident.eq_ignore_ascii_case("y") {
+            return instruction_stmt("iny", None);
+        }
+        instruction_stmt(
+            "inc",
+            Some(Operand::Value {
+                expr: Expr::Ident(ident),
+                force_far: false,
+                index: None,
+            }),
+        )
+    });
+
+    let dec = ident_parser()
+        .then_ignore(just(TokenKind::Minus))
+        .then_ignore(just(TokenKind::Minus))
+        .map(|ident| {
+            if ident.eq_ignore_ascii_case("x") {
+                return instruction_stmt("dex", None);
+            }
+            if ident.eq_ignore_ascii_case("y") {
+                return instruction_stmt("dey", None);
+            }
+            instruction_stmt(
+                "dec",
+                Some(Operand::Value {
+                    expr: Expr::Ident(ident),
+                    force_far: false,
+                    index: None,
+                }),
+            )
+        });
+
+    inc.or(dec)
+}
+
+fn legacy_shift_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let shift_op = just(TokenKind::Lt)
+        .then_ignore(just(TokenKind::Lt))
+        .then_ignore(just(TokenKind::Lt))
+        .to("rol")
+        .or(just(TokenKind::Gt)
+            .then_ignore(just(TokenKind::Gt))
+            .then_ignore(just(TokenKind::Gt))
+            .to("ror"))
+        .or(just(TokenKind::Lt).then_ignore(just(TokenKind::Lt)).to("asl"))
+        .or(just(TokenKind::Gt).then_ignore(just(TokenKind::Gt)).to("lsr"));
+
+    ident_parser().then(shift_op).map(|(target, mnemonic)| {
+        if target.eq_ignore_ascii_case("a") {
+            instruction_stmt(mnemonic, None)
+        } else {
+            instruction_stmt(
+                mnemonic,
+                Some(Operand::Value {
+                    expr: Expr::Ident(target),
+                    force_far: false,
+                    index: None,
+                }),
+            )
+        }
+    })
+}
+
+fn legacy_flag_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then(just(TokenKind::Plus).to(true).or(just(TokenKind::Minus).to(false)))
+        .map(|(flag, set)| match (flag.to_ascii_lowercase().as_str(), set) {
+            ("c", true) => instruction_stmt("sec", None),
+            ("c", false) => instruction_stmt("clc", None),
+            ("d", true) => instruction_stmt("sed", None),
+            ("d", false) => instruction_stmt("cld", None),
+            ("i", true) => instruction_stmt("sei", None),
+            ("i", false) => instruction_stmt("cli", None),
+            ("o", false) => instruction_stmt("clv", None),
+            _ => Stmt::Empty,
+        })
+}
+
+fn legacy_stack_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
+        .then(
+            just(TokenKind::Bang)
+                .then_ignore(just(TokenKind::Bang))
+                .to(true)
+                .or(just(TokenKind::Question)
+                    .then_ignore(just(TokenKind::Question))
+                    .to(false)),
+        )
+        .map(|(target, push)| {
+            if target.eq_ignore_ascii_case("a") {
+                return if push {
+                    instruction_stmt("pha", None)
+                } else {
+                    instruction_stmt("pla", None)
+                };
+            }
+            if push {
+                instruction_stmt("php", None)
+            } else {
+                instruction_stmt("plp", None)
+            }
+        })
+}
+
+fn legacy_flow_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let goto_kw = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("goto") => ()
+    };
+
+    let goto_stmt = goto_kw
+        .ignore_then(
+            just(TokenKind::LParen)
+                .ignore_then(expr_parser())
+                .then_ignore(just(TokenKind::RParen))
+                .or(expr_parser()),
+        )
+        .map(|target| {
+            instruction_stmt(
+                "jmp",
+                Some(Operand::Value {
+                    expr: target,
+                    force_far: false,
+                    index: None,
+                }),
+            )
+        });
+
+    let branch_goto_stmt = just(TokenKind::Lt)
+        .to("bcc")
+        .or(just(TokenKind::GtEq).to("bcs"))
+        .or(just(TokenKind::EqEq).to("beq"))
+        .or(just(TokenKind::BangEq).to("bne"))
+        .then_ignore(goto_kw.clone())
+        .then(expr_parser())
+        .map(|(mnemonic, target)| {
+            instruction_stmt(
+                mnemonic,
+                Some(Operand::Value {
+                    expr: target,
+                    force_far: false,
+                    index: None,
+                }),
+            )
+        });
+
+    let return_stmt = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("return") || value.eq_ignore_ascii_case("return_i") => value
+    }
+    .map(|keyword| {
+        if keyword.eq_ignore_ascii_case("return_i") {
+            instruction_stmt("rti", None)
+        } else {
+            instruction_stmt("rts", None)
+        }
+    });
+
+    let far_call_stmt = just(TokenKind::Far)
+        .ignore_then(ident_parser())
+        .map(|target| Stmt::Call(CallStmt { target }));
+
+    let break_repeat_stmt = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("break")
+            || value.eq_ignore_ascii_case("repeat") => ()
+    }
+    .to(Stmt::Empty);
+
+    goto_stmt
+        .or(branch_goto_stmt)
+        .or(return_stmt)
+        .or(far_call_stmt)
+        .or(break_repeat_stmt)
+}
+
+fn legacy_nop_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Star)
+        .then(number_parser().or_not())
+        .to(instruction_stmt("nop", None))
+        .or(just(TokenKind::Percent).to(instruction_stmt("nop", None)))
+}
+
+fn legacy_discard_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let else_clause = just(TokenKind::RBrace)
+        .then(
+            chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("else") => () },
+        )
+        .then(line_tail_parser())
+        .to(Stmt::Empty);
+
+    let generic = just(TokenKind::Hash)
+        .to(())
+        .or(just(TokenKind::EqEq).to(()))
+        .or(just(TokenKind::BangEq).to(()))
+        .or(just(TokenKind::LtEq).to(()))
+        .or(just(TokenKind::GtEq).to(()))
+        .or(just(TokenKind::Lt).to(()))
+        .or(just(TokenKind::Gt).to(()))
+        .or(chumsky::select! {
+            TokenKind::Ident(value) if is_legacy_discard_keyword(&value) => ()
+        })
+        .or(just(TokenKind::Question).to(()))
+        .then(line_tail_parser())
+        .to(Stmt::Empty);
+
+    else_clause.or(generic)
+}
+
+fn legacy_bare_rbrace_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::RBrace)
+        .then_ignore(line_sep_parser().repeated())
+        .then(just(TokenKind::RBrace))
+        .rewind()
+        .ignore_then(just(TokenKind::RBrace))
+        .to(Stmt::Empty)
+}
+
+fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
+    Stmt::Instruction(Instruction {
+        mnemonic: mnemonic.to_string(),
+        operand,
+    })
+}
+
+fn is_register_name(value: &str) -> bool {
+    value.eq_ignore_ascii_case("a")
+        || value.eq_ignore_ascii_case("x")
+        || value.eq_ignore_ascii_case("y")
+        || value.eq_ignore_ascii_case("s")
+}
+
+fn looks_like_constant_ident(value: &str) -> bool {
+    let mut has_alpha = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphabetic() {
+            has_alpha = true;
+            if !ch.is_ascii_uppercase() {
+                return false;
+            }
+        } else if !(ch.is_ascii_digit() || ch == '_') {
+            return false;
+        }
+    }
+    has_alpha
+}
+
+fn expr_is_address_like(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(name) => !looks_like_constant_ident(name) && !is_register_name(name),
+        Expr::Binary { lhs, rhs, .. } => expr_is_address_like(lhs) || expr_is_address_like(rhs),
+        Expr::Unary { .. } => false,
+        Expr::Number(_) | Expr::EvalText(_) => false,
+    }
+}
+
+fn is_legacy_discard_keyword(value: &str) -> bool {
+    value.eq_ignore_ascii_case("else")
+        || value.eq_ignore_ascii_case("always")
+        || value.eq_ignore_ascii_case("never")
+        || value.eq_ignore_ascii_case("evaluator")
+        || value.eq_ignore_ascii_case("charset")
+        || value.eq_ignore_ascii_case("for")
+        || value.eq_ignore_ascii_case("code")
+        || value.eq_ignore_ascii_case("tiles")
+        || value.eq_ignore_ascii_case("colormode")
+        || value.eq_ignore_ascii_case("imgwave")
+        || value.eq_ignore_ascii_case("inv")
 }
 
 fn hla_compare_op_parser<'src, I>()
@@ -804,20 +1647,14 @@ fn hla_condition_seed_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
+    chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => value }
         .then_ignore(just(TokenKind::Question))
         .then(expr_parser())
-        .try_map(|(ident, rhs), span| {
-            if !ident.eq_ignore_ascii_case("a") {
-                return Err(Rich::custom(
-                    span,
-                    format!("unsupported HLA condition lhs '{ident}', expected 'a'"),
-                ));
-            }
-            Ok(Stmt::Hla(HlaStmt::ConditionSeed {
+        .map(|(_ident, rhs)| {
+            Stmt::Hla(HlaStmt::ConditionSeed {
                 lhs: HlaRegister::A,
                 rhs,
-            }))
+            })
         })
 }
 
@@ -847,11 +1684,53 @@ fn expr_parser<'src, I>() -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! {
-        TokenKind::Number(value) => Expr::Number(value),
-        TokenKind::Ident(value) => Expr::Ident(value),
-        TokenKind::Eval(value) => Expr::EvalText(value),
-    }
+    recursive(|expr| {
+        let atom = chumsky::select! {
+            TokenKind::Number(value) => Expr::Number(value),
+            TokenKind::Ident(value) => Expr::Ident(value),
+            TokenKind::Eval(value) => parse_eval_expr_token(&value),
+        }
+        .or(just(TokenKind::LParen)
+            .ignore_then(expr.clone())
+            .then_ignore(just(TokenKind::RParen)));
+
+        let unary = just(TokenKind::Amp)
+            .ignore_then(
+                just(TokenKind::Lt)
+                    .to(ExprUnaryOp::LowByte)
+                    .or(just(TokenKind::Gt).to(ExprUnaryOp::HighByte)),
+            )
+            .repeated()
+            .collect::<Vec<_>>()
+            .then(atom)
+            .map(|(ops, mut inner)| {
+                for op in ops.into_iter().rev() {
+                    inner = Expr::Unary {
+                        op,
+                        expr: Box::new(inner),
+                    };
+                }
+                inner
+            });
+
+        unary
+            .clone()
+            .then(
+                just(TokenKind::Plus)
+                    .to(ExprBinaryOp::Add)
+                    .or(just(TokenKind::Minus).to(ExprBinaryOp::Sub))
+                    .then(unary)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, chain)| {
+                chain.into_iter().fold(lhs, |lhs, (op, rhs)| Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            })
+    })
     .boxed()
 }
 
@@ -862,11 +1741,29 @@ where
 {
     let expr = expr_parser().map_with(|expr, extra| (expr, extra.span()));
 
-    just(TokenKind::Newline)
+    line_sep_parser()
         .repeated()
         .ignore_then(expr)
-        .then_ignore(just(TokenKind::Newline).repeated())
+        .then_ignore(line_sep_parser().repeated())
         .then_ignore(end())
+}
+
+fn line_sep_parser<'src, I>() -> impl chumsky::Parser<'src, I, TokenKind, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Newline).or(just(TokenKind::Semi))
+}
+
+fn line_tail_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Vec<TokenKind>, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    any()
+        .filter(|token: &TokenKind| !matches!(token, TokenKind::Newline | TokenKind::Semi))
+        .repeated()
+        .collect::<Vec<_>>()
 }
 
 fn ident_parser<'src, I>() -> impl chumsky::Parser<'src, I, String, ParseExtra<'src>> + Clone
@@ -972,10 +1869,16 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::RParen => "')'".to_string(),
         TokenKind::Comma => "','".to_string(),
         TokenKind::Colon => "':'".to_string(),
+        TokenKind::Semi => "';'".to_string(),
         TokenKind::PlusPlus => "'++'".to_string(),
         TokenKind::Plus => "'+'".to_string(),
         TokenKind::Minus => "'-'".to_string(),
+        TokenKind::Star => "'*'".to_string(),
+        TokenKind::Percent => "'%'".to_string(),
         TokenKind::Amp => "'&'".to_string(),
+        TokenKind::Pipe => "'|'".to_string(),
+        TokenKind::Caret => "'^'".to_string(),
+        TokenKind::Bang => "'!'".to_string(),
         TokenKind::Question => "'?'".to_string(),
         TokenKind::EqEq => "'=='".to_string(),
         TokenKind::BangEq => "'!='".to_string(),
@@ -990,6 +1893,82 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::String(_) => "string literal".to_string(),
         TokenKind::Number(_) => "number literal".to_string(),
         TokenKind::Ident(value) => format!("identifier '{value}'"),
+    }
+}
+
+fn parse_eval_expr_token(value: &str) -> Expr {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Expr::Number(0);
+    }
+
+    if is_ident_text(trimmed) {
+        return Expr::Ident(trimmed.to_string());
+    }
+
+    if let Ok(number) = parse_numeric_text(trimmed) {
+        return Expr::Number(number);
+    }
+
+    if let Ok(expanded) = k816_eval::expand(trimmed) {
+        if let Ok(number) = expanded.trim().parse::<i64>() {
+            return Expr::Number(number);
+        }
+    }
+
+    Expr::EvalText(trimmed.to_string())
+}
+
+fn is_ident_text(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '.') {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+}
+
+fn parse_numeric_text(text: &str) -> Result<i64, ()> {
+    if let Some(bin) = text.strip_prefix("0b") {
+        return i64::from_str_radix(bin, 2).map_err(|_| ());
+    }
+    if let Some(hex) = text.strip_prefix("0x") {
+        return i64::from_str_radix(hex, 16).map_err(|_| ());
+    }
+    if let Some(hex) = text.strip_prefix('$') {
+        return i64::from_str_radix(hex, 16).map_err(|_| ());
+    }
+    text.parse::<i64>().map_err(|_| ())
+}
+
+fn eval_static_expr(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Number(value) => Some(*value),
+        Expr::Ident(_) => None,
+        Expr::EvalText(value) => {
+            if let Ok(expanded) = k816_eval::expand(value) {
+                expanded.trim().parse::<i64>().ok()
+            } else {
+                None
+            }
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let lhs = eval_static_expr(lhs)?;
+            let rhs = eval_static_expr(rhs)?;
+            match op {
+                ExprBinaryOp::Add => lhs.checked_add(rhs),
+                ExprBinaryOp::Sub => lhs.checked_sub(rhs),
+            }
+        }
+        Expr::Unary { op, expr } => {
+            let value = eval_static_expr(expr)?;
+            match op {
+                ExprUnaryOp::LowByte => Some(value & 0xFF),
+                ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
+            }
+        }
     }
 }
 

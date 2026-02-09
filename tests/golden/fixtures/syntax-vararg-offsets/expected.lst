@@ -1,0 +1,10 @@
+[default]
+000000: AD 04 02 AD FC 01 AD 03 02 AD FE 01 60
+
+
+[disasm obj#0 default::main]
+000000: AD 04 02    lda $0204
+000003: AD FC 01    lda $01FC
+000006: AD 03 02    lda $0203
+000009: AD FE 01    lda $01FE
+00000C: 60          rts

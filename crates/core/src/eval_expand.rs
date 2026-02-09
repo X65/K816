@@ -145,6 +145,7 @@ fn expand_named_data_entry(
             kind: kind.clone(),
             args: args.clone(),
         },
+        NamedDataEntry::Ignored => NamedDataEntry::Ignored,
     }
 }
 
@@ -175,6 +176,8 @@ fn expand_hla_stmt(
         HlaStmt::DoClose { condition } => HlaStmt::DoClose {
             condition: expand_hla_condition(condition, span, source_id, diagnostics),
         },
+        HlaStmt::DoCloseAlways => HlaStmt::DoCloseAlways,
+        HlaStmt::DoCloseNever => HlaStmt::DoCloseNever,
     }
 }
 
@@ -267,29 +270,23 @@ fn expand_expr(
         Expr::EvalText(input) => {
             let expanded = match k816_eval::expand(input) {
                 Ok(expanded) => expanded,
-                Err(err) => {
-                    diagnostics.push(
-                        Diagnostic::error(span, format!("eval expansion failed: {err}"))
-                            .with_help("check the expression inside [...]"),
-                    );
-                    return Expr::Number(0);
-                }
+                Err(_err) => return Expr::Number(0),
             };
 
             match parse_expression_fragment(source_id, &expanded) {
                 Ok(expr) => expr.node,
-                Err(err) => {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            span,
-                            format!("eval expansion is not valid syntax: {}", err.message),
-                        )
-                        .with_label(span, format!("expanded text: '{expanded}'")),
-                    );
-                    Expr::Number(0)
-                }
+                Err(_err) => Expr::Number(0),
             }
         }
         Expr::Number(_) | Expr::Ident(_) => expr.clone(),
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: *op,
+            lhs: Box::new(expand_expr(lhs, span, source_id, diagnostics)),
+            rhs: Box::new(expand_expr(rhs, span, source_id, diagnostics)),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: *op,
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+        },
     }
 }

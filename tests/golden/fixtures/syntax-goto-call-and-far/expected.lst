@@ -1,0 +1,20 @@
+[default]
+000000: EA 60 EA 60 4C 00 00 90 F7 4C 00 20 20 00 00 20
+000010: 02 00 60
+
+
+[disasm obj#0 default::near_target]
+000000: EA          nop
+000001: 60          rts
+
+[disasm obj#0 default::far_target]
+000002: EA          nop
+000003: 60          rts
+
+[disasm obj#0 default::main]
+000004: 4C 00 00    jmp $0000
+000007: 90 F7       bcc $000000
+000009: 4C 00 20    jmp $2000
+00000C: 20 00 00    jsr $0000
+00000F: 20 02 00    jsr $0002
+000012: 60          rts

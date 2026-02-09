@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 
-use crate::ast::{CodeBlock, Expr, File, Item, Stmt, VarDecl};
+use crate::ast::{CodeBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, Stmt, VarDecl};
 use crate::diag::Diagnostic;
 use crate::span::Span;
 
@@ -142,8 +142,8 @@ fn eval_var_address(
         return Some(next_auto_addr);
     };
 
-    match initializer {
-        Expr::Number(value) => match u32::try_from(*value) {
+    match eval_const_expr(initializer) {
+        Ok(value) => match u32::try_from(value) {
             Ok(address) => Some(address),
             Err(_) => {
                 diagnostics.push(Diagnostic::error(
@@ -153,17 +153,24 @@ fn eval_var_address(
                 None
             }
         },
-        Expr::Ident(name) => {
+        Err(ConstExprError::Ident(name)) => {
             diagnostics.push(Diagnostic::error(
                 span,
                 format!("var initializer '{name}' must be a numeric literal"),
             ));
             None
         }
-        Expr::EvalText(_) => {
+        Err(ConstExprError::EvalText) => {
             diagnostics.push(Diagnostic::error(
                 span,
                 "internal error: eval text should be expanded before semantic analysis",
+            ));
+            None
+        }
+        Err(ConstExprError::Overflow) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "var initializer overflows numeric literal range",
             ));
             None
         }
@@ -175,16 +182,16 @@ fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -
         return Some(1);
     };
 
-    match array_len {
-        Expr::Number(value) => {
-            if *value <= 0 {
+    match eval_const_expr(array_len) {
+        Ok(value) => {
+            if value <= 0 {
                 diagnostics.push(Diagnostic::error(
                     span,
                     format!("var array length must be positive: {value}"),
                 ));
                 return None;
             }
-            match u32::try_from(*value) {
+            match u32::try_from(value) {
                 Ok(size) => Some(size),
                 Err(_) => {
                     diagnostics.push(Diagnostic::error(
@@ -195,19 +202,55 @@ fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -
                 }
             }
         }
-        Expr::Ident(name) => {
+        Err(ConstExprError::Ident(name)) => {
             diagnostics.push(Diagnostic::error(
                 span,
                 format!("var array length '{name}' must be a numeric literal"),
             ));
             None
         }
-        Expr::EvalText(_) => {
+        Err(ConstExprError::EvalText) => {
             diagnostics.push(Diagnostic::error(
                 span,
                 "internal error: eval text should be expanded before semantic analysis",
             ));
             None
+        }
+        Err(ConstExprError::Overflow) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "var array length overflows numeric literal range",
+            ));
+            None
+        }
+    }
+}
+
+enum ConstExprError {
+    Ident(String),
+    EvalText,
+    Overflow,
+}
+
+fn eval_const_expr(expr: &Expr) -> Result<i64, ConstExprError> {
+    match expr {
+        Expr::Number(value) => Ok(*value),
+        Expr::Ident(name) => Err(ConstExprError::Ident(name.clone())),
+        Expr::EvalText(_) => Err(ConstExprError::EvalText),
+        Expr::Binary { op, lhs, rhs } => {
+            let lhs = eval_const_expr(lhs)?;
+            let rhs = eval_const_expr(rhs)?;
+            match op {
+                ExprBinaryOp::Add => lhs.checked_add(rhs).ok_or(ConstExprError::Overflow),
+                ExprBinaryOp::Sub => lhs.checked_sub(rhs).ok_or(ConstExprError::Overflow),
+            }
+        }
+        Expr::Unary { op, expr } => {
+            let value = eval_const_expr(expr)?;
+            match op {
+                ExprUnaryOp::LowByte => Ok(value & 0xFF),
+                ExprUnaryOp::HighByte => Ok((value >> 8) & 0xFF),
+            }
         }
     }
 }

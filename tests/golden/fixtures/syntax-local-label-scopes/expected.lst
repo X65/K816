@@ -1,0 +1,18 @@
+[default]
+000000: E8 D0 FD 60 C8 D0 FD 60 20 00 00 20 04 00 60
+
+
+[disasm obj#0 default::one]
+000000: E8          inx
+000001: D0 FD       bne $000000
+000003: 60          rts
+
+[disasm obj#0 default::two]
+000004: C8          iny
+000005: D0 FD       bne $000004
+000007: 60          rts
+
+[disasm obj#0 default::main]
+000008: 20 00 00    jsr $0000
+00000B: 20 04 00    jsr $0004
+00000E: 60          rts

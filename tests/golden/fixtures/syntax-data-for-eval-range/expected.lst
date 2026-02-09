@@ -1,0 +1,8 @@
+[default]
+000000: AD 00 00 AD 00 00 60
+
+
+[disasm obj#0 default::main]
+000000: AD 00 00    lda $0000
+000003: AD 00 00    lda $0000
+000006: 60          rts

@@ -151,12 +151,17 @@ where
 
     let modifiers = modifier.repeated().collect::<Vec<_>>();
     let stmt = spanned(stmt_parser(source_id), source_id);
+    let stmt_boundary = just(TokenKind::Newline)
+        .ignored()
+        .or(just(TokenKind::RBrace).ignored())
+        .or(end().ignored());
+    let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
     let separators = just(TokenKind::Newline).repeated();
     let body = just(TokenKind::LBrace)
         .ignore_then(
             separators
                 .clone()
-                .ignore_then(stmt)
+                .ignore_then(recover_stmt)
                 .then_ignore(separators.clone())
                 .repeated()
                 .collect::<Vec<_>>(),
@@ -209,12 +214,18 @@ where
 {
     let separators = just(TokenKind::Newline).repeated();
     let command = spanned(data_command_parser(), source_id);
+    let command_boundary = just(TokenKind::Newline)
+        .ignored()
+        .or(just(TokenKind::RBrace).ignored())
+        .or(end().ignored());
+    let recover_command =
+        command.recover_with(skip_then_retry_until(any().ignored(), command_boundary));
 
     just(TokenKind::LBrace)
         .ignore_then(
             separators
                 .clone()
-                .ignore_then(command)
+                .ignore_then(recover_command)
                 .then_ignore(separators.clone())
                 .repeated()
                 .collect::<Vec<_>>(),
@@ -495,5 +506,108 @@ mod tests {
 
         assert!(matches!(var.array_len, Some(Expr::Number(16))));
         assert!(var.initializer.is_none());
+    }
+
+    #[test]
+    fn parses_byte_directive_values() {
+        let source = "main {\n .byte 1, 0x02, symbol\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 1);
+
+        let Stmt::Bytes(values) = &block.body[0].node else {
+            panic!("expected .byte statement");
+        };
+        assert_eq!(
+            values,
+            &vec![
+                Expr::Number(1),
+                Expr::Number(2),
+                Expr::Ident("symbol".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_data_block_commands() {
+        let source =
+            "data {\n align 16\n address 0x1234\n nocross 0x100\n binary(\"tiles\", 3)\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::DataBlock(block) = &file.items[0].node else {
+            panic!("expected data block");
+        };
+        assert_eq!(block.commands.len(), 4);
+
+        assert!(matches!(block.commands[0].node, DataCommand::Align(16)));
+        assert!(matches!(
+            block.commands[1].node,
+            DataCommand::Address(0x1234)
+        ));
+        assert!(matches!(
+            block.commands[2].node,
+            DataCommand::Nocross(0x100)
+        ));
+
+        let DataCommand::Convert { kind, args } = &block.commands[3].node else {
+            panic!("expected converter command");
+        };
+        assert_eq!(kind, "binary");
+        assert_eq!(
+            args,
+            &vec![DataArg::Str("tiles".to_string()), DataArg::Int(3)]
+        );
+    }
+
+    #[test]
+    fn parses_label_and_instruction_statements() {
+        let source = "main {\n loop:\n nop\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 2);
+
+        let Stmt::Label(label) = &block.body[0].node else {
+            panic!("expected label");
+        };
+        assert_eq!(label.name, "loop");
+
+        let Stmt::Instruction(instr) = &block.body[1].node else {
+            panic!("expected instruction");
+        };
+        assert_eq!(instr.mnemonic, "nop");
+        assert!(instr.operand.is_none());
+    }
+
+    #[test]
+    fn rejects_modifier_without_code_block() {
+        let diagnostics = parse(SourceId(0), "far var x\n").expect_err("expected parse error");
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn collects_multiple_errors_across_items() {
+        let source = "far var first\nnaked var second\n";
+        let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
+        assert!(
+            diagnostics.len() >= 2,
+            "expected at least two diagnostics, got {}",
+            diagnostics.len()
+        );
+    }
+
+    #[test]
+    fn recovers_at_block_boundary_and_continues_items() {
+        let source = "main {\n call\n}\nfar var trailing\n";
+        let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
+        assert!(!diagnostics.is_empty());
     }
 }

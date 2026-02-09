@@ -1,10 +1,92 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 
 struct PipelineOutput {
     linked: k816_link::LinkOutput,
     warnings: String,
+}
+
+struct FixturePathRewriter {
+    repo_root: PathBuf,
+    repo_name: String,
+    repo_root_text: String,
+    repo_root_unix_text: String,
+    repo_root_windows_text: String,
+}
+
+impl FixturePathRewriter {
+    fn new(manifest_dir: &Path) -> Result<Self> {
+        let repo_root = manifest_dir
+            .ancestors()
+            .nth(2)
+            .ok_or_else(|| {
+                anyhow!(
+                    "failed to resolve repository root from '{}'",
+                    manifest_dir.display()
+                )
+            })?
+            .to_path_buf();
+        let repo_name = repo_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "failed to resolve repository directory name from '{}'",
+                    repo_root.display()
+                )
+            })?
+            .to_string();
+        let repo_root_text = repo_root.display().to_string();
+        let repo_root_unix_text = repo_root_text.replace('\\', "/");
+        let repo_root_windows_text = repo_root_text.replace('/', "\\");
+
+        Ok(Self {
+            repo_root,
+            repo_name,
+            repo_root_text,
+            repo_root_unix_text,
+            repo_root_windows_text,
+        })
+    }
+
+    fn source_name(&self, path: &Path) -> String {
+        self.repo_relative_path(path)
+            .unwrap_or_else(|| self.normalize(path.display().to_string()))
+    }
+
+    fn normalize(&self, text: impl AsRef<str>) -> String {
+        let mut normalized = text.as_ref().to_string();
+        normalized = normalized.replace(&self.repo_root_text, &self.repo_name);
+        if self.repo_root_unix_text != self.repo_root_text {
+            normalized = normalized.replace(&self.repo_root_unix_text, &self.repo_name);
+        }
+        if self.repo_root_windows_text != self.repo_root_text
+            && self.repo_root_windows_text != self.repo_root_unix_text
+        {
+            normalized = normalized.replace(&self.repo_root_windows_text, &self.repo_name);
+        }
+        normalized
+    }
+
+    fn repo_relative_path(&self, path: &Path) -> Option<String> {
+        if let Ok(relative) = path.strip_prefix(&self.repo_root) {
+            return Some(self.join_repo_name(relative));
+        }
+
+        let canonical = path.canonicalize().ok()?;
+        let relative = canonical.strip_prefix(&self.repo_root).ok()?;
+        Some(self.join_repo_name(relative))
+    }
+
+    fn join_repo_name(&self, relative: &Path) -> String {
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() {
+            self.repo_name.clone()
+        } else {
+            format!("{}/{relative}", self.repo_name)
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -55,7 +137,8 @@ fn detect_expected_binary(fixture_dir: &Path) -> Result<Option<ExpectedBinary>> 
 
 pub fn run_case(case: &str) -> Result<()> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let (fixture_dir, input_path, source_name) = resolve_paths(manifest_dir, case)?;
+    let path_rewriter = FixturePathRewriter::new(manifest_dir)?;
+    let (fixture_dir, input_path, source_name) = resolve_paths(manifest_dir, &path_rewriter, case)?;
 
     let source = std::fs::read_to_string(&input_path)
         .with_context(|| format!("failed to read fixture input '{}'", input_path.display()))?;
@@ -84,16 +167,17 @@ pub fn run_case(case: &str) -> Result<()> {
             }
 
             let pipeline = pipeline_result?;
-            if pipeline.warnings.trim().is_empty() {
+            let warnings = path_rewriter.normalize(&pipeline.warnings);
+            if warnings.trim().is_empty() {
                 return Err(anyhow!(
                     "fixture '{}' expected warnings in '{}', but compiler produced no warnings",
                     fixture_dir.display(),
                     expected_error_path.display()
                 ));
             }
-            similar_asserts::assert_eq!(expected_error.trim_end(), pipeline.warnings.trim_end());
-            if !pipeline.warnings.trim().is_empty() {
-                println!("{}", pipeline.warnings.trim_end());
+            similar_asserts::assert_eq!(expected_error.trim_end(), warnings.trim_end());
+            if !warnings.trim().is_empty() {
+                println!("{}", warnings.trim_end());
             }
             compare_binary_output(&fixture_dir, expected_binary, &pipeline.linked)?;
             compare_listing(&fixture_dir, &pipeline.linked.listing)?;
@@ -118,7 +202,8 @@ pub fn run_case(case: &str) -> Result<()> {
             ));
         }
 
-        similar_asserts::assert_eq!(expected_error.trim_end(), err.to_string().trim_end());
+        let rendered_error = path_rewriter.normalize(err.to_string());
+        similar_asserts::assert_eq!(expected_error.trim_end(), rendered_error.trim_end());
         return Ok(());
     }
 
@@ -142,6 +227,7 @@ pub fn run_case(case: &str) -> Result<()> {
 
 fn resolve_paths(
     manifest_dir: &Path,
+    path_rewriter: &FixturePathRewriter,
     case: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf, String)> {
     if let Some(name) = case.strip_prefix("fixture:") {
@@ -152,19 +238,18 @@ fn resolve_paths(
         } else {
             fixture_dir.join("input.k816")
         };
-        return Ok((
-            fixture_dir,
-            input_path.clone(),
-            input_path.display().to_string(),
-        ));
+        let source_name = path_rewriter.source_name(&input_path);
+        return Ok((fixture_dir, input_path, source_name));
     }
 
     if let Some(stem) = case.strip_prefix("example:") {
         let fixture_dir = manifest_dir.join("examples").join(stem);
-        let input_path = manifest_dir
-            .join("../../examples")
+        let input_path = path_rewriter
+            .repo_root
+            .join("examples")
             .join(format!("{stem}.k65"));
-        return Ok((fixture_dir, input_path, format!("examples/{stem}.k65")));
+        let source_name = path_rewriter.source_name(&input_path);
+        return Ok((fixture_dir, input_path, source_name));
     }
 
     Err(anyhow!(

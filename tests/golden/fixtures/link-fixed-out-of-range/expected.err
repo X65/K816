@@ -1,5 +1,5 @@
 Error: fixed chunk for segment 'default' at 0x10000..0x10002 is outside memory 'MAIN' (0x0..0x10000)
-   ╭─[ /home/smoku/devel/X65/k816/tests/golden/fixtures/link-fixed-out-of-range/input.k65:1:6 ]
+   ╭─[ k816/tests/golden/fixtures/link-fixed-out-of-range/input.k65:1:6 ]
    │
  1 │ func too_far {
    │      ───┬───  

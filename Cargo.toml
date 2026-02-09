@@ -7,6 +7,13 @@ members = [
   "crates/assets",
   "tests/golden",
 ]
+default-members = [
+  "crates/core",
+  "crates/eval",
+  "crates/fmt",
+  "crates/assets",
+  "tests/golden",
+]
 resolver = "2"
 
 [workspace.package]

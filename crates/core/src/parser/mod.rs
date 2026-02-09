@@ -5,6 +5,11 @@ use crate::ast::{
 use crate::diag::Diagnostic;
 use crate::lexer::{Token, TokenKind, lex};
 use crate::span::{SourceId, Span, Spanned};
+use chumsky::{
+    Parser as _, extra,
+    input::{Input as _, Stream, ValueInput},
+    prelude::{Rich, SimpleSpan, end, just},
+};
 
 pub fn parse(source_id: SourceId, source_text: &str) -> Result<File, Vec<Diagnostic>> {
     let tokens = lex(source_id, source_text)?;
@@ -25,18 +30,54 @@ pub fn parse_expression_fragment(
         }
     };
 
-    let mut parser = Parser::new(source_id, tokens);
-    parser.skip_separators();
-    let expr = parser.parse_expr()?;
-    parser.skip_separators();
-    if !parser.is_eof() {
-        return Err(Diagnostic::error(
-            parser.current_span(),
-            "unexpected trailing tokens in eval expansion",
-        ));
-    }
+    let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
+    let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
+        let span = (token.span.start..token.span.end).into();
+        (token.kind, span)
+    }))
+    .map((end_offset..end_offset).into(), |(kind, span): (_, _)| {
+        (kind, span)
+    });
 
-    Ok(expr)
+    expression_fragment_parser()
+        .parse(token_stream)
+        .into_result()
+        .map(|(expr, span)| {
+            let range = span.into_range();
+            Spanned::new(expr, Span::new(source_id, range.start, range.end))
+        })
+        .map_err(|errors| expression_fragment_error(source_id, errors))
+}
+
+fn expression_fragment_parser<'tokens, I>()
+-> impl chumsky::Parser<'tokens, I, (Expr, SimpleSpan), extra::Err<Rich<'tokens, TokenKind>>>
+where
+    I: ValueInput<'tokens, Token = TokenKind, Span = SimpleSpan>,
+{
+    let expr = chumsky::select! {
+        TokenKind::Number(value) => Expr::Number(value),
+        TokenKind::Ident(value) => Expr::Ident(value),
+        TokenKind::Eval(value) => Expr::EvalText(value),
+    }
+    .map_with(|expr, e| (expr, e.span()));
+
+    just(TokenKind::Newline)
+        .repeated()
+        .ignore_then(expr)
+        .then_ignore(just(TokenKind::Newline).repeated())
+        .then_ignore(end())
+}
+
+fn expression_fragment_error<'tokens>(
+    source_id: SourceId,
+    mut errors: Vec<Rich<'tokens, TokenKind>>,
+) -> Diagnostic {
+    let error = errors
+        .pop()
+        .expect("chumsky should return at least one parse error");
+    let range = error.span().into_range();
+    let span = Span::new(source_id, range.start, range.end);
+    Diagnostic::error(span, format!("invalid expression fragment: {error:?}"))
 }
 
 struct Parser {
@@ -551,6 +592,12 @@ mod tests {
     #[test]
     fn parses_expression_fragment() {
         let expr = parse_expression_fragment(SourceId(0), "0x10").expect("parse");
+        assert!(matches!(expr.node, Expr::Number(16)));
+    }
+
+    #[test]
+    fn parses_expression_fragment_with_newline_padding() {
+        let expr = parse_expression_fragment(SourceId(0), "\n0x10\n").expect("parse");
         assert!(matches!(expr.node, Expr::Number(16)));
     }
 

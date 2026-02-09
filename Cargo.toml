@@ -19,16 +19,16 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "0BSD"
 
 [workspace.dependencies]
 anyhow = "1.0"
-ariadne = "0.4"
+ariadne = "0.6"
 camino = "1.1"
-chumsky = "0.9"
+chumsky = "0.12"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 indexmap = "2.7"
-logos = "0.14"
+logos = "0.16"
 pretty = "0.12"
 rustc-hash = "1.1"
 thiserror = "2.0"

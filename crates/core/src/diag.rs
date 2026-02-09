@@ -1,6 +1,7 @@
+use std::collections::HashSet;
 use std::fmt;
 
-use ariadne::{Color, Label, Report, ReportKind, Source};
+use ariadne::{Color, Label, Report, ReportKind, sources};
 
 use crate::span::{SourceMap, Span};
 
@@ -59,26 +60,33 @@ impl fmt::Display for Diagnostic {
 pub fn render_diagnostic(source_map: &SourceMap, diagnostic: &Diagnostic) -> String {
     let file = source_map.must_get(diagnostic.primary.source_id);
     let mut output = Vec::new();
+    let primary_span = (
+        file.name.clone(),
+        diagnostic.primary.start..diagnostic.primary.end,
+    );
     let mut report = Report::build(
         match diagnostic.severity {
             Severity::Error => ReportKind::Error,
             Severity::Warning => ReportKind::Warning,
         },
-        file.name.clone(),
-        diagnostic.primary.start,
+        primary_span.clone(),
     )
     .with_message(diagnostic.message.clone())
     .with_label(
-        Label::new((
-            file.name.clone(),
-            diagnostic.primary.start..diagnostic.primary.end,
-        ))
-        .with_color(Color::Red)
-        .with_message("here"),
+        Label::new(primary_span)
+            .with_color(Color::Red)
+            .with_message("here"),
     );
+
+    let mut seen_files = HashSet::new();
+    let mut source_cache = vec![(file.name.clone(), file.text.clone())];
+    seen_files.insert(file.name.clone());
 
     for label in &diagnostic.labels {
         let label_file = source_map.must_get(label.span.source_id);
+        if seen_files.insert(label_file.name.clone()) {
+            source_cache.push((label_file.name.clone(), label_file.text.clone()));
+        }
         report = report.with_label(
             Label::new((label_file.name.clone(), label.span.start..label.span.end))
                 .with_color(Color::Yellow)
@@ -90,10 +98,7 @@ pub fn render_diagnostic(source_map: &SourceMap, diagnostic: &Diagnostic) -> Str
         report = report.with_note(hint.clone());
     }
 
-    let _ = report.finish().write(
-        (file.name.clone(), Source::from(file.text.clone())),
-        &mut output,
-    );
+    let _ = report.finish().write(sources(source_cache), &mut output);
 
     String::from_utf8_lossy(&output).into_owned()
 }

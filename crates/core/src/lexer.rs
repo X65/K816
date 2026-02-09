@@ -4,6 +4,9 @@ use crate::diag::Diagnostic;
 use crate::span::{SourceId, Span};
 
 #[derive(Logos, Debug, Clone, PartialEq)]
+#[logos(skip(r"[ \t\r\f]+"))]
+#[logos(skip(r"//[^\r\n]*", allow_greedy = true))]
+#[logos(skip(r"/\*([^*]|\*+[^*/])*\*+/"))]
 pub enum TokenKind {
     #[token("bank")]
     Bank,
@@ -61,11 +64,6 @@ pub enum TokenKind {
 
     #[regex(r"[A-Za-z_.][A-Za-z0-9_.]*", parse_ident)]
     Ident(String),
-
-    #[regex(r"//[^\n]*", logos::skip)]
-    #[regex(r"/\*([^*]|\*+[^*/])*\*+/", logos::skip)]
-    #[regex(r"[ \t\r\f]+", logos::skip)]
-    Trivia,
 }
 
 #[derive(Debug, Clone)]
@@ -84,7 +82,6 @@ pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnosti
         let range = lexer.span();
         let span = Span::new(source_id, range.start, range.end);
         match next {
-            Ok(TokenKind::Trivia) => {}
             Ok(kind) => {
                 tokens.push(Token {
                     kind,

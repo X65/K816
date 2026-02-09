@@ -1,0 +1,19 @@
+Warning: `bank` keyword is deprecated; use `segment` instead
+   ╭─[ /home/smoku/devel/X65/k816/tests/golden/fixtures/syntax-bank-deprecated/input.k65:1:1 ]
+   │
+ 1 │ bank legacy
+   │ ──┬─  
+   │   ╰─── primary location
+   │ 
+   │ Help: replace `bank <name>` with `segment <name>`
+───╯
+
+Warning: empty function body 'legacy_func'
+   ╭─[ /home/smoku/devel/X65/k816/tests/golden/fixtures/syntax-bank-deprecated/input.k65:2:6 ]
+   │
+ 2 │ func legacy_func {
+   │      ─────┬─────  
+   │           ╰─────── primary location
+   │ 
+   │ Help: add at least one statement or remove the function
+───╯

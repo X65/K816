@@ -2,6 +2,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
 
+struct PipelineOutput {
+    linked: k816_link::LinkOutput,
+    warnings: String,
+}
+
 pub fn run_case(case: &str) -> Result<()> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let (fixture_dir, input_path, source_name) = resolve_paths(manifest_dir, case)?;
@@ -10,11 +15,37 @@ pub fn run_case(case: &str) -> Result<()> {
         .with_context(|| format!("failed to read fixture input '{}'", input_path.display()))?;
 
     let expected_error_path = fixture_dir.join("expected.err");
+    let expected_bin_path = fixture_dir.join("expected.bin");
     if expected_error_path.exists() {
-        let expected_error = std::fs::read_to_string(&expected_error_path)
-            .with_context(|| format!("failed to read '{}'", expected_error_path.display()))?;
+        let expected_error = read_non_empty_text(&expected_error_path, "expected.err")?;
 
         let pipeline_result = compile_and_link(&fixture_dir, &input_path, &source_name, &source);
+
+        if expected_bin_path.exists() {
+            if contains_error_marker(&expected_error) {
+                return Err(anyhow!(
+                    "fixture '{}' has both expected.bin and expected.err, but expected.err must contain warnings only (no error diagnostics)",
+                    fixture_dir.display()
+                ));
+            }
+
+            let pipeline = pipeline_result?;
+            if pipeline.warnings.trim().is_empty() {
+                return Err(anyhow!(
+                    "fixture '{}' expected warnings in '{}', but compiler produced no warnings",
+                    fixture_dir.display(),
+                    expected_error_path.display()
+                ));
+            }
+            similar_asserts::assert_eq!(expected_error.trim_end(), pipeline.warnings.trim_end());
+            if !pipeline.warnings.trim().is_empty() {
+                println!("{}", pipeline.warnings.trim_end());
+            }
+            compare_binaries(&fixture_dir, &pipeline.linked.bytes)?;
+            compare_listing(&fixture_dir, &pipeline.linked.listing)?;
+            return Ok(());
+        }
+
         let err = match pipeline_result {
             Ok(_) => {
                 return Err(anyhow!(
@@ -29,9 +60,9 @@ pub fn run_case(case: &str) -> Result<()> {
         return Ok(());
     }
 
-    let linked = compile_and_link(&fixture_dir, &input_path, &source_name, &source)?;
-    compare_binaries(&fixture_dir, &linked.bytes)?;
-    compare_listing(&fixture_dir, &linked.listing)?;
+    let pipeline = compile_and_link(&fixture_dir, &input_path, &source_name, &source)?;
+    compare_binaries(&fixture_dir, &pipeline.linked.bytes)?;
+    compare_listing(&fixture_dir, &pipeline.linked.listing)?;
     Ok(())
 }
 
@@ -72,9 +103,10 @@ fn compile_and_link(
     input_path: &Path,
     source_name: &str,
     source: &str,
-) -> Result<k816_link::LinkOutput> {
+) -> Result<PipelineOutput> {
     let compiled = k816_core::compile_source_to_object(source_name, source)
         .map_err(|error| anyhow!("{}", error.rendered))?;
+    let warnings = compiled.rendered_warnings.clone();
 
     let local_config_path = fixture_dir.join("link.k816ld.ron");
     let source_config_path = input_path.with_extension("k816ld.ron");
@@ -86,13 +118,13 @@ fn compile_and_link(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.k816ld.ron")
     };
     let config = k816_link::load_config(&config_path)?;
-    k816_link::link_objects(&[compiled.object], &config)
+    let linked = k816_link::link_objects(&[compiled.object], &config)?;
+    Ok(PipelineOutput { linked, warnings })
 }
 
 fn compare_binaries(fixture_dir: &Path, bytes: &[u8]) -> Result<()> {
     let expected_path = fixture_dir.join("expected.bin");
-    let expected = std::fs::read(&expected_path)
-        .with_context(|| format!("failed to read '{}'", expected_path.display()))?;
+    let expected = read_non_empty_bytes(&expected_path, "expected.bin")?;
     if bytes != expected {
         return Err(anyhow!(
             "binary mismatch in fixture '{}': expected {} bytes, got {} bytes",
@@ -115,4 +147,28 @@ fn compare_listing(fixture_dir: &Path, listing: &str) -> Result<()> {
 
     similar_asserts::assert_eq!(expected.trim_end(), listing.trim_end());
     Ok(())
+}
+
+fn read_non_empty_text(path: &Path, label: &str) -> Result<String> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read '{}'", path.display()))?;
+    if text.trim().is_empty() {
+        return Err(anyhow!("{} '{}' must not be empty", label, path.display()));
+    }
+    Ok(text)
+}
+
+fn read_non_empty_bytes(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+    if bytes.is_empty() {
+        return Err(anyhow!("{} '{}' must not be empty", label, path.display()));
+    }
+    Ok(bytes)
+}
+
+fn contains_error_marker(text: &str) -> bool {
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("Error:") || line.starts_with("error:")
+    })
 }

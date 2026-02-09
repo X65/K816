@@ -10,7 +10,7 @@ use crate::emit_object::emit_object;
 use crate::eval_expand::expand_file;
 use crate::lower::lower;
 use crate::normalize_hla::normalize_file;
-use crate::parser::parse;
+use crate::parser::parse_with_warnings;
 use crate::sema::analyze;
 use crate::span::SourceMap;
 
@@ -18,11 +18,15 @@ use crate::span::SourceMap;
 pub struct CompileOutput {
     pub banks: IndexMap<String, Vec<u8>>,
     pub listing: String,
+    pub warnings: Vec<Diagnostic>,
+    pub rendered_warnings: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompileObjectOutput {
     pub object: O65Object,
+    pub warnings: Vec<Diagnostic>,
+    pub rendered_warnings: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,8 +97,17 @@ pub fn compile_source_with_fs_and_options(
     let mut source_map = SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
 
-    let ast = parse(source_id, source_text)
+    let parsed = parse_with_warnings(source_id, source_text)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    let ast = parsed.file;
+    let warnings = parsed.warnings;
+    let rendered_warnings = render_diagnostics_with_options(
+        &source_map,
+        &warnings,
+        RenderOptions {
+            color: options.color,
+        },
+    );
 
     let ast = expand_file(&ast, source_id)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
@@ -113,6 +126,8 @@ pub fn compile_source_with_fs_and_options(
     Ok(CompileOutput {
         banks: emit_output.banks,
         listing: emit_output.listing,
+        warnings,
+        rendered_warnings,
     })
 }
 
@@ -138,8 +153,17 @@ pub fn compile_source_to_object_with_fs_and_options(
     let mut source_map = SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
 
-    let ast = parse(source_id, source_text)
+    let parsed = parse_with_warnings(source_id, source_text)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    let ast = parsed.file;
+    let warnings = parsed.warnings;
+    let rendered_warnings = render_diagnostics_with_options(
+        &source_map,
+        &warnings,
+        RenderOptions {
+            color: options.color,
+        },
+    );
 
     let ast = expand_file(&ast, source_id)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
@@ -157,6 +181,8 @@ pub fn compile_source_to_object_with_fs_and_options(
 
     Ok(CompileObjectOutput {
         object: emit_output.object,
+        warnings,
+        rendered_warnings,
     })
 }
 

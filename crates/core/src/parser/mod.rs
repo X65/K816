@@ -17,8 +17,31 @@ use chumsky::{
 type ParseError<'src> = Rich<'src, TokenKind>;
 type ParseExtra<'src> = extra::Err<ParseError<'src>>;
 
+#[derive(Debug, Clone)]
+pub struct ParseOutput {
+    pub file: File,
+    pub warnings: Vec<Diagnostic>,
+}
+
 pub fn parse(source_id: SourceId, source_text: &str) -> Result<File, Vec<Diagnostic>> {
+    parse_with_warnings(source_id, source_text).map(|parsed| parsed.file)
+}
+
+pub fn parse_with_warnings(
+    source_id: SourceId,
+    source_text: &str,
+) -> Result<ParseOutput, Vec<Diagnostic>> {
     let tokens = lex(source_id, source_text)?;
+    let bank_spans = tokens
+        .iter()
+        .filter_map(|token| {
+            if matches!(token.kind, TokenKind::Bank) {
+                Some(token.span)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -37,10 +60,44 @@ pub fn parse(source_id: SourceId, source_text: &str) -> Result<File, Vec<Diagnos
         .collect::<Vec<_>>();
 
     if diagnostics.is_empty() {
-        Ok(output.unwrap_or_default())
+        let file = output.unwrap_or_default();
+        let warnings = collect_parser_warnings(&file, &bank_spans);
+        Ok(ParseOutput { file, warnings })
     } else {
         Err(diagnostics)
     }
+}
+
+fn collect_parser_warnings(file: &File, bank_spans: &[Span]) -> Vec<Diagnostic> {
+    let mut warnings = Vec::new();
+
+    for span in bank_spans {
+        warnings.push(
+            Diagnostic::warning(
+                *span,
+                "`bank` keyword is deprecated; use `segment` instead",
+            )
+            .with_help("replace `bank <name>` with `segment <name>`"),
+        );
+    }
+
+    for item in &file.items {
+        let Item::CodeBlock(block) = &item.node else {
+            continue;
+        };
+
+        if block.kind != BlockKind::Func || !block.body.is_empty() {
+            continue;
+        }
+
+        let span = block.name_span.unwrap_or(item.span);
+        warnings.push(
+            Diagnostic::warning(span, format!("empty function body '{}'", block.name))
+                .with_help("add at least one statement or remove the function"),
+        );
+    }
+
+    warnings
 }
 
 pub fn parse_expression_fragment(
@@ -164,10 +221,9 @@ where
     let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
     let separators = just(TokenKind::Newline).repeated();
     let body = just(TokenKind::LBrace)
+        .ignore_then(separators.clone())
         .ignore_then(
-            separators
-                .clone()
-                .ignore_then(recover_stmt)
+            recover_stmt
                 .then_ignore(separators.clone())
                 .repeated()
                 .collect::<Vec<_>>(),
@@ -963,6 +1019,26 @@ mod tests {
             panic!("expected segment item from bank alias");
         };
         assert_eq!(second.name, "legacy");
+    }
+
+    #[test]
+    fn emits_warning_for_bank_keyword() {
+        let source = "bank legacy\n";
+        let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
+        assert_eq!(parsed.file.items.len(), 1);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert_eq!(parsed.warnings[0].severity, crate::diag::Severity::Warning);
+        assert!(parsed.warnings[0].message.contains("deprecated"));
+    }
+
+    #[test]
+    fn emits_warning_for_empty_function_body() {
+        let source = "func f {\n}\n";
+        let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
+        assert_eq!(parsed.file.items.len(), 1);
+        assert_eq!(parsed.warnings.len(), 1);
+        assert_eq!(parsed.warnings[0].severity, crate::diag::Severity::Warning);
+        assert!(parsed.warnings[0].message.contains("empty function body"));
     }
 
     #[test]

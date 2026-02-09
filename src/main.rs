@@ -118,6 +118,9 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
         },
     )
     .map_err(|error| anyhow::anyhow!(error.rendered))?;
+    if !output.rendered_warnings.trim().is_empty() {
+        eprintln!("{}", output.rendered_warnings.trim_end());
+    }
     Ok(output.object)
 }
 

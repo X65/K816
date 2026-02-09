@@ -1,14 +1,17 @@
 var vec = 0x2000
 
-func target {
-  return
+func near_target {
+  nop
+}
+
+func far_target {
+  nop
 }
 
 main {
-  goto target
-  < goto target
+  goto near_target
+  < goto near_target
   goto (vec)
-  call target
-  far target
-  far goto target
+  call near_target
+  far far_target
 }

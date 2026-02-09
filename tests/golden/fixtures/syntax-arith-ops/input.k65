@@ -8,6 +8,6 @@ main {
   a^mem
   a?mem
   a&?mem
-  x+1
-  y-1
+  x?1
+  y?2
 }

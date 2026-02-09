@@ -1,275 +1,182 @@
-# K65 Syntax Reference (from source docs + C compiler grammar)
+# K65 Syntax Reference (Legacy-Accurate)
 
-This document summarizes K65 syntax as defined by the original project docs and the reference C compiler grammar.
+This reference is aligned to the legacy documentation snapshots in this repo:
 
-For k816 compatibility: `segment` is the preferred section-selection keyword. Legacy `bank` remains accepted as a deprecated alias and emits a warning.
+- `docs/legacy/syntax.md`
+- `docs/legacy/instructions.md`
+- `docs/legacy/examples.md`
 
-## Source Material
+Where needed, behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
 
-External source-of-truth URLs (from `prompts/init-project.plan.md`):
+## Core Language Constructs
 
-- <https://raw.githubusercontent.com/zbyti/k65-mkdocs/refs/heads/master/docs/syntax.md>
-- <https://raw.githubusercontent.com/zbyti/k65-mkdocs/refs/heads/master/docs/instructions.md>
-- <https://raw.githubusercontent.com/zbyti/k65-mkdocs/refs/heads/master/docs/examples.md>
-- <https://github.com/Krzysiek-K/k65/tree/master/src>
+### Comments
 
-Vendored mirror used in this repository (network fetch is unavailable in this environment):
+K65 uses C-style comments:
 
-- `vendor/doc/docs/syntax.md`
-- `vendor/doc/docs/instructions.md`
-- `vendor/doc/docs/examples.md`
-- `vendor/doc/docs/evaluator.md`
-- `vendor/src/compiler.inc` (authoritative grammar/actions)
+- `// line comment`
+- `/* block comment */`
 
-## Lexical Elements
+### Variables
 
-- Comments:
-  - Line: `// ...`
-  - Block: `/* ... */`
-- Identifier text: `[a-zA-Z_][a-zA-Z0-9_]*`
-- Local label identifier form: `.name` (rewritten internally to function-local names)
-- Integer literals:
-  - Decimal: `123`
-  - Hex: `0x7F`
-  - Binary: `0b1010`
-- Float literals (evaluator): `1.25`, `.5`
-- Strings: `"..."`
+Variables are symbolic names bound to memory addresses.
 
-## Top-Level Forms
+- `var foo=0x80`
+- `var foo2` (auto-next address)
+- `var foo3, foo4`
+- `var bar[10]` (size advances address by array length)
+- `var bar3 ?` (verbose declaration output)
 
-A file is a sequence of top-level elements (`TopElem`), including:
+### Constants
 
-- Empty statement: `;`
-- Compile-time evaluator execution:
-  - `[ EvalCode ]`
-- Variable declarations:
-  - `var name`
-  - `var name = Number`
-  - `var name[Number]`
-  - `var name[Number] = Number`
-  - Comma-separated lists: `var a, b, c`
-  - Verbose marker: trailing `?` on a declaration item
-- Constant declarations:
-  - `const name`
-  - `const name = Number`
-- Segment selection (preferred):
-  - `segment ident`
-- Deprecated alias:
-  - `bank ident` (accepted, emits warning)
-- Top-level image/binary sections:
-  - `image Name = "path"`
-  - `image "Name" = "path"`
-  - `binary Name = "path"`
-- Data section:
-  - `data Name { ... }`
-- Code sections:
-  - `main { ... }`
-  - `func Name { ... }` (auto-RTS)
-  - `naked Name { ... }` (no auto-RTS)
-  - `inline Name { ... }`
-- Evaluator function definition:
-  - `evalfunc name(args) [ EvalCode ]`
-  - `evalfunc name(args) { EvalCode }`
-- Preprocessor directives:
-  - `#if`, `#elif`, `#else`, `#endif`
-  - `#error "..."`, `#warn "..."`
+Legacy docs describe constants primarily via evaluator expressions (`[ ... ]`), e.g.:
 
-## Section Placement Directives
+```k65
+[
+  MY_CONSTANT = 5,
+  SOME_NUMBER = 0x13
+]
+```
 
-Supported alignment/address directives where allowed by grammar:
+### Labels
 
-- `align N`
-- `align N + OFFSET`
-- `address N`
-- `nocross` (context-dependent scope or block constraint)
+- Global labels: `label:`
+- Local labels: `.label:`
 
-## Data Block Syntax
+Local labels are used heavily in function-local flow patterns.
 
-Inside `data Name { ... }`, `Data` items can include:
+### Bank Selection
 
-- Raw byte-ish arguments: `Arg`
-- 16-bit address split shorthand: `&& VarArg`
-- Strings: `"TEXT"`
-- Labels: `label:`
-- Charset declaration for string encoding:
-  - `charset "..."`
-- Evaluator precompile in data context:
-  - `evaluator [ EvalCode ]`
-- Loop-generated data:
-  - `for ident = Number .. Number eval [ EvalCode ]`
-- Nested scoped constraints:
-  - `nocross { DataList }`
-- Embedded code blocks:
-  - `code { Sequence }`
-  - `nocross code { Sequence }`
-- Repeat data chunk:
-  - `repeat Number { DataList }`
-- Undefined byte marker:
-  - `?`
-- Binary include:
-  - `binary ident`
-  - `binary "path"`
-- Image extraction pipeline:
-  - `image ident|string x y bit_len bit_dir [bit_seq] img_len row_dir [inv]`
-  - `tiles dx dy count`
-  - `colormode Number`
-  - `imgwave [args...]`
+Legacy K65 uses `bank <name>` to select output bank.
 
-## Code Sequence Syntax
+```k65
+bank my_bank
+```
 
-`Sequence` contains `Instr` and optional semicolons.
+k816 compatibility note: `segment` is preferred in this codebase; `bank` is accepted as a deprecated alias.
 
-Instruction families include:
+### Data Blocks
 
-- Function-like call by identifier/argument:
-  - `Arg`
-  - `far Arg`
-- Far jump:
-  - `far goto Arg`
-- Arithmetic forms:
-  - `A ArithOp Arg`
-  - `X ArithOp Arg`
-  - `Y ArithOp Arg`
-- Unary/postfix forms:
-  - `Arg ++`, `Arg --`, `Arg <<`, `Arg >>`, `Arg <<<`, `Arg >>>`
-- Moves/chains:
-  - `Arg = Arg`
-  - `Arg = Arg = Arg ...`
-- Flag operations:
-  - `c+`, `c-`, `d+`, `d-`, `i+`, `i-`, `o+`, `o-`
-- Stack shorthand:
-  - `a!!`, `a??`
-  - `z!!`, `z??`, `c!!`, `c??`, `n!!`, `n??`, `v!!`, `v??`, `b!!`, `b??`, `i!!`, `i??`, `d!!`, `d??`
-- Return:
-  - `return`, `return_i`
-- Goto/call:
-  - `goto target`
-  - `BranchOp goto target`
-  - `goto (target)`
-  - `call target`
-- Labels:
-  - `label:` and `.local:`
-- Inline data emission in code:
-  - `data { DataList }`
-  - `nocross data { DataList }`
-- Loop control:
-  - `break`
-  - `BranchOp break`
-  - `repeat`
-  - `BranchOp repeat`
-- NOP shortcuts:
-  - `*`
-  - `* Number`
-  - `%`
+Named data blocks define a label at block start and support:
 
-## Branch and Control Syntax
+- raw bytes / string data
+- placement controls: `align`, `nocross`, `address`
+- `code { ... }` embedded code emission
+- `image ...` and `binary ...` generators
+- `for x=a..b eval [ ... ]` generated bytes
+- `charset "..."`
 
-Prefix branch block forms (`Br1`):
+### Code Sections
 
-- `BranchOp { Sequence }`
-- `never { Sequence }`
+Legacy docs define these section kinds:
 
-If/else form:
+- `main { ... }` (entry)
+- `func name { ... }` (auto `RTS`)
+- `naked name { ... }` (no auto `RTS`)
+- `inline name { ... }` (inlined macro-like block)
 
-- `BranchOp { Sequence } else { Sequence }`
+### `else` Behavior
 
-Postfix loop forms (`Br2`):
+`else` lowers to an extra jump around the else block in generated branch flow.
 
-- `{ Sequence } BranchOp`
-- `{ Sequence } always`
-- `{ Sequence } never`
+### Far Calls
 
-Branch operators and aliases:
+Legacy docs use `far <function>` for cross-bank function calls, with bankswitching handled by linker logic.
 
-- Symbolic:
-  - `>=` (`BCS`), `<` (`BCC`), `==` (`BEQ`), `!=` (`BNE`)
-  - `<0` (`BMI`), `>=0` (`BPL`), `>>=` (`BVC`), `<<=` (`BVS`)
-- Flag aliases:
-  - `c+?`, `c-?`, `z+?`, `z-?`, `n+?`, `n-?`, `v+?`, `v-?`
+## One-Letter / Symbolic Operator Syntax
 
-## Argument Grammar
+The legacy `instructions.md` page maps one-letter syntax to 6502 mnemonics.
 
-`Arg` supports:
+### Loads, Stores, Transfers
 
-- Registers: `a`, `x`, `y`, `s` (case-insensitive)
-- Immediate number: `Number`
-- Variable/address forms (`VarArg`)
-- Low/high byte extraction:
-  - `&< VarArg`
-  - `&> VarArg`
-- Indexed:
-  - `VarArg, X`
-  - `VarArg, Y`
-- Indirect:
-  - `(VarArg)`
-  - `(VarArg, X)`
-  - `(VarArg), Y`
+- `a=imm`, `a=mem`, `a=mem,x`, `a=mem,y`, `a=(mem,x)`, `a=(mem),y` -> LDA
+- `x=imm`, `x=mem`, `x=mem,y` -> LDX
+- `y=imm`, `y=mem`, `y=mem,x` -> LDY
+- `mem=a`, `mem,x=a`, `mem,y=a`, `(mem,x)=a`, `(mem),y=a` -> STA
+- `mem=x` -> STX
+- `mem=y` -> STY
+- `x=a` -> TAX
+- `y=a` -> TAY
+- `x=s` -> TSX
+- `a=x` -> TXA
+- `s=x` -> TXS
+- `a=y` -> TYA
 
-`VarArg` supports:
+### Arithmetic / Logic / Compare
 
-- `ident`
-- `ident + ident`
-- `ident - ident`
-- `ident + Number`
-- `ident - Number`
+- `a+...` -> ADC
+- `a-...` -> SBC
+- `a&...` -> AND
+- `a|...` -> ORA
+- `a^...` -> EOR
+- `a?...` -> CMP
+- `a&?...` -> BIT
+- `x?...` -> CPX
+- `y?...` -> CPY
 
-## Evaluator (`[ ... ]`) Syntax
+### Increment / Decrement / Shift / Rotate
 
-Evaluator code supports:
+- `mem++`, `mem,x++` -> INC
+- `mem--`, `mem,x--` -> DEC
+- `x++`, `x--`, `y++`, `y--` -> INX/DEX/INY/DEY
+- `a<<`, `mem<<`, `mem,x<<` -> ASL
+- `a>>`, `mem>>`, `mem,x>>` -> LSR
+- `a<<<`, `mem<<<`, `mem,x<<<` -> ROL
+- `a>>>`, `mem>>>`, `mem,x>>>` -> ROR
 
-- Statements and sequencing via `,`
-- Grouping with `{ EvalCode }`
-- `if` / `if ... else`
-- `while`
-- Assignments:
-  - `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `|=`, `&=`, `^=`, `<<=`, `>>=`
-- Ternary: `?:`
-- Logic and bitwise operators:
-  - `||`, `&&`, `|`, `^`, `&`
-- Comparisons:
-  - `==`, `!=`, `<`, `>`, `<=`, `>=`
-  - `?>` (max), `?<` (min)
-- Arithmetic:
-  - `+`, `-`, `*`, `/`, `%`, unary `+`, unary `-`
-- Unary logical/bitwise:
-  - `!`, `~`
-- Prefix/postfix increment and decrement on identifiers
-- Function calls:
-  - `name(args)`
-  - method-like `expr.name(args)`
-- Indexing:
-  - `expr[index]`
-  - `expr[x, y]`
-- Property access:
-  - `expr.name`
-- Built-in constant:
-  - `pi`
+### Flags and Stack
 
-## Preprocessor Scope
+- `c+` / `c-` -> SEC / CLC
+- `d+` / `d-` -> SED / CLD
+- `i+` / `i-` -> SEI / CLI
+- `o-` -> CLV
+- `a!!` / `a??` -> PHA / PLA
+- `flag!!` / `flag??` -> PHP / PLP (legacy docs use generic `flag`; practical forms include `z`, `c`, `n`, `v`, `b`, `i`, `d`)
 
-`#if/#elif/#else/#endif` applies at multiple grammar levels:
+### Flow and Branch Shorthands
 
-- top-level (`TopElem`)
-- code sequence (`Instr`)
-- data list (`Data`)
+- `goto label` -> JMP
+- `goto (addr)` -> JMP indirect
+- `call label` -> JSR
+- `return` -> RTS
+- `return_i` -> RTI
 
-`#if` condition accepts:
+Branch operator forms:
 
-- numeric literal (`Number`)
-- identifier (resolved via evaluator)
-- unary negation (`!`)
+- Prefix block: `OP { ... }`
+- Goto: `OP goto label`
+- Postfix block: `{ ... } OP`
 
-## Notable Edge Cases from Grammar/Examples
+Branch mapping (legacy docs):
 
-- Semicolons are optional separators; many statements can be space-separated on one line.
-- Local labels (`.name`) are scoped by an internal section-local prefix.
-- `for x=a..b eval [...]` in data is inclusive and supports descending ranges.
-- `nocross` can apply as a section/data option and as a wrapper around code/data sub-blocks.
-- `main`, `func`, `naked`, `inline`, `data`, `image`, `binary` all participate in section creation.
-- Branch syntax supports both symbolic (`>=`) and flag aliases (`c+?`) for equivalent operations.
-- Legacy grammar/doc examples use `bank`, but k816 prefers `segment`; `bank` is kept for compatibility with deprecation warning.
+- `<` / `c-?` -> BCC
+- `>=` / `c+?` -> BCS
+- `==` / `z+?` -> BEQ
+- `!=` / `z-?` -> BNE
+- `<0` / `n+?` -> BMI
+- `>=0` / `n-?` -> BPL
+- `>>=` / `v-?` -> BVC
+- `<<=` / `v+?` -> BVS
 
-## Open Notes for k816 Rewrite
+Note: some legacy examples/doc snippets omit `?` in `v` aliases; the reference grammar uses `v-?` / `v+?`.
 
-- The current k816 parser/encoder may not yet implement all legacy K65 forms listed here.
-- Golden fixtures under `tests/golden/fixtures/syntax-*` intentionally cover these forms and may fail until implementation reaches parity.
+Loop forms:
+
+- `{ ... } always`
+- `{ ... } never`
+
+### NOP Shorthand
+
+- `*` -> one NOP
+- `*<number>` -> wait-cycle form (legacy docs describe cycle semantics)
+
+## Additional Grammar-Level Constructs
+
+The reference compiler grammar (`vendor/src/compiler.inc`) also includes constructs that are not emphasized in legacy docs pages, such as:
+
+- top-level `const`
+- preprocessor directives (`#if/#else/#elif/#endif`, `#error`, `#warn`)
+- evaluator function declarations (`evalfunc`)
+- additional image/data helper directives
+
+These can exist in sources, but the sections above reflect the legacy docs naming and operator semantics first.

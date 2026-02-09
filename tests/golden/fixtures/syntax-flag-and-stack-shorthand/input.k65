@@ -2,7 +2,7 @@ main {
   c+ c-
   d+ d-
   i+ i-
-  o+ o-
+  o-
 
   a!!
   a??
@@ -14,4 +14,7 @@ main {
   b!! b??
   i!! i??
   d!! d??
+
+  return
+  return_i
 }

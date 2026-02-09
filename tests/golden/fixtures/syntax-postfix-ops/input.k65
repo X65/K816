@@ -5,6 +5,16 @@ main {
   a>>
   a<<<
   a>>>
+
+  mem<<
+  mem>>
+  mem<<<
+  mem>>>
+
   mem++
   mem--
+  x++
+  x--
+  y++
+  y--
 }

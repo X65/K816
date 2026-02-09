@@ -1,7 +1,13 @@
-bank legacy
-func legacy_func {
+bank boot
+func boot_func {
 }
 
+bank aux
+func aux_func {
+  nop
+}
+
+bank boot
 main {
-  call legacy_func
+  call boot_func
 }

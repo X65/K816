@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, bail};
+use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 use indexmap::IndexMap;
-use k816_o65::{O65Object, RelocationKind};
+use k816_o65::{O65Object, RelocationKind, SourceLocation};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,21 +103,40 @@ struct MemoryState {
     bytes: Vec<u8>,
     used: Vec<bool>,
     cursor: u32,
-    highest_used: usize,
 }
 
 #[derive(Debug, Clone)]
-struct PlacedSection {
+struct PlannedChunk {
+    obj_idx: usize,
     segment: String,
+    chunk_idx: usize,
+    section_offset: u32,
+    len: u32,
     memory_name: String,
+    align: u32,
+    start: Option<u32>,
+    offset: Option<u32>,
+    fixed_addr: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct PlacedChunk {
+    section_offset: u32,
+    len: u32,
     base_addr: u32,
-    len: usize,
+    memory_name: String,
 }
 
 #[derive(Debug, Clone)]
 struct ResolvedSymbol {
     addr: u32,
     segment: String,
+}
+
+#[derive(Debug, Clone)]
+struct AnchorContext {
+    symbol_name: String,
+    source: Option<SourceLocation>,
 }
 
 pub fn load_config(path: &Path) -> Result<LinkerConfig> {
@@ -174,95 +195,75 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
                 bytes: vec![fill; size],
                 used: vec![false; size],
                 cursor: mem.start,
-                highest_used: 0,
             },
         );
     }
 
-    let mut placed: HashMap<(usize, String), PlacedSection> = HashMap::new();
-    let mut placement_order: Vec<(usize, String)> = Vec::new();
+    let mut section_order = Vec::new();
+    let mut placed_by_section: HashMap<(usize, String), Vec<PlacedChunk>> = HashMap::new();
+    let mut planned = Vec::new();
+
     for (obj_idx, object) in objects.iter().enumerate() {
         for (segment, section) in &object.sections {
-            if section.bytes.is_empty() {
-                placed.insert(
-                    (obj_idx, segment.clone()),
-                    PlacedSection {
-                        segment: segment.clone(),
-                        memory_name: select_segment_rule(config, segment)?.load.clone(),
-                        base_addr: 0,
-                        len: 0,
-                    },
-                );
-                placement_order.push((obj_idx, segment.clone()));
-                continue;
-            }
+            section_order.push((obj_idx, segment.clone()));
+            placed_by_section
+                .entry((obj_idx, segment.clone()))
+                .or_default();
 
             let rule = select_segment_rule(config, segment)?;
-            let mem = memory_map
-                .get_mut(&rule.load)
-                .ok_or_else(|| anyhow::anyhow!("segment '{}' references unknown memory '{}'", rule.name, rule.load))?;
-
             let align = rule.align.unwrap_or(1);
             if align == 0 {
                 bail!("segment '{}' has align=0", rule.name);
             }
 
-            let mut base = if let Some(start) = rule.start {
-                start
-            } else {
-                align_up(mem.cursor.max(mem.spec.start), align)
-            };
-            if let Some(offset) = rule.offset {
-                base = base.saturating_add(offset);
-            }
-
-            if base < mem.spec.start {
-                bail!(
-                    "section '{}' placement underflows memory '{}'",
-                    segment,
-                    mem.spec.name
-                );
-            }
-
-            let rel_start = (base - mem.spec.start) as usize;
-            let rel_end = rel_start.saturating_add(section.bytes.len());
-            if rel_end > mem.bytes.len() {
-                bail!(
-                    "section '{}' does not fit memory '{}' (start={base:#X}, len={:#X})",
-                    segment,
-                    mem.spec.name,
-                    section.bytes.len()
-                );
-            }
-
-            for idx in rel_start..rel_end {
-                if mem.used[idx] {
-                    bail!(
-                        "section '{}' overlaps previously allocated bytes in memory '{}'",
-                        segment,
-                        mem.spec.name
-                    );
+            for (chunk_idx, chunk) in section.chunks.iter().enumerate() {
+                if chunk.bytes.is_empty() {
+                    continue;
                 }
-            }
 
-            mem.bytes[rel_start..rel_end].copy_from_slice(&section.bytes);
-            for idx in rel_start..rel_end {
-                mem.used[idx] = true;
-            }
-            mem.highest_used = mem.highest_used.max(rel_end);
-            mem.cursor = mem.cursor.max(base.saturating_add(section.bytes.len() as u32));
-
-            placed.insert(
-                (obj_idx, segment.clone()),
-                PlacedSection {
+                let len = u32::try_from(chunk.bytes.len()).context("section chunk is too large")?;
+                planned.push(PlannedChunk {
+                    obj_idx,
                     segment: segment.clone(),
-                    memory_name: mem.spec.name.clone(),
-                    base_addr: base,
-                    len: section.bytes.len(),
-                },
-            );
-            placement_order.push((obj_idx, segment.clone()));
+                    chunk_idx,
+                    section_offset: chunk.offset,
+                    len,
+                    memory_name: rule.load.clone(),
+                    align,
+                    start: rule.start,
+                    offset: rule.offset,
+                    fixed_addr: chunk.address,
+                });
+            }
         }
+    }
+
+    for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_some()) {
+        let base = chunk.fixed_addr.expect("filtered fixed chunk must have address");
+        place_chunk(
+            chunk,
+            base,
+            objects,
+            &mut memory_map,
+            &mut placed_by_section,
+            true,
+        )?;
+    }
+
+    for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_none()) {
+        let base = choose_reloc_base(chunk, &mut memory_map)?;
+        place_chunk(
+            chunk,
+            base,
+            objects,
+            &mut memory_map,
+            &mut placed_by_section,
+            false,
+        )?;
+    }
+
+    for chunks in placed_by_section.values_mut() {
+        chunks.sort_by_key(|chunk| chunk.section_offset);
     }
 
     let mut symbols: HashMap<String, ResolvedSymbol> = HashMap::new();
@@ -271,22 +272,28 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
             let Some(def) = &symbol.definition else {
                 continue;
             };
-            let placed_section = placed
-                .get(&(obj_idx, def.section.clone()))
-                .ok_or_else(|| anyhow::anyhow!("symbol '{}' references unknown section '{}'", symbol.name, def.section))?;
 
-            if def.offset as usize > placed_section.len {
-                bail!(
+            let section_key = (obj_idx, def.section.clone());
+            let placements = placed_by_section.get(&section_key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "symbol '{}' references unknown section '{}'",
+                    symbol.name,
+                    def.section
+                )
+            })?;
+
+            let addr = resolve_symbol_addr(placements, def.offset).ok_or_else(|| {
+                anyhow::anyhow!(
                     "symbol '{}' offset {:#X} is outside section '{}'",
                     symbol.name,
                     def.offset,
                     def.section
-                );
-            }
+                )
+            })?;
 
             let resolved = ResolvedSymbol {
-                addr: placed_section.base_addr.saturating_add(def.offset),
-                segment: placed_section.segment.clone(),
+                addr,
+                segment: def.section.clone(),
             };
             if symbols.insert(symbol.name.clone(), resolved).is_some() {
                 bail!("duplicate global symbol '{}'", symbol.name);
@@ -300,20 +307,37 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
                 addr: *addr,
                 segment: "__absolute__".to_string(),
             },
-            SymbolValue::Import(name) => symbols
-                .get(name)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("link symbol '{}' imports undefined symbol '{}'", link_symbol.name, name))?,
+            SymbolValue::Import(name) => symbols.get(name).cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "link symbol '{}' imports undefined symbol '{}'",
+                    link_symbol.name,
+                    name
+                )
+            })?,
         };
         symbols.insert(link_symbol.name.clone(), value);
     }
 
     for (obj_idx, object) in objects.iter().enumerate() {
         for reloc in &object.relocations {
-            let src_section = placed
-                .get(&(obj_idx, reloc.section.clone()))
-                .ok_or_else(|| anyhow::anyhow!("relocation references unknown section '{}'", reloc.section))?
-                .clone();
+            let section_key = (obj_idx, reloc.section.clone());
+            let placements = placed_by_section.get(&section_key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "relocation references unknown section '{}'",
+                    reloc.section
+                )
+            })?;
+
+            let (site_memory_name, site_addr) =
+                resolve_reloc_site(placements, reloc.offset, reloc.width).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "relocation site {:#X}..{:#X} is outside section '{}'",
+                        reloc.offset,
+                        reloc.offset.saturating_add(u32::from(reloc.width)),
+                        reloc.section
+                    )
+                })?;
+
             let target = symbols
                 .get(&reloc.symbol)
                 .ok_or_else(|| anyhow::anyhow!("undefined symbol '{}'", reloc.symbol))?
@@ -321,23 +345,23 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
 
             if reloc.kind == RelocationKind::Absolute
                 && reloc.width == 2
-                && src_section.segment != target.segment
+                && reloc.section != target.segment
             {
                 bail!(
                     "16-bit relocation from segment '{}' to '{}' requires far addressing",
-                    src_section.segment,
+                    reloc.section,
                     target.segment
                 );
             }
 
-            let mem = memory_map
-                .get_mut(&src_section.memory_name)
-                .ok_or_else(|| anyhow::anyhow!("internal linker error: memory '{}' missing", src_section.memory_name))?;
+            let mem = memory_map.get_mut(site_memory_name).ok_or_else(|| {
+                anyhow::anyhow!("internal linker error: memory '{}' missing", site_memory_name)
+            })?;
 
-            let site_addr = src_section.base_addr.saturating_add(reloc.offset);
             if site_addr < mem.spec.start {
                 bail!("relocation site underflows memory range");
             }
+
             let rel_idx = (site_addr - mem.spec.start) as usize;
             let end_idx = rel_idx.saturating_add(reloc.width as usize);
             if end_idx > mem.bytes.len() {
@@ -371,36 +395,427 @@ pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<Link
         let state = memory_map
             .get(&mem.name)
             .ok_or_else(|| anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name))?;
+
         let out_name = mem
             .out_file
             .clone()
             .unwrap_or_else(|| format!("{}.bin", mem.name.to_ascii_lowercase()));
-        let bytes = state.bytes[..state.highest_used].to_vec();
-        binaries.insert(out_name, bytes);
+
+        let mut compact = Vec::new();
+        for (start, end) in used_runs(&state.used) {
+            compact.extend_from_slice(&state.bytes[start..end]);
+        }
+        binaries.insert(out_name, compact);
     }
 
     let mut listing_blocks = Vec::new();
-    for key in placement_order {
-        let Some(section) = placed.get(&key) else {
+    for key in section_order {
+        let Some(chunks) = placed_by_section.get(&key) else {
             continue;
         };
-        if section.len == 0 {
-            listing_blocks.push(format_empty_listing_block(&section.segment));
+
+        if chunks.is_empty() {
+            listing_blocks.push(format_empty_listing_block(&key.1));
             continue;
         }
-        let mem = memory_map
-            .get(&section.memory_name)
-            .ok_or_else(|| anyhow::anyhow!("internal linker error: memory '{}' missing", section.memory_name))?;
-        let rel_start = (section.base_addr - mem.spec.start) as usize;
-        let rel_end = rel_start + section.len;
-        listing_blocks.push(format_listing_block(
-            &section.segment,
-            &mem.bytes[rel_start..rel_end],
-        ));
-    }
-    let listing = listing_blocks.join("\n\n");
 
-    Ok(LinkOutput { binaries, listing })
+        listing_blocks.push(format_section_listing(&key.1, chunks, &memory_map)?);
+    }
+
+    Ok(LinkOutput {
+        binaries,
+        listing: listing_blocks.join("\n\n"),
+    })
+}
+
+fn choose_reloc_base(chunk: &PlannedChunk, memory_map: &mut HashMap<String, MemoryState>) -> Result<u32> {
+    let mem = memory_map
+        .get_mut(&chunk.memory_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown memory area '{}'", chunk.memory_name))?;
+
+    let mut base = if let Some(start) = chunk.start {
+        start
+    } else {
+        mem.cursor.max(mem.spec.start)
+    };
+
+    base = align_up(base, chunk.align);
+
+    if let Some(offset) = chunk.offset {
+        base = base
+            .checked_add(offset)
+            .ok_or_else(|| anyhow::anyhow!("segment placement overflow in memory '{}'", mem.spec.name))?;
+    }
+
+    if chunk.start.is_some() {
+        return Ok(base);
+    }
+
+    find_first_fit(mem, base, chunk.len, chunk.align).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no free range found for relocatable chunk in segment '{}' (len={:#X})",
+            chunk.segment,
+            chunk.len
+        )
+    })
+}
+
+fn find_first_fit(mem: &MemoryState, min_addr: u32, len: u32, align: u32) -> Option<u32> {
+    if len == 0 {
+        return Some(min_addr.max(mem.spec.start));
+    }
+
+    let mem_end = mem.spec.start.checked_add(mem.spec.size)?;
+    let max_start = mem_end.checked_sub(len)?;
+
+    let mut candidate = align_up(min_addr.max(mem.spec.start), align);
+    while candidate <= max_start {
+        let rel_start = (candidate - mem.spec.start) as usize;
+        let rel_end = rel_start.checked_add(len as usize)?;
+
+        if rel_end > mem.used.len() {
+            return None;
+        }
+
+        let mut conflict_pos = None;
+        for (idx, used) in mem.used[rel_start..rel_end].iter().enumerate() {
+            if *used {
+                conflict_pos = Some(idx);
+                break;
+            }
+        }
+
+        if let Some(conflict_pos) = conflict_pos {
+            let next = mem
+                .spec
+                .start
+                .checked_add((rel_start + conflict_pos + 1) as u32)?;
+            candidate = align_up(next, align);
+            continue;
+        }
+
+        return Some(candidate);
+    }
+
+    None
+}
+
+fn place_chunk(
+    chunk: &PlannedChunk,
+    base: u32,
+    objects: &[O65Object],
+    memory_map: &mut HashMap<String, MemoryState>,
+    placed_by_section: &mut HashMap<(usize, String), Vec<PlacedChunk>>,
+    fixed: bool,
+) -> Result<()> {
+    let anchor = find_anchor_context(objects, chunk);
+
+    let section = objects
+        .get(chunk.obj_idx)
+        .and_then(|object| object.sections.get(&chunk.segment))
+        .ok_or_else(|| anyhow::anyhow!("internal linker error: missing section '{}'", chunk.segment))?;
+    let source_chunk = section.chunks.get(chunk.chunk_idx).ok_or_else(|| {
+        anyhow::anyhow!(
+            "internal linker error: missing chunk {} in section '{}'",
+            chunk.chunk_idx,
+            chunk.segment
+        )
+    })?;
+
+    let mem = memory_map
+        .get_mut(&chunk.memory_name)
+        .ok_or_else(|| anyhow::anyhow!("unknown memory area '{}'", chunk.memory_name))?;
+
+    let mem_end = mem
+        .spec
+        .start
+        .checked_add(mem.spec.size)
+        .ok_or_else(|| anyhow::anyhow!("memory '{}' range overflow", mem.spec.name))?;
+
+    let end = base
+        .checked_add(chunk.len)
+        .ok_or_else(|| anyhow::anyhow!("placement overflow for segment '{}'", chunk.segment))?;
+
+    if base < mem.spec.start || end > mem_end {
+        let kind = if fixed { "fixed" } else { "relocatable" };
+        let detail = format!(
+            "{kind} chunk for segment '{}' at {:#X}..{:#X} is outside memory '{}' ({:#X}..{:#X})",
+            chunk.segment,
+            base,
+            end,
+            mem.spec.name,
+            mem.spec.start,
+            mem_end
+        );
+        bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+    }
+
+    let rel_start = (base - mem.spec.start) as usize;
+    let rel_end = rel_start
+        .checked_add(chunk.len as usize)
+        .ok_or_else(|| anyhow::anyhow!("placement index overflow"))?;
+
+    if rel_end > mem.bytes.len() {
+        let detail = format!(
+            "segment '{}' chunk placement exceeds memory '{}': start={:#X}, len={:#X}",
+            chunk.segment,
+            mem.spec.name,
+            base,
+            chunk.len
+        );
+        bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+    }
+
+    if let Some(conflict) = mem.used[rel_start..rel_end].iter().position(|used| *used) {
+        let overlap_addr = base + conflict as u32;
+        if fixed {
+            let detail = format!(
+                "fixed chunk for segment '{}' at {:#X}..{:#X} overlaps existing placement near {:#X} in memory '{}'",
+                chunk.segment,
+                base,
+                end,
+                overlap_addr,
+                mem.spec.name
+            );
+            bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+        }
+
+        let detail = format!(
+            "relocatable chunk for segment '{}' cannot be placed at {:#X}..{:#X}; overlap near {:#X} in memory '{}'",
+            chunk.segment,
+            base,
+            end,
+            overlap_addr,
+            mem.spec.name
+        );
+        bail!("{}", decorate_with_anchor(&detail, anchor.as_ref()));
+    }
+
+    mem.bytes[rel_start..rel_end].copy_from_slice(&source_chunk.bytes);
+    for used in &mut mem.used[rel_start..rel_end] {
+        *used = true;
+    }
+
+    mem.cursor = mem.cursor.max(end);
+
+    let key = (chunk.obj_idx, chunk.segment.clone());
+    placed_by_section.entry(key).or_default().push(PlacedChunk {
+        section_offset: chunk.section_offset,
+        len: chunk.len,
+        base_addr: base,
+        memory_name: chunk.memory_name.clone(),
+    });
+
+    Ok(())
+}
+
+fn find_anchor_context(objects: &[O65Object], chunk: &PlannedChunk) -> Option<AnchorContext> {
+    let object = objects.get(chunk.obj_idx)?;
+    let mut first_match_name: Option<String> = None;
+
+    for symbol in &object.symbols {
+        let Some(definition) = symbol.definition.as_ref() else {
+            continue;
+        };
+        if definition.section != chunk.segment || definition.offset != chunk.section_offset {
+            continue;
+        }
+
+        if definition.source.is_some() {
+            return Some(AnchorContext {
+                symbol_name: symbol.name.clone(),
+                source: definition.source.clone(),
+            });
+        }
+
+        if first_match_name.is_none() {
+            first_match_name = Some(symbol.name.clone());
+        }
+    }
+
+    first_match_name.map(|symbol_name| AnchorContext {
+        symbol_name,
+        source: None,
+    })
+}
+
+fn decorate_with_anchor(message: &str, anchor: Option<&AnchorContext>) -> String {
+    let Some(anchor) = anchor else {
+        return message.to_string();
+    };
+
+    let Some(source) = &anchor.source else {
+        return format!("{message}\nfunction '{}'", anchor.symbol_name);
+    };
+
+    let context = render_anchor_context(message, anchor, source);
+    if context.is_empty() {
+        format!(
+            "{message}\nfunction '{}' at {}:{}:{}",
+            anchor.symbol_name, source.file, source.line, source.column
+        )
+    } else {
+        context
+    }
+}
+
+fn render_anchor_context(message: &str, anchor: &AnchorContext, source: &SourceLocation) -> String {
+    let file_id = source.file.clone();
+    let line_len = source.line_text.len();
+    let mut start = source.column.saturating_sub(1) as usize;
+    if start > line_len {
+        start = line_len;
+    }
+    let mut end = source.column_end.saturating_sub(1) as usize;
+    if end <= start {
+        end = start.saturating_add(1);
+    }
+    if end > line_len {
+        end = line_len;
+    }
+    if end <= start && line_len > start {
+        end = start + 1;
+    }
+
+    let mut cache = SingleSourceCache {
+        id: file_id.clone(),
+        source: Source::from(source.line_text.clone()),
+    };
+    let mut output = Vec::new();
+
+    let report = Report::build(ReportKind::Error, (file_id.clone(), start..end))
+        .with_config(
+            Config::default()
+                .with_index_type(IndexType::Byte)
+                .with_color(false),
+        )
+        .with_message(message.to_string())
+        .with_label(
+            Label::new((file_id.clone(), start..end))
+                .with_message(format!("function '{}' defined here", anchor.symbol_name)),
+        )
+        .finish();
+
+    if report.write(&mut cache, &mut output).is_ok() {
+        String::from_utf8_lossy(&output).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+#[derive(Debug)]
+struct SingleSourceCache {
+    id: String,
+    source: Source<String>,
+}
+
+impl Cache<String> for SingleSourceCache {
+    type Storage = String;
+
+    fn fetch(
+        &mut self,
+        id: &String,
+    ) -> std::result::Result<&Source<Self::Storage>, impl fmt::Debug> {
+        if id == &self.id {
+            Ok::<_, String>(&self.source)
+        } else {
+            Err::<&Source<Self::Storage>, _>(format!("missing source for '{id}'"))
+        }
+    }
+
+    fn display<'a>(&self, id: &'a String) -> Option<impl fmt::Display + 'a> {
+        Some(id)
+    }
+}
+
+fn resolve_symbol_addr(placements: &[PlacedChunk], offset: u32) -> Option<u32> {
+    for chunk in placements {
+        if offset == chunk.section_offset {
+            return Some(chunk.base_addr);
+        }
+    }
+
+    for chunk in placements {
+        let end = chunk.section_offset.checked_add(chunk.len)?;
+        if offset > chunk.section_offset && offset <= end {
+            return chunk.base_addr.checked_add(offset - chunk.section_offset);
+        }
+    }
+
+    None
+}
+
+fn resolve_reloc_site(placements: &[PlacedChunk], offset: u32, width: u8) -> Option<(&str, u32)> {
+    if width == 0 {
+        return None;
+    }
+
+    let end = offset.checked_add(u32::from(width))?;
+    for chunk in placements {
+        let chunk_end = chunk.section_offset.checked_add(chunk.len)?;
+        if offset >= chunk.section_offset && end <= chunk_end {
+            let addr = chunk.base_addr.checked_add(offset - chunk.section_offset)?;
+            return Some((&chunk.memory_name, addr));
+        }
+    }
+
+    None
+}
+
+fn used_runs(used: &[bool]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut index = 0usize;
+
+    while index < used.len() {
+        while index < used.len() && !used[index] {
+            index += 1;
+        }
+        if index >= used.len() {
+            break;
+        }
+
+        let start = index;
+        while index < used.len() && used[index] {
+            index += 1;
+        }
+        out.push((start, index));
+    }
+
+    out
+}
+
+fn format_section_listing(
+    segment: &str,
+    chunks: &[PlacedChunk],
+    memory_map: &HashMap<String, MemoryState>,
+) -> Result<String> {
+    let mut out = String::new();
+    out.push_str(&format!("[{segment}]\n"));
+
+    for chunk in chunks {
+        let mem = memory_map
+            .get(&chunk.memory_name)
+            .ok_or_else(|| anyhow::anyhow!("internal linker error: memory '{}' missing", chunk.memory_name))?;
+
+        let rel_start = (chunk.base_addr - mem.spec.start) as usize;
+        let rel_end = rel_start + chunk.len as usize;
+        let bytes = &mem.bytes[rel_start..rel_end];
+
+        for (row_index, row) in bytes.chunks(16).enumerate() {
+            let mut hex = String::new();
+            for (i, byte) in row.iter().enumerate() {
+                if i > 0 {
+                    hex.push(' ');
+                }
+                hex.push_str(&format!("{byte:02X}"));
+            }
+
+            let address = chunk.base_addr + (row_index as u32 * 16);
+            out.push_str(&format!("{address:06X}: {hex}\n"));
+        }
+    }
+
+    Ok(out)
 }
 
 fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'a SegmentRule> {
@@ -411,6 +826,7 @@ fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'
     {
         return Ok(rule);
     }
+
     if let Some(rule) = config
         .segments
         .iter()
@@ -418,14 +834,13 @@ fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'
     {
         return Ok(rule);
     }
+
     bail!("no segment rule found for segment '{segment}'");
 }
 
 impl SegmentRule {
     fn segment_name(&self) -> Option<&str> {
-        self.segment
-            .as_deref()
-            .or(self.legacy_bank.as_deref())
+        self.segment.as_deref().or(self.legacy_bank.as_deref())
     }
 }
 
@@ -448,7 +863,8 @@ fn write_value(slot: &mut [u8], value: u32, width: u8) -> Result<()> {
             slot[0] = v;
         }
         2 => {
-            let v = u16::try_from(value).context("absolute relocation does not fit in 16 bits")?;
+            let v =
+                u16::try_from(value).context("absolute relocation does not fit in 16 bits")?;
             slot.copy_from_slice(&v.to_le_bytes());
         }
         3 => {
@@ -467,33 +883,10 @@ fn format_empty_listing_block(name: &str) -> String {
     format!("[{name}]\n(empty)\n")
 }
 
-fn format_listing_block(name: &str, bytes: &[u8]) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("[{name}]\n"));
-    if bytes.is_empty() {
-        out.push_str("(empty)\n");
-        return out;
-    }
-
-    for (index, chunk) in bytes.chunks(16).enumerate() {
-        let mut hex = String::new();
-        for (i, byte) in chunk.iter().enumerate() {
-            if i > 0 {
-                hex.push(' ');
-            }
-            hex.push_str(&format!("{byte:02X}"));
-        }
-        let address = index * 16;
-        out.push_str(&format!("{address:06X}: {hex}\n"));
-    }
-
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k816_o65::{O65Object, Relocation, RelocationKind, Section, Symbol, SymbolDefinition};
+    use k816_o65::{Relocation, RelocationKind, Section, SectionChunk, Symbol, SymbolDefinition};
 
     #[test]
     fn links_absolute_relocation() {
@@ -501,9 +894,14 @@ mod tests {
         sections.insert(
             "default".to_string(),
             Section {
-                bytes: vec![0xEA, 0x00, 0x00],
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xEA, 0x00, 0x00],
+                }],
             },
         );
+
         let object = O65Object {
             sections,
             symbols: vec![Symbol {
@@ -512,6 +910,7 @@ mod tests {
                 definition: Some(SymbolDefinition {
                     section: "default".to_string(),
                     offset: 2,
+                    source: None,
                 }),
             }],
             relocations: vec![Relocation {
@@ -527,5 +926,132 @@ mod tests {
         let linked = link_objects(&[object], &default_stub_config()).expect("link");
         let main = linked.binaries.get("main.bin").expect("main output");
         assert_eq!(main, &vec![0xEA, 0x02, 0x00]);
+    }
+
+    #[test]
+    fn fixed_chunk_reserved_before_relocatable() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![
+                    SectionChunk {
+                        offset: 0,
+                        address: Some(0x20),
+                        bytes: vec![0xAA],
+                    },
+                    SectionChunk {
+                        offset: 1,
+                        address: None,
+                        bytes: vec![0xBB],
+                    },
+                ],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let linked = link_objects(&[object], &default_stub_config()).expect("link");
+        let main = linked.binaries.get("main.bin").expect("main output");
+        assert_eq!(main, &vec![0xAA, 0xBB]);
+        assert!(linked.listing.contains("000020: AA"));
+        assert!(linked.listing.contains("000021: BB"));
+    }
+
+    #[test]
+    fn rejects_overlapping_fixed_chunks() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![
+                    SectionChunk {
+                        offset: 0,
+                        address: Some(0x30),
+                        bytes: vec![0xAA, 0xBB],
+                    },
+                    SectionChunk {
+                        offset: 2,
+                        address: Some(0x31),
+                        bytes: vec![0xCC],
+                    },
+                ],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = link_objects(&[object], &default_stub_config()).expect_err("expected overlap");
+        assert!(err.to_string().contains("overlaps existing placement"));
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_fixed_chunk() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: Some(0x1_0000),
+                    bytes: vec![0xAA],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = link_objects(&[object], &default_stub_config()).expect_err("expected range error");
+        assert!(err.to_string().contains("outside memory"));
+    }
+
+    #[test]
+    fn fails_when_no_free_range_for_relocatable_chunk() {
+        let mut config = default_stub_config();
+        config.memory[0].size = 2;
+
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![
+                    SectionChunk {
+                        offset: 0,
+                        address: Some(1),
+                        bytes: vec![0xAA],
+                    },
+                    SectionChunk {
+                        offset: 1,
+                        address: None,
+                        bytes: vec![0xBB, 0xCC],
+                    },
+                ],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = link_objects(&[object], &config).expect_err("expected no-fit error");
+        assert!(err.to_string().contains("no free range found"));
     }
 }

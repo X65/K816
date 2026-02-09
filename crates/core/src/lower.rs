@@ -26,6 +26,7 @@ pub fn lower(
             },
             Item::CodeBlock(block) => {
                 let scope = block.name.clone();
+                let label_span = block.name_span.unwrap_or(item.span);
                 // Allow `segment ...` at the top of a code block to control where the
                 // function/main entry label is emitted.
                 let mut body_start = 0usize;
@@ -40,7 +41,7 @@ pub fn lower(
                     }
                 }
 
-                ops.push(Spanned::new(Op::Label(scope.clone()), item.span));
+                ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
                 for stmt in block.body.iter().skip(body_start) {
                     lower_stmt(
                         &stmt.node,

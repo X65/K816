@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ariadne.workspace = true
 indexmap.workspace = true
 k816-o65 = { path = "../o65" }
 ron.workspace = true

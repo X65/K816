@@ -494,6 +494,7 @@ name = "k816-link"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ariadne",
  "indexmap",
  "k816-o65",
  "ron",

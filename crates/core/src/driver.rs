@@ -91,8 +91,8 @@ pub fn compile_source_to_object_with_fs(
     let hir = lower(&ast, &sema, fs)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics))?;
 
-    let emit_output =
-        emit_object(&hir).map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics))?;
+    let emit_output = emit_object(&hir, &source_map)
+        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics))?;
 
     Ok(CompileObjectOutput {
         object: emit_output.object,

@@ -16,16 +16,49 @@ pub fn run_fixture(name: &str) -> Result<()> {
     let source = std::fs::read_to_string(&input_path)
         .with_context(|| format!("failed to read fixture input '{}'", input_path.display()))?;
 
-    let compiled = k816_core::compile_source_to_object(&input_path.display().to_string(), &source)
-        .map_err(|error| anyhow!("{}", error.rendered))?;
+    let expected_error_path = fixture_dir.join("expected.err");
+    if expected_error_path.exists() {
+        let expected_error = std::fs::read_to_string(&expected_error_path)
+            .with_context(|| format!("failed to read '{}'", expected_error_path.display()))?;
 
-    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.k816ld.ron");
-    let config = k816_link::load_config(&config_path)?;
-    let linked = k816_link::link_objects(&[compiled.object], &config)?;
+        let pipeline_result = compile_and_link(&fixture_dir, &input_path, &source);
+        let err = match pipeline_result {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "fixture '{}' expected a link error, but compile+link succeeded",
+                    fixture_dir.display()
+                ));
+            }
+            Err(err) => err,
+        };
 
+        let actual = err.to_string();
+        similar_asserts::assert_eq!(expected_error.trim_end(), actual.trim_end());
+        return Ok(());
+    }
+
+    let linked = compile_and_link(&fixture_dir, &input_path, &source)?;
     compare_binaries(&fixture_dir, &linked.binaries)?;
     compare_listing(&fixture_dir, &linked.listing)?;
     Ok(())
+}
+
+fn compile_and_link(
+    fixture_dir: &Path,
+    input_path: &Path,
+    source: &str,
+) -> Result<k816_link::LinkOutput> {
+    let compiled = k816_core::compile_source_to_object(&input_path.display().to_string(), &source)
+        .map_err(|error| anyhow!("{}", error.rendered))?;
+
+    let local_config_path = fixture_dir.join("link.k816ld.ron");
+    let config_path = if local_config_path.exists() {
+        local_config_path
+    } else {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.k816ld.ron")
+    };
+    let config = k816_link::load_config(&config_path)?;
+    k816_link::link_objects(&[compiled.object], &config)
 }
 
 fn compare_binaries(fixture_dir: &Path, banks: &indexmap::IndexMap<String, Vec<u8>>) -> Result<()> {

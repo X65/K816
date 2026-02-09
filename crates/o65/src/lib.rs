@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
 
 const MAGIC: &[u8; 8] = b"K816O65\0";
-const VERSION: u16 = 1;
+const VERSION: u16 = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -14,6 +14,13 @@ pub struct O65Object {
 
 #[derive(Debug, Clone, Default)]
 pub struct Section {
+    pub chunks: Vec<SectionChunk>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SectionChunk {
+    pub offset: u32,
+    pub address: Option<u32>,
     pub bytes: Vec<u8>,
 }
 
@@ -28,6 +35,16 @@ pub struct Symbol {
 pub struct SymbolDefinition {
     pub section: String,
     pub offset: u32,
+    pub source: Option<SourceLocation>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub column_end: u32,
+    pub line_text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +74,8 @@ pub fn read_object(path: &std::path::Path) -> Result<O65Object> {
 }
 
 pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
+    validate_object(object)?;
+
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
     write_u16(&mut out, VERSION);
@@ -67,7 +86,18 @@ pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
 
     for (name, section) in &object.sections {
         write_string(&mut out, name)?;
-        write_bytes(&mut out, &section.bytes)?;
+        write_u32(&mut out, section.chunks.len() as u32);
+        for chunk in &section.chunks {
+            write_u32(&mut out, chunk.offset);
+            match chunk.address {
+                Some(address) => {
+                    out.push(1);
+                    write_u32(&mut out, address);
+                }
+                None => out.push(0),
+            }
+            write_bytes(&mut out, &chunk.bytes)?;
+        }
     }
 
     for symbol in &object.symbols {
@@ -78,6 +108,17 @@ pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
                 out.push(1);
                 write_string(&mut out, &definition.section)?;
                 write_u32(&mut out, definition.offset);
+                match &definition.source {
+                    Some(source) => {
+                        out.push(1);
+                        write_string(&mut out, &source.file)?;
+                        write_u32(&mut out, source.line);
+                        write_u32(&mut out, source.column);
+                        write_u32(&mut out, source.column_end);
+                        write_string(&mut out, &source.line_text)?;
+                    }
+                    None => out.push(0),
+                }
             }
             None => out.push(0),
         }
@@ -116,13 +157,20 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
     let mut sections = IndexMap::new();
     for _ in 0..section_count {
         let name = rd.read_string()?;
-        let section_bytes = rd.read_bytes()?;
-        sections.insert(
-            name,
-            Section {
-                bytes: section_bytes,
-            },
-        );
+        let chunk_count = rd.read_u32()? as usize;
+        let mut chunks = Vec::with_capacity(chunk_count);
+        for _ in 0..chunk_count {
+            let offset = rd.read_u32()?;
+            let has_address = rd.read_u8()? != 0;
+            let address = if has_address { Some(rd.read_u32()?) } else { None };
+            let bytes = rd.read_bytes()?;
+            chunks.push(SectionChunk {
+                offset,
+                address,
+                bytes,
+            });
+        }
+        sections.insert(name, Section { chunks });
     }
 
     let mut symbols = Vec::with_capacity(symbol_count);
@@ -131,9 +179,23 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
         let global = rd.read_u8()? != 0;
         let has_definition = rd.read_u8()? != 0;
         let definition = if has_definition {
+            let section = rd.read_string()?;
+            let offset = rd.read_u32()?;
+            let has_source = rd.read_u8()? != 0;
             Some(SymbolDefinition {
-                section: rd.read_string()?,
-                offset: rd.read_u32()?,
+                section,
+                offset,
+                source: if has_source {
+                    Some(SourceLocation {
+                        file: rd.read_string()?,
+                        line: rd.read_u32()?,
+                        column: rd.read_u32()?,
+                        column_end: rd.read_u32()?,
+                        line_text: rd.read_string()?,
+                    })
+                } else {
+                    None
+                },
             })
         } else {
             None
@@ -169,12 +231,131 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
         bail!("object has trailing bytes");
     }
 
-    Ok(O65Object {
+    let object = O65Object {
         sections,
         symbols,
         relocations,
         listing,
-    })
+    };
+    validate_object(&object)?;
+    Ok(object)
+}
+
+fn validate_object(object: &O65Object) -> Result<()> {
+    for (section_name, section) in &object.sections {
+        validate_section(section_name, section)?;
+    }
+
+    for symbol in &object.symbols {
+        let Some(definition) = &symbol.definition else {
+            continue;
+        };
+
+        let section = object
+            .sections
+            .get(&definition.section)
+            .ok_or_else(|| anyhow::anyhow!("symbol '{}' references unknown section '{}'", symbol.name, definition.section))?;
+
+        if !section_contains_point(section, definition.offset)? {
+            bail!(
+                "symbol '{}' offset {:#X} is outside section '{}'",
+                symbol.name,
+                definition.offset,
+                definition.section
+            );
+        }
+    }
+
+    for reloc in &object.relocations {
+        if reloc.width == 0 {
+            bail!("relocation in section '{}' has zero width", reloc.section);
+        }
+
+        let section = object
+            .sections
+            .get(&reloc.section)
+            .ok_or_else(|| anyhow::anyhow!("relocation references unknown section '{}'", reloc.section))?;
+
+        let end = reloc
+            .offset
+            .checked_add(u32::from(reloc.width))
+            .ok_or_else(|| anyhow::anyhow!("relocation range overflow in section '{}'", reloc.section))?;
+
+        if !section_contains_range(section, reloc.offset, end)? {
+            bail!(
+                "relocation site {:#X}..{:#X} is outside section '{}'",
+                reloc.offset,
+                end,
+                reloc.section
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_section(section_name: &str, section: &Section) -> Result<()> {
+    let mut prev_end: Option<u32> = None;
+
+    for (index, chunk) in section.chunks.iter().enumerate() {
+        if chunk.bytes.is_empty() {
+            bail!(
+                "section '{}' chunk {} at offset {:#X} is empty",
+                section_name,
+                index,
+                chunk.offset
+            );
+        }
+
+        let len = u32::try_from(chunk.bytes.len())
+            .context("section chunk length does not fit in u32")?;
+        let chunk_end = chunk
+            .offset
+            .checked_add(len)
+            .ok_or_else(|| anyhow::anyhow!("section '{}' chunk {} range overflows u32", section_name, index))?;
+
+        if let Some(prev_end) = prev_end {
+            if chunk.offset < prev_end {
+                bail!(
+                    "section '{}' has overlapping chunks around offset {:#X}",
+                    section_name,
+                    chunk.offset
+                );
+            }
+        }
+
+        prev_end = Some(chunk_end);
+    }
+
+    Ok(())
+}
+
+fn section_contains_point(section: &Section, point: u32) -> Result<bool> {
+    for chunk in &section.chunks {
+        let end = chunk
+            .offset
+            .checked_add(u32::try_from(chunk.bytes.len()).context("section chunk length does not fit in u32")?)
+            .ok_or_else(|| anyhow::anyhow!("section chunk range overflow"))?;
+
+        if point >= chunk.offset && point <= end {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn section_contains_range(section: &Section, start: u32, end: u32) -> Result<bool> {
+    for chunk in &section.chunks {
+        let chunk_end = chunk
+            .offset
+            .checked_add(u32::try_from(chunk.bytes.len()).context("section chunk length does not fit in u32")?)
+            .ok_or_else(|| anyhow::anyhow!("section chunk range overflow"))?;
+
+        if start >= chunk.offset && end <= chunk_end {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn write_u16(out: &mut Vec<u8>, value: u16) {
@@ -267,7 +448,11 @@ mod tests {
         sections.insert(
             "default".to_string(),
             Section {
-                bytes: vec![0xEA, 0x00, 0x00],
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xEA, 0x00, 0x00],
+                }],
             },
         );
         let object = O65Object {
@@ -278,6 +463,7 @@ mod tests {
                 definition: Some(SymbolDefinition {
                     section: "default".to_string(),
                     offset: 2,
+                    source: None,
                 }),
             }],
             relocations: vec![Relocation {
@@ -292,9 +478,73 @@ mod tests {
 
         let bytes = encode_object(&object).expect("encode");
         let decoded = decode_object(&bytes).expect("decode");
-        assert_eq!(decoded.sections["default"].bytes, vec![0xEA, 0x00, 0x00]);
+        assert_eq!(decoded.sections["default"].chunks.len(), 1);
+        assert_eq!(decoded.sections["default"].chunks[0].bytes, vec![0xEA, 0x00, 0x00]);
         assert_eq!(decoded.symbols.len(), 1);
         assert_eq!(decoded.relocations.len(), 1);
         assert_eq!(decoded.listing, object.listing);
+    }
+
+    #[test]
+    fn rejects_overlapping_chunks() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![
+                    SectionChunk {
+                        offset: 0,
+                        address: None,
+                        bytes: vec![0xEA, 0x60],
+                    },
+                    SectionChunk {
+                        offset: 1,
+                        address: None,
+                        bytes: vec![0xEA],
+                    },
+                ],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            listing: String::new(),
+        };
+
+        let err = encode_object(&object).expect_err("expected validation error");
+        assert!(err.to_string().contains("overlapping chunks"));
+    }
+
+    #[test]
+    fn rejects_relocation_outside_chunk_data() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xEA],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: vec![Relocation {
+                section: "default".to_string(),
+                offset: 1,
+                width: 1,
+                kind: RelocationKind::Absolute,
+                symbol: "target".to_string(),
+            }],
+            listing: String::new(),
+        };
+
+        let err = encode_object(&object).expect_err("expected validation error");
+        assert!(err.to_string().contains("relocation site"));
     }
 }

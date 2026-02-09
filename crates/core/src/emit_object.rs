@@ -1,12 +1,15 @@
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
-use k816_o65::{O65Object, Relocation, RelocationKind, Section, Symbol, SymbolDefinition};
+use k816_o65::{
+    O65Object, Relocation, RelocationKind, Section, SectionChunk, SourceLocation, Symbol,
+    SymbolDefinition,
+};
 
 use crate::diag::Diagnostic;
 use crate::hir::{AddressValue, Op, OperandOp, Program};
 use crate::isa65816::{OperandShape, operand_width, select_encoding};
-use crate::span::Span;
+use crate::span::{SourceMap, Span};
 
 #[derive(Debug, Clone)]
 pub struct EmitObjectOutput {
@@ -15,41 +18,49 @@ pub struct EmitObjectOutput {
 
 #[derive(Debug)]
 struct SegmentState {
-    bytes: Vec<u8>,
+    chunks: Vec<SectionChunk>,
+    section_offset: u32,
+    fixed_cursor: Option<u32>,
     nocross_boundary: Option<u16>,
 }
 
 #[derive(Debug)]
 struct Fixup {
     segment: String,
-    offset: usize,
-    width: usize,
+    offset: u32,
+    width: u8,
     kind: RelocationKind,
     label: String,
     span: Span,
 }
 
-pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
+pub fn emit_object(
+    program: &Program,
+    source_map: &SourceMap,
+) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
-    let mut labels: FxHashMap<String, (String, usize)> = FxHashMap::default();
+    let mut labels: FxHashMap<String, (String, u32, Span)> = FxHashMap::default();
     let mut fixups = Vec::new();
     let mut current_segment = "default".to_string();
+
     segments
         .entry(current_segment.clone())
         .or_insert(SegmentState {
-        bytes: Vec::new(),
-        nocross_boundary: None,
-    });
+            chunks: Vec::new(),
+            section_offset: 0,
+            fixed_cursor: None,
+            nocross_boundary: None,
+        });
 
     for op in &program.ops {
         match &op.node {
             Op::SelectSegment(name) => {
                 current_segment = name.clone();
-                segments
-                    .entry(current_segment.clone())
-                    .or_insert(SegmentState {
-                    bytes: Vec::new(),
+                segments.entry(current_segment.clone()).or_insert(SegmentState {
+                    chunks: Vec::new(),
+                    section_offset: 0,
+                    fixed_cursor: None,
                     nocross_boundary: None,
                 });
             }
@@ -58,7 +69,10 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
                     .get(&current_segment)
                     .expect("current segment must exist during emit");
                 if labels
-                    .insert(name.clone(), (current_segment.clone(), segment.bytes.len()))
+                    .insert(
+                        name.clone(),
+                        (current_segment.clone(), segment.section_offset, op.span),
+                    )
                     .is_some()
                 {
                     diagnostics.push(
@@ -72,31 +86,25 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
                     diagnostics.push(Diagnostic::error(op.span, "align value must be non-zero"));
                     continue;
                 }
+
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
-                while !segment.bytes.len().is_multiple_of(usize::from(*align)) {
-                    segment.bytes.push(0);
+
+                let cursor = active_cursor(segment);
+                let align = u32::from(*align);
+                let rem = cursor % align;
+                let pad = if rem == 0 { 0 } else { align - rem };
+
+                if pad > 0 {
+                    emit_zeroes(segment, pad as usize, op.span, &mut diagnostics);
                 }
             }
             Op::Address(address) => {
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
-                let address = *address as usize;
-                if segment.bytes.len() > address {
-                    diagnostics.push(Diagnostic::error(
-                        op.span,
-                        format!(
-                            "address {address:#X} is behind current position {:#X}",
-                            segment.bytes.len()
-                        ),
-                    ));
-                    continue;
-                }
-                while segment.bytes.len() < address {
-                    segment.bytes.push(0);
-                }
+                segment.fixed_cursor = Some(*address);
             }
             Op::Nocross(boundary) => {
                 let segment = segments
@@ -108,13 +116,15 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
+
                 apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
-                segment.bytes.extend(bytes);
+                append_bytes(segment, bytes, op.span, &mut diagnostics);
             }
             Op::Instruction(instruction) => {
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
+
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
@@ -140,28 +150,25 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
 
                 let width = operand_width(encoding.mode);
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
-                segment.bytes.push(encoding.opcode);
-                let operand_offset = segment.bytes.len();
+
+                append_bytes(segment, &[encoding.opcode], op.span, &mut diagnostics);
+                let operand_offset = segment.section_offset;
 
                 match &instruction.operand {
                     None => {}
                     Some(OperandOp::Immediate(value)) => {
-                        segment.bytes.push(*value as u8);
+                        append_bytes(segment, &[*value as u8], op.span, &mut diagnostics);
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
-                        AddressValue::Literal(literal) => write_literal(
-                            &mut segment.bytes,
-                            *literal,
-                            width,
-                            op.span,
-                            &mut diagnostics,
-                        ),
+                        AddressValue::Literal(literal) => {
+                            emit_literal(segment, *literal, width, op.span, &mut diagnostics)
+                        }
                         AddressValue::Label(label) => {
-                            segment.bytes.resize(segment.bytes.len() + width, 0);
+                            emit_zeroes(segment, width, op.span, &mut diagnostics);
                             fixups.push(Fixup {
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
-                                width,
+                                width: width as u8,
                                 kind: RelocationKind::Absolute,
                                 label: label.clone(),
                                 span: op.span,
@@ -189,7 +196,7 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
     let skip_default_empty = segments.len() > 1
         && segments
             .get("default")
-            .is_some_and(|state| state.bytes.is_empty());
+            .is_some_and(|state| state.chunks.is_empty());
 
     let mut listing_blocks = Vec::new();
     let mut sections = IndexMap::new();
@@ -197,17 +204,18 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
         if skip_default_empty && segment_name == "default" {
             continue;
         }
-        listing_blocks.push(format_listing_block(segment_name, &state.bytes));
+
+        listing_blocks.push(format_listing_block(segment_name, &state.chunks));
         sections.insert(
             segment_name.clone(),
             Section {
-                bytes: state.bytes.clone(),
+                chunks: state.chunks.clone(),
             },
         );
     }
 
     let mut symbols = Vec::new();
-    for (name, (segment, offset)) in &labels {
+    for (name, (segment, offset, span)) in &labels {
         if skip_default_empty && segment == "default" {
             continue;
         }
@@ -216,7 +224,8 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
             global: true,
             definition: Some(SymbolDefinition {
                 section: segment.clone(),
-                offset: *offset as u32,
+                offset: *offset,
+                source: source_location_for_span(source_map, *span),
             }),
         });
     }
@@ -229,8 +238,8 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
         }
         relocations.push(Relocation {
             section: fixup.segment.clone(),
-            offset: fixup.offset as u32,
-            width: fixup.width as u8,
+            offset: fixup.offset,
+            width: fixup.width,
             kind: fixup.kind,
             symbol: fixup.label.clone(),
         });
@@ -246,6 +255,114 @@ pub fn emit_object(program: &Program) -> Result<EmitObjectOutput, Vec<Diagnostic
     })
 }
 
+fn active_cursor(segment: &SegmentState) -> u32 {
+    segment.fixed_cursor.unwrap_or(segment.section_offset)
+}
+
+fn emit_zeroes(
+    segment: &mut SegmentState,
+    count: usize,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if count == 0 {
+        return;
+    }
+    let bytes = vec![0_u8; count];
+    append_bytes(segment, &bytes, span, diagnostics);
+}
+
+fn append_bytes(
+    segment: &mut SegmentState,
+    bytes: &[u8],
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    let len = match u32::try_from(bytes.len()) {
+        Ok(len) => len,
+        Err(_) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "emitted bytes exceed 32-bit section offset range",
+            ));
+            return;
+        }
+    };
+
+    let section_start = segment.section_offset;
+    let fixed_start = segment.fixed_cursor;
+
+    let can_extend_last = segment
+        .chunks
+        .last()
+        .is_some_and(|last| can_extend_chunk(last, section_start, fixed_start));
+
+    if can_extend_last {
+        if let Some(last) = segment.chunks.last_mut() {
+            last.bytes.extend_from_slice(bytes);
+        }
+    } else {
+        segment.chunks.push(SectionChunk {
+            offset: section_start,
+            address: fixed_start,
+            bytes: bytes.to_vec(),
+        });
+    }
+
+    segment.section_offset = match segment.section_offset.checked_add(len) {
+        Some(next) => next,
+        None => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "section offset overflow while appending bytes",
+            ));
+            return;
+        }
+    };
+
+    if let Some(fixed_start) = segment.fixed_cursor {
+        segment.fixed_cursor = match fixed_start.checked_add(len) {
+            Some(next) => Some(next),
+            None => {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    "absolute address overflow while appending bytes",
+                ));
+                None
+            }
+        };
+    }
+}
+
+fn can_extend_chunk(last: &SectionChunk, section_start: u32, fixed_start: Option<u32>) -> bool {
+    let last_len = match u32::try_from(last.bytes.len()) {
+        Ok(len) => len,
+        Err(_) => return false,
+    };
+
+    let Some(last_section_end) = last.offset.checked_add(last_len) else {
+        return false;
+    };
+    if last_section_end != section_start {
+        return false;
+    }
+
+    match (last.address, fixed_start) {
+        (None, None) => true,
+        (Some(last_addr), Some(fixed_addr)) => {
+            let Some(last_addr_end) = last_addr.checked_add(last_len) else {
+                return false;
+            };
+            last_addr_end == fixed_addr
+        }
+        _ => false,
+    }
+}
+
 fn apply_nocross_if_needed(
     segment: &mut SegmentState,
     next_size: usize,
@@ -255,11 +372,13 @@ fn apply_nocross_if_needed(
     let Some(boundary) = segment.nocross_boundary.take() else {
         return;
     };
+
     let boundary = usize::from(boundary);
     if boundary == 0 {
         diagnostics.push(Diagnostic::error(span, "nocross value must be non-zero"));
         return;
     }
+
     if next_size > boundary {
         diagnostics.push(Diagnostic::error(
             span,
@@ -268,15 +387,16 @@ fn apply_nocross_if_needed(
         return;
     }
 
-    let offset_in_window = segment.bytes.len() % boundary;
+    let cursor = active_cursor(segment) as usize;
+    let offset_in_window = cursor % boundary;
     if offset_in_window + next_size > boundary {
         let pad = boundary - offset_in_window;
-        segment.bytes.resize(segment.bytes.len() + pad, 0);
+        emit_zeroes(segment, pad, span, diagnostics);
     }
 }
 
-fn write_literal(
-    bytes: &mut Vec<u8>,
+fn emit_literal(
+    segment: &mut SegmentState,
     value: u32,
     width: usize,
     span: Span,
@@ -285,14 +405,14 @@ fn write_literal(
     match width {
         0 => {}
         1 => match u8::try_from(value) {
-            Ok(value) => bytes.push(value),
+            Ok(value) => append_bytes(segment, &[value], span, diagnostics),
             Err(_) => diagnostics.push(Diagnostic::error(
                 span,
                 "value does not fit in 8-bit operand",
             )),
         },
         2 => match u16::try_from(value) {
-            Ok(value) => bytes.extend_from_slice(&value.to_le_bytes()),
+            Ok(value) => append_bytes(segment, &value.to_le_bytes(), span, diagnostics),
             Err(_) => diagnostics.push(Diagnostic::error(
                 span,
                 "value does not fit in 16-bit operand",
@@ -306,32 +426,136 @@ fn write_literal(
                 ));
             } else {
                 let bytes24 = value.to_le_bytes();
-                bytes.extend_from_slice(&bytes24[..3]);
+                append_bytes(segment, &bytes24[..3], span, diagnostics);
             }
         }
         _ => diagnostics.push(Diagnostic::error(span, "unsupported operand width")),
     }
 }
 
-fn format_listing_block(bank_name: &str, bytes: &[u8]) -> String {
+fn format_listing_block(segment_name: &str, chunks: &[SectionChunk]) -> String {
     let mut out = String::new();
-    out.push_str(&format!("[{bank_name}]\n"));
-    if bytes.is_empty() {
+    out.push_str(&format!("[{segment_name}]\n"));
+
+    if chunks.is_empty() {
         out.push_str("(empty)\n");
         return out;
     }
 
-    for (index, chunk) in bytes.chunks(16).enumerate() {
-        let mut hex = String::new();
-        for (i, byte) in chunk.iter().enumerate() {
-            if i > 0 {
-                hex.push(' ');
+    for chunk in chunks {
+        for (index, row) in chunk.bytes.chunks(16).enumerate() {
+            let mut hex = String::new();
+            for (i, byte) in row.iter().enumerate() {
+                if i > 0 {
+                    hex.push(' ');
+                }
+                hex.push_str(&format!("{byte:02X}"));
             }
-            hex.push_str(&format!("{byte:02X}"));
+
+            let address = chunk.offset + (index as u32 * 16);
+            out.push_str(&format!("{address:06X}: {hex}\n"));
         }
-        let address = index * 16;
-        out.push_str(&format!("{address:06X}: {hex}\n"));
     }
 
     out
+}
+
+fn source_location_for_span(source_map: &SourceMap, span: Span) -> Option<SourceLocation> {
+    let file = source_map.get(span.source_id)?;
+    let (line, column) = file.line_col(span.start);
+    let end_offset = span.end.saturating_sub(1).max(span.start);
+    let (end_line, end_column_inclusive) = file.line_col(end_offset);
+    let column_end = if end_line == line {
+        end_column_inclusive.saturating_add(1)
+    } else {
+        column.saturating_add(1)
+    };
+    let line_index = line.saturating_sub(1);
+    let line_text = file
+        .text
+        .lines()
+        .nth(line_index)
+        .unwrap_or_default()
+        .to_string();
+
+    Some(SourceLocation {
+        file: file.name.clone(),
+        line: line as u32,
+        column: column as u32,
+        column_end: column_end as u32,
+        line_text,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir::{Op, Program};
+    use crate::span::{SourceId, SourceMap, Span, Spanned};
+
+    fn op(node: Op) -> Spanned<Op> {
+        Spanned::new(node, Span::new(SourceId(0), 0, 0))
+    }
+
+    #[test]
+    fn address_creates_sparse_chunk_without_zero_padding() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "func a {}\n");
+        let program = Program {
+            ops: vec![
+                op(Op::Label("func_a".to_string())),
+                op(Op::EmitBytes(vec![0xEA, 0x60])),
+                op(Op::Address(0x4000)),
+                op(Op::Label("func_b".to_string())),
+                op(Op::EmitBytes(vec![0xEA, 0x60])),
+            ],
+        };
+
+        let emitted = emit_object(&program, &source_map).expect("emit object");
+        let section = emitted
+            .object
+            .sections
+            .get("default")
+            .expect("default section");
+
+        assert_eq!(section.chunks.len(), 2);
+        assert_eq!(section.chunks[0].offset, 0);
+        assert_eq!(section.chunks[0].address, None);
+        assert_eq!(section.chunks[0].bytes, vec![0xEA, 0x60]);
+
+        assert_eq!(section.chunks[1].offset, 2);
+        assert_eq!(section.chunks[1].address, Some(0x4000));
+        assert_eq!(section.chunks[1].bytes, vec![0xEA, 0x60]);
+    }
+
+    #[test]
+    fn labels_after_address_keep_compact_section_offsets() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "func a {}\n");
+        let program = Program {
+            ops: vec![
+                op(Op::Label("func_a".to_string())),
+                op(Op::EmitBytes(vec![0xEA, 0x60])),
+                op(Op::Address(0x4000)),
+                op(Op::Label("func_b".to_string())),
+                op(Op::EmitBytes(vec![0xEA, 0x60])),
+            ],
+        };
+
+        let emitted = emit_object(&program, &source_map).expect("emit object");
+        let mut symbols = emitted.object.symbols;
+        symbols.sort_by(|a, b| a.name.cmp(&b.name));
+
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "func_a");
+        assert_eq!(
+            symbols[0].definition.as_ref().expect("func_a definition").offset,
+            0
+        );
+        assert_eq!(symbols[1].name, "func_b");
+        assert_eq!(
+            symbols[1].definition.as_ref().expect("func_b definition").offset,
+            2
+        );
+    }
 }

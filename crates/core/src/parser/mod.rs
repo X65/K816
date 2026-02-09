@@ -175,6 +175,7 @@ where
         .ignore_then(body.clone())
         .map(|body| CodeBlock {
             name: "main".to_string(),
+            name_span: None,
             kind: BlockKind::Main,
             is_far: false,
             is_naked: false,
@@ -183,15 +184,20 @@ where
         });
 
     let func = just(TokenKind::Func)
-        .ignore_then(ident_parser())
+        .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
         .then(body)
-        .map(|(name, body)| CodeBlock {
-            name,
-            kind: BlockKind::Func,
-            is_far: false,
-            is_naked: false,
-            is_inline: false,
-            body,
+        .map(
+            move |((name, name_span), body): ((String, SimpleSpan), Vec<Spanned<Stmt>>)| {
+            let range = name_span.into_range();
+            CodeBlock {
+                name,
+                name_span: Some(Span::new(source_id, range.start, range.end)),
+                kind: BlockKind::Func,
+                is_far: false,
+                is_naked: false,
+                is_inline: false,
+                body,
+            }
         });
 
     modifiers

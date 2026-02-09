@@ -49,6 +49,7 @@ fn expand_code_block(
 
     CodeBlock {
         name: block.name.clone(),
+        name_span: block.name_span,
         kind: block.kind,
         is_far: block.is_far,
         is_naked: block.is_naked,

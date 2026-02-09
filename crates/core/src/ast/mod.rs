@@ -1,4 +1,4 @@
-use crate::span::Spanned;
+use crate::span::{Span, Spanned};
 
 #[derive(Debug, Clone, Default)]
 pub struct File {
@@ -35,6 +35,7 @@ pub enum BlockKind {
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
     pub name: String,
+    pub name_span: Option<Span>,
     pub kind: BlockKind,
     pub is_far: bool,
     pub is_naked: bool,

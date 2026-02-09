@@ -4,7 +4,7 @@ func func_a {
 }
 
 func func_b {
-  address $0020
+  address 0x4000
   nop
 }
 

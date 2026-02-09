@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory, Parser, Subcommand};
-use indexmap::IndexMap;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -10,7 +9,7 @@ use indexmap::IndexMap;
     about = "High-level assembler for the WDC 65816",
     long_about = None,
     override_usage = "k816 [COMMAND] [INPUT]",
-    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.k816obj\n  k816 --help"
+    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.k816ld.ron\n  k816 --help"
 )]
 struct Cli {
     /// Optional explicit subcommand.
@@ -24,36 +23,33 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Compile source file into relocatable object bundle.
+    /// Compile source file into relocatable o65 object file.
     Compile(CompileArgs),
-    /// Link relocatable object bundle into final binary output.
+    /// Link one or more o65 object files into final binary output.
     Link(LinkArgs),
 }
 
 #[derive(Debug, Parser)]
 struct CompileArgs {
-    /// Input source file.
+    /// Input source file (.k65).
     #[arg(value_name = "INPUT")]
     input: PathBuf,
-    /// Output object bundle directory.
-    #[arg(short = 'o', long = "output", value_name = "OBJECT_DIR")]
+    /// Output object file path.
+    #[arg(short = 'o', long = "output", value_name = "OBJECT_FILE")]
     output: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
 struct LinkArgs {
-    /// Input object bundle directory.
-    #[arg(value_name = "OBJECT_DIR")]
-    object: PathBuf,
-    /// Output base path (without extension).
+    /// Input object files (.o65).
+    #[arg(value_name = "OBJECT_FILE", required = true)]
+    objects: Vec<PathBuf>,
+    /// Linker config file in RON format.
+    #[arg(short = 'T', long = "config", value_name = "CONFIG")]
+    config: Option<PathBuf>,
+    /// Output base path (without extension) for emitted binaries/listing.
     #[arg(short = 'o', long = "output", value_name = "OUT_BASE")]
     output: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
-struct ObjectBundle {
-    banks: IndexMap<String, Vec<u8>>,
-    listing: String,
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +92,7 @@ fn print_banner() {
     println!("Provided AS IS, without warranty or liability.");
 }
 
-fn compile_source_file(input_path: &Path) -> anyhow::Result<ObjectBundle> {
+fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object> {
     let is_k65 = input_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -108,22 +104,19 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<ObjectBundle> {
         );
     }
 
-    let source = std::fs::read_to_string(&input_path)?;
-    let output = k816_core::compile_source(&input_path.display().to_string(), &source)
+    let source = std::fs::read_to_string(input_path)?;
+    let output = k816_core::compile_source_to_object(&input_path.display().to_string(), &source)
         .map_err(|error| anyhow::anyhow!(error.rendered))?;
-    Ok(ObjectBundle {
-        banks: output.banks,
-        listing: output.listing,
-    })
+    Ok(output.object)
 }
 
-fn default_object_dir_for_input(input_path: &Path) -> PathBuf {
+fn default_object_path_for_input(input_path: &Path) -> PathBuf {
     let stem = input_path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("out");
     let parent = input_path.parent().unwrap_or(Path::new("."));
-    parent.join(format!("{stem}.k816obj"))
+    parent.join(format!("{stem}.o65"))
 }
 
 fn output_base_from_input(input_path: &Path) -> OutputBase {
@@ -146,118 +139,93 @@ fn output_base_from_path(path: &Path) -> OutputBase {
     OutputBase { parent, stem }
 }
 
-fn output_base_from_object_dir(object_dir: &Path) -> OutputBase {
-    let raw = object_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("out");
-    let stem = raw
-        .strip_suffix(".k816obj")
-        .unwrap_or(raw)
+fn output_base_from_object_path(object_path: &Path) -> OutputBase {
+    let stem = object_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("out")
         .to_string();
-    let parent = object_dir.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let parent = object_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     OutputBase { parent, stem }
 }
 
-fn write_object_bundle(dir: &Path, bundle: &ObjectBundle) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)?;
-
-    let listing_name = "listing.lst";
-    std::fs::write(dir.join(listing_name), &bundle.listing)?;
-
-    let mut manifest = String::new();
-    manifest.push_str("K816OBJ1\n");
-    manifest.push_str(&format!("listing\t{listing_name}\n"));
-
-    for (idx, (bank, bytes)) in bundle.banks.iter().enumerate() {
-        let bank_file = format!("bank_{idx:04}.bin");
-        std::fs::write(dir.join(&bank_file), bytes)?;
-        manifest.push_str(&format!("bank\t{bank}\t{bank_file}\n"));
+fn write_link_output(
+    base: &OutputBase,
+    linked: &k816_link::LinkOutput,
+    keep_config_names: bool,
+) -> anyhow::Result<()> {
+    if linked.binaries.is_empty() {
+        anyhow::bail!("linker produced no output binaries");
     }
 
-    std::fs::write(dir.join("manifest.txt"), manifest)?;
-    Ok(())
-}
-
-fn read_object_bundle(dir: &Path) -> anyhow::Result<ObjectBundle> {
-    let manifest_path = dir.join("manifest.txt");
-    let manifest = std::fs::read_to_string(&manifest_path)?;
-    let mut lines = manifest.lines();
-
-    let Some(magic) = lines.next() else {
-        anyhow::bail!("object manifest is empty: {}", manifest_path.display());
-    };
-    if magic != "K816OBJ1" {
-        anyhow::bail!("unsupported object manifest version in {}", manifest_path.display());
-    }
-
-    let mut listing_name: Option<String> = None;
-    let mut banks: IndexMap<String, Vec<u8>> = IndexMap::new();
-
-    for line in lines {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.is_empty() {
-            continue;
-        }
-        match parts[0] {
-            "listing" if parts.len() == 2 => {
-                listing_name = Some(parts[1].to_string());
-            }
-            "bank" if parts.len() == 3 => {
-                let bank = parts[1].to_string();
-                let bytes = std::fs::read(dir.join(parts[2]))?;
-                banks.insert(bank, bytes);
-            }
-            _ => anyhow::bail!("invalid manifest line '{}'", line),
-        }
-    }
-
-    let Some(listing_name) = listing_name else {
-        anyhow::bail!("manifest is missing listing entry");
-    };
-    let listing = std::fs::read_to_string(dir.join(listing_name))?;
-    Ok(ObjectBundle { banks, listing })
-}
-
-fn write_link_output(base: &OutputBase, bundle: &ObjectBundle) -> anyhow::Result<()> {
-    if bundle.banks.len() == 1 {
-        let (_, bytes) = bundle
-            .banks
+    if linked.binaries.len() == 1 && !keep_config_names {
+        let (_, bytes) = linked
+            .binaries
             .first()
-            .expect("a single bank should be present");
-        let bin_path = base.parent.join(format!("{}.bin", base.stem));
-        std::fs::write(bin_path, bytes)?;
+            .expect("single output should be present");
+        let path = base.parent.join(format!("{}.bin", base.stem));
+        std::fs::write(path, bytes)?;
     } else {
-        for (bank, bytes) in &bundle.banks {
-            let bin_path = base.parent.join(format!("{}.{}.bin", base.stem, bank));
-            std::fs::write(bin_path, bytes)?;
+        for (name, bytes) in &linked.binaries {
+            let path = if keep_config_names {
+                base.parent.join(format!("{}.{}", base.stem, name))
+            } else {
+                base.parent.join(format!("{}.{}", base.stem, sanitize_filename(name)))
+            };
+            std::fs::write(path, bytes)?;
         }
     }
 
     let listing_path = base.parent.join(format!("{}.lst", base.stem));
-    std::fs::write(listing_path, &bundle.listing)?;
+    std::fs::write(listing_path, &linked.listing)?;
     Ok(())
 }
 
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn compile_command(args: CompileArgs) -> anyhow::Result<()> {
-    let bundle = compile_source_file(&args.input)?;
-    let out_dir = args
+    let object = compile_source_file(&args.input)?;
+    let out_path = args
         .output
-        .unwrap_or_else(|| default_object_dir_for_input(&args.input));
-    write_object_bundle(&out_dir, &bundle)
+        .unwrap_or_else(|| default_object_path_for_input(&args.input));
+    k816_o65::write_object(&out_path, &object)?;
+    Ok(())
 }
 
 fn link_command(args: LinkArgs) -> anyhow::Result<()> {
-    let bundle = read_object_bundle(&args.object)?;
+    let mut objects = Vec::with_capacity(args.objects.len());
+    for object_path in &args.objects {
+        objects.push(k816_o65::read_object(object_path)?);
+    }
+
+    let config = if let Some(config_path) = args.config {
+        k816_link::load_config(&config_path)?
+    } else {
+        k816_link::default_stub_config()
+    };
+    let linked = k816_link::link_objects(&objects, &config)?;
+
     let base = args
         .output
         .map(|path| output_base_from_path(&path))
-        .unwrap_or_else(|| output_base_from_object_dir(&args.object));
-    write_link_output(&base, &bundle)
+        .unwrap_or_else(|| output_base_from_object_path(&args.objects[0]));
+    write_link_output(&base, &linked, true)
 }
 
 fn build_command(input_path: PathBuf) -> anyhow::Result<()> {
-    let bundle = compile_source_file(&input_path)?;
+    let object = compile_source_file(&input_path)?;
+    let config = k816_link::default_stub_config();
+    let linked = k816_link::link_objects(&[object], &config)?;
     let base = output_base_from_input(&input_path);
-    write_link_output(&base, &bundle)
+    write_link_output(&base, &linked, false)
 }

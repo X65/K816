@@ -2,6 +2,8 @@
 members = [
   ".",
   "crates/core",
+  "crates/o65",
+  "crates/link",
   "crates/eval",
   "crates/fmt",
   "crates/assets",
@@ -10,6 +12,8 @@ members = [
 default-members = [
   ".",
   "crates/core",
+  "crates/o65",
+  "crates/link",
   "crates/eval",
   "crates/fmt",
   "crates/assets",
@@ -34,6 +38,8 @@ logos = "0.16"
 pretty = "0.12"
 rustc-hash = "2.1"
 thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+ron = "0.8"
 assert_cmd = "2.0"
 predicates = "3.1"
 similar-asserts = "1.6"
@@ -51,6 +57,8 @@ anyhow.workspace = true
 clap.workspace = true
 indexmap.workspace = true
 k816-core = { path = "crates/core" }
+k816-link = { path = "crates/link" }
+k816-o65 = { path = "crates/o65" }
 
 [dev-dependencies]
 assert_cmd.workspace = true

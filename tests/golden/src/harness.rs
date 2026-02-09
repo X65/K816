@@ -7,15 +7,24 @@ pub fn run_fixture(name: &str) -> Result<()> {
         .join("fixtures")
         .join(name);
 
-    let input_path = fixture_dir.join("input.k816");
+    let input_path = fixture_dir.join("input.k65");
+    let input_path = if input_path.exists() {
+        input_path
+    } else {
+        fixture_dir.join("input.k816")
+    };
     let source = std::fs::read_to_string(&input_path)
         .with_context(|| format!("failed to read fixture input '{}'", input_path.display()))?;
 
-    let output = k816_core::compile_source(&input_path.display().to_string(), &source)
+    let compiled = k816_core::compile_source_to_object(&input_path.display().to_string(), &source)
         .map_err(|error| anyhow!("{}", error.rendered))?;
 
-    compare_binaries(&fixture_dir, &output.banks)?;
-    compare_listing(&fixture_dir, &output.listing)?;
+    let config_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.k816ld.ron");
+    let config = k816_link::load_config(&config_path)?;
+    let linked = k816_link::link_objects(&[compiled.object], &config)?;
+
+    compare_binaries(&fixture_dir, &linked.binaries)?;
+    compare_listing(&fixture_dir, &linked.listing)?;
     Ok(())
 }
 

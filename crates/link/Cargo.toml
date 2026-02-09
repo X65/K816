@@ -1,0 +1,12 @@
+[package]
+name = "k816-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+indexmap.workspace = true
+k816-o65 = { path = "../o65" }
+ron.workspace = true
+serde.workspace = true

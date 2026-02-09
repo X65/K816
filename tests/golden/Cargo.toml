@@ -10,5 +10,6 @@ build = "build.rs"
 anyhow.workspace = true
 indexmap.workspace = true
 k816-core = { path = "../../crates/core" }
+k816-link = { path = "../../crates/link" }
 similar-asserts.workspace = true
 tempfile.workspace = true

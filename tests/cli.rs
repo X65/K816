@@ -37,7 +37,7 @@ fn compile_and_link_subcommands_work() {
     let input = root.join("demo.k65");
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
 
-    let object_dir = root.join("demo.k816obj");
+    let object_file = root.join("demo.o65");
     let out_base = root.join("game");
 
     let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
@@ -45,19 +45,19 @@ fn compile_and_link_subcommands_work() {
         .arg("compile")
         .arg(&input)
         .arg("-o")
-        .arg(&object_dir)
+        .arg(&object_file)
         .assert()
         .success();
-    assert!(object_dir.join("manifest.txt").exists());
+    assert!(object_file.exists());
 
     let mut link = Command::new(env!("CARGO_BIN_EXE_k816"));
     link.arg("link")
-        .arg(&object_dir)
+        .arg(&object_file)
         .arg("-o")
         .arg(&out_base)
         .assert()
         .success();
 
-    assert!(root.join("game.bin").exists());
+    assert!(root.join("game.main.bin").exists());
     assert!(root.join("game.lst").exists());
 }

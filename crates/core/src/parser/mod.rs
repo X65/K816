@@ -6,7 +6,9 @@ use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
 use crate::span::{SourceId, Span, Spanned};
 use chumsky::{
-    IterParser, Parser as _, extra,
+    IterParser, Parser as _,
+    error::{RichPattern, RichReason},
+    extra,
     input::{Input as _, Stream, ValueInput},
     prelude::{Rich, SimpleSpan, any, end, just, skip_then_retry_until},
 };
@@ -468,7 +470,81 @@ fn rich_error_to_diagnostic(
 ) -> Diagnostic {
     let range = error.span().into_range();
     let span = Span::new(source_id, range.start, range.end);
-    Diagnostic::error(span, format!("{context}: {error:?}"))
+    let message = match error.reason() {
+        RichReason::Custom(custom) => format!("{context}: {custom}"),
+        RichReason::ExpectedFound { expected, found } => {
+            let expected = format_expected_patterns(expected);
+            let found = found
+                .as_deref()
+                .map(token_kind_message)
+                .unwrap_or_else(|| "end of input".to_string());
+            format!("{context}: expected {expected}, found {found}")
+        }
+    };
+    Diagnostic::error(span, message)
+}
+
+fn format_expected_patterns(expected: &[RichPattern<'_, TokenKind>]) -> String {
+    let mut values = Vec::new();
+    for pattern in expected {
+        let text = rich_pattern_message(pattern);
+        if !values.contains(&text) {
+            values.push(text);
+        }
+    }
+
+    match values.as_slice() {
+        [] => "something else".to_string(),
+        [single] => single.clone(),
+        [a, b] => format!("{a} or {b}"),
+        _ => {
+            let head = values[..values.len() - 1].join(", ");
+            let tail = values.last().expect("non-empty values");
+            format!("{head}, or {tail}")
+        }
+    }
+}
+
+fn rich_pattern_message(pattern: &RichPattern<'_, TokenKind>) -> String {
+    match pattern {
+        RichPattern::Token(token) => token_kind_message(token),
+        RichPattern::Label(label) => label.to_string(),
+        RichPattern::Identifier(identifier) => format!("'{}'", identifier),
+        RichPattern::Any => "any token".to_string(),
+        RichPattern::SomethingElse => "something else".to_string(),
+        RichPattern::EndOfInput => "end of input".to_string(),
+        _ => "something else".to_string(),
+    }
+}
+
+fn token_kind_message(token: &TokenKind) -> String {
+    match token {
+        TokenKind::Bank => "'bank'".to_string(),
+        TokenKind::Var => "'var'".to_string(),
+        TokenKind::Func => "'func'".to_string(),
+        TokenKind::Main => "'main'".to_string(),
+        TokenKind::Naked => "'naked'".to_string(),
+        TokenKind::Inline => "'inline'".to_string(),
+        TokenKind::Far => "'far'".to_string(),
+        TokenKind::Data => "'data'".to_string(),
+        TokenKind::Align => "'align'".to_string(),
+        TokenKind::Address => "'address'".to_string(),
+        TokenKind::Nocross => "'nocross'".to_string(),
+        TokenKind::Call => "'call'".to_string(),
+        TokenKind::LBrace => "'{'".to_string(),
+        TokenKind::RBrace => "'}'".to_string(),
+        TokenKind::LParen => "'('".to_string(),
+        TokenKind::RParen => "')'".to_string(),
+        TokenKind::Comma => "','".to_string(),
+        TokenKind::Colon => "':'".to_string(),
+        TokenKind::Hash => "'#'".to_string(),
+        TokenKind::Eq => "'='".to_string(),
+        TokenKind::Newline => "newline".to_string(),
+        TokenKind::Eval(_) => "eval fragment".to_string(),
+        TokenKind::String(_) => "string literal".to_string(),
+        TokenKind::Number(_) => "number literal".to_string(),
+        TokenKind::Ident(value) => format!("identifier '{value}'"),
+    }
 }
 
 #[cfg(test)]
@@ -597,17 +673,40 @@ mod tests {
     fn collects_multiple_errors_across_items() {
         let source = "far var first\nnaked var second\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
-        assert!(
-            diagnostics.len() >= 2,
-            "expected at least two diagnostics, got {}",
-            diagnostics.len()
+        assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
+        assert_eq!(
+            diagnostics[0].message,
+            "invalid syntax: expected 'far', 'naked', 'inline', 'main', or 'func', found 'var'"
         );
+        assert_eq!(
+            diagnostics[1].message,
+            "invalid syntax: expected 'far', 'naked', 'inline', 'main', or 'func', found 'var'"
+        );
+        assert_eq!(diagnostics[0].primary.start, 4);
+        assert_eq!(diagnostics[0].primary.end, 7);
+        assert_eq!(diagnostics[1].primary.start, 20);
+        assert_eq!(diagnostics[1].primary.end, 23);
     }
 
     #[test]
     fn recovers_at_block_boundary_and_continues_items() {
         let source = "main {\n call\n}\nfar var trailing\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
-        assert!(!diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
+        assert_eq!(
+            diagnostics[0].message,
+            "invalid syntax: expected something else, found newline"
+        );
+        assert_eq!(diagnostics[0].primary.start, 12);
+        assert_eq!(diagnostics[0].primary.end, 13);
+    }
+
+    #[test]
+    fn parse_error_messages_are_human_readable() {
+        let diagnostics = parse(SourceId(0), "main {\n call\n}\n").expect_err("expected errors");
+        let message = &diagnostics[0].message;
+        assert!(message.contains("expected"));
+        assert!(!message.contains("TokenKind"));
+        assert!(!message.contains("ExpectedFound"));
     }
 }

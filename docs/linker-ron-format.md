@@ -24,7 +24,7 @@ The format is RON and deserializes into `LinkerConfig`.
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -101,7 +101,7 @@ Notes:
 
 ```ron
 (
-  name: String,            // rule name (diagnostics / readability)
+  id: String,              // rule id (diagnostics / referencing)
   load: String,            // target memory area name
   run: Option<String>,     // currently parsed but not used
   align: Option<u32>,      // default when omitted: 1
@@ -118,6 +118,11 @@ Segment-rule selection for an object section named `S`:
 1. First rule where `segment == Some(S)` (or legacy `bank == Some(S)`).
 2. Otherwise, first rule with no `segment`/`bank` set (fallback/default rule).
 3. Otherwise, link fails with `no segment rule found for segment 'S'`.
+
+Validation:
+
+- `id` must be non-empty.
+- `id` values must be unique across `segments`.
 
 Placement behavior:
 
@@ -217,7 +222,7 @@ When using direct build mode (`k816 input.k65` or `k816 -T config.ron input.k65`
 ```ron
 (
   memory: [ (name: "MAIN", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)) ],
-  segments: [ (name: "DEFAULT", load: "MAIN", run: None, align: Some(1), start: None, offset: None, optional: false, segment: None) ],
+  segments: [ (id: "DEFAULT", load: "MAIN", run: None, align: Some(1), start: None, offset: None, optional: false, segment: None) ],
 )
 ```
 
@@ -239,3 +244,4 @@ output: (
 
 - `segment` is the canonical selector in segment rules.
 - `bank` is accepted as a legacy alias for backward compatibility.
+- `name` is accepted as a legacy alias for `id` during migration; when both are present, `id` wins.

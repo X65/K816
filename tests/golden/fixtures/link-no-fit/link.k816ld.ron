@@ -12,7 +12,7 @@
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),

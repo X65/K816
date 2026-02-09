@@ -368,7 +368,8 @@ fn lower_hla_stmt(
                     mnemonic: "cmp".to_string(),
                     operand: Some(Operand::Immediate(rhs.clone())),
                 };
-                let _ = lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
+                let _ =
+                    lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
             }
         }
         HlaStmt::DoOpen => {

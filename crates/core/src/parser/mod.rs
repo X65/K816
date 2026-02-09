@@ -95,7 +95,8 @@ fn preprocess_source(source_text: &str) -> String {
             if opens >= closes {
                 skipped_nested_block_depth += opens - closes;
             } else {
-                skipped_nested_block_depth = skipped_nested_block_depth.saturating_sub(closes - opens);
+                skipped_nested_block_depth =
+                    skipped_nested_block_depth.saturating_sub(closes - opens);
             }
             continue;
         }
@@ -201,11 +202,8 @@ fn collect_parser_warnings(file: &File, bank_spans: &[Span]) -> Vec<Diagnostic> 
 
     for span in bank_spans {
         warnings.push(
-            Diagnostic::warning(
-                *span,
-                "`bank` keyword is deprecated; use `segment` instead",
-            )
-            .with_help("replace `bank <name>` with `segment <name>`"),
+            Diagnostic::warning(*span, "`bank` keyword is deprecated; use `segment` instead")
+                .with_help("replace `bank <name>` with `segment <name>`"),
         );
     }
 
@@ -318,8 +316,8 @@ where
         .then(line_tail_parser())
         .to(Item::Statement(Stmt::Empty));
 
-    let eval_block_item = chumsky::select! { TokenKind::Eval(_) => () }
-        .to(Item::Statement(Stmt::Empty));
+    let eval_block_item =
+        chumsky::select! { TokenKind::Eval(_) => () }.to(Item::Statement(Stmt::Empty));
 
     let compat_const_item =
         chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("const") => () }
@@ -434,24 +432,25 @@ where
             },
         );
 
-    let explicit_block = modifiers
-        .then(main.or(func))
-        .map(|(mods, mut block)| {
-            for modifier in mods {
-                match modifier {
-                    Modifier::Far => block.is_far = true,
-                    Modifier::Naked => block.is_naked = true,
-                    Modifier::Inline => block.is_inline = true,
-                }
+    let explicit_block = modifiers.then(main.or(func)).map(|(mods, mut block)| {
+        for modifier in mods {
+            match modifier {
+                Modifier::Far => block.is_far = true,
+                Modifier::Naked => block.is_naked = true,
+                Modifier::Inline => block.is_inline = true,
             }
-            block
-        });
+        }
+        block
+    });
 
     let implicit_func = required_modifiers
         .then(ident_parser().map_with(|name, extra| (name, extra.span())))
         .then(body)
         .map(
-            move |((mods, (name, name_span)), body): ((Vec<Modifier>, (String, SimpleSpan)), Vec<Spanned<Stmt>>)| {
+            move |((mods, (name, name_span)), body): (
+                (Vec<Modifier>, (String, SimpleSpan)),
+                Vec<Spanned<Stmt>>,
+            )| {
                 let range = name_span.into_range();
                 let mut block = CodeBlock {
                     name,
@@ -473,9 +472,7 @@ where
             },
         );
 
-    explicit_block
-        .or(implicit_func)
-        .boxed()
+    explicit_block.or(implicit_func).boxed()
 }
 
 fn data_block_parser<'src, I>(
@@ -533,14 +530,19 @@ where
                 )
                 .then_ignore(just(TokenKind::RBrace)),
         )
-        .map(move |((name, name_span), entries): ((String, SimpleSpan), Vec<Spanned<NamedDataEntry>>)| {
-            let range = name_span.into_range();
-            NamedDataBlock {
-                name,
-                name_span: Span::new(source_id, range.start, range.end),
-                entries,
-            }
-        })
+        .map(
+            move |((name, name_span), entries): (
+                (String, SimpleSpan),
+                Vec<Spanned<NamedDataEntry>>,
+            )| {
+                let range = name_span.into_range();
+                NamedDataBlock {
+                    name,
+                    name_span: Span::new(source_id, range.start, range.end),
+                    entries,
+                }
+            },
+        )
         .boxed()
 }
 
@@ -555,15 +557,17 @@ where
         .ignore_then(ident_parser())
         .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
 
-    let address_entry = just(TokenKind::Address)
-        .ignore_then(expr_parser())
-        .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
-            u32::try_from(value)
-                .map(NamedDataEntry::Address)
-                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
-        });
+    let address_entry =
+        just(TokenKind::Address)
+            .ignore_then(expr_parser())
+            .try_map(|value, span| {
+                let value = eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "address value must be a constant expression")
+                })?;
+                u32::try_from(value)
+                    .map(NamedDataEntry::Address)
+                    .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+            });
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
@@ -616,11 +620,12 @@ where
             NamedDataEntry::LegacyBytes(values.into_iter().map(Expr::Number).collect::<Vec<_>>())
         });
 
-    let eval_bytes_entry = chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(NamedDataEntry::Bytes);
+    let eval_bytes_entry =
+        chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .map(NamedDataEntry::Bytes);
 
     let amp_amp_entry = just(TokenKind::Amp)
         .then_ignore(just(TokenKind::Amp))
@@ -833,15 +838,17 @@ where
         .ignore_then(data_block_parser(source_id))
         .map(Stmt::DataBlock);
 
-    let address_stmt = just(TokenKind::Address)
-        .ignore_then(expr_parser())
-        .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
-            u32::try_from(value)
-                .map(Stmt::Address)
-                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
-        });
+    let address_stmt =
+        just(TokenKind::Address)
+            .ignore_then(expr_parser())
+            .try_map(|value, span| {
+                let value = eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "address value must be a constant expression")
+                })?;
+                u32::try_from(value)
+                    .map(Stmt::Address)
+                    .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+            });
 
     let align_stmt = just(TokenKind::Align)
         .ignore_then(expr_parser())
@@ -900,9 +907,7 @@ where
     let hla_do_close_stmt = just(TokenKind::RBrace)
         .then(hla_do_close_suffix.clone())
         .rewind()
-        .ignore_then(just(TokenKind::RBrace).ignore_then(
-            hla_do_close_suffix,
-        ));
+        .ignore_then(just(TokenKind::RBrace).ignore_then(hla_do_close_suffix));
     let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();
     let hla_x_assign_stmt = hla_x_assign_stmt_parser();
     let hla_x_increment_stmt = hla_x_increment_stmt_parser();
@@ -944,13 +949,7 @@ where
             .map(|expr| Some(Operand::Immediate(expr))))
         .or(just(TokenKind::Far)
             .or_not()
-            .then(
-                expr_parser().then(
-                    just(TokenKind::Comma)
-                        .ignore_then(ident_parser())
-                        .or_not(),
-                ),
-            )
+            .then(expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not()))
             .try_map(|(force_far, (expr, index)), span| {
                 let index = match index {
                     None => None,
@@ -1036,7 +1035,8 @@ where
         })
 }
 
-fn hla_x_assign_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+fn hla_x_assign_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1073,8 +1073,7 @@ where
         })
 }
 
-fn hla_store_rhs_parser<'src, I>()
--> impl chumsky::Parser<'src, I, HlaRhs, ParseExtra<'src>> + Clone
+fn hla_store_rhs_parser<'src, I>() -> impl chumsky::Parser<'src, I, HlaRhs, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1186,7 +1185,11 @@ where
             Operand::Value {
                 expr: rhs,
                 force_far: false,
-                index: if index_x { Some(IndexRegister::X) } else { None },
+                index: if index_x {
+                    Some(IndexRegister::X)
+                } else {
+                    None
+                },
             }
         } else {
             Operand::Immediate(rhs)
@@ -1225,7 +1228,11 @@ where
                 Some(Operand::Value {
                     expr: dest,
                     force_far: false,
-                    index: if index_x { Some(IndexRegister::X) } else { None },
+                    index: if index_x {
+                        Some(IndexRegister::X)
+                    } else {
+                        None
+                    },
                 }),
             )
         })
@@ -1328,22 +1335,24 @@ fn legacy_incdec_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let inc = ident_parser().then_ignore(just(TokenKind::PlusPlus)).map(|ident| {
-        if ident.eq_ignore_ascii_case("x") {
-            return instruction_stmt("inx", None);
-        }
-        if ident.eq_ignore_ascii_case("y") {
-            return instruction_stmt("iny", None);
-        }
-        instruction_stmt(
-            "inc",
-            Some(Operand::Value {
-                expr: Expr::Ident(ident),
-                force_far: false,
-                index: None,
-            }),
-        )
-    });
+    let inc = ident_parser()
+        .then_ignore(just(TokenKind::PlusPlus))
+        .map(|ident| {
+            if ident.eq_ignore_ascii_case("x") {
+                return instruction_stmt("inx", None);
+            }
+            if ident.eq_ignore_ascii_case("y") {
+                return instruction_stmt("iny", None);
+            }
+            instruction_stmt(
+                "inc",
+                Some(Operand::Value {
+                    expr: Expr::Ident(ident),
+                    force_far: false,
+                    index: None,
+                }),
+            )
+        });
 
     let dec = ident_parser()
         .then_ignore(just(TokenKind::Minus))
@@ -1381,8 +1390,12 @@ where
             .then_ignore(just(TokenKind::Gt))
             .then_ignore(just(TokenKind::Gt))
             .to("ror"))
-        .or(just(TokenKind::Lt).then_ignore(just(TokenKind::Lt)).to("asl"))
-        .or(just(TokenKind::Gt).then_ignore(just(TokenKind::Gt)).to("lsr"));
+        .or(just(TokenKind::Lt)
+            .then_ignore(just(TokenKind::Lt))
+            .to("asl"))
+        .or(just(TokenKind::Gt)
+            .then_ignore(just(TokenKind::Gt))
+            .to("lsr"));
 
     ident_parser().then(shift_op).map(|(target, mnemonic)| {
         if target.eq_ignore_ascii_case("a") {
@@ -1406,17 +1419,23 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     ident_parser()
-        .then(just(TokenKind::Plus).to(true).or(just(TokenKind::Minus).to(false)))
-        .map(|(flag, set)| match (flag.to_ascii_lowercase().as_str(), set) {
-            ("c", true) => instruction_stmt("sec", None),
-            ("c", false) => instruction_stmt("clc", None),
-            ("d", true) => instruction_stmt("sed", None),
-            ("d", false) => instruction_stmt("cld", None),
-            ("i", true) => instruction_stmt("sei", None),
-            ("i", false) => instruction_stmt("cli", None),
-            ("o", false) => instruction_stmt("clv", None),
-            _ => Stmt::Empty,
-        })
+        .then(
+            just(TokenKind::Plus)
+                .to(true)
+                .or(just(TokenKind::Minus).to(false)),
+        )
+        .map(
+            |(flag, set)| match (flag.to_ascii_lowercase().as_str(), set) {
+                ("c", true) => instruction_stmt("sec", None),
+                ("c", false) => instruction_stmt("clc", None),
+                ("d", true) => instruction_stmt("sed", None),
+                ("d", false) => instruction_stmt("cld", None),
+                ("i", true) => instruction_stmt("sei", None),
+                ("i", false) => instruction_stmt("cli", None),
+                ("o", false) => instruction_stmt("clv", None),
+                _ => Stmt::Empty,
+            },
+        )
 }
 
 fn legacy_stack_stmt_parser<'src, I>()
@@ -1522,8 +1541,7 @@ where
         .or(break_repeat_stmt)
 }
 
-fn legacy_nop_stmt_parser<'src, I>()
--> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+fn legacy_nop_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -2198,7 +2216,10 @@ mod tests {
         assert_eq!(block.entries.len(), 5);
         assert!(matches!(block.entries[0].node, NamedDataEntry::Segment(_)));
         assert!(matches!(block.entries[1].node, NamedDataEntry::String(_)));
-        assert!(matches!(block.entries[2].node, NamedDataEntry::LegacyBytes(_)));
+        assert!(matches!(
+            block.entries[2].node,
+            NamedDataEntry::LegacyBytes(_)
+        ));
         assert!(matches!(block.entries[3].node, NamedDataEntry::Bytes(_)));
         assert!(matches!(
             block.entries[4].node,
@@ -2230,9 +2251,11 @@ mod tests {
         let source = "main {\n call\n}\nfar var trailing\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
         assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
-        assert!(diagnostics
-            .iter()
-            .any(|diag| diag.message == "invalid syntax: expected something else, found newline"));
+        assert!(
+            diagnostics.iter().any(
+                |diag| diag.message == "invalid syntax: expected something else, found newline"
+            )
+        );
     }
 
     #[test]

@@ -187,11 +187,9 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
                 .join(", ");
             format!(".byte {values}")
         }
-        NamedDataEntry::LegacyBytes(values) => values
-            .iter()
-            .map(format_expr)
-            .collect::<Vec<_>>()
-            .join(" "),
+        NamedDataEntry::LegacyBytes(values) => {
+            values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
+        }
         NamedDataEntry::String(value) => format!("\"{}\"", value.replace('\"', "\\\"")),
         NamedDataEntry::Convert { kind, args } => {
             let args = args

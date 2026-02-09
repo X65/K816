@@ -112,7 +112,7 @@ fn build_command_accepts_config_parameter() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -167,7 +167,7 @@ fn build_infers_xex_from_output_extension_when_switch_not_present() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -223,7 +223,7 @@ fn build_output_format_switch_overrides_extension() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -289,7 +289,7 @@ fn build_command_uses_adjacent_config_and_rejects_ambiguous_raw_binary() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -299,7 +299,7 @@ fn build_command_uses_adjacent_config_and_rejects_ambiguous_raw_binary() {
       segment: Some("default"),
     ),
     (
-      name: "INFO",
+      id: "INFO",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -358,7 +358,7 @@ fn link_subcommand_emits_xex_when_configured() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -436,7 +436,7 @@ fn link_infers_xex_from_output_extension_when_switch_not_present() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -511,7 +511,7 @@ fn link_output_format_switch_overrides_extension() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -590,7 +590,7 @@ fn link_uses_output_file_from_config_when_o_missing() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -662,7 +662,7 @@ fn link_requires_output_file_when_not_provided() {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),

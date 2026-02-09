@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 use k816_isa65816::{decode_instruction, format_instruction};
 use k816_o65::{O65Object, RelocationKind, SourceLocation};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -50,24 +50,95 @@ pub enum MemoryKind {
     ReadWrite,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct SegmentRule {
-    pub name: String,
+    pub id: String,
     pub load: String,
-    #[serde(default)]
     pub run: Option<String>,
-    #[serde(default)]
     pub align: Option<u32>,
-    #[serde(default)]
     pub start: Option<u32>,
-    #[serde(default)]
     pub offset: Option<u32>,
-    #[serde(default)]
     pub optional: bool,
-    #[serde(default)]
     pub segment: Option<String>,
-    #[serde(default, rename = "bank")]
     pub legacy_bank: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum CompatStringRepr {
+    Raw(String),
+    Optional(Option<String>),
+}
+
+#[derive(Debug, Default)]
+struct CompatString(Option<String>);
+
+impl CompatString {
+    fn into_option(self) -> Option<String> {
+        self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for CompatString {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let repr = CompatStringRepr::deserialize(deserializer)?;
+        let value = match repr {
+            CompatStringRepr::Raw(value) => Some(value),
+            CompatStringRepr::Optional(value) => value,
+        };
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SegmentRuleCompat {
+    #[serde(default)]
+    id: CompatString,
+    #[serde(default, rename = "name")]
+    legacy_name: CompatString,
+    load: String,
+    #[serde(default)]
+    run: Option<String>,
+    #[serde(default)]
+    align: Option<u32>,
+    #[serde(default)]
+    start: Option<u32>,
+    #[serde(default)]
+    offset: Option<u32>,
+    #[serde(default)]
+    optional: bool,
+    #[serde(default)]
+    segment: Option<String>,
+    #[serde(default, rename = "bank")]
+    legacy_bank: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for SegmentRule {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let compat = SegmentRuleCompat::deserialize(deserializer)?;
+        let id = compat
+            .id
+            .into_option()
+            .or(compat.legacy_name.into_option())
+            .ok_or_else(|| serde::de::Error::missing_field("id"))?;
+        Ok(Self {
+            id,
+            load: compat.load,
+            run: compat.run,
+            align: compat.align,
+            start: compat.start,
+            offset: compat.offset,
+            optional: compat.optional,
+            segment: compat.segment,
+            legacy_bank: compat.legacy_bank,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -189,7 +260,7 @@ pub fn default_stub_config() -> LinkerConfig {
             fill: Some(0),
         }],
         segments: vec![SegmentRule {
-            name: "DEFAULT".to_string(),
+            id: "DEFAULT".to_string(),
             load: "MAIN".to_string(),
             run: None,
             align: Some(1),
@@ -217,6 +288,7 @@ pub fn link_objects_with_options(
     if config.memory.is_empty() {
         bail!("linker config must contain at least one memory area");
     }
+    validate_segment_rules(config)?;
 
     let mut memory_map: HashMap<String, MemoryState> = HashMap::new();
     for mem in &config.memory {
@@ -247,7 +319,7 @@ pub fn link_objects_with_options(
             let rule = select_segment_rule(config, segment)?;
             let align = rule.align.unwrap_or(1);
             if align == 0 {
-                bail!("segment '{}' has align=0", rule.name);
+                bail!("segment rule id '{}' has align=0", rule.id);
             }
 
             for (chunk_idx, chunk) in section.chunks.iter().enumerate() {
@@ -1096,14 +1168,6 @@ fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'
     if let Some(rule) = config
         .segments
         .iter()
-        .find(|rule| rule.matches_rule_name(segment))
-    {
-        return Ok(rule);
-    }
-
-    if let Some(rule) = config
-        .segments
-        .iter()
         .find(|rule| rule.segment_name().is_none())
     {
         return Ok(rule);
@@ -1121,10 +1185,24 @@ impl SegmentRule {
         self.segment_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(segment))
     }
+}
 
-    fn matches_rule_name(&self, segment: &str) -> bool {
-        self.segment_name().is_none() && self.name.eq_ignore_ascii_case(segment)
+fn validate_segment_rules(config: &LinkerConfig) -> Result<()> {
+    let mut seen_ids: HashMap<&str, usize> = HashMap::new();
+    for (index, rule) in config.segments.iter().enumerate() {
+        if rule.id.trim().is_empty() {
+            bail!("segment rule id at index {index} must not be empty");
+        }
+        if let Some(previous) = seen_ids.insert(rule.id.as_str(), index) {
+            bail!(
+                "duplicate segment rule id '{}' at indices {} and {}",
+                rule.id,
+                previous,
+                index
+            );
+        }
     }
+    Ok(())
 }
 
 fn align_up(value: u32, align: u32) -> u32 {
@@ -1170,6 +1248,41 @@ mod tests {
     use super::*;
     use indexmap::IndexMap;
     use k816_o65::{Relocation, RelocationKind, Section, SectionChunk, Symbol, SymbolDefinition};
+
+    fn object_with_single_section(section: &str, bytes: Vec<u8>) -> O65Object {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            section.to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes,
+                }],
+            },
+        );
+        O65Object {
+            sections,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+            function_disassembly: Vec::new(),
+            listing: String::new(),
+        }
+    }
+
+    fn segment_rule(id: &str, segment: Option<&str>, start: Option<u32>) -> SegmentRule {
+        SegmentRule {
+            id: id.to_string(),
+            load: "MAIN".to_string(),
+            run: None,
+            align: Some(1),
+            start,
+            offset: None,
+            optional: false,
+            segment: segment.map(std::string::ToString::to_string),
+            legacy_bank: None,
+        }
+    }
 
     #[test]
     fn links_absolute_relocation() {
@@ -1261,7 +1374,7 @@ mod tests {
   ],
   segments: [
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -1281,6 +1394,173 @@ mod tests {
         .expect("config should parse");
 
         assert_eq!(config.output.kind, OutputKind::Xex);
+    }
+
+    #[test]
+    fn linker_config_accepts_legacy_segment_rule_name_field() {
+        let config: LinkerConfig = ron::from_str(
+            r#"(
+  format: "o65-link",
+  target: Some("legacy-name"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    (
+      name: "LEGACY_RULE",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+  symbols: [],
+  output: (
+    kind: Xex,
+    file: None,
+  ),
+  entry: None,
+)"#,
+        )
+        .expect("legacy name should parse");
+
+        assert_eq!(config.segments[0].id, "LEGACY_RULE");
+    }
+
+    #[test]
+    fn linker_config_prefers_segment_rule_id_over_legacy_name() {
+        let config: LinkerConfig = ron::from_str(
+            r#"(
+  format: "o65-link",
+  target: Some("id-wins"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    (
+      id: "MODERN_ID",
+      name: "LEGACY_NAME",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+  symbols: [],
+  output: (
+    kind: Xex,
+    file: None,
+  ),
+  entry: None,
+)"#,
+        )
+        .expect("id and legacy name should parse");
+
+        assert_eq!(config.segments[0].id, "MODERN_ID");
+    }
+
+    #[test]
+    fn explicit_segment_selector_takes_precedence_over_default_rule() {
+        let object = object_with_single_section("info", vec![0xAA]);
+
+        let mut config = default_stub_config();
+        config.segments = vec![
+            segment_rule("DEFAULT", None, Some(0x0200)),
+            segment_rule("INFO_EXPLICIT", Some("info"), Some(0x0300)),
+        ];
+
+        let linked = link_objects(&[object], &config).expect("link");
+        assert!(linked.listing.contains("000300: AA"));
+    }
+
+    #[test]
+    fn selectorless_rule_is_used_as_default_fallback() {
+        let object = object_with_single_section("other", vec![0xBB]);
+
+        let mut config = default_stub_config();
+        config.segments = vec![segment_rule("DEFAULT", None, Some(0x0400))];
+
+        let linked = link_objects(&[object], &config).expect("link");
+        assert!(linked.listing.contains("000400: BB"));
+    }
+
+    #[test]
+    fn does_not_match_segment_by_rule_id_when_selector_missing() {
+        let object = object_with_single_section("info", vec![0xCC]);
+
+        let mut config = default_stub_config();
+        config.segments = vec![
+            segment_rule("DEFAULT", None, Some(0x0200)),
+            segment_rule("INFO", None, Some(0xFC00)),
+        ];
+
+        let linked = link_objects(&[object], &config).expect("link");
+        assert!(linked.listing.contains("000200: CC"));
+        assert!(!linked.listing.contains("00FC00: CC"));
+    }
+
+    #[test]
+    fn fails_when_no_matching_selector_or_default_rule_exists() {
+        let object = object_with_single_section("info", vec![0xDD]);
+
+        let mut config = default_stub_config();
+        config.segments = vec![segment_rule(
+            "ONLY_DEFAULT_SEGMENT",
+            Some("default"),
+            Some(0x0200),
+        )];
+
+        let err = link_objects(&[object], &config).expect_err("expected missing rule");
+        assert!(
+            err.to_string()
+                .contains("no segment rule found for segment 'info'")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_segment_rule_id() {
+        let object = object_with_single_section("default", vec![0xEE]);
+
+        let mut config = default_stub_config();
+        config.segments = vec![segment_rule("  ", None, Some(0x0200))];
+
+        let err = link_objects(&[object], &config).expect_err("expected empty id error");
+        assert!(
+            err.to_string()
+                .contains("segment rule id at index 0 must not be empty")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_segment_rule_ids() {
+        let object = object_with_single_section("default", vec![0xFF]);
+
+        let mut config = default_stub_config();
+        config.segments = vec![
+            segment_rule("DUP", Some("default"), Some(0x0200)),
+            segment_rule("DUP", Some("info"), Some(0x0300)),
+        ];
+
+        let err = link_objects(&[object], &config).expect_err("expected duplicate id error");
+        assert!(err.to_string().contains("duplicate segment rule id 'DUP'"));
     }
 
     #[test]
@@ -1435,7 +1715,7 @@ mod tests {
         });
         config.segments = vec![
             SegmentRule {
-                name: "DEFAULT".to_string(),
+                id: "DEFAULT".to_string(),
                 load: "MAIN".to_string(),
                 run: None,
                 align: Some(1),
@@ -1446,7 +1726,7 @@ mod tests {
                 legacy_bank: None,
             },
             SegmentRule {
-                name: "AUX".to_string(),
+                id: "AUX".to_string(),
                 load: "AUX".to_string(),
                 run: None,
                 align: Some(1),
@@ -1501,7 +1781,7 @@ mod tests {
         };
         config.segments = vec![
             SegmentRule {
-                name: "DEFAULT".to_string(),
+                id: "DEFAULT".to_string(),
                 load: "MAIN".to_string(),
                 run: None,
                 align: Some(1),
@@ -1512,7 +1792,7 @@ mod tests {
                 legacy_bank: None,
             },
             SegmentRule {
-                name: "INFO".to_string(),
+                id: "INFO".to_string(),
                 load: "MAIN".to_string(),
                 run: None,
                 align: Some(1),

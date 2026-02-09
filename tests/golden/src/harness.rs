@@ -251,7 +251,8 @@ fn read_non_empty_text(path: &Path, label: &str) -> Result<String> {
 }
 
 fn read_non_empty_bytes(path: &Path, label: &str) -> Result<Vec<u8>> {
-    let bytes = std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
+    let bytes =
+        std::fs::read(path).with_context(|| format!("failed to read '{}'", path.display()))?;
     if bytes.is_empty() {
         return Err(anyhow!("{} '{}' must not be empty", label, path.display()));
     }

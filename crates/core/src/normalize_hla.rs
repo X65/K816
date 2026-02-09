@@ -1,4 +1,6 @@
-use crate::ast::{Expr, File, HlaCondition, HlaRegister, HlaStmt, Item, NamedDataBlock, NamedDataEntry, Stmt};
+use crate::ast::{
+    Expr, File, HlaCondition, HlaRegister, HlaStmt, Item, NamedDataBlock, NamedDataEntry, Stmt,
+};
 use crate::diag::Diagnostic;
 use crate::span::Spanned;
 
@@ -36,7 +38,10 @@ fn normalize_item(item: &Item) -> Item {
 fn normalize_named_data_block(block: &NamedDataBlock) -> NamedDataBlock {
     let mut entries = Vec::with_capacity(block.entries.len());
     for entry in &block.entries {
-        entries.push(Spanned::new(normalize_named_data_entry(&entry.node), entry.span));
+        entries.push(Spanned::new(
+            normalize_named_data_entry(&entry.node),
+            entry.span,
+        ));
     }
 
     NamedDataBlock {

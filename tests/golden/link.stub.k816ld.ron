@@ -12,7 +12,7 @@
   ],
   segments: [
     (
-      name: "FIXED_LO",
+      id: "FIXED_LO",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -22,7 +22,7 @@
       segment: Some("fixed_lo"),
     ),
     (
-      name: "FIXED_HI",
+      id: "FIXED_HI",
       load: "MAIN",
       run: None,
       align: Some(1),
@@ -32,7 +32,7 @@
       segment: Some("fixed_hi"),
     ),
     (
-      name: "DEFAULT",
+      id: "DEFAULT",
       load: "MAIN",
       run: None,
       align: Some(1),

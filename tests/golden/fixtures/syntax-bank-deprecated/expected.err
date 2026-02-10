@@ -1,5 +1,5 @@
 Warning: `bank` keyword is deprecated; use `segment` instead
-   ╭─[ k816/tests/golden/fixtures/syntax-bank-deprecated/input.k65:1:1 ]
+   ╭─[ tests/golden/fixtures/syntax-bank-deprecated/input.k65:1:1 ]
    │
  1 │ bank boot
    │ ──┬─  
@@ -9,7 +9,7 @@ Warning: `bank` keyword is deprecated; use `segment` instead
 ───╯
 
 Warning: `bank` keyword is deprecated; use `segment` instead
-   ╭─[ k816/tests/golden/fixtures/syntax-bank-deprecated/input.k65:5:1 ]
+   ╭─[ tests/golden/fixtures/syntax-bank-deprecated/input.k65:5:1 ]
    │
  5 │ bank aux
    │ ──┬─  
@@ -19,7 +19,7 @@ Warning: `bank` keyword is deprecated; use `segment` instead
 ───╯
 
 Warning: `bank` keyword is deprecated; use `segment` instead
-    ╭─[ k816/tests/golden/fixtures/syntax-bank-deprecated/input.k65:10:1 ]
+    ╭─[ tests/golden/fixtures/syntax-bank-deprecated/input.k65:10:1 ]
     │
  10 │ bank boot
     │ ──┬─  
@@ -29,7 +29,7 @@ Warning: `bank` keyword is deprecated; use `segment` instead
 ────╯
 
 Warning: empty function body 'boot_func'
-   ╭─[ k816/tests/golden/fixtures/syntax-bank-deprecated/input.k65:2:6 ]
+   ╭─[ tests/golden/fixtures/syntax-bank-deprecated/input.k65:2:6 ]
    │
  2 │ func boot_func {
    │      ────┬────  

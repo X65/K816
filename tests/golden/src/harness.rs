@@ -9,7 +9,6 @@ struct PipelineOutput {
 
 struct FixturePathRewriter {
     repo_root: PathBuf,
-    repo_name: String,
     repo_root_text: String,
     repo_root_unix_text: String,
     repo_root_windows_text: String,
@@ -27,23 +26,12 @@ impl FixturePathRewriter {
                 )
             })?
             .to_path_buf();
-        let repo_name = repo_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                anyhow!(
-                    "failed to resolve repository directory name from '{}'",
-                    repo_root.display()
-                )
-            })?
-            .to_string();
         let repo_root_text = repo_root.display().to_string();
         let repo_root_unix_text = repo_root_text.replace('\\', "/");
         let repo_root_windows_text = repo_root_text.replace('/', "\\");
 
         Ok(Self {
             repo_root,
-            repo_name,
             repo_root_text,
             repo_root_unix_text,
             repo_root_windows_text,
@@ -57,35 +45,39 @@ impl FixturePathRewriter {
 
     fn normalize(&self, text: impl AsRef<str>) -> String {
         let mut normalized = text.as_ref().to_string();
-        normalized = normalized.replace(&self.repo_root_text, &self.repo_name);
+        normalized = normalized.replace(&format!("{}/", self.repo_root_text), "");
         if self.repo_root_unix_text != self.repo_root_text {
-            normalized = normalized.replace(&self.repo_root_unix_text, &self.repo_name);
+            normalized = normalized.replace(&format!("{}/", self.repo_root_unix_text), "");
         }
         if self.repo_root_windows_text != self.repo_root_text
             && self.repo_root_windows_text != self.repo_root_unix_text
         {
-            normalized = normalized.replace(&self.repo_root_windows_text, &self.repo_name);
+            normalized = normalized.replace(&format!("{}\\", self.repo_root_windows_text), "");
+        }
+        normalized = normalized.replace(&self.repo_root_text, "");
+        if self.repo_root_unix_text != self.repo_root_text {
+            normalized = normalized.replace(&self.repo_root_unix_text, "");
+        }
+        if self.repo_root_windows_text != self.repo_root_text
+            && self.repo_root_windows_text != self.repo_root_unix_text
+        {
+            normalized = normalized.replace(&self.repo_root_windows_text, "");
         }
         normalized
     }
 
     fn repo_relative_path(&self, path: &Path) -> Option<String> {
         if let Ok(relative) = path.strip_prefix(&self.repo_root) {
-            return Some(self.join_repo_name(relative));
+            return Some(self.relative_path_text(relative));
         }
 
         let canonical = path.canonicalize().ok()?;
         let relative = canonical.strip_prefix(&self.repo_root).ok()?;
-        Some(self.join_repo_name(relative))
+        Some(self.relative_path_text(relative))
     }
 
-    fn join_repo_name(&self, relative: &Path) -> String {
-        let relative = relative.to_string_lossy().replace('\\', "/");
-        if relative.is_empty() {
-            self.repo_name.clone()
-        } else {
-            format!("{}/{relative}", self.repo_name)
-        }
+    fn relative_path_text(&self, relative: &Path) -> String {
+        relative.to_string_lossy().replace('\\', "/")
     }
 }
 

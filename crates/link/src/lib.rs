@@ -360,7 +360,7 @@ pub fn link_objects_with_options(
     }
 
     for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_none()) {
-        let base = choose_reloc_base(chunk, &mut memory_map)?;
+        let base = choose_reloc_base(chunk, objects, &mut memory_map, options)?;
         place_chunk(
             chunk,
             base,
@@ -555,8 +555,11 @@ pub fn link_objects_with_options(
 
 fn choose_reloc_base(
     chunk: &PlannedChunk,
+    objects: &[O65Object],
     memory_map: &mut HashMap<String, MemoryState>,
+    options: LinkRenderOptions,
 ) -> Result<u32> {
+    let anchor = find_anchor_context(objects, chunk);
     let mem = memory_map
         .get_mut(&chunk.memory_name)
         .ok_or_else(|| anyhow::anyhow!("unknown memory area '{}'", chunk.memory_name))?;
@@ -580,11 +583,11 @@ fn choose_reloc_base(
     }
 
     find_first_fit(mem, base, chunk.len, chunk.align).ok_or_else(|| {
-        anyhow::anyhow!(
+        let detail = format!(
             "no free range found for relocatable chunk in segment '{}' (len={:#X})",
-            chunk.segment,
-            chunk.len
-        )
+            chunk.segment, chunk.len
+        );
+        anyhow::anyhow!("{}", decorate_with_anchor(&detail, anchor.as_ref(), options))
     })
 }
 

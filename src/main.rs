@@ -10,7 +10,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
     about = "High-level assembler for the WDC 65816",
     long_about = None,
     override_usage = "k816 [COMMAND] [INPUT]",
-    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.k816ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.k816ld.ron\n  k816 --help"
+    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.ld.ron\n  k816 --help"
 )]
 struct Cli {
     /// Optional explicit subcommand.
@@ -280,14 +280,9 @@ fn resolve_config_output_path(
 }
 
 fn discover_adjacent_config_path(input_path: &Path) -> Option<PathBuf> {
-    let legacy = input_path.with_extension("k816ld.ron");
-    if legacy.exists() {
-        return Some(legacy);
-    }
-
-    let short = input_path.with_extension("k816.ron");
-    if short.exists() {
-        return Some(short);
+    let path = input_path.with_extension("ld.ron");
+    if path.exists() {
+        return Some(path);
     }
 
     None

@@ -182,7 +182,7 @@ fn build_command_accepts_config_parameter() {
     let input = root.join("demo.k65");
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
 
-    let config = root.join("custom.k816.ron");
+    let config = root.join("custom.ld.ron");
     std::fs::write(
         &config,
         r#"(
@@ -237,7 +237,7 @@ fn build_infers_xex_from_output_extension_when_switch_not_present() {
     let input = root.join("demo.k65");
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
 
-    let config = root.join("custom.k816.ron");
+    let config = root.join("custom.ld.ron");
     std::fs::write(
         &config,
         r#"(
@@ -293,7 +293,7 @@ fn build_output_format_switch_overrides_extension() {
     let input = root.join("demo.k65");
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
 
-    let config = root.join("custom.k816.ron");
+    let config = root.join("custom.ld.ron");
     std::fs::write(
         &config,
         r#"(
@@ -359,7 +359,7 @@ fn build_command_uses_adjacent_config_and_rejects_ambiguous_raw_binary() {
     )
     .expect("failed to write input");
 
-    let config = root.join("demo.k816ld.ron");
+    let config = root.join("demo.ld.ron");
     std::fs::write(
         &config,
         r#"(
@@ -427,7 +427,7 @@ fn link_subcommand_emits_xex_when_configured() {
 
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.xex");
-    let config = root.join("link.k816ld.ron");
+    let config = root.join("link.ld.ron");
 
     std::fs::write(
         &config,
@@ -505,7 +505,7 @@ fn link_infers_xex_from_output_extension_when_switch_not_present() {
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.xex");
-    let config = root.join("link.k816ld.ron");
+    let config = root.join("link.ld.ron");
 
     std::fs::write(
         &config,
@@ -580,7 +580,7 @@ fn link_output_format_switch_overrides_extension() {
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.bin");
-    let config = root.join("link.k816ld.ron");
+    let config = root.join("link.ld.ron");
 
     std::fs::write(
         &config,
@@ -659,7 +659,7 @@ fn link_uses_output_file_from_config_when_o_missing() {
     let object_file = root.join("demo.o65");
     let config_dir = root.join("cfg");
     std::fs::create_dir_all(&config_dir).expect("failed to create config dir");
-    let config = config_dir.join("link.k816ld.ron");
+    let config = config_dir.join("link.ld.ron");
 
     std::fs::write(
         &config,
@@ -731,7 +731,7 @@ fn link_requires_output_file_when_not_provided() {
     std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
 
     let object_file = root.join("demo.o65");
-    let config = root.join("link.k816ld.ron");
+    let config = root.join("link.ld.ron");
 
     std::fs::write(
         &config,

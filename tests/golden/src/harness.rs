@@ -260,14 +260,14 @@ fn compile_and_link(
         .map_err(|error| anyhow!("{}", error.rendered))?;
     let warnings = compiled.rendered_warnings.clone();
 
-    let local_config_path = fixture_dir.join("link.k816ld.ron");
-    let source_config_path = input_path.with_extension("k816ld.ron");
+    let local_config_path = fixture_dir.join("link.ld.ron");
+    let source_config_path = input_path.with_extension("ld.ron");
     let config_path = if local_config_path.exists() {
         local_config_path
     } else if source_config_path.exists() {
         source_config_path
     } else {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.k816ld.ron")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.ld.ron")
     };
     let mut config = k816_link::load_config(&config_path)?;
     if let Some(kind) = expected_output_kind {

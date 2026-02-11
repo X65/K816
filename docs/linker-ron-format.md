@@ -1,8 +1,8 @@
-# K816 Linker RON Format (`.k816ld.ron`)
+# K816 Linker RON Format (`.ld.ron`)
 
 This document describes the linker configuration format used by:
 
-- `k816 link ... -T path/to/link.k816ld.ron`
+- `k816 link ... -T path/to/link.ld.ron`
 - internal linker APIs in `crates/link`
 
 The format is RON and deserializes into `LinkerConfig`.
@@ -209,8 +209,7 @@ When using direct build mode (`k816 input.k65` or `k816 -T config.ron input.k65`
 
 1. Config selection order:
    - Explicit `-T/--config` path if provided.
-   - Else adjacent `<input>.k816ld.ron` if present.
-   - Else adjacent `<input>.k816.ron` if present.
+   - Else adjacent `<input>.ld.ron` if present.
    - Else built-in stub config.
 2. If selected config has `output.file`, that path is used.
 3. Else default output path is `<input-stem>.bin` for `RawBinary` or `<input-stem>.xex` for `Xex`.
@@ -244,4 +243,3 @@ output: (
 
 - `segment` is the canonical selector in segment rules.
 - `bank` is accepted as a legacy alias for backward compatibility.
-- `name` is accepted as a legacy alias for `id` during migration; when both are present, `id` wins.

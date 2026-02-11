@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 use k816_isa65816::{decode_instruction, format_instruction};
 use k816_o65::{O65Object, RelocationKind, SourceLocation};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
@@ -50,95 +50,24 @@ pub enum MemoryKind {
     ReadWrite,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SegmentRule {
     pub id: String,
     pub load: String,
+    #[serde(default)]
     pub run: Option<String>,
+    #[serde(default)]
     pub align: Option<u32>,
+    #[serde(default)]
     pub start: Option<u32>,
+    #[serde(default)]
     pub offset: Option<u32>,
+    #[serde(default)]
     pub optional: bool,
+    #[serde(default)]
     pub segment: Option<String>,
+    #[serde(default, alias = "bank")]
     pub legacy_bank: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum CompatStringRepr {
-    Raw(String),
-    Optional(Option<String>),
-}
-
-#[derive(Debug, Default)]
-struct CompatString(Option<String>);
-
-impl CompatString {
-    fn into_option(self) -> Option<String> {
-        self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for CompatString {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let repr = CompatStringRepr::deserialize(deserializer)?;
-        let value = match repr {
-            CompatStringRepr::Raw(value) => Some(value),
-            CompatStringRepr::Optional(value) => value,
-        };
-        Ok(Self(value))
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct SegmentRuleCompat {
-    #[serde(default)]
-    id: CompatString,
-    #[serde(default, rename = "name")]
-    legacy_name: CompatString,
-    load: String,
-    #[serde(default)]
-    run: Option<String>,
-    #[serde(default)]
-    align: Option<u32>,
-    #[serde(default)]
-    start: Option<u32>,
-    #[serde(default)]
-    offset: Option<u32>,
-    #[serde(default)]
-    optional: bool,
-    #[serde(default)]
-    segment: Option<String>,
-    #[serde(default, rename = "bank")]
-    legacy_bank: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for SegmentRule {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let compat = SegmentRuleCompat::deserialize(deserializer)?;
-        let id = compat
-            .id
-            .into_option()
-            .or(compat.legacy_name.into_option())
-            .ok_or_else(|| serde::de::Error::missing_field("id"))?;
-        Ok(Self {
-            id,
-            load: compat.load,
-            run: compat.run,
-            align: compat.align,
-            start: compat.start,
-            offset: compat.offset,
-            optional: compat.optional,
-            segment: compat.segment,
-            legacy_bank: compat.legacy_bank,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1751,87 +1680,6 @@ mod tests {
         .expect("config should parse");
 
         assert_eq!(config.output.kind, OutputKind::Xex);
-    }
-
-    #[test]
-    fn linker_config_accepts_legacy_segment_rule_name_field() {
-        let config: LinkerConfig = ron::from_str(
-            r#"(
-  format: "o65-link",
-  target: Some("legacy-name"),
-  memory: [
-    (
-      name: "MAIN",
-      start: 0,
-      size: 65536,
-      kind: ReadWrite,
-      fill: Some(0),
-    ),
-  ],
-  segments: [
-    (
-      name: "LEGACY_RULE",
-      load: "MAIN",
-      run: None,
-      align: Some(1),
-      start: None,
-      offset: None,
-      optional: false,
-      segment: None,
-    ),
-  ],
-  symbols: [],
-  output: (
-    kind: Xex,
-    file: None,
-  ),
-  entry: None,
-)"#,
-        )
-        .expect("legacy name should parse");
-
-        assert_eq!(config.segments[0].id, "LEGACY_RULE");
-    }
-
-    #[test]
-    fn linker_config_prefers_segment_rule_id_over_legacy_name() {
-        let config: LinkerConfig = ron::from_str(
-            r#"(
-  format: "o65-link",
-  target: Some("id-wins"),
-  memory: [
-    (
-      name: "MAIN",
-      start: 0,
-      size: 65536,
-      kind: ReadWrite,
-      fill: Some(0),
-    ),
-  ],
-  segments: [
-    (
-      id: "MODERN_ID",
-      name: "LEGACY_NAME",
-      load: "MAIN",
-      run: None,
-      align: Some(1),
-      start: None,
-      offset: None,
-      optional: false,
-      segment: None,
-    ),
-  ],
-  symbols: [],
-  output: (
-    kind: Xex,
-    file: None,
-  ),
-  entry: None,
-)"#,
-        )
-        .expect("id and legacy name should parse");
-
-        assert_eq!(config.segments[0].id, "MODERN_ID");
     }
 
     #[test]

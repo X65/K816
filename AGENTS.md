@@ -1,30 +1,18 @@
-# Agent Guidelines for k816
+# Project Guidelines
 
 ## Project Identity
 
 k816 is a fresh Rust implementation of a high-level assembler for the WDC 65816 microprocessor. It is **not** a port, rewrite, or continuation of any previous compiler. There is no legacy code in this Rust codebase and no need for compatibility layers with prior implementations.
 
-## Key Rules
+## Code Style
 
-- Do not introduce "compat", "legacy", or "deprecated" shims. If a feature exists, it is a first-class feature. If it does not belong, remove it.
-- The `segment` directive is the only way to select output segments. There is no `bank` alias.
-- Do not silently ignore unknown directives. Unknown syntax should produce a parse error.
+Follow standard Rust conventions with `rustfmt` for formatting and `cargo clippy` for style guidance. Apply clippy suggestions to new and modified code. Example: [crates/core/src/lib.rs](crates/core/src/lib.rs) uses clean module declarations and public exports.
 
 ## Architecture
 
-Workspace with multiple crates:
+Multi-crate workspace for separation of concerns: `core` handles lexing/parsing/AST/HIR/semantics/lowering/encoding/emit (depends on `eval` and `assets`); `eval` for compile-time expression evaluation; `fmt` for pretty-printing; `assets` for data converters; `isa65816` for instruction definitions; `o65` for object format; `link` for RON-based linking. Design emphasizes high-level assembly with C-like syntax, compile-time evaluation, structured blocks, deterministic output, explicit far functions, and 24-bit addressing. No optimizer or linker-based far-calls. Reference: [Cargo.toml](Cargo.toml).
 
-- `crates/core` — Lexing, parsing, AST, HIR, semantics, lowering, encoding, emit. Depends on `eval` and `assets`.
-- `crates/eval` — Compile-time expression evaluator for textual expansion.
-- `crates/fmt` — Formatter/pretty printer using `core` types.
-- `crates/assets` — Modular data converters for `data {}` blocks.
-- `crates/isa65816` — WDC 65816 instruction set definitions and encoding.
-- `crates/o65` — O65 relocatable object file format.
-- `crates/link` — Linker with RON-based configuration.
-
-Design choices: High-level assembly with C-like syntax, compile-time evaluation, structured code blocks, deterministic output, explicit far functions, and 24-bit addressing. No optimizer or linker-based far-calls.
-
-## Repository Layout
+Repository Layout:
 
 - `vendor/` contains the source code of a reference K65 compiler written in C. It is kept for reference purposes only and has no bearing on the Rust implementation.
 - `crates/` contains the Rust workspace crates listed above.
@@ -32,12 +20,19 @@ Design choices: High-level assembly with C-like syntax, compile-time evaluation,
 - `examples/` contains example K65 programs.
 - `tests/golden/` contains golden test fixtures for regression testing.
 
-## Code Style
-
-Follow standard Rust conventions. Use `rustfmt` for formatting. Use `cargo clippy` as code style guidance — apply its suggestions to new and modified code.
-
 ## Build and Test
 
 - Build: `cargo build`
 - Test: `cargo test`
-- Golden tests: `cargo test -p k816-golden-tests` for reproducible output validation against fixtures.
+- Golden tests: `cargo test -p k816-golden-tests` for reproducible output validation against fixtures. Uses Rust edition 2024 with dependencies like `chumsky` for parsing, `clap` for CLI. Reference: [Cargo.toml](Cargo.toml).
+
+## Project Conventions
+
+- No "compat", "legacy", or "deprecated" shims; features are first-class or removed.
+- `segment` directive only for output segments; no `bank` alias.
+- Error on unknown directives; no silent ignores.
+- Syntax: C-style comments, variables with `var`, constants in `[...]`, labels (global `label:`, local `.label:`), numeric literals (decimal, hex `$` or `0x`, binary `%` or `0b`). Example: [examples/hello_uart.k65](examples/hello_uart.k65) and [docs/k65-syntax-reference.md](docs/k65-syntax-reference.md).
+
+## Integration Points
+
+Linker uses RON format for configuration (`.ld.ron` files). `vendor/` contains reference C compiler for syntax validation only; no integration with Rust code. Reference: [docs/linker-ron-format.md](docs/linker-ron-format.md).

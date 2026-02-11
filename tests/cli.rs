@@ -830,3 +830,167 @@ fn link_writes_listing_to_explicit_path() {
     assert!(out_file.exists());
     assert!(listing_file.exists());
 }
+
+#[test]
+fn init_scaffolds_project_and_builds_default_target() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("k816-cli-project-init-{unique}"));
+    std::fs::create_dir_all(&workspace).expect("failed to create temp root");
+
+    let mut init = Command::new(env!("CARGO_BIN_EXE_k816"));
+    init.current_dir(&workspace)
+        .arg("init")
+        .arg("hello")
+        .assert()
+        .success();
+
+    let project = workspace.join("hello");
+    assert!(project.join("k816.toml").exists());
+    assert!(project.join("src/main.k65").exists());
+    assert!(project.join("link.ron").exists());
+    assert!(project.join(".gitignore").exists());
+
+    let mut build = Command::new(env!("CARGO_BIN_EXE_k816"));
+    build.current_dir(&project).arg("build").assert().success();
+
+    assert!(project.join("target/debug/hello.xex").exists());
+    assert!(project.join("target/debug/obj/main.o65").exists());
+}
+
+#[test]
+fn build_discovers_nested_k65_sources() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("k816-cli-project-discovery-{unique}"));
+    std::fs::create_dir_all(&workspace).expect("failed to create temp root");
+
+    let mut init = Command::new(env!("CARGO_BIN_EXE_k816"));
+    init.current_dir(&workspace)
+        .arg("init")
+        .arg("discovery")
+        .assert()
+        .success();
+
+    let project = workspace.join("discovery");
+    let nested = project.join("src/modules/extra.k65");
+    std::fs::create_dir_all(nested.parent().expect("nested file should have parent"))
+        .expect("failed to create nested source dir");
+    std::fs::write(&nested, "func helper {\n  nop\n}\n").expect("failed to write nested source");
+
+    let mut build = Command::new(env!("CARGO_BIN_EXE_k816"));
+    build.current_dir(&project).arg("build").assert().success();
+
+    assert!(project.join("target/debug/discovery.xex").exists());
+    assert!(project.join("target/debug/obj/modules/extra.o65").exists());
+}
+
+#[test]
+fn run_uses_configured_runner_and_forwards_args() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("k816-cli-project-run-{unique}"));
+    std::fs::create_dir_all(&workspace).expect("failed to create temp root");
+
+    let mut init = Command::new(env!("CARGO_BIN_EXE_k816"));
+    init.current_dir(&workspace)
+        .arg("init")
+        .arg("runner")
+        .assert()
+        .success();
+
+    let project = workspace.join("runner");
+    std::fs::write(
+        project.join("k816.toml"),
+        r#"[package]
+name = "runner"
+version = "0.1.0"
+
+[link]
+script = "link.ron"
+
+[run]
+runner = "bash"
+args = ["-c", "printf '%s\n' \"$@\" > runner.args", "--"]
+"#,
+    )
+    .expect("failed to write project manifest");
+
+    let mut run = Command::new(env!("CARGO_BIN_EXE_k816"));
+    run.current_dir(&project)
+        .arg("run")
+        .arg("--")
+        .arg("foo")
+        .arg("bar")
+        .assert()
+        .success();
+
+    assert!(project.join("target/debug/runner.xex").exists());
+
+    let recorded = std::fs::read_to_string(project.join("runner.args"))
+        .expect("runner should emit forwarded args");
+    let mut args = recorded.lines();
+    assert_eq!(args.next(), Some("target/debug/runner.xex"));
+    assert_eq!(args.next(), Some("foo"));
+    assert_eq!(args.next(), Some("bar"));
+    assert_eq!(args.next(), None);
+}
+
+#[test]
+fn run_requires_runner_configuration() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("k816-cli-project-run-missing-{unique}"));
+    std::fs::create_dir_all(&workspace).expect("failed to create temp root");
+
+    let mut init = Command::new(env!("CARGO_BIN_EXE_k816"));
+    init.current_dir(&workspace)
+        .arg("init")
+        .arg("missing-runner")
+        .assert()
+        .success();
+
+    let project = workspace.join("missing-runner");
+    let mut run = Command::new(env!("CARGO_BIN_EXE_k816"));
+    run.current_dir(&project)
+        .arg("run")
+        .assert()
+        .failure()
+        .stderr(contains(
+            "No runner configured. Set [run].runner in k816.toml.",
+        ));
+}
+
+#[test]
+fn clean_removes_project_target_directory() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let workspace = std::env::temp_dir().join(format!("k816-cli-project-clean-{unique}"));
+    std::fs::create_dir_all(&workspace).expect("failed to create temp root");
+
+    let mut init = Command::new(env!("CARGO_BIN_EXE_k816"));
+    init.current_dir(&workspace)
+        .arg("init")
+        .arg("cleanup")
+        .assert()
+        .success();
+
+    let project = workspace.join("cleanup");
+    let mut build = Command::new(env!("CARGO_BIN_EXE_k816"));
+    build.current_dir(&project).arg("build").assert().success();
+    assert!(project.join("target").exists());
+
+    let mut clean = Command::new(env!("CARGO_BIN_EXE_k816"));
+    clean.current_dir(&project).arg("clean").assert().success();
+    assert!(!project.join("target").exists());
+}

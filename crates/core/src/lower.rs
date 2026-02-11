@@ -97,7 +97,11 @@ pub fn lower(
                     }
                 }
 
-                ops.push(Spanned::new(Op::FunctionStart(scope.clone()), label_span));
+                ops.push(Spanned::new(Op::FunctionStart {
+                    name: scope.clone(),
+                    mode_contract: block.mode_contract,
+                    is_entry: block.kind == crate::ast::BlockKind::Main,
+                }, label_span));
                 ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
                 // Mode contract is enforced at call sites, not at function entry.
                 // Just update the tracker so the body knows its assumed mode.

@@ -86,7 +86,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                         nocross_boundary: None,
                     });
             }
-            Op::FunctionStart(name) => {
+            Op::FunctionStart { name, .. } => {
                 current_function = Some(name.clone());
             }
             Op::FunctionEnd => {

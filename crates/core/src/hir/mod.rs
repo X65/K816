@@ -1,3 +1,4 @@
+use crate::ast::ModeContract;
 use crate::span::Spanned;
 
 #[derive(Debug, Clone, Default)]
@@ -8,7 +9,12 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub enum Op {
     SelectSegment(String),
-    FunctionStart(String),
+    FunctionStart {
+        name: String,
+        mode_contract: ModeContract,
+        /// True for `main` blocks — defaults to 8-bit mode when uncolored.
+        is_entry: bool,
+    },
     FunctionEnd,
     Label(String),
     Instruction(InstructionOp),

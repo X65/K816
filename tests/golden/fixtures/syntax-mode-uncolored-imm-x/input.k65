@@ -1,0 +1,12 @@
+// Error: width-dependent immediate in uncolored function (index)
+//
+// All ImmediateX instructions (ldx, ldy, cpx, cpy)
+// require @i8 or @i16 on the enclosing function.
+
+func uncolored {
+  ldx #$01
+}
+
+main {
+  nop
+}

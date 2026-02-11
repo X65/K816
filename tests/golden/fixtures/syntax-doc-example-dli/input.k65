@@ -17,7 +17,7 @@ data displist {
   0x41 &<displist &>displist
 }
 
-naked dli {
+naked dli @a8 {
   a!!
   COLPF2=a=0xDE
   WSYNC=a

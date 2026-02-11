@@ -7,7 +7,7 @@ pub fn format_ir(program: &Program) -> String {
     for op in &program.ops {
         match &op.node {
             Op::SelectSegment(name) => out.push_str(&format!("segment {name}\n")),
-            Op::FunctionStart(name) => out.push_str(&format!("function_start {name}\n")),
+            Op::FunctionStart { name, .. } => out.push_str(&format!("function_start {name}\n")),
             Op::FunctionEnd => out.push_str("function_end\n"),
             Op::Label(name) => out.push_str(&format!("label {name}\n")),
             Op::Align(value) => out.push_str(&format!("align {value}\n")),

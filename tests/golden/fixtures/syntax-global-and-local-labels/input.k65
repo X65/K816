@@ -1,4 +1,4 @@
-func labels {
+func labels @i8 {
   start:
   .loop:
   x++

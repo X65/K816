@@ -1,0 +1,12 @@
+// Error: width-dependent immediate in uncolored function (accumulator)
+//
+// All ImmediateM instructions (ora, and, eor, adc, bit, lda, cmp, sbc)
+// require @a8 or @a16 on the enclosing function.
+
+func uncolored {
+  lda #$01
+}
+
+main {
+  nop
+}

@@ -1,0 +1,13 @@
+// Extracted from vendor/doc/docs/instructions.md:
+// Postfix operations (shift, rotate, inc, dec) with indexed addressing.
+// ASL, LSR, ROL, ROR, INC, DEC support mem,x addressing.
+var zp = 0x40
+
+main {
+  zp,x<<
+  zp,x>>
+  zp,x<<<
+  zp,x>>>
+  zp,x++
+  zp,x--
+}

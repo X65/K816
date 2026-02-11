@@ -1,0 +1,37 @@
+// Extracted from vendor/doc/docs/examples.md - Atari 800 XL DLI example
+// Tests naked function, push/pull, return_i, address byte operators in code.
+var VDSLST = 0x0200
+var SDLST  = 0x0230
+var COLPF2 = 0xD018
+var WSYNC  = 0xD40A
+var NMIEN  = 0xD40E
+var screen = 0x8000
+
+data displist {
+  nocross
+  0x70 0x70 0x70
+  0x42 &<screen &>screen
+  2 2 2
+  0xF0
+  2 2 2 2
+  0x41 &<displist &>displist
+}
+
+naked dli {
+  a!!
+  COLPF2=a=0xDE
+  WSYNC=a
+  a??
+  return_i
+}
+
+main {
+  SDLST=a=&<displist
+  a=&>displist
+  SDLST+1=a
+  VDSLST=a=&<dli
+  a=&>dli
+  VDSLST+1=a
+  NMIEN=a=0xC0
+  {} always
+}

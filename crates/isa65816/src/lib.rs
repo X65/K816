@@ -517,6 +517,14 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                     mode: AddressingMode::AbsoluteLongX,
                                 });
                             }
+                            if let Some(opcode) =
+                                find_opcode(&lower, AddressingMode::DirectPageX)
+                            {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::DirectPageX,
+                                });
+                            }
                         }
                         Some(IndexRegister::Y) => {
                             if wants_long {
@@ -529,6 +537,14 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                 return Ok(Encoding {
                                     opcode,
                                     mode: AddressingMode::AbsoluteY,
+                                });
+                            }
+                            if let Some(opcode) =
+                                find_opcode(&lower, AddressingMode::DirectPageY)
+                            {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::DirectPageY,
                                 });
                             }
                         }

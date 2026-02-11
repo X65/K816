@@ -1,0 +1,31 @@
+[default]
+000000: 70 70 70 42 00 80 02 02 02 F0 02 02 02 02 41 00
+000010: 00 48 A9 DE 8D 18 D0 8D 0A D4 68 40 A9 00 8D 30
+000020: 02 A9 00 8D 31 02 A9 00 8D 00 02 A9 00 8D 01 02
+000030: A9 C0 8D 0E D4 80 FE 60
+
+
+[data obj#0 default::displist]
+000000: <28 bytes of data>
+
+[disasm obj#0 default::dli]
+000011: 48          pha
+000012: A9 DE       lda #$DE
+000014: 8D 18 D0    sta $D018
+000017: 8D 0A D4    sta $D40A
+00001A: 68          pla
+00001B: 40          rti
+
+[disasm obj#0 default::main]
+00001C: A9 00       lda #$00
+00001E: 8D 30 02    sta $0230
+000021: A9 00       lda #$00
+000023: 8D 31 02    sta $0231
+000026: A9 00       lda #$00
+000028: 8D 00 02    sta $0200
+00002B: A9 00       lda #$00
+00002D: 8D 01 02    sta $0201
+000030: A9 C0       lda #$C0
+000032: 8D 0E D4    sta $D40E
+000035: 80 FE       bra $000035
+000037: 60          rts

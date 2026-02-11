@@ -1,0 +1,20 @@
+// Extracted from vendor/doc/docs/instructions.md:
+// Conditional goto with comparison operators.
+// BCC: < goto label
+// BCS: >= goto label
+// BEQ: == goto label
+// BNE: != goto label
+var mem = 0x40
+
+main {
+  a?mem
+  < goto .done
+  a?mem
+  >= goto .done
+  a?mem
+  == goto .done
+  a?mem
+  != goto .done
+.done:
+  return
+}

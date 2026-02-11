@@ -1,0 +1,10 @@
+[default]
+000000: AD 0B D4 8D 18 D0 8D 0A D4 80 F5 60
+
+
+[disasm obj#0 default::main]
+000000: AD 0B D4    lda $D40B
+000003: 8D 18 D0    sta $D018
+000006: 8D 0A D4    sta $D40A
+000009: 80 F5       bra $000000
+00000B: 60          rts

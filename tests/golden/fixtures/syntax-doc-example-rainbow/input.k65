@@ -1,0 +1,12 @@
+// Extracted from vendor/doc/docs/examples.md - Atari 800 XL Rainbow
+// Tests chained store-from-a and loop patterns.
+var COLPF2 = 0xD018
+var VCOUNT = 0xD40B
+var WSYNC = 0xD40A
+
+main {
+  {
+    COLPF2=a=VCOUNT
+    WSYNC=a
+  } always
+}

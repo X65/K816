@@ -1,0 +1,13 @@
+// Extracted from vendor/doc/docs/instructions.md:
+// STX supports zpg,Y addressing (mem,y=x)
+// STY supports zpg,X addressing (mem,x=y)
+// LDX supports mem,Y addressing (x=mem,y)
+// LDY supports mem,X addressing (y=mem,x)
+var zp = 0x20
+
+main {
+  zp,y=x
+  zp,x=y
+  x=zp,y
+  y=zp,x
+}

@@ -1,0 +1,10 @@
+[default]
+000000: DD 20 00 D9 34 12 C1 20 D1 20 60
+
+
+[disasm obj#0 default::main]
+000000: DD 20 00    cmp $0020,X
+000003: D9 34 12    cmp $1234,Y
+000006: C1 20       cmp ($20,X)
+000008: D1 20       cmp ($20),Y
+00000A: 60          rts

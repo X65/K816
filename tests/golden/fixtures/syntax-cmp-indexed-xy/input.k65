@@ -1,0 +1,11 @@
+// Extracted from vendor/doc/docs/instructions.md:
+// CMP supports indexed and indirect addressing modes.
+var zp = 0x20
+var abs = 0x1234
+
+main {
+  a?zp,x
+  a?abs,y
+  a?(zp,x)
+  a?(zp),y
+}

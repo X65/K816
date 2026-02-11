@@ -1348,18 +1348,9 @@ where
     }
     .then_ignore(just(TokenKind::Amp))
     .then_ignore(just(TokenKind::Question))
-    .ignore_then(expr_parser())
-    .map(|rhs| {
-        let operand = if expr_is_address_like(&rhs) {
-            Operand::Value {
-                expr: rhs,
-                force_far: false,
-                index: None,
-                addr_mode: OperandAddrMode::Direct,
-            }
-        } else {
-            Operand::Immediate(rhs)
-        };
+    .ignore_then(legacy_operand_expr_parser())
+    .map(|parsed| {
+        let operand = parsed_operand_to_operand(parsed);
         instruction_stmt("bit", Some(operand))
     });
 
@@ -1374,18 +1365,9 @@ where
             .or(just(TokenKind::Pipe).to("ora"))
             .or(just(TokenKind::Caret).to("eor")),
     )
-    .then(expr_parser())
-    .map(|(mnemonic, rhs)| {
-        let operand = if expr_is_address_like(&rhs) {
-            Operand::Value {
-                expr: rhs,
-                force_far: false,
-                index: None,
-                addr_mode: OperandAddrMode::Direct,
-            }
-        } else {
-            Operand::Immediate(rhs)
-        };
+    .then(legacy_operand_expr_parser())
+    .map(|(mnemonic, parsed)| {
+        let operand = parsed_operand_to_operand(parsed);
         instruction_stmt(mnemonic, Some(operand))
     });
 
@@ -1393,23 +1375,14 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("y") => value
     }
     .then_ignore(just(TokenKind::Question))
-    .then(expr_parser())
-    .map(|(lhs, rhs)| {
+    .then(legacy_operand_expr_parser())
+    .map(|(lhs, parsed)| {
         let mnemonic = if lhs.eq_ignore_ascii_case("x") {
             "cpx"
         } else {
             "cpy"
         };
-        let operand = if expr_is_address_like(&rhs) {
-            Operand::Value {
-                expr: rhs,
-                force_far: false,
-                index: None,
-                addr_mode: OperandAddrMode::Direct,
-            }
-        } else {
-            Operand::Immediate(rhs)
-        };
+        let operand = parsed_operand_to_operand(parsed);
         instruction_stmt(mnemonic, Some(operand))
     });
 
@@ -1421,6 +1394,41 @@ fn legacy_incdec_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
+    let indexed_inc = ident_parser()
+        .then_ignore(just(TokenKind::Comma))
+        .then(ident_parser())
+        .then_ignore(just(TokenKind::PlusPlus))
+        .try_map(|(base, idx), span| {
+            let index = parse_index_register(Some(idx), span)?;
+            Ok(instruction_stmt(
+                "inc",
+                Some(Operand::Value {
+                    expr: Expr::Ident(base),
+                    force_far: false,
+                    index,
+                    addr_mode: OperandAddrMode::Direct,
+                }),
+            ))
+        });
+
+    let indexed_dec = ident_parser()
+        .then_ignore(just(TokenKind::Comma))
+        .then(ident_parser())
+        .then_ignore(just(TokenKind::Minus))
+        .then_ignore(just(TokenKind::Minus))
+        .try_map(|(base, idx), span| {
+            let index = parse_index_register(Some(idx), span)?;
+            Ok(instruction_stmt(
+                "dec",
+                Some(Operand::Value {
+                    expr: Expr::Ident(base),
+                    force_far: false,
+                    index,
+                    addr_mode: OperandAddrMode::Direct,
+                }),
+            ))
+        });
+
     let inc = ident_parser()
         .then_ignore(just(TokenKind::PlusPlus))
         .map(|ident| {
@@ -1462,7 +1470,7 @@ where
             )
         });
 
-    inc.or(dec)
+    indexed_inc.or(indexed_dec).or(inc).or(dec)
 }
 
 fn legacy_shift_stmt_parser<'src, I>()
@@ -1485,7 +1493,24 @@ where
             .then_ignore(just(TokenKind::Gt))
             .to("lsr"));
 
-    ident_parser().then(shift_op).map(|(target, mnemonic)| {
+    let indexed = ident_parser()
+        .then_ignore(just(TokenKind::Comma))
+        .then(ident_parser())
+        .then(shift_op.clone())
+        .try_map(|((base, idx), mnemonic), span| {
+            let index = parse_index_register(Some(idx), span)?;
+            Ok(instruction_stmt(
+                mnemonic,
+                Some(Operand::Value {
+                    expr: Expr::Ident(base),
+                    force_far: false,
+                    index,
+                    addr_mode: OperandAddrMode::Direct,
+                }),
+            ))
+        });
+
+    let plain = ident_parser().then(shift_op).map(|(target, mnemonic)| {
         if target.eq_ignore_ascii_case("a") {
             instruction_stmt(mnemonic, None)
         } else {
@@ -1499,7 +1524,9 @@ where
                 }),
             )
         }
-    })
+    });
+
+    indexed.or(plain)
 }
 
 fn legacy_flag_stmt_parser<'src, I>()
@@ -1692,6 +1719,22 @@ fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
     })
 }
 
+fn parsed_operand_to_operand(parsed: ParsedOperandExpr) -> Operand {
+    let is_value = parsed.addr_mode != OperandAddrMode::Direct
+        || parsed.index.is_some()
+        || expr_is_address_like(&parsed.expr);
+    if is_value {
+        Operand::Value {
+            expr: parsed.expr,
+            force_far: false,
+            index: parsed.index,
+            addr_mode: parsed.addr_mode,
+        }
+    } else {
+        Operand::Immediate(parsed.expr)
+    }
+}
+
 fn parse_index_register<'src>(
     index: Option<String>,
     span: SimpleSpan,
@@ -1789,12 +1832,16 @@ where
 {
     chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => value }
         .then_ignore(just(TokenKind::Question))
-        .then(expr_parser())
-        .map(|(_ident, rhs)| {
-            Stmt::Hla(HlaStmt::ConditionSeed {
-                lhs: HlaRegister::A,
-                rhs,
-            })
+        .then(legacy_operand_expr_parser())
+        .map(|(_ident, parsed)| {
+            if parsed.index.is_some() || parsed.addr_mode != OperandAddrMode::Direct {
+                instruction_stmt("cmp", Some(parsed_operand_to_operand(parsed)))
+            } else {
+                Stmt::Hla(HlaStmt::ConditionSeed {
+                    lhs: HlaRegister::A,
+                    rhs: parsed.expr,
+                })
+            }
         })
 }
 

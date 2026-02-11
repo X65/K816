@@ -23,7 +23,7 @@ const PROJECT_OBJECT_DIR: &str = "obj";
     about = "High-level assembler for the WDC 65816",
     long_about = None,
     override_usage = "k816 [COMMAND] [INPUT]",
-    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.ld.ron\n  k816 init hello\n  k816 build\n  k816 run -- --fast\n  k816 clean\n  k816 --help"
+    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.ld.ron\n  k816 init hello\n  k816 build\n  k816 run -- --fast\n  k816 clean\n  k816 lsp\n  k816 --help"
 )]
 struct Cli {
     /// Optional explicit subcommand.
@@ -181,6 +181,8 @@ enum Commands {
     Run(RunArgs),
     /// Remove project build outputs.
     Clean,
+    /// Run the Language Server Protocol server over stdio.
+    Lsp,
 }
 
 #[derive(Debug, Parser)]
@@ -291,6 +293,11 @@ fn run() -> anyhow::Result<()> {
             link_options.validate_absent_for_subcommand("clean")?;
             output_option.validate_absent_for_subcommand("clean")?;
             project_clean_command()
+        }
+        Some(Commands::Lsp) => {
+            link_options.validate_absent_for_subcommand("lsp")?;
+            output_option.validate_absent_for_subcommand("lsp")?;
+            k816_lsp::run_stdio_server()
         }
         None => {
             let Some(input_path) = input else {

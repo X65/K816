@@ -164,19 +164,35 @@ pub enum HlaRhs {
 
 #[derive(Debug, Clone)]
 pub enum HlaStmt {
-    XAssignImmediate { rhs: Expr },
+    XAssignImmediate {
+        rhs: Expr,
+    },
     XIncrement,
-    StoreFromA { dest: String, rhs: HlaRhs },
-    WaitLoopWhileNFlagClear { symbol: String },
-    ConditionSeed { lhs: HlaRegister, rhs: Expr },
+    StoreFromA {
+        dest: String,
+        rhs: HlaRhs,
+    },
+    WaitLoopWhileNFlagClear {
+        symbol: String,
+    },
+    ConditionSeed {
+        lhs: HlaRegister,
+        rhs: Expr,
+    },
     DoOpen,
     DoCloseNFlagClear,
     DoCloseNFlagSet,
-    DoCloseWithOp { op: HlaCompareOp },
-    DoClose { condition: HlaCondition },
+    DoCloseWithOp {
+        op: HlaCompareOp,
+    },
+    DoClose {
+        condition: HlaCondition,
+    },
     DoCloseAlways,
     DoCloseNever,
-    DoCloseBranch { mnemonic: String },
+    DoCloseBranch {
+        mnemonic: String,
+    },
     RepeatNop(usize),
     PrefixConditional {
         skip_mnemonic: String,

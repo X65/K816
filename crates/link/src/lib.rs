@@ -513,7 +513,10 @@ fn choose_reloc_base(
             "no free range found for relocatable chunk in segment '{}' (len={:#X})",
             chunk.segment, chunk.len
         );
-        anyhow::anyhow!("{}", decorate_with_anchor(&detail, anchor.as_ref(), options))
+        anyhow::anyhow!(
+            "{}",
+            decorate_with_anchor(&detail, anchor.as_ref(), options)
+        )
     })
 }
 
@@ -1378,23 +1381,32 @@ fn format_function_disassembly_block(
 
         let index = (address - memory.spec.start) as usize;
         let decode_slice = &memory.bytes[index..];
-        let decoded = decode_instruction_with_mode(decode_slice, m_wide, x_wide).map_err(|err| {
-            anyhow::anyhow!(
-                "failed to decode instruction at {address:#X} ({}::{}): {err}",
-                function.section,
-                function.function
-            )
-        })?;
+        let decoded =
+            decode_instruction_with_mode(decode_slice, m_wide, x_wide).map_err(|err| {
+                anyhow::anyhow!(
+                    "failed to decode instruction at {address:#X} ({}::{}): {err}",
+                    function.section,
+                    function.function
+                )
+            })?;
 
         // Track mode changes from REP/SEP
         if decoded.mnemonic == "rep" && !decoded.operand.is_empty() {
             let mask = decoded.operand[0];
-            if mask & 0x20 != 0 { m_wide = true; }
-            if mask & 0x10 != 0 { x_wide = true; }
+            if mask & 0x20 != 0 {
+                m_wide = true;
+            }
+            if mask & 0x10 != 0 {
+                x_wide = true;
+            }
         } else if decoded.mnemonic == "sep" && !decoded.operand.is_empty() {
             let mask = decoded.operand[0];
-            if mask & 0x20 != 0 { m_wide = false; }
-            if mask & 0x10 != 0 { x_wide = false; }
+            if mask & 0x20 != 0 {
+                m_wide = false;
+            }
+            if mask & 0x10 != 0 {
+                x_wide = false;
+            }
         }
 
         let len = decoded.len();
@@ -1943,7 +1955,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("default".to_string()),
-                },
+            },
             SegmentRule {
                 id: "AUX".to_string(),
                 load: "AUX".to_string(),
@@ -1953,7 +1965,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("aux".to_string()),
-                },
+            },
         ];
 
         let mut sections = IndexMap::new();
@@ -2008,7 +2020,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("default".to_string()),
-                },
+            },
             SegmentRule {
                 id: "INFO".to_string(),
                 load: "MAIN".to_string(),
@@ -2018,7 +2030,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("info".to_string()),
-                },
+            },
         ];
 
         let mut sections = IndexMap::new();

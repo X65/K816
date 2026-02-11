@@ -71,7 +71,8 @@ pub fn emit_object(
     let mut current_segment = "default".to_string();
     let mut current_function: Option<String> = None;
     let mut function_instruction_sites = Vec::new();
-    let mut function_initial_modes: FxHashMap<(String, String), (bool, bool)> = FxHashMap::default();
+    let mut function_initial_modes: FxHashMap<(String, String), (bool, bool)> =
+        FxHashMap::default();
     let mut data_string_fragments = Vec::new();
     let mut m_wide: Option<bool> = None; // accumulator width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
     let mut x_wide: Option<bool> = None; // index width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
@@ -98,13 +99,23 @@ pub fn emit_object(
                         nocross_boundary: None,
                     });
             }
-            Op::FunctionStart { name, mode_contract, is_entry } => {
+            Op::FunctionStart {
+                name,
+                mode_contract,
+                is_entry,
+            } => {
                 current_function = Some(name.clone());
                 // Entry point (main) defaults to 8-bit (emulation mode).
                 // Functions require explicit mode contract for width-dependent ops.
                 let default = if *is_entry { Some(false) } else { None };
-                m_wide = mode_contract.a_width.map(|w| w == crate::ast::RegWidth::W16).or(default);
-                x_wide = mode_contract.i_width.map(|w| w == crate::ast::RegWidth::W16).or(default);
+                m_wide = mode_contract
+                    .a_width
+                    .map(|w| w == crate::ast::RegWidth::W16)
+                    .or(default);
+                x_wide = mode_contract
+                    .i_width
+                    .map(|w| w == crate::ast::RegWidth::W16)
+                    .or(default);
                 function_initial_modes.insert(
                     (current_segment.clone(), name.clone()),
                     (m_wide.unwrap_or(false), x_wide.unwrap_or(false)),
@@ -162,8 +173,12 @@ pub fn emit_object(
                 segment.nocross_boundary = Some(*boundary);
             }
             Op::Rep(mask) => {
-                if mask & 0x20 != 0 { m_wide = Some(true); }
-                if mask & 0x10 != 0 { x_wide = Some(true); }
+                if mask & 0x20 != 0 {
+                    m_wide = Some(true);
+                }
+                if mask & 0x10 != 0 {
+                    x_wide = Some(true);
+                }
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
@@ -179,8 +194,12 @@ pub fn emit_object(
                 append_bytes(segment, &bytes, op.span, &mut diagnostics);
             }
             Op::Sep(mask) => {
-                if mask & 0x20 != 0 { m_wide = Some(false); }
-                if mask & 0x10 != 0 { x_wide = Some(false); }
+                if mask & 0x20 != 0 {
+                    m_wide = Some(false);
+                }
+                if mask & 0x10 != 0 {
+                    x_wide = Some(false);
+                }
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
@@ -288,17 +307,24 @@ pub fn emit_object(
                     continue;
                 }
                 if encoding.mode == AddressingMode::ImmediateX && x_wide.is_none() {
-                    diagnostics.push(Diagnostic::error(
-                        op.span,
-                        format!(
-                            "`{}` uses a width-dependent immediate but index width is unknown",
-                            instruction.mnemonic,
-                        ),
-                    ).with_help("add @i8 or @i16 to the enclosing function"));
+                    diagnostics.push(
+                        Diagnostic::error(
+                            op.span,
+                            format!(
+                                "`{}` uses a width-dependent immediate but index width is unknown",
+                                instruction.mnemonic,
+                            ),
+                        )
+                        .with_help("add @i8 or @i16 to the enclosing function"),
+                    );
                     continue;
                 }
 
-                let width = operand_width_for_mode(encoding.mode, m_wide.unwrap_or(false), x_wide.unwrap_or(false));
+                let width = operand_width_for_mode(
+                    encoding.mode,
+                    m_wide.unwrap_or(false),
+                    x_wide.unwrap_or(false),
+                );
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
 
                 let opcode_offset = segment.section_offset;

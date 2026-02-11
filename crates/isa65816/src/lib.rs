@@ -509,17 +509,14 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                     mode: AddressingMode::AbsoluteX,
                                 });
                             }
-                            if let Some(opcode) =
-                                find_opcode(&lower, AddressingMode::AbsoluteLongX)
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLongX)
                             {
                                 return Ok(Encoding {
                                     opcode,
                                     mode: AddressingMode::AbsoluteLongX,
                                 });
                             }
-                            if let Some(opcode) =
-                                find_opcode(&lower, AddressingMode::DirectPageX)
-                            {
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::DirectPageX) {
                                 return Ok(Encoding {
                                     opcode,
                                     mode: AddressingMode::DirectPageX,
@@ -539,9 +536,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                     mode: AddressingMode::AbsoluteY,
                                 });
                             }
-                            if let Some(opcode) =
-                                find_opcode(&lower, AddressingMode::DirectPageY)
-                            {
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::DirectPageY) {
                                 return Ok(Encoding {
                                     opcode,
                                     mode: AddressingMode::DirectPageY,
@@ -550,7 +545,8 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                         }
                         None => {
                             if wants_long {
-                                if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLong)
+                                if let Some(opcode) =
+                                    find_opcode(&lower, AddressingMode::AbsoluteLong)
                                 {
                                     return Ok(Encoding {
                                         opcode,
@@ -568,8 +564,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                     mode: AddressingMode::Absolute,
                                 });
                             }
-                            if let Some(opcode) =
-                                find_opcode(&lower, AddressingMode::AbsoluteLong)
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLong)
                             {
                                 return Ok(Encoding {
                                     opcode,
@@ -609,8 +604,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                             mode: AddressingMode::AbsoluteIndirect,
                         });
                     }
-                    if let Some(opcode) =
-                        find_opcode(&lower, AddressingMode::AbsoluteIndirectLong)
+                    if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteIndirectLong)
                     {
                         return Ok(Encoding {
                             opcode,
@@ -686,10 +680,18 @@ pub fn operand_width_for_mode(mode: AddressingMode, m_wide: bool, x_wide: bool) 
     match mode {
         AddressingMode::Implied | AddressingMode::Accumulator => 0,
         AddressingMode::ImmediateM => {
-            if m_wide { 2 } else { 1 }
+            if m_wide {
+                2
+            } else {
+                1
+            }
         }
         AddressingMode::ImmediateX => {
-            if x_wide { 2 } else { 1 }
+            if x_wide {
+                2
+            } else {
+                1
+            }
         }
         AddressingMode::Immediate8
         | AddressingMode::DirectPage

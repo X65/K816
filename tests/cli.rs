@@ -10,7 +10,8 @@ fn no_args_prints_banner_and_help() {
         .stdout(contains("K816 HLA, version"))
         .stdout(contains("Usage: k816"))
         .stdout(contains("compile"))
-        .stdout(contains("link"));
+        .stdout(contains("link"))
+        .stdout(contains("lsp"));
 }
 
 #[test]
@@ -23,7 +24,8 @@ fn help_flag_prints_help() {
         .stdout(contains("Usage: k816"))
         .stdout(contains("--listing"))
         .stdout(contains("compile"))
-        .stdout(contains("link"));
+        .stdout(contains("link"))
+        .stdout(contains("lsp"));
 }
 
 #[test]

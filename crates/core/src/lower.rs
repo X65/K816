@@ -104,11 +104,14 @@ pub fn lower(
                     .map(|meta| meta.mode_contract)
                     .unwrap_or(block.mode_contract);
 
-                ops.push(Spanned::new(Op::FunctionStart {
-                    name: scope.clone(),
-                    mode_contract: effective_contract,
-                    is_entry: block.kind == crate::ast::BlockKind::Main,
-                }, label_span));
+                ops.push(Spanned::new(
+                    Op::FunctionStart {
+                        name: scope.clone(),
+                        mode_contract: effective_contract,
+                        is_entry: block.kind == crate::ast::BlockKind::Main,
+                    },
+                    label_span,
+                ));
                 ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
                 // For entry points, emit mode setup at function entry since
                 // there is no call site to bridge from. The CPU defaults to
@@ -427,12 +430,19 @@ fn lower_stmt(
             skip_mnemonic,
             body,
         }) => {
-            let Some(skip_label) =
-                fresh_local_label("prefix_skip", ctx, scope, span, diagnostics)
+            let Some(skip_label) = fresh_local_label("prefix_skip", ctx, scope, span, diagnostics)
             else {
                 return;
             };
-            emit_branch_to_label(skip_mnemonic, &skip_label, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                skip_mnemonic,
+                &skip_label,
+                scope,
+                sema,
+                span,
+                diagnostics,
+                ops,
+            );
             for s in body {
                 lower_stmt(
                     &s.node,
@@ -477,7 +487,15 @@ fn lower_stmt(
             // Lower body
             for s in body {
                 lower_stmt(
-                    &s.node, s.span, scope, sema, fs, current_segment, ctx, diagnostics, ops,
+                    &s.node,
+                    s.span,
+                    scope,
+                    sema,
+                    fs,
+                    current_segment,
+                    ctx,
+                    diagnostics,
+                    ops,
                 );
             }
             // Restore mode: emit ops to return to saved state
@@ -1531,7 +1549,8 @@ mod tests {
 
     #[test]
     fn segment_inside_code_block_restores_outer_segment() {
-        let source = "segment fixed_lo\nmain {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+        let source =
+            "segment fixed_lo\nmain {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -1569,7 +1588,8 @@ mod tests {
 
     #[test]
     fn segment_inside_func_block_restores_outer_segment() {
-        let source = "segment fixed_lo\nfunc worker {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+        let source =
+            "segment fixed_lo\nfunc worker {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -1607,7 +1627,8 @@ mod tests {
 
     #[test]
     fn segment_inside_naked_block_restores_outer_segment() {
-        let source = "segment fixed_lo\nnaked worker {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+        let source =
+            "segment fixed_lo\nnaked worker {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;

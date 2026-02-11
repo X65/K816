@@ -193,8 +193,8 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
     for function in &object.function_disassembly {
         write_string(&mut out, &function.section)?;
         write_string(&mut out, &function.function)?;
-        let mode_flags: u8 = (if function.m_wide { 0x20 } else { 0 })
-            | (if function.x_wide { 0x10 } else { 0 });
+        let mode_flags: u8 =
+            (if function.m_wide { 0x20 } else { 0 }) | (if function.x_wide { 0x10 } else { 0 });
         out.push(mode_flags);
         write_u32(&mut out, function.instruction_offsets.len() as u32);
         for offset in &function.instruction_offsets {

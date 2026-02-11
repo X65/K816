@@ -1,8 +1,7 @@
 use indexmap::IndexMap;
 use k816_isa65816::{
     AddressOperandMode as IsaAddressOperandMode, AddressingMode, IndexRegister as IsaIndexRegister,
-    OperandShape, decode_instruction_with_mode, format_instruction, operand_width,
-    select_encoding,
+    OperandShape, decode_instruction_with_mode, format_instruction, operand_width, select_encoding,
 };
 use rustc_hash::FxHashMap;
 
@@ -709,12 +708,20 @@ fn format_disassembly_block(
                 // Track mode changes from REP/SEP
                 if decoded.mnemonic == "rep" && !decoded.operand.is_empty() {
                     let mask = decoded.operand[0];
-                    if mask & 0x20 != 0 { m_wide = true; }
-                    if mask & 0x10 != 0 { x_wide = true; }
+                    if mask & 0x20 != 0 {
+                        m_wide = true;
+                    }
+                    if mask & 0x10 != 0 {
+                        x_wide = true;
+                    }
                 } else if decoded.mnemonic == "sep" && !decoded.operand.is_empty() {
                     let mask = decoded.operand[0];
-                    if mask & 0x20 != 0 { m_wide = false; }
-                    if mask & 0x10 != 0 { x_wide = false; }
+                    if mask & 0x20 != 0 {
+                        m_wide = false;
+                    }
+                    if mask & 0x10 != 0 {
+                        x_wide = false;
+                    }
                 }
 
                 let len = decoded.len();

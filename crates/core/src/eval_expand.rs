@@ -16,7 +16,10 @@ pub fn expand_file(file: &File, source_id: SourceId) -> Result<File, Vec<Diagnos
     }
 
     if diagnostics.is_empty() {
-        Ok(File { mode_default: file.mode_default, items })
+        Ok(File {
+            mode_default: file.mode_default,
+            items,
+        })
     } else {
         Err(diagnostics)
     }
@@ -106,9 +109,7 @@ fn expand_stmt(
             i_width: *i_width,
             body: body
                 .iter()
-                .map(|s| {
-                    Spanned::new(expand_stmt(&s.node, s.span, source_id, diagnostics), s.span)
-                })
+                .map(|s| Spanned::new(expand_stmt(&s.node, s.span, source_id, diagnostics), s.span))
                 .collect(),
         },
         Stmt::SwapAB => Stmt::SwapAB,

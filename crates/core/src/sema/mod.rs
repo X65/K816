@@ -1,8 +1,7 @@
 use indexmap::IndexMap;
 
 use crate::ast::{
-    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract, Stmt,
-    VarDecl,
+    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::span::Span;
@@ -43,7 +42,13 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 &mut diagnostics,
             ),
             Item::CodeBlock(block) => {
-                collect_function(block, item.span, &file.mode_default, &mut model, &mut diagnostics);
+                collect_function(
+                    block,
+                    item.span,
+                    &file.mode_default,
+                    &mut model,
+                    &mut diagnostics,
+                );
                 for stmt in &block.body {
                     if let Stmt::Var(var) = &stmt.node {
                         collect_var(

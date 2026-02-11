@@ -380,6 +380,31 @@ fn lower_stmt(
         Stmt::Nocross(nocross) => {
             ops.push(Spanned::new(Op::Nocross(*nocross), span));
         }
+        Stmt::Hla(HlaStmt::PrefixConditional {
+            skip_mnemonic,
+            body,
+        }) => {
+            let Some(skip_label) =
+                fresh_local_label("prefix_skip", ctx, scope, span, diagnostics)
+            else {
+                return;
+            };
+            emit_branch_to_label(skip_mnemonic, &skip_label, scope, sema, span, diagnostics, ops);
+            for s in body {
+                lower_stmt(
+                    &s.node,
+                    s.span,
+                    scope,
+                    sema,
+                    fs,
+                    current_segment,
+                    ctx,
+                    diagnostics,
+                    ops,
+                );
+            }
+            ops.push(Spanned::new(Op::Label(skip_label), span));
+        }
         Stmt::Hla(stmt) => {
             lower_hla_stmt(stmt, span, scope, sema, ctx, diagnostics, ops);
         }
@@ -557,6 +582,28 @@ fn lower_hla_stmt(
                 );
                 return;
             };
+        }
+        HlaStmt::DoCloseBranch { mnemonic } => {
+            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+                diagnostics.push(
+                    Diagnostic::error(span, "HLA do/while close without matching '{'")
+                        .with_help("open loop with a standalone '{' line before the condition"),
+                );
+                return;
+            };
+            emit_branch_to_label(mnemonic, &loop_target, scope, sema, span, diagnostics, ops);
+        }
+        HlaStmt::RepeatNop(count) => {
+            let nop = Instruction {
+                mnemonic: "nop".to_string(),
+                operand: None,
+            };
+            for _ in 0..*count {
+                lower_instruction_and_push(&nop, scope, sema, span, diagnostics, ops);
+            }
+        }
+        HlaStmt::PrefixConditional { .. } => {
+            // Handled in lower_stmt directly (needs fs and current_segment parameters)
         }
     }
 }

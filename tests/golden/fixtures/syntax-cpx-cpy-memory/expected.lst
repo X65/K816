@@ -1,0 +1,10 @@
+[default]
+000000: EC 20 00 EC 34 12 CC 20 00 CC 34 12 60
+
+
+[disasm obj#0 default::main]
+000000: EC 20 00    cpx $0020
+000003: EC 34 12    cpx $1234
+000006: CC 20 00    cpy $0020
+000009: CC 34 12    cpy $1234
+00000C: 60          rts

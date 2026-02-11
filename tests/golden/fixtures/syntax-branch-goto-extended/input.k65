@@ -1,0 +1,18 @@
+func target {
+  *
+}
+
+main {
+  c-? goto target
+  c+? goto target
+  z+? goto target
+  z-? goto target
+  n+? goto target
+  n-? goto target
+  v+ goto target
+  v- goto target
+  <0 goto target
+  >=0 goto target
+  <<= goto target
+  >>= goto target
+}

@@ -1,9 +1,13 @@
 [default]
-000000: EA EA EA 60
+000000: EA EA EA EA EA EA EA 60
 
 
 [disasm obj#0 default::main]
 000000: EA          nop
 000001: EA          nop
 000002: EA          nop
-000003: 60          rts
+000003: EA          nop
+000004: EA          nop
+000005: EA          nop
+000006: EA          nop
+000007: 60          rts

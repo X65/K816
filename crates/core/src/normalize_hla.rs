@@ -138,6 +138,17 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         },
         HlaStmt::DoCloseAlways => HlaStmt::DoCloseAlways,
         HlaStmt::DoCloseNever => HlaStmt::DoCloseNever,
+        HlaStmt::DoCloseBranch { mnemonic } => HlaStmt::DoCloseBranch {
+            mnemonic: mnemonic.clone(),
+        },
+        HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
+        HlaStmt::PrefixConditional {
+            skip_mnemonic,
+            body,
+        } => HlaStmt::PrefixConditional {
+            skip_mnemonic: skip_mnemonic.clone(),
+            body: normalize_stmt_sequence(body),
+        },
     }
 }
 

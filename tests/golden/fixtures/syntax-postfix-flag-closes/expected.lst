@@ -1,0 +1,17 @@
+[default]
+000000: 90 FE B0 FE F0 FE D0 FE 70 FE 50 FE 30 FE 10 FE
+000010: 70 FE 50 FE 60
+
+
+[disasm obj#0 default::main]
+000000: 90 FE       bcc $000000
+000002: B0 FE       bcs $000002
+000004: F0 FE       beq $000004
+000006: D0 FE       bne $000006
+000008: 70 FE       bvs $000008
+00000A: 50 FE       bvc $00000A
+00000C: 30 FE       bmi $00000C
+00000E: 10 FE       bpl $00000E
+000010: 70 FE       bvs $000010
+000012: 50 FE       bvc $000012
+000014: 60          rts

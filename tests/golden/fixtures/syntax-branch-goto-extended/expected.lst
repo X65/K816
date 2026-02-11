@@ -1,0 +1,23 @@
+[default]
+000000: EA 60 90 FC B0 FA F0 F8 D0 F6 30 F4 10 F2 70 F0
+000010: 50 EE 30 EC 10 EA 70 E8 50 E6 60
+
+
+[disasm obj#0 default::target]
+000000: EA          nop
+000001: 60          rts
+
+[disasm obj#0 default::main]
+000002: 90 FC       bcc $000000
+000004: B0 FA       bcs $000000
+000006: F0 F8       beq $000000
+000008: D0 F6       bne $000000
+00000A: 30 F4       bmi $000000
+00000C: 10 F2       bpl $000000
+00000E: 70 F0       bvs $000000
+000010: 50 EE       bvc $000000
+000012: 30 EC       bmi $000000
+000014: 10 EA       bpl $000000
+000016: 70 E8       bvs $000000
+000018: 50 E6       bvc $000000
+00001A: 60          rts

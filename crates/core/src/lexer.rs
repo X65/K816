@@ -71,6 +71,10 @@ pub enum TokenKind {
     EqEq,
     #[token("!=")]
     BangEq,
+    #[token("<<=")]
+    LtLtEq,
+    #[token(">>=")]
+    GtGtEq,
     #[token("<=")]
     LtEq,
     #[token(">=")]

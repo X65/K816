@@ -212,6 +212,11 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
         HlaStmt::DoClose { condition } => format!("}} {}", format_hla_condition(condition)),
         HlaStmt::DoCloseAlways => "} always".to_string(),
         HlaStmt::DoCloseNever => "} never".to_string(),
+        HlaStmt::DoCloseBranch { mnemonic } => format!("}} {mnemonic}"),
+        HlaStmt::RepeatNop(n) => format!("* {n}"),
+        HlaStmt::PrefixConditional { skip_mnemonic, .. } => {
+            format!("prefix({skip_mnemonic}) {{ ... }}")
+        }
     }
 }
 

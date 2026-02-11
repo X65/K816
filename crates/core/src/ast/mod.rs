@@ -142,6 +142,12 @@ pub enum HlaStmt {
     DoClose { condition: HlaCondition },
     DoCloseAlways,
     DoCloseNever,
+    DoCloseBranch { mnemonic: String },
+    RepeatNop(usize),
+    PrefixConditional {
+        skip_mnemonic: String,
+        body: Vec<Spanned<Stmt>>,
+    },
 }
 
 #[derive(Debug, Clone)]

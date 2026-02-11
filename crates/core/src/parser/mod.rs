@@ -852,6 +852,72 @@ where
         .boxed()
 }
 
+fn prefix_condition_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, &'static str, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Flag-based: c-? c+? z+? z-? n+? n-? → skip branch (inverted)
+    let c_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("c") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to("bcc") // execute when C=1, skip when C=0
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("bcs")), // execute when C=0, skip when C=1
+        );
+
+    let z_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("z") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to("bne") // execute when Z=1, skip when Z=0
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("beq")), // execute when Z=0, skip when Z=1
+        );
+
+    let n_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("n") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to("bpl") // execute when N=1, skip when N=0
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("bmi")), // execute when N=0, skip when N=1
+        );
+
+    // v+? v-? (with trailing ?)
+    let v_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to("bvc") // execute when V=1, skip when V=0
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("bvs")), // execute when V=0, skip when V=1
+        );
+
+    // Comparison-based: >= < == != <0 >=0 <<= >>=
+    let cmp_based = just(TokenKind::GtEq)
+        .ignore_then(just(TokenKind::Number(0)).or_not())
+        .map(|zero| if zero.is_some() { "bmi" } else { "bcc" }) // >=0: exec N=0, skip N=1; >=: exec C=1, skip C=0
+        .or(just(TokenKind::Lt)
+            .ignore_then(just(TokenKind::Number(0)).or_not())
+            .map(|zero| if zero.is_some() { "bpl" } else { "bcs" })) // <0: exec N=1, skip N=0; <: exec C=0, skip C=1
+        .or(just(TokenKind::EqEq).to("bne")) // ==: exec Z=1, skip Z=0
+        .or(just(TokenKind::BangEq).to("beq")) // !=: exec Z=0, skip Z=1
+        .or(just(TokenKind::LtLtEq).to("bvc")) // <<=: exec V=1, skip V=0
+        .or(just(TokenKind::GtGtEq).to("bvs")); // >>=: exec V=0, skip V=1
+
+    c_flag
+        .or(z_flag)
+        .or(n_flag)
+        .or(v_flag)
+        .or(cmp_based)
+}
+
 fn stmt_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -925,7 +991,7 @@ where
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
     let hla_do_close_suffix = hla_condition_parser()
         .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
-        .or(hla_n_flag_close_stmt_parser())
+        .or(hla_flag_close_stmt_parser())
         .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
         .or(
             chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
@@ -995,7 +1061,39 @@ where
         .then(operand)
         .map(|(mnemonic, operand)| Stmt::Instruction(Instruction { mnemonic, operand }));
 
-    segment_stmt
+    let separators_inner = line_sep_parser().repeated();
+
+    // Inner statement parser for prefix conditional bodies - excludes bare_rbrace_stmt,
+    // hla_do_close_stmt, and hla_do_open_stmt which would interfere with brace matching
+    let base_stmt_inner = segment_stmt
+        .clone()
+        .or(var_stmt.clone())
+        .or(data_stmt.clone())
+        .or(address_stmt.clone())
+        .or(align_stmt.clone())
+        .or(nocross_stmt.clone())
+        .or(call_stmt.clone())
+        .or(label_stmt.clone())
+        .or(byte_stmt.clone())
+        .or(hla_condition_seed_stmt.clone())
+        .or(hla_x_increment_stmt.clone())
+        .or(hla_x_assign_stmt.clone())
+        .or(hla_store_from_a_stmt.clone())
+        .or(chain_stmt.clone())
+        .or(assign_stmt.clone())
+        .or(store_stmt.clone())
+        .or(alu_stmt.clone())
+        .or(incdec_stmt.clone())
+        .or(shift_stmt.clone())
+        .or(flow_stmt.clone())
+        .or(flag_stmt.clone())
+        .or(stack_stmt.clone())
+        .or(nop_stmt.clone())
+        .or(discard_stmt.clone())
+        .or(instruction.clone())
+        .boxed();
+
+    let base_stmt = segment_stmt
         .or(var_stmt)
         .or(data_stmt)
         .or(address_stmt)
@@ -1018,13 +1116,36 @@ where
         .or(alu_stmt)
         .or(incdec_stmt)
         .or(shift_stmt)
+        .or(flow_stmt)
         .or(flag_stmt)
         .or(stack_stmt)
-        .or(flow_stmt)
         .or(nop_stmt)
         .or(discard_stmt)
         .or(instruction)
-        .boxed()
+        .boxed();
+
+    let inner_stmt = spanned(base_stmt_inner, source_id);
+
+    let prefix_conditional = prefix_condition_parser()
+        .then(
+            just(TokenKind::LBrace)
+                .ignore_then(separators_inner.clone())
+                .ignore_then(
+                    inner_stmt
+                        .then_ignore(separators_inner)
+                        .repeated()
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(TokenKind::RBrace)),
+        )
+        .map(|(skip_mnemonic, body)| {
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic: skip_mnemonic.to_string(),
+                body,
+            })
+        });
+
+    prefix_conditional.or(base_stmt).boxed()
 }
 
 fn hla_wait_loop_stmt_parser<'src, I>()
@@ -1561,13 +1682,25 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("goto") => ()
     };
 
-    let goto_stmt = goto_kw
-        .ignore_then(
-            just(TokenKind::LParen)
-                .ignore_then(expr_parser())
-                .then_ignore(just(TokenKind::RParen))
-                .or(expr_parser()),
-        )
+    let goto_indirect = goto_kw
+        .clone()
+        .ignore_then(just(TokenKind::LParen))
+        .ignore_then(expr_parser())
+        .then_ignore(just(TokenKind::RParen))
+        .map(|target| {
+            instruction_stmt(
+                "jmp",
+                Some(Operand::Value {
+                    expr: target,
+                    force_far: false,
+                    index: None,
+                    addr_mode: OperandAddrMode::Indirect,
+                }),
+            )
+        });
+
+    let goto_direct = goto_kw
+        .ignore_then(expr_parser())
         .map(|target| {
             instruction_stmt(
                 "jmp",
@@ -1580,8 +1713,66 @@ where
             )
         });
 
-    let branch_goto_stmt = just(TokenKind::Lt)
-        .to("bcc")
+    let goto_stmt = goto_indirect.or(goto_direct);
+
+    // Flag-based goto forms: flag goto label → branch instruction
+    let c_flag_goto = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("c") => () }
+        .ignore_then(
+            just(TokenKind::Minus)
+                .then_ignore(just(TokenKind::Question))
+                .to("bcc")
+                .or(just(TokenKind::Plus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("bcs")),
+        );
+
+    let z_flag_goto = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("z") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to("beq")
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("bne")),
+        );
+
+    let n_flag_goto = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("n") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to("bmi")
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to("bpl")),
+        );
+
+    // v+ and v- have no trailing ?
+    let v_flag_goto = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
+        .ignore_then(
+            just(TokenKind::Plus).to("bvs")
+                .or(just(TokenKind::Minus).to("bvc")),
+        );
+
+    // <0 goto → bmi, >=0 goto → bpl
+    let signed_goto = just(TokenKind::Lt)
+        .ignore_then(just(TokenKind::Number(0)))
+        .to("bmi")
+        .or(just(TokenKind::GtEq)
+            .ignore_then(just(TokenKind::Number(0)))
+            .to("bpl"));
+
+    // <<= goto → bvs, >>= goto → bvc
+    let overflow_goto = just(TokenKind::LtLtEq)
+        .to("bvs")
+        .or(just(TokenKind::GtGtEq).to("bvc"));
+
+    let branch_goto_stmt = c_flag_goto
+        .or(z_flag_goto)
+        .or(n_flag_goto)
+        .or(v_flag_goto)
+        .or(signed_goto)
+        .or(overflow_goto)
+        .or(just(TokenKind::Lt).to("bcc"))
         .or(just(TokenKind::GtEq).to("bcs"))
         .or(just(TokenKind::EqEq).to("beq"))
         .or(just(TokenKind::BangEq).to("bne"))
@@ -1632,8 +1823,15 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     just(TokenKind::Star)
-        .then(number_parser().or_not())
-        .to(instruction_stmt("nop", None))
+        .ignore_then(number_parser().or_not())
+        .map(|count| {
+            let n = count.unwrap_or(1) as usize;
+            if n == 1 {
+                instruction_stmt("nop", None)
+            } else {
+                Stmt::Hla(HlaStmt::RepeatNop(n))
+            }
+        })
         .or(just(TokenKind::Percent).to(instruction_stmt("nop", None)))
 }
 
@@ -1653,6 +1851,8 @@ where
         .to(())
         .or(just(TokenKind::EqEq).to(()))
         .or(just(TokenKind::BangEq).to(()))
+        .or(just(TokenKind::LtLtEq).to(()))
+        .or(just(TokenKind::GtGtEq).to(()))
         .or(just(TokenKind::LtEq).to(()))
         .or(just(TokenKind::GtEq).to(()))
         .or(just(TokenKind::Lt).to(()))
@@ -1777,12 +1977,16 @@ where
         .or(just(TokenKind::Gt).to(HlaCompareOp::Gt))
 }
 
-fn hla_n_flag_close_stmt_parser<'src, I>()
+fn hla_flag_close_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("n") => () }
+    let do_close_branch =
+        |mnemonic: &str| Stmt::Hla(HlaStmt::DoCloseBranch { mnemonic: mnemonic.to_string() });
+
+    // n-? → BPL, n+? → BMI
+    let n_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("n") => () }
         .ignore_then(
             just(TokenKind::Minus)
                 .then_ignore(just(TokenKind::Question))
@@ -1790,7 +1994,57 @@ where
                 .or(just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
                     .to(Stmt::Hla(HlaStmt::DoCloseNFlagSet))),
-        )
+        );
+
+    // c-? → BCC, c+? → BCS
+    let c_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("c") => () }
+        .ignore_then(
+            just(TokenKind::Minus)
+                .then_ignore(just(TokenKind::Question))
+                .to(do_close_branch("bcc"))
+                .or(just(TokenKind::Plus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to(do_close_branch("bcs"))),
+        );
+
+    // z+? → BEQ, z-? → BNE
+    let z_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("z") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to(do_close_branch("beq"))
+                .or(just(TokenKind::Minus)
+                    .then_ignore(just(TokenKind::Question))
+                    .to(do_close_branch("bne"))),
+        );
+
+    // v+ → BVS, v- → BVC (no trailing ?)
+    let v_flag = chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
+        .ignore_then(
+            just(TokenKind::Plus)
+                .to(do_close_branch("bvs"))
+                .or(just(TokenKind::Minus).to(do_close_branch("bvc"))),
+        );
+
+    // <0 → BMI, >=0 → BPL
+    let signed_cmp = just(TokenKind::Lt)
+        .ignore_then(just(TokenKind::Number(0)))
+        .to(do_close_branch("bmi"))
+        .or(just(TokenKind::GtEq)
+            .ignore_then(just(TokenKind::Number(0)))
+            .to(do_close_branch("bpl")));
+
+    // <<= → BVS, >>= → BVC
+    let overflow_cmp = just(TokenKind::LtLtEq)
+        .to(do_close_branch("bvs"))
+        .or(just(TokenKind::GtGtEq).to(do_close_branch("bvc")));
+
+    n_flag
+        .or(c_flag)
+        .or(z_flag)
+        .or(v_flag)
+        .or(signed_cmp)
+        .or(overflow_cmp)
 }
 
 fn hla_condition_seed_stmt_parser<'src, I>()
@@ -1802,7 +2056,10 @@ where
         .then_ignore(just(TokenKind::Question))
         .then(operand_expr_parser())
         .map(|(_ident, parsed)| {
-            if parsed.index.is_some() || parsed.addr_mode != OperandAddrMode::Direct {
+            if parsed.index.is_some()
+                || parsed.addr_mode != OperandAddrMode::Direct
+                || expr_is_address_like(&parsed.expr)
+            {
                 instruction_stmt("cmp", Some(parsed_operand_to_operand(parsed)))
             } else {
                 Stmt::Hla(HlaStmt::ConditionSeed {
@@ -2037,6 +2294,8 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::Question => "'?'".to_string(),
         TokenKind::EqEq => "'=='".to_string(),
         TokenKind::BangEq => "'!='".to_string(),
+        TokenKind::LtLtEq => "'<<='".to_string(),
+        TokenKind::GtGtEq => "'>>='".to_string(),
         TokenKind::LtEq => "'<='".to_string(),
         TokenKind::GtEq => "'>='".to_string(),
         TokenKind::Lt => "'<'".to_string(),

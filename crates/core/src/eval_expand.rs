@@ -174,6 +174,28 @@ fn expand_hla_stmt(
         },
         HlaStmt::DoCloseAlways => HlaStmt::DoCloseAlways,
         HlaStmt::DoCloseNever => HlaStmt::DoCloseNever,
+        HlaStmt::DoCloseBranch { mnemonic } => HlaStmt::DoCloseBranch {
+            mnemonic: mnemonic.clone(),
+        },
+        HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
+        HlaStmt::PrefixConditional {
+            skip_mnemonic,
+            body,
+        } => {
+            let expanded_body = body
+                .iter()
+                .map(|s| {
+                    crate::span::Spanned::new(
+                        expand_stmt(&s.node, s.span, source_id, diagnostics),
+                        s.span,
+                    )
+                })
+                .collect();
+            HlaStmt::PrefixConditional {
+                skip_mnemonic: skip_mnemonic.clone(),
+                body: expanded_body,
+            }
+        }
     }
 }
 

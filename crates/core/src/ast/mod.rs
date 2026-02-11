@@ -191,7 +191,6 @@ pub enum NamedDataEntry {
     Align(u16),
     Nocross(u16),
     Bytes(Vec<Expr>),
-    LegacyBytes(Vec<Expr>),
     String(String),
     Convert { kind: String, args: Vec<DataArg> },
     Ignored,

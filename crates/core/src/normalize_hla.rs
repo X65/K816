@@ -56,7 +56,6 @@ fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
         NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
         NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
         NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
-        NamedDataEntry::LegacyBytes(values) => NamedDataEntry::LegacyBytes(values.clone()),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
             kind: kind.clone(),

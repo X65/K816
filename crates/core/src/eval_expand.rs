@@ -134,12 +134,6 @@ fn expand_named_data_entry(
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
-        NamedDataEntry::LegacyBytes(values) => NamedDataEntry::LegacyBytes(
-            values
-                .iter()
-                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
-                .collect(),
-        ),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
             kind: kind.clone(),

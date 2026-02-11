@@ -1,6 +1,6 @@
 // Extracted from vendor/doc/docs/instructions.md address-mode examples:
 // - abs,Y forms (Mem,Y)
-// - legacy shorthand with ,y operands
+// - HLA shorthand with ,y operands
 var ptr = 0x20
 var abs = 0x1234
 

@@ -178,14 +178,6 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
         NamedDataEntry::Align(value) => format!("align {value}"),
         NamedDataEntry::Nocross(value) => format!("nocross {value}"),
         NamedDataEntry::Bytes(values) => {
-            let values = values
-                .iter()
-                .map(format_expr)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!(".byte {values}")
-        }
-        NamedDataEntry::LegacyBytes(values) => {
             values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
         }
         NamedDataEntry::String(value) => format!("\"{}\"", value.replace('\"', "\\\"")),

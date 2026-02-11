@@ -247,7 +247,7 @@ fn lower_named_data_entry(
         NamedDataEntry::Nocross(value) => {
             ops.push(Spanned::new(Op::Nocross(*value), span));
         }
-        NamedDataEntry::Bytes(values) | NamedDataEntry::LegacyBytes(values) => {
+        NamedDataEntry::Bytes(values) => {
             if let Some(evaluated) = evaluate_byte_exprs(values, None, sema, span, diagnostics) {
                 let op = if evaluated.relocations.is_empty() {
                     Op::EmitBytes(evaluated.bytes)
@@ -966,8 +966,8 @@ fn eval_to_number(
                 return Some(i64::from(var.address));
             }
 
-            // Legacy syntax often uses constants that are not materialized in semantic
-            // tables yet; keep lowering permissive by resolving unknown constants to 0.
+            // Constants that are not materialized in semantic tables yet;
+            // keep lowering permissive by resolving unknown constants to 0.
             let _ = resolve_symbol(name, scope, span, diagnostics)?;
             Some(0)
         }
@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn lowers_wait_loop_legacy_bit_pattern_to_bit_and_bpl() {
+    fn lowers_wait_loop_bit_pattern_to_bit_and_bpl() {
         let source = "var ready = 0x1234\nmain {\n  { a&?ready } n-?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");

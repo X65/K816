@@ -658,7 +658,7 @@ where
             }
         });
 
-    let legacy_address_byte_expr = just(TokenKind::Amp).ignore_then(
+    let address_byte_expr = just(TokenKind::Amp).ignore_then(
         just(TokenKind::Lt)
             .ignore_then(expr_parser())
             .map(|expr| {
@@ -689,14 +689,14 @@ where
                 })),
     );
 
-    let legacy_bytes_entry = number_parser()
+    let bytes_entry = number_parser()
         .map(|value| vec![Expr::Number(value)])
-        .or(legacy_address_byte_expr)
+        .or(address_byte_expr)
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
         .map(|chunks| {
-            NamedDataEntry::LegacyBytes(chunks.into_iter().flatten().collect::<Vec<_>>())
+            NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>())
         });
 
     let eval_bytes_entry =
@@ -723,8 +723,8 @@ where
         .then_ignore(just(TokenKind::Colon))
         .to(NamedDataEntry::Ignored);
 
-    let legacy_directive_ignored_entry = chumsky::select! {
-        TokenKind::Ident(value) if is_legacy_discard_keyword(&value)
+    let directive_ignored_entry = chumsky::select! {
+        TokenKind::Ident(value) if is_discard_keyword(&value)
             || value.eq_ignore_ascii_case("image")
             || value.eq_ignore_ascii_case("binary")
             || value.eq_ignore_ascii_case("repeat") => ()
@@ -739,10 +739,10 @@ where
         .or(nocross_entry)
         .or(byte_entry)
         .or(convert_entry)
-        .or(legacy_bytes_entry)
+        .or(bytes_entry)
         .or(eval_bytes_entry)
         .or(label_ignored_entry)
-        .or(legacy_directive_ignored_entry)
+        .or(directive_ignored_entry)
         .boxed()
 }
 
@@ -799,7 +799,7 @@ where
         )
         .map(|(kind, args)| DataCommand::Convert { kind, args });
 
-    let legacy_bytes = number_parser()
+    let bytes = number_parser()
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
@@ -808,8 +808,8 @@ where
             args: values.into_iter().map(DataArg::Int).collect::<Vec<_>>(),
         });
 
-    let legacy_directive_ignored = chumsky::select! {
-        TokenKind::Ident(value) if is_legacy_discard_keyword(&value)
+    let directive_ignored = chumsky::select! {
+        TokenKind::Ident(value) if is_discard_keyword(&value)
             || value.eq_ignore_ascii_case("image")
             || value.eq_ignore_ascii_case("binary")
             || value.eq_ignore_ascii_case("repeat") => ()
@@ -825,8 +825,8 @@ where
         .or(address)
         .or(nocross)
         .or(convert)
-        .or(legacy_bytes)
-        .or(legacy_directive_ignored)
+        .or(bytes)
+        .or(directive_ignored)
         .or(preproc_ignored)
         .boxed()
 }
@@ -957,7 +957,7 @@ where
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
     let hla_do_close_suffix = hla_condition_parser()
         .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
-        .or(hla_legacy_n_flag_close_stmt_parser())
+        .or(hla_n_flag_close_stmt_parser())
         .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
         .or(
             chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
@@ -975,18 +975,18 @@ where
     let hla_x_assign_stmt = hla_x_assign_stmt_parser();
     let hla_x_increment_stmt = hla_x_increment_stmt_parser();
     let hla_store_from_a_stmt = hla_store_from_a_stmt_parser();
-    let legacy_assign_stmt = legacy_assign_stmt_parser();
-    let legacy_store_stmt = legacy_store_stmt_parser();
-    let legacy_alu_stmt = legacy_alu_stmt_parser();
-    let legacy_incdec_stmt = legacy_incdec_stmt_parser();
-    let legacy_shift_stmt = legacy_shift_stmt_parser();
-    let legacy_flag_stmt = legacy_flag_stmt_parser();
-    let legacy_stack_stmt = legacy_stack_stmt_parser();
-    let legacy_flow_stmt = legacy_flow_stmt_parser();
-    let legacy_nop_stmt = legacy_nop_stmt_parser();
-    let legacy_chain_stmt = legacy_chain_stmt_parser();
-    let legacy_bare_rbrace_stmt = legacy_bare_rbrace_stmt_parser();
-    let legacy_discard_stmt = legacy_discard_stmt_parser();
+    let assign_stmt = assign_stmt_parser();
+    let store_stmt = store_stmt_parser();
+    let alu_stmt = alu_stmt_parser();
+    let incdec_stmt = incdec_stmt_parser();
+    let shift_stmt = shift_stmt_parser();
+    let flag_stmt = flag_stmt_parser();
+    let stack_stmt = stack_stmt_parser();
+    let flow_stmt = flow_stmt_parser();
+    let nop_stmt = nop_stmt_parser();
+    let chain_stmt = chain_stmt_parser();
+    let bare_rbrace_stmt = bare_rbrace_stmt_parser();
+    let discard_stmt = discard_stmt_parser();
 
     let mnemonic = ident_parser().try_map(|mnemonic, span| {
         if mnemonic == ".byte" {
@@ -1038,23 +1038,23 @@ where
         .or(byte_stmt)
         .or(hla_wait_stmt)
         .or(hla_do_close_stmt)
-        .or(legacy_bare_rbrace_stmt)
+        .or(bare_rbrace_stmt)
         .or(hla_condition_seed_stmt)
         .or(hla_do_open_stmt)
         .or(hla_x_increment_stmt)
         .or(hla_x_assign_stmt)
         .or(hla_store_from_a_stmt)
-        .or(legacy_chain_stmt)
-        .or(legacy_assign_stmt)
-        .or(legacy_store_stmt)
-        .or(legacy_alu_stmt)
-        .or(legacy_incdec_stmt)
-        .or(legacy_shift_stmt)
-        .or(legacy_flag_stmt)
-        .or(legacy_stack_stmt)
-        .or(legacy_flow_stmt)
-        .or(legacy_nop_stmt)
-        .or(legacy_discard_stmt)
+        .or(chain_stmt)
+        .or(assign_stmt)
+        .or(store_stmt)
+        .or(alu_stmt)
+        .or(incdec_stmt)
+        .or(shift_stmt)
+        .or(flag_stmt)
+        .or(stack_stmt)
+        .or(flow_stmt)
+        .or(nop_stmt)
+        .or(discard_stmt)
         .or(instruction)
         .boxed()
 }
@@ -1136,7 +1136,7 @@ where
         .ignore_then(expr_parser())
         .map(HlaRhs::Immediate);
 
-    let value = legacy_operand_expr_parser().map(|parsed| {
+    let value = operand_expr_parser().map(|parsed| {
         if parsed.addr_mode == OperandAddrMode::Direct
             && parsed.index.is_none()
             && !matches!(parsed.expr, Expr::Ident(_))
@@ -1175,7 +1175,7 @@ where
         })
 }
 
-fn legacy_chain_stmt_parser<'src, I>()
+fn chain_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1188,7 +1188,7 @@ where
         .to(Stmt::Empty)
 }
 
-fn legacy_assign_stmt_parser<'src, I>()
+fn assign_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1197,7 +1197,7 @@ where
         TokenKind::Ident(value) if is_register_name(&value) => value
     }
     .then_ignore(just(TokenKind::Eq))
-    .then(legacy_operand_expr_parser())
+    .then(operand_expr_parser())
     .map(|(lhs, parsed)| {
         let lhs = lhs.to_ascii_lowercase();
         let rhs_ident = match &parsed.expr {
@@ -1249,12 +1249,12 @@ where
     })
 }
 
-fn legacy_store_stmt_parser<'src, I>()
+fn store_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    legacy_operand_expr_parser()
+    operand_expr_parser()
         .then_ignore(just(TokenKind::Eq))
         .then(chumsky::select! {
             TokenKind::Ident(value) if value.eq_ignore_ascii_case("a")
@@ -1282,7 +1282,7 @@ where
         })
 }
 
-fn legacy_operand_expr_parser<'src, I>()
+fn operand_expr_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, ParsedOperandExpr, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1339,7 +1339,7 @@ where
     parenthesized.or(plain)
 }
 
-fn legacy_alu_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+fn alu_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1348,7 +1348,7 @@ where
     }
     .then_ignore(just(TokenKind::Amp))
     .then_ignore(just(TokenKind::Question))
-    .ignore_then(legacy_operand_expr_parser())
+    .ignore_then(operand_expr_parser())
     .map(|parsed| {
         let operand = parsed_operand_to_operand(parsed);
         instruction_stmt("bit", Some(operand))
@@ -1365,7 +1365,7 @@ where
             .or(just(TokenKind::Pipe).to("ora"))
             .or(just(TokenKind::Caret).to("eor")),
     )
-    .then(legacy_operand_expr_parser())
+    .then(operand_expr_parser())
     .map(|(mnemonic, parsed)| {
         let operand = parsed_operand_to_operand(parsed);
         instruction_stmt(mnemonic, Some(operand))
@@ -1375,7 +1375,7 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("y") => value
     }
     .then_ignore(just(TokenKind::Question))
-    .then(legacy_operand_expr_parser())
+    .then(operand_expr_parser())
     .map(|(lhs, parsed)| {
         let mnemonic = if lhs.eq_ignore_ascii_case("x") {
             "cpx"
@@ -1389,7 +1389,7 @@ where
     a_bit.or(a_alu).or(xy_cmp)
 }
 
-fn legacy_incdec_stmt_parser<'src, I>()
+fn incdec_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1473,7 +1473,7 @@ where
     indexed_inc.or(indexed_dec).or(inc).or(dec)
 }
 
-fn legacy_shift_stmt_parser<'src, I>()
+fn shift_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1529,7 +1529,7 @@ where
     indexed.or(plain)
 }
 
-fn legacy_flag_stmt_parser<'src, I>()
+fn flag_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1554,7 +1554,7 @@ where
         )
 }
 
-fn legacy_stack_stmt_parser<'src, I>()
+fn stack_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1584,7 +1584,7 @@ where
         })
 }
 
-fn legacy_flow_stmt_parser<'src, I>()
+fn flow_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1659,7 +1659,7 @@ where
         .or(break_repeat_stmt)
 }
 
-fn legacy_nop_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+fn nop_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1669,7 +1669,7 @@ where
         .or(just(TokenKind::Percent).to(instruction_stmt("nop", None)))
 }
 
-fn legacy_discard_stmt_parser<'src, I>()
+fn discard_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1690,7 +1690,7 @@ where
         .or(just(TokenKind::Lt).to(()))
         .or(just(TokenKind::Gt).to(()))
         .or(chumsky::select! {
-            TokenKind::Ident(value) if is_legacy_discard_keyword(&value) => ()
+            TokenKind::Ident(value) if is_discard_keyword(&value) => ()
         })
         .or(just(TokenKind::Question).to(()))
         .then(line_tail_parser())
@@ -1699,7 +1699,7 @@ where
     else_clause.or(generic)
 }
 
-fn legacy_bare_rbrace_stmt_parser<'src, I>()
+fn bare_rbrace_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1781,7 +1781,7 @@ fn expr_is_address_like(expr: &Expr) -> bool {
     }
 }
 
-fn is_legacy_discard_keyword(value: &str) -> bool {
+fn is_discard_keyword(value: &str) -> bool {
     value.eq_ignore_ascii_case("else")
         || value.eq_ignore_ascii_case("always")
         || value.eq_ignore_ascii_case("never")
@@ -1809,7 +1809,7 @@ where
         .or(just(TokenKind::Gt).to(HlaCompareOp::Gt))
 }
 
-fn hla_legacy_n_flag_close_stmt_parser<'src, I>()
+fn hla_n_flag_close_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1832,7 +1832,7 @@ where
 {
     chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => value }
         .then_ignore(just(TokenKind::Question))
-        .then(legacy_operand_expr_parser())
+        .then(operand_expr_parser())
         .map(|(_ident, parsed)| {
             if parsed.index.is_some() || parsed.addr_mode != OperandAddrMode::Direct {
                 instruction_stmt("cmp", Some(parsed_operand_to_operand(parsed)))
@@ -2376,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_hla_do_close_with_legacy_n_flag_suffix() {
+    fn parses_hla_do_close_with_n_flag_suffix() {
         let source = "main {\n  {\n    a=READY\n  } n-?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
@@ -2392,7 +2392,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_hla_do_close_with_legacy_n_plus_suffix() {
+    fn parses_hla_do_close_with_n_plus_suffix() {
         let source = "main {\n  {\n    a=READY\n  } n+?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
@@ -2436,7 +2436,7 @@ mod tests {
         assert!(matches!(block.entries[1].node, NamedDataEntry::String(_)));
         assert!(matches!(
             block.entries[2].node,
-            NamedDataEntry::LegacyBytes(_)
+            NamedDataEntry::Bytes(_)
         ));
         assert!(matches!(block.entries[3].node, NamedDataEntry::Bytes(_)));
         assert!(matches!(
@@ -2446,7 +2446,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_main_symbol_in_legacy_address_byte_entries() {
+    fn parses_main_symbol_in_address_byte_entries() {
         let source = "data vectors {\n  &<main &>main\n}\nmain {\n  return\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
@@ -2456,8 +2456,8 @@ mod tests {
         };
         assert_eq!(block.entries.len(), 1);
 
-        let NamedDataEntry::LegacyBytes(values) = &block.entries[0].node else {
-            panic!("expected legacy bytes entry");
+        let NamedDataEntry::Bytes(values) = &block.entries[0].node else {
+            panic!("expected bytes entry");
         };
         assert_eq!(values.len(), 2);
         assert!(matches!(
@@ -2477,7 +2477,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_legacy_operand_modes_with_y_and_indirect_forms() {
+    fn parses_operand_modes_with_y_and_indirect_forms() {
         let source = "var ptr = 0x20\nmain {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);

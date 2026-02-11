@@ -36,3 +36,22 @@ data text_data {
   hello: "HELLO WORLD" $00
 }
 ```
+
+## Register-Width-Aware Syntax
+
+Functions declare their expected register widths with `@a8`/`@a16` and
+`@i8`/`@i16`.  The compiler sizes immediate operands correctly, emits
+`REP`/`SEP` at call sites automatically, and optimizes away redundant mode
+switches:
+
+```k65
+func draw @a16 @i16 {
+  lda #$1234          // 16-bit immediate -- sized automatically
+}
+
+main {
+  call draw           // REP #$30 emitted before JSR
+}
+```
+
+See [docs/register-width-aware-syntax.md](docs/register-width-aware-syntax.md) for full details.

@@ -1,5 +1,4 @@
 use std::collections::{BTreeSet, HashMap};
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -839,30 +838,22 @@ fn server_capabilities() -> ServerCapabilities {
 
 #[allow(deprecated)]
 fn determine_workspace_root(params: &InitializeParams) -> Result<PathBuf> {
-    let root_from_uri = params.root_uri.as_ref().and_then(uri_to_file_path);
-    let root_from_workspace_folders = params.workspace_folders.as_ref().and_then(|folders| {
-        folders
-            .first()
-            .and_then(|folder| uri_to_file_path(&folder.uri))
-    });
-    let root_from_root_path = params.root_path.as_ref().map(PathBuf::from);
-    let cwd = env::current_dir().context("failed to resolve current directory")?;
-
-    let probe = root_from_uri
-        .or(root_from_workspace_folders)
-        .or(root_from_root_path)
-        .unwrap_or(cwd);
-    Ok(find_project_root(&probe).unwrap_or(probe))
+    workspace_root_from_initialize_params(params).ok_or_else(|| {
+        anyhow::anyhow!(
+            "initialize request did not include a filesystem workspace root (workspaceFolders/rootUri/rootPath)"
+        )
+    })
 }
 
-fn find_project_root(start: &Path) -> Option<PathBuf> {
-    for dir in start.ancestors() {
-        let manifest = dir.join(PROJECT_MANIFEST);
-        if manifest.is_file() {
-            return Some(dir.to_path_buf());
-        }
-    }
-    None
+#[allow(deprecated)]
+fn workspace_root_from_initialize_params(params: &InitializeParams) -> Option<PathBuf> {
+    params
+        .workspace_folders
+        .as_ref()
+        .and_then(|folders| folders.first())
+        .and_then(|folder| uri_to_file_path(&folder.uri))
+        .or_else(|| params.root_uri.as_ref().and_then(uri_to_file_path))
+        .or_else(|| params.root_path.as_ref().map(PathBuf::from))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1516,6 +1507,17 @@ fn make_document_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn initialize_params(value: serde_json::Value) -> InitializeParams {
+        serde_json::from_value(value).expect("valid initialize params")
+    }
+
+    fn file_uri(path: &Path) -> String {
+        url::Url::from_file_path(path)
+            .expect("file uri")
+            .to_string()
+    }
 
     #[test]
     fn line_index_round_trip_handles_utf16_columns() {
@@ -1596,5 +1598,41 @@ mod tests {
 
         assert!(!in_symbol_completion_context(text, statement_start_offset));
         assert!(in_symbol_completion_context(text, operand_offset));
+    }
+
+    #[test]
+    fn workspace_root_prefers_first_workspace_folder() {
+        let temp = std::env::temp_dir();
+        let workspace_root = temp.join("k816-lsp-workspace");
+        let root_uri = temp.join("k816-lsp-root-uri");
+
+        let params = initialize_params(json!({
+            "capabilities": {},
+            "rootUri": file_uri(&root_uri),
+            "workspaceFolders": [
+                {
+                    "uri": file_uri(&workspace_root),
+                    "name": "workspace"
+                }
+            ]
+        }));
+
+        let resolved = determine_workspace_root(&params).expect("workspace root");
+        assert_eq!(resolved, workspace_root);
+    }
+
+    #[test]
+    fn workspace_root_errors_when_client_omits_root_hints() {
+        let params = initialize_params(json!({
+            "capabilities": {}
+        }));
+
+        let error = determine_workspace_root(&params).expect_err("missing workspace root");
+        assert!(
+            error
+                .to_string()
+                .contains("workspaceFolders/rootUri/rootPath"),
+            "unexpected error: {error}"
+        );
     }
 }

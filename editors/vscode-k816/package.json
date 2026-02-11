@@ -1,0 +1,99 @@
+{
+  "name": "vscode-k816",
+  "displayName": "k816 Language Support",
+  "description": "VS Code extension wiring the k816 Language Server Protocol implementation.",
+  "version": "0.0.1",
+  "publisher": "k816-dev",
+  "license": "0BSD",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:k65",
+    "onCommand:k816.restartServer"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "k65",
+        "extensions": [
+          ".k65"
+        ],
+        "aliases": [
+          "K65",
+          "k65"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "k65",
+        "scopeName": "source.k65",
+        "path": "./syntaxes/k65.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "k816.restartServer",
+        "title": "K816: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "k816",
+      "properties": {
+        "k816.server.path": {
+          "type": "string",
+          "default": "k816",
+          "description": "Path to the k816 executable used to start the language server."
+        },
+        "k816.server.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "description": "Arguments passed to the k816 executable when starting the language server."
+        },
+        "k816.server.env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra environment variables merged into the language server process environment."
+        },
+        "k816.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace level forwarded to the language server client."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.96.0",
+    "@vscode/vsce": "^2.27.0",
+    "typescript": "^5.7.3"
+  }
+}

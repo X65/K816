@@ -1,20 +1,22 @@
 // Test function mode contracts and call-site bridging
 //
-// - func with @a16 contract emits REP #$20 at entry and call site
-// - func with @a8 @i8 contract emits SEP #$30 at entry and call site
-// - func with @a16 @i16 contract emits REP #$30 (folded)
-// - func with no contract ("uncolored") emits nothing extra at entry or call site
+// - func with @a16 contract: caller emits REP #$20 before JSR
+// - func with @a8 @i8 contract: caller emits SEP #$30 before JSR
+// - func with @a16 @i16 contract: caller emits REP #$30 (folded)
+// - func with no contract ("uncolored"): no REP/SEP at call site
 
 func wide_a @a16 {
-  nop
+  lda #1
 }
 
 func narrow_all @a8 @i8 {
-  nop
+  lda #1
+  ldx #1
 }
 
 func wide_all @a16 @i16 {
-  nop
+  lda #1
+  ldx #1
 }
 
 func plain {

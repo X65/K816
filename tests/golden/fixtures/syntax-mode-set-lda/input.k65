@@ -1,0 +1,20 @@
+// Test mode switching with width-dependent lda immediate
+//
+// @a16: lda #1 emits 3 bytes (16-bit immediate)
+// @a8:  lda #1 emits 2 bytes (8-bit immediate)
+// @i16/@i8: only affect index width, lda stays at current accumulator width
+
+main {
+  @a16
+  lda #1
+  ldy #1
+  @a8
+  lda #1
+  ldy #1
+  @i16
+  lda #1
+  ldy #1
+  @i8
+  lda #1
+  ldy #1
+}

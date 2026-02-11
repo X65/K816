@@ -1,5 +1,6 @@
-// Test @a8/@a16/@i8/@i16 mode set syntax
-// Each generates a REP or SEP instruction
+// Test dead mode elimination: @a8/@a16/@i8/@i16 followed by non-width-dependent
+// instructions are removed. Colored functions with no width-dependent body are
+// folded to colorless, so call-site bridging is also eliminated.
 
 main {
   @a16
@@ -9,5 +10,21 @@ main {
   @i16
   nop
   @i8
+  nop
+  @a8 @i8
+  call uncolored
+  call colored_a
+  call colored_i
+}
+
+func uncolored {
+  nop
+}
+
+func colored_a @a16 {
+  nop
+}
+
+func colored_i @i16 {
   nop
 }

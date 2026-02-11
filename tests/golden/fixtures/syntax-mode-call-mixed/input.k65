@@ -1,15 +1,17 @@
 // Test mixed mode contracts: @a8, @i8, far func, partial contracts
 
 far func wide_all @a16 @i16 {
-  nop
+  lda #1
+  ldx #1
 }
 
 func narrow_all @a8 @i8 {
-  nop
+  lda #1
+  ldx #1
 }
 
 func only_index @i16 {
-  nop
+  ldx #1
 }
 
 main {

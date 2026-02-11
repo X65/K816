@@ -5,35 +5,36 @@
 // Nested blocks restore correctly
 
 main @a8 @i8 {
-  nop
+  lda #1
 
   // Prefix block: switch to a16, restore to a8 on exit
   @a16 {
-    nop
+    lda #1
   }
-  nop
+  lda #1
 
   // Prefix block with both: switch to a16 i16, restore to a8 i8 on exit
   @a16 @i16 {
-    nop
+    lda #1
+    ldx #1
   }
-  nop
+  lda #1
 
   // Inside block switch: block enters a16, inner changes to a8,
   // block restore undoes the prefix (a16->a8)
   @a16 {
     @a8
-    nop
+    lda #1
   }
-  nop
+  lda #1
 
   // Nested blocks: outer sets a16, inner sets i16, both restore
   @a16 {
-    nop
+    lda #1
     @i16 {
-      nop
+      ldx #1
     }
-    nop
+    lda #1
   }
-  nop
+  lda #1
 }

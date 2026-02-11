@@ -16,7 +16,7 @@ pub fn expand_file(file: &File, source_id: SourceId) -> Result<File, Vec<Diagnos
     }
 
     if diagnostics.is_empty() {
-        Ok(File { items })
+        Ok(File { mode_default: file.mode_default, items })
     } else {
         Err(diagnostics)
     }

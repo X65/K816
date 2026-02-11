@@ -1,0 +1,14 @@
+// Test module-level default coloring.
+//
+// @a16 at module level sets the default for all uncolored functions.
+// Uncolored functions inherit @a16, so lda #1 uses 16-bit immediate.
+
+@a16
+
+main {
+  lda #1
+}
+
+func helper {
+  lda #2
+}

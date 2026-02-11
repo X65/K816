@@ -71,6 +71,7 @@ pub fn emit_object(
     let mut current_segment = "default".to_string();
     let mut current_function: Option<String> = None;
     let mut function_instruction_sites = Vec::new();
+    let mut function_initial_modes: FxHashMap<(String, String), (bool, bool)> = FxHashMap::default();
     let mut data_string_fragments = Vec::new();
     let mut m_wide: Option<bool> = None; // accumulator width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
     let mut x_wide: Option<bool> = None; // index width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
@@ -104,6 +105,10 @@ pub fn emit_object(
                 let default = if *is_entry { Some(false) } else { None };
                 m_wide = mode_contract.a_width.map(|w| w == crate::ast::RegWidth::W16).or(default);
                 x_wide = mode_contract.i_width.map(|w| w == crate::ast::RegWidth::W16).or(default);
+                function_initial_modes.insert(
+                    (current_segment.clone(), name.clone()),
+                    (m_wide.unwrap_or(false), x_wide.unwrap_or(false)),
+                );
             }
             Op::FunctionEnd => {
                 current_function = None;
@@ -436,13 +441,19 @@ pub fn emit_object(
 
     let function_disassembly = grouped_disassembly
         .into_iter()
-        .map(
-            |((section, function), instruction_offsets)| FunctionDisassembly {
+        .map(|((section, function), instruction_offsets)| {
+            let (m_wide, x_wide) = function_initial_modes
+                .get(&(section.clone(), function.clone()))
+                .copied()
+                .unwrap_or((false, false));
+            FunctionDisassembly {
                 section,
                 function,
                 instruction_offsets,
-            },
-        )
+                m_wide,
+                x_wide,
+            }
+        })
         .collect();
     data_string_fragments.sort_by(|lhs, rhs| {
         lhs.section

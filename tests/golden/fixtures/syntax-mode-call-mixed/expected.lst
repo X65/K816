@@ -5,8 +5,8 @@
 
 
 [disasm obj#0 default::wide_all]
-000000: A9 01       lda #$01
-000003: A2 01       ldx #$01
+000000: A9 01 00    lda #$0001
+000003: A2 01 00    ldx #$0001
 000006: 6B          rtl
 
 [disasm obj#0 default::narrow_all]
@@ -15,7 +15,7 @@
 00000B: 60          rts
 
 [disasm obj#0 default::only_index]
-00000C: A2 01       ldx #$01
+00000C: A2 01 00    ldx #$0001
 00000F: 60          rts
 
 [disasm obj#0 default::main]

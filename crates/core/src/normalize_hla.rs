@@ -8,7 +8,7 @@ pub fn normalize_file(file: &File) -> Result<File, Vec<Diagnostic>> {
         items.push(Spanned::new(normalize_item(&item.node), item.span));
     }
 
-    Ok(File { items })
+    Ok(File { mode_default: file.mode_default, items })
 }
 
 fn normalize_item(item: &Item) -> Item {

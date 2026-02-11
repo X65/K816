@@ -306,16 +306,39 @@ where
         .or(end().ignored());
     let recover_item = item.recover_with(skip_then_retry_until(any().ignored(), boundary));
 
+    let mode_token = just(TokenKind::ModeA8)
+        .to((Some(RegWidth::W8), None))
+        .or(just(TokenKind::ModeA16).to((Some(RegWidth::W16), None)))
+        .or(just(TokenKind::ModeI8).to((None, Some(RegWidth::W8))))
+        .or(just(TokenKind::ModeI16).to((None, Some(RegWidth::W16))));
+    let module_mode = mode_token
+        .then_ignore(line_sep_parser().repeated())
+        .repeated()
+        .collect::<Vec<_>>()
+        .map(|annotations| {
+            let mut contract = ModeContract::default();
+            for (a, i) in annotations {
+                if let Some(a) = a {
+                    contract.a_width = Some(a);
+                }
+                if let Some(i) = i {
+                    contract.i_width = Some(i);
+                }
+            }
+            contract
+        });
+
     separators
         .clone()
-        .ignore_then(
+        .ignore_then(module_mode)
+        .then(
             recover_item
                 .then_ignore(separators.clone())
                 .repeated()
                 .collect::<Vec<_>>(),
         )
         .then_ignore(end())
-        .map(|items| File { items })
+        .map(|(mode_default, items)| File { mode_default, items })
 }
 
 fn item_parser<'src, I>(

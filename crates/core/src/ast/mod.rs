@@ -23,6 +23,7 @@ pub struct ModeContract {
 
 #[derive(Debug, Clone, Default)]
 pub struct File {
+    pub mode_default: ModeContract,
     pub items: Vec<Spanned<Item>>,
 }
 

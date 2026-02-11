@@ -1,0 +1,14 @@
+[default]
+000000: C2 30 A9 01 00 A2 01 00 60 A9 01 A2 01 60
+
+
+[disasm obj#0 default::main]
+000000: C2 30       rep #$30
+000002: A9 01 00    lda #$0001
+000005: A2 01 00    ldx #$0001
+000008: 60          rts
+
+[disasm obj#0 default::narrow]
+000009: A9 01       lda #$01
+00000B: A2 01       ldx #$01
+00000D: 60          rts

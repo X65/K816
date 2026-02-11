@@ -1352,8 +1352,8 @@ fn format_function_disassembly_block(
         function.section, function.function
     ));
 
-    let mut m_wide = false;
-    let mut x_wide = false;
+    let mut m_wide = function.m_wide;
+    let mut x_wide = function.x_wide;
 
     for offset in &function.instruction_offsets {
         let (memory_name, address) =

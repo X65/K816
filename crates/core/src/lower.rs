@@ -97,18 +97,34 @@ pub fn lower(
                     }
                 }
 
+                // Use sema's merged contract (includes module defaults).
+                let effective_contract = sema
+                    .functions
+                    .get(&block.name)
+                    .map(|meta| meta.mode_contract)
+                    .unwrap_or(block.mode_contract);
+
                 ops.push(Spanned::new(Op::FunctionStart {
                     name: scope.clone(),
-                    mode_contract: block.mode_contract,
+                    mode_contract: effective_contract,
                     is_entry: block.kind == crate::ast::BlockKind::Main,
                 }, label_span));
                 ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
-                // Mode contract is enforced at call sites, not at function entry.
-                // Just update the tracker so the body knows its assumed mode.
-                if let Some(a) = block.mode_contract.a_width {
+                // For entry points, emit mode setup at function entry since
+                // there is no call site to bridge from. The CPU defaults to
+                // 8-bit mode, so only emit Rep for 16-bit contracts.
+                if block.kind == BlockKind::Main {
+                    if effective_contract.a_width == Some(RegWidth::W16) {
+                        ops.push(Spanned::new(Op::Rep(0x20), label_span));
+                    }
+                    if effective_contract.i_width == Some(RegWidth::W16) {
+                        ops.push(Spanned::new(Op::Rep(0x10), label_span));
+                    }
+                }
+                if let Some(a) = effective_contract.a_width {
                     block_ctx.mode.a_width = Some(a);
                 }
-                if let Some(i) = block.mode_contract.i_width {
+                if let Some(i) = effective_contract.i_width {
                     block_ctx.mode.i_width = Some(i);
                 }
                 for stmt in block.body.iter().skip(body_start) {

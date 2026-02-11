@@ -1,0 +1,17 @@
+// Test that module-level defaults are eliminated by dead mode optimization
+// when no width-dependent instructions exist.
+//
+// @a16 @i16 at module level, but all functions only use nop (not width-dependent).
+// Dead mode elimination removes all REP/SEP and clears contracts.
+
+@a16
+@i16
+
+main {
+  nop
+  call helper
+}
+
+func helper {
+  nop
+}

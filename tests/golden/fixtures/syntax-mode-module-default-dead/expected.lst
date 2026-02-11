@@ -1,0 +1,12 @@
+[default]
+000000: EA 20 05 00 60 EA 60
+
+
+[disasm obj#0 default::main]
+000000: EA          nop
+000001: 20 05 00    jsr $0005
+000004: 60          rts
+
+[disasm obj#0 default::helper]
+000005: EA          nop
+000006: 60          rts

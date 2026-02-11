@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 3;
+const PAYLOAD_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -20,6 +20,10 @@ pub struct FunctionDisassembly {
     pub section: String,
     pub function: String,
     pub instruction_offsets: Vec<u32>,
+    /// Initial accumulator width for disassembly: true = 16-bit, false = 8-bit.
+    pub m_wide: bool,
+    /// Initial index register width for disassembly: true = 16-bit, false = 8-bit.
+    pub x_wide: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -189,6 +193,9 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
     for function in &object.function_disassembly {
         write_string(&mut out, &function.section)?;
         write_string(&mut out, &function.function)?;
+        let mode_flags: u8 = (if function.m_wide { 0x20 } else { 0 })
+            | (if function.x_wide { 0x10 } else { 0 });
+        out.push(mode_flags);
         write_u32(&mut out, function.instruction_offsets.len() as u32);
         for offset in &function.instruction_offsets {
             write_u32(&mut out, *offset);
@@ -351,6 +358,12 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
     for _ in 0..function_disassembly_count {
         let section = rd.read_string()?;
         let function = rd.read_string()?;
+        let (m_wide, x_wide) = if version >= 4 {
+            let flags = rd.read_u8()?;
+            (flags & 0x20 != 0, flags & 0x10 != 0)
+        } else {
+            (false, false)
+        };
         let offset_count = rd.read_u32()? as usize;
         let mut instruction_offsets = Vec::with_capacity(offset_count);
         for _ in 0..offset_count {
@@ -360,6 +373,8 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
             section,
             function,
             instruction_offsets,
+            m_wide,
+            x_wide,
         });
     }
 
@@ -739,6 +754,8 @@ mod tests {
                 section: "default".to_string(),
                 function: "main".to_string(),
                 instruction_offsets: vec![0],
+                m_wide: false,
+                x_wide: false,
             }],
             data_string_fragments: vec![DataStringFragment {
                 section: "default".to_string(),

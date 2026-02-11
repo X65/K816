@@ -43,7 +43,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 &mut diagnostics,
             ),
             Item::CodeBlock(block) => {
-                collect_function(block, item.span, &mut model, &mut diagnostics);
+                collect_function(block, item.span, &file.mode_default, &mut model, &mut diagnostics);
                 for stmt in &block.body {
                     if let Stmt::Var(var) = &stmt.node {
                         collect_var(
@@ -78,6 +78,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
 fn collect_function(
     block: &CodeBlock,
     span: Span,
+    module_default: &ModeContract,
     model: &mut SemanticModel,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -89,13 +90,19 @@ fn collect_function(
         return;
     }
 
+    // Merge: function-level explicit annotations take priority, module default fills gaps.
+    let merged_contract = ModeContract {
+        a_width: block.mode_contract.a_width.or(module_default.a_width),
+        i_width: block.mode_contract.i_width.or(module_default.i_width),
+    };
+
     model.functions.insert(
         block.name.clone(),
         FunctionMeta {
             is_far: block.is_far,
             is_naked: block.is_naked,
             is_inline: block.is_inline,
-            mode_contract: block.mode_contract,
+            mode_contract: merged_contract,
         },
     );
 }

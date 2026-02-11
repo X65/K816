@@ -1,0 +1,17 @@
+// Test that function-level annotations override module defaults.
+//
+// Module sets @a16 @i16, but func narrow overrides with @a8 @i8.
+// main inherits module default @a16 @i16.
+
+@a16
+@i16
+
+main {
+  lda #1
+  ldx #1
+}
+
+func narrow @a8 @i8 {
+  lda #1
+  ldx #1
+}

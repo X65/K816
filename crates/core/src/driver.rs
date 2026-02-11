@@ -16,7 +16,7 @@ use crate::span::SourceMap;
 
 #[derive(Debug, Clone)]
 pub struct CompileOutput {
-    pub banks: IndexMap<String, Vec<u8>>,
+    pub segments: IndexMap<String, Vec<u8>>,
     pub listing: String,
     pub warnings: Vec<Diagnostic>,
     pub rendered_warnings: String,
@@ -124,7 +124,7 @@ pub fn compile_source_with_fs_and_options(
         emit(&hir).map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
     Ok(CompileOutput {
-        banks: emit_output.banks,
+        segments: emit_output.segments,
         listing: emit_output.listing,
         warnings,
         rendered_warnings,

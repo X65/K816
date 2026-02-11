@@ -66,8 +66,6 @@ pub struct SegmentRule {
     pub optional: bool,
     #[serde(default)]
     pub segment: Option<String>,
-    #[serde(default, alias = "bank")]
-    pub legacy_bank: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -197,7 +195,6 @@ pub fn default_stub_config() -> LinkerConfig {
             offset: None,
             optional: false,
             segment: None,
-            legacy_bank: None,
         }],
         symbols: Vec::new(),
         output: OutputSpec::default(),
@@ -1433,7 +1430,7 @@ fn select_segment_rule<'a>(config: &'a LinkerConfig, segment: &str) -> Result<&'
 
 impl SegmentRule {
     fn segment_name(&self) -> Option<&str> {
-        self.segment.as_deref().or(self.legacy_bank.as_deref())
+        self.segment.as_deref()
     }
 
     fn matches_named_segment(&self, segment: &str) -> bool {
@@ -1539,7 +1536,6 @@ mod tests {
             offset: None,
             optional: false,
             segment: segment.map(std::string::ToString::to_string),
-            legacy_bank: None,
         }
     }
 
@@ -1932,8 +1928,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("default".to_string()),
-                legacy_bank: None,
-            },
+                },
             SegmentRule {
                 id: "AUX".to_string(),
                 load: "AUX".to_string(),
@@ -1943,8 +1938,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("aux".to_string()),
-                legacy_bank: None,
-            },
+                },
         ];
 
         let mut sections = IndexMap::new();
@@ -1999,8 +1993,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("default".to_string()),
-                legacy_bank: None,
-            },
+                },
             SegmentRule {
                 id: "INFO".to_string(),
                 load: "MAIN".to_string(),
@@ -2010,8 +2003,7 @@ mod tests {
                 offset: None,
                 optional: false,
                 segment: Some("info".to_string()),
-                legacy_bank: None,
-            },
+                },
         ];
 
         let mut sections = IndexMap::new();

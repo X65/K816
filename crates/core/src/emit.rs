@@ -14,7 +14,7 @@ use crate::span::Span;
 
 #[derive(Debug, Clone)]
 pub struct EmitOutput {
-    pub banks: IndexMap<String, Vec<u8>>,
+    pub segments: IndexMap<String, Vec<u8>>,
     pub listing: String,
 }
 
@@ -432,13 +432,13 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             .is_some_and(|state| state.bytes.is_empty());
 
     let mut listing_blocks = Vec::new();
-    let mut output_banks = IndexMap::new();
+    let mut output_segments = IndexMap::new();
     for (segment_name, state) in &segments {
         if skip_default_empty && segment_name == "default" {
             continue;
         }
         listing_blocks.push(format_listing_block(segment_name, &state.bytes));
-        output_banks.insert(segment_name.clone(), state.bytes.clone());
+        output_segments.insert(segment_name.clone(), state.bytes.clone());
     }
     listing_blocks.extend(format_disassembly_blocks(
         &segments,
@@ -447,7 +447,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
     ));
 
     Ok(EmitOutput {
-        banks: output_banks,
+        segments: output_segments,
         listing: listing_blocks.join("\n\n"),
     })
 }
@@ -600,9 +600,9 @@ fn write_literal_at(
     }
 }
 
-fn format_listing_block(bank_name: &str, bytes: &[u8]) -> String {
+fn format_listing_block(segment_name: &str, bytes: &[u8]) -> String {
     let mut out = String::new();
-    out.push_str(&format!("[{bank_name}]\n"));
+    out.push_str(&format!("[{segment_name}]\n"));
 
     if bytes.is_empty() {
         out.push_str("000000: <empty>");

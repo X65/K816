@@ -43,16 +43,6 @@ pub fn parse_with_warnings(
     let preprocessed = preprocess_source(source_text);
     let source_text = preprocessed.as_str();
     let tokens = lex(source_id, source_text)?;
-    let bank_spans = tokens
-        .iter()
-        .filter_map(|token| {
-            if matches!(token.kind, TokenKind::Bank) {
-                Some(token.span)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -72,7 +62,7 @@ pub fn parse_with_warnings(
 
     if diagnostics.is_empty() {
         let file = output.unwrap_or_default();
-        let warnings = collect_parser_warnings(&file, &bank_spans);
+        let warnings = collect_parser_warnings(&file);
         Ok(ParseOutput { file, warnings })
     } else {
         Err(diagnostics)
@@ -204,15 +194,8 @@ fn preprocess_source(source_text: &str) -> String {
     text
 }
 
-fn collect_parser_warnings(file: &File, bank_spans: &[Span]) -> Vec<Diagnostic> {
+fn collect_parser_warnings(file: &File) -> Vec<Diagnostic> {
     let mut warnings = Vec::new();
-
-    for span in bank_spans {
-        warnings.push(
-            Diagnostic::warning(*span, "`bank` keyword is deprecated; use `segment` instead")
-                .with_help("replace `bank <name>` with `segment <name>`"),
-        );
-    }
 
     for item in &file.items {
         let Item::CodeBlock(block) = &item.node else {
@@ -342,7 +325,6 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let segment_item = just(TokenKind::Segment)
-        .or(just(TokenKind::Bank))
         .ignore_then(ident_parser())
         .map(|name| Item::Segment(SegmentDecl { name }));
 
@@ -364,16 +346,6 @@ where
 
     let eval_block_item =
         chumsky::select! { TokenKind::Eval(_) => () }.to(Item::Statement(Stmt::Empty));
-
-    let compat_const_item =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("const") => () }
-            .then(line_tail_parser())
-            .to(Item::Statement(Stmt::Empty));
-
-    let compat_evalfunc_item =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("evalfunc") => () }
-            .then(line_tail_parser())
-            .to(Item::Statement(Stmt::Empty));
 
     let image_binary_var_item = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("image") || value.eq_ignore_ascii_case("binary") => ()
@@ -400,8 +372,6 @@ where
 
     preproc_item
         .or(eval_block_item)
-        .or(compat_const_item)
-        .or(compat_evalfunc_item)
         .or(image_binary_var_item)
         .or(segment_item)
         .or(var_item)
@@ -599,7 +569,6 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let segment_entry = just(TokenKind::Segment)
-        .or(just(TokenKind::Bank))
         .ignore_then(ident_parser())
         .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
 
@@ -890,7 +859,6 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let segment_stmt = just(TokenKind::Segment)
-        .or(just(TokenKind::Bank))
         .ignore_then(ident_parser())
         .map(|name| Stmt::Segment(SegmentDecl { name }));
 
@@ -2039,7 +2007,6 @@ fn rich_pattern_message(pattern: &RichPattern<'_, TokenKind>) -> String {
 fn token_kind_message(token: &TokenKind) -> String {
     match token {
         TokenKind::Segment => "'segment'".to_string(),
-        TokenKind::Bank => "'bank'".to_string(),
         TokenKind::Var => "'var'".to_string(),
         TokenKind::Func => "'func'".to_string(),
         TokenKind::Main => "'main'".to_string(),
@@ -2169,33 +2136,6 @@ mod tests {
         let source = "far func target {\n nop\n}\nmain {\n call target\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
-    }
-
-    #[test]
-    fn parses_segment_and_bank_alias() {
-        let source = "segment code\nbank legacy\n";
-        let file = parse(SourceId(0), source).expect("parse");
-        assert_eq!(file.items.len(), 2);
-
-        let Item::Segment(first) = &file.items[0].node else {
-            panic!("expected segment item");
-        };
-        assert_eq!(first.name, "code");
-
-        let Item::Segment(second) = &file.items[1].node else {
-            panic!("expected segment item from bank alias");
-        };
-        assert_eq!(second.name, "legacy");
-    }
-
-    #[test]
-    fn emits_warning_for_bank_keyword() {
-        let source = "bank legacy\n";
-        let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
-        assert_eq!(parsed.file.items.len(), 1);
-        assert_eq!(parsed.warnings.len(), 1);
-        assert_eq!(parsed.warnings[0].severity, crate::diag::Severity::Warning);
-        assert!(parsed.warnings[0].message.contains("deprecated"));
     }
 
     #[test]

@@ -1,20 +1,13 @@
 # Syntax Fixture Matrix
 
-These `syntax-*` fixtures cover K65 HLA surface syntax as documented in:
-
-- `docs/legacy/syntax.md`
-- `docs/legacy/instructions.md`
-- `docs/legacy/examples.md`
-- `vendor/doc/docs/instructions.md`
-- `vendor/src/compiler_src.cpp` (`ADDRMODES`: `AM_VAR_Y`, `AM_IND`, `AM_IND_X`, `AM_IND_Y`)
+These `syntax-*` fixtures cover K65 HLA surface syntax as documented in `vendor/src/compiler_src.cpp` and the K65 documentation.
 
 Key focus areas:
 
 - one-letter/symbolic operator forms (`a+...`, `mem=a`, `c+?{...}`, `*`)
-- deprecated feature naming (`bank` in old docs)
 - data/evaluator/control-flow shorthand patterns from examples
 
-Primary operator-coverage fixture:
+Primary operator-coverage fixtures:
 
 - `syntax-one-letter-operators-legacy`
 - `syntax-wait-loop-bit`
@@ -27,8 +20,3 @@ Primary operator-coverage fixture:
 - `syntax-c-addrmodes-indirect-xy`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.
-
-Compatibility note for this codebase:
-
-- `segment` is the preferred keyword in k816.
-- `syntax-bank-deprecated` keeps explicit coverage of `bank` compatibility, deprecation warnings, and bank-switching usage.

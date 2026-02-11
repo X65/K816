@@ -108,15 +108,14 @@ Notes:
   start: Option<u32>,      // placement base
   offset: Option<u32>,     // added after start/cursor and alignment
   optional: bool,          // currently parsed but not used
-  segment: Option<String>, // canonical segment selector
-  bank: Option<String>,    // legacy alias for segment
+  segment: Option<String>, // segment selector
 )
 ```
 
 Segment-rule selection for an object section named `S`:
 
-1. First rule where `segment == Some(S)` (or legacy `bank == Some(S)`).
-2. Otherwise, first rule with no `segment`/`bank` set (fallback/default rule).
+1. First rule where `segment == Some(S)`.
+2. Otherwise, first rule with no `segment` set (fallback/default rule).
 3. Otherwise, link fails with `no segment rule found for segment 'S'`.
 
 Validation:
@@ -238,8 +237,3 @@ output: (
   file: Some("game.bin"),
 )
 ```
-
-## Compatibility Notes
-
-- `segment` is the canonical selector in segment rules.
-- `bank` is accepted as a legacy alias for backward compatibility.

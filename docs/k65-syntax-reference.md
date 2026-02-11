@@ -1,12 +1,6 @@
-# K65 Syntax Reference (Legacy-Accurate)
+# K65 Syntax Reference
 
-This reference is aligned to the legacy documentation snapshots in this repo:
-
-- `docs/legacy/syntax.md`
-- `docs/legacy/instructions.md`
-- `docs/legacy/examples.md`
-
-Where needed, behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
+This reference documents the K65 assembly language syntax. Behavior is cross-checked with the reference compiler grammar in `vendor/src/compiler.inc`.
 
 ## Core Language Constructs
 
@@ -29,7 +23,7 @@ Variables are symbolic names bound to memory addresses.
 
 ### Constants
 
-Legacy docs describe constants primarily via evaluator expressions (`[ ... ]`), e.g.:
+Constants are defined via evaluator expressions (`[ ... ]`), e.g.:
 
 ```k65
 [
@@ -53,15 +47,13 @@ K65/k816 accepts these common numeric literal formats:
 
 Local labels are used heavily in function-local flow patterns.
 
-### Bank Selection
+### Segment Selection
 
-Legacy K65 uses `bank <name>` to select output bank.
+`segment <name>` selects the output segment.
 
 ```k65
-bank my_bank
+segment code
 ```
-
-k816 compatibility note: `segment` is preferred in this codebase; `bank` is accepted as a deprecated alias.
 
 ### Data Blocks
 
@@ -76,8 +68,6 @@ Named data blocks define a label at block start and support:
 
 ### Code Sections
 
-Legacy docs define these section kinds:
-
 - `main { ... }` (entry)
 - `func name { ... }` (auto `RTS`)
 - `naked name { ... }` (no auto `RTS`)
@@ -89,11 +79,11 @@ Legacy docs define these section kinds:
 
 ### Far Calls
 
-Legacy docs use `far <function>` for cross-bank function calls, with bankswitching handled by linker logic.
+`far <function>` for cross-bank function calls, with bankswitching handled by linker logic.
 
 ## One-Letter / Symbolic Operator Syntax
 
-The legacy `instructions.md` page maps one-letter syntax to 6502 mnemonics.
+The K65 `instructions.md` page maps one-letter syntax to 6502 mnemonics.
 
 ### Loads, Stores, Transfers
 
@@ -139,7 +129,7 @@ The legacy `instructions.md` page maps one-letter syntax to 6502 mnemonics.
 - `i+` / `i-` -> SEI / CLI
 - `o-` -> CLV
 - `a!!` / `a??` -> PHA / PLA
-- `flag!!` / `flag??` -> PHP / PLP (legacy docs use generic `flag`; practical forms include `z`, `c`, `n`, `v`, `b`, `i`, `d`)
+- `flag!!` / `flag??` -> PHP / PLP (practical forms include `z`, `c`, `n`, `v`, `b`, `i`, `d`)
 
 ### Flow and Branch Shorthands
 
@@ -155,7 +145,7 @@ Branch operator forms:
 - Goto: `OP goto label`
 - Postfix block: `{ ... } OP`
 
-Branch mapping (legacy docs):
+Branch mapping:
 
 - `<` / `c-?` -> BCC
 - `>=` / `c+?` -> BCS
@@ -166,7 +156,7 @@ Branch mapping (legacy docs):
 - `>>=` / `v-?` -> BVC
 - `<<=` / `v+?` -> BVS
 
-Note: some legacy examples/doc snippets omit `?` in `v` aliases; the reference grammar uses `v-?` / `v+?`.
+Note: the reference grammar uses `v-?` / `v+?`.
 
 Loop forms:
 
@@ -176,15 +166,11 @@ Loop forms:
 ### NOP Shorthand
 
 - `*` -> one NOP
-- `*<number>` -> wait-cycle form (legacy docs describe cycle semantics)
+- `*<number>` -> wait-cycle form
 
 ## Additional Grammar-Level Constructs
 
-The reference compiler grammar (`vendor/src/compiler.inc`) also includes constructs that are not emphasized in legacy docs pages, such as:
+The reference compiler grammar (`vendor/src/compiler.inc`) also includes constructs such as:
 
-- top-level `const`
 - preprocessor directives (`#if/#else/#elif/#endif`, `#error`, `#warn`)
-- evaluator function declarations (`evalfunc`)
 - additional image/data helper directives
-
-These can exist in sources, but the sections above reflect the legacy docs naming and operator semantics first.

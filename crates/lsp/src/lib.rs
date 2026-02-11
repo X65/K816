@@ -3,8 +3,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use crossbeam_channel::RecvTimeoutError;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -31,6 +33,8 @@ use walkdir::WalkDir;
 const PROJECT_MANIFEST: &str = "k816.toml";
 const PROJECT_SRC_DIR: &str = "src";
 const PROJECT_TESTS_DIR: &str = "tests";
+const DID_CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
+const LOOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct FileId(u32);
@@ -135,7 +139,7 @@ struct SemanticInfo {
     vars: HashMap<String, k816_core::sema::VarMeta>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct DocumentAnalysis {
     diagnostics: Vec<k816_core::diag::Diagnostic>,
     symbols: Vec<SymbolDef>,
@@ -276,13 +280,25 @@ impl ServerState {
     }
 
     fn upsert_document(&mut self, uri: Uri, text: String, version: i32, open: bool) -> Result<()> {
+        self.upsert_document_without_analysis(uri.clone(), text, version, open);
+        self.analyze_document(&uri);
+        Ok(())
+    }
+
+    fn upsert_document_without_analysis(
+        &mut self,
+        uri: Uri,
+        text: String,
+        version: i32,
+        open: bool,
+    ) {
         let path = uri_to_file_path(&uri);
         let file_id = self.source_index.ensure_file_id(uri.clone(), path.clone());
-        let source_name = path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| uri.to_string());
-        let analysis = analyze_document(&source_name, &text);
+        let analysis = self
+            .documents
+            .remove(&uri)
+            .map(|doc| doc.analysis)
+            .unwrap_or_default();
 
         self.documents.insert(
             uri.clone(),
@@ -297,8 +313,19 @@ impl ServerState {
                 analysis,
             },
         );
+    }
+
+    fn analyze_document(&mut self, uri: &Uri) {
+        let Some(doc) = self.documents.get_mut(uri) else {
+            return;
+        };
+        let source_name = doc
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| doc.uri.to_string());
+        doc.analysis = analyze_document(&source_name, &doc.text);
         self.rebuild_symbol_index();
-        Ok(())
     }
 
     fn close_document(&mut self, uri: &Uri) {
@@ -425,6 +452,7 @@ impl ServerState {
         let offset = doc.line_index.to_offset(&doc.text, position)?;
         let prefix = token_prefix_at_offset(&doc.text, offset).to_ascii_lowercase();
         let scope = doc.analysis.scope_at_offset(offset);
+        let allow_symbol_completions = in_symbol_completion_context(&doc.text, offset);
 
         let mut candidates: Vec<(String, CompletionItemKind, &'static str)> = opcode_keywords()
             .into_iter()
@@ -438,31 +466,33 @@ impl ServerState {
             )
         }));
 
-        let mut visible_symbols: BTreeSet<(String, SymbolCategory)> = BTreeSet::new();
-        for entries in self.symbols.values() {
-            for entry in entries {
-                if entry.name.starts_with('.') {
-                    continue;
-                }
-                visible_symbols.insert((entry.name.clone(), entry.category));
-            }
-        }
-
-        if let Some(scope) = scope {
-            for symbol in &doc.analysis.symbols {
-                if symbol.name.starts_with('.') && symbol.scope.as_deref() == Some(scope) {
-                    visible_symbols.insert((symbol.name.clone(), symbol.category));
+        if allow_symbol_completions {
+            let mut visible_symbols: BTreeSet<(String, SymbolCategory)> = BTreeSet::new();
+            for entries in self.symbols.values() {
+                for entry in entries {
+                    if entry.name.starts_with('.') {
+                        continue;
+                    }
+                    visible_symbols.insert((entry.name.clone(), entry.category));
                 }
             }
-        }
 
-        candidates.extend(visible_symbols.into_iter().map(|(name, category)| {
-            (
-                name,
-                completion_kind_for_symbol(category),
-                category.detail(),
-            )
-        }));
+            if let Some(scope) = scope {
+                for symbol in &doc.analysis.symbols {
+                    if symbol.name.starts_with('.') && symbol.scope.as_deref() == Some(scope) {
+                        visible_symbols.insert((symbol.name.clone(), symbol.category));
+                    }
+                }
+            }
+
+            candidates.extend(visible_symbols.into_iter().map(|(name, category)| {
+                (
+                    name,
+                    completion_kind_for_symbol(category),
+                    category.detail(),
+                )
+            }));
+        }
 
         let mut seen = BTreeSet::new();
         let items = candidates
@@ -532,6 +562,7 @@ pub fn run_stdio_server() -> Result<()> {
     let mut server = Server {
         connection,
         state: ServerState::new(workspace_root),
+        pending_changes: HashMap::new(),
     };
     server.state.initialize_workspace()?;
     server.run()?;
@@ -543,11 +574,18 @@ pub fn run_stdio_server() -> Result<()> {
 struct Server {
     connection: Connection,
     state: ServerState,
+    pending_changes: HashMap<Uri, Instant>,
 }
 
 impl Server {
     fn run(&mut self) -> Result<()> {
-        while let Ok(message) = self.connection.receiver.recv() {
+        loop {
+            self.flush_due_did_change_analyses()?;
+            let message = match self.connection.receiver.recv_timeout(LOOP_POLL_INTERVAL) {
+                Ok(message) => message,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
             match message {
                 Message::Request(request) => {
                     if self.connection.handle_shutdown(&request)? {
@@ -587,6 +625,7 @@ impl Server {
                 let uri = params.text_document.uri;
                 let version = params.text_document.version;
                 let text = params.text_document.text;
+                self.pending_changes.remove(&uri);
                 self.state
                     .upsert_document(uri.clone(), text, version, true)?;
                 let diagnostics = self.state.lsp_diagnostics(&uri);
@@ -607,14 +646,16 @@ impl Server {
                     return Ok(());
                 };
                 self.state
-                    .upsert_document(uri.clone(), text, version, true)?;
-                let diagnostics = self.state.lsp_diagnostics(&uri);
-                self.publish_diagnostics(uri, Some(version), diagnostics)
+                    .upsert_document_without_analysis(uri.clone(), text, version, true);
+                self.pending_changes
+                    .insert(uri, Instant::now() + DID_CHANGE_DEBOUNCE);
+                Ok(())
             }
             DidSaveTextDocument::METHOD => {
                 let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)
                     .context("invalid didSave params")?;
                 let uri = params.text_document.uri;
+                self.pending_changes.remove(&uri);
                 let version = self
                     .state
                     .documents
@@ -644,6 +685,7 @@ impl Server {
                     serde_json::from_value(notification.params)
                         .context("invalid didClose params")?;
                 let uri = params.text_document.uri;
+                self.pending_changes.remove(&uri);
                 self.state.close_document(&uri);
                 self.publish_diagnostics(uri, None, Vec::new())
             }
@@ -651,10 +693,43 @@ impl Server {
         }
     }
 
+    fn flush_due_did_change_analyses(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let due_uris = self
+            .pending_changes
+            .iter()
+            .filter_map(|(uri, due)| if *due <= now { Some(uri.clone()) } else { None })
+            .collect::<Vec<_>>();
+
+        for uri in due_uris {
+            self.pending_changes.remove(&uri);
+            self.analyze_and_publish(uri)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_document_fresh(&mut self, uri: &Uri) -> Result<()> {
+        if self.pending_changes.remove(uri).is_some() {
+            self.analyze_and_publish(uri.clone())?;
+        }
+        Ok(())
+    }
+
+    fn analyze_and_publish(&mut self, uri: Uri) -> Result<()> {
+        if !self.state.documents.contains_key(&uri) {
+            return Ok(());
+        }
+        self.state.analyze_document(&uri);
+        let version = self.state.documents.get(&uri).map(|doc| doc.version);
+        let diagnostics = self.state.lsp_diagnostics(&uri);
+        self.publish_diagnostics(uri, version, diagnostics)
+    }
+
     fn on_definition(&mut self, request: Request) -> Result<()> {
         let params: GotoDefinitionParams = parse_request_params(&request)?;
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        self.ensure_document_fresh(&uri)?;
         let result = self.state.definition(&uri, position);
         self.send_result(request.id, &result)
     }
@@ -663,6 +738,7 @@ impl Server {
         let params: HoverParams = parse_request_params(&request)?;
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
+        self.ensure_document_fresh(&uri)?;
         let result = self.state.hover(&uri, position);
         self.send_result(request.id, &result)
     }
@@ -671,18 +747,21 @@ impl Server {
         let params: CompletionParams = parse_request_params(&request)?;
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
+        self.ensure_document_fresh(&uri)?;
         let result = self.state.completion(&uri, position);
         self.send_result(request.id, &result)
     }
 
     fn on_document_symbol(&mut self, request: Request) -> Result<()> {
         let params: DocumentSymbolParams = parse_request_params(&request)?;
+        self.ensure_document_fresh(&params.text_document.uri)?;
         let result = self.state.document_symbols(&params.text_document.uri);
         self.send_result(request.id, &result)
     }
 
     fn on_formatting(&mut self, request: Request) -> Result<()> {
         let params: DocumentFormattingParams = parse_request_params(&request)?;
+        self.ensure_document_fresh(&params.text_document.uri)?;
         let edits = self.state.formatting(&params.text_document.uri);
         self.send_result(request.id, &edits)
     }
@@ -747,7 +826,7 @@ fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
-            trigger_characters: None,
+            trigger_characters: Some(vec![".".to_string(), "@".to_string()]),
             all_commit_characters: None,
             work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
             completion_item: None,
@@ -1167,7 +1246,27 @@ fn token_prefix_at_offset(text: &str, offset: usize) -> String {
 }
 
 fn is_ident_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' || byte == b'@'
+}
+
+fn in_symbol_completion_context(text: &str, offset: usize) -> bool {
+    if !token_prefix_at_offset(text, offset).is_empty() {
+        return true;
+    }
+
+    let offset = offset.min(text.len());
+    let line_start = text[..offset].rfind('\n').map_or(0, |line| line + 1);
+    let line_prefix = &text[line_start..offset];
+    let trimmed = line_prefix.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if line_prefix.chars().last().is_some_and(char::is_whitespace) {
+        return true;
+    }
+
+    trimmed.split_whitespace().count() > 1
 }
 
 fn hover_contents_for_symbol(
@@ -1479,5 +1578,23 @@ mod tests {
             GotoDefinitionResponse::Array(locations) => assert_eq!(locations.len(), 1),
             _ => panic!("unexpected response shape"),
         }
+    }
+
+    #[test]
+    fn token_match_includes_mode_directives() {
+        let text = "@a16\n";
+        let token = token_at_offset(text, 2).expect("token");
+        assert_eq!(token.text, "@a16");
+        assert_eq!(token_prefix_at_offset(text, 3), "@a1");
+    }
+
+    #[test]
+    fn completion_context_prefers_symbols_in_operand_positions() {
+        let text = "main {\n  bra\n  bra start\n}\n";
+        let statement_start_offset = text.find("  bra").expect("statement start") + 2;
+        let operand_offset = text.find("bra start").expect("operand") + 4;
+
+        assert!(!in_symbol_completion_context(text, statement_start_offset));
+        assert!(in_symbol_completion_context(text, operand_offset));
     }
 }

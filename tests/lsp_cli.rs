@@ -273,3 +273,278 @@ fn lsp_initialize_diagnostics_definition_and_hover() {
 
     lsp.shutdown();
 }
+
+#[test]
+fn lsp_completion_symbols_and_formatting_idempotence() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-lsp-it-completion-{unique}"));
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
+    std::fs::write(
+        root.join("k816.toml"),
+        "[package]\nname = \"lsp-it-completion\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("failed to write manifest");
+
+    let source = "main {\nstart:\ncall start\n}\n";
+    let source_path = src_dir.join("main.k65");
+    std::fs::write(&source_path, source).expect("failed to write source");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(10))
+    });
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+    });
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 2, "character": 5 }
+        }
+    }));
+    let completion_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(11))
+    });
+    let completion_items = completion_response["result"]
+        .as_array()
+        .expect("completion array");
+    assert!(
+        completion_items
+            .iter()
+            .any(|item| item["label"].as_str() == Some("start")),
+        "expected completion entry for local label, got: {completion_items:?}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "textDocument/documentSymbol",
+        "params": {
+            "textDocument": { "uri": file_uri }
+        }
+    }));
+    let symbol_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(12))
+    });
+    let symbols = symbol_response["result"]
+        .as_array()
+        .expect("document symbols");
+    assert!(
+        symbols
+            .iter()
+            .any(|symbol| symbol["name"].as_str() == Some("main")),
+        "expected function symbol, got: {symbols:?}"
+    );
+    let main_symbol = symbols
+        .iter()
+        .find(|symbol| symbol["name"].as_str() == Some("main"))
+        .expect("main symbol");
+    let main_children = main_symbol["children"].as_array().expect("main children");
+    assert!(
+        main_children
+            .iter()
+            .any(|symbol| symbol["name"].as_str() == Some("start")),
+        "expected nested label symbol, got: {main_children:?}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "textDocument/formatting",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "options": { "tabSize": 2, "insertSpaces": true }
+        }
+    }));
+    let formatting_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(13))
+    });
+    let edits = formatting_response["result"]
+        .as_array()
+        .expect("formatting edits");
+    assert!(!edits.is_empty(), "expected non-empty formatting edits");
+    let formatted = edits[0]["newText"]
+        .as_str()
+        .expect("formatted text")
+        .to_string();
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "version": 2
+            },
+            "contentChanges": [
+                { "text": formatted }
+            ]
+        }
+    }));
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "textDocument/formatting",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "options": { "tabSize": 2, "insertSpaces": true }
+        }
+    }));
+    let formatting_second_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(14))
+    });
+    let second_edits = formatting_second_response["result"]
+        .as_array()
+        .expect("second formatting edits");
+    assert!(
+        second_edits.is_empty(),
+        "expected idempotent formatting, got: {second_edits:?}"
+    );
+
+    lsp.shutdown();
+}
+
+#[test]
+fn lsp_did_change_publishes_debounced_diagnostics() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-lsp-it-debounce-{unique}"));
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
+    std::fs::write(
+        root.join("k816.toml"),
+        "[package]\nname = \"lsp-it-debounce\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("failed to write manifest");
+
+    let source = "main {\nstart:\n  bra start\n}\n";
+    let source_path = src_dir.join("main.k65");
+    std::fs::write(&source_path, source).expect("failed to write source");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 20,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(20))
+    });
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+    });
+
+    let changed_source = "main {\nstart:\n  call missing\n}\n";
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "version": 2
+            },
+            "contentChanges": [
+                { "text": changed_source }
+            ]
+        }
+    }));
+
+    let diagnostics_notification = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+            && message
+                .get("params")
+                .and_then(|params| params.get("version"))
+                == Some(&json!(2))
+    });
+    let diagnostics = diagnostics_notification["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics.iter().any(|diag| diag["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unknown function")),
+        "expected unknown function diagnostic after didChange, got: {diagnostics:?}"
+    );
+
+    lsp.shutdown();
+}

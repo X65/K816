@@ -36,6 +36,7 @@ ariadne = "0.6"
 camino = "1.2"
 chumsky = "0.12"
 clap = { version = "4.5", features = ["derive"] }
+crossbeam-channel = "0.5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 indexmap = "2.13"
 logos = "0.16"

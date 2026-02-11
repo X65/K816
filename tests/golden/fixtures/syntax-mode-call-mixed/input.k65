@@ -1,0 +1,23 @@
+// Test mixed mode contracts: @a8, @i8, far func, partial contracts
+
+far func wide_all @a16 @i16 {
+  nop
+}
+
+func narrow_all @a8 @i8 {
+  nop
+}
+
+func only_index @i16 {
+  nop
+}
+
+main {
+  // far call emits JSL with mode bridge
+  call wide_all
+  // near call with sep contract
+  call narrow_all
+  // partial contract: only index width
+  call only_index
+  nop
+}

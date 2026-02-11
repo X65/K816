@@ -5,6 +5,7 @@ pub mod driver;
 pub mod emit;
 pub mod emit_object;
 pub mod eval_expand;
+pub mod fold_mode;
 pub mod hir;
 pub mod lexer;
 pub mod lower;

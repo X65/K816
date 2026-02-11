@@ -33,6 +33,18 @@ pub enum TokenKind {
     #[token("call")]
     Call,
 
+    #[token("@a8")]
+    ModeA8,
+    #[token("@a16")]
+    ModeA16,
+    #[token("@i8")]
+    ModeI8,
+    #[token("@i16")]
+    ModeI16,
+
+    #[token("><")]
+    SwapOp,
+
     #[token("{")]
     LBrace,
     #[token("}")]

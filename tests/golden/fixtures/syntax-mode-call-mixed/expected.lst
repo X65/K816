@@ -1,0 +1,26 @@
+[default]
+000000: EA 6B EA 60 EA 60 C2 30 22 00 00 00 E2 30 20 02
+000010: 00 C2 10 20 04 00 EA 60
+
+
+[disasm obj#0 default::wide_all]
+000000: EA          nop
+000001: 6B          rtl
+
+[disasm obj#0 default::narrow_all]
+000002: EA          nop
+000003: 60          rts
+
+[disasm obj#0 default::only_index]
+000004: EA          nop
+000005: 60          rts
+
+[disasm obj#0 default::main]
+000006: C2 30       rep #$30
+000008: 22 00 00 00 jsl $000000
+00000C: E2 30       sep #$30
+00000E: 20 02 00    jsr $0002
+000011: C2 10       rep #$10
+000013: 20 04 00    jsr $0004
+000016: EA          nop
+000017: 60          rts

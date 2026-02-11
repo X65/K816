@@ -1,8 +1,8 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, ExprBinaryOp,
+    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp,
     ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister,
-    Instruction, Item, LabelDecl, NamedDataBlock, NamedDataEntry, Operand, OperandAddrMode,
-    SegmentDecl, Stmt, VarDecl,
+    Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, Operand,
+    OperandAddrMode, RegWidth, SegmentDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -362,6 +362,7 @@ where
         if let Some(name) = name {
             Item::Var(VarDecl {
                 name,
+                data_width: None,
                 array_len: None,
                 initializer: Some(Expr::Number(0)),
             })
@@ -379,6 +380,34 @@ where
         .or(code_block_item)
         .or(stmt_item)
         .boxed()
+}
+
+fn mode_annotation_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, ModeContract, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let mode_token = just(TokenKind::ModeA8)
+        .to((Some(RegWidth::W8), None))
+        .or(just(TokenKind::ModeA16).to((Some(RegWidth::W16), None)))
+        .or(just(TokenKind::ModeI8).to((None, Some(RegWidth::W8))))
+        .or(just(TokenKind::ModeI16).to((None, Some(RegWidth::W16))));
+
+    mode_token
+        .repeated()
+        .collect::<Vec<_>>()
+        .map(|annotations| {
+            let mut contract = ModeContract::default();
+            for (a, i) in annotations {
+                if let Some(a) = a {
+                    contract.a_width = Some(a);
+                }
+                if let Some(i) = i {
+                    contract.i_width = Some(i);
+                }
+            }
+            contract
+        })
 }
 
 fn code_block_parser<'src, I>(
@@ -418,23 +447,31 @@ where
         )
         .then_ignore(just(TokenKind::RBrace));
 
+    let mode_annotations = mode_annotation_parser();
+
     let main = just(TokenKind::Main)
-        .ignore_then(body.clone())
-        .map(|body| CodeBlock {
+        .ignore_then(mode_annotations.clone())
+        .then(body.clone())
+        .map(|(mode_contract, body)| CodeBlock {
             name: "main".to_string(),
             name_span: None,
             kind: BlockKind::Main,
             is_far: false,
             is_naked: false,
             is_inline: false,
+            mode_contract,
             body,
         });
 
     let func = just(TokenKind::Func)
         .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
+        .then(mode_annotations.clone())
         .then(body.clone())
         .map(
-            move |((name, name_span), body): ((String, SimpleSpan), Vec<Spanned<Stmt>>)| {
+            move |(((name, name_span), mode_contract), body): (
+                ((String, SimpleSpan), ModeContract),
+                Vec<Spanned<Stmt>>,
+            )| {
                 let range = name_span.into_range();
                 CodeBlock {
                     name,
@@ -443,6 +480,7 @@ where
                     is_far: false,
                     is_naked: false,
                     is_inline: false,
+                    mode_contract,
                     body,
                 }
             },
@@ -461,10 +499,11 @@ where
 
     let implicit_func = required_modifiers
         .then(ident_parser().map_with(|name, extra| (name, extra.span())))
+        .then(mode_annotations)
         .then(body)
         .map(
-            move |((mods, (name, name_span)), body): (
-                (Vec<Modifier>, (String, SimpleSpan)),
+            move |(((mods, (name, name_span)), mode_contract), body): (
+                ((Vec<Modifier>, (String, SimpleSpan)), ModeContract),
                 Vec<Spanned<Stmt>>,
             )| {
                 let range = name_span.into_range();
@@ -475,6 +514,7 @@ where
                     is_far: false,
                     is_naked: false,
                     is_inline: false,
+                    mode_contract,
                     body,
                 };
                 for modifier in mods {
@@ -811,6 +851,19 @@ where
     .boxed()
 }
 
+fn data_width_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, DataWidth, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Colon).ignore_then(
+        chumsky::select! {
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => DataWidth::Byte,
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => DataWidth::Word,
+        }
+    )
+}
+
 fn var_decl_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, VarDecl, ParseExtra<'src>> + Clone
@@ -819,10 +872,12 @@ where
 {
     just(TokenKind::Var)
         .ignore_then(ident_parser())
+        .then(data_width_parser().or_not())
         .then(bracket_expr_parser(source_id).or_not())
         .then(just(TokenKind::Eq).ignore_then(expr_parser()).or_not())
-        .map(|((name, array_len), initializer)| VarDecl {
+        .map(|(((name, data_width), array_len), initializer)| VarDecl {
             name,
+            data_width,
             array_len,
             initializer,
         })
@@ -1022,6 +1077,33 @@ where
     let bare_rbrace_stmt = bare_rbrace_stmt_parser();
     let discard_stmt = discard_stmt_parser();
 
+    let mode_set_stmt = just(TokenKind::ModeA8)
+        .to(Stmt::ModeSet {
+            a_width: Some(RegWidth::W8),
+            i_width: None,
+        })
+        .or(just(TokenKind::ModeA16).to(Stmt::ModeSet {
+            a_width: Some(RegWidth::W16),
+            i_width: None,
+        }))
+        .or(just(TokenKind::ModeI8).to(Stmt::ModeSet {
+            a_width: None,
+            i_width: Some(RegWidth::W8),
+        }))
+        .or(just(TokenKind::ModeI16).to(Stmt::ModeSet {
+            a_width: None,
+            i_width: Some(RegWidth::W16),
+        }));
+
+    let swap_ab_stmt = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("b") => ()
+    }
+    .ignore_then(just(TokenKind::SwapOp))
+    .ignore_then(chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
+    })
+    .to(Stmt::SwapAB);
+
     let mnemonic = ident_parser().try_map(|mnemonic, span| {
         if mnemonic == ".byte" {
             Err(Rich::custom(
@@ -1063,10 +1145,11 @@ where
 
     let separators_inner = line_sep_parser().repeated();
 
-    // Inner statement parser for prefix conditional bodies - excludes bare_rbrace_stmt,
-    // hla_do_close_stmt, and hla_do_open_stmt which would interfere with brace matching
-    let base_stmt_inner = segment_stmt
+    // Flat statement parsers (no brace-delimited blocks)
+    let flat_stmt_inner = mode_set_stmt
         .clone()
+        .or(swap_ab_stmt.clone())
+        .or(segment_stmt.clone())
         .or(var_stmt.clone())
         .or(data_stmt.clone())
         .or(address_stmt.clone())
@@ -1093,7 +1176,9 @@ where
         .or(instruction.clone())
         .boxed();
 
-    let base_stmt = segment_stmt
+    let base_stmt = mode_set_stmt
+        .or(swap_ab_stmt)
+        .or(segment_stmt)
         .or(var_stmt)
         .or(data_stmt)
         .or(address_stmt)
@@ -1124,20 +1209,58 @@ where
         .or(instruction)
         .boxed();
 
-    let inner_stmt = spanned(base_stmt_inner, source_id);
-
-    let prefix_conditional = prefix_condition_parser()
-        .then(
-            just(TokenKind::LBrace)
+    // Use recursive to allow mode_scoped_block and prefix_conditional
+    // to nest inside each other's bodies
+    let inner_stmt_recursive =
+        chumsky::prelude::recursive::<_, Spanned<Stmt>, _, _, _>(|inner_stmt_ref| {
+            let block_body = just(TokenKind::LBrace)
                 .ignore_then(separators_inner.clone())
                 .ignore_then(
-                    inner_stmt
-                        .then_ignore(separators_inner)
+                    inner_stmt_ref
+                        .then_ignore(separators_inner.clone())
                         .repeated()
                         .collect::<Vec<_>>(),
                 )
-                .then_ignore(just(TokenKind::RBrace)),
+                .then_ignore(just(TokenKind::RBrace));
+
+            let prefix_conditional = prefix_condition_parser()
+                .then(block_body.clone())
+                .map(|(skip_mnemonic, body)| {
+                    Stmt::Hla(HlaStmt::PrefixConditional {
+                        skip_mnemonic: skip_mnemonic.to_string(),
+                        body,
+                    })
+                });
+
+            let mode_scoped_block = mode_annotation_parser()
+                .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
+                .then(block_body)
+                .map(|(contract, body)| Stmt::ModeScopedBlock {
+                    a_width: contract.a_width,
+                    i_width: contract.i_width,
+                    body,
+                });
+
+            let inner_stmt = mode_scoped_block
+                .or(prefix_conditional)
+                .or(flat_stmt_inner);
+
+            spanned(inner_stmt, source_id)
+        });
+
+    // Top-level statement: mode_scoped_block, prefix_conditional, or base_stmt
+    let block_body_top = just(TokenKind::LBrace)
+        .ignore_then(separators_inner.clone())
+        .ignore_then(
+            inner_stmt_recursive
+                .then_ignore(separators_inner)
+                .repeated()
+                .collect::<Vec<_>>(),
         )
+        .then_ignore(just(TokenKind::RBrace));
+
+    let prefix_conditional_top = prefix_condition_parser()
+        .then(block_body_top.clone())
         .map(|(skip_mnemonic, body)| {
             Stmt::Hla(HlaStmt::PrefixConditional {
                 skip_mnemonic: skip_mnemonic.to_string(),
@@ -1145,7 +1268,19 @@ where
             })
         });
 
-    prefix_conditional.or(base_stmt).boxed()
+    let mode_scoped_block_top = mode_annotation_parser()
+        .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
+        .then(block_body_top)
+        .map(|(contract, body)| Stmt::ModeScopedBlock {
+            a_width: contract.a_width,
+            i_width: contract.i_width,
+            body,
+        });
+
+    mode_scoped_block_top
+        .or(prefix_conditional_top)
+        .or(base_stmt)
+        .boxed()
 }
 
 fn hla_wait_loop_stmt_parser<'src, I>()
@@ -1946,6 +2081,7 @@ fn expr_is_address_like(expr: &Expr) -> bool {
         Expr::Binary { lhs, rhs, .. } => expr_is_address_like(lhs) || expr_is_address_like(rhs),
         Expr::Unary { .. } => false,
         Expr::Number(_) | Expr::EvalText(_) => false,
+        Expr::TypedView { expr, .. } => expr_is_address_like(expr),
     }
 }
 
@@ -2307,6 +2443,11 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::String(_) => "string literal".to_string(),
         TokenKind::Number(_) => "number literal".to_string(),
         TokenKind::Ident(value) => format!("identifier '{value}'"),
+        TokenKind::ModeA8 => "'@a8'".to_string(),
+        TokenKind::ModeA16 => "'@a16'".to_string(),
+        TokenKind::ModeI8 => "'@i8'".to_string(),
+        TokenKind::ModeI16 => "'@i16'".to_string(),
+        TokenKind::SwapOp => "'><'".to_string(),
     }
 }
 
@@ -2383,6 +2524,7 @@ fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
             }
         }
+        Expr::TypedView { expr, .. } => eval_static_expr(expr),
     }
 }
 

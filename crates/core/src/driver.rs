@@ -8,6 +8,7 @@ use crate::diag::{Diagnostic, RenderOptions, render_diagnostics_with_options};
 use crate::emit::emit;
 use crate::emit_object::emit_object;
 use crate::eval_expand::expand_file;
+use crate::fold_mode::fold_mode_ops;
 use crate::lower::lower;
 use crate::normalize_hla::normalize_file;
 use crate::parser::parse_with_warnings;
@@ -119,6 +120,7 @@ pub fn compile_source_with_fs_and_options(
 
     let hir = lower(&ast, &sema, fs)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    let hir = fold_mode_ops(&hir);
 
     let emit_output =
         emit(&hir).map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
@@ -175,6 +177,7 @@ pub fn compile_source_to_object_with_fs_and_options(
 
     let hir = lower(&ast, &sema, fs)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    let hir = fold_mode_ops(&hir);
 
     let emit_output = emit_object(&hir, &source_map)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;

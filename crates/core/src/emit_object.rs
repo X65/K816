@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 
 use k816_isa65816::{
     AddressOperandMode as IsaAddressOperandMode, AddressingMode, IndexRegister as IsaIndexRegister,
-    OperandShape, operand_width, select_encoding,
+    OperandShape, operand_width_for_mode, select_encoding,
 };
 use k816_o65::{
     DataStringFragment, FunctionDisassembly, O65Object, Relocation, RelocationKind, Section,
@@ -72,6 +72,8 @@ pub fn emit_object(
     let mut current_function: Option<String> = None;
     let mut function_instruction_sites = Vec::new();
     let mut data_string_fragments = Vec::new();
+    let mut m_wide = false; // accumulator 16-bit (M flag clear)
+    let mut x_wide = false; // index 16-bit (X flag clear)
 
     segments
         .entry(current_segment.clone())
@@ -148,6 +150,40 @@ pub fn emit_object(
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
                 segment.nocross_boundary = Some(*boundary);
+            }
+            Op::Rep(mask) => {
+                if mask & 0x20 != 0 { m_wide = true; }
+                if mask & 0x10 != 0 { x_wide = true; }
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                let opcode_offset = segment.section_offset;
+                if let Some(function) = &current_function {
+                    function_instruction_sites.push(FunctionInstructionSite {
+                        segment: current_segment.clone(),
+                        function: function.clone(),
+                        offset: opcode_offset,
+                    });
+                }
+                let bytes = [0xC2, *mask];
+                append_bytes(segment, &bytes, op.span, &mut diagnostics);
+            }
+            Op::Sep(mask) => {
+                if mask & 0x20 != 0 { m_wide = false; }
+                if mask & 0x10 != 0 { x_wide = false; }
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                let opcode_offset = segment.section_offset;
+                if let Some(function) = &current_function {
+                    function_instruction_sites.push(FunctionInstructionSite {
+                        segment: current_segment.clone(),
+                        function: function.clone(),
+                        offset: opcode_offset,
+                    });
+                }
+                let bytes = [0xE2, *mask];
+                append_bytes(segment, &bytes, op.span, &mut diagnostics);
             }
             Op::EmitBytes(bytes) => {
                 let segment = segments
@@ -231,7 +267,7 @@ pub fn emit_object(
                     }
                 };
 
-                let width = operand_width(encoding.mode);
+                let width = operand_width_for_mode(encoding.mode, m_wide, x_wide);
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
 
                 let opcode_offset = segment.section_offset;

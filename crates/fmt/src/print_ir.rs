@@ -13,6 +13,8 @@ pub fn format_ir(program: &Program) -> String {
             Op::Align(value) => out.push_str(&format!("align {value}\n")),
             Op::Address(value) => out.push_str(&format!("address {value}\n")),
             Op::Nocross(value) => out.push_str(&format!("nocross {value}\n")),
+            Op::Rep(mask) => out.push_str(&format!("rep #{mask:#04X}\n")),
+            Op::Sep(mask) => out.push_str(&format!("sep #{mask:#04X}\n")),
             Op::EmitBytes(bytes) => {
                 let data = bytes
                     .iter()

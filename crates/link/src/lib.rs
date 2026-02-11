@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
-use k816_isa65816::{decode_instruction, format_instruction};
+use k816_isa65816::{decode_instruction_with_mode, format_instruction};
 use k816_o65::{O65Object, RelocationKind, SourceLocation};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -1352,6 +1352,9 @@ fn format_function_disassembly_block(
         function.section, function.function
     ));
 
+    let mut m_wide = false;
+    let mut x_wide = false;
+
     for offset in &function.instruction_offsets {
         let (memory_name, address) =
             resolve_reloc_site(placements, *offset, 1).ok_or_else(|| {
@@ -1375,13 +1378,25 @@ fn format_function_disassembly_block(
 
         let index = (address - memory.spec.start) as usize;
         let decode_slice = &memory.bytes[index..];
-        let decoded = decode_instruction(decode_slice).map_err(|err| {
+        let decoded = decode_instruction_with_mode(decode_slice, m_wide, x_wide).map_err(|err| {
             anyhow::anyhow!(
                 "failed to decode instruction at {address:#X} ({}::{}): {err}",
                 function.section,
                 function.function
             )
         })?;
+
+        // Track mode changes from REP/SEP
+        if decoded.mnemonic == "rep" && !decoded.operand.is_empty() {
+            let mask = decoded.operand[0];
+            if mask & 0x20 != 0 { m_wide = true; }
+            if mask & 0x10 != 0 { x_wide = true; }
+        } else if decoded.mnemonic == "sep" && !decoded.operand.is_empty() {
+            let mask = decoded.operand[0];
+            if mask & 0x20 != 0 { m_wide = false; }
+            if mask & 0x10 != 0 { x_wide = false; }
+        }
+
         let len = decoded.len();
         let end = index.saturating_add(len);
         if end > memory.bytes.len() {

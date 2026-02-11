@@ -673,12 +673,25 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
     }
 }
 
+/// Operand width assuming 8-bit immediates (no CPU mode context).
+/// Used by the disassembler when mode state is unknown.
 pub fn operand_width(mode: AddressingMode) -> usize {
+    operand_width_for_mode(mode, false, false)
+}
+
+/// Operand width with CPU mode context.
+/// `m_wide` = true when accumulator is 16-bit (M flag clear).
+/// `x_wide` = true when index registers are 16-bit (X flag clear).
+pub fn operand_width_for_mode(mode: AddressingMode, m_wide: bool, x_wide: bool) -> usize {
     match mode {
         AddressingMode::Implied | AddressingMode::Accumulator => 0,
+        AddressingMode::ImmediateM => {
+            if m_wide { 2 } else { 1 }
+        }
+        AddressingMode::ImmediateX => {
+            if x_wide { 2 } else { 1 }
+        }
         AddressingMode::Immediate8
-        | AddressingMode::ImmediateM
-        | AddressingMode::ImmediateX
         | AddressingMode::DirectPage
         | AddressingMode::DirectPageX
         | AddressingMode::DirectPageY
@@ -704,9 +717,17 @@ pub fn operand_width(mode: AddressingMode) -> usize {
 }
 
 pub fn decode_instruction(bytes: &[u8]) -> Result<DecodedInstruction<'_>, DecodeError> {
+    decode_instruction_with_mode(bytes, false, false)
+}
+
+pub fn decode_instruction_with_mode(
+    bytes: &[u8],
+    m_wide: bool,
+    x_wide: bool,
+) -> Result<DecodedInstruction<'_>, DecodeError> {
     let (&opcode, rest) = bytes.split_first().ok_or(DecodeError::EmptyInput)?;
     let descriptor = opcode_descriptor(opcode);
-    let width = operand_width(descriptor.mode);
+    let width = operand_width_for_mode(descriptor.mode, m_wide, x_wide);
     if rest.len() < width {
         return Err(DecodeError::Truncated {
             opcode,
@@ -736,8 +757,16 @@ fn format_operand(mode: AddressingMode, operand: &[u8], address: u32) -> String 
     match mode {
         AddressingMode::Implied => String::new(),
         AddressingMode::Accumulator => "A".to_string(),
-        AddressingMode::Immediate8 | AddressingMode::ImmediateM | AddressingMode::ImmediateX => {
+        AddressingMode::Immediate8 => {
             format!("#${:02X}", operand[0])
+        }
+        AddressingMode::ImmediateM | AddressingMode::ImmediateX => {
+            if operand.len() >= 2 {
+                let value = u16::from_le_bytes([operand[0], operand[1]]);
+                format!("#${value:04X}")
+            } else {
+                format!("#${:02X}", operand[0])
+            }
         }
         AddressingMode::Immediate16 => {
             let value = u16::from_le_bytes([operand[0], operand[1]]);

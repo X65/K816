@@ -1,0 +1,42 @@
+// Test width-dependent immediate sizing for all affected instructions
+//
+// ImmediateM (M flag, accumulator width): ora, and, eor, adc, bit, lda, cmp, sbc
+// ImmediateX (X flag, index width): ldy, ldx, cpy, cpx
+
+main {
+  // --- ImmediateM: 16-bit ---
+  @a16
+  ora #$01
+  and #$02
+  eor #$03
+  adc #$04
+  bit #$05
+  lda #$06
+  cmp #$07
+  sbc #$08
+
+  // --- ImmediateM: 8-bit ---
+  @a8
+  ora #$01
+  and #$02
+  eor #$03
+  adc #$04
+  bit #$05
+  lda #$06
+  cmp #$07
+  sbc #$08
+
+  // --- ImmediateX: 16-bit ---
+  @i16
+  ldy #$01
+  ldx #$02
+  cpy #$03
+  cpx #$04
+
+  // --- ImmediateX: 8-bit ---
+  @i8
+  ldy #$01
+  ldx #$02
+  cpy #$03
+  cpx #$04
+}

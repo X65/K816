@@ -60,6 +60,7 @@ fn expand_code_block(
         is_far: block.is_far,
         is_naked: block.is_naked,
         is_inline: block.is_inline,
+        mode_contract: block.mode_contract,
         body,
     }
 }
@@ -92,6 +93,25 @@ fn expand_stmt(
         Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Label(label) => Stmt::Label(label.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
+        Stmt::ModeSet { a_width, i_width } => Stmt::ModeSet {
+            a_width: *a_width,
+            i_width: *i_width,
+        },
+        Stmt::ModeScopedBlock {
+            a_width,
+            i_width,
+            body,
+        } => Stmt::ModeScopedBlock {
+            a_width: *a_width,
+            i_width: *i_width,
+            body: body
+                .iter()
+                .map(|s| {
+                    Spanned::new(expand_stmt(&s.node, s.span, source_id, diagnostics), s.span)
+                })
+                .collect(),
+        },
+        Stmt::SwapAB => Stmt::SwapAB,
         Stmt::Hla(stmt) => Stmt::Hla(expand_hla_stmt(stmt, span, source_id, diagnostics)),
         Stmt::Empty => Stmt::Empty,
     }
@@ -245,6 +265,7 @@ fn expand_var(
 ) -> VarDecl {
     VarDecl {
         name: var.name.clone(),
+        data_width: var.data_width,
         array_len: var
             .array_len
             .as_ref()
@@ -312,6 +333,10 @@ fn expand_expr(
         Expr::Unary { op, expr } => Expr::Unary {
             op: *op,
             expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+        },
+        Expr::TypedView { expr, width } => Expr::TypedView {
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            width: *width,
         },
     }
 }

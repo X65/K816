@@ -1,6 +1,9 @@
 use indexmap::IndexMap;
 
-use crate::ast::{CodeBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, Stmt, VarDecl};
+use crate::ast::{
+    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract, Stmt,
+    VarDecl,
+};
 use crate::diag::Diagnostic;
 use crate::span::Span;
 
@@ -9,12 +12,14 @@ pub struct FunctionMeta {
     pub is_far: bool,
     pub is_naked: bool,
     pub is_inline: bool,
+    pub mode_contract: ModeContract,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VarMeta {
     pub address: u32,
     pub size: u32,
+    pub data_width: Option<DataWidth>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -90,6 +95,7 @@ fn collect_function(
             is_far: block.is_far,
             is_naked: block.is_naked,
             is_inline: block.is_inline,
+            mode_contract: block.mode_contract,
         },
     );
 }
@@ -127,9 +133,14 @@ fn collect_var(
     };
 
     *next_auto_addr = next_addr;
-    model
-        .vars
-        .insert(var.name.clone(), VarMeta { address, size });
+    model.vars.insert(
+        var.name.clone(),
+        VarMeta {
+            address,
+            size,
+            data_width: var.data_width,
+        },
+    );
 }
 
 fn eval_var_address(
@@ -178,8 +189,13 @@ fn eval_var_address(
 }
 
 fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -> Option<u32> {
+    let element_size: u32 = match var.data_width {
+        Some(DataWidth::Word) => 2,
+        Some(DataWidth::Byte) | None => 1,
+    };
+
     let Some(array_len) = &var.array_len else {
-        return Some(1);
+        return Some(element_size);
     };
 
     match eval_const_expr(array_len) {
@@ -192,7 +208,7 @@ fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -
                 return None;
             }
             match u32::try_from(value) {
-                Ok(size) => Some(size),
+                Ok(count) => Some(count * element_size),
                 Err(_) => {
                     diagnostics.push(Diagnostic::error(
                         span,
@@ -252,6 +268,7 @@ fn eval_const_expr(expr: &Expr) -> Result<i64, ConstExprError> {
                 ExprUnaryOp::HighByte => Ok((value >> 8) & 0xFF),
             }
         }
+        Expr::TypedView { expr, .. } => eval_const_expr(expr),
     }
 }
 

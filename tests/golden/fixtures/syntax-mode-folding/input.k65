@@ -1,0 +1,24 @@
+// Test REP/SEP folding: adjacent mode ops merge into single instructions
+// @a16 @i16 should fold into REP #$30 instead of REP #$20 + REP #$10
+
+main {
+  // Adjacent 16-bit modes fold into single REP #$30
+  @a16
+  @i16
+  nop
+
+  // Adjacent 8-bit modes fold into single SEP #$30
+  @a8
+  @i8
+  nop
+
+  // Mixed: @a16 + @i8 => REP #$20 + SEP #$10
+  @a16
+  @i8
+  nop
+
+  // Opposite cancels: @a16 then @a8 => just SEP #$20
+  @a16
+  @a8
+  nop
+}

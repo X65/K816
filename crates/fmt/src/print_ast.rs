@@ -86,6 +86,48 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
                 .join(", ");
             line(out, indent, format!(".byte {values}"));
         }
+        Stmt::ModeSet { a_width, i_width } => {
+            let mut parts = Vec::new();
+            if let Some(w) = a_width {
+                parts.push(match w {
+                    k816_core::ast::RegWidth::W8 => "@a8",
+                    k816_core::ast::RegWidth::W16 => "@a16",
+                });
+            }
+            if let Some(w) = i_width {
+                parts.push(match w {
+                    k816_core::ast::RegWidth::W8 => "@i8",
+                    k816_core::ast::RegWidth::W16 => "@i16",
+                });
+            }
+            line(out, indent, parts.join(" "));
+        }
+        Stmt::ModeScopedBlock {
+            a_width,
+            i_width,
+            body,
+        } => {
+            let mut parts = Vec::new();
+            if let Some(w) = a_width {
+                parts.push(match w {
+                    k816_core::ast::RegWidth::W8 => "@a8",
+                    k816_core::ast::RegWidth::W16 => "@a16",
+                });
+            }
+            if let Some(w) = i_width {
+                parts.push(match w {
+                    k816_core::ast::RegWidth::W8 => "@i8",
+                    k816_core::ast::RegWidth::W16 => "@i16",
+                });
+            }
+            parts.push("{");
+            line(out, indent, parts.join(" "));
+            for s in body {
+                format_stmt(out, &s.node, indent + 1);
+            }
+            line(out, indent, "}".to_string());
+        }
+        Stmt::SwapAB => line(out, indent, "b><a".to_string()),
         Stmt::Hla(stmt) => line(out, indent, format_hla_stmt(stmt)),
         Stmt::Empty => line(out, indent, String::new()),
     }
@@ -167,6 +209,13 @@ fn format_expr(expr: &Expr) -> String {
                 k816_core::ast::ExprUnaryOp::HighByte => "&>",
             };
             format!("{op}{}", format_expr(expr))
+        }
+        Expr::TypedView { expr, width } => {
+            let suffix = match width {
+                k816_core::ast::DataWidth::Byte => ":byte",
+                k816_core::ast::DataWidth::Word => ":word",
+            };
+            format!("{}{suffix}", format_expr(expr))
         }
     }
 }

@@ -20,6 +20,12 @@ pub enum Op {
     Align(u16),
     Address(u32),
     Nocross(u16),
+    /// REP pseudo-op: clear processor status bits (set register to 16-bit).
+    /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
+    Rep(u8),
+    /// SEP pseudo-op: set processor status bits (set register to 8-bit).
+    /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
+    Sep(u8),
 }
 
 #[derive(Debug, Clone)]

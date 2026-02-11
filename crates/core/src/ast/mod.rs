@@ -1,5 +1,26 @@
 use crate::span::{Span, Spanned};
 
+/// Data width for typed variables and typed views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataWidth {
+    Byte,
+    Word,
+}
+
+/// CPU register width (8 or 16 bits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegWidth {
+    W8,
+    W16,
+}
+
+/// Mode contract for function headers: optional A and Index widths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ModeContract {
+    pub a_width: Option<RegWidth>,
+    pub i_width: Option<RegWidth>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct File {
     pub items: Vec<Spanned<Item>>,
@@ -23,6 +44,7 @@ pub struct SegmentDecl {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub name: String,
+    pub data_width: Option<DataWidth>,
     pub array_len: Option<Expr>,
     pub initializer: Option<Expr>,
 }
@@ -41,6 +63,7 @@ pub struct CodeBlock {
     pub is_far: bool,
     pub is_naked: bool,
     pub is_inline: bool,
+    pub mode_contract: ModeContract,
     pub body: Vec<Spanned<Stmt>>,
 }
 
@@ -57,6 +80,16 @@ pub enum Stmt {
     Call(CallStmt),
     Bytes(Vec<Expr>),
     Hla(HlaStmt),
+    ModeSet {
+        a_width: Option<RegWidth>,
+        i_width: Option<RegWidth>,
+    },
+    ModeScopedBlock {
+        a_width: Option<RegWidth>,
+        i_width: Option<RegWidth>,
+        body: Vec<Spanned<Stmt>>,
+    },
+    SwapAB,
     Empty,
 }
 
@@ -168,6 +201,10 @@ pub enum Expr {
     Unary {
         op: ExprUnaryOp,
         expr: Box<Expr>,
+    },
+    TypedView {
+        expr: Box<Expr>,
+        width: DataWidth,
     },
 }
 

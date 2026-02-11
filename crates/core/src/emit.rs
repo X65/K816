@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use k816_isa65816::{
     AddressOperandMode as IsaAddressOperandMode, AddressingMode, IndexRegister as IsaIndexRegister,
-    OperandShape, decode_instruction, format_instruction, operand_width,
+    OperandShape, decode_instruction_with_mode, format_instruction, operand_width,
     select_encoding,
 };
 use rustc_hash::FxHashMap;
@@ -142,6 +142,36 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
                 segment.nocross_boundary = Some(*boundary);
+            }
+            Op::Rep(mask) => {
+                // REP #mask => opcode 0xC2, 1-byte immediate
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                if let Some(ref func_name) = current_function {
+                    function_instruction_sites.push(FunctionInstructionSite {
+                        segment: current_segment.clone(),
+                        function: func_name.clone(),
+                        offset: segment.bytes.len(),
+                    });
+                }
+                segment.bytes.push(0xC2);
+                segment.bytes.push(*mask);
+            }
+            Op::Sep(mask) => {
+                // SEP #mask => opcode 0xE2, 1-byte immediate
+                let segment = segments
+                    .get_mut(&current_segment)
+                    .expect("current segment must exist during emit");
+                if let Some(ref func_name) = current_function {
+                    function_instruction_sites.push(FunctionInstructionSite {
+                        segment: current_segment.clone(),
+                        function: func_name.clone(),
+                        offset: segment.bytes.len(),
+                    });
+                }
+                segment.bytes.push(0xE2);
+                segment.bytes.push(*mask);
             }
             Op::EmitBytes(bytes) => {
                 let segment = segments
@@ -666,13 +696,27 @@ fn format_disassembly_block(
     let mut out = String::new();
     out.push_str(&format!("[disasm {segment_name}::{function_name}]\n"));
 
+    let mut m_wide = false;
+    let mut x_wide = false;
+
     for &offset in offsets {
         if offset >= bytes.len() {
             continue;
         }
 
-        match decode_instruction(&bytes[offset..]) {
+        match decode_instruction_with_mode(&bytes[offset..], m_wide, x_wide) {
             Ok(decoded) => {
+                // Track mode changes from REP/SEP
+                if decoded.mnemonic == "rep" && !decoded.operand.is_empty() {
+                    let mask = decoded.operand[0];
+                    if mask & 0x20 != 0 { m_wide = true; }
+                    if mask & 0x10 != 0 { x_wide = true; }
+                } else if decoded.mnemonic == "sep" && !decoded.operand.is_empty() {
+                    let mask = decoded.operand[0];
+                    if mask & 0x20 != 0 { m_wide = false; }
+                    if mask & 0x10 != 0 { x_wide = false; }
+                }
+
                 let len = decoded.len();
                 let end = (offset + len).min(bytes.len());
                 let raw = &bytes[offset..end];

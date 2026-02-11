@@ -1,0 +1,15 @@
+[default]
+000000: C2 30 EA E2 30 EA C2 20 E2 10 EA E2 20 EA 60
+
+
+[disasm obj#0 default::main]
+000000: C2 30       rep #$30
+000002: EA          nop
+000003: E2 30       sep #$30
+000005: EA          nop
+000006: C2 20       rep #$20
+000008: E2 10       sep #$10
+00000A: EA          nop
+00000B: E2 20       sep #$20
+00000D: EA          nop
+00000E: 60          rts

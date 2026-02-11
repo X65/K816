@@ -26,6 +26,7 @@ fn normalize_item(item: &Item) -> Item {
                 is_far: block.is_far,
                 is_naked: block.is_naked,
                 is_inline: block.is_inline,
+                mode_contract: block.mode_contract,
                 body,
             })
         }
@@ -77,6 +78,20 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
         Stmt::Instruction(instruction) => Stmt::Instruction(instruction.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
         Stmt::Bytes(values) => Stmt::Bytes(values.clone()),
+        Stmt::ModeSet { a_width, i_width } => Stmt::ModeSet {
+            a_width: *a_width,
+            i_width: *i_width,
+        },
+        Stmt::ModeScopedBlock {
+            a_width,
+            i_width,
+            body,
+        } => Stmt::ModeScopedBlock {
+            a_width: *a_width,
+            i_width: *i_width,
+            body: normalize_stmt_sequence(body),
+        },
+        Stmt::SwapAB => Stmt::SwapAB,
         Stmt::Empty => Stmt::Empty,
         Stmt::Hla(stmt) => Stmt::Hla(normalize_hla_stmt(stmt)),
     }

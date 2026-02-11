@@ -1,0 +1,34 @@
+// Test function mode contracts and call-site bridging
+//
+// - func with @a16 contract emits REP #$20 at entry and call site
+// - func with @a8 @i8 contract emits SEP #$30 at entry and call site
+// - func with @a16 @i16 contract emits REP #$30 (folded)
+// - func with no contract ("uncolored") emits nothing extra at entry or call site
+
+func wide_a @a16 {
+  nop
+}
+
+func narrow_all @a8 @i8 {
+  nop
+}
+
+func wide_all @a16 @i16 {
+  nop
+}
+
+func plain {
+  nop
+}
+
+main {
+  // Colored calls: emit mode bridge before JSR
+  call wide_a
+  call narrow_all
+  call wide_all
+  // Uncolored call: no REP/SEP emitted
+  call plain
+  @a16 call plain
+  @a8  call plain
+  nop
+}

@@ -1,0 +1,13 @@
+// Test @a8/@a16/@i8/@i16 mode set syntax
+// Each generates a REP or SEP instruction
+
+main {
+  @a16
+  nop
+  @a8
+  nop
+  @i16
+  nop
+  @i8
+  nop
+}

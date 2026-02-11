@@ -1,0 +1,39 @@
+// Test block-level mode scoping
+//
+// Prefix block: @a16 { ... } sets mode and restores on exit
+// Inside block switch: @a16 { @a8 ... } restores to @a16 on exit
+// Nested blocks restore correctly
+
+main @a8 @i8 {
+  nop
+
+  // Prefix block: switch to a16, restore to a8 on exit
+  @a16 {
+    nop
+  }
+  nop
+
+  // Prefix block with both: switch to a16 i16, restore to a8 i8 on exit
+  @a16 @i16 {
+    nop
+  }
+  nop
+
+  // Inside block switch: block enters a16, inner changes to a8,
+  // block restore undoes the prefix (a16->a8)
+  @a16 {
+    @a8
+    nop
+  }
+  nop
+
+  // Nested blocks: outer sets a16, inner sets i16, both restore
+  @a16 {
+    nop
+    @i16 {
+      nop
+    }
+    nop
+  }
+  nop
+}

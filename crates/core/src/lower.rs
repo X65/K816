@@ -3,7 +3,7 @@ use k816_assets::AssetFS;
 use crate::ast::{
     BlockKind, DataBlock, DataCommand, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp,
     HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry,
-    Operand, OperandAddrMode, Stmt,
+    Operand, OperandAddrMode, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -14,10 +14,18 @@ use crate::hir::{
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
 
+/// Tracked CPU register width state during lowering.
+#[derive(Debug, Clone, Copy, Default)]
+struct ModeState {
+    a_width: Option<RegWidth>,
+    i_width: Option<RegWidth>,
+}
+
 #[derive(Debug, Default)]
 struct LowerContext {
     next_label: usize,
     do_loop_targets: Vec<String>,
+    mode: ModeState,
 }
 
 struct EvaluatedBytes {
@@ -91,6 +99,14 @@ pub fn lower(
 
                 ops.push(Spanned::new(Op::FunctionStart(scope.clone()), label_span));
                 ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
+                // Mode contract is enforced at call sites, not at function entry.
+                // Just update the tracker so the body knows its assumed mode.
+                if let Some(a) = block.mode_contract.a_width {
+                    block_ctx.mode.a_width = Some(a);
+                }
+                if let Some(i) = block.mode_contract.i_width {
+                    block_ctx.mode.i_width = Some(i);
+                }
                 for stmt in block.body.iter().skip(body_start) {
                     lower_stmt(
                         &stmt.node,
@@ -341,6 +357,13 @@ fn lower_stmt(
                 return;
             };
 
+            lower_mode_set(
+                meta.mode_contract.a_width,
+                meta.mode_contract.i_width,
+                span,
+                ops,
+            );
+
             let mnemonic = if meta.is_far { "jsl" } else { "jsr" };
             ops.push(Spanned::new(
                 Op::Instruction(InstructionOp {
@@ -408,7 +431,99 @@ fn lower_stmt(
         Stmt::Hla(stmt) => {
             lower_hla_stmt(stmt, span, scope, sema, ctx, diagnostics, ops);
         }
+        Stmt::ModeSet { a_width, i_width } => {
+            lower_mode_set(*a_width, *i_width, span, ops);
+            if let Some(a) = a_width {
+                ctx.mode.a_width = Some(*a);
+            }
+            if let Some(i) = i_width {
+                ctx.mode.i_width = Some(*i);
+            }
+        }
+        Stmt::ModeScopedBlock {
+            a_width,
+            i_width,
+            body,
+        } => {
+            let saved_mode = ctx.mode;
+            // Apply block's mode prefix
+            lower_mode_set(*a_width, *i_width, span, ops);
+            if let Some(a) = a_width {
+                ctx.mode.a_width = Some(*a);
+            }
+            if let Some(i) = i_width {
+                ctx.mode.i_width = Some(*i);
+            }
+            // Lower body
+            for s in body {
+                lower_stmt(
+                    &s.node, s.span, scope, sema, fs, current_segment, ctx, diagnostics, ops,
+                );
+            }
+            // Restore mode: emit ops to return to saved state
+            lower_mode_restore(ctx.mode, saved_mode, span, ops);
+            ctx.mode = saved_mode;
+        }
+        Stmt::SwapAB => {
+            ops.push(Spanned::new(
+                Op::Instruction(InstructionOp {
+                    mnemonic: "xba".to_string(),
+                    operand: None,
+                }),
+                span,
+            ));
+        }
         Stmt::Var(_) | Stmt::Empty => {}
+    }
+}
+
+fn lower_mode_set(
+    a_width: Option<RegWidth>,
+    i_width: Option<RegWidth>,
+    span: Span,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    // @a16 => rep(0x20), @a8 => sep(0x20)
+    // @i16 => rep(0x10), @i8 => sep(0x10)
+    match a_width {
+        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep(0x20), span)),
+        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep(0x20), span)),
+        None => {}
+    }
+    match i_width {
+        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep(0x10), span)),
+        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep(0x10), span)),
+        None => {}
+    }
+}
+
+/// Emit REP/SEP ops to restore from `current` mode back to `saved` mode.
+/// Only emits for dimensions where both states are known and differ.
+fn lower_mode_restore(
+    current: ModeState,
+    saved: ModeState,
+    span: Span,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    // Restore A width
+    match (saved.a_width, current.a_width) {
+        (Some(RegWidth::W16), Some(RegWidth::W8)) => {
+            ops.push(Spanned::new(Op::Rep(0x20), span));
+        }
+        (Some(RegWidth::W8), Some(RegWidth::W16)) => {
+            ops.push(Spanned::new(Op::Sep(0x20), span));
+        }
+        _ => {}
+    }
+    // Restore index width
+    match (saved.i_width, current.i_width) {
+        (Some(RegWidth::W16), Some(RegWidth::W8)) => {
+            ops.push(Spanned::new(Op::Rep(0x10), span));
+        }
+        (Some(RegWidth::W8), Some(RegWidth::W16)) => {
+            ops.push(Spanned::new(Op::Sep(0x10), span));
+        }
+        _ => {}
     }
 }
 
@@ -857,6 +972,7 @@ fn eval_to_number_strict(
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
             }
         }
+        Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
     }
 }
 
@@ -965,7 +1081,7 @@ fn lower_instruction(
                     *force_far,
                     mode,
                 )?),
-                Expr::Binary { .. } | Expr::Unary { .. } => {
+                Expr::Binary { .. } | Expr::Unary { .. } | Expr::TypedView { .. } => {
                     let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
                         return None;
                     };
@@ -1044,6 +1160,7 @@ fn eval_to_number(
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
             }
         }
+        Expr::TypedView { expr, .. } => eval_to_number(expr, scope, sema, span, diagnostics),
     }
 }
 

@@ -1,0 +1,7 @@
+// Test b><a swap operator emits XBA instruction
+
+main {
+  nop
+  b><a
+  nop
+}

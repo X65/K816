@@ -1,0 +1,17 @@
+// Test mode set combined with real instructions
+// Verifies mode ops interleave correctly with instruction encoding
+
+main {
+  @a16
+  nop
+  lda #$12
+  @a8
+  nop
+  @i16
+  b><a
+  @i8
+  nop
+  @a8
+  b><a
+  nop
+}

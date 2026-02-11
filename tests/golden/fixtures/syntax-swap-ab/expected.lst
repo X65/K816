@@ -1,0 +1,9 @@
+[default]
+000000: EA EB EA 60
+
+
+[disasm obj#0 default::main]
+000000: EA          nop
+000001: EB          xba
+000002: EA          nop
+000003: 60          rts

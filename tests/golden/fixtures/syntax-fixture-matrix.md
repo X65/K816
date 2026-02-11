@@ -5,6 +5,8 @@ These `syntax-*` fixtures prioritize legacy K65 surface syntax as documented in:
 - `docs/legacy/syntax.md`
 - `docs/legacy/instructions.md`
 - `docs/legacy/examples.md`
+- `vendor/doc/docs/instructions.md`
+- `vendor/src/compiler_src.cpp` (`ADDRMODES`: `AM_VAR_Y`, `AM_IND`, `AM_IND_X`, `AM_IND_Y`)
 
 Key focus areas:
 
@@ -21,6 +23,8 @@ Primary operator-coverage fixture:
 - `syntax-postfix-gt-efficiency-warning`
 - `syntax-data-address-byte-operators`
 - `syntax-data-address-byte-main-symbol`
+- `syntax-doc-instructions-indexed-y`
+- `syntax-c-addrmodes-indirect-xy`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.
 

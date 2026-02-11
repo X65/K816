@@ -41,13 +41,27 @@ pub struct InstructionOp {
     pub operand: Option<OperandOp>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexRegister {
+    X,
+    Y,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressOperandMode {
+    Direct { index: Option<IndexRegister> },
+    Indirect,
+    IndexedIndirectX,
+    IndirectIndexedY,
+}
+
 #[derive(Debug, Clone)]
 pub enum OperandOp {
     Immediate(i64),
     Address {
         value: AddressValue,
         force_far: bool,
-        index_x: bool,
+        mode: AddressOperandMode,
     },
 }
 

@@ -38,8 +38,22 @@ pub enum OperandShape {
     Address {
         literal: Option<u32>,
         force_far: bool,
-        indexed_x: bool,
+        mode: AddressOperandMode,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressOperandMode {
+    Direct { index: Option<IndexRegister> },
+    Indirect,
+    IndexedIndirectX,
+    IndirectIndexedY,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexRegister {
+    X,
+    Y,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -439,87 +453,194 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
         OperandShape::Address {
             literal,
             force_far,
-            indexed_x,
+            mode,
         } => {
-            if !indexed_x {
-                if modes.contains(&AddressingMode::Relative8) {
+            match mode {
+                AddressOperandMode::Direct { index } => {
+                    if index.is_none() {
+                        if modes.contains(&AddressingMode::Relative8) {
+                            if force_far {
+                                return Err(EncodeError::InvalidOperand {
+                                    mnemonic: mnemonic.to_string(),
+                                });
+                            }
+                            let opcode = find_opcode(&lower, AddressingMode::Relative8)
+                                .expect("relative mode should exist");
+                            return Ok(Encoding {
+                                opcode,
+                                mode: AddressingMode::Relative8,
+                            });
+                        }
+                        if modes.contains(&AddressingMode::Relative16) {
+                            if force_far {
+                                return Err(EncodeError::InvalidOperand {
+                                    mnemonic: mnemonic.to_string(),
+                                });
+                            }
+                            let opcode = find_opcode(&lower, AddressingMode::Relative16)
+                                .expect("relative mode should exist");
+                            return Ok(Encoding {
+                                opcode,
+                                mode: AddressingMode::Relative16,
+                            });
+                        }
+                    }
+
+                    let wants_long = force_far || literal.is_some_and(|value| value > 0xFFFF);
+                    match index {
+                        Some(IndexRegister::X) => {
+                            if wants_long {
+                                if let Some(opcode) =
+                                    find_opcode(&lower, AddressingMode::AbsoluteLongX)
+                                {
+                                    return Ok(Encoding {
+                                        opcode,
+                                        mode: AddressingMode::AbsoluteLongX,
+                                    });
+                                }
+                                return Err(EncodeError::NoLongForm {
+                                    mnemonic: mnemonic.to_string(),
+                                });
+                            }
+
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteX) {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::AbsoluteX,
+                                });
+                            }
+                            if let Some(opcode) =
+                                find_opcode(&lower, AddressingMode::AbsoluteLongX)
+                            {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::AbsoluteLongX,
+                                });
+                            }
+                        }
+                        Some(IndexRegister::Y) => {
+                            if wants_long {
+                                return Err(EncodeError::NoLongForm {
+                                    mnemonic: mnemonic.to_string(),
+                                });
+                            }
+
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteY) {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::AbsoluteY,
+                                });
+                            }
+                        }
+                        None => {
+                            if wants_long {
+                                if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLong)
+                                {
+                                    return Ok(Encoding {
+                                        opcode,
+                                        mode: AddressingMode::AbsoluteLong,
+                                    });
+                                }
+                                return Err(EncodeError::NoLongForm {
+                                    mnemonic: mnemonic.to_string(),
+                                });
+                            }
+
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::Absolute) {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::Absolute,
+                                });
+                            }
+                            if let Some(opcode) =
+                                find_opcode(&lower, AddressingMode::AbsoluteLong)
+                            {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::AbsoluteLong,
+                                });
+                            }
+                        }
+                    }
+                }
+                AddressOperandMode::Indirect => {
                     if force_far {
                         return Err(EncodeError::InvalidOperand {
                             mnemonic: mnemonic.to_string(),
                         });
                     }
-                    let opcode = find_opcode(&lower, AddressingMode::Relative8)
-                        .expect("relative mode should exist");
-                    return Ok(Encoding {
-                        opcode,
-                        mode: AddressingMode::Relative8,
-                    });
-                }
-                if modes.contains(&AddressingMode::Relative16) {
-                    if force_far {
+
+                    if literal.is_some_and(|value| value <= 0xFF) {
+                        if let Some(opcode) =
+                            find_opcode(&lower, AddressingMode::DirectPageIndirect)
+                        {
+                            return Ok(Encoding {
+                                opcode,
+                                mode: AddressingMode::DirectPageIndirect,
+                            });
+                        }
+                    }
+
+                    if literal.is_some_and(|value| value > 0xFFFF) {
                         return Err(EncodeError::InvalidOperand {
                             mnemonic: mnemonic.to_string(),
                         });
                     }
-                    let opcode = find_opcode(&lower, AddressingMode::Relative16)
-                        .expect("relative mode should exist");
-                    return Ok(Encoding {
-                        opcode,
-                        mode: AddressingMode::Relative16,
-                    });
-                }
-            }
 
-            let wants_long = force_far || literal.is_some_and(|value| value > 0xFFFF);
-            if indexed_x {
-                if wants_long {
-                    if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLongX) {
+                    if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteIndirect) {
                         return Ok(Encoding {
                             opcode,
-                            mode: AddressingMode::AbsoluteLongX,
+                            mode: AddressingMode::AbsoluteIndirect,
                         });
                     }
-                    return Err(EncodeError::NoLongForm {
-                        mnemonic: mnemonic.to_string(),
-                    });
-                }
-
-                if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteX) {
-                    return Ok(Encoding {
-                        opcode,
-                        mode: AddressingMode::AbsoluteX,
-                    });
-                }
-                if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLongX) {
-                    return Ok(Encoding {
-                        opcode,
-                        mode: AddressingMode::AbsoluteLongX,
-                    });
-                }
-            } else {
-                if wants_long {
-                    if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLong) {
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::AbsoluteIndirectLong)
+                    {
                         return Ok(Encoding {
                             opcode,
-                            mode: AddressingMode::AbsoluteLong,
+                            mode: AddressingMode::AbsoluteIndirectLong,
                         });
                     }
-                    return Err(EncodeError::NoLongForm {
-                        mnemonic: mnemonic.to_string(),
-                    });
                 }
+                AddressOperandMode::IndexedIndirectX => {
+                    if force_far || literal.is_none() || literal.is_some_and(|value| value > 0xFF) {
+                        return Err(EncodeError::InvalidOperand {
+                            mnemonic: mnemonic.to_string(),
+                        });
+                    }
 
-                if let Some(opcode) = find_opcode(&lower, AddressingMode::Absolute) {
-                    return Ok(Encoding {
-                        opcode,
-                        mode: AddressingMode::Absolute,
-                    });
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::DirectPageIndexedIndirectX)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::DirectPageIndexedIndirectX,
+                        });
+                    }
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::AbsoluteIndexedIndirectX)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::AbsoluteIndexedIndirectX,
+                        });
+                    }
                 }
-                if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteLong) {
-                    return Ok(Encoding {
-                        opcode,
-                        mode: AddressingMode::AbsoluteLong,
-                    });
+                AddressOperandMode::IndirectIndexedY => {
+                    if force_far || literal.is_none() || literal.is_some_and(|value| value > 0xFF) {
+                        return Err(EncodeError::InvalidOperand {
+                            mnemonic: mnemonic.to_string(),
+                        });
+                    }
+
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::DirectPageIndirectIndexedY)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::DirectPageIndirectIndexedY,
+                        });
+                    }
                 }
             }
 
@@ -716,7 +837,7 @@ mod tests {
             OperandShape::Address {
                 literal: Some(1),
                 force_far: true,
-                indexed_x: false,
+                mode: AddressOperandMode::Direct { index: None },
             },
         )
         .expect_err("must fail");
@@ -730,7 +851,7 @@ mod tests {
             OperandShape::Address {
                 literal: Some(0x1234),
                 force_far: false,
-                indexed_x: false,
+                mode: AddressOperandMode::Direct { index: None },
             },
         )
         .expect("encoding");
@@ -745,7 +866,9 @@ mod tests {
             OperandShape::Address {
                 literal: Some(0x1234),
                 force_far: false,
-                indexed_x: true,
+                mode: AddressOperandMode::Direct {
+                    index: Some(IndexRegister::X),
+                },
             },
         )
         .expect("encoding");
@@ -756,11 +879,57 @@ mod tests {
             OperandShape::Address {
                 literal: Some(0x12_3456),
                 force_far: false,
-                indexed_x: true,
+                mode: AddressOperandMode::Direct {
+                    index: Some(IndexRegister::X),
+                },
             },
         )
         .expect("encoding");
         assert_eq!(long.opcode, 0xBF);
+    }
+
+    #[test]
+    fn selects_lda_abs_y() {
+        let abs_y = select_encoding(
+            "lda",
+            OperandShape::Address {
+                literal: Some(0x1234),
+                force_far: false,
+                mode: AddressOperandMode::Direct {
+                    index: Some(IndexRegister::Y),
+                },
+            },
+        )
+        .expect("encoding");
+        assert_eq!(abs_y.opcode, 0xB9);
+        assert_eq!(abs_y.mode, AddressingMode::AbsoluteY);
+    }
+
+    #[test]
+    fn selects_lda_dp_indirect_indexed_modes() {
+        let ind_x = select_encoding(
+            "lda",
+            OperandShape::Address {
+                literal: Some(0x20),
+                force_far: false,
+                mode: AddressOperandMode::IndexedIndirectX,
+            },
+        )
+        .expect("encoding");
+        assert_eq!(ind_x.opcode, 0xA1);
+        assert_eq!(ind_x.mode, AddressingMode::DirectPageIndexedIndirectX);
+
+        let ind_y = select_encoding(
+            "lda",
+            OperandShape::Address {
+                literal: Some(0x20),
+                force_far: false,
+                mode: AddressOperandMode::IndirectIndexedY,
+            },
+        )
+        .expect("encoding");
+        assert_eq!(ind_y.opcode, 0xB1);
+        assert_eq!(ind_y.mode, AddressingMode::DirectPageIndirectIndexedY);
     }
 
     #[test]

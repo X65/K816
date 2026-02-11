@@ -1,4 +1,6 @@
-use k816_core::hir::{AddressValue, ByteRelocationKind, Op, OperandOp, Program};
+use k816_core::hir::{
+    AddressOperandMode, AddressValue, ByteRelocationKind, IndexRegister, Op, OperandOp, Program,
+};
 
 pub fn format_ir(program: &Program) -> String {
     let mut out = String::new();
@@ -46,18 +48,28 @@ pub fn format_ir(program: &Program) -> String {
                         OperandOp::Address {
                             value,
                             force_far,
-                            index_x,
+                            mode,
                         } => {
                             if *force_far {
                                 out.push_str("far ");
                             }
-                            match value {
-                                AddressValue::Literal(value) => out.push_str(&value.to_string()),
-                                AddressValue::Label(name) => out.push_str(name),
-                            }
-                            if *index_x {
-                                out.push_str(",x");
-                            }
+                            let base = match value {
+                                AddressValue::Literal(value) => value.to_string(),
+                                AddressValue::Label(name) => name.clone(),
+                            };
+                            let rendered = match mode {
+                                AddressOperandMode::Direct {
+                                    index: Some(IndexRegister::X),
+                                } => format!("{base},x"),
+                                AddressOperandMode::Direct {
+                                    index: Some(IndexRegister::Y),
+                                } => format!("{base},y"),
+                                AddressOperandMode::Direct { index: None } => base,
+                                AddressOperandMode::Indirect => format!("({base})"),
+                                AddressOperandMode::IndexedIndirectX => format!("({base},x)"),
+                                AddressOperandMode::IndirectIndexedY => format!("({base}),y"),
+                            };
+                            out.push_str(&rendered);
                         }
                     }
                 }

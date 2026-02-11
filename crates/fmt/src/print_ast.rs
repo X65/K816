@@ -1,6 +1,6 @@
 use k816_core::ast::{
     BlockKind, DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt,
-    Instruction, Item, NamedDataEntry, Operand, Stmt,
+    Instruction, Item, NamedDataEntry, Operand, OperandAddrMode, Stmt,
 };
 
 pub fn format_ast(file: &File) -> String {
@@ -99,11 +99,9 @@ fn format_instruction(instr: &Instruction) -> String {
             expr,
             force_far,
             index,
+            addr_mode,
         }) => {
-            let mut value = format_expr(expr);
-            if index.is_some() {
-                value.push_str(",x");
-            }
+            let value = format_address_operand(expr, *index, *addr_mode);
             if *force_far {
                 format!("{} far {}", instr.mnemonic, value)
             } else {
@@ -228,13 +226,11 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
 fn format_hla_rhs(rhs: &HlaRhs) -> String {
     match rhs {
         HlaRhs::Immediate(expr) => format!("#{}", format_expr(expr)),
-        HlaRhs::Value { expr, index } => {
-            let mut value = format_expr(expr);
-            if index.is_some() {
-                value.push_str(",x");
-            }
-            value
-        }
+        HlaRhs::Value {
+            expr,
+            index,
+            addr_mode,
+        } => format_address_operand(expr, *index, *addr_mode),
     }
 }
 
@@ -264,4 +260,22 @@ fn line(out: &mut String, indent: usize, text: String) {
     out.push_str(&" ".repeat(indent));
     out.push_str(&text);
     out.push('\n');
+}
+
+fn format_address_operand(
+    expr: &Expr,
+    index: Option<k816_core::ast::IndexRegister>,
+    addr_mode: OperandAddrMode,
+) -> String {
+    let expr = format_expr(expr);
+    match addr_mode {
+        OperandAddrMode::Direct => match index {
+            None => expr,
+            Some(k816_core::ast::IndexRegister::X) => format!("{expr},x"),
+            Some(k816_core::ast::IndexRegister::Y) => format!("{expr},y"),
+        },
+        OperandAddrMode::Indirect => format!("({expr})"),
+        OperandAddrMode::IndexedIndirectX => format!("({expr},x)"),
+        OperandAddrMode::IndirectIndexedY => format!("({expr}),y"),
+    }
 }

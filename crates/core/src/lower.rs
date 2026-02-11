@@ -3,12 +3,13 @@ use k816_assets::AssetFS;
 use crate::ast::{
     BlockKind, DataBlock, DataCommand, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp,
     HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry,
-    Operand, Stmt,
+    Operand, OperandAddrMode, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
 use crate::hir::{
-    AddressValue, ByteRelocation, ByteRelocationKind, InstructionOp, Op, OperandOp, Program,
+    AddressOperandMode, AddressValue, ByteRelocation, ByteRelocationKind, IndexRegister,
+    InstructionOp, Op, OperandOp, Program,
 };
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
@@ -317,7 +318,7 @@ fn lower_stmt(
                             operand: Some(OperandOp::Address {
                                 value: AddressValue::Label(target),
                                 force_far: meta.is_far,
-                                index_x: false,
+                                mode: AddressOperandMode::Direct { index: None },
                             }),
                         }),
                         span,
@@ -347,7 +348,7 @@ fn lower_stmt(
                     operand: Some(OperandOp::Address {
                         value: AddressValue::Label(target),
                         force_far: meta.is_far,
-                        index_x: false,
+                        mode: AddressOperandMode::Direct { index: None },
                     }),
                 }),
                 span,
@@ -415,10 +416,15 @@ fn lower_hla_stmt(
                 mnemonic: "lda".to_string(),
                 operand: Some(match rhs {
                     HlaRhs::Immediate(expr) => Operand::Immediate(expr.clone()),
-                    HlaRhs::Value { expr, index } => Operand::Value {
+                    HlaRhs::Value {
+                        expr,
+                        index,
+                        addr_mode,
+                    } => Operand::Value {
                         expr: expr.clone(),
                         force_far: false,
                         index: *index,
+                        addr_mode: *addr_mode,
                     },
                 }),
             };
@@ -432,6 +438,7 @@ fn lower_hla_stmt(
                     expr: Expr::Ident(dest.clone()),
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             };
             lower_instruction_and_push(&rhs_instruction, scope, sema, span, diagnostics, ops);
@@ -448,6 +455,7 @@ fn lower_hla_stmt(
                     expr: Expr::Ident(symbol.clone()),
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             };
             if !lower_instruction_and_push(&bit_instruction, scope, sema, span, diagnostics, ops) {
@@ -678,6 +686,7 @@ fn emit_branch_to_label(
             expr: Expr::Ident(target.to_string()),
             force_far: false,
             index: None,
+            addr_mode: OperandAddrMode::Direct,
         }),
     };
     let _ = lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
@@ -880,8 +889,9 @@ fn lower_instruction(
             expr,
             force_far,
             index,
+            addr_mode,
         }) => {
-            let index_x = index.is_some();
+            let mode = lower_operand_mode(*addr_mode, *index);
             match expr {
                 Expr::Number(value) => {
                     let address = u32::try_from(*value).map_err(|_| {
@@ -891,7 +901,7 @@ fn lower_instruction(
                         Ok(address) => Some(OperandOp::Address {
                             value: AddressValue::Literal(address),
                             force_far: *force_far,
-                            index_x,
+                            mode,
                         }),
                         Err(diag) => {
                             diagnostics.push(diag);
@@ -906,7 +916,7 @@ fn lower_instruction(
                     span,
                     diagnostics,
                     *force_far,
-                    index_x,
+                    mode,
                 )?),
                 Expr::Binary { .. } | Expr::Unary { .. } => {
                     let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
@@ -922,7 +932,7 @@ fn lower_instruction(
                     Some(OperandOp::Address {
                         value: AddressValue::Literal(address),
                         force_far: *force_far,
-                        index_x,
+                        mode,
                     })
                 }
                 Expr::EvalText(_) => {
@@ -990,6 +1000,27 @@ fn eval_to_number(
     }
 }
 
+fn lower_operand_mode(
+    addr_mode: OperandAddrMode,
+    index: Option<crate::ast::IndexRegister>,
+) -> AddressOperandMode {
+    match addr_mode {
+        OperandAddrMode::Direct => AddressOperandMode::Direct {
+            index: index.map(lower_index_register),
+        },
+        OperandAddrMode::Indirect => AddressOperandMode::Indirect,
+        OperandAddrMode::IndexedIndirectX => AddressOperandMode::IndexedIndirectX,
+        OperandAddrMode::IndirectIndexedY => AddressOperandMode::IndirectIndexedY,
+    }
+}
+
+fn lower_index_register(index: crate::ast::IndexRegister) -> IndexRegister {
+    match index {
+        crate::ast::IndexRegister::X => IndexRegister::X,
+        crate::ast::IndexRegister::Y => IndexRegister::Y,
+    }
+}
+
 fn resolve_operand_ident(
     name: &str,
     scope: Option<&str>,
@@ -997,14 +1028,14 @@ fn resolve_operand_ident(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
     force_far: bool,
-    index_x: bool,
+    mode: AddressOperandMode,
 ) -> Option<OperandOp> {
     if name.starts_with('.') {
         let resolved = resolve_symbol(name, scope, span, diagnostics)?;
         return Some(OperandOp::Address {
             value: AddressValue::Label(resolved),
             force_far,
-            index_x,
+            mode,
         });
     }
 
@@ -1012,7 +1043,7 @@ fn resolve_operand_ident(
         return Some(OperandOp::Address {
             value: AddressValue::Literal(var.address),
             force_far,
-            index_x,
+            mode,
         });
     }
 
@@ -1020,14 +1051,14 @@ fn resolve_operand_ident(
         return Some(OperandOp::Address {
             value: AddressValue::Label(name.to_string()),
             force_far,
-            index_x,
+            mode,
         });
     }
 
     Some(OperandOp::Address {
         value: AddressValue::Label(name.to_string()),
         force_far,
-        index_x,
+        mode,
     })
 }
 
@@ -1053,7 +1084,7 @@ fn resolve_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{AddressValue, OperandOp};
+    use crate::hir::{AddressOperandMode, AddressValue, OperandOp};
     use crate::parser::parse;
     use crate::sema::analyze;
     use crate::span::SourceId;
@@ -1082,10 +1113,10 @@ mod tests {
             OperandOp::Address {
                 value,
                 force_far,
-                index_x,
+                mode,
             } => {
                 assert!(!force_far);
-                assert!(!index_x);
+                assert_eq!(*mode, AddressOperandMode::Direct { index: None });
                 assert!(matches!(value, AddressValue::Literal(0x1234)));
             }
             _ => panic!("expected address operand"),
@@ -1210,7 +1241,7 @@ mod tests {
             OperandOp::Address {
                 value: AddressValue::Literal(0x1234),
                 force_far: false,
-                index_x: false
+                mode: AddressOperandMode::Direct { index: None }
             }
         ));
     }

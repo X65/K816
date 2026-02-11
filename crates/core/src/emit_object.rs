@@ -1,14 +1,19 @@
 use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
-use k816_isa65816::{AddressingMode, OperandShape, operand_width, select_encoding};
+use k816_isa65816::{
+    AddressOperandMode as IsaAddressOperandMode, AddressingMode, IndexRegister as IsaIndexRegister,
+    OperandShape, operand_width, select_encoding,
+};
 use k816_o65::{
     DataStringFragment, FunctionDisassembly, O65Object, Relocation, RelocationKind, Section,
     SectionChunk, SourceLocation, Symbol, SymbolDefinition,
 };
 
 use crate::diag::Diagnostic;
-use crate::hir::{AddressValue, ByteRelocationKind, Op, OperandOp, Program};
+use crate::hir::{
+    AddressOperandMode, AddressValue, ByteRelocationKind, IndexRegister, Op, OperandOp, Program,
+};
 use crate::span::{SourceMap, Span};
 
 #[derive(Debug, Clone)]
@@ -39,6 +44,20 @@ struct FunctionInstructionSite {
     segment: String,
     function: String,
     offset: u32,
+}
+
+fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
+    match mode {
+        AddressOperandMode::Direct { index } => IsaAddressOperandMode::Direct {
+            index: index.map(|index| match index {
+                IndexRegister::X => IsaIndexRegister::X,
+                IndexRegister::Y => IsaIndexRegister::Y,
+            }),
+        },
+        AddressOperandMode::Indirect => IsaAddressOperandMode::Indirect,
+        AddressOperandMode::IndexedIndirectX => IsaAddressOperandMode::IndexedIndirectX,
+        AddressOperandMode::IndirectIndexedY => IsaAddressOperandMode::IndirectIndexedY,
+    }
 }
 
 pub fn emit_object(
@@ -189,17 +208,17 @@ pub fn emit_object(
                     Some(OperandOp::Address {
                         value,
                         force_far,
-                        index_x,
+                        mode,
                     }) => match value {
                         AddressValue::Literal(literal) => OperandShape::Address {
                             literal: Some(*literal),
                             force_far: *force_far,
-                            indexed_x: *index_x,
+                            mode: to_isa_address_mode(*mode),
                         },
                         AddressValue::Label(_) => OperandShape::Address {
                             literal: None,
                             force_far: *force_far,
-                            indexed_x: *index_x,
+                            mode: to_isa_address_mode(*mode),
                         },
                     },
                 };

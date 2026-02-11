@@ -1,8 +1,8 @@
 use crate::ast::{
     BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, Expr, ExprBinaryOp,
     ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister,
-    Instruction, Item, LabelDecl, NamedDataBlock, NamedDataEntry, Operand, SegmentDecl, Stmt,
-    VarDecl,
+    Instruction, Item, LabelDecl, NamedDataBlock, NamedDataEntry, Operand, OperandAddrMode,
+    SegmentDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -18,6 +18,13 @@ use chumsky::{
 
 type ParseError<'src> = Rich<'src, TokenKind>;
 type ParseExtra<'src> = extra::Err<ParseError<'src>>;
+
+#[derive(Debug, Clone)]
+struct ParsedOperandExpr {
+    expr: Expr,
+    index: Option<IndexRegister>,
+    addr_mode: OperandAddrMode,
+}
 
 #[derive(Debug, Clone)]
 pub struct ParseOutput {
@@ -1007,20 +1014,12 @@ where
             .or_not()
             .then(expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not()))
             .try_map(|(force_far, (expr, index)), span| {
-                let index = match index {
-                    None => None,
-                    Some(value) if value.eq_ignore_ascii_case("x") => Some(IndexRegister::X),
-                    Some(value) => {
-                        return Err(Rich::custom(
-                            span,
-                            format!("unsupported index register '{value}', expected 'x'"),
-                        ));
-                    }
-                };
+                let index = parse_index_register(index, span)?;
                 Ok(Some(Operand::Value {
                     expr,
                     force_far: force_far.is_some(),
                     index,
+                    addr_mode: OperandAddrMode::Direct,
                 }))
             }));
 
@@ -1137,25 +1136,19 @@ where
         .ignore_then(expr_parser())
         .map(HlaRhs::Immediate);
 
-    let value = expr_parser()
-        .then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not())
-        .try_map(|(expr, index), span| {
-            let index = match index {
-                None => None,
-                Some(value) if value.eq_ignore_ascii_case("x") => Some(IndexRegister::X),
-                Some(value) => {
-                    return Err(Rich::custom(
-                        span,
-                        format!("unsupported index register '{value}', expected 'x'"),
-                    ));
-                }
-            };
+    let value = legacy_operand_expr_parser().map(|parsed| {
+        if parsed.addr_mode == OperandAddrMode::Direct
+            && parsed.index.is_none()
+            && !matches!(parsed.expr, Expr::Ident(_))
+        {
+            return HlaRhs::Immediate(parsed.expr);
+        }
 
-            if index.is_none() && !matches!(expr, Expr::Ident(_)) {
-                return Ok(HlaRhs::Immediate(expr));
-            }
-
-            Ok(HlaRhs::Value { expr, index })
+        HlaRhs::Value {
+            expr: parsed.expr,
+            index: parsed.index,
+            addr_mode: parsed.addr_mode,
+        }
         });
 
     immediate.or(value).boxed()
@@ -1204,21 +1197,26 @@ where
         TokenKind::Ident(value) if is_register_name(&value) => value
     }
     .then_ignore(just(TokenKind::Eq))
-    .then(legacy_operand_expr_with_index_parser())
-    .map(|(lhs, (rhs, index))| {
+    .then(legacy_operand_expr_parser())
+    .map(|(lhs, parsed)| {
         let lhs = lhs.to_ascii_lowercase();
-        let rhs_ident = match &rhs {
+        let rhs_ident = match &parsed.expr {
             Expr::Ident(value) => Some(value.to_ascii_lowercase()),
             _ => None,
         };
 
-        let transfer = match (lhs.as_str(), rhs_ident.as_deref(), index.as_deref()) {
-            ("x", Some("a"), None) => Some("tax"),
-            ("y", Some("a"), None) => Some("tay"),
-            ("a", Some("x"), None) => Some("txa"),
-            ("a", Some("y"), None) => Some("tya"),
-            ("x", Some("s"), None) => Some("tsx"),
-            ("s", Some("x"), None) => Some("txs"),
+        let transfer = match (
+            lhs.as_str(),
+            rhs_ident.as_deref(),
+            parsed.addr_mode,
+            parsed.index,
+        ) {
+            ("x", Some("a"), OperandAddrMode::Direct, None) => Some("tax"),
+            ("y", Some("a"), OperandAddrMode::Direct, None) => Some("tay"),
+            ("a", Some("x"), OperandAddrMode::Direct, None) => Some("txa"),
+            ("a", Some("y"), OperandAddrMode::Direct, None) => Some("tya"),
+            ("x", Some("s"), OperandAddrMode::Direct, None) => Some("tsx"),
+            ("s", Some("x"), OperandAddrMode::Direct, None) => Some("txs"),
             _ => None,
         };
 
@@ -1233,22 +1231,18 @@ where
             _ => return Stmt::Empty,
         };
 
-        let index_x = index
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case("x"));
-        let is_value = index_x || expr_is_address_like(&rhs);
+        let is_value = parsed.addr_mode != OperandAddrMode::Direct
+            || parsed.index.is_some()
+            || expr_is_address_like(&parsed.expr);
         let operand = if is_value {
             Operand::Value {
-                expr: rhs,
+                expr: parsed.expr,
                 force_far: false,
-                index: if index_x {
-                    Some(IndexRegister::X)
-                } else {
-                    None
-                },
+                index: parsed.index,
+                addr_mode: parsed.addr_mode,
             }
         } else {
-            Operand::Immediate(rhs)
+            Operand::Immediate(parsed.expr)
         };
 
         instruction_stmt(mnemonic, Some(operand))
@@ -1260,14 +1254,14 @@ fn legacy_store_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    legacy_operand_expr_with_index_parser()
+    legacy_operand_expr_parser()
         .then_ignore(just(TokenKind::Eq))
         .then(chumsky::select! {
             TokenKind::Ident(value) if value.eq_ignore_ascii_case("a")
                 || value.eq_ignore_ascii_case("x")
                 || value.eq_ignore_ascii_case("y") => value
         })
-        .map(|((dest, index), rhs)| {
+        .map(|(dest, rhs)| {
             let mnemonic = if rhs.eq_ignore_ascii_case("a") {
                 "sta"
             } else if rhs.eq_ignore_ascii_case("x") {
@@ -1276,38 +1270,71 @@ where
                 "sty"
             };
 
-            let index_x = index
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case("x"));
             instruction_stmt(
                 mnemonic,
                 Some(Operand::Value {
-                    expr: dest,
+                    expr: dest.expr,
                     force_far: false,
-                    index: if index_x {
-                        Some(IndexRegister::X)
-                    } else {
-                        None
-                    },
+                    index: dest.index,
+                    addr_mode: dest.addr_mode,
                 }),
             )
         })
 }
 
-fn legacy_operand_expr_with_index_parser<'src, I>()
--> impl chumsky::Parser<'src, I, (Expr, Option<String>), ParseExtra<'src>> + Clone
+fn legacy_operand_expr_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, ParsedOperandExpr, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let plain = expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not());
+    let index = just(TokenKind::Comma)
+        .ignore_then(ident_parser())
+        .or_not()
+        .try_map(parse_index_register);
+
+    let plain = expr_parser()
+        .then(index.clone())
+        .map(|(expr, index)| ParsedOperandExpr {
+            expr,
+            index,
+            addr_mode: OperandAddrMode::Direct,
+        });
 
     let parenthesized = just(TokenKind::LParen)
-        .ignore_then(
-            expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not()),
-        )
+        .ignore_then(expr_parser().then(index.clone()))
         .then_ignore(just(TokenKind::RParen))
-        .then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not())
-        .map(|((expr, inner_index), outer_index)| (expr, outer_index.or(inner_index)));
+        .then(index.clone())
+        .try_map(|((expr, inner_index), outer_index), span| {
+            let (index, addr_mode) = match (inner_index, outer_index) {
+                (None, None) => (None, OperandAddrMode::Indirect),
+                (Some(IndexRegister::X), None) => (None, OperandAddrMode::IndexedIndirectX),
+                (None, Some(IndexRegister::Y)) => (None, OperandAddrMode::IndirectIndexedY),
+                (Some(IndexRegister::Y), None) => {
+                    return Err(Rich::custom(
+                        span,
+                        "unsupported indirect index register 'y', expected '(expr,x)'",
+                    ));
+                }
+                (None, Some(IndexRegister::X)) => {
+                    return Err(Rich::custom(
+                        span,
+                        "unsupported post-indirect index register 'x', expected '(expr),y'",
+                    ));
+                }
+                (Some(_), Some(_)) => {
+                    return Err(Rich::custom(
+                        span,
+                        "invalid indirect operand: choose either '(expr,x)' or '(expr),y'",
+                    ));
+                }
+            };
+
+            Ok(ParsedOperandExpr {
+                expr,
+                index,
+                addr_mode,
+            })
+        });
 
     parenthesized.or(plain)
 }
@@ -1328,6 +1355,7 @@ where
                 expr: rhs,
                 force_far: false,
                 index: None,
+                addr_mode: OperandAddrMode::Direct,
             }
         } else {
             Operand::Immediate(rhs)
@@ -1353,6 +1381,7 @@ where
                 expr: rhs,
                 force_far: false,
                 index: None,
+                addr_mode: OperandAddrMode::Direct,
             }
         } else {
             Operand::Immediate(rhs)
@@ -1376,6 +1405,7 @@ where
                 expr: rhs,
                 force_far: false,
                 index: None,
+                addr_mode: OperandAddrMode::Direct,
             }
         } else {
             Operand::Immediate(rhs)
@@ -1406,6 +1436,7 @@ where
                     expr: Expr::Ident(ident),
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             )
         });
@@ -1426,6 +1457,7 @@ where
                     expr: Expr::Ident(ident),
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             )
         });
@@ -1463,6 +1495,7 @@ where
                     expr: Expr::Ident(target),
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             )
         }
@@ -1547,6 +1580,7 @@ where
                     expr: target,
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             )
         });
@@ -1565,6 +1599,7 @@ where
                     expr: target,
                     force_far: false,
                     index: None,
+                    addr_mode: OperandAddrMode::Direct,
                 }),
             )
         });
@@ -1655,6 +1690,21 @@ fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
         mnemonic: mnemonic.to_string(),
         operand,
     })
+}
+
+fn parse_index_register<'src>(
+    index: Option<String>,
+    span: SimpleSpan,
+) -> Result<Option<IndexRegister>, Rich<'src, TokenKind>> {
+    match index {
+        None => Ok(None),
+        Some(value) if value.eq_ignore_ascii_case("x") => Ok(Some(IndexRegister::X)),
+        Some(value) if value.eq_ignore_ascii_case("y") => Ok(Some(IndexRegister::Y)),
+        Some(value) => Err(Rich::custom(
+            span,
+            format!("unsupported index register '{value}', expected 'x' or 'y'"),
+        )),
+    }
 }
 
 fn is_register_name(value: &str) -> bool {
@@ -2377,6 +2427,47 @@ mod tests {
                 expr
             } if matches!(expr.as_ref(), Expr::Ident(name) if name == "main")
         ));
+    }
+
+    #[test]
+    fn parses_legacy_operand_modes_with_y_and_indirect_forms() {
+        let source = "var ptr = 0x20\nmain {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 2);
+
+        let Item::CodeBlock(block) = &file.items[1].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 4);
+
+        let expect_mode = |stmt: &Stmt, mode: OperandAddrMode, index: Option<IndexRegister>| {
+            let Stmt::Instruction(instruction) = stmt else {
+                panic!("expected instruction");
+            };
+            assert_eq!(instruction.mnemonic, "lda");
+            let Some(Operand::Value {
+                expr,
+                force_far,
+                index: found_index,
+                addr_mode,
+            }) = instruction.operand.as_ref()
+            else {
+                panic!("expected value operand");
+            };
+            assert!(matches!(expr, Expr::Ident(name) if name == "ptr"));
+            assert!(!force_far);
+            assert_eq!(*found_index, index);
+            assert_eq!(*addr_mode, mode);
+        };
+
+        expect_mode(
+            &block.body[0].node,
+            OperandAddrMode::Direct,
+            Some(IndexRegister::Y),
+        );
+        expect_mode(&block.body[1].node, OperandAddrMode::Indirect, None);
+        expect_mode(&block.body[2].node, OperandAddrMode::IndexedIndirectX, None);
+        expect_mode(&block.body[3].node, OperandAddrMode::IndirectIndexedY, None);
     }
 
     #[test]

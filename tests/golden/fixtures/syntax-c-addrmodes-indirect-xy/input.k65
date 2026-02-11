@@ -1,0 +1,13 @@
+// Extracted from vendor/src/compiler_src.cpp ADDRMODES entries:
+// - AM_IND  "(v)"
+// - AM_IND_X "(v,X)"
+// - AM_IND_Y "(v),Y"
+var ptr = 0x20
+
+main {
+  a=(ptr)
+  a=(ptr,x)
+  a=(ptr),y
+  (ptr,x)=a
+  (ptr),y=a
+}

@@ -74,6 +74,15 @@ pub struct Instruction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexRegister {
     X,
+    Y,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperandAddrMode {
+    Direct,
+    Indirect,
+    IndexedIndirectX,
+    IndirectIndexedY,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +92,7 @@ pub enum Operand {
         expr: Expr,
         force_far: bool,
         index: Option<IndexRegister>,
+        addr_mode: OperandAddrMode,
     },
 }
 
@@ -114,6 +124,7 @@ pub enum HlaRhs {
     Value {
         expr: Expr,
         index: Option<IndexRegister>,
+        addr_mode: OperandAddrMode,
     },
 }
 

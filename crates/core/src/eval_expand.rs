@@ -193,9 +193,14 @@ fn expand_hla_rhs(
         HlaRhs::Immediate(expr) => {
             HlaRhs::Immediate(expand_expr(expr, span, source_id, diagnostics))
         }
-        HlaRhs::Value { expr, index } => HlaRhs::Value {
+        HlaRhs::Value {
+            expr,
+            index,
+            addr_mode,
+        } => HlaRhs::Value {
             expr: expand_expr(expr, span, source_id, diagnostics),
             index: *index,
+            addr_mode: *addr_mode,
         },
     }
 }
@@ -249,10 +254,12 @@ fn expand_instruction(
             expr,
             force_far,
             index,
+            addr_mode,
         } => Operand::Value {
             expr: expand_expr(expr, span, source_id, diagnostics),
             force_far: *force_far,
             index: *index,
+            addr_mode: *addr_mode,
         },
     });
 

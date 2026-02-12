@@ -105,6 +105,33 @@ jsr wide_all
 jsr uncolored   ; no bridge -- uncolored
 ```
 
+### Label-site bridging
+
+`goto`/branch transfers to labels use label-anchored bridging: when the target
+label has a known mode, the compiler emits minimal `REP`/`SEP` at the label
+site itself, immediately after the label definition.
+
+```k65
+main @a8 @i8 {
+    c+? goto .loop
+    @a16
+.loop:
+    lda #1
+}
+```
+
+Generated output:
+
+```asm
+bcs .loop
+rep #$20
+lda #$0001
+```
+
+This label-anchored `REP`/`SEP` is treated as fixed and is not removed by dead
+mode elimination. Redundant mode switches before that fixed label bridge are
+still eliminated.
+
 ### Entry-point mode setup
 
 The 65816 starts in 8-bit emulation mode after reset.  Regular functions rely

@@ -1,7 +1,8 @@
 use indexmap::IndexMap;
 use k816_isa65816::{
     AddressOperandMode as IsaAddressOperandMode, AddressingMode, IndexRegister as IsaIndexRegister,
-    OperandShape, decode_instruction_with_mode, format_instruction, operand_width, select_encoding,
+    OperandShape, decode_instruction_with_mode, format_instruction, operand_width_for_mode,
+    select_encoding,
 };
 use rustc_hash::FxHashMap;
 
@@ -38,6 +39,12 @@ enum FixupKind {
     ByteRelocation(ByteRelocationKind),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnknownWidthCause {
+    Plp,
+    Rti,
+}
+
 #[derive(Debug)]
 struct FunctionInstructionSite {
     segment: String,
@@ -67,6 +74,10 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
     let mut current_segment = "default".to_string();
     let mut current_function: Option<String> = None;
     let mut function_instruction_sites = Vec::new();
+    let mut m_wide: Option<bool> = None;
+    let mut x_wide: Option<bool> = None;
+    let mut m_unknown_cause: Option<UnknownWidthCause> = None;
+    let mut x_unknown_cause: Option<UnknownWidthCause> = None;
     segments
         .entry(current_segment.clone())
         .or_insert(SegmentState {
@@ -85,11 +96,28 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                         nocross_boundary: None,
                     });
             }
-            Op::FunctionStart { name, .. } => {
+            Op::FunctionStart {
+                name,
+                mode_contract,
+                is_entry,
+            } => {
                 current_function = Some(name.clone());
+                let default = if *is_entry { Some(false) } else { None };
+                m_wide = mode_contract
+                    .a_width
+                    .map(|w| w == crate::ast::RegWidth::W16)
+                    .or(default);
+                x_wide = mode_contract
+                    .i_width
+                    .map(|w| w == crate::ast::RegWidth::W16)
+                    .or(default);
+                m_unknown_cause = None;
+                x_unknown_cause = None;
             }
             Op::FunctionEnd => {
                 current_function = None;
+                m_unknown_cause = None;
+                x_unknown_cause = None;
             }
             Op::Label(name) => {
                 let segment = segments
@@ -142,8 +170,16 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                     .expect("current segment must exist during emit");
                 segment.nocross_boundary = Some(*boundary);
             }
-            Op::Rep(mask) => {
+            Op::Rep(mask) | Op::FixedRep(mask) => {
                 // REP #mask => opcode 0xC2, 1-byte immediate
+                if mask & 0x20 != 0 {
+                    m_wide = Some(true);
+                    m_unknown_cause = None;
+                }
+                if mask & 0x10 != 0 {
+                    x_wide = Some(true);
+                    x_unknown_cause = None;
+                }
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
@@ -157,8 +193,16 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 segment.bytes.push(0xC2);
                 segment.bytes.push(*mask);
             }
-            Op::Sep(mask) => {
+            Op::Sep(mask) | Op::FixedSep(mask) => {
                 // SEP #mask => opcode 0xE2, 1-byte immediate
+                if mask & 0x20 != 0 {
+                    m_wide = Some(false);
+                    m_unknown_cause = None;
+                }
+                if mask & 0x10 != 0 {
+                    x_wide = Some(false);
+                    x_unknown_cause = None;
+                }
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
@@ -216,6 +260,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
+                let mnemonic = instruction.mnemonic.to_ascii_lowercase();
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
@@ -245,7 +290,56 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                     }
                 };
 
-                let width = operand_width(encoding.mode);
+                if encoding.mode == AddressingMode::ImmediateM && m_wide.is_none() {
+                    let help = match m_unknown_cause {
+                        Some(UnknownWidthCause::Plp) => {
+                            "PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width"
+                        }
+                        Some(UnknownWidthCause::Rti) => {
+                            "RTI restores processor flags from runtime state; add @a8 or @a16 to re-establish accumulator width"
+                        }
+                        None => "add @a8 or @a16 to the enclosing function",
+                    };
+                    diagnostics.push(
+                        Diagnostic::error(
+                            op.span,
+                            format!(
+                                "`{}` uses a width-dependent immediate but accumulator width is unknown",
+                                instruction.mnemonic,
+                            ),
+                        )
+                        .with_help(help),
+                    );
+                    continue;
+                }
+                if encoding.mode == AddressingMode::ImmediateX && x_wide.is_none() {
+                    let help = match x_unknown_cause {
+                        Some(UnknownWidthCause::Plp) => {
+                            "PLP restores processor flags from runtime stack; add @i8 or @i16 to re-establish index width"
+                        }
+                        Some(UnknownWidthCause::Rti) => {
+                            "RTI restores processor flags from runtime state; add @i8 or @i16 to re-establish index width"
+                        }
+                        None => "add @i8 or @i16 to the enclosing function",
+                    };
+                    diagnostics.push(
+                        Diagnostic::error(
+                            op.span,
+                            format!(
+                                "`{}` uses a width-dependent immediate but index width is unknown",
+                                instruction.mnemonic,
+                            ),
+                        )
+                        .with_help(help),
+                    );
+                    continue;
+                }
+
+                let width = operand_width_for_mode(
+                    encoding.mode,
+                    m_wide.unwrap_or(false),
+                    x_wide.unwrap_or(false),
+                );
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
                 let opcode_offset = segment.bytes.len();
                 segment.bytes.push(encoding.opcode);
@@ -321,6 +415,18 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                             });
                         }
                     },
+                }
+
+                if mnemonic == "plp" || mnemonic == "rti" {
+                    m_wide = None;
+                    x_wide = None;
+                    let cause = if mnemonic == "plp" {
+                        UnknownWidthCause::Plp
+                    } else {
+                        UnknownWidthCause::Rti
+                    };
+                    m_unknown_cause = Some(cause);
+                    x_unknown_cause = Some(cause);
                 }
             }
         }

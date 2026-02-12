@@ -57,7 +57,7 @@ pub fn parse_with_warnings(
         .into_output_errors();
     let diagnostics = errors
         .into_iter()
-        .map(|error| rich_error_to_diagnostic(source_id, error, "invalid syntax"))
+        .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax"))
         .collect::<Vec<_>>();
 
     if diagnostics.is_empty() {
@@ -268,7 +268,7 @@ pub fn parse_expression_fragment(
             let error = errors
                 .pop()
                 .expect("chumsky should return at least one parse error");
-            rich_error_to_diagnostic(source_id, error, "invalid expression fragment")
+            rich_error_to_diagnostic(source_id, source_text, error, "invalid expression fragment")
         })
 }
 
@@ -1073,6 +1073,7 @@ where
     let flag_stmt = flag_stmt_parser();
     let stack_stmt = stack_stmt_parser();
     let flow_stmt = flow_stmt_parser();
+    let invalid_flag_goto_stmt = invalid_flag_goto_stmt_parser();
     let nop_stmt = nop_stmt_parser();
     let chain_stmt = chain_stmt_parser();
     let bare_rbrace_stmt = bare_rbrace_stmt_parser();
@@ -1157,8 +1158,8 @@ where
         .or(align_stmt.clone())
         .or(nocross_stmt.clone())
         .or(call_stmt.clone())
-        .or(label_stmt.clone())
         .or(byte_stmt.clone())
+        .or(invalid_flag_goto_stmt.clone())
         .or(hla_condition_seed_stmt.clone())
         .or(hla_x_increment_stmt.clone())
         .or(hla_x_assign_stmt.clone())
@@ -1174,6 +1175,7 @@ where
         .or(stack_stmt.clone())
         .or(nop_stmt.clone())
         .or(discard_stmt.clone())
+        .or(label_stmt.clone())
         .or(instruction.clone())
         .boxed();
 
@@ -1186,8 +1188,8 @@ where
         .or(align_stmt)
         .or(nocross_stmt)
         .or(call_stmt)
-        .or(label_stmt)
         .or(byte_stmt)
+        .or(invalid_flag_goto_stmt)
         .or(hla_wait_stmt)
         .or(hla_do_close_stmt)
         .or(bare_rbrace_stmt)
@@ -1207,6 +1209,7 @@ where
         .or(stack_stmt)
         .or(nop_stmt)
         .or(discard_stmt)
+        .or(label_stmt)
         .or(instruction)
         .boxed();
 
@@ -1753,24 +1756,30 @@ fn flag_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
+    chumsky::select! { TokenKind::Ident(value) if value.chars().count() == 1 => value }
         .then(
             just(TokenKind::Plus)
                 .to(true)
                 .or(just(TokenKind::Minus).to(false)),
         )
-        .map(
-            |(flag, set)| match (flag.to_ascii_lowercase().as_str(), set) {
-                ("c", true) => instruction_stmt("sec", None),
-                ("c", false) => instruction_stmt("clc", None),
-                ("d", true) => instruction_stmt("sed", None),
-                ("d", false) => instruction_stmt("cld", None),
-                ("i", true) => instruction_stmt("sei", None),
-                ("i", false) => instruction_stmt("cli", None),
-                ("o", false) => instruction_stmt("clv", None),
-                _ => Stmt::Empty,
-            },
-        )
+        .try_map(|(flag, set), span| {
+            let lower = flag.to_ascii_lowercase();
+            let sign = if set { '+' } else { '-' };
+            let shorthand = format!("{flag}{sign}");
+            match (lower.as_str(), set) {
+                ("c", true) => Ok(instruction_stmt("sec", None)),
+                ("c", false) => Ok(instruction_stmt("clc", None)),
+                ("d", true) => Ok(instruction_stmt("sed", None)),
+                ("d", false) => Ok(instruction_stmt("cld", None)),
+                ("i", true) => Ok(instruction_stmt("sei", None)),
+                ("i", false) => Ok(instruction_stmt("cli", None)),
+                ("o", false) => Ok(instruction_stmt("clv", None)),
+                _ => Err(Rich::custom(
+                    span,
+                    format!("unsupported flag shorthand '{shorthand}'"),
+                )),
+            }
+        })
 }
 
 fn stack_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -1842,38 +1851,46 @@ where
     let goto_stmt = goto_indirect.or(goto_direct);
 
     // Flag-based goto forms: flag goto label → branch instruction
-    let c_flag_goto =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("c") => () }
-            .ignore_then(
-                just(TokenKind::Minus)
-                    .then_ignore(just(TokenKind::Question))
-                    .to("bcc")
-                    .or(just(TokenKind::Plus)
-                        .then_ignore(just(TokenKind::Question))
-                        .to("bcs")),
-            );
-
-    let z_flag_goto =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("z") => () }
-            .ignore_then(
-                just(TokenKind::Plus)
-                    .then_ignore(just(TokenKind::Question))
-                    .to("beq")
-                    .or(just(TokenKind::Minus)
-                        .then_ignore(just(TokenKind::Question))
-                        .to("bne")),
-            );
-
-    let n_flag_goto =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("n") => () }
-            .ignore_then(
-                just(TokenKind::Plus)
-                    .then_ignore(just(TokenKind::Question))
-                    .to("bmi")
-                    .or(just(TokenKind::Minus)
-                        .then_ignore(just(TokenKind::Question))
-                        .to("bpl")),
-            );
+    let question_flag_goto = chumsky::select! {
+        TokenKind::Ident(value) if value.chars().count() == 1 => value
+    }
+    .then(
+        just(TokenKind::Minus)
+            .then_ignore(just(TokenKind::Question))
+            .to(false)
+            .or(just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to(true)),
+    )
+    .then_ignore(goto_kw.clone())
+    .then(expr_parser())
+    .try_map(|((flag, plus), target), span| {
+        let lower = flag.to_ascii_lowercase();
+        let mnemonic = match (lower.as_str(), plus) {
+            ("c", false) => "bcc",
+            ("c", true) => "bcs",
+            ("z", true) => "beq",
+            ("z", false) => "bne",
+            ("n", true) => "bmi",
+            ("n", false) => "bpl",
+            _ => {
+                let sign = if plus { '+' } else { '-' };
+                return Err(Rich::custom(
+                    span,
+                    format!("unsupported flag shorthand '{flag}{sign}?'"),
+                ));
+            }
+        };
+        Ok(instruction_stmt(
+            mnemonic,
+            Some(Operand::Value {
+                expr: target,
+                force_far: false,
+                index: None,
+                addr_mode: OperandAddrMode::Direct,
+            }),
+        ))
+    });
 
     // v+ and v- have no trailing ?
     let v_flag_goto =
@@ -1897,10 +1914,7 @@ where
         .to("bvs")
         .or(just(TokenKind::GtGtEq).to("bvc"));
 
-    let branch_goto_stmt = c_flag_goto
-        .or(z_flag_goto)
-        .or(n_flag_goto)
-        .or(v_flag_goto)
+    let symbolic_branch_goto_stmt = v_flag_goto
         .or(signed_goto)
         .or(overflow_goto)
         .or(just(TokenKind::Lt).to("bcc"))
@@ -1920,6 +1934,8 @@ where
                 }),
             )
         });
+
+    let branch_goto_stmt = question_flag_goto.or(symbolic_branch_goto_stmt);
 
     let return_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("return") || value.eq_ignore_ascii_case("return_i") => value
@@ -1947,6 +1963,40 @@ where
         .or(return_stmt)
         .or(far_call_stmt)
         .or(break_repeat_stmt)
+}
+
+fn invalid_flag_goto_stmt_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let goto_kw = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("goto") => ()
+    };
+
+    chumsky::select! {
+        TokenKind::Ident(value)
+            if value.chars().count() == 1
+                && !value.eq_ignore_ascii_case("c")
+                && !value.eq_ignore_ascii_case("z")
+                && !value.eq_ignore_ascii_case("n") => value
+    }
+    .then(
+        just(TokenKind::Minus)
+            .then_ignore(just(TokenKind::Question))
+            .to('-')
+            .or(just(TokenKind::Plus)
+                .then_ignore(just(TokenKind::Question))
+                .to('+')),
+    )
+    .then_ignore(goto_kw)
+    .then(expr_parser())
+    .try_map(|((flag, sign), _target), span| {
+        Err(Rich::custom(
+            span,
+            format!("unsupported flag shorthand '{flag}{sign}?'"),
+        ))
+    })
 }
 
 fn nop_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -2281,6 +2331,13 @@ where
                     rhs: Box::new(rhs),
                 })
             })
+            .then(data_width_parser().repeated().collect::<Vec<_>>())
+            .map(|(expr, views)| {
+                views.into_iter().fold(expr, |expr, width| Expr::TypedView {
+                    expr: Box::new(expr),
+                    width,
+                })
+            })
     })
     .boxed()
 }
@@ -2347,27 +2404,121 @@ where
 
 fn rich_error_to_diagnostic(
     source_id: SourceId,
+    source_text: &str,
     error: Rich<'_, TokenKind>,
     context: &str,
 ) -> Diagnostic {
     let range = error.span().into_range();
     let span = Span::new(source_id, range.start, range.end);
-    let message = match error.reason() {
-        RichReason::Custom(custom) => format!("{context}: {custom}"),
+    let (message, help) = match error.reason() {
+        RichReason::Custom(custom) => {
+            let custom = custom.to_string();
+            let help = custom
+                .starts_with("unsupported flag shorthand '")
+                .then_some("expected one of c+, c-, d+, d-, i+, i-, or o-".to_string());
+            (format!("{context}: {custom}"), help)
+        }
         RichReason::ExpectedFound { expected, found } => {
-            let found = found
+            if found
                 .as_deref()
-                .map(token_kind_message)
-                .unwrap_or_else(|| "end of input".to_string());
-            let expected = format_expected_patterns(expected);
-            if expected.len() > 80 {
-                format!("{context}: unexpected {found}")
+                .is_some_and(|token| matches!(token, TokenKind::Question))
+            {
+                if let Some(shorthand) =
+                    detect_invalid_flag_goto_shorthand(source_text, range.start)
+                {
+                    let message = format!("{context}: unsupported flag shorthand '{shorthand}'");
+                    let help = "expected one of c+, c-, d+, d-, i+, i-, or o-".to_string();
+                    (message, Some(help))
+                } else {
+                    let found = found
+                        .as_deref()
+                        .map(token_kind_message)
+                        .unwrap_or_else(|| "end of input".to_string());
+                    let expected = format_expected_patterns(expected);
+                    if expected.len() > 80 {
+                        (format!("{context}: unexpected {found}"), None)
+                    } else {
+                        (
+                            format!("{context}: expected {expected}, found {found}"),
+                            None,
+                        )
+                    }
+                }
             } else {
-                format!("{context}: expected {expected}, found {found}")
+                let found = found
+                    .as_deref()
+                    .map(token_kind_message)
+                    .unwrap_or_else(|| "end of input".to_string());
+                let expected = format_expected_patterns(expected);
+                if expected.len() > 80 {
+                    (format!("{context}: unexpected {found}"), None)
+                } else {
+                    (
+                        format!("{context}: expected {expected}, found {found}"),
+                        None,
+                    )
+                }
             }
         }
     };
-    Diagnostic::error(span, message)
+    let diagnostic = Diagnostic::error(span, message);
+    match help {
+        Some(help) => diagnostic.with_help(help),
+        None => diagnostic,
+    }
+}
+
+fn detect_invalid_flag_goto_shorthand(source_text: &str, question_offset: usize) -> Option<String> {
+    let bytes = source_text.as_bytes();
+    if bytes.get(question_offset).copied()? != b'?' {
+        return None;
+    }
+    if question_offset < 2 {
+        return None;
+    }
+
+    let sign = bytes[question_offset - 1] as char;
+    if sign != '+' && sign != '-' {
+        return None;
+    }
+
+    let flag = bytes[question_offset - 2] as char;
+    if !flag.is_ascii_alphabetic() {
+        return None;
+    }
+
+    if matches!(flag.to_ascii_lowercase(), 'c' | 'z' | 'n') {
+        return None;
+    }
+
+    if question_offset >= 3 {
+        let prev = bytes[question_offset - 3] as char;
+        if prev.is_ascii_alphanumeric() || prev == '_' || prev == '.' {
+            return None;
+        }
+    }
+
+    let mut idx = question_offset + 1;
+    while idx < bytes.len() && matches!(bytes[idx], b' ' | b'\t' | b'\r' | b'\n') {
+        idx += 1;
+    }
+
+    let tail = source_text.get(idx..)?;
+    if !tail.to_ascii_lowercase().starts_with("goto") {
+        return None;
+    }
+
+    let after_goto = idx + 4;
+    if let Some(next) = source_text
+        .get(after_goto..)
+        .and_then(|rest| rest.chars().next())
+    {
+        if next.is_ascii_alphanumeric() || next == '_' || next == '.' {
+            return None;
+        }
+    }
+
+    Some(format!("{flag}{sign}?"))
 }
 
 fn format_expected_patterns(expected: &[RichPattern<'_, TokenKind>]) -> String {
@@ -2899,5 +3050,52 @@ mod tests {
         assert!(message.contains("expected"));
         assert!(!message.contains("TokenKind"));
         assert!(!message.contains("ExpectedFound"));
+    }
+
+    #[test]
+    fn reports_unsupported_flag_shorthand_for_invalid_flag_goto() {
+        let source = "main {\n  s-? goto .skip\n.skip:\n  return\n}\n";
+        let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.message == "invalid syntax: unsupported flag shorthand 's-?'"),
+            "unexpected diagnostics: {diagnostics:#?}"
+        );
+        assert!(diagnostics.iter().any(|diag| {
+            diag.supplements.iter().any(|supplement| {
+                matches!(
+                    supplement,
+                    crate::diag::Supplemental::Help(help)
+                        if help == "expected one of c+, c-, d+, d-, i+, i-, or o-"
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn invalid_flag_goto_parser_matches_signed_flag_form() {
+        let source = "s-? goto .skip";
+        let tokens = lex(SourceId(0), source).expect("lex");
+        let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
+        let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
+            let span = (token.span.start..token.span.end).into();
+            (token.kind, span)
+        }))
+        .map((end_offset..end_offset).into(), |(kind, span): (_, _)| {
+            (kind, span)
+        });
+
+        let (_output, errors) = invalid_flag_goto_stmt_parser()
+            .parse(token_stream)
+            .into_output_errors();
+        assert!(
+            errors.iter().any(|error| matches!(
+                error.reason(),
+                RichReason::Custom(message)
+                    if message == "unsupported flag shorthand 's-?'"
+            )),
+            "unexpected parser errors: {errors:#?}"
+        );
     }
 }

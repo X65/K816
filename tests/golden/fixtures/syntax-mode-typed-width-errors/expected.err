@@ -1,0 +1,9 @@
+Error: Store to var w:word requires @a16.
+   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors/input.k65:5:3 ]
+   │
+ 5 │   w = a
+   │   ──┬──  
+   │     ╰──── primary location
+   │ 
+   │ Help: for byte stores, use explicit view (w:byte / (w+1):byte)
+───╯

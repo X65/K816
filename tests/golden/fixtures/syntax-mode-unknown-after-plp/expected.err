@@ -1,0 +1,9 @@
+Error: `lda` uses a width-dependent immediate but accumulator width is unknown
+   ╭─[ tests/golden/fixtures/syntax-mode-unknown-after-plp/input.k65:4:3 ]
+   │
+ 4 │   lda #1
+   │   ───┬──  
+   │      ╰──── primary location
+   │ 
+   │ Help: PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width
+───╯

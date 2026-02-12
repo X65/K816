@@ -37,3 +37,9 @@ Repository Layout:
 ## Integration Points
 
 Linker uses RON format for configuration (`.ld.ron` files). `vendor/` contains reference C compiler for syntax validation only; no integration with Rust code. Reference: [docs/linker-ron-format.md](docs/linker-ron-format.md).
+
+## Diagnostics Style
+
+- Keep primary error messages concise and focused on what is wrong.
+- Put remediation guidance in Ariadne help text using `Diagnostic::with_help(...)`.
+- Avoid embedding "how to fix" details directly in the main error message when help text can carry that context.

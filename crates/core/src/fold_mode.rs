@@ -4,14 +4,24 @@ use crate::ast::ModeContract;
 use crate::hir::{AddressValue, InstructionOp, Op, OperandOp, Program};
 use crate::span::Spanned;
 
-/// Returns (needs_m, needs_x) for an instruction: whether it uses ImmediateM or ImmediateX.
+/// Returns (needs_m, needs_x) for an instruction.
+///
+/// This models semantic width dependencies, not just immediate operand sizing.
 fn instruction_mode_needs(instruction: &InstructionOp) -> (bool, bool) {
-    if !matches!(&instruction.operand, Some(OperandOp::Immediate(_))) {
-        return (false, false);
-    }
-    match instruction.mnemonic.as_str() {
-        "ora" | "and" | "eor" | "adc" | "bit" | "lda" | "cmp" | "sbc" => (true, false),
-        "ldy" | "ldx" | "cpy" | "cpx" => (false, true),
+    let mnemonic = instruction.mnemonic.to_ascii_lowercase();
+    match mnemonic.as_str() {
+        // Accumulator-width sensitive (M flag).
+        "adc" | "and" | "bit" | "cmp" | "eor" | "lda" | "ora" | "pha" | "pla" | "sbc" | "sta"
+        | "stz" | "trb" | "tsb" => (true, false),
+        // Index-width sensitive (X flag, applies to both X and Y registers).
+        "cpx" | "cpy" | "dex" | "dey" | "inx" | "iny" | "ldx" | "ldy" | "phx" | "phy" | "plx"
+        | "ply" | "stx" | "sty" | "tsx" | "txs" | "txy" | "tyx" => (false, true),
+        // Transfer ops that cross A and index registers depend on both dimensions.
+        "tax" | "tay" | "txa" | "tya" => (true, true),
+        // Shift/rotate/inc/dec are width-sensitive only in accumulator form.
+        "asl" | "dec" | "inc" | "lsr" | "rol" | "ror" if instruction.operand.is_none() => {
+            (true, false)
+        }
         _ => (false, false),
     }
 }
@@ -34,7 +44,7 @@ fn call_target(instruction: &InstructionOp) -> Option<&str> {
 fn compute_effective_needs(program: &Program) -> FxHashMap<String, (bool, bool)> {
     let mut needs: FxHashMap<String, (bool, bool)> = FxHashMap::default();
 
-    // Direct scan: mark functions that use ImmediateM/ImmediateX instructions.
+    // Direct scan: mark functions that use width-sensitive instructions.
     let mut current_function: Option<String> = None;
     let mut cur_m = false;
     let mut cur_x = false;
@@ -107,9 +117,9 @@ fn compute_effective_needs(program: &Program) -> FxHashMap<String, (bool, bool)>
 /// Eliminate dead REP/SEP ops that have no effect on subsequent instructions.
 ///
 /// Scans each function body backwards: a Rep/Sep is only kept when a
-/// width-dependent instruction (ImmediateM/ImmediateX) or a call to a function
-/// that needs the corresponding width follows before the next Rep/Sep on the
-/// same axis.  Function mode contracts are trimmed to match.
+/// width-sensitive instruction or a call to a function that needs the
+/// corresponding width follows before the next Rep/Sep on the same axis.
+/// Function mode contracts are trimmed to match.
 pub fn eliminate_dead_mode_ops(program: &Program) -> Program {
     let effective_needs = compute_effective_needs(program);
     let mut out: Vec<Spanned<Op>> = Vec::with_capacity(program.ops.len());
@@ -180,6 +190,14 @@ fn process_function(
                     }
                 }
             }
+            Op::FixedRep(mask) | Op::FixedSep(mask) => {
+                if mask & 0x20 != 0 {
+                    need_m = false;
+                }
+                if mask & 0x10 != 0 {
+                    need_x = false;
+                }
+            }
             Op::Rep(mask) | Op::Sep(mask) => {
                 let mut new_mask = 0u8;
                 if mask & 0x20 != 0 {
@@ -247,6 +265,9 @@ fn process_function(
             Op::Sep(_) => {
                 result.push(Spanned::new(Op::Sep(masks[idx]), op.span));
             }
+            Op::FixedRep(_) | Op::FixedSep(_) => {
+                result.push(op.clone());
+            }
             _ => {
                 result.push(op.clone());
             }
@@ -277,6 +298,11 @@ pub fn fold_mode_ops(program: &Program) -> Program {
                 want_sep |= mask;
                 want_rep &= !mask;
                 last_mode_span = Some(op.span);
+            }
+            Op::FixedRep(_) | Op::FixedSep(_) => {
+                flush_mode_ops(&mut out, &mut want_rep, &mut want_sep, last_mode_span);
+                last_mode_span = None;
+                out.push(op.clone());
             }
             _ => {
                 flush_mode_ops(&mut out, &mut want_rep, &mut want_sep, last_mode_span);
@@ -315,7 +341,8 @@ fn flush_mode_ops(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::InstructionOp;
+    use crate::ast::ModeContract;
+    use crate::hir::{AddressOperandMode, AddressValue, InstructionOp, OperandOp};
     use crate::span::{SourceId, Span};
 
     fn test_span() -> Span {
@@ -327,6 +354,20 @@ mod tests {
             Op::Instruction(InstructionOp {
                 mnemonic: "nop".to_string(),
                 operand: None,
+            }),
+            test_span(),
+        )
+    }
+
+    fn abs_op(mnemonic: &str, literal: u32) -> Spanned<Op> {
+        Spanned::new(
+            Op::Instruction(InstructionOp {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(OperandOp::Address {
+                    value: AddressValue::Literal(literal),
+                    force_far: false,
+                    mode: AddressOperandMode::Direct { index: None },
+                }),
             }),
             test_span(),
         )
@@ -390,5 +431,31 @@ mod tests {
         assert_eq!(folded.ops.len(), 3); // REP #$20 + SEP #$10 + NOP
         assert!(matches!(folded.ops[0].node, Op::Rep(0x20)));
         assert!(matches!(folded.ops[1].node, Op::Sep(0x10)));
+    }
+
+    #[test]
+    fn keeps_mode_ops_for_width_sensitive_memory_instructions() {
+        let span = test_span();
+        let program = Program {
+            ops: vec![
+                Spanned::new(
+                    Op::FunctionStart {
+                        name: "main".to_string(),
+                        mode_contract: ModeContract::default(),
+                        is_entry: true,
+                    },
+                    span,
+                ),
+                Spanned::new(Op::Rep(0x20), span),
+                abs_op("lda", 0x2000),
+                Spanned::new(Op::Sep(0x20), span),
+                abs_op("sta", 0x2000),
+                Spanned::new(Op::FunctionEnd, span),
+            ],
+        };
+
+        let pruned = eliminate_dead_mode_ops(&program);
+        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Rep(0x20))));
+        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Sep(0x20))));
     }
 }

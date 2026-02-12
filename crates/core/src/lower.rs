@@ -1,9 +1,10 @@
 use k816_assets::AssetFS;
+use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    BlockKind, DataBlock, DataCommand, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp,
-    HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry,
-    Operand, OperandAddrMode, RegWidth, Stmt,
+    BlockKind, DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File,
+    HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
+    NamedDataEntry, Operand, OperandAddrMode, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -15,17 +16,28 @@ use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
 
 /// Tracked CPU register width state during lowering.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ModeState {
     a_width: Option<RegWidth>,
     i_width: Option<RegWidth>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone)]
+struct ModeFrame {
+    entry_mode: ModeState,
+}
+
+#[derive(Debug)]
 struct LowerContext {
     next_label: usize,
     do_loop_targets: Vec<String>,
     mode: ModeState,
+    mode_frames: Vec<ModeFrame>,
+    label_entry_modes: FxHashMap<String, ModeState>,
+    label_declared_modes: FxHashMap<String, ModeState>,
+    label_fixed_masks: FxHashMap<String, u8>,
+    label_depths: FxHashMap<String, usize>,
+    reachable: bool,
 }
 
 struct EvaluatedBytes {
@@ -38,6 +50,39 @@ impl LowerContext {
         let id = self.next_label;
         self.next_label += 1;
         id
+    }
+
+    fn frame_depth(&self) -> usize {
+        self.mode_frames.len()
+    }
+}
+
+impl Default for LowerContext {
+    fn default() -> Self {
+        Self {
+            next_label: 0,
+            do_loop_targets: Vec::new(),
+            mode: ModeState::default(),
+            mode_frames: Vec::new(),
+            label_entry_modes: FxHashMap::default(),
+            label_declared_modes: FxHashMap::default(),
+            label_fixed_masks: FxHashMap::default(),
+            label_depths: FxHashMap::default(),
+            reachable: true,
+        }
+    }
+}
+
+fn initial_mode_for_block(kind: BlockKind, mode_contract: crate::ast::ModeContract) -> ModeState {
+    match kind {
+        BlockKind::Main => ModeState {
+            a_width: Some(mode_contract.a_width.unwrap_or(RegWidth::W8)),
+            i_width: Some(mode_contract.i_width.unwrap_or(RegWidth::W8)),
+        },
+        BlockKind::Func => ModeState {
+            a_width: mode_contract.a_width,
+            i_width: mode_contract.i_width,
+        },
     }
 }
 
@@ -77,6 +122,8 @@ pub fn lower(
             Item::CodeBlock(block) => {
                 let mut block_ctx = LowerContext::default();
                 let scope = block.name.clone();
+                block_ctx.label_depths =
+                    collect_label_depths(&block.body, Some(scope.as_str()), 0, &mut diagnostics);
                 let label_span = block.name_span.unwrap_or(item.span);
                 let mut block_segment = current_segment.clone();
                 // Allow `segment ...` at the top of a code block to control where the
@@ -103,6 +150,14 @@ pub fn lower(
                     .get(&block.name)
                     .map(|meta| meta.mode_contract)
                     .unwrap_or(block.mode_contract);
+                let initial_mode = initial_mode_for_block(block.kind, effective_contract);
+                block_ctx.mode = initial_mode;
+                block_ctx.label_declared_modes = collect_label_declared_modes(
+                    &block.body[body_start..],
+                    Some(scope.as_str()),
+                    initial_mode,
+                    &mut diagnostics,
+                );
 
                 ops.push(Spanned::new(
                     Op::FunctionStart {
@@ -123,12 +178,6 @@ pub fn lower(
                     if effective_contract.i_width == Some(RegWidth::W16) {
                         ops.push(Spanned::new(Op::Rep(0x10), label_span));
                     }
-                }
-                if let Some(a) = effective_contract.a_width {
-                    block_ctx.mode.a_width = Some(a);
-                }
-                if let Some(i) = effective_contract.i_width {
-                    block_ctx.mode.i_width = Some(i);
                 }
                 for stmt in block.body.iter().skip(body_start) {
                     lower_stmt(
@@ -197,6 +246,106 @@ pub fn lower(
         Ok(Program { ops })
     } else {
         Err(diagnostics)
+    }
+}
+
+fn collect_label_depths(
+    stmts: &[Spanned<Stmt>],
+    scope: Option<&str>,
+    depth: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> FxHashMap<String, usize> {
+    let mut out = FxHashMap::default();
+    collect_label_depths_into(stmts, scope, depth, diagnostics, &mut out);
+    out
+}
+
+fn collect_label_declared_modes(
+    stmts: &[Spanned<Stmt>],
+    scope: Option<&str>,
+    initial_mode: ModeState,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> FxHashMap<String, ModeState> {
+    let mut out = FxHashMap::default();
+    let mut mode = initial_mode;
+    collect_label_declared_modes_into(stmts, scope, &mut mode, diagnostics, &mut out);
+    out
+}
+
+fn collect_label_depths_into(
+    stmts: &[Spanned<Stmt>],
+    scope: Option<&str>,
+    depth: usize,
+    diagnostics: &mut Vec<Diagnostic>,
+    out: &mut FxHashMap<String, usize>,
+) {
+    for stmt in stmts {
+        match &stmt.node {
+            Stmt::Label(label) => {
+                if let Some(name) = resolve_symbol(&label.name, scope, stmt.span, diagnostics) {
+                    out.entry(name).or_insert(depth);
+                }
+            }
+            Stmt::ModeScopedBlock { body, .. } => {
+                collect_label_depths_into(body, scope, depth + 1, diagnostics, out);
+            }
+            Stmt::Hla(HlaStmt::PrefixConditional { body, .. }) => {
+                collect_label_depths_into(body, scope, depth, diagnostics, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_label_declared_modes_into(
+    stmts: &[Spanned<Stmt>],
+    scope: Option<&str>,
+    mode: &mut ModeState,
+    diagnostics: &mut Vec<Diagnostic>,
+    out: &mut FxHashMap<String, ModeState>,
+) {
+    for stmt in stmts {
+        match &stmt.node {
+            Stmt::Label(label) => {
+                if let Some(name) = resolve_symbol(&label.name, scope, stmt.span, diagnostics) {
+                    out.entry(name).or_insert(*mode);
+                }
+            }
+            Stmt::ModeSet { a_width, i_width } => {
+                if let Some(a) = a_width {
+                    mode.a_width = Some(*a);
+                }
+                if let Some(i) = i_width {
+                    mode.i_width = Some(*i);
+                }
+            }
+            Stmt::ModeScopedBlock {
+                a_width,
+                i_width,
+                body,
+            } => {
+                let saved = *mode;
+                if let Some(a) = a_width {
+                    mode.a_width = Some(*a);
+                }
+                if let Some(i) = i_width {
+                    mode.i_width = Some(*i);
+                }
+                collect_label_declared_modes_into(body, scope, mode, diagnostics, out);
+                *mode = saved;
+            }
+            Stmt::Instruction(instruction) => {
+                let mnemonic = instruction.mnemonic.to_ascii_lowercase();
+                if mnemonic == "plp" || mnemonic == "rti" {
+                    *mode = ModeState::default();
+                }
+            }
+            Stmt::Hla(HlaStmt::PrefixConditional { body, .. }) => {
+                let mut inner_mode = *mode;
+                collect_label_declared_modes_into(body, scope, &mut inner_mode, diagnostics, out);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -339,7 +488,62 @@ fn lower_stmt(
         }
         Stmt::Label(label) => {
             if let Some(resolved) = resolve_symbol(&label.name, scope, span, diagnostics) {
-                ops.push(Spanned::new(Op::Label(resolved), span));
+                let declared_mode = ctx.label_declared_modes.get(&resolved).copied();
+                let mut fixed_mask = ctx.label_fixed_masks.get(&resolved).copied().unwrap_or(0);
+                if let Some(declared) = declared_mode {
+                    if ctx.reachable {
+                        if let Some(a) = declared.a_width {
+                            if ctx.mode.a_width != Some(a) {
+                                fixed_mask |= 0x20;
+                            }
+                        }
+                        if let Some(i) = declared.i_width {
+                            if ctx.mode.i_width != Some(i) {
+                                fixed_mask |= 0x10;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(incoming_mode) = ctx.label_entry_modes.get(&resolved).copied() {
+                    let incoming_mode = apply_declared_label_mode(incoming_mode, declared_mode);
+                    if ctx.reachable && ctx.mode != incoming_mode {
+                        diagnostics.push(mode_mismatch_diagnostic(
+                            span,
+                            &resolved,
+                            ctx.mode,
+                            incoming_mode,
+                        ));
+                    }
+                    ctx.mode = incoming_mode;
+                    ctx.reachable = true;
+                } else if ctx.reachable {
+                    ctx.mode = apply_declared_label_mode(ctx.mode, declared_mode);
+                    ctx.label_entry_modes.insert(resolved.clone(), ctx.mode);
+                }
+
+                ops.push(Spanned::new(Op::Label(resolved.clone()), span));
+
+                if fixed_mask != 0 {
+                    let fixed_a = if fixed_mask & 0x20 != 0 {
+                        declared_mode.and_then(|mode| mode.a_width)
+                    } else {
+                        None
+                    };
+                    let fixed_i = if fixed_mask & 0x10 != 0 {
+                        declared_mode.and_then(|mode| mode.i_width)
+                    } else {
+                        None
+                    };
+                    emit_fixed_mode_set(fixed_a, fixed_i, span, ops);
+                    if let Some(a) = fixed_a {
+                        ctx.mode.a_width = Some(a);
+                    }
+                    if let Some(i) = fixed_i {
+                        ctx.mode.i_width = Some(i);
+                    }
+                    ctx.label_fixed_masks.insert(resolved, fixed_mask);
+                }
             }
         }
         Stmt::Instruction(instruction) => {
@@ -350,22 +554,19 @@ fn lower_stmt(
                     else {
                         return;
                     };
-                    let mnemonic = if meta.is_far { "jsl" } else { "jsr" };
-                    ops.push(Spanned::new(
-                        Op::Instruction(InstructionOp {
-                            mnemonic: mnemonic.to_string(),
-                            operand: Some(OperandOp::Address {
-                                value: AddressValue::Label(target),
-                                force_far: meta.is_far,
-                                mode: AddressOperandMode::Direct { index: None },
-                            }),
-                        }),
+                    lower_call_with_contract(
+                        &target,
+                        meta.is_far,
+                        meta.mode_contract.a_width,
+                        meta.mode_contract.i_width,
                         span,
-                    ));
+                        ctx,
+                        ops,
+                    );
                     return;
                 }
             }
-            lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops);
+            lower_instruction_stmt(instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         Stmt::Call(call) => {
             let Some(meta) = sema.functions.get(&call.target) else {
@@ -380,25 +581,15 @@ fn lower_stmt(
                 return;
             };
 
-            lower_mode_set(
+            lower_call_with_contract(
+                &target,
+                meta.is_far,
                 meta.mode_contract.a_width,
                 meta.mode_contract.i_width,
                 span,
+                ctx,
                 ops,
             );
-
-            let mnemonic = if meta.is_far { "jsl" } else { "jsr" };
-            ops.push(Spanned::new(
-                Op::Instruction(InstructionOp {
-                    mnemonic: mnemonic.to_string(),
-                    operand: Some(OperandOp::Address {
-                        value: AddressValue::Label(target),
-                        force_far: meta.is_far,
-                        mode: AddressOperandMode::Direct { index: None },
-                    }),
-                }),
-                span,
-            ));
         }
         Stmt::Bytes(values) => {
             if let Some(evaluated) = evaluate_byte_exprs(values, scope, sema, span, diagnostics) {
@@ -440,6 +631,7 @@ fn lower_stmt(
                 scope,
                 sema,
                 span,
+                ctx,
                 diagnostics,
                 ops,
             );
@@ -456,19 +648,27 @@ fn lower_stmt(
                     ops,
                 );
             }
+            if let Some(incoming_mode) = ctx.label_entry_modes.get(&skip_label).copied() {
+                if ctx.reachable && ctx.mode != incoming_mode {
+                    diagnostics.push(mode_mismatch_diagnostic(
+                        span,
+                        &skip_label,
+                        ctx.mode,
+                        incoming_mode,
+                    ));
+                }
+                ctx.mode = incoming_mode;
+                ctx.reachable = true;
+            } else if ctx.reachable {
+                ctx.label_entry_modes.insert(skip_label.clone(), ctx.mode);
+            }
             ops.push(Spanned::new(Op::Label(skip_label), span));
         }
         Stmt::Hla(stmt) => {
             lower_hla_stmt(stmt, span, scope, sema, ctx, diagnostics, ops);
         }
         Stmt::ModeSet { a_width, i_width } => {
-            lower_mode_set(*a_width, *i_width, span, ops);
-            if let Some(a) = a_width {
-                ctx.mode.a_width = Some(*a);
-            }
-            if let Some(i) = i_width {
-                ctx.mode.i_width = Some(*i);
-            }
+            ctx.mode = lower_mode_contract_transition(ctx.mode, *a_width, *i_width, span, ops);
         }
         Stmt::ModeScopedBlock {
             a_width,
@@ -476,14 +676,10 @@ fn lower_stmt(
             body,
         } => {
             let saved_mode = ctx.mode;
-            // Apply block's mode prefix
-            lower_mode_set(*a_width, *i_width, span, ops);
-            if let Some(a) = a_width {
-                ctx.mode.a_width = Some(*a);
-            }
-            if let Some(i) = i_width {
-                ctx.mode.i_width = Some(*i);
-            }
+            ctx.mode_frames.push(ModeFrame {
+                entry_mode: saved_mode,
+            });
+            ctx.mode = lower_mode_contract_transition(ctx.mode, *a_width, *i_width, span, ops);
             // Lower body
             for s in body {
                 lower_stmt(
@@ -498,9 +694,12 @@ fn lower_stmt(
                     ops,
                 );
             }
-            // Restore mode: emit ops to return to saved state
-            lower_mode_restore(ctx.mode, saved_mode, span, ops);
-            ctx.mode = saved_mode;
+            let _ = ctx.mode_frames.pop();
+            if ctx.reachable {
+                // Restore mode when control falls out of the block naturally.
+                lower_mode_restore(ctx.mode, saved_mode, span, ops);
+                ctx.mode = saved_mode;
+            }
         }
         Stmt::SwapAB => {
             ops.push(Spanned::new(
@@ -535,6 +734,71 @@ fn lower_mode_set(
     }
 }
 
+fn emit_fixed_mode_set(
+    a_width: Option<RegWidth>,
+    i_width: Option<RegWidth>,
+    span: Span,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let mut rep_mask = 0u8;
+    let mut sep_mask = 0u8;
+    match a_width {
+        Some(RegWidth::W16) => rep_mask |= 0x20,
+        Some(RegWidth::W8) => sep_mask |= 0x20,
+        None => {}
+    }
+    match i_width {
+        Some(RegWidth::W16) => rep_mask |= 0x10,
+        Some(RegWidth::W8) => sep_mask |= 0x10,
+        None => {}
+    }
+    if rep_mask != 0 {
+        ops.push(Spanned::new(Op::FixedRep(rep_mask), span));
+    }
+    if sep_mask != 0 {
+        ops.push(Spanned::new(Op::FixedSep(sep_mask), span));
+    }
+}
+
+fn lower_mode_contract_transition(
+    current: ModeState,
+    a_width: Option<RegWidth>,
+    i_width: Option<RegWidth>,
+    span: Span,
+    ops: &mut Vec<Spanned<Op>>,
+) -> ModeState {
+    let mut next = current;
+
+    let a_delta = if let Some(target) = a_width {
+        if current.a_width != Some(target) {
+            Some(target)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let i_delta = if let Some(target) = i_width {
+        if current.i_width != Some(target) {
+            Some(target)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    lower_mode_set(a_delta, i_delta, span, ops);
+
+    if let Some(target) = a_width {
+        next.a_width = Some(target);
+    }
+    if let Some(target) = i_width {
+        next.i_width = Some(target);
+    }
+    next
+}
+
 /// Emit REP/SEP ops to restore from `current` mode back to `saved` mode.
 /// Only emits for dimensions where both states are known and differ.
 fn lower_mode_restore(
@@ -562,6 +826,469 @@ fn lower_mode_restore(
             ops.push(Spanned::new(Op::Sep(0x10), span));
         }
         _ => {}
+    }
+}
+
+fn lower_call_with_contract(
+    target: &str,
+    is_far: bool,
+    a_width: Option<RegWidth>,
+    i_width: Option<RegWidth>,
+    span: Span,
+    ctx: &mut LowerContext,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let saved_mode = ctx.mode;
+    ctx.mode = lower_mode_contract_transition(ctx.mode, a_width, i_width, span, ops);
+
+    let mnemonic = if is_far { "jsl" } else { "jsr" };
+    ops.push(Spanned::new(
+        Op::Instruction(InstructionOp {
+            mnemonic: mnemonic.to_string(),
+            operand: Some(OperandOp::Address {
+                value: AddressValue::Label(target.to_string()),
+                force_far: is_far,
+                mode: AddressOperandMode::Direct { index: None },
+            }),
+        }),
+        span,
+    ));
+
+    lower_mode_restore(ctx.mode, saved_mode, span, ops);
+    ctx.mode = saved_mode;
+}
+
+fn lower_instruction_stmt(
+    instruction: &Instruction,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    ctx: &mut LowerContext,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let mnemonic = instruction.mnemonic.to_ascii_lowercase();
+
+    validate_instruction_width_rules(instruction, sema, ctx.mode, span, diagnostics);
+
+    let target_label = instruction_jump_target_label(instruction, scope, span, diagnostics);
+    let is_unconditional_jump = matches!(mnemonic.as_str(), "jmp" | "jml" | "bra" | "brl");
+    let is_conditional_branch = matches!(
+        mnemonic.as_str(),
+        "bcc" | "bcs" | "beq" | "bmi" | "bne" | "bpl" | "bvc" | "bvs"
+    );
+    let is_return = matches!(mnemonic.as_str(), "rts" | "rtl" | "rti");
+
+    if is_unconditional_jump || is_return {
+        let exit_frames = if is_return {
+            ctx.frame_depth()
+        } else if let Some(target) = target_label.as_deref() {
+            match ctx.label_depths.get(target).copied() {
+                Some(target_depth) if target_depth > ctx.frame_depth() => {
+                    diagnostics.push(
+                        Diagnostic::error(span, "illegal jump into a deeper block scope")
+                            .with_help("jump targets cannot enter nested @a*/@i* blocks"),
+                    );
+                    0
+                }
+                Some(target_depth) => ctx.frame_depth().saturating_sub(target_depth),
+                None => ctx.frame_depth(),
+            }
+        } else {
+            ctx.frame_depth()
+        };
+
+        let mode_after_jump = emit_mode_restores_for_exited_frames(
+            ctx.mode,
+            &ctx.mode_frames,
+            exit_frames,
+            span,
+            ops,
+        );
+
+        if let Some(target) = target_label.as_deref() {
+            record_jump_target_mode(ctx, target, mode_after_jump, span, diagnostics);
+        }
+
+        if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops) {
+            ctx.mode = mode_after_jump;
+            ctx.reachable = false;
+            if mnemonic == "plp" || mnemonic == "rti" {
+                ctx.mode = ModeState::default();
+            }
+        }
+        return;
+    }
+
+    if is_conditional_branch {
+        if let Some(target) = target_label.as_deref() {
+            record_jump_target_mode(ctx, target, ctx.mode, span, diagnostics);
+        }
+    }
+
+    if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops)
+        && (mnemonic == "plp" || mnemonic == "rti")
+    {
+        ctx.mode = ModeState::default();
+    }
+}
+
+fn emit_mode_restores_for_exited_frames(
+    current: ModeState,
+    frames: &[ModeFrame],
+    exit_count: usize,
+    span: Span,
+    ops: &mut Vec<Spanned<Op>>,
+) -> ModeState {
+    let mut mode = current;
+    for frame in frames.iter().rev().take(exit_count) {
+        lower_mode_restore(mode, frame.entry_mode, span, ops);
+        mode = frame.entry_mode;
+    }
+    mode
+}
+
+fn instruction_jump_target_label(
+    instruction: &Instruction,
+    scope: Option<&str>,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    let Operand::Value {
+        expr,
+        addr_mode,
+        index,
+        ..
+    } = instruction.operand.as_ref()?
+    else {
+        return None;
+    };
+
+    if *addr_mode != OperandAddrMode::Direct || index.is_some() {
+        return None;
+    }
+
+    let Expr::Ident(name) = expr else {
+        return None;
+    };
+
+    resolve_symbol(name, scope, span, diagnostics)
+}
+
+fn record_label_entry_mode(
+    ctx: &mut LowerContext,
+    label: &str,
+    mode: ModeState,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(existing) = ctx.label_entry_modes.get(label).copied() {
+        if existing != mode {
+            diagnostics.push(mode_mismatch_diagnostic(span, label, existing, mode));
+        }
+    } else {
+        ctx.label_entry_modes.insert(label.to_string(), mode);
+    }
+}
+
+fn apply_declared_label_mode(mode: ModeState, declared: Option<ModeState>) -> ModeState {
+    let Some(declared) = declared else {
+        return mode;
+    };
+    let mut out = mode;
+    if let Some(a) = declared.a_width {
+        out.a_width = Some(a);
+    }
+    if let Some(i) = declared.i_width {
+        out.i_width = Some(i);
+    }
+    out
+}
+
+fn record_jump_target_mode(
+    ctx: &mut LowerContext,
+    label: &str,
+    incoming_mode: ModeState,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let declared = ctx.label_declared_modes.get(label).copied();
+    let mut effective_mode = apply_declared_label_mode(incoming_mode, declared);
+
+    if let Some(declared) = declared {
+        let mut fixed_mask = ctx.label_fixed_masks.get(label).copied().unwrap_or(0);
+        if let Some(a) = declared.a_width {
+            if incoming_mode.a_width != Some(a) {
+                fixed_mask |= 0x20;
+            }
+            effective_mode.a_width = Some(a);
+        }
+        if let Some(i) = declared.i_width {
+            if incoming_mode.i_width != Some(i) {
+                fixed_mask |= 0x10;
+            }
+            effective_mode.i_width = Some(i);
+        }
+        if fixed_mask != 0 {
+            ctx.label_fixed_masks.insert(label.to_string(), fixed_mask);
+        }
+    }
+
+    record_label_entry_mode(ctx, label, effective_mode, span, diagnostics);
+}
+
+fn mode_mismatch_diagnostic(span: Span, label: &str, lhs: ModeState, rhs: ModeState) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        format!(
+            "mode mismatch at label {label}: incoming edges have different modes ({} vs {})",
+            format_mode_state(lhs),
+            format_mode_state(rhs),
+        ),
+    )
+    .with_help("ensure all incoming paths use the same @a*/@i* mode state")
+}
+
+fn format_mode_state(mode: ModeState) -> String {
+    let a = match mode.a_width {
+        Some(RegWidth::W8) => "a8",
+        Some(RegWidth::W16) => "a16",
+        None => "a?",
+    };
+    let i = match mode.i_width {
+        Some(RegWidth::W8) => "i8",
+        Some(RegWidth::W16) => "i16",
+        None => "i?",
+    };
+    format!("{a}/{i}")
+}
+
+fn validate_instruction_width_rules(
+    instruction: &Instruction,
+    sema: &SemanticModel,
+    mode: ModeState,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mnemonic = instruction.mnemonic.to_ascii_lowercase();
+    let Some(operand) = instruction.operand.as_ref() else {
+        return;
+    };
+
+    if let Operand::Immediate(expr) = operand {
+        let reg_mode = match mnemonic.as_str() {
+            "lda" => mode.a_width,
+            "ldx" | "ldy" => mode.i_width,
+            _ => None,
+        };
+        if let Some(reg_width) = reg_mode {
+            if let Some(value) = eval_to_number_strict(expr, sema, span, diagnostics) {
+                if !value_fits_reg_width(value, reg_width) {
+                    diagnostics.push(immediate_width_error(
+                        span,
+                        value,
+                        reg_width,
+                        mnemonic.as_str(),
+                    ));
+                }
+            }
+        }
+    }
+
+    let Operand::Value { expr, .. } = operand else {
+        return;
+    };
+
+    let Some(data_width) = expr_data_width(expr, sema) else {
+        return;
+    };
+    let required_width = data_width_to_reg_width(data_width);
+    let var_name = base_ident(expr);
+
+    match mnemonic.as_str() {
+        "lda" => validate_mode_for_typed_access(
+            span,
+            mode.a_width,
+            required_width,
+            "load",
+            "a",
+            var_name,
+            data_width,
+            diagnostics,
+        ),
+        "ldx" | "ldy" => validate_mode_for_typed_access(
+            span,
+            mode.i_width,
+            required_width,
+            "load",
+            "i",
+            var_name,
+            data_width,
+            diagnostics,
+        ),
+        "sta" => validate_mode_for_typed_access(
+            span,
+            mode.a_width,
+            required_width,
+            "store",
+            "a",
+            var_name,
+            data_width,
+            diagnostics,
+        ),
+        "stx" | "sty" => validate_mode_for_typed_access(
+            span,
+            mode.i_width,
+            required_width,
+            "store",
+            "i",
+            var_name,
+            data_width,
+            diagnostics,
+        ),
+        _ => {}
+    }
+}
+
+fn validate_mode_for_typed_access(
+    span: Span,
+    actual: Option<RegWidth>,
+    required: RegWidth,
+    action: &str,
+    axis: &str,
+    var_name: Option<&str>,
+    data_width: DataWidth,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(actual) = actual else {
+        return;
+    };
+    if actual == required {
+        return;
+    }
+
+    let required_tag = match (axis, required) {
+        ("a", RegWidth::W8) => "@a8",
+        ("a", RegWidth::W16) => "@a16",
+        ("i", RegWidth::W8) => "@i8",
+        ("i", RegWidth::W16) => "@i16",
+        _ => "@?",
+    };
+
+    let (message, help) = if action == "store" && axis == "a" && data_width == DataWidth::Word {
+        if let Some(name) = var_name {
+            (
+                format!("Store to var {name}:word requires @a16."),
+                Some(format!(
+                    "for byte stores, use explicit view ({name}:byte / ({name}+1):byte)"
+                )),
+            )
+        } else {
+            (
+                "Store to word-typed value requires @a16.".to_string(),
+                Some("for byte stores, use an explicit :byte view".to_string()),
+            )
+        }
+    } else if action == "store" && axis == "a" && data_width == DataWidth::Byte {
+        if let Some(name) = var_name {
+            (format!("Store to var {name}:byte requires @a8."), None)
+        } else {
+            ("Store to byte-typed value requires @a8.".to_string(), None)
+        }
+    } else if action == "load" {
+        (
+            format!(
+                "Load from {}-typed value requires {required_tag}.",
+                data_width_name(data_width)
+            ),
+            None,
+        )
+    } else {
+        (
+            format!(
+                "{} to {}-typed value requires {required_tag}.",
+                capitalize(action),
+                data_width_name(data_width)
+            ),
+            None,
+        )
+    };
+
+    let diagnostic = if let Some(help) = help {
+        Diagnostic::error(span, message).with_help(help)
+    } else {
+        Diagnostic::error(span, message)
+    };
+    diagnostics.push(diagnostic);
+}
+
+fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
+    match expr {
+        Expr::TypedView { width, .. } => Some(*width),
+        Expr::Ident(name) => sema.vars.get(name).and_then(|var| var.data_width),
+        _ => None,
+    }
+}
+
+fn base_ident(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::TypedView { expr, .. } => base_ident(expr),
+        _ => None,
+    }
+}
+
+fn data_width_to_reg_width(width: DataWidth) -> RegWidth {
+    match width {
+        DataWidth::Byte => RegWidth::W8,
+        DataWidth::Word => RegWidth::W16,
+    }
+}
+
+fn data_width_name(width: DataWidth) -> &'static str {
+    match width {
+        DataWidth::Byte => "byte",
+        DataWidth::Word => "word",
+    }
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    first.to_uppercase().chain(chars).collect()
+}
+
+fn value_fits_reg_width(value: i64, width: RegWidth) -> bool {
+    if value < 0 {
+        return false;
+    }
+    match width {
+        RegWidth::W8 => value <= i64::from(u8::MAX),
+        RegWidth::W16 => value <= i64::from(u16::MAX),
+    }
+}
+
+fn immediate_width_error(span: Span, value: i64, width: RegWidth, mnemonic: &str) -> Diagnostic {
+    let value_text = if value < 0 {
+        value.to_string()
+    } else {
+        format!("0x{value:X}")
+    };
+    match (mnemonic, width) {
+        ("lda", RegWidth::W8) => Diagnostic::error(
+            span,
+            format!("Immediate {value_text} does not fit in @a8; use @a16 or split into bytes."),
+        ),
+        ("ldx" | "ldy", RegWidth::W8) => Diagnostic::error(
+            span,
+            format!("Immediate {value_text} does not fit in @i8; use @i16 or split into bytes."),
+        ),
+        _ => Diagnostic::error(
+            span,
+            format!("Immediate {value_text} does not fit in selected width."),
+        ),
     }
 }
 
@@ -640,7 +1367,7 @@ fn lower_hla_stmt(
                 return;
             }
 
-            emit_branch_to_label("bpl", &wait_label, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bpl", &wait_label, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::ConditionSeed { .. } => {
             if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
@@ -667,7 +1394,16 @@ fn lower_hla_stmt(
                 );
                 return;
             };
-            emit_branch_to_label("bpl", &loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                "bpl",
+                &loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
         }
         HlaStmt::DoCloseNFlagSet => {
             let Some(loop_target) = ctx.do_loop_targets.pop() else {
@@ -677,7 +1413,16 @@ fn lower_hla_stmt(
                 );
                 return;
             };
-            emit_branch_to_label("bmi", &loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                "bmi",
+                &loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
         }
         HlaStmt::DoCloseWithOp { op } => {
             let Some(loop_target) = ctx.do_loop_targets.pop() else {
@@ -725,7 +1470,16 @@ fn lower_hla_stmt(
                 );
                 return;
             };
-            emit_branch_to_label("bra", &loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                "bra",
+                &loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
         }
         HlaStmt::DoCloseNever => {
             let Some(_loop_target) = ctx.do_loop_targets.pop() else {
@@ -744,7 +1498,16 @@ fn lower_hla_stmt(
                 );
                 return;
             };
-            emit_branch_to_label(mnemonic, &loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                mnemonic,
+                &loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
         }
         HlaStmt::RepeatNop(count) => {
             let nop = Instruction {
@@ -773,20 +1536,20 @@ fn lower_hla_postfix_close_op_branch(
 ) {
     match op {
         HlaCompareOp::Eq => {
-            emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("beq", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Ne => {
-            emit_branch_to_label("bne", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bne", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Lt => {
-            emit_branch_to_label("bcc", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bcc", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Ge => {
-            emit_branch_to_label("bcs", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bcs", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Le => {
-            emit_branch_to_label("bcc", loop_target, scope, sema, span, diagnostics, ops);
-            emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bcc", loop_target, scope, sema, span, ctx, diagnostics, ops);
+            emit_branch_to_label("beq", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Gt => {
             let Some(skip_label) =
@@ -794,9 +1557,9 @@ fn lower_hla_postfix_close_op_branch(
             else {
                 return;
             };
-            emit_branch_to_label("beq", &skip_label, scope, sema, span, diagnostics, ops);
-            emit_branch_to_label("bcc", &skip_label, scope, sema, span, diagnostics, ops);
-            emit_branch_to_label("bra", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("beq", &skip_label, scope, sema, span, ctx, diagnostics, ops);
+            emit_branch_to_label("bcc", &skip_label, scope, sema, span, ctx, diagnostics, ops);
+            emit_branch_to_label("bra", loop_target, scope, sema, span, ctx, diagnostics, ops);
             ops.push(Spanned::new(Op::Label(skip_label), span));
         }
     }
@@ -835,26 +1598,44 @@ fn lower_hla_condition_branch(
 
     match condition.op {
         HlaCompareOp::Eq => {
-            emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("beq", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Ne => {
-            emit_branch_to_label("bne", loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("bne", loop_target, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaCompareOp::Ge => {
             let branch = if rhs_number == 0 { "bpl" } else { "bcs" };
-            emit_branch_to_label(branch, loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                branch,
+                loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
         }
         HlaCompareOp::Lt => {
             let branch = if rhs_number == 0 { "bmi" } else { "bcc" };
-            emit_branch_to_label(branch, loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                branch,
+                loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
         }
         HlaCompareOp::Le => {
             if rhs_number == 0 {
-                emit_branch_to_label("bmi", loop_target, scope, sema, span, diagnostics, ops);
-                emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+                emit_branch_to_label("bmi", loop_target, scope, sema, span, ctx, diagnostics, ops);
+                emit_branch_to_label("beq", loop_target, scope, sema, span, ctx, diagnostics, ops);
             } else {
-                emit_branch_to_label("bcc", loop_target, scope, sema, span, diagnostics, ops);
-                emit_branch_to_label("beq", loop_target, scope, sema, span, diagnostics, ops);
+                emit_branch_to_label("bcc", loop_target, scope, sema, span, ctx, diagnostics, ops);
+                emit_branch_to_label("beq", loop_target, scope, sema, span, ctx, diagnostics, ops);
             }
         }
         HlaCompareOp::Gt => {
@@ -863,9 +1644,18 @@ fn lower_hla_condition_branch(
                 return;
             };
 
-            emit_branch_to_label("beq", &skip_label, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label("beq", &skip_label, scope, sema, span, ctx, diagnostics, ops);
             let branch = if rhs_number == 0 { "bpl" } else { "bcs" };
-            emit_branch_to_label(branch, loop_target, scope, sema, span, diagnostics, ops);
+            emit_branch_to_label(
+                branch,
+                loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
             ops.push(Spanned::new(Op::Label(skip_label), span));
         }
     }
@@ -877,6 +1667,7 @@ fn emit_branch_to_label(
     scope: Option<&str>,
     sema: &SemanticModel,
     span: Span,
+    ctx: &mut LowerContext,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
@@ -889,7 +1680,7 @@ fn emit_branch_to_label(
             addr_mode: OperandAddrMode::Direct,
         }),
     };
-    let _ = lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
+    lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
 }
 
 fn fresh_local_label(

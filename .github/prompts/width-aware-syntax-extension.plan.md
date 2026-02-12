@@ -2,7 +2,7 @@
 title: "K65 -> 65816 Width-Aware Syntax Extension"
 project: k816
 area: core (parser/AST) + lowering + diagnostics
-status: draft
+status: completed
 ---
 
 # Goal
@@ -126,6 +126,15 @@ Call-site bridging:
 - If caller already matches, emit nothing.
 - Folding pass merges adjacent mode ops.
 
+Goto/branch label bridging:
+
+- If a jump target label has known mode, emit minimal `REP/SEP` at the label site (immediately after label) so all incoming edges normalize to target mode.
+- Label-anchored mode bridges are fixed and must not be removed by dead mode elimination.
+- Cross-compilation unit jumps to unknown-mode or mismatched-mode labels are an error.
+  - This allows not needing to inject mode ops at every label in compilation units.
+- Redundant mode switches before a fixed label bridge are allowed to be removed.
+- Non-returning transfers do not emit post-restore.
+
 Tail calls / non-returning transfers:
 
 - For `goto`-like transfers that do not return, do not emit post-restore.
@@ -169,8 +178,8 @@ This also cancels redundant toggles and ensures minimal emission.
 
 Enforce mode consistency at labels:
 
-- All incoming edges to a label must agree on `Mode`.
-- If mismatch, compilation error: "mode mismatch at label".
+- `goto`/branch edges normalize through fixed label-anchored bridges when target label mode is known.
+- If incoming edges still disagree on unresolved/unknown dimensions, emit mode mismatch.
 
 Mode can become unknown after instructions that restore P from runtime:
 
@@ -185,7 +194,8 @@ Mode can become unknown after instructions that restore P from runtime:
   - immediate sizing correctness in `@a8/@a16` and `@i8/@i16`
   - lexical scoping restores (including nested blocks)
   - early exit restores for `break`, `return`, `goto` out of frame
-  - label mode consistency errors
+  - goto/branch mode bridging
+  - label mode consistency errors (unresolved target mode cases)
   - typed var assignment errors and required explicit views
   - folding REP/SEP in adjacency cases
 - Create fixture set: minimal sources + expected bytes/listings.
@@ -255,11 +265,11 @@ Provide explicit and actionable errors:
 
 # Deliverables Checklist
 
-- [ ] Grammar + parser updated
-- [ ] AST nodes added for mode sets, typed views, swap operator, function mode contracts
-- [ ] Mode-frame tracking with lexical scoping and early-exit restores
-- [ ] CFG label mode unification + diagnostics
-- [ ] Strict type/width checking for immediates and typed assignments
-- [ ] REP/SEP folding pass
-- [ ] Opcode emission updated for width-dependent immediates
-- [ ] Golden tests covering all key behaviors
+- [x] Grammar + parser updated
+- [x] AST nodes added for mode sets, typed views, swap operator, function mode contracts
+- [x] Mode-frame tracking with lexical scoping and early-exit restores
+- [x] CFG label mode unification + diagnostics
+- [x] Strict type/width checking for immediates and typed assignments
+- [x] REP/SEP folding pass
+- [x] Opcode emission updated for width-dependent immediates
+- [x] Golden tests covering all key behaviors

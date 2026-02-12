@@ -32,6 +32,12 @@ pub enum Op {
     /// SEP pseudo-op: set processor status bits (set register to 8-bit).
     /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
     Sep(u8),
+    /// Fixed REP pseudo-op anchored at a label bridge point.
+    /// Never removed or folded away by mode optimization passes.
+    FixedRep(u8),
+    /// Fixed SEP pseudo-op anchored at a label bridge point.
+    /// Never removed or folded away by mode optimization passes.
+    FixedSep(u8),
 }
 
 #[derive(Debug, Clone)]

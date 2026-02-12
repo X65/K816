@@ -1,0 +1,10 @@
+Error: unexpected token '['
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-missing-close/input.k65:1:8 ]
+   │
+ 1 │ var foo[
+   │        ┬  
+   │        ╰── here
+   │ 
+   │ Help: remove or fix this token
+───╯
+

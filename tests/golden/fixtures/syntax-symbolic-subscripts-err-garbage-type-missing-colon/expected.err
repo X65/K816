@@ -1,0 +1,10 @@
+Error: invalid syntax: invalid overlay field declaration '.a[2]word': expected ':byte' or ':word'; inside brackets: [
+  .a[2]word
+]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-type-missing-colon/input.k65:2:8 ]
+   │
+ 2 │   .a[2]word
+   │        ──┬─  
+   │          ╰─── here
+───╯
+

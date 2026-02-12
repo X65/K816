@@ -1,0 +1,4 @@
+var foo[
+  .a:byte,
+  junk
+] = 0x1234

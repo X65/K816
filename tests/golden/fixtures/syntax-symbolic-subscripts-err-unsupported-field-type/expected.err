@@ -1,20 +1,10 @@
 Error: invalid syntax: invalid overlay field declaration '.a:dword': unsupported field type 'dword'; inside brackets: [
   .a:dword
 ]
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-unsupported-field-type/input.k65:1:8 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-unsupported-field-type/input.k65:2:6 ]
    │
- 1 │ ╭─▶ var foo[
-   ┆ ┆   
- 3 │ ├─▶ ] = 0x1234
-   │ │                
-   │ ╰──────────────── here
-───╯
-
-Error: invalid syntax: expected something else, found number literal
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-unsupported-field-type/input.k65:3:5 ]
-   │
- 3 │ ] = 0x1234
-   │     ───┬──  
+ 2 │   .a:dword
+   │      ──┬──  
    │        ╰──── here
 ───╯
 

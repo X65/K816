@@ -8,6 +8,12 @@ k816 is a fresh Rust implementation of a high-level assembler for the WDC 65816 
 
 Follow standard Rust conventions with `rustfmt` for formatting and `cargo clippy` for style guidance. Apply clippy suggestions to new and modified code. Example: [crates/core/src/lib.rs](crates/core/src/lib.rs) uses clean module declarations and public exports.
 
+## Reuse First
+
+- Default behavior: search the existing codebase for matching patterns, utilities, and functions before introducing new ones.
+- Prefer extending or reusing existing implementations when behavior aligns, instead of creating parallel code paths.
+- When touching related code, refactor opportunistically to reduce duplication if it can be done safely and clearly.
+
 ## Architecture
 
 Multi-crate workspace for separation of concerns: `core` handles lexing/parsing/AST/HIR/semantics/lowering/encoding/emit (depends on `eval` and `assets`); `eval` for compile-time expression evaluation; `fmt` for pretty-printing; `assets` for data converters; `isa65816` for instruction definitions; `o65` for object format; `link` for RON-based linking. Design emphasizes high-level assembly with C-like syntax, compile-time evaluation, structured blocks, deterministic output, explicit far functions, and 24-bit addressing. No optimizer or linker-based far-calls. Reference: [Cargo.toml](Cargo.toml).

@@ -873,6 +873,21 @@ enum VarBracketPayload {
     OverlayFields(Vec<OverlayFieldDecl>),
 }
 
+#[derive(Debug, Clone)]
+struct BracketPayloadParseError {
+    message: String,
+    span: Span,
+}
+
+impl BracketPayloadParseError {
+    fn new(span: Span, message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+        }
+    }
+}
+
 fn var_decl_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, VarDecl, ParseExtra<'src>> + Clone
@@ -883,29 +898,35 @@ where
         .ignore_then(ident_parser())
         .then(data_width_parser().or_not())
         .then(bracket_payload_parser(source_id))
-        .then(just(TokenKind::Eq).ignore_then(spanned(expr_parser(), source_id)).or_not())
-        .map(|(((name, data_width), bracket_payload), initializer_with_span)| {
-            let (array_len, overlay_fields) = match bracket_payload {
-                Some(VarBracketPayload::ArrayLen(array_len)) => (Some(array_len), None),
-                Some(VarBracketPayload::OverlayFields(overlay_fields)) => {
-                    (None, Some(overlay_fields))
-                }
-                None => (None, None),
-            };
-            let (initializer, initializer_span) = match initializer_with_span {
-                Some(initializer) => (Some(initializer.node), Some(initializer.span)),
-                None => (None, None),
-            };
+        .then(
+            just(TokenKind::Eq)
+                .ignore_then(spanned(expr_parser(), source_id))
+                .or_not(),
+        )
+        .map(
+            |(((name, data_width), bracket_payload), initializer_with_span)| {
+                let (array_len, overlay_fields) = match bracket_payload {
+                    Some(VarBracketPayload::ArrayLen(array_len)) => (Some(array_len), None),
+                    Some(VarBracketPayload::OverlayFields(overlay_fields)) => {
+                        (None, Some(overlay_fields))
+                    }
+                    None => (None, None),
+                };
+                let (initializer, initializer_span) = match initializer_with_span {
+                    Some(initializer) => (Some(initializer.node), Some(initializer.span)),
+                    None => (None, None),
+                };
 
-            VarDecl {
-                name,
-                data_width,
-                array_len,
-                overlay_fields,
-                initializer,
-                initializer_span,
-            }
-        })
+                VarDecl {
+                    name,
+                    data_width,
+                    array_len,
+                    overlay_fields,
+                    initializer,
+                    initializer_span,
+                }
+            },
+        )
         .boxed()
 }
 
@@ -915,32 +936,37 @@ fn bracket_payload_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    spanned(chumsky::select! { TokenKind::Eval(text) => text }, source_id)
-        .or_not()
-        .try_map(move |payload, _| match payload {
-            Some(payload) => {
-                let text = payload.node;
-                let span = payload.span;
-                parse_var_bracket_payload(source_id, &text, span)
-                    .map(Some)
-                    .map_err(|message| {
-                        let eval_span: SimpleSpan = (span.start..span.end).into();
-                        Rich::custom(
-                            eval_span,
-                            format!("{message}; inside brackets: [{}]", text),
-                        )
-                    })
+    spanned(
+        chumsky::select! { TokenKind::Eval(text) => text },
+        source_id,
+    )
+    .or_not()
+    .validate(move |payload, _, emitter| match payload {
+        Some(payload) => {
+            let text = payload.node;
+            let span = payload.span;
+            match parse_var_bracket_payload(source_id, &text, span) {
+                Ok(parsed) => Some(parsed),
+                Err(error) => {
+                    let payload_span: SimpleSpan = (error.span.start..error.span.end).into();
+                    emitter.emit(Rich::custom(
+                        payload_span,
+                        format!("{}; inside brackets: [{}]", error.message, text),
+                    ));
+                    None
+                }
             }
-            None => Ok(None),
-        })
-        .boxed()
+        }
+        None => None,
+    })
+    .boxed()
 }
 
 fn parse_var_bracket_payload(
     source_id: SourceId,
     text: &str,
     eval_span: Span,
-) -> Result<VarBracketPayload, String> {
+) -> Result<VarBracketPayload, BracketPayloadParseError> {
     if looks_like_overlay_field_list(text) {
         return parse_overlay_field_list(source_id, text, eval_span)
             .map(VarBracketPayload::OverlayFields);
@@ -948,7 +974,12 @@ fn parse_var_bracket_payload(
 
     parse_expression_fragment(source_id, text)
         .map(|expr| VarBracketPayload::ArrayLen(expr.node))
-        .map_err(|error| format!("invalid var array length expression: {}", error.message))
+        .map_err(|error| {
+            BracketPayloadParseError::new(
+                eval_span,
+                format!("invalid var array length expression: {}", error.message),
+            )
+        })
 }
 
 fn looks_like_overlay_field_list(text: &str) -> bool {
@@ -964,7 +995,7 @@ fn parse_overlay_field_list(
     source_id: SourceId,
     text: &str,
     eval_span: Span,
-) -> Result<Vec<OverlayFieldDecl>, String> {
+) -> Result<Vec<OverlayFieldDecl>, BracketPayloadParseError> {
     let mut entries: Vec<(String, Span)> = Vec::new();
     let mut current_start = 0usize;
     let mut bracket_depth = 0usize;
@@ -977,7 +1008,15 @@ fn parse_overlay_field_list(
             }
             ']' => {
                 if bracket_depth == 0 {
-                    return Err("invalid overlay field list: unexpected ']'".to_string());
+                    let close_span = Span::new(
+                        source_id,
+                        inner_start + offset,
+                        inner_start + offset + ch.len_utf8(),
+                    );
+                    return Err(BracketPayloadParseError::new(
+                        close_span,
+                        "invalid overlay field list: unexpected ']'",
+                    ));
                 }
                 bracket_depth -= 1;
             }
@@ -997,9 +1036,10 @@ fn parse_overlay_field_list(
     }
 
     if bracket_depth != 0 {
-        return Err(
-            "invalid overlay field list: missing closing ']' in field declaration".to_string(),
-        );
+        return Err(BracketPayloadParseError::new(
+            eval_span,
+            "invalid overlay field list: missing closing ']' in field declaration",
+        ));
     }
 
     push_overlay_field_entry(
@@ -1012,7 +1052,10 @@ fn parse_overlay_field_list(
     );
 
     if entries.is_empty() {
-        return Err("invalid overlay field list: expected at least one field".to_string());
+        return Err(BracketPayloadParseError::new(
+            eval_span,
+            "invalid overlay field list: expected at least one field",
+        ));
     }
 
     entries
@@ -1053,12 +1096,16 @@ fn parse_overlay_field_entry(
     source_id: SourceId,
     entry: &str,
     span: Span,
-) -> Result<OverlayFieldDecl, String> {
+) -> Result<OverlayFieldDecl, BracketPayloadParseError> {
+    let entry_span =
+        |start: usize, end: usize| Span::new(source_id, span.start + start, span.start + end);
+
     let mut cursor = entry.trim();
     let mut consumed = 0usize;
     if !cursor.starts_with('.') {
-        return Err(format!(
-            "invalid overlay field declaration '{entry}': expected '.field'"
+        return Err(BracketPayloadParseError::new(
+            span,
+            format!("invalid overlay field declaration '{entry}': expected '.field'"),
         ));
     }
     cursor = &cursor[1..];
@@ -1066,13 +1113,15 @@ fn parse_overlay_field_entry(
 
     let mut chars = cursor.char_indices();
     let Some((_, first)) = chars.next() else {
-        return Err(format!(
-            "invalid overlay field declaration '{entry}': expected field name after '.'"
+        return Err(BracketPayloadParseError::new(
+            entry_span(0, consumed),
+            format!("invalid overlay field declaration '{entry}': expected field name after '.'"),
         ));
     };
     if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(format!(
-            "invalid overlay field declaration '{entry}': expected field name after '.'"
+        return Err(BracketPayloadParseError::new(
+            entry_span(consumed, consumed + first.len_utf8()),
+            format!("invalid overlay field declaration '{entry}': expected field name after '.'"),
         ));
     }
     let mut name_end = first.len_utf8();
@@ -1084,8 +1133,9 @@ fn parse_overlay_field_entry(
         }
     }
     if name_end == 0 {
-        return Err(format!(
-            "invalid overlay field declaration '{entry}': expected field name after '.'"
+        return Err(BracketPayloadParseError::new(
+            entry_span(consumed, consumed + 1),
+            format!("invalid overlay field declaration '{entry}': expected field name after '.'"),
         ));
     }
     let name = cursor[..name_end].to_string();
@@ -1113,15 +1163,17 @@ fn parse_overlay_field_entry(
             }
         }
         let Some(close_offset) = close_offset else {
-            return Err(format!(
-                "invalid overlay field declaration '{entry}': missing closing ']'"
+            return Err(BracketPayloadParseError::new(
+                entry_span(consumed, entry.len()),
+                format!("invalid overlay field declaration '{entry}': missing closing ']'"),
             ));
         };
         let count_text_raw = &cursor[1..close_offset];
         let count_text = count_text_raw.trim();
         if count_text.is_empty() {
-            return Err(format!(
-                "invalid overlay field declaration '{entry}': empty array count"
+            return Err(BracketPayloadParseError::new(
+                entry_span(0, consumed + close_offset + 1),
+                format!("invalid overlay field declaration '{entry}': empty array count"),
             ));
         }
         let leading_ws = count_text_raw.len() - count_text_raw.trim_start().len();
@@ -1132,32 +1184,48 @@ fn parse_overlay_field_entry(
         let count_expr = parse_expression_fragment(source_id, count_text)
             .map(|expr| expr.node)
             .map_err(|error| {
-                format!(
-                    "invalid overlay field declaration '{entry}': invalid array count expression: {}",
-                    error.message
+                BracketPayloadParseError::new(
+                    count_span.expect("count span must exist for non-empty count"),
+                    format!(
+                        "invalid overlay field declaration '{entry}': invalid array count expression: {}",
+                        error.message
+                    ),
                 )
             })?;
         count = Some(count_expr);
         let after_count = &cursor[close_offset + 1..];
+        let ws_after_count = after_count.len() - after_count.trim_start().len();
         cursor = after_count.trim_start();
+        consumed += close_offset + 1 + ws_after_count;
     }
 
     let data_width = if cursor.is_empty() {
         None
     } else {
         let Some(type_name) = cursor.strip_prefix(':') else {
-            return Err(format!(
-                "invalid overlay field declaration '{entry}': expected ':byte' or ':word'"
+            return Err(BracketPayloadParseError::new(
+                entry_span(consumed, entry.len()),
+                format!("invalid overlay field declaration '{entry}': expected ':byte' or ':word'"),
             ));
         };
+        let leading_ws = type_name.len() - type_name.trim_start().len();
+        let trailing_ws = type_name.len() - type_name.trim_end().len();
         let type_name = type_name.trim();
+        let type_span = Span::new(
+            source_id,
+            span.start + consumed + 1 + leading_ws,
+            span.start + consumed + cursor.len() - trailing_ws,
+        );
         if type_name.eq_ignore_ascii_case("byte") {
             Some(DataWidth::Byte)
         } else if type_name.eq_ignore_ascii_case("word") {
             Some(DataWidth::Word)
         } else {
-            return Err(format!(
-                "invalid overlay field declaration '{entry}': unsupported field type '{type_name}'"
+            return Err(BracketPayloadParseError::new(
+                type_span,
+                format!(
+                    "invalid overlay field declaration '{entry}': unsupported field type '{type_name}'"
+                ),
             ));
         }
     };
@@ -3129,16 +3197,28 @@ mod tests {
         let source = "var foo[\n  .a:dword\n] = 0x1234\n";
         let errors = parse(SourceId(0), source).expect_err("must fail");
 
-        assert!(errors.iter().any(|error| {
-            error
-                .message
-                .contains("unsupported field type 'dword'")
-        }));
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.message.contains("unsupported field type 'dword'") })
+        );
         assert!(
             !errors
                 .iter()
                 .any(|error| error.message.contains("unexpected '='"))
         );
+    }
+
+    #[test]
+    fn rejects_empty_overlay_array_count_at_field_slice() {
+        let source = "var foo[\n  .a[]:byte\n] = 0x1234\n";
+        let errors = parse(SourceId(0), source).expect_err("must fail");
+        let error = errors
+            .iter()
+            .find(|error| error.message.contains("empty array count"))
+            .expect("empty-count diagnostic");
+
+        assert_eq!(&source[error.primary.start..error.primary.end], ".a[]");
     }
 
     #[test]

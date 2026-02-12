@@ -1,0 +1,11 @@
+Error: invalid syntax: invalid overlay field declaration '.:word': expected field name after '.'; inside brackets: [
+  .a:byte,
+  .:word
+]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-entry-missing-name/input.k65:3:4 ]
+   │
+ 3 │   .:word
+   │    ┬  
+   │    ╰── here
+───╯
+

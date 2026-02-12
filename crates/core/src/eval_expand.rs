@@ -277,33 +277,27 @@ fn expand_var(
                 .map(|field| OverlayFieldDecl {
                     name: field.name.clone(),
                     data_width: field.data_width,
-                    count: field
-                        .count
-                        .as_ref()
-                        .map(|count| {
-                            expand_expr(
-                                count,
-                                field.count_span.unwrap_or(field.span),
-                                source_id,
-                                diagnostics,
-                            )
-                        }),
+                    count: field.count.as_ref().map(|count| {
+                        expand_expr(
+                            count,
+                            field.count_span.unwrap_or(field.span),
+                            source_id,
+                            diagnostics,
+                        )
+                    }),
                     count_span: field.count_span,
                     span: field.span,
                 })
                 .collect()
         }),
-        initializer: var
-            .initializer
-            .as_ref()
-            .map(|expr| {
-                expand_expr(
-                    expr,
-                    var.initializer_span.unwrap_or(span),
-                    source_id,
-                    diagnostics,
-                )
-            }),
+        initializer: var.initializer.as_ref().map(|expr| {
+            expand_expr(
+                expr,
+                var.initializer_span.unwrap_or(span),
+                source_id,
+                diagnostics,
+            )
+        }),
         initializer_span: var.initializer_span,
     }
 }

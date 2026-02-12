@@ -592,11 +592,11 @@ mod tests {
         let source = "var VIA[\n  .orb:byte\n  .ora:byte\n]\n";
         let file = parse(SourceId(0), source).expect("parse");
         let errors = analyze(&file).expect_err("must fail");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("is missing a base address assignment"))
-        );
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("is missing a base address assignment")
+        }));
     }
 
     #[test]

@@ -2528,7 +2528,8 @@ mod tests {
 
     #[test]
     fn suggests_field_for_overlay_aggregate_expression_index() {
-        let source = "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[idx]\n}\n";
+        let source =
+            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[idx]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;

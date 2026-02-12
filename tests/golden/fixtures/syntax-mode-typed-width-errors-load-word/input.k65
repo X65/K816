@@ -1,0 +1,8 @@
+var regs[
+  .ctrl:word
+  .status:byte
+] = 0x2100
+
+func test @a8 {
+  lda regs.ctrl
+}

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 use k816_isa65816::{decode_instruction_with_mode, format_instruction};
-use k816_o65::{O65Object, RelocationKind, SourceLocation};
+use k816_o65::{O65Object, RelocationKind, SourceLocation, SymbolDefinition};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -168,6 +168,8 @@ struct AnchorContext {
     source: Option<SourceLocation>,
 }
 
+const ABSOLUTE_SYMBOL_SEGMENT: &str = "__absolute__";
+
 pub fn load_config(path: &Path) -> Result<LinkerConfig> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read linker config '{}'", path.display()))?;
@@ -309,27 +311,37 @@ pub fn link_objects_with_options(
                 continue;
             };
 
-            let section_key = (obj_idx, def.section.clone());
-            let placements = placed_by_section.get(&section_key).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "symbol '{}' references unknown section '{}'",
-                    symbol.name,
-                    def.section
-                )
-            })?;
+            let resolved = match def {
+                SymbolDefinition::Section {
+                    section, offset, ..
+                } => {
+                    let section_key = (obj_idx, section.clone());
+                    let placements = placed_by_section.get(&section_key).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "symbol '{}' references unknown section '{}'",
+                            symbol.name,
+                            section
+                        )
+                    })?;
 
-            let addr = resolve_symbol_addr(placements, def.offset).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "symbol '{}' offset {:#X} is outside section '{}'",
-                    symbol.name,
-                    def.offset,
-                    def.section
-                )
-            })?;
+                    let addr = resolve_symbol_addr(placements, *offset).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "symbol '{}' offset {:#X} is outside section '{}'",
+                            symbol.name,
+                            offset,
+                            section
+                        )
+                    })?;
 
-            let resolved = ResolvedSymbol {
-                addr,
-                segment: def.section.clone(),
+                    ResolvedSymbol {
+                        addr,
+                        segment: section.clone(),
+                    }
+                }
+                SymbolDefinition::Absolute { address, .. } => ResolvedSymbol {
+                    addr: *address,
+                    segment: ABSOLUTE_SYMBOL_SEGMENT.to_string(),
+                },
             };
             if symbols.insert(symbol.name.clone(), resolved).is_some() {
                 bail!("duplicate global symbol '{}'", symbol.name);
@@ -341,7 +353,7 @@ pub fn link_objects_with_options(
         let value = match &link_symbol.value {
             SymbolValue::Absolute(addr) => ResolvedSymbol {
                 addr: *addr,
-                segment: "__absolute__".to_string(),
+                segment: ABSOLUTE_SYMBOL_SEGMENT.to_string(),
             },
             SymbolValue::Import(name) => symbols.get(name).cloned().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -378,6 +390,7 @@ pub fn link_objects_with_options(
 
             if reloc.kind == RelocationKind::Absolute
                 && reloc.width == 2
+                && target.segment != ABSOLUTE_SYMBOL_SEGMENT
                 && reloc.section != target.segment
             {
                 bail!(
@@ -452,18 +465,30 @@ pub fn link_objects_with_options(
     let (output_kind, bytes) = render_link_output(config, &memory_map)?;
 
     let mut listing_blocks = Vec::new();
+    let include_object_index = objects.len() > 1;
     for key in &section_order {
+        let object_index = key.0;
         let segment_name = &key.1;
         let Some(chunks) = placed_by_section.get(key) else {
             continue;
         };
 
         if chunks.is_empty() {
-            listing_blocks.push(format_empty_listing_block(segment_name));
+            listing_blocks.push(format_empty_listing_block(
+                object_index,
+                segment_name,
+                include_object_index,
+            ));
             continue;
         }
 
-        listing_blocks.push(format_section_listing(segment_name, chunks, &memory_map)?);
+        listing_blocks.push(format_section_listing(
+            object_index,
+            segment_name,
+            chunks,
+            &memory_map,
+            include_object_index,
+        )?);
     }
     listing_blocks.extend(format_data_symbol_listings(objects, &placed_by_section)?);
     listing_blocks.extend(format_function_disassembly_listings(
@@ -673,17 +698,22 @@ fn find_anchor_context(objects: &[O65Object], chunk: &PlannedChunk) -> Option<An
     let mut first_match_name: Option<String> = None;
 
     for symbol in &object.symbols {
-        let Some(definition) = symbol.definition.as_ref() else {
+        let Some(SymbolDefinition::Section {
+            section,
+            offset,
+            source,
+        }) = symbol.definition.as_ref()
+        else {
             continue;
         };
-        if definition.section != chunk.segment || definition.offset != chunk.section_offset {
+        if section != &chunk.segment || *offset != chunk.section_offset {
             continue;
         }
 
-        if definition.source.is_some() {
+        if source.is_some() {
             return Some(AnchorContext {
                 symbol_name: symbol.name.clone(),
-                source: definition.source.clone(),
+                source: source.clone(),
             });
         }
 
@@ -968,12 +998,17 @@ fn render_xex_output(
 }
 
 fn format_section_listing(
+    object_index: usize,
     segment: &str,
     chunks: &[PlacedChunk],
     memory_map: &HashMap<String, MemoryState>,
+    include_object_index: bool,
 ) -> Result<String> {
     let mut out = String::new();
-    out.push_str(&format!("[{segment}]\n"));
+    out.push_str(&format!(
+        "{}\n",
+        format_section_header(object_index, segment, include_object_index)
+    ));
 
     for chunk in chunks {
         let mem = memory_map.get(&chunk.memory_name).ok_or_else(|| {
@@ -1020,13 +1055,13 @@ fn format_data_symbol_listings(
             let lhs_location = lhs
                 .definition
                 .as_ref()
-                .and_then(|definition| definition.source.as_ref())
+                .and_then(symbol_source_location)
                 .map(|source| (source.line, source.column))
                 .unwrap_or((u32::MAX, u32::MAX));
             let rhs_location = rhs
                 .definition
                 .as_ref()
-                .and_then(|definition| definition.source.as_ref())
+                .and_then(symbol_source_location)
                 .map(|source| (source.line, source.column))
                 .unwrap_or((u32::MAX, u32::MAX));
 
@@ -1039,11 +1074,19 @@ fn format_data_symbol_listings(
             let definition = symbol.definition.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("internal linker error: data symbol without definition")
             })?;
-            let key = (object_index, definition.section.clone());
+            let SymbolDefinition::Section {
+                section,
+                offset,
+                source: _,
+            } = definition
+            else {
+                continue;
+            };
+            let key = (object_index, section.clone());
             let placements = placed_by_section.get(&key).ok_or_else(|| {
                 anyhow::anyhow!(
                     "internal linker error: placements missing for data section '{}'",
-                    definition.section
+                    section
                 )
             })?;
             let byte_count = data_symbol_byte_count(object, symbol)?;
@@ -1051,9 +1094,9 @@ fn format_data_symbol_listings(
             blocks.push(format_data_symbol_listing_block(
                 object_index,
                 object,
-                &definition.section,
+                section,
                 &symbol.name,
-                definition.offset,
+                *offset,
                 byte_count,
                 placements,
             )?);
@@ -1064,10 +1107,11 @@ fn format_data_symbol_listings(
 }
 
 fn is_named_data_symbol(symbol: &k816_o65::Symbol) -> bool {
-    let Some(definition) = symbol.definition.as_ref() else {
-        return false;
-    };
-    let Some(source) = definition.source.as_ref() else {
+    let Some(SymbolDefinition::Section {
+        source: Some(source),
+        ..
+    }) = symbol.definition.as_ref()
+    else {
         return false;
     };
 
@@ -1075,10 +1119,11 @@ fn is_named_data_symbol(symbol: &k816_o65::Symbol) -> bool {
 }
 
 fn is_top_level_code_block_symbol(symbol: &k816_o65::Symbol) -> bool {
-    let Some(definition) = symbol.definition.as_ref() else {
-        return false;
-    };
-    let Some(source) = definition.source.as_ref() else {
+    let Some(SymbolDefinition::Section {
+        source: Some(source),
+        ..
+    }) = symbol.definition.as_ref()
+    else {
         return false;
     };
 
@@ -1109,17 +1154,22 @@ fn data_symbol_byte_count(object: &O65Object, symbol: &k816_o65::Symbol) -> Resu
         .definition
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("internal linker error: data symbol without definition"))?;
-    let source = definition.source.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "internal linker error: data symbol '{}' missing source location",
+    let SymbolDefinition::Section {
+        section: section_name,
+        offset,
+        source: Some(source),
+    } = definition
+    else {
+        return Err(anyhow::anyhow!(
+            "internal linker error: data symbol '{}' must be section-relative",
             symbol.name
-        )
-    })?;
-    let section = object.sections.get(&definition.section).ok_or_else(|| {
+        ));
+    };
+    let section = object.sections.get(section_name).ok_or_else(|| {
         anyhow::anyhow!(
             "data symbol '{}' references unknown section '{}'",
             symbol.name,
-            definition.section
+            section_name
         )
     })?;
 
@@ -1134,21 +1184,21 @@ fn data_symbol_byte_count(object: &O65Object, symbol: &k816_o65::Symbol) -> Resu
         section_end = section_end.max(chunk_end);
     }
 
-    let current_key = (
-        definition.offset,
-        source.line,
-        source.column,
-        symbol.name.as_str(),
-    );
+    let current_key = (*offset, source.line, source.column, symbol.name.as_str());
     let mut next_key = (section_end, u32::MAX, u32::MAX, "\u{10FFFF}");
     for candidate in &object.symbols {
         let Some(candidate_definition) = candidate.definition.as_ref() else {
             continue;
         };
-        let Some(candidate_source) = candidate_definition.source.as_ref() else {
+        let SymbolDefinition::Section {
+            section: candidate_section,
+            offset: candidate_offset,
+            source: Some(candidate_source),
+        } = candidate_definition
+        else {
             continue;
         };
-        if candidate_definition.section != definition.section {
+        if candidate_section != section_name {
             continue;
         }
         if !is_named_data_symbol(candidate) && !is_top_level_code_block_symbol(candidate) {
@@ -1156,7 +1206,7 @@ fn data_symbol_byte_count(object: &O65Object, symbol: &k816_o65::Symbol) -> Resu
         }
 
         let candidate_key = (
-            candidate_definition.offset,
+            *candidate_offset,
             candidate_source.line,
             candidate_source.column,
             candidate.name.as_str(),
@@ -1166,13 +1216,21 @@ fn data_symbol_byte_count(object: &O65Object, symbol: &k816_o65::Symbol) -> Resu
         }
     }
 
-    next_key.0.checked_sub(definition.offset).ok_or_else(|| {
+    next_key.0.checked_sub(*offset).ok_or_else(|| {
         anyhow::anyhow!(
             "data symbol '{}' has invalid range in section '{}'",
             symbol.name,
-            definition.section
+            section_name
         )
     })
+}
+
+fn symbol_source_location(definition: &SymbolDefinition) -> Option<&SourceLocation> {
+    match definition {
+        SymbolDefinition::Section { source, .. } | SymbolDefinition::Absolute { source, .. } => {
+            source.as_ref()
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1518,8 +1576,22 @@ fn write_value(slot: &mut [u8], value: u32, width: u8) -> Result<()> {
     Ok(())
 }
 
-fn format_empty_listing_block(name: &str) -> String {
-    format!("[{name}]\n(empty)\n")
+fn format_empty_listing_block(
+    object_index: usize,
+    name: &str,
+    include_object_index: bool,
+) -> String {
+    format!(
+        "{}\n(empty)\n",
+        format_section_header(object_index, name, include_object_index)
+    )
+}
+
+fn format_section_header(object_index: usize, segment: &str, include_object_index: bool) -> String {
+    if include_object_index {
+        return format!("[obj#{object_index} {segment}]");
+    }
+    format!("[{segment}]")
 }
 
 #[cfg(test)]
@@ -1577,7 +1649,7 @@ mod tests {
         Symbol {
             name: name.to_string(),
             global: true,
-            definition: Some(SymbolDefinition {
+            definition: Some(SymbolDefinition::Section {
                 section: section.to_string(),
                 offset,
                 source: Some(SourceLocation {
@@ -1610,7 +1682,7 @@ mod tests {
             symbols: vec![Symbol {
                 name: "target".to_string(),
                 global: true,
-                definition: Some(SymbolDefinition {
+                definition: Some(SymbolDefinition::Section {
                     section: "default".to_string(),
                     offset: 2,
                     source: None,
@@ -1636,6 +1708,51 @@ mod tests {
         let linked = link_objects(&[object], &config).expect("link");
         assert_eq!(linked.kind, OutputKind::RawBinary);
         assert_eq!(linked.bytes, vec![0xEA, 0x02, 0x00]);
+    }
+
+    #[test]
+    fn links_16bit_relocation_to_absolute_symbol() {
+        let mut sections = IndexMap::new();
+        sections.insert(
+            "default".to_string(),
+            Section {
+                chunks: vec![SectionChunk {
+                    offset: 0,
+                    address: None,
+                    bytes: vec![0xAD, 0x00, 0x00],
+                }],
+            },
+        );
+
+        let object = O65Object {
+            sections,
+            symbols: vec![Symbol {
+                name: "abs_target".to_string(),
+                global: true,
+                definition: Some(SymbolDefinition::Absolute {
+                    address: 0x1234,
+                    source: None,
+                }),
+            }],
+            relocations: vec![Relocation {
+                section: "default".to_string(),
+                offset: 1,
+                width: 2,
+                kind: RelocationKind::Absolute,
+                symbol: "abs_target".to_string(),
+            }],
+            function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
+            listing: String::new(),
+        };
+
+        let mut config = default_stub_config();
+        config.output = OutputSpec {
+            kind: OutputKind::RawBinary,
+            file: None,
+        };
+        let linked = link_objects(&[object], &config).expect("link");
+        assert_eq!(linked.bytes, vec![0xAD, 0x34, 0x12]);
     }
 
     #[test]
@@ -2190,7 +2307,7 @@ mod tests {
         object.symbols = vec![Symbol {
             name: "text".to_string(),
             global: true,
-            definition: Some(SymbolDefinition {
+            definition: Some(SymbolDefinition::Section {
                 section: "default".to_string(),
                 offset: 0,
                 source: None,

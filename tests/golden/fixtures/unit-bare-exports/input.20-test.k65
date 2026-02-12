@@ -1,0 +1,11 @@
+/**
+  * this is a
+  * test function */
+func test @a8 {
+    nop
+    lda foo
+    lda regs.ctrl:byte
+    lda regs.status:byte
+    pha
+    nop
+}

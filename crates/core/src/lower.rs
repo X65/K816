@@ -238,7 +238,9 @@ pub fn lower(
                     &mut ops,
                 );
             }
-            Item::Var(_) => {}
+            Item::Var(var) => {
+                emit_var_absolute_symbols(var, item.span, sema, &mut diagnostics, &mut ops);
+            }
         }
     }
 
@@ -710,7 +712,54 @@ fn lower_stmt(
                 span,
             ));
         }
-        Stmt::Var(_) | Stmt::Empty => {}
+        Stmt::Var(var) => {
+            emit_var_absolute_symbols(var, span, sema, diagnostics, ops);
+        }
+        Stmt::Empty => {}
+    }
+}
+
+fn emit_var_absolute_symbols(
+    var: &crate::ast::VarDecl,
+    span: Span,
+    sema: &SemanticModel,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let Some(meta) = sema.vars.get(&var.name) else {
+        return;
+    };
+
+    ops.push(Spanned::new(
+        Op::DefineAbsoluteSymbol {
+            name: var.name.clone(),
+            address: meta.address,
+        },
+        span,
+    ));
+
+    let Some(symbolic_subscript) = meta.symbolic_subscript.as_ref() else {
+        return;
+    };
+
+    for (field_name, field_meta) in &symbolic_subscript.fields {
+        let Some(address) = meta.address.checked_add(field_meta.offset) else {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!(
+                    "symbolic subscript field '{}.{}' address overflows address space",
+                    var.name, field_name
+                ),
+            ));
+            continue;
+        };
+        ops.push(Spanned::new(
+            Op::DefineAbsoluteSymbol {
+                name: format!("{}.{}", var.name, field_name),
+                address,
+            },
+            span,
+        ));
     }
 }
 
@@ -2134,60 +2183,7 @@ fn lower_instruction(
             addr_mode,
         }) => {
             let mode = lower_operand_mode(*addr_mode, *index);
-            match expr {
-                Expr::Number(value) => {
-                    let address = u32::try_from(*value).map_err(|_| {
-                        Diagnostic::error(span, format!("address cannot be negative: {value}"))
-                    });
-                    match address {
-                        Ok(address) => Some(OperandOp::Address {
-                            value: AddressValue::Literal(address),
-                            force_far: *force_far,
-                            mode,
-                        }),
-                        Err(diag) => {
-                            diagnostics.push(diag);
-                            return None;
-                        }
-                    }
-                }
-                Expr::Ident(name) => Some(resolve_operand_ident(
-                    name,
-                    scope,
-                    sema,
-                    span,
-                    diagnostics,
-                    *force_far,
-                    mode,
-                )?),
-                Expr::Index { .. }
-                | Expr::Binary { .. }
-                | Expr::Unary { .. }
-                | Expr::TypedView { .. } => {
-                    let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
-                        return None;
-                    };
-                    let Ok(address) = u32::try_from(value) else {
-                        diagnostics.push(Diagnostic::error(
-                            span,
-                            format!("address cannot be negative: {value}"),
-                        ));
-                        return None;
-                    };
-                    Some(OperandOp::Address {
-                        value: AddressValue::Literal(address),
-                        force_far: *force_far,
-                        mode,
-                    })
-                }
-                Expr::EvalText(_) => {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        "internal error: eval text should be expanded before lowering",
-                    ));
-                    return None;
-                }
-            }
+            lower_address_operand(expr, scope, sema, span, diagnostics, *force_far, mode)
         }
     };
 
@@ -2195,6 +2191,66 @@ fn lower_instruction(
         mnemonic: instruction.mnemonic.clone(),
         operand,
     })
+}
+
+fn lower_address_operand(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    force_far: bool,
+    mode: AddressOperandMode,
+) -> Option<OperandOp> {
+    match expr {
+        Expr::Number(value) => {
+            let address = u32::try_from(*value).map_err(|_| {
+                Diagnostic::error(span, format!("address cannot be negative: {value}"))
+            });
+            match address {
+                Ok(address) => Some(OperandOp::Address {
+                    value: AddressValue::Literal(address),
+                    force_far,
+                    mode,
+                }),
+                Err(diag) => {
+                    diagnostics.push(diag);
+                    None
+                }
+            }
+        }
+        Expr::Ident(name) => {
+            resolve_operand_ident(name, scope, sema, span, diagnostics, force_far, mode)
+        }
+        // Typed views should preserve unresolved labels for relocation-aware object flows.
+        Expr::TypedView { expr, .. } => {
+            lower_address_operand(expr, scope, sema, span, diagnostics, force_far, mode)
+        }
+        Expr::Index { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
+            let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
+                return None;
+            };
+            let Ok(address) = u32::try_from(value) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("address cannot be negative: {value}"),
+                ));
+                return None;
+            };
+            Some(OperandOp::Address {
+                value: AddressValue::Literal(address),
+                force_far,
+                mode,
+            })
+        }
+        Expr::EvalText(_) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "internal error: eval text should be expanded before lowering",
+            ));
+            None
+        }
+    }
 }
 
 fn eval_to_number(
@@ -2490,6 +2546,54 @@ mod tests {
                 ..
             } if name == "missing"
         ));
+    }
+
+    #[test]
+    fn keeps_unresolved_typed_view_identifier_as_label_operand() {
+        let source = "func test @a8 {\n  lda regs.status:byte\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::Label(name),
+                ..
+            } if name == "regs.status"
+        ));
+    }
+
+    #[test]
+    fn emits_absolute_symbols_for_vars_and_symbolic_fields() {
+        let source = "var foo = 0x1234\nvar regs[\n  .ctrl:word\n  .status:byte\n] = 0x2100\nmain {\n  nop\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mut symbols = std::collections::BTreeMap::new();
+        for op in &program.ops {
+            let Op::DefineAbsoluteSymbol { name, address } = &op.node else {
+                continue;
+            };
+            symbols.insert(name.clone(), *address);
+        }
+
+        assert_eq!(symbols.get("foo"), Some(&0x1234));
+        assert_eq!(symbols.get("regs"), Some(&0x2100));
+        assert_eq!(symbols.get("regs.ctrl"), Some(&0x2100));
+        assert_eq!(symbols.get("regs.status"), Some(&0x2102));
     }
 
     #[test]

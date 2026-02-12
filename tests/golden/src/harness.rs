@@ -7,6 +7,12 @@ struct PipelineOutput {
     warnings: String,
 }
 
+#[derive(Clone, Debug)]
+struct InputSource {
+    path: PathBuf,
+    source_name: String,
+}
+
 struct FixturePathRewriter {
     repo_root: PathBuf,
     repo_root_text: String,
@@ -130,10 +136,8 @@ fn detect_expected_binary(fixture_dir: &Path) -> Result<Option<ExpectedBinary>> 
 pub fn run_case(case: &str) -> Result<()> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path_rewriter = FixturePathRewriter::new(manifest_dir)?;
-    let (fixture_dir, input_path, source_name) = resolve_paths(manifest_dir, &path_rewriter, case)?;
-
-    let source = std::fs::read_to_string(&input_path)
-        .with_context(|| format!("failed to read fixture input '{}'", input_path.display()))?;
+    let (fixture_dir, inputs, allow_adjacent_config) =
+        resolve_paths(manifest_dir, &path_rewriter, case)?;
 
     let expected_binary = detect_expected_binary(&fixture_dir)?;
     let expected_error_path = fixture_dir.join("expected.err");
@@ -143,9 +147,8 @@ pub fn run_case(case: &str) -> Result<()> {
 
         let pipeline_result = compile_and_link(
             &fixture_dir,
-            &input_path,
-            &source_name,
-            &source,
+            &inputs,
+            allow_adjacent_config,
             expected_binary.map(ExpectedBinary::kind),
         );
 
@@ -207,9 +210,8 @@ pub fn run_case(case: &str) -> Result<()> {
     };
     let pipeline = compile_and_link(
         &fixture_dir,
-        &input_path,
-        &source_name,
-        &source,
+        &inputs,
+        allow_adjacent_config,
         Some(expected_binary.kind()),
     )?;
     compare_binary_output(&fixture_dir, expected_binary, &pipeline.linked)?;
@@ -221,17 +223,19 @@ fn resolve_paths(
     manifest_dir: &Path,
     path_rewriter: &FixturePathRewriter,
     case: &str,
-) -> Result<(std::path::PathBuf, std::path::PathBuf, String)> {
+) -> Result<(PathBuf, Vec<InputSource>, bool)> {
     if let Some(name) = case.strip_prefix("fixture:") {
         let fixture_dir = manifest_dir.join("fixtures").join(name);
-        let input_k65 = fixture_dir.join("input.k65");
-        let input_path = if input_k65.exists() {
-            input_k65
-        } else {
-            fixture_dir.join("input.k816")
-        };
-        let source_name = path_rewriter.source_name(&input_path);
-        return Ok((fixture_dir, input_path, source_name));
+        let input_paths = resolve_fixture_inputs(&fixture_dir)?;
+        let allow_adjacent_config = input_paths.len() == 1;
+        let inputs = input_paths
+            .into_iter()
+            .map(|path| InputSource {
+                source_name: path_rewriter.source_name(&path),
+                path,
+            })
+            .collect();
+        return Ok((fixture_dir, inputs, allow_adjacent_config));
     }
 
     if let Some(stem) = case.strip_prefix("example:") {
@@ -240,8 +244,11 @@ fn resolve_paths(
             .repo_root
             .join("examples")
             .join(format!("{stem}.k65"));
-        let source_name = path_rewriter.source_name(&input_path);
-        return Ok((fixture_dir, input_path, source_name));
+        let input = InputSource {
+            source_name: path_rewriter.source_name(&input_path),
+            path: input_path,
+        };
+        return Ok((fixture_dir, vec![input], true));
     }
 
     Err(anyhow!(
@@ -249,23 +256,102 @@ fn resolve_paths(
     ))
 }
 
+fn resolve_fixture_inputs(fixture_dir: &Path) -> Result<Vec<PathBuf>> {
+    let input_k65 = fixture_dir.join("input.k65");
+    let input_k816 = fixture_dir.join("input.k816");
+    let has_input_k65 = input_k65.is_file();
+    let has_input_k816 = input_k816.is_file();
+
+    if has_input_k65 && has_input_k816 {
+        return Err(anyhow!(
+            "fixture '{}' must not contain both input.k65 and input.k816",
+            fixture_dir.display()
+        ));
+    }
+
+    let mut multi_inputs = std::fs::read_dir(fixture_dir)
+        .with_context(|| format!("failed to read fixture dir '{}'", fixture_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                return false;
+            };
+            if file_name == "input.k65" || file_name == "input.k816" {
+                return false;
+            }
+            if !file_name.starts_with("input.") {
+                return false;
+            }
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("k65") || ext.eq_ignore_ascii_case("k816")
+                })
+        })
+        .collect::<Vec<_>>();
+    multi_inputs.sort();
+
+    if (has_input_k65 || has_input_k816) && !multi_inputs.is_empty() {
+        return Err(anyhow!(
+            "fixture '{}' mixes input.k65/input.k816 with input.*.k65/input.*.k816 files",
+            fixture_dir.display()
+        ));
+    }
+
+    if has_input_k65 {
+        return Ok(vec![input_k65]);
+    }
+    if has_input_k816 {
+        return Ok(vec![input_k816]);
+    }
+    if !multi_inputs.is_empty() {
+        return Ok(multi_inputs);
+    }
+
+    Err(anyhow!(
+        "fixture '{}' must provide input.k65, input.k816, or one or more input.*.k65/input.*.k816 files",
+        fixture_dir.display()
+    ))
+}
+
 fn compile_and_link(
     fixture_dir: &Path,
-    input_path: &Path,
-    source_name: &str,
-    source: &str,
+    inputs: &[InputSource],
+    allow_adjacent_config: bool,
     expected_output_kind: Option<k816_link::OutputKind>,
 ) -> Result<PipelineOutput> {
-    let compiled = k816_core::compile_source_to_object(source_name, source)
-        .map_err(|error| anyhow!("{}", error.rendered))?;
-    let warnings = compiled.rendered_warnings.clone();
+    let mut objects = Vec::with_capacity(inputs.len());
+    let mut warnings = String::new();
+    for input in inputs {
+        let source = std::fs::read_to_string(&input.path)
+            .with_context(|| format!("failed to read fixture input '{}'", input.path.display()))?;
+        let compiled = k816_core::compile_source_to_object_for_link(&input.source_name, &source)
+            .map_err(|error| anyhow!("{}", error.rendered))?;
+        if !compiled.rendered_warnings.trim().is_empty() {
+            if !warnings.is_empty() && !warnings.ends_with('\n') {
+                warnings.push('\n');
+            }
+            warnings.push_str(compiled.rendered_warnings.trim_end());
+            warnings.push('\n');
+        }
+        objects.push(compiled.object);
+    }
 
     let local_config_path = fixture_dir.join("link.ld.ron");
-    let source_config_path = input_path.with_extension("ld.ron");
+    let source_config_path = if allow_adjacent_config && inputs.len() == 1 {
+        Some(inputs[0].path.with_extension("ld.ron"))
+    } else {
+        None
+    };
     let config_path = if local_config_path.exists() {
         local_config_path
-    } else if source_config_path.exists() {
-        source_config_path
+    } else if source_config_path
+        .as_ref()
+        .is_some_and(|path| path.exists())
+    {
+        source_config_path.expect("checked above")
     } else {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("link.stub.ld.ron")
     };
@@ -273,7 +359,7 @@ fn compile_and_link(
     if let Some(kind) = expected_output_kind {
         config.output.kind = kind;
     }
-    let linked = k816_link::link_objects(&[compiled.object], &config)?;
+    let linked = k816_link::link_objects(&objects, &config)?;
     Ok(PipelineOutput { linked, warnings })
 }
 

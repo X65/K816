@@ -38,6 +38,11 @@ pub enum Op {
     /// Fixed SEP pseudo-op anchored at a label bridge point.
     /// Never removed or folded away by mode optimization passes.
     FixedSep(u8),
+    /// Defines an absolute symbol exported to object/link stage.
+    DefineAbsoluteSymbol {
+        name: String,
+        address: u32,
+    },
 }
 
 #[derive(Debug, Clone)]

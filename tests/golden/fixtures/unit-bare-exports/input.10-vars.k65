@@ -7,13 +7,3 @@ var regs[
     /* status byte */
     .status:byte
 ] = 0x2100
-
-/**
-  * this is a
-  * test function */
-func test @a8 {
-    nop
-    lda $00
-    pha
-    nop
-}

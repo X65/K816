@@ -133,6 +133,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                     );
                 }
             }
+            Op::DefineAbsoluteSymbol { .. } => {}
             Op::Align(align) => {
                 if *align == 0 {
                     diagnostics.push(Diagnostic::error(op.span, "align value must be non-zero"));

@@ -17,6 +17,9 @@ pub fn format_ir(program: &Program) -> String {
             Op::Sep(mask) => out.push_str(&format!("sep #{mask:#04X}\n")),
             Op::FixedRep(mask) => out.push_str(&format!("fixed_rep #{mask:#04X}\n")),
             Op::FixedSep(mask) => out.push_str(&format!("fixed_sep #{mask:#04X}\n")),
+            Op::DefineAbsoluteSymbol { name, address } => {
+                out.push_str(&format!("abs_symbol {name} {address:#X}\n"));
+            }
             Op::EmitBytes(bytes) => {
                 let data = bytes
                     .iter()

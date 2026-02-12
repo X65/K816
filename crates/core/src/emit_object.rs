@@ -21,6 +21,25 @@ pub struct EmitObjectOutput {
     pub object: O65Object,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmitObjectOptions {
+    pub allow_undefined_symbols: bool,
+}
+
+impl EmitObjectOptions {
+    pub const fn strict() -> Self {
+        Self {
+            allow_undefined_symbols: false,
+        }
+    }
+
+    pub const fn for_link() -> Self {
+        Self {
+            allow_undefined_symbols: true,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SegmentState {
     chunks: Vec<SectionChunk>,
@@ -70,9 +89,18 @@ pub fn emit_object(
     program: &Program,
     source_map: &SourceMap,
 ) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
+    emit_object_with_options(program, source_map, EmitObjectOptions::strict())
+}
+
+pub fn emit_object_with_options(
+    program: &Program,
+    source_map: &SourceMap,
+    options: EmitObjectOptions,
+) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
     let mut labels: FxHashMap<String, (String, u32, Span)> = FxHashMap::default();
+    let mut absolute_symbols: FxHashMap<String, (u32, Span)> = FxHashMap::default();
     let mut fixups = Vec::new();
     let mut current_segment = "default".to_string();
     let mut current_function: Option<String> = None;
@@ -146,10 +174,23 @@ pub fn emit_object(
                         (current_segment.clone(), segment.section_offset, op.span),
                     )
                     .is_some()
+                    || absolute_symbols.contains_key(name)
                 {
                     diagnostics.push(
                         Diagnostic::error(op.span, format!("duplicate label '{name}'"))
                             .with_help("rename one of the labels"),
+                    );
+                }
+            }
+            Op::DefineAbsoluteSymbol { name, address } => {
+                if labels.contains_key(name)
+                    || absolute_symbols
+                        .insert(name.clone(), (*address, op.span))
+                        .is_some()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(op.span, format!("duplicate symbol '{name}'"))
+                            .with_help("rename one of the symbols"),
                     );
                 }
             }
@@ -440,7 +481,9 @@ pub fn emit_object(
     }
 
     for fixup in &fixups {
-        if !labels.contains_key(&fixup.label) {
+        let is_defined =
+            labels.contains_key(&fixup.label) || absolute_symbols.contains_key(&fixup.label);
+        if !is_defined && !options.allow_undefined_symbols {
             diagnostics.push(Diagnostic::error(
                 fixup.span,
                 format!("undefined label '{}'", fixup.label),
@@ -481,9 +524,19 @@ pub fn emit_object(
         symbols.push(Symbol {
             name: name.clone(),
             global: true,
-            definition: Some(SymbolDefinition {
+            definition: Some(SymbolDefinition::Section {
                 section: segment.clone(),
                 offset: *offset,
+                source: source_location_for_span(source_map, *span),
+            }),
+        });
+    }
+    for (name, (address, span)) in &absolute_symbols {
+        symbols.push(Symbol {
+            name: name.clone(),
+            global: true,
+            definition: Some(SymbolDefinition::Absolute {
+                address: *address,
                 source: source_location_for_span(source_map, *span),
             }),
         });
@@ -797,7 +850,7 @@ fn string_literal_text_for_emit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{Op, Program};
+    use crate::hir::{AddressOperandMode, AddressValue, InstructionOp, Op, OperandOp, Program};
     use crate::span::{SourceId, SourceMap, Span, Spanned};
 
     fn op(node: Op) -> Spanned<Op> {
@@ -855,22 +908,82 @@ mod tests {
 
         assert_eq!(symbols.len(), 2);
         assert_eq!(symbols[0].name, "func_a");
-        assert_eq!(
-            symbols[0]
-                .definition
-                .as_ref()
-                .expect("func_a definition")
-                .offset,
-            0
-        );
+        assert!(matches!(
+            symbols[0].definition.as_ref(),
+            Some(SymbolDefinition::Section { offset: 0, .. })
+        ));
         assert_eq!(symbols[1].name, "func_b");
-        assert_eq!(
-            symbols[1]
-                .definition
-                .as_ref()
-                .expect("func_b definition")
-                .offset,
-            2
+        assert!(matches!(
+            symbols[1].definition.as_ref(),
+            Some(SymbolDefinition::Section { offset: 2, .. })
+        ));
+    }
+
+    #[test]
+    fn strict_mode_rejects_unresolved_labels() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "func a {}\n");
+        let program = Program {
+            ops: vec![op(Op::Instruction(InstructionOp {
+                mnemonic: "lda".to_string(),
+                operand: Some(OperandOp::Address {
+                    value: AddressValue::Label("missing".to_string()),
+                    force_far: false,
+                    mode: AddressOperandMode::Direct { index: None },
+                }),
+            }))],
+        };
+
+        let errors = emit_object(&program, &source_map).expect_err("strict mode must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("undefined label 'missing'"))
         );
+    }
+
+    #[test]
+    fn link_mode_keeps_unresolved_labels_for_linker() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "func a {}\n");
+        let program = Program {
+            ops: vec![op(Op::Instruction(InstructionOp {
+                mnemonic: "lda".to_string(),
+                operand: Some(OperandOp::Address {
+                    value: AddressValue::Label("missing".to_string()),
+                    force_far: false,
+                    mode: AddressOperandMode::Direct { index: None },
+                }),
+            }))],
+        };
+
+        let emitted =
+            emit_object_with_options(&program, &source_map, EmitObjectOptions::for_link())
+                .expect("link mode must keep unresolved label");
+        assert_eq!(emitted.object.symbols.len(), 0);
+        assert_eq!(emitted.object.relocations.len(), 1);
+        assert_eq!(emitted.object.relocations[0].symbol, "missing");
+    }
+
+    #[test]
+    fn emits_absolute_symbol_definitions() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "var foo = 0x1234\n");
+        let program = Program {
+            ops: vec![op(Op::DefineAbsoluteSymbol {
+                name: "foo".to_string(),
+                address: 0x1234,
+            })],
+        };
+
+        let emitted = emit_object(&program, &source_map).expect("emit object");
+        assert_eq!(emitted.object.symbols.len(), 1);
+        assert!(matches!(
+            emitted.object.symbols[0].definition.as_ref(),
+            Some(SymbolDefinition::Absolute {
+                address: 0x1234,
+                ..
+            })
+        ));
     }
 }

@@ -1,0 +1,3 @@
+main @a16 {
+    jsr test
+}

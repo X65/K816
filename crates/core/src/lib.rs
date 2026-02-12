@@ -16,7 +16,10 @@ pub mod span;
 
 pub use driver::{
     CompileError, CompileObjectOutput, CompileOutput, CompileRenderOptions, compile_source,
-    compile_source_to_object, compile_source_to_object_with_fs,
+    compile_source_to_object, compile_source_to_object_for_link,
+    compile_source_to_object_for_link_with_fs,
+    compile_source_to_object_for_link_with_fs_and_options,
+    compile_source_to_object_for_link_with_options, compile_source_to_object_with_fs,
     compile_source_to_object_with_fs_and_options, compile_source_to_object_with_options,
     compile_source_with_fs, compile_source_with_fs_and_options, compile_source_with_options,
 };

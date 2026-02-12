@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 4;
+const PAYLOAD_VERSION: u16 = 5;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -53,10 +53,16 @@ pub struct Symbol {
 }
 
 #[derive(Debug, Clone)]
-pub struct SymbolDefinition {
-    pub section: String,
-    pub offset: u32,
-    pub source: Option<SourceLocation>,
+pub enum SymbolDefinition {
+    Section {
+        section: String,
+        offset: u32,
+        source: Option<SourceLocation>,
+    },
+    Absolute {
+        address: u32,
+        source: Option<SourceLocation>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -157,11 +163,32 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
         write_string(&mut out, &symbol.name)?;
         out.push(symbol.global as u8);
         match &symbol.definition {
-            Some(definition) => {
+            Some(SymbolDefinition::Section {
+                section,
+                offset,
+                source,
+            }) => {
                 out.push(1);
-                write_string(&mut out, &definition.section)?;
-                write_u32(&mut out, definition.offset);
-                match &definition.source {
+                out.push(0);
+                write_string(&mut out, section)?;
+                write_u32(&mut out, *offset);
+                match source {
+                    Some(source) => {
+                        out.push(1);
+                        write_string(&mut out, &source.file)?;
+                        write_u32(&mut out, source.line);
+                        write_u32(&mut out, source.column);
+                        write_u32(&mut out, source.column_end);
+                        write_string(&mut out, &source.line_text)?;
+                    }
+                    None => out.push(0),
+                }
+            }
+            Some(SymbolDefinition::Absolute { address, source }) => {
+                out.push(1);
+                out.push(1);
+                write_u32(&mut out, *address);
+                match source {
                     Some(source) => {
                         out.push(1);
                         write_string(&mut out, &source.file)?;
@@ -304,24 +331,41 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         let global = rd.read_u8()? != 0;
         let has_definition = rd.read_u8()? != 0;
         let definition = if has_definition {
-            let section = rd.read_string()?;
-            let offset = rd.read_u32()?;
-            let has_source = rd.read_u8()? != 0;
-            Some(SymbolDefinition {
-                section,
-                offset,
-                source: if has_source {
-                    Some(SourceLocation {
+            let source = |rd: &mut Reader<'_>| -> Result<Option<SourceLocation>> {
+                let has_source = rd.read_u8()? != 0;
+                if has_source {
+                    Ok(Some(SourceLocation {
                         file: rd.read_string()?,
                         line: rd.read_u32()?,
                         column: rd.read_u32()?,
                         column_end: rd.read_u32()?,
                         line_text: rd.read_string()?,
-                    })
+                    }))
                 } else {
-                    None
-                },
-            })
+                    Ok(None)
+                }
+            };
+
+            if version >= 5 {
+                match rd.read_u8()? {
+                    0 => Some(SymbolDefinition::Section {
+                        section: rd.read_string()?,
+                        offset: rd.read_u32()?,
+                        source: source(&mut rd)?,
+                    }),
+                    1 => Some(SymbolDefinition::Absolute {
+                        address: rd.read_u32()?,
+                        source: source(&mut rd)?,
+                    }),
+                    other => bail!("invalid symbol definition kind: {other}"),
+                }
+            } else {
+                Some(SymbolDefinition::Section {
+                    section: rd.read_string()?,
+                    offset: rd.read_u32()?,
+                    source: source(&mut rd)?,
+                })
+            }
         } else {
             None
         };
@@ -414,21 +458,26 @@ fn validate_object(object: &O65Object) -> Result<()> {
             continue;
         };
 
-        let section = object.sections.get(&definition.section).ok_or_else(|| {
-            anyhow::anyhow!(
-                "symbol '{}' references unknown section '{}'",
-                symbol.name,
-                definition.section
-            )
-        })?;
+        if let SymbolDefinition::Section {
+            section, offset, ..
+        } = definition
+        {
+            let section_data = object.sections.get(section).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "symbol '{}' references unknown section '{}'",
+                    symbol.name,
+                    section
+                )
+            })?;
 
-        if !section_contains_point(section, definition.offset)? {
-            bail!(
-                "symbol '{}' offset {:#X} is outside section '{}'",
-                symbol.name,
-                definition.offset,
-                definition.section
-            );
+            if !section_contains_point(section_data, *offset)? {
+                bail!(
+                    "symbol '{}' offset {:#X} is outside section '{}'",
+                    symbol.name,
+                    offset,
+                    section
+                );
+            }
         }
     }
 
@@ -737,7 +786,7 @@ mod tests {
             symbols: vec![Symbol {
                 name: "target".to_string(),
                 global: true,
-                definition: Some(SymbolDefinition {
+                definition: Some(SymbolDefinition::Section {
                     section: "default".to_string(),
                     offset: 2,
                     source: None,
@@ -777,6 +826,36 @@ mod tests {
         assert_eq!(decoded.function_disassembly.len(), 1);
         assert_eq!(decoded.data_string_fragments.len(), 1);
         assert_eq!(decoded.listing, object.listing);
+    }
+
+    #[test]
+    fn object_roundtrip_with_absolute_symbol() {
+        let object = O65Object {
+            sections: IndexMap::new(),
+            symbols: vec![Symbol {
+                name: "foo".to_string(),
+                global: true,
+                definition: Some(SymbolDefinition::Absolute {
+                    address: 0x1234,
+                    source: None,
+                }),
+            }],
+            relocations: Vec::new(),
+            function_disassembly: Vec::new(),
+            data_string_fragments: Vec::new(),
+            listing: String::new(),
+        };
+
+        let bytes = encode_object(&object).expect("encode");
+        let decoded = decode_object(&bytes).expect("decode");
+        assert_eq!(decoded.symbols.len(), 1);
+        assert!(matches!(
+            decoded.symbols[0].definition.as_ref(),
+            Some(SymbolDefinition::Absolute {
+                address: 0x1234,
+                ..
+            })
+        ));
     }
 
     #[test]

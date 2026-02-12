@@ -6,7 +6,7 @@ use k816_o65::O65Object;
 
 use crate::diag::{Diagnostic, RenderOptions, render_diagnostics_with_options};
 use crate::emit::emit;
-use crate::emit_object::emit_object;
+use crate::emit_object::{EmitObjectOptions, emit_object_with_options};
 use crate::eval_expand::expand_file;
 use crate::fold_mode::{eliminate_dead_mode_ops, fold_mode_ops};
 use crate::lower::lower;
@@ -81,6 +81,26 @@ pub fn compile_source_to_object_with_options(
     compile_source_to_object_with_fs_and_options(source_name, source_text, &fs, options)
 }
 
+pub fn compile_source_to_object_for_link(
+    source_name: &str,
+    source_text: &str,
+) -> Result<CompileObjectOutput, CompileError> {
+    compile_source_to_object_for_link_with_options(
+        source_name,
+        source_text,
+        CompileRenderOptions::plain(),
+    )
+}
+
+pub fn compile_source_to_object_for_link_with_options(
+    source_name: &str,
+    source_text: &str,
+    options: CompileRenderOptions,
+) -> Result<CompileObjectOutput, CompileError> {
+    let fs = StdAssetFS;
+    compile_source_to_object_for_link_with_fs_and_options(source_name, source_text, &fs, options)
+}
+
 pub fn compile_source_with_fs(
     source_name: &str,
     source_text: &str,
@@ -153,6 +173,50 @@ pub fn compile_source_to_object_with_fs_and_options(
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
 ) -> Result<CompileObjectOutput, CompileError> {
+    compile_source_to_object_with_fs_and_options_internal(
+        source_name,
+        source_text,
+        fs,
+        options,
+        EmitObjectOptions::strict(),
+    )
+}
+
+pub fn compile_source_to_object_for_link_with_fs(
+    source_name: &str,
+    source_text: &str,
+    fs: &dyn AssetFS,
+) -> Result<CompileObjectOutput, CompileError> {
+    compile_source_to_object_for_link_with_fs_and_options(
+        source_name,
+        source_text,
+        fs,
+        CompileRenderOptions::plain(),
+    )
+}
+
+pub fn compile_source_to_object_for_link_with_fs_and_options(
+    source_name: &str,
+    source_text: &str,
+    fs: &dyn AssetFS,
+    options: CompileRenderOptions,
+) -> Result<CompileObjectOutput, CompileError> {
+    compile_source_to_object_with_fs_and_options_internal(
+        source_name,
+        source_text,
+        fs,
+        options,
+        EmitObjectOptions::for_link(),
+    )
+}
+
+fn compile_source_to_object_with_fs_and_options_internal(
+    source_name: &str,
+    source_text: &str,
+    fs: &dyn AssetFS,
+    options: CompileRenderOptions,
+    emit_options: EmitObjectOptions,
+) -> Result<CompileObjectOutput, CompileError> {
     let mut source_map = SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
 
@@ -181,7 +245,7 @@ pub fn compile_source_to_object_with_fs_and_options(
     let hir = eliminate_dead_mode_ops(&hir);
     let hir = fold_mode_ops(&hir);
 
-    let emit_output = emit_object(&hir, &source_map)
+    let emit_output = emit_object_with_options(&hir, &source_map, emit_options)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
     Ok(CompileObjectOutput {

@@ -1,0 +1,7 @@
+Error: Load from word-typed value requires @a16.
+   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-load-word/input.k65:7:3 ]
+   │
+ 7 │   lda regs.ctrl
+   │   ──────┬──────  
+   │         ╰──────── here
+───╯

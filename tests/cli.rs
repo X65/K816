@@ -66,6 +66,49 @@ fn compile_and_link_subcommands_work() {
 }
 
 #[test]
+fn compile_subcommand_allows_unresolved_symbols_for_later_linking() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-compile-unresolved-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "main {\n  lda missing\n}\n").expect("failed to write input");
+    let object_file = root.join("demo.o65");
+
+    let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
+    compile
+        .arg("compile")
+        .arg(&input)
+        .arg("-o")
+        .arg(&object_file)
+        .assert()
+        .success();
+    assert!(object_file.exists());
+}
+
+#[test]
+fn shortcut_build_keeps_strict_undefined_label_diagnostics() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-shortcut-strict-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "main {\n  lda missing\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg(&input)
+        .assert()
+        .failure()
+        .stderr(contains("undefined label 'missing'"));
+}
+
+#[test]
 fn compile_subcommand_rejects_link_only_options() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

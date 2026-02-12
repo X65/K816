@@ -325,7 +325,18 @@ fn print_banner() {
     println!("Provided AS IS, without warranty or liability.");
 }
 
-fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object> {
+fn compile_source_file_strict(input_path: &Path) -> anyhow::Result<k816_o65::O65Object> {
+    compile_source_file_internal(input_path, false)
+}
+
+fn compile_source_file_for_link(input_path: &Path) -> anyhow::Result<k816_o65::O65Object> {
+    compile_source_file_internal(input_path, true)
+}
+
+fn compile_source_file_internal(
+    input_path: &Path,
+    allow_undefined_symbols: bool,
+) -> anyhow::Result<k816_o65::O65Object> {
     let is_k65 = input_path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -338,13 +349,22 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
     }
 
     let source = std::fs::read_to_string(input_path)?;
-    let output = k816_core::compile_source_to_object_with_options(
-        &input_path.display().to_string(),
-        &source,
-        k816_core::CompileRenderOptions {
-            color: stderr_supports_color(),
-        },
-    )
+    let render = k816_core::CompileRenderOptions {
+        color: stderr_supports_color(),
+    };
+    let output = if allow_undefined_symbols {
+        k816_core::compile_source_to_object_for_link_with_options(
+            &input_path.display().to_string(),
+            &source,
+            render,
+        )
+    } else {
+        k816_core::compile_source_to_object_with_options(
+            &input_path.display().to_string(),
+            &source,
+            render,
+        )
+    }
     .map_err(|error| anyhow::anyhow!(error.rendered))?;
     if !output.rendered_warnings.trim().is_empty() {
         eprintln!("{}", output.rendered_warnings.trim_end());
@@ -465,7 +485,7 @@ fn compile_command(
     _options: CompilePhaseOptions,
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let object = compile_source_file(&args.input)?;
+    let object = compile_source_file_for_link(&args.input)?;
     let out_path = output.unwrap_or_else(|| default_object_path_for_input(&args.input));
     k816_o65::write_object(&out_path, &object)?;
     Ok(())
@@ -519,7 +539,7 @@ fn single_file_build_command(
     link_options: LinkPhaseOptions,
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let object = compile_source_file(&input_path)?;
+    let object = compile_source_file_strict(&input_path)?;
     let resolved_config_path = link_options
         .config
         .or_else(|| discover_adjacent_config_path(&input_path));
@@ -870,7 +890,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
             display_project_path(&project_root, source),
             display_project_path(&project_root, &object_path)
         );
-        let object = compile_source_file(source)?;
+        let object = compile_source_file_for_link(source)?;
         k816_o65::write_object(&object_path, &object)?;
         objects.push(object);
     }

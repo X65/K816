@@ -1,0 +1,10 @@
+[default]
+000000: EA AD 00 00 48 EA 60
+
+
+[disasm obj#0 default::test]
+000000: EA          nop
+000001: AD 00 00    lda $0000
+000004: 48          pha
+000005: EA          nop
+000006: 60          rts

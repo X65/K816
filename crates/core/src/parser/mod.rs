@@ -983,12 +983,36 @@ fn parse_var_bracket_payload(
 }
 
 fn looks_like_overlay_field_list(text: &str) -> bool {
-    let candidate = text.trim_start();
+    let candidate = trim_overlay_payload_start(text);
     candidate.starts_with('.')
         && candidate
             .chars()
             .nth(1)
             .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+}
+
+fn trim_overlay_payload_start(mut text: &str) -> &str {
+    loop {
+        let trimmed = text.trim_start();
+
+        if let Some(rest) = trimmed.strip_prefix("//") {
+            if let Some(newline) = rest.find('\n') {
+                text = &rest[newline + 1..];
+                continue;
+            }
+            return "";
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("/*") {
+            if let Some(close) = rest.find("*/") {
+                text = &rest[close + 2..];
+                continue;
+            }
+            return "";
+        }
+
+        return trimmed;
+    }
 }
 
 fn parse_overlay_field_list(
@@ -1077,8 +1101,16 @@ fn push_overlay_field_entry(
     }
 
     let segment = &text[start..end];
+    let segment = segment.find("//").map_or(segment, |idx| &segment[..idx]);
     let trimmed = segment.trim();
     if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("*/")
+        || trimmed.ends_with("*/")
+    {
         return;
     }
 
@@ -2822,6 +2854,7 @@ fn rich_error_to_diagnostic(
             }
         }
     };
+    let help = help.or_else(|| detect_var_width_after_array_hint(source_text, range.start));
     let diagnostic = Diagnostic::error(span, message);
     match help {
         Some(help) => diagnostic.with_help(help),
@@ -2880,6 +2913,51 @@ fn detect_invalid_flag_goto_shorthand(source_text: &str, question_offset: usize)
     }
 
     Some(format!("{flag}{sign}?"))
+}
+
+fn detect_var_width_after_array_hint(source_text: &str, error_offset: usize) -> Option<String> {
+    if source_text.as_bytes().get(error_offset).copied()? != b':' {
+        return None;
+    }
+
+    let line_start = source_text[..error_offset]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let line_end = source_text[error_offset..]
+        .find('\n')
+        .map_or(source_text.len(), |index| error_offset + index);
+    let line = source_text.get(line_start..line_end)?.trim();
+    let rest = line.strip_prefix("var ")?.trim();
+
+    let bracket_open = rest.find('[')?;
+    let bracket_close = rest.rfind(']')?;
+    if bracket_close <= bracket_open {
+        return None;
+    }
+
+    let name = rest[..bracket_open].trim();
+    if !is_ident_text(name) {
+        return None;
+    }
+    let count = rest[bracket_open + 1..bracket_close].trim();
+    if count.is_empty() {
+        return None;
+    }
+    let suffix = rest[bracket_close + 1..].trim_start();
+    if !suffix.starts_with(':') {
+        return None;
+    }
+
+    let width = suffix
+        .trim_start_matches(':')
+        .split(|ch: char| ch.is_ascii_whitespace())
+        .next()
+        .filter(|w| matches!(w.to_ascii_lowercase().as_str(), "byte" | "word"))
+        .unwrap_or("word");
+    let example = format!("var {name}:{width}[{count}]");
+    Some(format!(
+        "for typed arrays, place the type before the array length (e.g. `{example}`)"
+    ))
 }
 
 fn format_expected_patterns(expected: &[RichPattern<'_, TokenKind>]) -> String {
@@ -3118,6 +3196,23 @@ mod tests {
         assert!(matches!(fields[0].data_width, Some(DataWidth::Word)));
         assert!(matches!(fields[1].data_width, Some(DataWidth::Byte)));
         assert!(matches!(fields[2].count, Some(Expr::Number(20))));
+    }
+
+    #[test]
+    fn parses_overlay_field_list_with_leading_comments() {
+        let source = "var regs[\n  // control registers\n  .ctrl:word\n  /* status byte */\n  .status:byte\n] = 0x2100\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::Var(var) = &file.items[0].node else {
+            panic!("expected var item");
+        };
+        let fields = var.overlay_fields.as_ref().expect("overlay field list");
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "ctrl");
+        assert_eq!(fields[1].name, "status");
+        assert!(matches!(fields[0].data_width, Some(DataWidth::Word)));
+        assert!(matches!(fields[1].data_width, Some(DataWidth::Byte)));
     }
 
     #[test]
@@ -3513,6 +3608,25 @@ mod tests {
         assert!(message.contains("expected"));
         assert!(!message.contains("TokenKind"));
         assert!(!message.contains("ExpectedFound"));
+    }
+
+    #[test]
+    fn suggests_width_before_array_in_var_decl_errors() {
+        let source = "var bar[20]:word = 0x2000\n";
+        let diagnostics = parse(SourceId(0), source).expect_err("expected parse error");
+        assert!(
+            diagnostics.iter().any(|diag| {
+                diag.message == "invalid syntax: unexpected ':'"
+                    && diag.supplements.iter().any(|supplement| {
+                        matches!(
+                            supplement,
+                            crate::diag::Supplemental::Help(help)
+                                if help.contains("`var bar:word[20]`")
+                        )
+                    })
+            }),
+            "unexpected diagnostics: {diagnostics:#?}"
+        );
     }
 
     #[test]

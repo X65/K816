@@ -1,0 +1,10 @@
+Error: invalid syntax: unexpected ':'
+   ╭─[ tests/golden/fixtures/syntax-var-err-width-after-array/input.k65:1:12 ]
+   │
+ 1 │ var bar[20]:word = 0x2000
+   │            ┬  
+   │            ╰── here
+   │ 
+   │ Help: for typed arrays, place the type before the array length (e.g. `var bar:word[20]`)
+───╯
+

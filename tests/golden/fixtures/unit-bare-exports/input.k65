@@ -1,0 +1,19 @@
+/* some comments */
+var foo = $1234 // this is a comment
+var bar:word[20] = 0x2000           // another comment
+var regs[
+    // control registers
+    .ctrl:word
+    /* status byte */
+    .status:byte
+] = 0x2100
+
+/**
+  * this is a
+  * test function */
+func test @a8 {
+    nop
+    lda $00
+    pha
+    nop
+}

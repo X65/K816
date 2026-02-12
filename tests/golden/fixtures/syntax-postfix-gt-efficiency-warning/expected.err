@@ -3,7 +3,7 @@ Warning: postfix `} >` expands to three branch instructions and may be inefficie
    │
  4 │   } >
    │   ─┬─  
-   │    ╰─── primary location
+   │    ╰─── here
    │ 
    │ Help: expansion is `BEQ skip` + `BCC skip` + `BRA target`
 ───╯

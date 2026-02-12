@@ -1,0 +1,8 @@
+Error: duplicate overlay field '.orb' in 'VIA'
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-duplicate-fields/input.k65:3:3 ]
+   │
+ 3 │   .orb:word
+   │   ────┬────  
+   │       ╰────── here
+───╯
+

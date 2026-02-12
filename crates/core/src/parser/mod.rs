@@ -2,7 +2,7 @@ use crate::ast::{
     BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp,
     ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister,
     Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, Operand,
-    OperandAddrMode, RegWidth, SegmentDecl, Stmt, VarDecl,
+    OperandAddrMode, OverlayFieldDecl, RegWidth, SegmentDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -370,7 +370,9 @@ where
                 name,
                 data_width: None,
                 array_len: None,
+                overlay_fields: None,
                 initializer: Some(Expr::Number(0)),
+                initializer_span: None,
             })
         } else {
             Item::Statement(Stmt::Empty)
@@ -865,6 +867,12 @@ where
     })
 }
 
+#[derive(Debug, Clone)]
+enum VarBracketPayload {
+    ArrayLen(Expr),
+    OverlayFields(Vec<OverlayFieldDecl>),
+}
+
 fn var_decl_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, VarDecl, ParseExtra<'src>> + Clone
@@ -874,38 +882,293 @@ where
     just(TokenKind::Var)
         .ignore_then(ident_parser())
         .then(data_width_parser().or_not())
-        .then(bracket_expr_parser(source_id).or_not())
-        .then(just(TokenKind::Eq).ignore_then(expr_parser()).or_not())
-        .map(|(((name, data_width), array_len), initializer)| VarDecl {
-            name,
-            data_width,
-            array_len,
-            initializer,
+        .then(bracket_payload_parser(source_id))
+        .then(just(TokenKind::Eq).ignore_then(spanned(expr_parser(), source_id)).or_not())
+        .map(|(((name, data_width), bracket_payload), initializer_with_span)| {
+            let (array_len, overlay_fields) = match bracket_payload {
+                Some(VarBracketPayload::ArrayLen(array_len)) => (Some(array_len), None),
+                Some(VarBracketPayload::OverlayFields(overlay_fields)) => {
+                    (None, Some(overlay_fields))
+                }
+                None => (None, None),
+            };
+            let (initializer, initializer_span) = match initializer_with_span {
+                Some(initializer) => (Some(initializer.node), Some(initializer.span)),
+                None => (None, None),
+            };
+
+            VarDecl {
+                name,
+                data_width,
+                array_len,
+                overlay_fields,
+                initializer,
+                initializer_span,
+            }
         })
         .boxed()
 }
 
-fn bracket_expr_parser<'src, I>(
+fn bracket_payload_parser<'src, I>(
     source_id: SourceId,
-) -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src>> + Clone
+) -> impl chumsky::Parser<'src, I, Option<VarBracketPayload>, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! { TokenKind::Eval(text) => text }
-        .try_map_with(move |text, extra| {
-            parse_expression_fragment(source_id, &text)
-                .map(|expr| expr.node)
-                .map_err(|error| {
-                    Rich::custom(
-                        extra.span(),
-                        format!(
-                            "invalid var array length expression: {}; inside brackets: [{}]",
-                            error.message, text
-                        ),
-                    )
-                })
+    spanned(chumsky::select! { TokenKind::Eval(text) => text }, source_id)
+        .or_not()
+        .try_map(move |payload, _| match payload {
+            Some(payload) => {
+                let text = payload.node;
+                let span = payload.span;
+                parse_var_bracket_payload(source_id, &text, span)
+                    .map(Some)
+                    .map_err(|message| {
+                        let eval_span: SimpleSpan = (span.start..span.end).into();
+                        Rich::custom(
+                            eval_span,
+                            format!("{message}; inside brackets: [{}]", text),
+                        )
+                    })
+            }
+            None => Ok(None),
         })
         .boxed()
+}
+
+fn parse_var_bracket_payload(
+    source_id: SourceId,
+    text: &str,
+    eval_span: Span,
+) -> Result<VarBracketPayload, String> {
+    if looks_like_overlay_field_list(text) {
+        return parse_overlay_field_list(source_id, text, eval_span)
+            .map(VarBracketPayload::OverlayFields);
+    }
+
+    parse_expression_fragment(source_id, text)
+        .map(|expr| VarBracketPayload::ArrayLen(expr.node))
+        .map_err(|error| format!("invalid var array length expression: {}", error.message))
+}
+
+fn looks_like_overlay_field_list(text: &str) -> bool {
+    let candidate = text.trim_start();
+    candidate.starts_with('.')
+        && candidate
+            .chars()
+            .nth(1)
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+}
+
+fn parse_overlay_field_list(
+    source_id: SourceId,
+    text: &str,
+    eval_span: Span,
+) -> Result<Vec<OverlayFieldDecl>, String> {
+    let mut entries: Vec<(String, Span)> = Vec::new();
+    let mut current_start = 0usize;
+    let mut bracket_depth = 0usize;
+    let inner_start = eval_span.start + 1;
+
+    for (offset, ch) in text.char_indices() {
+        match ch {
+            '[' => {
+                bracket_depth += 1;
+            }
+            ']' => {
+                if bracket_depth == 0 {
+                    return Err("invalid overlay field list: unexpected ']'".to_string());
+                }
+                bracket_depth -= 1;
+            }
+            ',' | '\n' if bracket_depth == 0 => {
+                push_overlay_field_entry(
+                    source_id,
+                    text,
+                    current_start,
+                    offset,
+                    inner_start,
+                    &mut entries,
+                );
+                current_start = offset + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+
+    if bracket_depth != 0 {
+        return Err(
+            "invalid overlay field list: missing closing ']' in field declaration".to_string(),
+        );
+    }
+
+    push_overlay_field_entry(
+        source_id,
+        text,
+        current_start,
+        text.len(),
+        inner_start,
+        &mut entries,
+    );
+
+    if entries.is_empty() {
+        return Err("invalid overlay field list: expected at least one field".to_string());
+    }
+
+    entries
+        .into_iter()
+        .map(|(entry, span)| parse_overlay_field_entry(source_id, &entry, span))
+        .collect()
+}
+
+fn push_overlay_field_entry(
+    source_id: SourceId,
+    text: &str,
+    start: usize,
+    end: usize,
+    inner_start: usize,
+    entries: &mut Vec<(String, Span)>,
+) {
+    if start >= end {
+        return;
+    }
+
+    let segment = &text[start..end];
+    let trimmed = segment.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let leading = segment.len() - segment.trim_start().len();
+    let trailing = segment.len() - segment.trim_end().len();
+    let span = Span::new(
+        source_id,
+        inner_start + start + leading,
+        inner_start + end - trailing,
+    );
+    entries.push((trimmed.to_string(), span));
+}
+
+fn parse_overlay_field_entry(
+    source_id: SourceId,
+    entry: &str,
+    span: Span,
+) -> Result<OverlayFieldDecl, String> {
+    let mut cursor = entry.trim();
+    let mut consumed = 0usize;
+    if !cursor.starts_with('.') {
+        return Err(format!(
+            "invalid overlay field declaration '{entry}': expected '.field'"
+        ));
+    }
+    cursor = &cursor[1..];
+    consumed += 1;
+
+    let mut chars = cursor.char_indices();
+    let Some((_, first)) = chars.next() else {
+        return Err(format!(
+            "invalid overlay field declaration '{entry}': expected field name after '.'"
+        ));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(format!(
+            "invalid overlay field declaration '{entry}': expected field name after '.'"
+        ));
+    }
+    let mut name_end = first.len_utf8();
+    for (idx, ch) in chars {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            name_end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if name_end == 0 {
+        return Err(format!(
+            "invalid overlay field declaration '{entry}': expected field name after '.'"
+        ));
+    }
+    let name = cursor[..name_end].to_string();
+    let after_name = &cursor[name_end..];
+    let ws_after_name = after_name.len() - after_name.trim_start().len();
+    cursor = after_name.trim_start();
+    consumed += name_end + ws_after_name;
+
+    let mut count = None;
+    let mut count_span = None;
+    if cursor.starts_with('[') {
+        let mut depth = 0usize;
+        let mut close_offset = None;
+        for (idx, ch) in cursor.char_indices() {
+            match ch {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_offset = Some(idx);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close_offset) = close_offset else {
+            return Err(format!(
+                "invalid overlay field declaration '{entry}': missing closing ']'"
+            ));
+        };
+        let count_text_raw = &cursor[1..close_offset];
+        let count_text = count_text_raw.trim();
+        if count_text.is_empty() {
+            return Err(format!(
+                "invalid overlay field declaration '{entry}': empty array count"
+            ));
+        }
+        let leading_ws = count_text_raw.len() - count_text_raw.trim_start().len();
+        let trailing_ws = count_text_raw.len() - count_text_raw.trim_end().len();
+        let count_start = span.start + consumed + 1 + leading_ws;
+        let count_end = span.start + consumed + close_offset - trailing_ws;
+        count_span = Some(Span::new(source_id, count_start, count_end));
+        let count_expr = parse_expression_fragment(source_id, count_text)
+            .map(|expr| expr.node)
+            .map_err(|error| {
+                format!(
+                    "invalid overlay field declaration '{entry}': invalid array count expression: {}",
+                    error.message
+                )
+            })?;
+        count = Some(count_expr);
+        let after_count = &cursor[close_offset + 1..];
+        cursor = after_count.trim_start();
+    }
+
+    let data_width = if cursor.is_empty() {
+        None
+    } else {
+        let Some(type_name) = cursor.strip_prefix(':') else {
+            return Err(format!(
+                "invalid overlay field declaration '{entry}': expected ':byte' or ':word'"
+            ));
+        };
+        let type_name = type_name.trim();
+        if type_name.eq_ignore_ascii_case("byte") {
+            Some(DataWidth::Byte)
+        } else if type_name.eq_ignore_ascii_case("word") {
+            Some(DataWidth::Word)
+        } else {
+            return Err(format!(
+                "invalid overlay field declaration '{entry}': unsupported field type '{type_name}'"
+            ));
+        }
+    };
+
+    Ok(OverlayFieldDecl {
+        name,
+        data_width,
+        count,
+        count_span,
+        span,
+    })
 }
 
 fn prefix_condition_parser<'src, I>()
@@ -2123,6 +2386,7 @@ fn looks_like_constant_ident(value: &str) -> bool {
 fn expr_is_address_like(expr: &Expr) -> bool {
     match expr {
         Expr::Ident(name) => !looks_like_constant_ident(name) && !is_register_name(name),
+        Expr::Index { base, .. } => expr_is_address_like(base),
         Expr::Binary { lhs, rhs, .. } => expr_is_address_like(lhs) || expr_is_address_like(rhs),
         Expr::Unary { .. } => false,
         Expr::Number(_) | Expr::EvalText(_) => false,
@@ -2285,7 +2549,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     recursive(|expr| {
-        let atom = chumsky::select! {
+        let base_atom = chumsky::select! {
             TokenKind::Number(value) => Expr::Number(value),
             TokenKind::Ident(value) => Expr::Ident(value),
             TokenKind::Main => Expr::Ident("main".to_string()),
@@ -2294,6 +2558,16 @@ where
         .or(just(TokenKind::LParen)
             .ignore_then(expr.clone())
             .then_ignore(just(TokenKind::RParen)));
+
+        let atom = base_atom
+            .then(
+                chumsky::select! { TokenKind::Eval(value) => value }
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .try_map(|(base, suffixes), span| {
+                apply_eval_suffixes(base, suffixes).map_err(|message| Rich::custom(span, message))
+            });
 
         let unary = just(TokenKind::Amp)
             .ignore_then(
@@ -2340,6 +2614,51 @@ where
             })
     })
     .boxed()
+}
+
+fn apply_eval_suffixes(mut base: Expr, suffixes: Vec<String>) -> Result<Expr, String> {
+    for suffix in suffixes {
+        let trimmed = suffix.trim();
+        if trimmed.is_empty() {
+            return Err("index expression cannot be empty".to_string());
+        }
+
+        if let Some(field_name) = parse_symbolic_field_subscript(trimmed) {
+            let Expr::Ident(base_name) = base else {
+                return Err("symbolic field indexing requires an identifier base".to_string());
+            };
+            base = Expr::Ident(format!("{base_name}.{field_name}"));
+            continue;
+        }
+
+        let index_expr = parse_expression_fragment(SourceId(0), trimmed)
+            .map(|expr| expr.node)
+            .unwrap_or_else(|_| parse_eval_expr_token(trimmed));
+        base = Expr::Index {
+            base: Box::new(base),
+            index: Box::new(index_expr),
+        };
+    }
+
+    Ok(base)
+}
+
+fn parse_symbolic_field_subscript(text: &str) -> Option<&str> {
+    let field = text.strip_prefix('.')?;
+    if field.is_empty() {
+        return None;
+    }
+
+    let mut chars = field.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        Some(field)
+    } else {
+        None
+    }
 }
 
 fn expression_fragment_parser<'src, I>()
@@ -2666,6 +2985,11 @@ fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 None
             }
         }
+        Expr::Index { base, index } => {
+            let base = eval_static_expr(base)?;
+            let index = eval_static_expr(index)?;
+            base.checked_add(index)
+        }
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_static_expr(lhs)?;
             let rhs = eval_static_expr(rhs)?;
@@ -2729,7 +3053,92 @@ mod tests {
         };
 
         assert!(matches!(var.array_len, Some(Expr::Number(16))));
+        assert!(var.overlay_fields.is_none());
         assert!(var.initializer.is_none());
+    }
+
+    #[test]
+    fn parses_overlay_field_list_with_commas_and_trailing_separator() {
+        let source = "var foo[\n  .field_w:word,\n  .idx:byte,\n  .string[20]:byte,\n] = 0x1234\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::Var(var) = &file.items[0].node else {
+            panic!("expected var item");
+        };
+        assert!(var.array_len.is_none());
+        assert!(matches!(var.initializer, Some(Expr::Number(0x1234))));
+        let fields = var.overlay_fields.as_ref().expect("overlay field list");
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name, "field_w");
+        assert_eq!(fields[1].name, "idx");
+        assert_eq!(fields[2].name, "string");
+        assert!(matches!(fields[0].data_width, Some(DataWidth::Word)));
+        assert!(matches!(fields[1].data_width, Some(DataWidth::Byte)));
+        assert!(matches!(fields[2].count, Some(Expr::Number(20))));
+    }
+
+    #[test]
+    fn parses_symbolic_subscript_forms() {
+        let source = "main {\n  a=foo[.idx]\n  a=foo.string[2]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 2);
+
+        let Stmt::Instruction(first) = &block.body[0].node else {
+            panic!("expected first instruction");
+        };
+        let Some(Operand::Value { expr, .. }) = &first.operand else {
+            panic!("expected first value operand");
+        };
+        assert!(matches!(expr, Expr::Ident(name) if name == "foo.idx"));
+
+        let Stmt::Instruction(second) = &block.body[1].node else {
+            panic!("expected second instruction");
+        };
+        let Some(Operand::Value { expr, .. }) = &second.operand else {
+            panic!("expected second value operand");
+        };
+        assert!(matches!(
+            expr,
+            Expr::Index { base, index }
+                if matches!(base.as_ref(), Expr::Ident(name) if name == "foo.string")
+                && matches!(index.as_ref(), Expr::Number(2))
+        ));
+    }
+
+    #[test]
+    fn parses_overlay_fields_with_default_var_width() {
+        let source = "var baz:byte[\n  .a\n  .b\n  .len:word\n] = 0x2244\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::Var(var) = &file.items[0].node else {
+            panic!("expected var item");
+        };
+        assert!(matches!(var.data_width, Some(DataWidth::Byte)));
+        let fields = var.overlay_fields.as_ref().expect("overlay field list");
+        assert_eq!(fields.len(), 3);
+        assert!(fields[0].data_width.is_none());
+        assert!(fields[1].data_width.is_none());
+        assert!(matches!(fields[2].data_width, Some(DataWidth::Word)));
+    }
+
+    #[test]
+    fn rejects_unsupported_overlay_field_type_in_var_brackets() {
+        let source = "var foo[\n  .a:dword\n] = 0x1234\n";
+        let errors = parse(SourceId(0), source).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("unsupported field type 'dword'")
+        }));
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.message.contains("unexpected '='"))
+        );
     }
 
     #[test]

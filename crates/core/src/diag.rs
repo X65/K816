@@ -171,7 +171,7 @@ pub fn render_diagnostic_with_options(
                 .with_color(primary_color(diagnostic.severity))
                 .with_priority(100)
                 .with_order(0)
-                .with_message("primary location"),
+                .with_message("here"),
         );
 
     let mut colors = ColorGenerator::new();

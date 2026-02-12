@@ -1,0 +1,12 @@
+Error: overlay var 'VIA' is missing a base address assignment
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-missing-base-address/input.k65:1:1 ]
+   │
+ 1 │ ╭─▶ var VIA[
+   ┆ ┆   
+ 4 │ ├─▶ ]
+   │ │       
+   │ ╰─────── here
+   │     
+   │     Help: append '= <constant numeric expression>' after the field list (for example: '] = $6000')
+───╯
+

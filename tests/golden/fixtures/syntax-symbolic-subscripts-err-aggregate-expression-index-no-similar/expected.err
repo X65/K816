@@ -1,0 +1,10 @@
+Error: invalid index on overlay 'foo': use '.field' or '[.field]'
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-aggregate-expression-index-no-similar/input.k65:7:3 ]
+   │
+ 7 │   lda foo[buffer]
+   │   ───────┬───────  
+   │          ╰───────── here
+   │ 
+   │ Help: only named field access is allowed on overlay aggregates
+───╯
+

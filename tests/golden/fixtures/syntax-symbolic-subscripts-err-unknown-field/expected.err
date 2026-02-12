@@ -1,0 +1,10 @@
+Error: unknown overlay field '.idz' on 'foo'
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-unknown-field/input.k65:7:3 ]
+   │
+ 7 │   lda foo.idz
+   │   ─────┬─────  
+   │        ╰─────── here
+   │ 
+   │ Help: did you mean '.idx'?
+───╯
+

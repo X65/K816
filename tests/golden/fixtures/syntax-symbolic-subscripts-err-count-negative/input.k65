@@ -1,0 +1,3 @@
+var foo[
+  .string[0-1]:byte
+] = 0x1234

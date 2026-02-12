@@ -1,0 +1,12 @@
+var regs[
+  .lo:byte
+  .hi:byte
+  .wide:word
+] = 0x2200
+
+main @a16 {
+  lda regs.wide
+  sta regs.wide
+  lda regs.lo:word
+  sta regs.lo:word
+}

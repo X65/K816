@@ -1,0 +1,8 @@
+Error: var initializer 'base_addr' must be a constant numeric expression
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-nonconstant-base/input.k65:3:5 ]
+   │
+ 3 │ ] = base_addr
+   │     ────┬────  
+   │         ╰────── here
+───╯
+

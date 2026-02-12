@@ -1,0 +1,4 @@
+var VIA[
+  .orb:byte
+  .orb:word
+] = 0x6000

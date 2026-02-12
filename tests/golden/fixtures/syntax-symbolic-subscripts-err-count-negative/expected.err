@@ -1,0 +1,8 @@
+Error: overlay field '.string' count must be >= 1, found -1
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-negative/input.k65:2:11 ]
+   │
+ 2 │   .string[0-1]:byte
+   │           ─┬─  
+   │            ╰─── here
+───╯
+

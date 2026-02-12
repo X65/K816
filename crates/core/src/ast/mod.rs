@@ -47,7 +47,18 @@ pub struct VarDecl {
     pub name: String,
     pub data_width: Option<DataWidth>,
     pub array_len: Option<Expr>,
+    pub overlay_fields: Option<Vec<OverlayFieldDecl>>,
     pub initializer: Option<Expr>,
+    pub initializer_span: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OverlayFieldDecl {
+    pub name: String,
+    pub data_width: Option<DataWidth>,
+    pub count: Option<Expr>,
+    pub count_span: Option<Span>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +221,10 @@ pub enum Expr {
     Number(i64),
     Ident(String),
     EvalText(String),
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
     Binary {
         op: ExprBinaryOp,
         lhs: Box<Expr>,

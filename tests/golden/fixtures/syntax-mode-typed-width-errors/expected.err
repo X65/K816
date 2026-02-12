@@ -3,7 +3,8 @@ Error: Store to var w:word requires @a16.
    │
  5 │   w = a
    │   ──┬──  
-   │     ╰──── primary location
+   │     ╰──── here
    │ 
    │ Help: for byte stores, use explicit view (w:byte / (w+1):byte)
 ───╯
+

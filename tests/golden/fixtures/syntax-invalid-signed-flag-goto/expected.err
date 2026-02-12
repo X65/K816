@@ -3,7 +3,8 @@ Error: invalid syntax: unsupported flag shorthand 's-?'
    │
  2 │   s-? goto .skip
    │     ┬  
-   │     ╰── primary location
+   │     ╰── here
    │ 
    │ Help: expected one of c+, c-, d+, d-, i+, i-, or o-
 ───╯
+

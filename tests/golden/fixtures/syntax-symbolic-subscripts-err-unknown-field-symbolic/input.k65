@@ -1,0 +1,8 @@
+var foo[
+  .idx:byte
+  .status:byte
+] = 0x1234
+
+main {
+  lda foo[.idz]
+}

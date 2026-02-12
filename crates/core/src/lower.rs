@@ -1225,7 +1225,12 @@ fn validate_mode_for_typed_access(
 fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
     match expr {
         Expr::TypedView { width, .. } => Some(*width),
-        Expr::Ident(name) => sema.vars.get(name).and_then(|var| var.data_width),
+        Expr::Ident(name) => sema
+            .vars
+            .get(name)
+            .and_then(|var| var.data_width)
+            .or_else(|| overlay_field_width(name, sema)),
+        Expr::Index { base, .. } => expr_data_width(base, sema),
         _ => None,
     }
 }
@@ -1233,9 +1238,17 @@ fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
 fn base_ident(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Ident(name) => Some(name.as_str()),
+        Expr::Index { base, .. } => base_ident(base),
         Expr::TypedView { expr, .. } => base_ident(expr),
         _ => None,
     }
+}
+
+fn overlay_field_width(name: &str, sema: &SemanticModel) -> Option<DataWidth> {
+    let (base_name, field_name) = name.split_once('.')?;
+    let base = sema.vars.get(base_name)?;
+    let overlay = base.overlay.as_ref()?;
+    overlay.fields.get(field_name).map(|field| field.data_width)
 }
 
 fn data_width_to_reg_width(width: DataWidth) -> RegWidth {
@@ -1774,7 +1787,16 @@ fn eval_to_number_strict(
 ) -> Option<i64> {
     match expr {
         Expr::Number(value) => Some(*value),
-        Expr::Ident(name) => sema.vars.get(name).map(|var| i64::from(var.address)),
+        Expr::Ident(name) => {
+            if let Some(var) = sema.vars.get(name) {
+                return Some(i64::from(var.address));
+            }
+            match resolve_overlay_name(name, sema, span, diagnostics) {
+                Ok(Some(ResolvedOverlayName::Aggregate { address, .. }))
+                | Ok(Some(ResolvedOverlayName::Field { address, .. })) => Some(i64::from(address)),
+                Ok(None) | Err(()) => None,
+            }
+        }
         Expr::EvalText(_) => {
             diagnostics.push(Diagnostic::error(
                 span,
@@ -1782,6 +1804,7 @@ fn eval_to_number_strict(
             ));
             None
         }
+        Expr::Index { base, index } => eval_index_expr_strict(base, index, sema, span, diagnostics),
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_to_number_strict(lhs, sema, span, diagnostics)?;
             let rhs = eval_to_number_strict(rhs, sema, span, diagnostics)?;
@@ -1803,6 +1826,84 @@ fn eval_to_number_strict(
         }
         Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
     }
+}
+
+fn eval_index_expr_strict(
+    base: &Expr,
+    index: &Expr,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    let overlay_base_name = if let Some(name) = base_ident(base) {
+        match resolve_overlay_name(name, sema, span, diagnostics) {
+            Ok(found) => found,
+            Err(()) => return None,
+        }
+    } else {
+        None
+    };
+
+    if let Some(resolved) = overlay_base_name {
+        match resolved {
+            ResolvedOverlayName::Aggregate { base, .. } => {
+                diagnostics.push(invalid_overlay_aggregate_index_diagnostic(
+                    &base, index, sema, span,
+                ));
+                return None;
+            }
+            ResolvedOverlayName::Field {
+                base,
+                field,
+                address,
+                data_width,
+                count,
+            } => {
+                if count <= 1 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("overlay field '{}.{}' is not an array", base, field),
+                    ));
+                    return None;
+                }
+
+                let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
+                else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        "overlay array index must be a constant numeric expression",
+                    ));
+                    return None;
+                };
+                if index_value < 0 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("index must be non-negative, found {index_value}"),
+                    ));
+                    return None;
+                }
+                let scale = match data_width {
+                    DataWidth::Byte => 1_i64,
+                    DataWidth::Word => 2_i64,
+                };
+                let byte_offset = index_value.checked_mul(scale).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                })?;
+                return i64::from(address).checked_add(byte_offset).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                });
+            }
+        }
+    }
+
+    let base_value = eval_to_number_strict(base, sema, span, diagnostics)?;
+    let index_value = eval_to_number_strict(index, sema, span, diagnostics)?;
+    base_value.checked_add(index_value).or_else(|| {
+        diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+        None
+    })
 }
 
 fn resolve_symbolic_byte_relocation(
@@ -1829,6 +1930,11 @@ fn resolve_symbolic_byte_relocation(
         return None;
     }
 
+    match resolve_overlay_name(symbol, sema, span, diagnostics) {
+        Ok(Some(_)) | Err(()) => return None,
+        Ok(None) => {}
+    }
+
     let resolved = resolve_symbol(symbol, scope, span, diagnostics)?;
     Some((kind, resolved))
 }
@@ -1846,6 +1952,139 @@ fn looks_like_constant_ident(value: &str) -> bool {
         }
     }
     has_alpha
+}
+
+#[derive(Debug, Clone)]
+enum ResolvedOverlayName {
+    Aggregate {
+        base: String,
+        address: u32,
+    },
+    Field {
+        base: String,
+        field: String,
+        address: u32,
+        data_width: DataWidth,
+        count: u32,
+    },
+}
+
+fn resolve_overlay_name(
+    name: &str,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Option<ResolvedOverlayName>, ()> {
+    if let Some(var) = sema.vars.get(name) {
+        if var.overlay.is_some() {
+            return Ok(Some(ResolvedOverlayName::Aggregate {
+                base: name.to_string(),
+                address: var.address,
+            }));
+        }
+        return Ok(None);
+    }
+
+    let Some((base_name, field_name)) = name.split_once('.') else {
+        return Ok(None);
+    };
+
+    let Some(base_var) = sema.vars.get(base_name) else {
+        return Ok(None);
+    };
+    let Some(overlay) = base_var.overlay.as_ref() else {
+        return Ok(None);
+    };
+
+    let Some(field_meta) = overlay.fields.get(field_name) else {
+        let mut diagnostic = Diagnostic::error(
+            span,
+            format!("unknown overlay field '.{field_name}' on '{base_name}'"),
+        );
+        if let Some(suggestion) = suggest_overlay_field(field_name, overlay) {
+            diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
+        }
+        diagnostics.push(diagnostic);
+        return Err(());
+    };
+
+    let Some(address) = base_var.address.checked_add(field_meta.offset) else {
+        diagnostics.push(Diagnostic::error(
+            span,
+            format!("overlay field '{name}' address overflows address space"),
+        ));
+        return Err(());
+    };
+
+    Ok(Some(ResolvedOverlayName::Field {
+        base: base_name.to_string(),
+        field: field_name.to_string(),
+        address,
+        data_width: field_meta.data_width,
+        count: field_meta.count,
+    }))
+}
+
+fn suggest_overlay_field<'a>(
+    requested: &str,
+    overlay: &'a crate::sema::OverlayMeta,
+) -> Option<&'a str> {
+    overlay
+        .fields
+        .keys()
+        .map(|candidate| (candidate.as_str(), levenshtein(requested, candidate)))
+        .min_by_key(|(_, distance)| *distance)
+        .and_then(|(candidate, distance)| (distance <= 3).then_some(candidate))
+}
+
+fn invalid_overlay_aggregate_index_diagnostic(
+    base: &str,
+    index: &Expr,
+    sema: &SemanticModel,
+    span: Span,
+) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error(
+        span,
+        format!("invalid index on overlay '{base}': use '.field' or '[.field]'"),
+    );
+
+    if let Expr::Ident(requested) = index
+        && let Some(overlay) = sema.vars.get(base).and_then(|var| var.overlay.as_ref())
+        && let Some(suggestion) = suggest_overlay_field(requested, overlay)
+    {
+        diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
+        return diagnostic;
+    }
+
+    diagnostic.with_help("only named field access is allowed on overlay aggregates")
+}
+
+fn levenshtein(lhs: &str, rhs: &str) -> usize {
+    if lhs.is_empty() {
+        return rhs.chars().count();
+    }
+    if rhs.is_empty() {
+        return lhs.chars().count();
+    }
+
+    let lhs_chars = lhs.chars().collect::<Vec<_>>();
+    let rhs_chars = rhs.chars().collect::<Vec<_>>();
+    let mut costs = (0..=rhs_chars.len()).collect::<Vec<_>>();
+
+    for (i, lhs_char) in lhs_chars.iter().enumerate() {
+        let mut prev = costs[0];
+        costs[0] = i + 1;
+        for (j, rhs_char) in rhs_chars.iter().enumerate() {
+            let saved = costs[j + 1];
+            let replace = if lhs_char == rhs_char { prev } else { prev + 1 };
+            let insert = costs[j] + 1;
+            let delete = costs[j + 1] + 1;
+            costs[j + 1] = replace.min(insert).min(delete);
+            prev = saved;
+        }
+    }
+
+    costs[rhs_chars.len()]
 }
 
 fn lower_instruction_and_push(
@@ -1910,7 +2149,10 @@ fn lower_instruction(
                     *force_far,
                     mode,
                 )?),
-                Expr::Binary { .. } | Expr::Unary { .. } | Expr::TypedView { .. } => {
+                Expr::Index { .. }
+                | Expr::Binary { .. }
+                | Expr::Unary { .. }
+                | Expr::TypedView { .. } => {
                     let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
                         return None;
                     };
@@ -1957,6 +2199,14 @@ fn eval_to_number(
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
+            match resolve_overlay_name(name, sema, span, diagnostics) {
+                Ok(Some(ResolvedOverlayName::Aggregate { address, .. }))
+                | Ok(Some(ResolvedOverlayName::Field { address, .. })) => {
+                    return Some(i64::from(address));
+                }
+                Err(()) => return None,
+                Ok(None) => {}
+            }
 
             // Constants that are not materialized in semantic tables yet;
             // keep lowering permissive by resolving unknown constants to 0.
@@ -1970,6 +2220,7 @@ fn eval_to_number(
             ));
             None
         }
+        Expr::Index { base, index } => eval_index_expr(base, index, scope, sema, span, diagnostics),
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_to_number(lhs, scope, sema, span, diagnostics)?;
             let rhs = eval_to_number(rhs, scope, sema, span, diagnostics)?;
@@ -1991,6 +2242,78 @@ fn eval_to_number(
         }
         Expr::TypedView { expr, .. } => eval_to_number(expr, scope, sema, span, diagnostics),
     }
+}
+
+fn eval_index_expr(
+    base: &Expr,
+    index: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    if let Some(name) = base_ident(base) {
+        match resolve_overlay_name(name, sema, span, diagnostics) {
+            Ok(Some(ResolvedOverlayName::Aggregate { base, .. })) => {
+                diagnostics.push(invalid_overlay_aggregate_index_diagnostic(
+                    &base, index, sema, span,
+                ));
+                return None;
+            }
+            Ok(Some(ResolvedOverlayName::Field {
+                base,
+                field,
+                address,
+                data_width,
+                count,
+            })) => {
+                if count <= 1 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("overlay field '{}.{}' is not an array", base, field),
+                    ));
+                    return None;
+                }
+
+                let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
+                else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        "overlay array index must be a constant numeric expression",
+                    ));
+                    return None;
+                };
+                if index_value < 0 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("index must be non-negative, found {index_value}"),
+                    ));
+                    return None;
+                }
+                let scale = match data_width {
+                    DataWidth::Byte => 1_i64,
+                    DataWidth::Word => 2_i64,
+                };
+                let byte_offset = index_value.checked_mul(scale).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                })?;
+                return i64::from(address).checked_add(byte_offset).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                });
+            }
+            Ok(None) => {}
+            Err(()) => return None,
+        }
+    }
+
+    let base_value = eval_to_number(base, scope, sema, span, diagnostics)?;
+    let index_value = eval_to_number(index, scope, sema, span, diagnostics)?;
+    base_value.checked_add(index_value).or_else(|| {
+        diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+        None
+    })
 }
 
 fn lower_operand_mode(
@@ -2038,6 +2361,19 @@ fn resolve_operand_ident(
             force_far,
             mode,
         });
+    }
+
+    match resolve_overlay_name(name, sema, span, diagnostics) {
+        Ok(Some(ResolvedOverlayName::Aggregate { address, .. }))
+        | Ok(Some(ResolvedOverlayName::Field { address, .. })) => {
+            return Some(OperandOp::Address {
+                value: AddressValue::Literal(address),
+                force_far,
+                mode,
+            });
+        }
+        Ok(None) => {}
+        Err(()) => return None,
     }
 
     if sema.functions.contains_key(name) {
@@ -2143,6 +2479,129 @@ mod tests {
     }
 
     #[test]
+    fn resolves_overlay_field_accesses_to_literal_addresses() {
+        let source = "var foo[\n  .field_w:byte\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\nmain {\n  lda foo.field_w\n  sta foo[.idx]\n  lda foo.string[2]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mut lda_literals = Vec::new();
+        let mut sta_literals = Vec::new();
+        for op in &program.ops {
+            let Op::Instruction(instruction) = &op.node else {
+                continue;
+            };
+            let Some(OperandOp::Address {
+                value: AddressValue::Literal(value),
+                ..
+            }) = instruction.operand.as_ref()
+            else {
+                continue;
+            };
+
+            match instruction.mnemonic.as_str() {
+                "lda" => lda_literals.push(*value),
+                "sta" => sta_literals.push(*value),
+                _ => {}
+            }
+        }
+
+        assert_eq!(lda_literals, vec![0x1234, 0x1238]);
+        assert_eq!(sta_literals, vec![0x1235]);
+    }
+
+    #[test]
+    fn rejects_numeric_indexing_on_overlay_aggregate() {
+        let source = "var foo[\n  .idx:byte\n] = 0x1234\nmain {\n  lda foo[1]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("invalid index on overlay 'foo'"))
+        );
+    }
+
+    #[test]
+    fn suggests_field_for_overlay_aggregate_expression_index() {
+        let source = "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[idx]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("invalid index on overlay 'foo'"))
+        );
+        assert!(errors.iter().any(|error| {
+            error.supplements.iter().any(|supplement| {
+                matches!(
+                    supplement,
+                    crate::diag::Supplemental::Help(help) if help.contains("did you mean '.idx'")
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn keeps_generic_help_for_overlay_aggregate_index_without_similar_field() {
+        let source =
+            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[buffer]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error.supplements.iter().any(|supplement| {
+                matches!(
+                    supplement,
+                    crate::diag::Supplemental::Help(help)
+                        if help.contains("only named field access is allowed on overlay aggregates")
+                )
+            })
+        }));
+        assert!(!errors.iter().any(|error| {
+            error.supplements.iter().any(|supplement| {
+                matches!(
+                    supplement,
+                    crate::diag::Supplemental::Help(help) if help.contains("did you mean '.")
+                )
+            })
+        }));
+    }
+
+    #[test]
+    fn reports_unknown_overlay_field_with_suggestion() {
+        let source =
+            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo.idz\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("unknown overlay field '.idz'"))
+        );
+        assert!(errors.iter().any(|error| {
+            error.supplements.iter().any(|supplement| {
+                matches!(
+                    supplement,
+                    crate::diag::Supplemental::Help(help) if help.contains("did you mean '.idx'")
+                )
+            })
+        }));
+    }
+
+    #[test]
     fn named_data_label_is_emitted_after_leading_segment_directive() {
         let source = "data info {\n  segment INFO\n  \"A\"\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
@@ -2163,7 +2622,7 @@ mod tests {
         let emit_index = program
             .ops
             .iter()
-            .position(|op| matches!(&op.node, Op::EmitBytes(bytes) if bytes == &[b'A']))
+            .position(|op| matches!(&op.node, Op::EmitBytes(bytes) if bytes == b"A"))
             .expect("emit for data payload");
 
         assert!(segment_index < label_index);

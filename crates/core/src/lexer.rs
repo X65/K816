@@ -103,7 +103,7 @@ pub enum TokenKind {
     #[regex(r"\n+")]
     Newline,
 
-    #[regex(r"\[[^\]]*\]", parse_eval)]
+    #[token("[", parse_eval)]
     Eval(String),
 
     #[regex(r#""([^"\\]|\\.)*""#, parse_string)]
@@ -177,9 +177,24 @@ fn parse_ident(lex: &mut logos::Lexer<TokenKind>) -> String {
     lex.slice().to_string()
 }
 
-fn parse_eval(lex: &mut logos::Lexer<TokenKind>) -> String {
-    let slice = lex.slice();
-    slice[1..slice.len() - 1].trim().to_string()
+fn parse_eval(lex: &mut logos::Lexer<TokenKind>) -> Option<String> {
+    let mut depth = 1usize;
+    for (offset, ch) in lex.remainder().char_indices() {
+        match ch {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    let content = &lex.remainder()[..offset];
+                    lex.bump(offset + 1);
+                    return Some(content.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn parse_string(lex: &mut logos::Lexer<TokenKind>) -> String {
@@ -224,6 +239,17 @@ mod tests {
                 .iter()
                 .any(|token| matches!(token.kind, TokenKind::Eval(_)))
         );
+    }
+
+    #[test]
+    fn lexes_nested_eval_fragment() {
+        let tokens = lex(SourceId(0), "var mmio[.data[4]:byte] = 0x4000").expect("lex");
+        assert!(tokens.iter().any(|token| {
+            matches!(
+                token.kind,
+                TokenKind::Eval(ref value) if value == ".data[4]:byte"
+            )
+        }));
     }
 
     #[test]

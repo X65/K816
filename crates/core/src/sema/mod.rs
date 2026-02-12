@@ -1,7 +1,8 @@
 use indexmap::IndexMap;
 
 use crate::ast::{
-    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract, Stmt, VarDecl,
+    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract,
+    OverlayFieldDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::span::Span;
@@ -14,11 +15,26 @@ pub struct FunctionMeta {
     pub mode_contract: ModeContract,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayFieldMeta {
+    pub offset: u32,
+    pub size: u32,
+    pub data_width: DataWidth,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverlayMeta {
+    pub fields: IndexMap<String, OverlayFieldMeta>,
+    pub total_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarMeta {
     pub address: u32,
     pub size: u32,
     pub data_width: Option<DataWidth>,
+    pub overlay: Option<OverlayMeta>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -130,15 +146,15 @@ fn collect_var(
     let Some(address) = eval_var_address(var, *next_auto_addr, span, diagnostics) else {
         return;
     };
-    let Some(size) = eval_var_size(var, span, diagnostics) else {
+    let Some(layout) = eval_var_layout(var, span, diagnostics) else {
         return;
     };
-    let Some(next_addr) = address.checked_add(size) else {
+    let Some(next_addr) = address.checked_add(layout.size) else {
         diagnostics.push(Diagnostic::error(
             span,
             format!(
-                "var allocation for '{}' overflows address space (start={address:#X}, size={size})",
-                var.name
+                "var allocation for '{}' overflows address space (start={address:#X}, size={})",
+                var.name, layout.size
             ),
         ));
         return;
@@ -149,8 +165,9 @@ fn collect_var(
         var.name.clone(),
         VarMeta {
             address,
-            size,
+            size: layout.size,
             data_width: var.data_width,
+            overlay: layout.overlay,
         },
     );
 }
@@ -162,15 +179,26 @@ fn eval_var_address(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
     let Some(initializer) = &var.initializer else {
+        if var.overlay_fields.is_some() {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!("overlay var '{}' is missing a base address assignment", var.name),
+                )
+                .with_help("append '= <constant numeric expression>' after the field list (for example: '] = $6000')"),
+            );
+            return None;
+        }
         return Some(next_auto_addr);
     };
+    let initializer_span = var.initializer_span.unwrap_or(span);
 
     match eval_const_expr(initializer) {
         Ok(value) => match u32::try_from(value) {
             Ok(address) => Some(address),
             Err(_) => {
                 diagnostics.push(Diagnostic::error(
-                    span,
+                    initializer_span,
                     format!("var address cannot be negative: {value}"),
                 ));
                 None
@@ -178,21 +206,21 @@ fn eval_var_address(
         },
         Err(ConstExprError::Ident(name)) => {
             diagnostics.push(Diagnostic::error(
-                span,
-                format!("var initializer '{name}' must be a numeric literal"),
+                initializer_span,
+                format!("var initializer '{name}' must be a constant numeric expression"),
             ));
             None
         }
         Err(ConstExprError::EvalText) => {
             diagnostics.push(Diagnostic::error(
-                span,
+                initializer_span,
                 "internal error: eval text should be expanded before semantic analysis",
             ));
             None
         }
         Err(ConstExprError::Overflow) => {
             diagnostics.push(Diagnostic::error(
-                span,
+                initializer_span,
                 "var initializer overflows numeric literal range",
             ));
             None
@@ -200,14 +228,45 @@ fn eval_var_address(
     }
 }
 
-fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -> Option<u32> {
+struct VarLayout {
+    size: u32,
+    overlay: Option<OverlayMeta>,
+}
+
+fn eval_var_layout(
+    var: &VarDecl,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<VarLayout> {
+    if let Some(overlay_fields) = &var.overlay_fields {
+        if var.array_len.is_some() {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!(
+                    "var '{}' cannot use both array length and overlay field list",
+                    var.name
+                ),
+            ));
+            return None;
+        }
+
+        let overlay = eval_overlay_layout(var, overlay_fields, span, diagnostics)?;
+        return Some(VarLayout {
+            size: overlay.total_size,
+            overlay: Some(overlay),
+        });
+    }
+
     let element_size: u32 = match var.data_width {
         Some(DataWidth::Word) => 2,
         Some(DataWidth::Byte) | None => 1,
     };
 
     let Some(array_len) = &var.array_len else {
-        return Some(element_size);
+        return Some(VarLayout {
+            size: element_size,
+            overlay: None,
+        });
     };
 
     match eval_const_expr(array_len) {
@@ -220,7 +279,10 @@ fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -
                 return None;
             }
             match u32::try_from(value) {
-                Ok(count) => Some(count * element_size),
+                Ok(count) => Some(VarLayout {
+                    size: count * element_size,
+                    overlay: None,
+                }),
                 Err(_) => {
                     diagnostics.push(Diagnostic::error(
                         span,
@@ -233,7 +295,7 @@ fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -
         Err(ConstExprError::Ident(name)) => {
             diagnostics.push(Diagnostic::error(
                 span,
-                format!("var array length '{name}' must be a numeric literal"),
+                format!("var array length '{name}' must be a constant numeric expression"),
             ));
             None
         }
@@ -254,6 +316,135 @@ fn eval_var_size(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -
     }
 }
 
+fn eval_overlay_layout(
+    var: &VarDecl,
+    fields: &[OverlayFieldDecl],
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<OverlayMeta> {
+    let mut offset = 0_u32;
+    let mut resolved_fields = IndexMap::new();
+
+    for field in fields {
+        if resolved_fields.contains_key(&field.name) {
+            diagnostics.push(Diagnostic::error(
+                field.span,
+                format!(
+                    "duplicate overlay field '.{}' in '{}'",
+                    field.name, var.name
+                ),
+            ));
+            return None;
+        }
+
+        let data_width = field
+            .data_width
+            .or(var.data_width)
+            .unwrap_or(DataWidth::Byte);
+
+        let count = match &field.count {
+            Some(count_expr) => match eval_const_expr(count_expr) {
+                Ok(value) => {
+                    if value <= 0 {
+                        let count_span = field.count_span.unwrap_or(field.span);
+                        diagnostics.push(Diagnostic::error(
+                            count_span,
+                            format!(
+                                "overlay field '.{}' count must be >= 1, found {value}",
+                                field.name
+                            ),
+                        ));
+                        return None;
+                    }
+                    match u32::try_from(value) {
+                        Ok(count) => count,
+                        Err(_) => {
+                            let count_span = field.count_span.unwrap_or(field.span);
+                            diagnostics.push(Diagnostic::error(
+                                count_span,
+                                format!(
+                                    "overlay field '.{}' count is out of range: {value}",
+                                    field.name
+                                ),
+                            ));
+                            return None;
+                        }
+                    }
+                }
+                Err(ConstExprError::Ident(name)) => {
+                    let count_span = field.count_span.unwrap_or(field.span);
+                    diagnostics.push(Diagnostic::error(
+                        count_span,
+                        format!(
+                            "overlay field '.{}' count expression '{name}' must be a constant numeric expression",
+                            field.name
+                        ),
+                    ));
+                    return None;
+                }
+                Err(ConstExprError::EvalText) => {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        "internal error: eval text should be expanded before semantic analysis",
+                    ));
+                    return None;
+                }
+                Err(ConstExprError::Overflow) => {
+                    let count_span = field.count_span.unwrap_or(field.span);
+                    diagnostics.push(Diagnostic::error(
+                        count_span,
+                        format!(
+                            "overlay field '.{}' count expression overflows numeric literal range",
+                            field.name
+                        ),
+                    ));
+                    return None;
+                }
+            },
+            None => 1,
+        };
+
+        let element_size = match data_width {
+            DataWidth::Byte => 1_u32,
+            DataWidth::Word => 2_u32,
+        };
+        let Some(size) = count.checked_mul(element_size) else {
+            diagnostics.push(Diagnostic::error(
+                field.span,
+                format!(
+                    "overlay field '.{}' in '{}' overflows layout size",
+                    field.name, var.name
+                ),
+            ));
+            return None;
+        };
+
+        resolved_fields.insert(
+            field.name.clone(),
+            OverlayFieldMeta {
+                offset,
+                size,
+                data_width,
+                count,
+            },
+        );
+
+        let Some(next_offset) = offset.checked_add(size) else {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("overlay '{}' total size overflows address space", var.name),
+            ));
+            return None;
+        };
+        offset = next_offset;
+    }
+
+    Some(OverlayMeta {
+        fields: resolved_fields,
+        total_size: offset,
+    })
+}
+
 enum ConstExprError {
     Ident(String),
     EvalText,
@@ -265,6 +456,11 @@ fn eval_const_expr(expr: &Expr) -> Result<i64, ConstExprError> {
         Expr::Number(value) => Ok(*value),
         Expr::Ident(name) => Err(ConstExprError::Ident(name.clone())),
         Expr::EvalText(_) => Err(ConstExprError::EvalText),
+        Expr::Index { base, index } => {
+            let base = eval_const_expr(base)?;
+            let index = eval_const_expr(index)?;
+            base.checked_add(index).ok_or(ConstExprError::Overflow)
+        }
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_const_expr(lhs)?;
             let rhs = eval_const_expr(rhs)?;
@@ -369,5 +565,95 @@ mod tests {
                 .iter()
                 .any(|error| error.message.contains("duplicate symbol 'dup'"))
         );
+    }
+
+    #[test]
+    fn computes_overlay_field_offsets_and_total_size() {
+        let source = "var foo[\n  .field_w:word\n  .field_w2:word\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        let foo = sema.vars.get("foo").expect("foo");
+        assert_eq!(foo.address, 0x1234);
+        assert_eq!(foo.size, 9);
+        let overlay = foo.overlay.as_ref().expect("overlay");
+        let field_w = overlay.fields.get("field_w").expect("field_w");
+        let field_w2 = overlay.fields.get("field_w2").expect("field_w2");
+        let idx = overlay.fields.get("idx").expect("idx");
+        let string = overlay.fields.get("string").expect("string");
+        assert_eq!(field_w.offset, 0);
+        assert_eq!(field_w2.offset, 2);
+        assert_eq!(idx.offset, 4);
+        assert_eq!(string.offset, 5);
+    }
+
+    #[test]
+    fn overlay_requires_explicit_base_address() {
+        let source = "var VIA[\n  .orb:byte\n  .ora:byte\n]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("is missing a base address assignment"))
+        );
+    }
+
+    #[test]
+    fn overlay_rejects_duplicate_field_names() {
+        let source = "var VIA[\n  .orb:byte\n  .orb:word\n] = 0x6000\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("duplicate overlay field '.orb'"))
+        );
+    }
+
+    #[test]
+    fn overlay_base_expression_must_be_constant() {
+        let source = "var VIA[\n  .orb:byte\n] = base_addr\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("must be a constant numeric expression")
+        }));
+    }
+
+    #[test]
+    fn overlay_fields_use_default_var_width_when_type_is_omitted() {
+        let source = "var baz:byte[\n  .a\n  .b\n  .len:word\n] = 0x2244\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        let baz = sema.vars.get("baz").expect("baz");
+        assert_eq!(baz.size, 4);
+        let overlay = baz.overlay.as_ref().expect("overlay");
+        assert_eq!(overlay.fields.get("a").expect("a").offset, 0);
+        assert_eq!(overlay.fields.get("b").expect("b").offset, 1);
+        assert_eq!(overlay.fields.get("len").expect("len").offset, 2);
+    }
+
+    #[test]
+    fn overlay_fields_default_to_byte_when_no_type_is_provided() {
+        let source = "var foo[\n  .a\n  .b[2]\n  .w:word\n] = 0x1234\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        let foo = sema.vars.get("foo").expect("foo");
+        assert_eq!(foo.size, 5);
+        let overlay = foo.overlay.as_ref().expect("overlay");
+        let a = overlay.fields.get("a").expect("a");
+        let b = overlay.fields.get("b").expect("b");
+        let w = overlay.fields.get("w").expect("w");
+        assert_eq!(a.offset, 0);
+        assert_eq!(b.offset, 1);
+        assert_eq!(w.offset, 3);
+        assert_eq!(a.data_width, DataWidth::Byte);
+        assert_eq!(b.data_width, DataWidth::Byte);
+        assert_eq!(w.data_width, DataWidth::Word);
     }
 }

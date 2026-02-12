@@ -1,0 +1,12 @@
+var foo[
+  .field_w:word,
+  .idx:byte,
+  .string[4]:byte,
+] = 0x2000
+
+main @a8 {
+  lda foo[.idx]
+  sta foo.idx
+  lda foo.string[2]
+  sta foo[.string][1]
+}

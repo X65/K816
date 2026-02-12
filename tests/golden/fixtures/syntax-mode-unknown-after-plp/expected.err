@@ -3,7 +3,8 @@ Error: `lda` uses a width-dependent immediate but accumulator width is unknown
    │
  4 │   lda #1
    │   ───┬──  
-   │      ╰──── primary location
+   │      ╰──── here
    │ 
    │ Help: PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width
 ───╯
+

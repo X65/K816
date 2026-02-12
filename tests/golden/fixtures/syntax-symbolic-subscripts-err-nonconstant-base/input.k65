@@ -1,0 +1,3 @@
+var VIA[
+  .orb:byte
+] = base_addr

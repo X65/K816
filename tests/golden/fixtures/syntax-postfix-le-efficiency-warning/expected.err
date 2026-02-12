@@ -3,7 +3,7 @@ Warning: postfix `} <=` expands to two branch instructions and may be inefficien
    │
  4 │   } <=
    │   ──┬─  
-   │     ╰─── primary location
+   │     ╰─── here
    │ 
    │ Help: expansion is `BCC target` + `BEQ target`
 ───╯

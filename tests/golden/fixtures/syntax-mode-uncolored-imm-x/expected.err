@@ -3,7 +3,7 @@ Error: `ldx` uses a width-dependent immediate but index width is unknown
    │
  7 │   ldx #$01
    │   ────┬───  
-   │       ╰───── primary location
+   │       ╰───── here
    │ 
    │ Help: add @i8 or @i16 to the enclosing function
 ───╯

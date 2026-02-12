@@ -155,7 +155,38 @@ fn format_instruction(instr: &Instruction) -> String {
 
 fn format_var(var: &k816_core::ast::VarDecl) -> String {
     let mut out = format!("var {}", var.name);
-    if let Some(array_len) = &var.array_len {
+    if let Some(width) = var.data_width {
+        out.push(':');
+        out.push_str(match width {
+            k816_core::ast::DataWidth::Byte => "byte",
+            k816_core::ast::DataWidth::Word => "word",
+        });
+    }
+    if let Some(fields) = &var.overlay_fields {
+        out.push('[');
+        let rendered = fields
+            .iter()
+            .map(|field| {
+                let mut value = format!(".{}", field.name);
+                if let Some(count) = &field.count {
+                    value.push('[');
+                    value.push_str(&format_expr(count));
+                    value.push(']');
+                }
+                if let Some(width) = field.data_width {
+                    value.push(':');
+                    value.push_str(match width {
+                        k816_core::ast::DataWidth::Byte => "byte",
+                        k816_core::ast::DataWidth::Word => "word",
+                    });
+                }
+                value
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&rendered);
+        out.push(']');
+    } else if let Some(array_len) = &var.array_len {
         out.push('[');
         out.push_str(&format_expr(array_len));
         out.push(']');
@@ -196,6 +227,7 @@ fn format_expr(expr: &Expr) -> String {
         Expr::Number(value) => value.to_string(),
         Expr::Ident(value) => value.clone(),
         Expr::EvalText(value) => format!("[{value}]"),
+        Expr::Index { base, index } => format!("{}[{}]", format_expr(base), format_expr(index)),
         Expr::Binary { op, lhs, rhs } => {
             let op = match op {
                 k816_core::ast::ExprBinaryOp::Add => "+",

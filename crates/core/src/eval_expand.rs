@@ -1,6 +1,6 @@
 use crate::ast::{
     CodeBlock, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
-    NamedDataEntry, Operand, Stmt, VarDecl,
+    NamedDataEntry, Operand, OverlayFieldDecl, Stmt, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::parser::parse_expression_fragment;
@@ -271,10 +271,40 @@ fn expand_var(
             .array_len
             .as_ref()
             .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
+        overlay_fields: var.overlay_fields.as_ref().map(|fields| {
+            fields
+                .iter()
+                .map(|field| OverlayFieldDecl {
+                    name: field.name.clone(),
+                    data_width: field.data_width,
+                    count: field
+                        .count
+                        .as_ref()
+                        .map(|count| {
+                            expand_expr(
+                                count,
+                                field.count_span.unwrap_or(field.span),
+                                source_id,
+                                diagnostics,
+                            )
+                        }),
+                    count_span: field.count_span,
+                    span: field.span,
+                })
+                .collect()
+        }),
         initializer: var
             .initializer
             .as_ref()
-            .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
+            .map(|expr| {
+                expand_expr(
+                    expr,
+                    var.initializer_span.unwrap_or(span),
+                    source_id,
+                    diagnostics,
+                )
+            }),
+        initializer_span: var.initializer_span,
     }
 }
 
@@ -326,6 +356,10 @@ fn expand_expr(
             }
         }
         Expr::Number(_) | Expr::Ident(_) => expr.clone(),
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(expand_expr(base, span, source_id, diagnostics)),
+            index: Box::new(expand_expr(index, span, source_id, diagnostics)),
+        },
         Expr::Binary { op, lhs, rhs } => Expr::Binary {
             op: *op,
             lhs: Box::new(expand_expr(lhs, span, source_id, diagnostics)),

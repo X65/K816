@@ -1,0 +1,8 @@
+Error: overlay array index must be a constant numeric expression
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-array-index-nonconstant/input.k65:6:3 ]
+   │
+ 6 │   lda foo.string[idx]
+   │   ─────────┬─────────  
+   │            ╰─────────── here
+───╯
+

@@ -1,0 +1,8 @@
+var foo[
+  .a
+  .w:word
+] = 0x1234
+
+main @a8 {
+  lda foo.a
+}

@@ -1,4 +1,4 @@
-Error: overlay var 'VIA' is missing a base address assignment
+Error: symbolic subscript array 'VIA' is missing a base address assignment
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-missing-base-address/input.k65:1:1 ]
    │
  1 │ ╭─▶ var VIA[

@@ -1,4 +1,4 @@
-Error: invalid syntax: invalid overlay field declaration '.:word': expected field name after '.'; inside brackets: [
+Error: invalid syntax: invalid symbolic subscript field declaration '.:word': expected field name after '.'; inside brackets: [
   .a:byte,
   .:word
 ]

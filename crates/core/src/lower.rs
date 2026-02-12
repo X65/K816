@@ -1229,7 +1229,7 @@ fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
             .vars
             .get(name)
             .and_then(|var| var.data_width)
-            .or_else(|| overlay_field_width(name, sema)),
+            .or_else(|| symbolic_subscript_field_width(name, sema)),
         Expr::Index { base, .. } => expr_data_width(base, sema),
         _ => None,
     }
@@ -1244,11 +1244,14 @@ fn base_ident(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn overlay_field_width(name: &str, sema: &SemanticModel) -> Option<DataWidth> {
+fn symbolic_subscript_field_width(name: &str, sema: &SemanticModel) -> Option<DataWidth> {
     let (base_name, field_name) = name.split_once('.')?;
     let base = sema.vars.get(base_name)?;
-    let overlay = base.overlay.as_ref()?;
-    overlay.fields.get(field_name).map(|field| field.data_width)
+    let symbolic_subscript = base.symbolic_subscript.as_ref()?;
+    symbolic_subscript
+        .fields
+        .get(field_name)
+        .map(|field| field.data_width)
 }
 
 fn data_width_to_reg_width(width: DataWidth) -> RegWidth {
@@ -1791,9 +1794,11 @@ fn eval_to_number_strict(
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
-            match resolve_overlay_name(name, sema, span, diagnostics) {
-                Ok(Some(ResolvedOverlayName::Aggregate { address, .. }))
-                | Ok(Some(ResolvedOverlayName::Field { address, .. })) => Some(i64::from(address)),
+            match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+                Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
+                | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
+                    Some(i64::from(address))
+                }
                 Ok(None) | Err(()) => None,
             }
         }
@@ -1835,8 +1840,8 @@ fn eval_index_expr_strict(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    let overlay_base_name = if let Some(name) = base_ident(base) {
-        match resolve_overlay_name(name, sema, span, diagnostics) {
+    let symbolic_subscript_base_name = if let Some(name) = base_ident(base) {
+        match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
             Ok(found) => found,
             Err(()) => return None,
         }
@@ -1844,15 +1849,15 @@ fn eval_index_expr_strict(
         None
     };
 
-    if let Some(resolved) = overlay_base_name {
+    if let Some(resolved) = symbolic_subscript_base_name {
         match resolved {
-            ResolvedOverlayName::Aggregate { base, .. } => {
-                diagnostics.push(invalid_overlay_aggregate_index_diagnostic(
+            ResolvedSymbolicSubscriptName::Aggregate { base, .. } => {
+                diagnostics.push(invalid_symbolic_subscript_aggregate_index_diagnostic(
                     &base, index, sema, span,
                 ));
                 return None;
             }
-            ResolvedOverlayName::Field {
+            ResolvedSymbolicSubscriptName::Field {
                 base,
                 field,
                 address,
@@ -1862,7 +1867,10 @@ fn eval_index_expr_strict(
                 if count <= 1 {
                     diagnostics.push(Diagnostic::error(
                         span,
-                        format!("overlay field '{}.{}' is not an array", base, field),
+                        format!(
+                            "symbolic subscript field '{}.{}' is not an array",
+                            base, field
+                        ),
                     ));
                     return None;
                 }
@@ -1871,7 +1879,7 @@ fn eval_index_expr_strict(
                 else {
                     diagnostics.push(Diagnostic::error(
                         span,
-                        "overlay array index must be a constant numeric expression",
+                        "symbolic subscript array index must be a constant numeric expression",
                     ));
                     return None;
                 };
@@ -1930,7 +1938,7 @@ fn resolve_symbolic_byte_relocation(
         return None;
     }
 
-    match resolve_overlay_name(symbol, sema, span, diagnostics) {
+    match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
         Ok(Some(_)) | Err(()) => return None,
         Ok(None) => {}
     }
@@ -1955,7 +1963,7 @@ fn looks_like_constant_ident(value: &str) -> bool {
 }
 
 #[derive(Debug, Clone)]
-enum ResolvedOverlayName {
+enum ResolvedSymbolicSubscriptName {
     Aggregate {
         base: String,
         address: u32,
@@ -1969,15 +1977,15 @@ enum ResolvedOverlayName {
     },
 }
 
-fn resolve_overlay_name(
+fn resolve_symbolic_subscript_name(
     name: &str,
     sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Result<Option<ResolvedOverlayName>, ()> {
+) -> Result<Option<ResolvedSymbolicSubscriptName>, ()> {
     if let Some(var) = sema.vars.get(name) {
-        if var.overlay.is_some() {
-            return Ok(Some(ResolvedOverlayName::Aggregate {
+        if var.symbolic_subscript.is_some() {
+            return Ok(Some(ResolvedSymbolicSubscriptName::Aggregate {
                 base: name.to_string(),
                 address: var.address,
             }));
@@ -1992,16 +2000,16 @@ fn resolve_overlay_name(
     let Some(base_var) = sema.vars.get(base_name) else {
         return Ok(None);
     };
-    let Some(overlay) = base_var.overlay.as_ref() else {
+    let Some(symbolic_subscript) = base_var.symbolic_subscript.as_ref() else {
         return Ok(None);
     };
 
-    let Some(field_meta) = overlay.fields.get(field_name) else {
+    let Some(field_meta) = symbolic_subscript.fields.get(field_name) else {
         let mut diagnostic = Diagnostic::error(
             span,
-            format!("unknown overlay field '.{field_name}' on '{base_name}'"),
+            format!("unknown symbolic subscript field '.{field_name}' on '{base_name}'"),
         );
-        if let Some(suggestion) = suggest_overlay_field(field_name, overlay) {
+        if let Some(suggestion) = suggest_symbolic_subscript_field(field_name, symbolic_subscript) {
             diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
         }
         diagnostics.push(diagnostic);
@@ -2011,12 +2019,12 @@ fn resolve_overlay_name(
     let Some(address) = base_var.address.checked_add(field_meta.offset) else {
         diagnostics.push(Diagnostic::error(
             span,
-            format!("overlay field '{name}' address overflows address space"),
+            format!("symbolic subscript field '{name}' address overflows address space"),
         ));
         return Err(());
     };
 
-    Ok(Some(ResolvedOverlayName::Field {
+    Ok(Some(ResolvedSymbolicSubscriptName::Field {
         base: base_name.to_string(),
         field: field_name.to_string(),
         address,
@@ -2025,11 +2033,11 @@ fn resolve_overlay_name(
     }))
 }
 
-fn suggest_overlay_field<'a>(
+fn suggest_symbolic_subscript_field<'a>(
     requested: &str,
-    overlay: &'a crate::sema::OverlayMeta,
+    symbolic_subscript: &'a crate::sema::SymbolicSubscriptMeta,
 ) -> Option<&'a str> {
-    overlay
+    symbolic_subscript
         .fields
         .keys()
         .map(|candidate| (candidate.as_str(), levenshtein(requested, candidate)))
@@ -2037,7 +2045,7 @@ fn suggest_overlay_field<'a>(
         .and_then(|(candidate, distance)| (distance <= 3).then_some(candidate))
 }
 
-fn invalid_overlay_aggregate_index_diagnostic(
+fn invalid_symbolic_subscript_aggregate_index_diagnostic(
     base: &str,
     index: &Expr,
     sema: &SemanticModel,
@@ -2045,18 +2053,21 @@ fn invalid_overlay_aggregate_index_diagnostic(
 ) -> Diagnostic {
     let mut diagnostic = Diagnostic::error(
         span,
-        format!("invalid index on overlay '{base}': use '.field' or '[.field]'"),
+        format!("invalid index on symbolic subscript array '{base}': use '.field' or '[.field]'"),
     );
 
     if let Expr::Ident(requested) = index
-        && let Some(overlay) = sema.vars.get(base).and_then(|var| var.overlay.as_ref())
-        && let Some(suggestion) = suggest_overlay_field(requested, overlay)
+        && let Some(symbolic_subscript) = sema
+            .vars
+            .get(base)
+            .and_then(|var| var.symbolic_subscript.as_ref())
+        && let Some(suggestion) = suggest_symbolic_subscript_field(requested, symbolic_subscript)
     {
         diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
         return diagnostic;
     }
 
-    diagnostic.with_help("only named field access is allowed on overlay aggregates")
+    diagnostic.with_help("only named field access is allowed on symbolic subscript arrays")
 }
 
 fn levenshtein(lhs: &str, rhs: &str) -> usize {
@@ -2199,9 +2210,9 @@ fn eval_to_number(
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
-            match resolve_overlay_name(name, sema, span, diagnostics) {
-                Ok(Some(ResolvedOverlayName::Aggregate { address, .. }))
-                | Ok(Some(ResolvedOverlayName::Field { address, .. })) => {
+            match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+                Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
+                | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     return Some(i64::from(address));
                 }
                 Err(()) => return None,
@@ -2253,14 +2264,14 @@ fn eval_index_expr(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
     if let Some(name) = base_ident(base) {
-        match resolve_overlay_name(name, sema, span, diagnostics) {
-            Ok(Some(ResolvedOverlayName::Aggregate { base, .. })) => {
-                diagnostics.push(invalid_overlay_aggregate_index_diagnostic(
+        match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+            Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
+                diagnostics.push(invalid_symbolic_subscript_aggregate_index_diagnostic(
                     &base, index, sema, span,
                 ));
                 return None;
             }
-            Ok(Some(ResolvedOverlayName::Field {
+            Ok(Some(ResolvedSymbolicSubscriptName::Field {
                 base,
                 field,
                 address,
@@ -2270,7 +2281,10 @@ fn eval_index_expr(
                 if count <= 1 {
                     diagnostics.push(Diagnostic::error(
                         span,
-                        format!("overlay field '{}.{}' is not an array", base, field),
+                        format!(
+                            "symbolic subscript field '{}.{}' is not an array",
+                            base, field
+                        ),
                     ));
                     return None;
                 }
@@ -2279,7 +2293,7 @@ fn eval_index_expr(
                 else {
                     diagnostics.push(Diagnostic::error(
                         span,
-                        "overlay array index must be a constant numeric expression",
+                        "symbolic subscript array index must be a constant numeric expression",
                     ));
                     return None;
                 };
@@ -2363,9 +2377,9 @@ fn resolve_operand_ident(
         });
     }
 
-    match resolve_overlay_name(name, sema, span, diagnostics) {
-        Ok(Some(ResolvedOverlayName::Aggregate { address, .. }))
-        | Ok(Some(ResolvedOverlayName::Field { address, .. })) => {
+    match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+        Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
+        | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
             return Some(OperandOp::Address {
                 value: AddressValue::Literal(address),
                 force_far,
@@ -2479,7 +2493,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_overlay_field_accesses_to_literal_addresses() {
+    fn resolves_symbolic_subscript_field_accesses_to_literal_addresses() {
         let source = "var foo[\n  .field_w:byte\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\nmain {\n  lda foo.field_w\n  sta foo[.idx]\n  lda foo.string[2]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
@@ -2512,22 +2526,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_numeric_indexing_on_overlay_aggregate() {
+    fn rejects_numeric_indexing_on_symbolic_subscript_aggregate() {
         let source = "var foo[\n  .idx:byte\n] = 0x1234\nmain {\n  lda foo[1]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
         let errors = lower(&file, &sema, &fs).expect_err("must fail");
 
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("invalid index on overlay 'foo'"))
-        );
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("invalid index on symbolic subscript array 'foo'")
+        }));
     }
 
     #[test]
-    fn suggests_field_for_overlay_aggregate_expression_index() {
+    fn suggests_field_for_symbolic_subscript_aggregate_expression_index() {
         let source =
             "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[idx]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
@@ -2535,11 +2549,11 @@ mod tests {
         let fs = StdAssetFS;
         let errors = lower(&file, &sema, &fs).expect_err("must fail");
 
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("invalid index on overlay 'foo'"))
-        );
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("invalid index on symbolic subscript array 'foo'")
+        }));
         assert!(errors.iter().any(|error| {
             error.supplements.iter().any(|supplement| {
                 matches!(
@@ -2551,7 +2565,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_generic_help_for_overlay_aggregate_index_without_similar_field() {
+    fn keeps_generic_help_for_symbolic_subscript_aggregate_index_without_similar_field() {
         let source =
             "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[buffer]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
@@ -2564,7 +2578,7 @@ mod tests {
                 matches!(
                     supplement,
                     crate::diag::Supplemental::Help(help)
-                        if help.contains("only named field access is allowed on overlay aggregates")
+                        if help.contains("only named field access is allowed on symbolic subscript arrays")
                 )
             })
         }));
@@ -2579,7 +2593,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_unknown_overlay_field_with_suggestion() {
+    fn reports_unknown_symbolic_subscript_field_with_suggestion() {
         let source =
             "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo.idz\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
@@ -2587,11 +2601,11 @@ mod tests {
         let fs = StdAssetFS;
         let errors = lower(&file, &sema, &fs).expect_err("must fail");
 
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("unknown overlay field '.idz'"))
-        );
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("unknown symbolic subscript field '.idz'")
+        }));
         assert!(errors.iter().any(|error| {
             error.supplements.iter().any(|supplement| {
                 matches!(

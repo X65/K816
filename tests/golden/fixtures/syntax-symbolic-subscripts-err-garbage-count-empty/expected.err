@@ -1,4 +1,4 @@
-Error: invalid syntax: invalid overlay field declaration '.a[]:byte': empty array count; inside brackets: [
+Error: invalid syntax: invalid symbolic subscript field declaration '.a[]:byte': empty array count; inside brackets: [
   .a[]:byte
 ]
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-empty/input.k65:2:3 ]

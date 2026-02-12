@@ -1,4 +1,4 @@
-Error: overlay field '.string' count expression 'count' must be a constant numeric expression
+Error: symbolic subscript field '.string' count expression 'count' must be a constant numeric expression
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-nonconstant/input.k65:2:11 ]
    │
  2 │   .string[count]:byte

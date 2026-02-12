@@ -35,6 +35,8 @@ var bar3 ?              // adding '?' at the end makes the compiler print var ad
 
 When no address is specified, the variable is placed at the next address following the previous variable. The `[N]` suffix reserves N bytes starting at the variable address, and advances the auto-address counter accordingly.
 
+K65 also supports symbolic subscript arrays with named `.field` entries inside `var name[...] = <addr>`. This feature is inspired by the Pawn language's named-field array style.
+
 ## Constant Declaration
 
 The best way of defining constants is using the evaluator. Constants defined this way can be changed at any moment during compilation. Constants can be any value of floating point type. When used within a 6502 instruction, they are converted to a single byte by rounding to the nearest integer and AND-ing with `0xFF` (this way negative values are represented in U2 form).

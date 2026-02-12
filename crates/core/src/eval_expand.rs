@@ -1,6 +1,6 @@
 use crate::ast::{
     CodeBlock, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
-    NamedDataEntry, Operand, OverlayFieldDecl, Stmt, VarDecl,
+    NamedDataEntry, Operand, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::parser::parse_expression_fragment;
@@ -271,10 +271,10 @@ fn expand_var(
             .array_len
             .as_ref()
             .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
-        overlay_fields: var.overlay_fields.as_ref().map(|fields| {
+        symbolic_subscript_fields: var.symbolic_subscript_fields.as_ref().map(|fields| {
             fields
                 .iter()
-                .map(|field| OverlayFieldDecl {
+                .map(|field| SymbolicSubscriptFieldDecl {
                     name: field.name.clone(),
                     data_width: field.data_width,
                     count: field.count.as_ref().map(|count| {

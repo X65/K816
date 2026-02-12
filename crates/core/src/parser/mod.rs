@@ -2,7 +2,7 @@ use crate::ast::{
     BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp,
     ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister,
     Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, Operand,
-    OperandAddrMode, OverlayFieldDecl, RegWidth, SegmentDecl, Stmt, VarDecl,
+    OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -370,7 +370,7 @@ where
                 name,
                 data_width: None,
                 array_len: None,
-                overlay_fields: None,
+                symbolic_subscript_fields: None,
                 initializer: Some(Expr::Number(0)),
                 initializer_span: None,
             })
@@ -870,7 +870,7 @@ where
 #[derive(Debug, Clone)]
 enum VarBracketPayload {
     ArrayLen(Expr),
-    OverlayFields(Vec<OverlayFieldDecl>),
+    SymbolicSubscriptFields(Vec<SymbolicSubscriptFieldDecl>),
 }
 
 #[derive(Debug, Clone)]
@@ -905,10 +905,10 @@ where
         )
         .map(
             |(((name, data_width), bracket_payload), initializer_with_span)| {
-                let (array_len, overlay_fields) = match bracket_payload {
+                let (array_len, symbolic_subscript_fields) = match bracket_payload {
                     Some(VarBracketPayload::ArrayLen(array_len)) => (Some(array_len), None),
-                    Some(VarBracketPayload::OverlayFields(overlay_fields)) => {
-                        (None, Some(overlay_fields))
+                    Some(VarBracketPayload::SymbolicSubscriptFields(symbolic_subscript_fields)) => {
+                        (None, Some(symbolic_subscript_fields))
                     }
                     None => (None, None),
                 };
@@ -921,7 +921,7 @@ where
                     name,
                     data_width,
                     array_len,
-                    overlay_fields,
+                    symbolic_subscript_fields,
                     initializer,
                     initializer_span,
                 }
@@ -967,9 +967,9 @@ fn parse_var_bracket_payload(
     text: &str,
     eval_span: Span,
 ) -> Result<VarBracketPayload, BracketPayloadParseError> {
-    if looks_like_overlay_field_list(text) {
-        return parse_overlay_field_list(source_id, text, eval_span)
-            .map(VarBracketPayload::OverlayFields);
+    if looks_like_symbolic_subscript_field_list(text) {
+        return parse_symbolic_subscript_field_list(source_id, text, eval_span)
+            .map(VarBracketPayload::SymbolicSubscriptFields);
     }
 
     parse_expression_fragment(source_id, text)
@@ -982,8 +982,8 @@ fn parse_var_bracket_payload(
         })
 }
 
-fn looks_like_overlay_field_list(text: &str) -> bool {
-    let candidate = trim_overlay_payload_start(text);
+fn looks_like_symbolic_subscript_field_list(text: &str) -> bool {
+    let candidate = trim_symbolic_subscript_payload_start(text);
     candidate.starts_with('.')
         && candidate
             .chars()
@@ -991,7 +991,7 @@ fn looks_like_overlay_field_list(text: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
 }
 
-fn trim_overlay_payload_start(mut text: &str) -> &str {
+fn trim_symbolic_subscript_payload_start(mut text: &str) -> &str {
     loop {
         let trimmed = text.trim_start();
 
@@ -1015,11 +1015,11 @@ fn trim_overlay_payload_start(mut text: &str) -> &str {
     }
 }
 
-fn parse_overlay_field_list(
+fn parse_symbolic_subscript_field_list(
     source_id: SourceId,
     text: &str,
     eval_span: Span,
-) -> Result<Vec<OverlayFieldDecl>, BracketPayloadParseError> {
+) -> Result<Vec<SymbolicSubscriptFieldDecl>, BracketPayloadParseError> {
     let mut entries: Vec<(String, Span)> = Vec::new();
     let mut current_start = 0usize;
     let mut bracket_depth = 0usize;
@@ -1039,13 +1039,13 @@ fn parse_overlay_field_list(
                     );
                     return Err(BracketPayloadParseError::new(
                         close_span,
-                        "invalid overlay field list: unexpected ']'",
+                        "invalid symbolic subscript field list: unexpected ']'",
                     ));
                 }
                 bracket_depth -= 1;
             }
             ',' | '\n' if bracket_depth == 0 => {
-                push_overlay_field_entry(
+                push_symbolic_subscript_field_entry(
                     source_id,
                     text,
                     current_start,
@@ -1062,11 +1062,11 @@ fn parse_overlay_field_list(
     if bracket_depth != 0 {
         return Err(BracketPayloadParseError::new(
             eval_span,
-            "invalid overlay field list: missing closing ']' in field declaration",
+            "invalid symbolic subscript field list: missing closing ']' in field declaration",
         ));
     }
 
-    push_overlay_field_entry(
+    push_symbolic_subscript_field_entry(
         source_id,
         text,
         current_start,
@@ -1078,17 +1078,17 @@ fn parse_overlay_field_list(
     if entries.is_empty() {
         return Err(BracketPayloadParseError::new(
             eval_span,
-            "invalid overlay field list: expected at least one field",
+            "invalid symbolic subscript field list: expected at least one field",
         ));
     }
 
     entries
         .into_iter()
-        .map(|(entry, span)| parse_overlay_field_entry(source_id, &entry, span))
+        .map(|(entry, span)| parse_symbolic_subscript_field_entry(source_id, &entry, span))
         .collect()
 }
 
-fn push_overlay_field_entry(
+fn push_symbolic_subscript_field_entry(
     source_id: SourceId,
     text: &str,
     start: usize,
@@ -1124,11 +1124,11 @@ fn push_overlay_field_entry(
     entries.push((trimmed.to_string(), span));
 }
 
-fn parse_overlay_field_entry(
+fn parse_symbolic_subscript_field_entry(
     source_id: SourceId,
     entry: &str,
     span: Span,
-) -> Result<OverlayFieldDecl, BracketPayloadParseError> {
+) -> Result<SymbolicSubscriptFieldDecl, BracketPayloadParseError> {
     let entry_span =
         |start: usize, end: usize| Span::new(source_id, span.start + start, span.start + end);
 
@@ -1137,7 +1137,7 @@ fn parse_overlay_field_entry(
     if !cursor.starts_with('.') {
         return Err(BracketPayloadParseError::new(
             span,
-            format!("invalid overlay field declaration '{entry}': expected '.field'"),
+            format!("invalid symbolic subscript field declaration '{entry}': expected '.field'"),
         ));
     }
     cursor = &cursor[1..];
@@ -1147,13 +1147,17 @@ fn parse_overlay_field_entry(
     let Some((_, first)) = chars.next() else {
         return Err(BracketPayloadParseError::new(
             entry_span(0, consumed),
-            format!("invalid overlay field declaration '{entry}': expected field name after '.'"),
+            format!(
+                "invalid symbolic subscript field declaration '{entry}': expected field name after '.'"
+            ),
         ));
     };
     if !(first.is_ascii_alphabetic() || first == '_') {
         return Err(BracketPayloadParseError::new(
             entry_span(consumed, consumed + first.len_utf8()),
-            format!("invalid overlay field declaration '{entry}': expected field name after '.'"),
+            format!(
+                "invalid symbolic subscript field declaration '{entry}': expected field name after '.'"
+            ),
         ));
     }
     let mut name_end = first.len_utf8();
@@ -1167,7 +1171,9 @@ fn parse_overlay_field_entry(
     if name_end == 0 {
         return Err(BracketPayloadParseError::new(
             entry_span(consumed, consumed + 1),
-            format!("invalid overlay field declaration '{entry}': expected field name after '.'"),
+            format!(
+                "invalid symbolic subscript field declaration '{entry}': expected field name after '.'"
+            ),
         ));
     }
     let name = cursor[..name_end].to_string();
@@ -1197,7 +1203,9 @@ fn parse_overlay_field_entry(
         let Some(close_offset) = close_offset else {
             return Err(BracketPayloadParseError::new(
                 entry_span(consumed, entry.len()),
-                format!("invalid overlay field declaration '{entry}': missing closing ']'"),
+                format!(
+                    "invalid symbolic subscript field declaration '{entry}': missing closing ']'"
+                ),
             ));
         };
         let count_text_raw = &cursor[1..close_offset];
@@ -1205,7 +1213,9 @@ fn parse_overlay_field_entry(
         if count_text.is_empty() {
             return Err(BracketPayloadParseError::new(
                 entry_span(0, consumed + close_offset + 1),
-                format!("invalid overlay field declaration '{entry}': empty array count"),
+                format!(
+                    "invalid symbolic subscript field declaration '{entry}': empty array count"
+                ),
             ));
         }
         let leading_ws = count_text_raw.len() - count_text_raw.trim_start().len();
@@ -1219,7 +1229,7 @@ fn parse_overlay_field_entry(
                 BracketPayloadParseError::new(
                     count_span.expect("count span must exist for non-empty count"),
                     format!(
-                        "invalid overlay field declaration '{entry}': invalid array count expression: {}",
+                        "invalid symbolic subscript field declaration '{entry}': invalid array count expression: {}",
                         error.message
                     ),
                 )
@@ -1237,7 +1247,9 @@ fn parse_overlay_field_entry(
         let Some(type_name) = cursor.strip_prefix(':') else {
             return Err(BracketPayloadParseError::new(
                 entry_span(consumed, entry.len()),
-                format!("invalid overlay field declaration '{entry}': expected ':byte' or ':word'"),
+                format!(
+                    "invalid symbolic subscript field declaration '{entry}': expected ':byte' or ':word'"
+                ),
             ));
         };
         let leading_ws = type_name.len() - type_name.trim_start().len();
@@ -1256,13 +1268,13 @@ fn parse_overlay_field_entry(
             return Err(BracketPayloadParseError::new(
                 type_span,
                 format!(
-                    "invalid overlay field declaration '{entry}': unsupported field type '{type_name}'"
+                    "invalid symbolic subscript field declaration '{entry}': unsupported field type '{type_name}'"
                 ),
             ));
         }
     };
 
-    Ok(OverlayFieldDecl {
+    Ok(SymbolicSubscriptFieldDecl {
         name,
         data_width,
         count,
@@ -3173,12 +3185,12 @@ mod tests {
         };
 
         assert!(matches!(var.array_len, Some(Expr::Number(16))));
-        assert!(var.overlay_fields.is_none());
+        assert!(var.symbolic_subscript_fields.is_none());
         assert!(var.initializer.is_none());
     }
 
     #[test]
-    fn parses_overlay_field_list_with_commas_and_trailing_separator() {
+    fn parses_symbolic_subscript_field_list_with_commas_and_trailing_separator() {
         let source = "var foo[\n  .field_w:word,\n  .idx:byte,\n  .string[20]:byte,\n] = 0x1234\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 1);
@@ -3188,7 +3200,10 @@ mod tests {
         };
         assert!(var.array_len.is_none());
         assert!(matches!(var.initializer, Some(Expr::Number(0x1234))));
-        let fields = var.overlay_fields.as_ref().expect("overlay field list");
+        let fields = var
+            .symbolic_subscript_fields
+            .as_ref()
+            .expect("symbolic subscript field list");
         assert_eq!(fields.len(), 3);
         assert_eq!(fields[0].name, "field_w");
         assert_eq!(fields[1].name, "idx");
@@ -3199,7 +3214,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_overlay_field_list_with_leading_comments() {
+    fn parses_symbolic_subscript_field_list_with_leading_comments() {
         let source = "var regs[\n  // control registers\n  .ctrl:word\n  /* status byte */\n  .status:byte\n] = 0x2100\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 1);
@@ -3207,7 +3222,10 @@ mod tests {
         let Item::Var(var) = &file.items[0].node else {
             panic!("expected var item");
         };
-        let fields = var.overlay_fields.as_ref().expect("overlay field list");
+        let fields = var
+            .symbolic_subscript_fields
+            .as_ref()
+            .expect("symbolic subscript field list");
         assert_eq!(fields.len(), 2);
         assert_eq!(fields[0].name, "ctrl");
         assert_eq!(fields[1].name, "status");
@@ -3247,14 +3265,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_overlay_fields_with_default_var_width() {
+    fn parses_symbolic_subscript_fields_with_default_var_width() {
         let source = "var baz:byte[\n  .a\n  .b\n  .len:word\n] = 0x2244\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::Var(var) = &file.items[0].node else {
             panic!("expected var item");
         };
         assert!(matches!(var.data_width, Some(DataWidth::Byte)));
-        let fields = var.overlay_fields.as_ref().expect("overlay field list");
+        let fields = var
+            .symbolic_subscript_fields
+            .as_ref()
+            .expect("symbolic subscript field list");
         assert_eq!(fields.len(), 3);
         assert!(fields[0].data_width.is_none());
         assert!(fields[1].data_width.is_none());
@@ -3262,7 +3283,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_overlay_field_type_in_var_brackets() {
+    fn rejects_unsupported_symbolic_subscript_field_type_in_var_brackets() {
         let source = "var foo[\n  .a:dword\n] = 0x1234\n";
         let errors = parse(SourceId(0), source).expect_err("must fail");
 
@@ -3279,7 +3300,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_overlay_array_count_at_field_slice() {
+    fn rejects_empty_symbolic_subscript_array_count_at_field_slice() {
         let source = "var foo[\n  .a[]:byte\n] = 0x1234\n";
         let errors = parse(SourceId(0), source).expect_err("must fail");
         let error = errors

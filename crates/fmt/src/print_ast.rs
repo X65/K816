@@ -162,7 +162,7 @@ fn format_var(var: &k816_core::ast::VarDecl) -> String {
             k816_core::ast::DataWidth::Word => "word",
         });
     }
-    if let Some(fields) = &var.overlay_fields {
+    if let Some(fields) = &var.symbolic_subscript_fields {
         out.push('[');
         let rendered = fields
             .iter()

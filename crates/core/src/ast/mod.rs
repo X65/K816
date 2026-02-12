@@ -47,13 +47,13 @@ pub struct VarDecl {
     pub name: String,
     pub data_width: Option<DataWidth>,
     pub array_len: Option<Expr>,
-    pub overlay_fields: Option<Vec<OverlayFieldDecl>>,
+    pub symbolic_subscript_fields: Option<Vec<SymbolicSubscriptFieldDecl>>,
     pub initializer: Option<Expr>,
     pub initializer_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
-pub struct OverlayFieldDecl {
+pub struct SymbolicSubscriptFieldDecl {
     pub name: String,
     pub data_width: Option<DataWidth>,
     pub count: Option<Expr>,

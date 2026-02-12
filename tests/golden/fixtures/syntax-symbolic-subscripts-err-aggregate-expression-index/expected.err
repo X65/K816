@@ -1,4 +1,4 @@
-Error: invalid index on overlay 'foo': use '.field' or '[.field]'
+Error: invalid index on symbolic subscript array 'foo': use '.field' or '[.field]'
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-aggregate-expression-index/input.k65:6:3 ]
    │
  6 │   lda foo[idx]

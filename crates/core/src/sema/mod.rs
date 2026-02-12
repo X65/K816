@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 
 use crate::ast::{
-    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract,
-    OverlayFieldDecl, Stmt, VarDecl,
+    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract, Stmt,
+    SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::span::Span;
@@ -16,7 +16,7 @@ pub struct FunctionMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayFieldMeta {
+pub struct SymbolicSubscriptFieldMeta {
     pub offset: u32,
     pub size: u32,
     pub data_width: DataWidth,
@@ -24,8 +24,8 @@ pub struct OverlayFieldMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OverlayMeta {
-    pub fields: IndexMap<String, OverlayFieldMeta>,
+pub struct SymbolicSubscriptMeta {
+    pub fields: IndexMap<String, SymbolicSubscriptFieldMeta>,
     pub total_size: u32,
 }
 
@@ -34,7 +34,7 @@ pub struct VarMeta {
     pub address: u32,
     pub size: u32,
     pub data_width: Option<DataWidth>,
-    pub overlay: Option<OverlayMeta>,
+    pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -167,7 +167,7 @@ fn collect_var(
             address,
             size: layout.size,
             data_width: var.data_width,
-            overlay: layout.overlay,
+            symbolic_subscript: layout.symbolic_subscript,
         },
     );
 }
@@ -179,11 +179,14 @@ fn eval_var_address(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
     let Some(initializer) = &var.initializer else {
-        if var.overlay_fields.is_some() {
+        if var.symbolic_subscript_fields.is_some() {
             diagnostics.push(
                 Diagnostic::error(
                     span,
-                    format!("overlay var '{}' is missing a base address assignment", var.name),
+                    format!(
+                        "symbolic subscript array '{}' is missing a base address assignment",
+                        var.name
+                    ),
                 )
                 .with_help("append '= <constant numeric expression>' after the field list (for example: '] = $6000')"),
             );
@@ -230,7 +233,7 @@ fn eval_var_address(
 
 struct VarLayout {
     size: u32,
-    overlay: Option<OverlayMeta>,
+    symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
 fn eval_var_layout(
@@ -238,22 +241,23 @@ fn eval_var_layout(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<VarLayout> {
-    if let Some(overlay_fields) = &var.overlay_fields {
+    if let Some(symbolic_subscript_fields) = &var.symbolic_subscript_fields {
         if var.array_len.is_some() {
             diagnostics.push(Diagnostic::error(
                 span,
                 format!(
-                    "var '{}' cannot use both array length and overlay field list",
+                    "var '{}' cannot use both array length and symbolic subscript field list",
                     var.name
                 ),
             ));
             return None;
         }
 
-        let overlay = eval_overlay_layout(var, overlay_fields, span, diagnostics)?;
+        let symbolic_subscript =
+            eval_symbolic_subscript_layout(var, symbolic_subscript_fields, span, diagnostics)?;
         return Some(VarLayout {
-            size: overlay.total_size,
-            overlay: Some(overlay),
+            size: symbolic_subscript.total_size,
+            symbolic_subscript: Some(symbolic_subscript),
         });
     }
 
@@ -265,7 +269,7 @@ fn eval_var_layout(
     let Some(array_len) = &var.array_len else {
         return Some(VarLayout {
             size: element_size,
-            overlay: None,
+            symbolic_subscript: None,
         });
     };
 
@@ -281,7 +285,7 @@ fn eval_var_layout(
             match u32::try_from(value) {
                 Ok(count) => Some(VarLayout {
                     size: count * element_size,
-                    overlay: None,
+                    symbolic_subscript: None,
                 }),
                 Err(_) => {
                     diagnostics.push(Diagnostic::error(
@@ -316,12 +320,12 @@ fn eval_var_layout(
     }
 }
 
-fn eval_overlay_layout(
+fn eval_symbolic_subscript_layout(
     var: &VarDecl,
-    fields: &[OverlayFieldDecl],
+    fields: &[SymbolicSubscriptFieldDecl],
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<OverlayMeta> {
+) -> Option<SymbolicSubscriptMeta> {
     let mut offset = 0_u32;
     let mut resolved_fields = IndexMap::new();
 
@@ -330,7 +334,7 @@ fn eval_overlay_layout(
             diagnostics.push(Diagnostic::error(
                 field.span,
                 format!(
-                    "duplicate overlay field '.{}' in '{}'",
+                    "duplicate symbolic subscript field '.{}' in '{}'",
                     field.name, var.name
                 ),
             ));
@@ -350,7 +354,7 @@ fn eval_overlay_layout(
                         diagnostics.push(Diagnostic::error(
                             count_span,
                             format!(
-                                "overlay field '.{}' count must be >= 1, found {value}",
+                                "symbolic subscript field '.{}' count must be >= 1, found {value}",
                                 field.name
                             ),
                         ));
@@ -363,7 +367,7 @@ fn eval_overlay_layout(
                             diagnostics.push(Diagnostic::error(
                                 count_span,
                                 format!(
-                                    "overlay field '.{}' count is out of range: {value}",
+                                    "symbolic subscript field '.{}' count is out of range: {value}",
                                     field.name
                                 ),
                             ));
@@ -376,7 +380,7 @@ fn eval_overlay_layout(
                     diagnostics.push(Diagnostic::error(
                         count_span,
                         format!(
-                            "overlay field '.{}' count expression '{name}' must be a constant numeric expression",
+                            "symbolic subscript field '.{}' count expression '{name}' must be a constant numeric expression",
                             field.name
                         ),
                     ));
@@ -394,7 +398,7 @@ fn eval_overlay_layout(
                     diagnostics.push(Diagnostic::error(
                         count_span,
                         format!(
-                            "overlay field '.{}' count expression overflows numeric literal range",
+                            "symbolic subscript field '.{}' count expression overflows numeric literal range",
                             field.name
                         ),
                     ));
@@ -412,7 +416,7 @@ fn eval_overlay_layout(
             diagnostics.push(Diagnostic::error(
                 field.span,
                 format!(
-                    "overlay field '.{}' in '{}' overflows layout size",
+                    "symbolic subscript field '.{}' in '{}' overflows layout size",
                     field.name, var.name
                 ),
             ));
@@ -421,7 +425,7 @@ fn eval_overlay_layout(
 
         resolved_fields.insert(
             field.name.clone(),
-            OverlayFieldMeta {
+            SymbolicSubscriptFieldMeta {
                 offset,
                 size,
                 data_width,
@@ -432,14 +436,17 @@ fn eval_overlay_layout(
         let Some(next_offset) = offset.checked_add(size) else {
             diagnostics.push(Diagnostic::error(
                 span,
-                format!("overlay '{}' total size overflows address space", var.name),
+                format!(
+                    "symbolic subscript array '{}' total size overflows address space",
+                    var.name
+                ),
             ));
             return None;
         };
         offset = next_offset;
     }
 
-    Some(OverlayMeta {
+    Some(SymbolicSubscriptMeta {
         fields: resolved_fields,
         total_size: offset,
     })
@@ -568,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn computes_overlay_field_offsets_and_total_size() {
+    fn computes_symbolic_subscript_field_offsets_and_total_size() {
         let source = "var foo[\n  .field_w:word\n  .field_w2:word\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
@@ -576,11 +583,11 @@ mod tests {
         let foo = sema.vars.get("foo").expect("foo");
         assert_eq!(foo.address, 0x1234);
         assert_eq!(foo.size, 9);
-        let overlay = foo.overlay.as_ref().expect("overlay");
-        let field_w = overlay.fields.get("field_w").expect("field_w");
-        let field_w2 = overlay.fields.get("field_w2").expect("field_w2");
-        let idx = overlay.fields.get("idx").expect("idx");
-        let string = overlay.fields.get("string").expect("string");
+        let symbolic_subscript = foo.symbolic_subscript.as_ref().expect("symbolic subscript");
+        let field_w = symbolic_subscript.fields.get("field_w").expect("field_w");
+        let field_w2 = symbolic_subscript.fields.get("field_w2").expect("field_w2");
+        let idx = symbolic_subscript.fields.get("idx").expect("idx");
+        let string = symbolic_subscript.fields.get("string").expect("string");
         assert_eq!(field_w.offset, 0);
         assert_eq!(field_w2.offset, 2);
         assert_eq!(idx.offset, 4);
@@ -588,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_requires_explicit_base_address() {
+    fn symbolic_subscript_array_requires_explicit_base_address() {
         let source = "var VIA[\n  .orb:byte\n  .ora:byte\n]\n";
         let file = parse(SourceId(0), source).expect("parse");
         let errors = analyze(&file).expect_err("must fail");
@@ -600,19 +607,19 @@ mod tests {
     }
 
     #[test]
-    fn overlay_rejects_duplicate_field_names() {
+    fn symbolic_subscript_rejects_duplicate_field_names() {
         let source = "var VIA[\n  .orb:byte\n  .orb:word\n] = 0x6000\n";
         let file = parse(SourceId(0), source).expect("parse");
         let errors = analyze(&file).expect_err("must fail");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("duplicate overlay field '.orb'"))
-        );
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("duplicate symbolic subscript field '.orb'")
+        }));
     }
 
     #[test]
-    fn overlay_base_expression_must_be_constant() {
+    fn symbolic_subscript_base_expression_must_be_constant() {
         let source = "var VIA[\n  .orb:byte\n] = base_addr\n";
         let file = parse(SourceId(0), source).expect("parse");
         let errors = analyze(&file).expect_err("must fail");
@@ -624,31 +631,31 @@ mod tests {
     }
 
     #[test]
-    fn overlay_fields_use_default_var_width_when_type_is_omitted() {
+    fn symbolic_subscript_fields_use_default_var_width_when_type_is_omitted() {
         let source = "var baz:byte[\n  .a\n  .b\n  .len:word\n] = 0x2244\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
 
         let baz = sema.vars.get("baz").expect("baz");
         assert_eq!(baz.size, 4);
-        let overlay = baz.overlay.as_ref().expect("overlay");
-        assert_eq!(overlay.fields.get("a").expect("a").offset, 0);
-        assert_eq!(overlay.fields.get("b").expect("b").offset, 1);
-        assert_eq!(overlay.fields.get("len").expect("len").offset, 2);
+        let symbolic_subscript = baz.symbolic_subscript.as_ref().expect("symbolic subscript");
+        assert_eq!(symbolic_subscript.fields.get("a").expect("a").offset, 0);
+        assert_eq!(symbolic_subscript.fields.get("b").expect("b").offset, 1);
+        assert_eq!(symbolic_subscript.fields.get("len").expect("len").offset, 2);
     }
 
     #[test]
-    fn overlay_fields_default_to_byte_when_no_type_is_provided() {
+    fn symbolic_subscript_fields_default_to_byte_when_no_type_is_provided() {
         let source = "var foo[\n  .a\n  .b[2]\n  .w:word\n] = 0x1234\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
 
         let foo = sema.vars.get("foo").expect("foo");
         assert_eq!(foo.size, 5);
-        let overlay = foo.overlay.as_ref().expect("overlay");
-        let a = overlay.fields.get("a").expect("a");
-        let b = overlay.fields.get("b").expect("b");
-        let w = overlay.fields.get("w").expect("w");
+        let symbolic_subscript = foo.symbolic_subscript.as_ref().expect("symbolic subscript");
+        let a = symbolic_subscript.fields.get("a").expect("a");
+        let b = symbolic_subscript.fields.get("b").expect("b");
+        let w = symbolic_subscript.fields.get("w").expect("w");
         assert_eq!(a.offset, 0);
         assert_eq!(b.offset, 1);
         assert_eq!(w.offset, 3);

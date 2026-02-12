@@ -1,4 +1,4 @@
-# K65 Dialect - Symbolic Subscripts for Arrays (Field-List Overlays)
+# K65 Dialect - Symbolic Subscripts for Arrays
 
 ## Goal
 
@@ -8,11 +8,11 @@ This feature must:
 
 - avoid introducing an explicit `record/struct` block syntax
 - unify with existing K65 access style (dot access, brackets)
-- be overlay-only: `var` does not emit data; `data{}` is the only way to emit bytes
+- be declaration-only: `var` does not emit data; `data{}` is the only way to emit bytes
 
 ## User-Facing Syntax
 
-### Overlay declaration (only valid form)
+### Symbolic subscript array declaration (only valid form)
 
 ```k65
 var foo[
@@ -190,9 +190,9 @@ Notes:
 
 ### 2. AST / HIR nodes
 
-Add a new declaration kind (names illustrative):
+Add a new declaration shape (names illustrative):
 
-- `VarDecl::OverlayFieldList { name, fields, base_addr_expr }`
+- `VarDecl { name, symbolic_subscript_fields, address }`
 
 Field representation:
 
@@ -208,7 +208,7 @@ Field representation:
 
 ### 4. Name resolution and typing
 
-- `foo` binds as an address-valued symbol (overlay base)
+- `foo` binds as an address-valued symbol (symbolic subscript base)
 - `foo.field` binds as an lvalue at `foo + offset`
 - array field yields an lvalue slice type
 
@@ -255,7 +255,7 @@ Prefer tests that assert emitted opcodes/IR and diagnostics span accuracy.
 - No padding/alignment rules (packed only)
 - No multi-dimensional symbolic aggregates in v1 (only scalar fields and fixed-size 1D array fields)
 
-## Example (MMIO overlay)
+## Example (MMIO symbolic subscript array)
 
 ```k65
 var VIA[

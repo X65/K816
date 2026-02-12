@@ -1,0 +1,5 @@
+naked STOP_ISR @a8 @i8 {
+    sep #%00110000
+    lda #$FF
+    sta RIA::op         // HALT CPU
+}

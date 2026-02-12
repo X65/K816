@@ -1,0 +1,7 @@
+Error: invalid syntax: unexpected ':'
+   ╭─[ tests/golden/fixtures/syntax-invalid-double-colon/input.k65:4:12 ]
+   │
+ 4 │     sta RIA::op         // HALT CPU
+   │            ┬  
+   │            ╰── primary location
+───╯

@@ -158,26 +158,6 @@ fn preprocess_source(source_text: &str) -> String {
             }
         }
 
-        if trimmed.starts_with("inline ") && trimmed.ends_with('{') && !trimmed.contains("func") {
-            let indent = raw_line
-                .chars()
-                .take_while(|ch| ch.is_ascii_whitespace())
-                .collect::<String>();
-            let rest = trimmed.trim_start_matches("inline ").trim();
-            out.push(format!("{indent}inline func {rest}"));
-            continue;
-        }
-
-        if trimmed.starts_with("naked ") && trimmed.ends_with('{') && !trimmed.contains("func") {
-            let indent = raw_line
-                .chars()
-                .take_while(|ch| ch.is_ascii_whitespace())
-                .collect::<String>();
-            let rest = trimmed.trim_start_matches("naked ").trim();
-            out.push(format!("{indent}naked func {rest}"));
-            continue;
-        }
-
         if trimmed.starts_with("data ") && trimmed.ends_with('{') {
             data_block_depth += 1;
         } else if data_block_depth > 0 && trimmed == "}" {
@@ -2375,12 +2355,16 @@ fn rich_error_to_diagnostic(
     let message = match error.reason() {
         RichReason::Custom(custom) => format!("{context}: {custom}"),
         RichReason::ExpectedFound { expected, found } => {
-            let expected = format_expected_patterns(expected);
             let found = found
                 .as_deref()
                 .map(token_kind_message)
                 .unwrap_or_else(|| "end of input".to_string());
-            format!("{context}: expected {expected}, found {found}")
+            let expected = format_expected_patterns(expected);
+            if expected.len() > 80 {
+                format!("{context}: unexpected {found}")
+            } else {
+                format!("{context}: expected {expected}, found {found}")
+            }
         }
     };
     Diagnostic::error(span, message)

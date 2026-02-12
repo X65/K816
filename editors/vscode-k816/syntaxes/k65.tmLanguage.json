@@ -7,6 +7,9 @@
   ],
   "patterns": [
     {
+      "include": "#preprocessor"
+    },
+    {
       "include": "#comments"
     },
     {
@@ -41,6 +44,14 @@
     }
   ],
   "repository": {
+    "preprocessor": {
+      "patterns": [
+        {
+          "name": "keyword.control.directive.k65",
+          "match": "(?m)^\\s*#\\s*(?:if|elif|else|endif|error|warn)\\b"
+        }
+      ]
+    },
     "comments": {
       "patterns": [
         {
@@ -118,7 +129,11 @@
         },
         {
           "name": "keyword.control.k65",
-          "match": "\\b(?:call|goto|break|return|else|always|for|repeat|eval|code|align|address|nocross|charset|tiles|colormode|imgwave)\\b"
+          "match": "\\b(?:call|goto|break|return|return_i|else|always|never|for|repeat|eval|evaluator|code|align|address|nocross|charset|tiles|colormode|imgwave|inv)\\b"
+        },
+        {
+          "name": "storage.type.data-width.k65",
+          "match": "\\b(?:byte|word)\\b"
         }
       ]
     },
@@ -174,7 +189,7 @@
       "patterns": [
         {
           "name": "keyword.operator.k65",
-          "match": "\\+\\+|--|<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\^=|\\|=|==|!=|<=|>=|&&|\\|\\||<<|>>|\\?>|\\?<|&&|&<|&>|[=+\\-*/%&|^~!?]"
+          "match": "><|\\+\\+|--|<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\^=|\\|=|==|!=|<=|>=|&&|\\|\\||<<|>>|\\?>|\\?<|&<|&>|[=+\\-*/%&|^~!?<>]"
         }
       ]
     },

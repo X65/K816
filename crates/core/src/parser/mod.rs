@@ -1478,39 +1478,7 @@ where
 
     let separators_inner = line_sep_parser().repeated();
 
-    // Flat statement parsers (no brace-delimited blocks)
-    let flat_stmt_inner = mode_set_stmt
-        .clone()
-        .or(swap_ab_stmt.clone())
-        .or(segment_stmt.clone())
-        .or(var_stmt.clone())
-        .or(data_stmt.clone())
-        .or(address_stmt.clone())
-        .or(align_stmt.clone())
-        .or(nocross_stmt.clone())
-        .or(call_stmt.clone())
-        .or(byte_stmt.clone())
-        .or(invalid_flag_goto_stmt.clone())
-        .or(hla_condition_seed_stmt.clone())
-        .or(hla_x_increment_stmt.clone())
-        .or(hla_x_assign_stmt.clone())
-        .or(hla_store_from_a_stmt.clone())
-        .or(chain_stmt.clone())
-        .or(assign_stmt.clone())
-        .or(store_stmt.clone())
-        .or(alu_stmt.clone())
-        .or(incdec_stmt.clone())
-        .or(shift_stmt.clone())
-        .or(flow_stmt.clone())
-        .or(flag_stmt.clone())
-        .or(stack_stmt.clone())
-        .or(nop_stmt.clone())
-        .or(discard_stmt.clone())
-        .or(label_stmt.clone())
-        .or(instruction.clone())
-        .boxed();
-
-    let base_stmt = mode_set_stmt
+    let common_stmt = mode_set_stmt
         .or(swap_ab_stmt)
         .or(segment_stmt)
         .or(var_stmt)
@@ -1521,11 +1489,7 @@ where
         .or(call_stmt)
         .or(byte_stmt)
         .or(invalid_flag_goto_stmt)
-        .or(hla_wait_stmt)
-        .or(hla_do_close_stmt)
-        .or(bare_rbrace_stmt)
         .or(hla_condition_seed_stmt)
-        .or(hla_do_open_stmt)
         .or(hla_x_increment_stmt)
         .or(hla_x_assign_stmt)
         .or(hla_store_from_a_stmt)
@@ -1542,6 +1506,16 @@ where
         .or(discard_stmt)
         .or(label_stmt)
         .or(instruction)
+        .boxed();
+
+    // Flat statement parsers (no brace-delimited blocks)
+    let flat_stmt_inner = common_stmt.clone();
+
+    let base_stmt = common_stmt
+        .or(hla_wait_stmt)
+        .or(hla_do_close_stmt)
+        .or(bare_rbrace_stmt)
+        .or(hla_do_open_stmt)
         .boxed();
 
     // Use recursive to allow mode_scoped_block and prefix_conditional

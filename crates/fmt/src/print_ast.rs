@@ -137,7 +137,9 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
 fn format_instruction(instr: &Instruction) -> String {
     match &instr.operand {
         None => instr.mnemonic.clone(),
-        Some(Operand::Immediate(expr)) => format!("{} #{}", instr.mnemonic, format_expr(expr)),
+        Some(Operand::Immediate { expr, .. }) => {
+            format!("{} #{}", instr.mnemonic, format_expr(expr))
+        }
         Some(Operand::Value {
             expr,
             force_far,

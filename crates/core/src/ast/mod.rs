@@ -140,7 +140,10 @@ pub enum OperandAddrMode {
 
 #[derive(Debug, Clone)]
 pub enum Operand {
-    Immediate(Expr),
+    Immediate {
+        expr: Expr,
+        explicit_hash: bool,
+    },
     Value {
         expr: Expr,
         force_far: bool,

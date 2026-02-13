@@ -133,9 +133,96 @@ fn detect_expected_binary(fixture_dir: &Path) -> Result<Option<ExpectedBinary>> 
     })
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BlessOptions {
+    pub errors_only: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct BlessSummary {
+    pub processed_cases: usize,
+    pub skipped_cases: usize,
+    pub updated_files: Vec<PathBuf>,
+}
+
+pub fn discover_cases() -> Result<Vec<String>> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixtures_dir = manifest_dir.join("fixtures");
+    let examples_fixtures_dir = manifest_dir.join("examples");
+
+    let mut cases = Vec::new();
+    if fixtures_dir.exists() {
+        let mut fixture_cases = std::fs::read_dir(&fixtures_dir)
+            .with_context(|| format!("failed to read fixtures dir '{}'", fixtures_dir.display()))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str().map(str::to_string))
+            })
+            .map(|name| format!("fixture:{name}"))
+            .collect::<Vec<_>>();
+        fixture_cases.sort();
+        cases.extend(fixture_cases);
+    }
+
+    if examples_fixtures_dir.exists() {
+        let mut example_cases = std::fs::read_dir(&examples_fixtures_dir)
+            .with_context(|| {
+                format!(
+                    "failed to read examples fixture dir '{}'",
+                    examples_fixtures_dir.display()
+                )
+            })?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str().map(str::to_string))
+            })
+            .map(|name| format!("example:{name}"))
+            .collect::<Vec<_>>();
+        example_cases.sort();
+        cases.extend(example_cases);
+    }
+
+    cases.sort();
+    Ok(cases)
+}
+
+pub fn bless_cases(cases: &[String], options: BlessOptions) -> Result<BlessSummary> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path_rewriter = FixturePathRewriter::new(manifest_dir)?;
+    let mut summary = BlessSummary::default();
+
+    for case in cases {
+        let updated = bless_case_internal(case, manifest_dir, &path_rewriter, options)?;
+        summary.processed_cases += 1;
+        if updated.is_empty() {
+            summary.skipped_cases += 1;
+        } else {
+            summary.updated_files.extend(updated);
+        }
+    }
+
+    Ok(summary)
+}
+
 pub fn run_case(case: &str) -> Result<()> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let path_rewriter = FixturePathRewriter::new(manifest_dir)?;
+    if cfg!(feature = "golden-bless") {
+        let _updated = bless_case_internal(
+            case,
+            manifest_dir,
+            &path_rewriter,
+            BlessOptions { errors_only: false },
+        )?;
+        return Ok(());
+    }
+
     let (fixture_dir, inputs, allow_adjacent_config) =
         resolve_paths(manifest_dir, &path_rewriter, case)?;
 
@@ -217,6 +304,108 @@ pub fn run_case(case: &str) -> Result<()> {
     compare_binary_output(&fixture_dir, expected_binary, &pipeline.linked)?;
     compare_listing(&fixture_dir, &pipeline.linked.listing)?;
     Ok(())
+}
+
+fn bless_case_internal(
+    case: &str,
+    manifest_dir: &Path,
+    path_rewriter: &FixturePathRewriter,
+    options: BlessOptions,
+) -> Result<Vec<PathBuf>> {
+    let (fixture_dir, inputs, allow_adjacent_config) =
+        resolve_paths(manifest_dir, path_rewriter, case)?;
+
+    let expected_binary = detect_expected_binary(&fixture_dir)?;
+    let expected_error_path = fixture_dir.join("expected.err");
+    let expected_listing_path = fixture_dir.join("expected.lst");
+    let mut updated = Vec::new();
+
+    if options.errors_only && !expected_error_path.exists() {
+        return Ok(updated);
+    }
+
+    if expected_error_path.exists() {
+        let pipeline_result = compile_and_link(
+            &fixture_dir,
+            &inputs,
+            allow_adjacent_config,
+            expected_binary.map(ExpectedBinary::kind),
+        );
+
+        if let Some(expected_binary) = expected_binary {
+            let pipeline = pipeline_result?;
+            let warnings = path_rewriter.normalize(&pipeline.warnings);
+            if warnings.trim().is_empty() {
+                return Err(anyhow!(
+                    "fixture '{}' expected warnings in '{}', but compiler produced no warnings",
+                    fixture_dir.display(),
+                    expected_error_path.display()
+                ));
+            }
+
+            if write_text_if_changed(&expected_error_path, &warnings)? {
+                updated.push(expected_error_path.clone());
+            }
+            if options.errors_only {
+                return Ok(updated);
+            }
+
+            let expected_binary_path = expected_binary.path(&fixture_dir);
+            if write_bytes_if_changed(&expected_binary_path, &pipeline.linked.bytes)? {
+                updated.push(expected_binary_path);
+            }
+            if expected_listing_path.exists()
+                && write_text_if_changed(&expected_listing_path, &pipeline.linked.listing)?
+            {
+                updated.push(expected_listing_path);
+            }
+            return Ok(updated);
+        }
+
+        let err = match pipeline_result {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "fixture '{}' expected a link error, but compile+link succeeded",
+                    fixture_dir.display()
+                ));
+            }
+            Err(err) => err,
+        };
+
+        let rendered_error = path_rewriter.normalize(err.to_string());
+        if write_text_if_changed(&expected_error_path, &rendered_error)? {
+            updated.push(expected_error_path);
+        }
+        return Ok(updated);
+    }
+
+    if options.errors_only {
+        return Ok(updated);
+    }
+
+    let Some(expected_binary) = expected_binary else {
+        return Err(anyhow!(
+            "fixture '{}' must provide either expected.bin or expected.xex",
+            fixture_dir.display()
+        ));
+    };
+
+    let pipeline = compile_and_link(
+        &fixture_dir,
+        &inputs,
+        allow_adjacent_config,
+        Some(expected_binary.kind()),
+    )?;
+    let expected_binary_path = expected_binary.path(&fixture_dir);
+    if write_bytes_if_changed(&expected_binary_path, &pipeline.linked.bytes)? {
+        updated.push(expected_binary_path);
+    }
+    if expected_listing_path.exists()
+        && write_text_if_changed(&expected_listing_path, &pipeline.linked.listing)?
+    {
+        updated.push(expected_listing_path);
+    }
+    Ok(updated)
 }
 
 fn resolve_paths(
@@ -420,6 +609,27 @@ fn read_non_empty_bytes(path: &Path, label: &str) -> Result<Vec<u8>> {
         return Err(anyhow!("{} '{}' must not be empty", label, path.display()));
     }
     Ok(bytes)
+}
+
+fn write_text_if_changed(path: &Path, text: &str) -> Result<bool> {
+    let mut normalized = text.to_string();
+    if !normalized.ends_with('\n') {
+        normalized.push('\n');
+    }
+    if std::fs::read_to_string(path).ok().as_deref() == Some(normalized.as_str()) {
+        return Ok(false);
+    }
+    std::fs::write(path, normalized)
+        .with_context(|| format!("failed to write '{}'", path.display()))?;
+    Ok(true)
+}
+
+fn write_bytes_if_changed(path: &Path, bytes: &[u8]) -> Result<bool> {
+    if std::fs::read(path).ok().as_deref() == Some(bytes) {
+        return Ok(false);
+    }
+    std::fs::write(path, bytes).with_context(|| format!("failed to write '{}'", path.display()))?;
+    Ok(true)
 }
 
 fn contains_error_marker(text: &str) -> bool {

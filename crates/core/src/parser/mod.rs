@@ -1538,7 +1538,12 @@ where
         .to(None)
         .or(just(TokenKind::Hash)
             .ignore_then(expr_parser())
-            .map(|expr| Some(Operand::Immediate(expr))))
+            .map(|expr| {
+                Some(Operand::Immediate {
+                    expr,
+                    explicit_hash: true,
+                })
+            }))
         .or(just(TokenKind::Far)
             .or_not()
             .then(expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not()))
@@ -1853,7 +1858,10 @@ where
                 addr_mode: parsed.addr_mode,
             }
         } else {
-            Operand::Immediate(parsed.expr)
+            Operand::Immediate {
+                expr: parsed.expr,
+                explicit_hash: false,
+            }
         };
 
         instruction_stmt(mnemonic, Some(operand))
@@ -2464,7 +2472,10 @@ fn parsed_operand_to_operand(parsed: ParsedOperandExpr) -> Operand {
             addr_mode: parsed.addr_mode,
         }
     } else {
-        Operand::Immediate(parsed.expr)
+        Operand::Immediate {
+            expr: parsed.expr,
+            explicit_hash: false,
+        }
     }
 }
 

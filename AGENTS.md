@@ -32,6 +32,15 @@ Repository Layout:
 - Test: `cargo test`
 - Golden tests: `cargo test -p k816-golden-tests` for reproducible output validation against fixtures. Uses Rust edition 2024 with dependencies like `chumsky` for parsing, `clap` for CLI. Reference: [Cargo.toml](Cargo.toml).
 - Golden fixture binaries: Use [tests/golden/link.stub.ld.ron](tests/golden/link.stub.ld.ron) as the linker config (`-T` flag) to generate `expected.bin` files in raw binary format for golden test fixtures.
+- Golden bless through `cargo test` (feature-gated):
+  - Regenerate all golden outputs: `cargo test -p k816-golden-tests --features golden-bless`
+  - Regenerate selected cases via test filter: `cargo test -p k816-golden-tests --features golden-bless syntax_doc_example_dli`
+  - Validate after blessing: `cargo test -p k816-golden-tests`
+- Golden bless CLI (secondary, script-friendly):
+  - Regenerate all golden outputs: `cargo run -p k816-golden-tests --bin bless --`
+  - Regenerate only error fixtures (`expected.err`): `cargo run -p k816-golden-tests --bin bless -- --err-only`
+  - Regenerate a single fixture: `cargo run -p k816-golden-tests --bin bless -- --case fixture:<name>`
+  - List discoverable cases: `cargo run -p k816-golden-tests --bin bless -- --list`
 
 ## Testing Approach
 

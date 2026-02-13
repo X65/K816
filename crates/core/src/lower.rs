@@ -1125,7 +1125,7 @@ fn validate_instruction_width_rules(
         return;
     };
 
-    if let Operand::Immediate(expr) = operand {
+    if let Operand::Immediate { expr, .. } = operand {
         let reg_mode = match mnemonic.as_str() {
             "lda" => mode.a_width,
             "ldx" | "ldy" => mode.i_width,
@@ -1371,7 +1371,10 @@ fn lower_hla_stmt(
         HlaStmt::XAssignImmediate { rhs } => {
             let instruction = Instruction {
                 mnemonic: "ldx".to_string(),
-                operand: Some(Operand::Immediate(rhs.clone())),
+                operand: Some(Operand::Immediate {
+                    expr: rhs.clone(),
+                    explicit_hash: false,
+                }),
             };
             lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
         }
@@ -1386,7 +1389,10 @@ fn lower_hla_stmt(
             let lhs_instruction = Instruction {
                 mnemonic: "lda".to_string(),
                 operand: Some(match rhs {
-                    HlaRhs::Immediate(expr) => Operand::Immediate(expr.clone()),
+                    HlaRhs::Immediate(expr) => Operand::Immediate {
+                        expr: expr.clone(),
+                        explicit_hash: false,
+                    },
                     HlaRhs::Value {
                         expr,
                         index,
@@ -1439,7 +1445,10 @@ fn lower_hla_stmt(
             if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
                 let instruction = Instruction {
                     mnemonic: "cmp".to_string(),
-                    operand: Some(Operand::Immediate(rhs.clone())),
+                    operand: Some(Operand::Immediate {
+                        expr: rhs.clone(),
+                        explicit_hash: false,
+                    }),
                 };
                 let _ =
                     lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
@@ -1656,7 +1665,10 @@ fn lower_hla_condition_branch(
 
     let compare_instruction = Instruction {
         mnemonic: "cmp".to_string(),
-        operand: Some(Operand::Immediate(Expr::Number(rhs_number))),
+        operand: Some(Operand::Immediate {
+            expr: Expr::Number(rhs_number),
+            explicit_hash: false,
+        }),
     };
     if !lower_instruction_and_push(&compare_instruction, scope, sema, span, diagnostics, ops) {
         return;
@@ -2176,8 +2188,11 @@ fn lower_instruction(
 ) -> Option<InstructionOp> {
     let operand = match &instruction.operand {
         None => None,
-        Some(Operand::Immediate(expr)) => {
-            let eval_span = immediate_expr_span(expr, span);
+        Some(Operand::Immediate {
+            expr,
+            explicit_hash,
+        }) => {
+            let eval_span = immediate_expr_span(expr, span, *explicit_hash);
             let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
             Some(OperandOp::Immediate(value))
         }
@@ -2198,12 +2213,30 @@ fn lower_instruction(
     })
 }
 
-fn immediate_expr_span(expr: &Expr, instruction_span: Span) -> Span {
+fn immediate_expr_span(expr: &Expr, instruction_span: Span, explicit_hash: bool) -> Span {
     match expr {
-        Expr::Ident(name) => {
+        Expr::Ident(name) if explicit_hash => {
             let ident_start = instruction_span.end.saturating_sub(name.len());
-            Span::new(instruction_span.source_id, ident_start, instruction_span.end)
+            Span::new(
+                instruction_span.source_id,
+                ident_start,
+                instruction_span.end,
+            )
         }
+        Expr::Unary {
+            op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
+            expr,
+        } => match expr.as_ref() {
+            Expr::Ident(name) => {
+                let ident_start = instruction_span.end.saturating_sub(name.len());
+                Span::new(
+                    instruction_span.source_id,
+                    ident_start,
+                    instruction_span.end,
+                )
+            }
+            _ => instruction_span,
+        },
         _ => instruction_span,
     }
 }

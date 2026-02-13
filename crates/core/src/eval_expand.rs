@@ -330,9 +330,13 @@ fn expand_instruction(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Instruction {
     let operand = instruction.operand.as_ref().map(|operand| match operand {
-        Operand::Immediate(expr) => {
-            Operand::Immediate(expand_expr(expr, span, source_id, diagnostics))
-        }
+        Operand::Immediate {
+            expr,
+            explicit_hash,
+        } => Operand::Immediate {
+            expr: expand_expr(expr, span, source_id, diagnostics),
+            explicit_hash: *explicit_hash,
+        },
         Operand::Value {
             expr,
             force_far,

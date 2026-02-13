@@ -55,3 +55,14 @@ main {
 ```
 
 See [docs/register-width-aware-syntax.md](docs/register-width-aware-syntax.md) for full details.
+
+## Development
+
+Regenerate golden fixtures:
+
+- Via feature-gated test flow: `cargo test -p k816-golden-tests --features golden-bless`
+- Via CLI bless tool: `cargo run -p k816-golden-tests --bin bless --`
+
+After regeneration, verify fixtures:
+
+- `cargo test -p k816-golden-tests`

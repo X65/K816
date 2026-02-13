@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
+[features]
+golden-bless = []
+
 [dependencies]
 anyhow.workspace = true
 indexmap.workspace = true

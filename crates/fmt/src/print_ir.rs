@@ -52,6 +52,15 @@ pub fn format_ir(program: &Program) -> String {
                     out.push(' ');
                     match operand {
                         OperandOp::Immediate(value) => out.push_str(&format!("#{value}")),
+                        OperandOp::ImmediateByteRelocation { kind, label } => {
+                            let prefix = match kind {
+                                ByteRelocationKind::LowByte => "&<",
+                                ByteRelocationKind::HighByte => "&>",
+                            };
+                            out.push('#');
+                            out.push_str(prefix);
+                            out.push_str(label);
+                        }
                         OperandOp::Address {
                             value,
                             force_far,

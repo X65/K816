@@ -1,8 +1,10 @@
 use indexmap::IndexMap;
+use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 
 use crate::ast::{
-    CodeBlock, ConstDecl, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract,
-    Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    CodeBlock, ConstDecl, DataWidth, EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, Item,
+    ModeContract, NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, Stmt,
+    SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::span::Span;
@@ -37,9 +39,9 @@ pub struct VarMeta {
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstMeta {
-    pub value: i64,
+    pub value: Number,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -53,12 +55,31 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
     let mut model = SemanticModel::default();
     let mut diagnostics = Vec::new();
     let mut next_auto_addr = 0_u32;
+    let mut evaluator_context = EvalContext::default();
 
     for item in &file.items {
         match &item.node {
-            Item::Const(const_decl) => {
-                collect_const(const_decl, item.span, &mut model, &mut diagnostics)
-            }
+            Item::Const(const_decl) => collect_const(
+                const_decl,
+                item.span,
+                &mut model,
+                &mut evaluator_context,
+                &mut diagnostics,
+            ),
+            Item::EvaluatorBlock(block) => collect_evaluator_block(
+                block,
+                item.span,
+                &mut model,
+                &mut evaluator_context,
+                &mut diagnostics,
+            ),
+            Item::Statement(Stmt::Var(var)) => collect_var(
+                var,
+                item.span,
+                &mut next_auto_addr,
+                &mut model,
+                &mut diagnostics,
+            ),
             Item::Var(var) => collect_var(
                 var,
                 item.span,
@@ -86,14 +107,9 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                     }
                 }
             }
-            Item::Statement(Stmt::Var(var)) => collect_var(
-                var,
-                item.span,
-                &mut next_auto_addr,
-                &mut model,
-                &mut diagnostics,
-            ),
-            Item::NamedDataBlock(_) => {}
+            Item::NamedDataBlock(block) => {
+                collect_named_data_block_array(block, &model.consts, &mut evaluator_context)
+            }
             _ => {}
         }
     }
@@ -141,6 +157,7 @@ fn collect_const(
     const_decl: &ConstDecl,
     span: Span,
     model: &mut SemanticModel,
+    evaluator_context: &mut EvalContext,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if !is_symbol_available(&const_decl.name, model) {
@@ -157,12 +174,22 @@ fn collect_const(
             model
                 .consts
                 .insert(const_decl.name.clone(), ConstMeta { value });
+            evaluator_context.set(const_decl.name.clone(), value);
         }
         Err(ConstExprError::Ident(name)) => {
             diagnostics.push(Diagnostic::error(
                 initializer_span,
                 format!("const initializer '{name}' must be a constant numeric expression"),
             ));
+        }
+        Err(ConstExprError::NonInteger) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    initializer_span,
+                    "const initializer requires an exact integer value in this expression",
+                )
+                .with_help("remove floating-point components or avoid integer-only operators"),
+            );
         }
         Err(ConstExprError::EvalText) => {
             diagnostics.push(Diagnostic::error(
@@ -177,6 +204,204 @@ fn collect_const(
             ));
         }
     }
+}
+
+fn collect_evaluator_block(
+    block: &EvaluatorBlock,
+    span: Span,
+    model: &mut SemanticModel,
+    evaluator_context: &mut EvalContext,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut block_context = evaluator_context.clone();
+    let outcome = match k816_eval::evaluate_with_context(&block.text, &mut block_context) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            diagnostics.push(map_evaluator_error(error, span));
+            return;
+        }
+    };
+
+    for (name, _) in &outcome.assigned {
+        if model.consts.contains_key(name) {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!("cannot reassign constant '{name}' in a different evaluator block"),
+                )
+                .with_help(
+                    "mutate a constant only within the same top-level evaluator block, or choose a new name",
+                ),
+            );
+            return;
+        }
+
+        if model.functions.contains_key(name) || model.vars.contains_key(name) {
+            diagnostics.push(
+                Diagnostic::error(span, format!("duplicate symbol '{}'", name))
+                    .with_help("rename one of the consts/vars/functions to keep symbols unique"),
+            );
+            return;
+        }
+    }
+
+    for (name, value) in outcome.assigned {
+        model.consts.insert(name.clone(), ConstMeta { value });
+    }
+    *evaluator_context = block_context;
+}
+
+fn collect_named_data_block_array(
+    block: &NamedDataBlock,
+    consts: &IndexMap<String, ConstMeta>,
+    evaluator_context: &mut EvalContext,
+) {
+    let Some(values) = try_collect_named_data_block_values(block, consts, evaluator_context) else {
+        return;
+    };
+    evaluator_context.set_array(block.name.clone(), values);
+}
+
+fn try_collect_named_data_block_values(
+    block: &NamedDataBlock,
+    consts: &IndexMap<String, ConstMeta>,
+    evaluator_context: &EvalContext,
+) -> Option<Vec<Number>> {
+    let mut out = Vec::new();
+    for entry in &block.entries {
+        match &entry.node {
+            NamedDataEntry::Segment(_)
+            | NamedDataEntry::Address(_)
+            | NamedDataEntry::Align(_)
+            | NamedDataEntry::Nocross(_)
+            | NamedDataEntry::Ignored => {}
+            NamedDataEntry::String(value) => {
+                out.extend(value.bytes().map(|byte| Number::Int(i64::from(byte))));
+            }
+            NamedDataEntry::Bytes(values) => {
+                for expr in values {
+                    let value = eval_const_expr_to_int(expr, consts).ok()?;
+                    let byte = u8::try_from(value).ok()?;
+                    out.push(Number::Int(i64::from(byte)));
+                }
+            }
+            NamedDataEntry::ForEvalRange(range) => {
+                out.extend(try_collect_named_data_range_values(
+                    range,
+                    consts,
+                    evaluator_context,
+                )?);
+            }
+            NamedDataEntry::Convert { .. } => return None,
+        }
+    }
+    Some(out)
+}
+
+fn try_collect_named_data_range_values(
+    range: &NamedDataForEvalRange,
+    consts: &IndexMap<String, ConstMeta>,
+    evaluator_context: &EvalContext,
+) -> Option<Vec<Number>> {
+    let start = eval_const_expr_to_int(&range.start, consts).ok()?;
+    let end = eval_const_expr_to_int(&range.end, consts).ok()?;
+
+    let mut context = evaluator_context.clone();
+    let mut out = Vec::new();
+    let step = if start <= end { 1_i64 } else { -1_i64 };
+    let mut current = start;
+
+    loop {
+        context.set(range.iterator.as_str(), Number::Int(current));
+        let outcome = k816_eval::evaluate_with_context(&range.eval, &mut context).ok()?;
+        let value = outcome.value.to_i64_exact()?;
+        let byte = u8::try_from(value).ok()?;
+        out.push(Number::Int(i64::from(byte)));
+
+        if current == end {
+            break;
+        }
+        current = current.checked_add(step)?;
+    }
+
+    Some(out)
+}
+
+fn map_evaluator_error(error: EvaluatorError, span: Span) -> Diagnostic {
+    match error {
+        EvaluatorError::UnknownIdentifier { name, start, end } => {
+            let primary = evaluator_relative_span(span, start, end);
+            Diagnostic::error(
+                primary,
+                format!("unknown identifier '{name}' in top-level evaluator block"),
+            )
+            .with_help(
+                "define the identifier earlier in the file or assign it in the same evaluator block",
+            )
+        }
+        EvaluatorError::UnknownFunction { name } => {
+            Diagnostic::error(span, format!("unknown evaluator function '{name}'"))
+        }
+        EvaluatorError::DeferredFunction { name, reason } => Diagnostic::error(
+            span,
+            format!("evaluator function '{name}' is not supported in top-level blocks yet"),
+        )
+        .with_help(reason),
+        EvaluatorError::BadArity {
+            name,
+            expected,
+            got,
+        } => Diagnostic::error(
+            span,
+            format!("function '{name}' expected {expected} arguments, got {got}"),
+        ),
+        EvaluatorError::InvalidAssignmentTarget => {
+            Diagnostic::error(span, "invalid assignment target in evaluator block")
+                .with_help("assign only to identifiers (for example: `NAME = expr`)")
+        }
+        EvaluatorError::IntegerRequired { op } => Diagnostic::error(
+            span,
+            format!("operator '{op}' requires exact integer operands"),
+        ),
+        EvaluatorError::DivisionByZero => Diagnostic::error(span, "division by zero"),
+        EvaluatorError::Overflow => Diagnostic::error(span, "arithmetic overflow"),
+        EvaluatorError::UnexpectedToken { column, token } => {
+            let primary = evaluator_column_span(span, column);
+            Diagnostic::error(
+                primary,
+                format!("unexpected token {token} in evaluator block at column {column}"),
+            )
+        }
+        EvaluatorError::UnexpectedEof => {
+            Diagnostic::error(span, "unexpected end of evaluator expression")
+        }
+        EvaluatorError::InvalidNumber { literal } => {
+            Diagnostic::error(span, format!("invalid number literal '{literal}'"))
+        }
+        EvaluatorError::ArrayLiteralInNumericContext => Diagnostic::error(
+            span,
+            "array literal can only be assigned to an identifier or indexed",
+        ),
+    }
+}
+
+fn evaluator_relative_span(block_span: Span, start: usize, end: usize) -> Span {
+    let content_start = block_span.start.saturating_add(1);
+    let content_end = block_span.end.saturating_sub(1);
+    let content_len = content_end.saturating_sub(content_start);
+    let rel_start = start.min(content_len);
+    let rel_end = end.min(content_len).max(rel_start.saturating_add(1));
+
+    Span::new(
+        block_span.source_id,
+        content_start.saturating_add(rel_start),
+        content_start.saturating_add(rel_end),
+    )
+}
+
+fn evaluator_column_span(block_span: Span, column: usize) -> Span {
+    let start = column.saturating_sub(1);
+    evaluator_relative_span(block_span, start, start.saturating_add(1))
 }
 
 fn collect_var(
@@ -249,7 +474,7 @@ fn eval_var_address(
     };
     let initializer_span = var.initializer_span.unwrap_or(span);
 
-    match eval_const_expr(initializer, consts) {
+    match eval_const_expr_to_int(initializer, consts) {
         Ok(value) => match u32::try_from(value) {
             Ok(address) => Some(address),
             Err(_) => {
@@ -272,6 +497,16 @@ fn eval_var_address(
                 initializer_span,
                 "internal error: eval text should be expanded before semantic analysis",
             ));
+            None
+        }
+        Err(ConstExprError::NonInteger) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    initializer_span,
+                    "var initializer must be an exact integer value",
+                )
+                .with_help("remove fractional parts before using this value as an address"),
+            );
             None
         }
         Err(ConstExprError::Overflow) => {
@@ -332,7 +567,7 @@ fn eval_var_layout(
         });
     };
 
-    match eval_const_expr(array_len, consts) {
+    match eval_const_expr_to_int(array_len, consts) {
         Ok(value) => {
             if value <= 0 {
                 diagnostics.push(Diagnostic::error(
@@ -367,6 +602,15 @@ fn eval_var_layout(
                 span,
                 "internal error: eval text should be expanded before semantic analysis",
             ));
+            None
+        }
+        Err(ConstExprError::NonInteger) => {
+            diagnostics.push(
+                Diagnostic::error(span, "var array length must be an exact integer value")
+                    .with_help(
+                        "remove fractional parts or convert to an integer before using it as an array length",
+                    ),
+            );
             None
         }
         Err(ConstExprError::Overflow) => {
@@ -407,7 +651,7 @@ fn eval_symbolic_subscript_layout(
             .unwrap_or(DataWidth::Byte);
 
         let count = match &field.count {
-            Some(count_expr) => match eval_const_expr(count_expr, consts) {
+            Some(count_expr) => match eval_const_expr_to_int(count_expr, consts) {
                 Ok(value) => {
                     if value <= 0 {
                         let count_span = field.count_span.unwrap_or(field.span);
@@ -451,6 +695,22 @@ fn eval_symbolic_subscript_layout(
                         span,
                         "internal error: eval text should be expanded before semantic analysis",
                     ));
+                    return None;
+                }
+                Err(ConstExprError::NonInteger) => {
+                    let count_span = field.count_span.unwrap_or(field.span);
+                    diagnostics.push(
+                        Diagnostic::error(
+                            count_span,
+                            format!(
+                                "symbolic subscript field '.{}' count must be an exact integer value",
+                                field.name
+                            ),
+                        )
+                        .with_help(
+                            "remove fractional parts before using this value as a field count",
+                        ),
+                    );
                     return None;
                 }
                 Err(ConstExprError::Overflow) => {
@@ -515,15 +775,16 @@ fn eval_symbolic_subscript_layout(
 enum ConstExprError {
     Ident(String),
     EvalText,
+    NonInteger,
     Overflow,
 }
 
 fn eval_const_expr(
     expr: &Expr,
     consts: &IndexMap<String, ConstMeta>,
-) -> Result<i64, ConstExprError> {
+) -> Result<Number, ConstExprError> {
     match expr {
-        Expr::Number(value) => Ok(*value),
+        Expr::Number(value) => Ok(Number::Int(*value)),
         Expr::Ident(name) => consts
             .get(name)
             .map(|constant| constant.value)
@@ -534,27 +795,43 @@ fn eval_const_expr(
             .ok_or_else(|| ConstExprError::Ident(name.clone())),
         Expr::EvalText(_) => Err(ConstExprError::EvalText),
         Expr::Index { base, index } => {
-            let base = eval_const_expr(base, consts)?;
-            let index = eval_const_expr(index, consts)?;
-            base.checked_add(index).ok_or(ConstExprError::Overflow)
+            let base = eval_const_expr_to_int(base, consts)?;
+            let index = eval_const_expr_to_int(index, consts)?;
+            base.checked_add(index)
+                .map(Number::Int)
+                .ok_or(ConstExprError::Overflow)
         }
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_const_expr(lhs, consts)?;
             let rhs = eval_const_expr(rhs, consts)?;
             match op {
-                ExprBinaryOp::Add => lhs.checked_add(rhs).ok_or(ConstExprError::Overflow),
-                ExprBinaryOp::Sub => lhs.checked_sub(rhs).ok_or(ConstExprError::Overflow),
+                ExprBinaryOp::Add => lhs.checked_add(rhs).map_err(|error| match error {
+                    EvaluatorError::Overflow => ConstExprError::Overflow,
+                    _ => ConstExprError::NonInteger,
+                }),
+                ExprBinaryOp::Sub => lhs.checked_sub(rhs).map_err(|error| match error {
+                    EvaluatorError::Overflow => ConstExprError::Overflow,
+                    _ => ConstExprError::NonInteger,
+                }),
             }
         }
         Expr::Unary { op, expr } => {
-            let value = eval_const_expr(expr, consts)?;
+            let value = eval_const_expr_to_int(expr, consts)?;
             match op {
-                ExprUnaryOp::LowByte => Ok(value & 0xFF),
-                ExprUnaryOp::HighByte => Ok((value >> 8) & 0xFF),
+                ExprUnaryOp::LowByte => Ok(Number::Int(value & 0xFF)),
+                ExprUnaryOp::HighByte => Ok(Number::Int((value >> 8) & 0xFF)),
             }
         }
         Expr::TypedView { expr, .. } => eval_const_expr(expr, consts),
     }
+}
+
+fn eval_const_expr_to_int(
+    expr: &Expr,
+    consts: &IndexMap<String, ConstMeta>,
+) -> Result<i64, ConstExprError> {
+    let value = eval_const_expr(expr, consts)?;
+    value.to_i64_exact().ok_or(ConstExprError::NonInteger)
 }
 
 fn is_symbol_available(symbol: &str, model: &SemanticModel) -> bool {
@@ -602,10 +879,113 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
 
-        assert_eq!(sema.consts.get("BASE").expect("BASE").value, 0x100);
-        assert_eq!(sema.consts.get("NEXT").expect("NEXT").value, 0x103);
+        assert_eq!(
+            sema.consts.get("BASE").expect("BASE").value,
+            Number::Int(0x100)
+        );
+        assert_eq!(
+            sema.consts.get("NEXT").expect("NEXT").value,
+            Number::Int(0x103)
+        );
         assert_eq!(sema.vars.get("ptr").expect("ptr").address, 0x103);
         assert_eq!(sema.vars.get("tail").expect("tail").address, 0x104);
+    }
+
+    #[test]
+    fn top_level_evaluator_constants_are_available_in_source_order() {
+        let source = "[ A = 1, B = A + 2 ]\nconst C = B + 3\nvar ptr = C\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(1));
+        assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(3));
+        assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(6));
+        assert_eq!(sema.vars.get("ptr").expect("ptr").address, 6);
+    }
+
+    #[test]
+    fn top_level_evaluator_allows_in_block_mutation() {
+        let source = "[ A = 1, B = ++A + A--, C = A ]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(1));
+        assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(4));
+        assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(1));
+    }
+
+    #[test]
+    fn top_level_evaluator_supports_array_literal_indexing() {
+        let source = "[ arr = [10, 20, 30], A = arr[1] ]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(20));
+        assert!(!sema.consts.contains_key("arr"));
+    }
+
+    #[test]
+    fn top_level_evaluator_supports_named_data_indexing() {
+        let source = "data arr {\n  10 20 30\n}\n[ A = arr[1] ]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(20));
+    }
+
+    #[test]
+    fn top_level_evaluator_rejects_cross_item_reassignment() {
+        let source = "[ A = 1 ]\n[ A = 2 ]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("cannot reassign constant 'A' in a different evaluator block")
+        }));
+    }
+
+    #[test]
+    fn top_level_evaluator_unexpected_token_points_to_token() {
+        let source = "[\n  obj = { member: 42 },\n]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        let error = errors
+            .iter()
+            .find(|error| error.message.contains("unexpected token"))
+            .expect("unexpected-token error");
+        let brace = source.find('{').expect("brace");
+
+        assert_eq!(error.primary.start, brace);
+        assert_eq!(error.primary.end, brace + 1);
+    }
+
+    #[test]
+    fn var_initializer_requires_exact_integer_from_top_level_evaluator_constant() {
+        let source = "[ F = 1.5 ]\nvar ptr = F\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("var initializer must be an exact integer value")
+        }));
+    }
+
+    #[test]
+    fn var_array_length_requires_exact_integer_from_top_level_evaluator_constant() {
+        let source = "[ N = 2.5 ]\nvar buf[N]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("var array length must be an exact integer value")
+        }));
     }
 
     #[test]

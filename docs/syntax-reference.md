@@ -39,7 +39,7 @@ K65 also supports symbolic subscript arrays with named `.field` entries inside `
 
 ## Constant Declaration
 
-The best way of defining constants is using the evaluator. Constants defined this way can be changed at any moment during compilation. Constants can be any value of floating point type. When used within a 6502 instruction, they are converted to a single byte by rounding to the nearest integer and AND-ing with `0xFF` (this way negative values are represented in U2 form).
+The best way of defining constants is using the evaluator. Evaluator-defined constants are processed in source order and can be mutated within a single evaluator block (`=`, `+=`, `++`, and similar operators). Reassigning the same constant name in a later top-level evaluator block is an error. Constants can be any value of floating point type. When used within a 6502 instruction, they are converted to a single byte by rounding to the nearest integer and AND-ing with `0xFF` (this way negative values are represented in U2 form).
 
 ```k65
 [                       // square brace starts evaluator expression
@@ -477,6 +477,8 @@ data FourFiveSix {
   [FIVE+1]         // uses FIVE
 }
 ```
+
+Top-level evaluator blocks execute in source order. A name assigned in one block is available to later code, but assigning that same name again in a different top-level evaluator block is rejected.
 
 ### Operators
 

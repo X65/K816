@@ -1,0 +1,8 @@
+[default]
+000000: A9 14 A2 1E 60
+
+
+[disasm obj#0 default::main]
+000000: A9 14       lda #$14
+000002: A2 1E       ldx #$1E
+000004: 60          rts

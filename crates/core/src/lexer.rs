@@ -59,6 +59,8 @@ pub enum TokenKind {
     Comma,
     #[token(":")]
     Colon,
+    #[token("..")]
+    DotDot,
     #[token(";")]
     Semi,
     #[token("++")]
@@ -114,7 +116,10 @@ pub enum TokenKind {
     #[regex(r"%[01]+|0b[01]+|0x[0-9a-fA-F]+|\$[0-9a-fA-F]+|[0-9]+", parse_number)]
     Number(i64),
 
-    #[regex(r"[A-Za-z_.][A-Za-z0-9_.]*", parse_ident)]
+    #[regex(
+        r"(?:[A-Za-z_]|[.][A-Za-z_])[A-Za-z0-9_]*(?:[.][A-Za-z_][A-Za-z0-9_]*)*",
+        parse_ident
+    )]
     Ident(String),
 }
 
@@ -252,6 +257,16 @@ mod tests {
                 TokenKind::Eval(ref value) if value == ".data[4]:byte"
             )
         }));
+    }
+
+    #[test]
+    fn lexes_range_operator_in_data_for_eval() {
+        let tokens = lex(SourceId(0), "for i=0..4 eval [i]").expect("lex");
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::DotDot))
+        );
     }
 
     #[test]

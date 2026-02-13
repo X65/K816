@@ -1,6 +1,7 @@
 use crate::ast::{
     CodeBlock, ConstDecl, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item,
-    NamedDataBlock, NamedDataEntry, Operand, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, Operand, Stmt,
+    SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::parser::parse_expression_fragment;
@@ -35,6 +36,7 @@ fn expand_item(
         Item::Const(const_decl) => {
             Item::Const(expand_const(const_decl, span, source_id, diagnostics))
         }
+        Item::EvaluatorBlock(block) => Item::EvaluatorBlock(block.clone()),
         Item::Var(var) => Item::Var(expand_var(var, span, source_id, diagnostics)),
         Item::CodeBlock(block) => Item::CodeBlock(expand_code_block(block, source_id, diagnostics)),
         Item::Statement(stmt) => Item::Statement(expand_stmt(stmt, span, source_id, diagnostics)),
@@ -158,6 +160,14 @@ fn expand_named_data_entry(
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
+        NamedDataEntry::ForEvalRange(range) => {
+            NamedDataEntry::ForEvalRange(NamedDataForEvalRange {
+                iterator: range.iterator.clone(),
+                start: expand_expr(&range.start, span, source_id, diagnostics),
+                end: expand_expr(&range.end, span, source_id, diagnostics),
+                eval: range.eval.clone(),
+            })
+        }
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
             kind: kind.clone(),

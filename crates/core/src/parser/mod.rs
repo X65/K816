@@ -1,8 +1,9 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth, Expr,
-    ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt,
-    IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry,
-    Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    BlockKind, CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
+    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister,
+    HlaRhs, HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock,
+    NamedDataEntry, NamedDataForEvalRange, Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt,
+    SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -70,26 +71,13 @@ pub fn parse_with_warnings(
 }
 
 fn preprocess_source(source_text: &str) -> String {
-    fn blank_line_like(line: &str) -> String {
-        " ".repeat(line.len())
-    }
-
     let mut out = Vec::new();
-    let mut skipping_eval_block = false;
     let mut data_block_depth = 0usize;
     let mut skipped_nested_block_depth = 0usize;
 
     for raw_line in source_text.lines() {
         let mut line = raw_line.to_string();
         let mut trimmed = line.trim();
-
-        if skipping_eval_block {
-            if trimmed == "]" {
-                skipping_eval_block = false;
-            }
-            out.push(blank_line_like(raw_line));
-            continue;
-        }
 
         if skipped_nested_block_depth > 0 {
             let opens = trimmed.chars().filter(|ch| *ch == '{').count();
@@ -100,16 +88,6 @@ fn preprocess_source(source_text: &str) -> String {
                 skipped_nested_block_depth =
                     skipped_nested_block_depth.saturating_sub(closes - opens);
             }
-            continue;
-        }
-
-        if trimmed == "[" {
-            skipping_eval_block = true;
-            out.push(blank_line_like(raw_line));
-            continue;
-        }
-
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
             continue;
         }
 
@@ -136,6 +114,10 @@ fn preprocess_source(source_text: &str) -> String {
                 || trimmed == "nocross {")
         {
             skipped_nested_block_depth = 1;
+            continue;
+        }
+
+        if data_block_depth > 0 && trimmed.starts_with('[') && trimmed.ends_with(']') {
             continue;
         }
 
@@ -374,8 +356,8 @@ where
         .then(line_tail_parser())
         .to(Item::Statement(Stmt::Empty));
 
-    let eval_block_item =
-        chumsky::select! { TokenKind::Eval(_) => () }.to(Item::Statement(Stmt::Empty));
+    let eval_block_item = chumsky::select! { TokenKind::Eval(value) => value }
+        .map(|text| Item::EvaluatorBlock(EvaluatorBlock { text }));
 
     let image_binary_var_item = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("image") || value.eq_ignore_ascii_case("binary") => ()
@@ -746,6 +728,27 @@ where
             .collect::<Vec<_>>()
             .map(NamedDataEntry::Bytes);
 
+    let for_eval_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("for") => ()
+    }
+    .ignore_then(ident_parser())
+    .then_ignore(just(TokenKind::Eq))
+    .then(expr_parser())
+    .then_ignore(just(TokenKind::DotDot))
+    .then(expr_parser())
+    .then_ignore(chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("eval") => ()
+    })
+    .then(chumsky::select! { TokenKind::Eval(value) => value })
+    .map(|(((iterator, start), end), eval)| {
+        NamedDataEntry::ForEvalRange(NamedDataForEvalRange {
+            iterator,
+            start,
+            end,
+            eval,
+        })
+    });
+
     let args = data_arg_parser()
         .separated_by(just(TokenKind::Comma))
         .collect::<Vec<_>>()
@@ -778,6 +781,7 @@ where
         .or(align_entry)
         .or(nocross_entry)
         .or(byte_entry)
+        .or(for_eval_entry)
         .or(convert_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
@@ -3134,6 +3138,7 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::RParen => "')'".to_string(),
         TokenKind::Comma => "','".to_string(),
         TokenKind::Colon => "':'".to_string(),
+        TokenKind::DotDot => "'..'".to_string(),
         TokenKind::Semi => "';'".to_string(),
         TokenKind::PlusPlus => "'++'".to_string(),
         TokenKind::Plus => "'+'".to_string(),
@@ -3352,6 +3357,29 @@ mod tests {
         assert_eq!(file.items.len(), 2);
         assert!(matches!(file.items[0].node, Item::Const(_)));
         assert!(matches!(file.items[1].node, Item::Const(_)));
+    }
+
+    #[test]
+    fn parses_top_level_evaluator_block_item() {
+        let source = "[ A = 1 ]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+        let Item::EvaluatorBlock(block) = &file.items[0].node else {
+            panic!("expected evaluator block item");
+        };
+        assert!(block.text.contains("A = 1"));
+    }
+
+    #[test]
+    fn parses_multiline_top_level_evaluator_block_item() {
+        let source = "[\n  A = 1,\n  B = A + 2\n]\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+        let Item::EvaluatorBlock(block) = &file.items[0].node else {
+            panic!("expected evaluator block item");
+        };
+        assert!(block.text.contains("A = 1"));
+        assert!(block.text.contains("B = A + 2"));
     }
 
     #[test]
@@ -3702,6 +3730,32 @@ mod tests {
             block.entries[4].node,
             NamedDataEntry::Convert { .. }
         ));
+    }
+
+    #[test]
+    fn parses_named_data_for_eval_range_entries() {
+        let source = "data table {\n  for i=0..4 eval [ i * FACTOR ]\n  for j=4..0 eval [ j ]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::NamedDataBlock(block) = &file.items[0].node else {
+            panic!("expected named data block");
+        };
+        assert_eq!(block.entries.len(), 2);
+
+        let NamedDataEntry::ForEvalRange(forward) = &block.entries[0].node else {
+            panic!("expected forward for-eval entry");
+        };
+        assert_eq!(forward.iterator, "i");
+        assert!(matches!(forward.start, Expr::Number(0)));
+        assert!(matches!(forward.end, Expr::Number(4)));
+        assert_eq!(forward.eval.trim(), "i * FACTOR");
+
+        let NamedDataEntry::ForEvalRange(reverse) = &block.entries[1].node else {
+            panic!("expected reverse for-eval entry");
+        };
+        assert_eq!(reverse.iterator, "j");
+        assert!(matches!(reverse.start, Expr::Number(4)));
+        assert!(matches!(reverse.end, Expr::Number(0)));
+        assert_eq!(reverse.eval.trim(), "j");
     }
 
     #[test]

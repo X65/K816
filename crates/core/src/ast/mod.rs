@@ -31,6 +31,7 @@ pub struct File {
 pub enum Item {
     Segment(SegmentDecl),
     Const(ConstDecl),
+    EvaluatorBlock(EvaluatorBlock),
     Var(VarDecl),
     DataBlock(DataBlock),
     NamedDataBlock(NamedDataBlock),
@@ -48,6 +49,11 @@ pub struct ConstDecl {
     pub name: String,
     pub initializer: Expr,
     pub initializer_span: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvaluatorBlock {
+    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -276,12 +282,21 @@ pub struct NamedDataBlock {
 }
 
 #[derive(Debug, Clone)]
+pub struct NamedDataForEvalRange {
+    pub iterator: String,
+    pub start: Expr,
+    pub end: Expr,
+    pub eval: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum NamedDataEntry {
     Segment(SegmentDecl),
     Address(u32),
     Align(u16),
     Nocross(u16),
     Bytes(Vec<Expr>),
+    ForEvalRange(NamedDataForEvalRange),
     String(String),
     Convert { kind: String, args: Vec<DataArg> },
     Ignored,

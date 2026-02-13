@@ -1,4 +1,5 @@
 use k816_assets::AssetFS;
+use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
@@ -238,6 +239,7 @@ pub fn lower(
                     &mut ops,
                 );
             }
+            Item::EvaluatorBlock(_) => {}
             Item::Const(_) => {}
             Item::Var(var) => {
                 emit_var_absolute_symbols(var, item.span, sema, &mut diagnostics, &mut ops);
@@ -450,6 +452,71 @@ fn lower_named_data_entry(
                 };
                 ops.push(Spanned::new(op, span));
             }
+        }
+        NamedDataEntry::ForEvalRange(range) => {
+            let Some(start) = eval_to_number_strict(&range.start, sema, span, diagnostics) else {
+                return;
+            };
+            let Some(end) = eval_to_number_strict(&range.end, sema, span, diagnostics) else {
+                return;
+            };
+
+            let mut context = EvalContext::default();
+            for (name, constant) in &sema.consts {
+                context.set(name.clone(), constant.value);
+            }
+
+            let mut bytes = Vec::new();
+            let step = if start <= end { 1_i64 } else { -1_i64 };
+            let mut current = start;
+
+            loop {
+                context.set(range.iterator.as_str(), Number::Int(current));
+                let outcome = match k816_eval::evaluate_with_context(&range.eval, &mut context) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        diagnostics.push(map_named_data_for_eval_error(error, span));
+                        return;
+                    }
+                };
+                let value = outcome.value;
+
+                let Some(integer) = value.to_i64_exact() else {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "data for-eval expression must evaluate to an exact integer, got {value}"
+                            ),
+                        )
+                        .with_help("use an expression that resolves to an integer byte value"),
+                    );
+                    return;
+                };
+
+                let Ok(byte) = u8::try_from(integer) else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("byte literal out of range: {integer}"),
+                    ));
+                    return;
+                };
+                bytes.push(byte);
+
+                if current == end {
+                    break;
+                }
+                let Some(next) = current.checked_add(step) else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        "for-eval range overflow while iterating",
+                    ));
+                    return;
+                };
+                current = next;
+            }
+
+            ops.push(Spanned::new(Op::EmitBytes(bytes), span));
         }
         NamedDataEntry::String(value) => {
             ops.push(Spanned::new(Op::EmitBytes(value.as_bytes().to_vec()), span));
@@ -1879,7 +1946,13 @@ fn eval_to_number_strict(
                 return Some(i64::from(var.address));
             }
             if let Some(constant) = sema.consts.get(name) {
-                return Some(constant.value);
+                return constant_to_exact_i64(
+                    name,
+                    constant.value,
+                    ident_span,
+                    diagnostics,
+                    "numeric expression",
+                );
             }
             match resolve_symbolic_subscript_name(name, sema, ident_span, diagnostics) {
                 Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
@@ -1918,6 +1991,79 @@ fn eval_to_number_strict(
         }
         Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
     }
+}
+
+fn map_named_data_for_eval_error(error: EvaluatorError, span: Span) -> Diagnostic {
+    match error {
+        EvaluatorError::UnknownIdentifier { name, .. } => Diagnostic::error(
+            span,
+            format!("unknown identifier '{name}' in data for-eval expression"),
+        )
+        .with_help("define the identifier earlier or use the loop variable declared after 'for'"),
+        EvaluatorError::UnknownFunction { name } => {
+            Diagnostic::error(span, format!("unknown evaluator function '{name}'"))
+        }
+        EvaluatorError::DeferredFunction { name, reason } => Diagnostic::error(
+            span,
+            format!("evaluator function '{name}' is not supported in data for-eval expressions"),
+        )
+        .with_help(reason),
+        EvaluatorError::BadArity {
+            name,
+            expected,
+            got,
+        } => Diagnostic::error(
+            span,
+            format!("function '{name}' expected {expected} arguments, got {got}"),
+        ),
+        EvaluatorError::InvalidAssignmentTarget => Diagnostic::error(
+            span,
+            "invalid assignment target in data for-eval expression",
+        )
+        .with_help("assign only to identifiers (for example: `NAME = expr`)"),
+        EvaluatorError::IntegerRequired { op } => Diagnostic::error(
+            span,
+            format!("operator '{op}' requires exact integer operands"),
+        ),
+        EvaluatorError::DivisionByZero => Diagnostic::error(span, "division by zero"),
+        EvaluatorError::Overflow => Diagnostic::error(span, "arithmetic overflow"),
+        EvaluatorError::UnexpectedToken { column, token } => Diagnostic::error(
+            span,
+            format!("unexpected token {token} in data for-eval expression at column {column}"),
+        ),
+        EvaluatorError::UnexpectedEof => {
+            Diagnostic::error(span, "unexpected end of data for-eval expression")
+        }
+        EvaluatorError::InvalidNumber { literal } => Diagnostic::error(
+            span,
+            format!("invalid number literal '{literal}' in data for-eval expression"),
+        ),
+        EvaluatorError::ArrayLiteralInNumericContext => Diagnostic::error(
+            span,
+            "array literal can only be assigned to an identifier or indexed",
+        ),
+    }
+}
+
+fn constant_to_exact_i64(
+    name: &str,
+    value: k816_eval::Number,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    context: &str,
+) -> Option<i64> {
+    if let Some(integer) = value.to_i64_exact() {
+        return Some(integer);
+    }
+
+    diagnostics.push(
+        Diagnostic::error(
+            span,
+            format!("constant '{name}' must be an exact integer in this {context}"),
+        )
+        .with_help("remove fractional parts before using this constant in integer-only contexts"),
+    );
+    None
 }
 
 fn eval_index_expr_strict(
@@ -2353,7 +2499,13 @@ fn eval_to_number(
                 return Some(i64::from(var.address));
             }
             if let Some(constant) = sema.consts.get(name) {
-                return Some(constant.value);
+                return constant_to_exact_i64(
+                    name,
+                    constant.value,
+                    ident_span,
+                    diagnostics,
+                    "numeric expression",
+                );
             }
             match resolve_symbolic_subscript_name(name, sema, ident_span, diagnostics) {
                 Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
@@ -2524,13 +2676,19 @@ fn resolve_operand_ident(
         });
     }
     if let Some(constant) = sema.consts.get(name) {
-        let Ok(address) = u32::try_from(constant.value) else {
+        let Some(value) = constant_to_exact_i64(
+            name,
+            constant.value,
+            span,
+            diagnostics,
+            "address expression",
+        ) else {
+            return None;
+        };
+        let Ok(address) = u32::try_from(value) else {
             diagnostics.push(Diagnostic::error(
                 span,
-                format!(
-                    "address cannot be negative: {} (from const '{name}')",
-                    constant.value
-                ),
+                format!("address cannot be negative: {value} (from const '{name}')"),
             ));
             return None;
         };
@@ -2633,6 +2791,28 @@ mod tests {
     #[test]
     fn resolves_const_operand_to_immediate_value() {
         let source = "const LIMIT = 0x34\nmain {\n  lda #LIMIT\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(0x34)));
+    }
+
+    #[test]
+    fn resolves_top_level_evaluator_constant_to_immediate_value() {
+        let source = "[ LIMIT = 0x34 ]\nmain {\n  lda #LIMIT\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -2975,6 +3155,28 @@ mod tests {
 
         assert!(align_index < label_index);
         assert!(label_index < emit_index);
+    }
+
+    #[test]
+    fn lowers_named_data_for_eval_range_entries() {
+        let source = "[ FACTOR = 3 ]\ndata table {\n  for i=0..4 eval [ i * FACTOR ]\n  for j=4..0 eval [ j ]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let emitted = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::EmitBytes(bytes) => Some(bytes.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[0], vec![0, 3, 6, 9, 12]);
+        assert_eq!(emitted[1], vec![4, 3, 2, 1, 0]);
     }
 
     #[test]

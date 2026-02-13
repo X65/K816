@@ -18,6 +18,7 @@ fn normalize_item(item: &Item) -> Item {
     match item {
         Item::Segment(segment) => Item::Segment(segment.clone()),
         Item::Const(const_decl) => Item::Const(const_decl.clone()),
+        Item::EvaluatorBlock(block) => Item::EvaluatorBlock(block.clone()),
         Item::Var(var) => Item::Var(var.clone()),
         Item::DataBlock(block) => Item::DataBlock(block.clone()),
         Item::NamedDataBlock(block) => Item::NamedDataBlock(normalize_named_data_block(block)),
@@ -61,6 +62,7 @@ fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
         NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
         NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
         NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
+        NamedDataEntry::ForEvalRange(range) => NamedDataEntry::ForEvalRange(range.clone()),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
             kind: kind.clone(),

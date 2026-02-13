@@ -15,6 +15,7 @@ fn format_item(out: &mut String, item: &Item, indent: usize) {
     match item {
         Item::Segment(segment) => line(out, indent, format!("segment {}", segment.name)),
         Item::Const(const_decl) => line(out, indent, format_const(const_decl)),
+        Item::EvaluatorBlock(block) => line(out, indent, format!("[{}]", block.text)),
         Item::Var(var) => line(out, indent, format_var(var)),
         Item::DataBlock(block) => {
             line(out, indent, "data {".to_string());
@@ -237,6 +238,7 @@ fn format_expr(expr: &Expr) -> String {
     match expr {
         Expr::Number(value) => value.to_string(),
         Expr::Ident(value) => value.clone(),
+        Expr::IdentSpanned { name, .. } => name.clone(),
         Expr::EvalText(value) => format!("[{value}]"),
         Expr::Index { base, index } => format!("{}[{}]", format_expr(base), format_expr(index)),
         Expr::Binary { op, lhs, rhs } => {
@@ -272,6 +274,13 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
         NamedDataEntry::Bytes(values) => {
             values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
         }
+        NamedDataEntry::ForEvalRange(range) => format!(
+            "for {}={}..{} eval [{}]",
+            range.iterator,
+            format_expr(&range.start),
+            format_expr(&range.end),
+            range.eval
+        ),
         NamedDataEntry::String(value) => format!("\"{}\"", value.replace('\"', "\\\"")),
         NamedDataEntry::Convert { kind, args } => {
             let args = args

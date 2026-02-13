@@ -1061,6 +1061,7 @@ fn collect_symbols(file: &k816_core::ast::File) -> SymbolCollection {
             k816_core::ast::Item::Statement(stmt) => {
                 collect_stmt_symbols(stmt, item.span, None, &mut out.symbols);
             }
+            k816_core::ast::Item::EvaluatorBlock(_) => {}
             k816_core::ast::Item::DataBlock(_) => {}
         }
     }
@@ -1436,6 +1437,7 @@ fn document_symbols_from_ast(
             k816_core::ast::Item::Statement(stmt) => {
                 stmt_to_document_symbol(stmt, item.span, line_index, text)
             }
+            k816_core::ast::Item::EvaluatorBlock(_) => None,
             k816_core::ast::Item::DataBlock(_) => None,
         })
         .collect()

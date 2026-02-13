@@ -33,6 +33,12 @@ Repository Layout:
 - Golden tests: `cargo test -p k816-golden-tests` for reproducible output validation against fixtures. Uses Rust edition 2024 with dependencies like `chumsky` for parsing, `clap` for CLI. Reference: [Cargo.toml](Cargo.toml).
 - Golden fixture binaries: Use [tests/golden/link.stub.ld.ron](tests/golden/link.stub.ld.ron) as the linker config (`-T` flag) to generate `expected.bin` files in raw binary format for golden test fixtures.
 
+## Testing Approach
+
+- Follow Test-Driven Development (TDD): write or update tests first, then implement behavior to satisfy them.
+- Ensure implementations are thoroughly testable through `tests/golden/` fixtures.
+- Cover positive desired paths, expected and handled errors, and edge cases in golden fixtures.
+
 ## Project Conventions
 
 - No "compat", "legacy", or "deprecated" shims; features are first-class or removed.

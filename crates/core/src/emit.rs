@@ -35,8 +35,15 @@ struct Fixup {
 
 #[derive(Debug, Clone, Copy)]
 enum FixupKind {
-    Instruction { width: usize, mode: AddressingMode },
+    Instruction {
+        width: usize,
+        mode: AddressingMode,
+    },
     ByteRelocation(ByteRelocationKind),
+    ImmediateByteRelocation {
+        width: usize,
+        kind: ByteRelocationKind,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +272,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
+                    Some(OperandOp::ImmediateByteRelocation { .. }) => OperandShape::Immediate(0),
                     Some(OperandOp::Address {
                         value,
                         force_far,
@@ -372,6 +380,16 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                             ));
                         }
                     }
+                    Some(OperandOp::ImmediateByteRelocation { kind, label }) => {
+                        segment.bytes.resize(segment.bytes.len() + width, 0);
+                        fixups.push(Fixup {
+                            segment: current_segment.clone(),
+                            offset: operand_offset,
+                            kind: FixupKind::ImmediateByteRelocation { width, kind: *kind },
+                            label: label.clone(),
+                            span: op.span,
+                        });
+                    }
                     Some(OperandOp::Address { value, .. }) => match value {
                         AddressValue::Literal(literal) => {
                             if encoding.mode == AddressingMode::Relative8 {
@@ -442,120 +460,139 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
             continue;
         };
 
-        let FixupKind::Instruction { width, mode } = fixup.kind else {
-            let value = *label_addr as u32;
-            let segment = segments
-                .get_mut(&fixup.segment)
-                .expect("fixup segment should exist during patching");
-            match fixup.kind {
-                FixupKind::ByteRelocation(ByteRelocationKind::LowByte) => {
-                    segment.bytes[fixup.offset] = (value & 0xFF) as u8;
-                }
-                FixupKind::ByteRelocation(ByteRelocationKind::HighByte) => {
-                    segment.bytes[fixup.offset] = ((value >> 8) & 0xFF) as u8;
-                }
-                FixupKind::Instruction { .. } => unreachable!(),
-            }
-            continue;
-        };
-
-        if mode == AddressingMode::Relative8 {
-            if label_segment != &fixup.segment {
-                diagnostics.push(
-                    Diagnostic::error(
-                        fixup.span,
-                        format!(
-                            "relative branch from segment '{}' to '{}' is not supported",
-                            fixup.segment, label_segment
-                        ),
-                    )
-                    .with_help("branch targets must stay in the same segment"),
+        match fixup.kind {
+            FixupKind::ByteRelocation(kind) => {
+                let value = *label_addr as u32;
+                let segment = segments
+                    .get_mut(&fixup.segment)
+                    .expect("fixup segment should exist during patching");
+                write_byte_relocation_at(
+                    &mut segment.bytes,
+                    fixup.offset,
+                    value,
+                    kind,
+                    fixup.span,
+                    &mut diagnostics,
                 );
-                continue;
             }
-
-            let site_addr = fixup.offset;
-            let delta = *label_addr as isize - (site_addr as isize + 1);
-            if delta < i8::MIN as isize || delta > i8::MAX as isize {
-                diagnostics.push(Diagnostic::error(
+            FixupKind::ImmediateByteRelocation { width, kind } => {
+                let value = *label_addr as u32;
+                let segment = segments
+                    .get_mut(&fixup.segment)
+                    .expect("fixup segment should exist during patching");
+                write_immediate_byte_relocation_at(
+                    &mut segment.bytes,
+                    fixup.offset,
+                    width,
+                    value,
+                    kind,
                     fixup.span,
-                    format!(
-                        "relative branch to '{}' out of range from {site_addr:#X}",
-                        fixup.label
-                    ),
-                ));
-                continue;
-            }
-
-            let segment = segments
-                .get_mut(&fixup.segment)
-                .expect("fixup segment should exist during patching");
-            segment.bytes[fixup.offset] = delta as i8 as u8;
-            continue;
-        }
-
-        if mode == AddressingMode::Relative16 {
-            if label_segment != &fixup.segment {
-                diagnostics.push(
-                    Diagnostic::error(
-                        fixup.span,
-                        format!(
-                            "relative branch from segment '{}' to '{}' is not supported",
-                            fixup.segment, label_segment
-                        ),
-                    )
-                    .with_help("branch targets must stay in the same segment"),
+                    &mut diagnostics,
                 );
-                continue;
             }
+            FixupKind::Instruction { width, mode } => {
+                if mode == AddressingMode::Relative8 {
+                    if label_segment != &fixup.segment {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                fixup.span,
+                                format!(
+                                    "relative branch from segment '{}' to '{}' is not supported",
+                                    fixup.segment, label_segment
+                                ),
+                            )
+                            .with_help("branch targets must stay in the same segment"),
+                        );
+                        continue;
+                    }
 
-            let site_addr = fixup.offset;
-            let delta = *label_addr as i64 - (site_addr as i64 + 2);
-            if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
-                diagnostics.push(Diagnostic::error(
+                    let site_addr = fixup.offset;
+                    let delta = *label_addr as isize - (site_addr as isize + 1);
+                    if delta < i8::MIN as isize || delta > i8::MAX as isize {
+                        diagnostics.push(Diagnostic::error(
+                            fixup.span,
+                            format!(
+                                "relative branch to '{}' out of range from {site_addr:#X}",
+                                fixup.label
+                            ),
+                        ));
+                        continue;
+                    }
+
+                    let segment = segments
+                        .get_mut(&fixup.segment)
+                        .expect("fixup segment should exist during patching");
+                    segment.bytes[fixup.offset] = delta as i8 as u8;
+                    continue;
+                }
+
+                if mode == AddressingMode::Relative16 {
+                    if label_segment != &fixup.segment {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                fixup.span,
+                                format!(
+                                    "relative branch from segment '{}' to '{}' is not supported",
+                                    fixup.segment, label_segment
+                                ),
+                            )
+                            .with_help("branch targets must stay in the same segment"),
+                        );
+                        continue;
+                    }
+
+                    let site_addr = fixup.offset;
+                    let delta = *label_addr as i64 - (site_addr as i64 + 2);
+                    if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
+                        diagnostics.push(Diagnostic::error(
+                            fixup.span,
+                            format!(
+                                "relative branch to '{}' out of range from {site_addr:#X}",
+                                fixup.label
+                            ),
+                        ));
+                        continue;
+                    }
+
+                    let segment = segments
+                        .get_mut(&fixup.segment)
+                        .expect("fixup segment should exist during patching");
+                    let rel = (delta as i16).to_le_bytes();
+                    segment.bytes[fixup.offset..fixup.offset + 2].copy_from_slice(&rel);
+                    continue;
+                }
+
+                if width == 2
+                    && mode != AddressingMode::Relative16
+                    && label_segment != &fixup.segment
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            fixup.span,
+                            format!(
+                                "label '{}' is in segment '{label_segment}', but absolute reference is in segment '{}'",
+                                fixup.label, fixup.segment
+                            ),
+                        )
+                        .with_help("use far function calls or far operand to cross segments"),
+                    );
+                    continue;
+                }
+
+                let value = *label_addr as u32;
+                let segment = segments
+                    .get_mut(&fixup.segment)
+                    .expect("fixup segment should exist during patching");
+                write_literal_at(
+                    &mut segment.bytes,
+                    fixup.offset,
+                    value,
+                    width,
                     fixup.span,
-                    format!(
-                        "relative branch to '{}' out of range from {site_addr:#X}",
-                        fixup.label
-                    ),
-                ));
-                continue;
+                    &mut diagnostics,
+                );
             }
-
-            let segment = segments
-                .get_mut(&fixup.segment)
-                .expect("fixup segment should exist during patching");
-            let rel = (delta as i16).to_le_bytes();
-            segment.bytes[fixup.offset..fixup.offset + 2].copy_from_slice(&rel);
-            continue;
         }
-
-        if width == 2 && mode != AddressingMode::Relative16 && label_segment != &fixup.segment {
-            diagnostics.push(
-                Diagnostic::error(
-                    fixup.span,
-                    format!(
-                        "label '{}' is in segment '{label_segment}', but absolute reference is in segment '{}'",
-                        fixup.label, fixup.segment
-                    ),
-                )
-                .with_help("use far function calls or far operand to cross segments"),
-            );
-            continue;
-        }
-
-        let value = *label_addr as u32;
-        let segment = segments
-            .get_mut(&fixup.segment)
-            .expect("fixup segment should exist during patching");
-        write_literal_at(
-            &mut segment.bytes,
-            fixup.offset,
-            value,
-            width,
-            fixup.span,
-            &mut diagnostics,
-        );
     }
 
     if !diagnostics.is_empty() {
@@ -734,6 +771,50 @@ fn write_literal_at(
         }
         _ => diagnostics.push(Diagnostic::error(span, "unsupported operand width")),
     }
+}
+
+fn write_byte_relocation_at(
+    bytes: &mut [u8],
+    offset: usize,
+    value: u32,
+    kind: ByteRelocationKind,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if offset >= bytes.len() {
+        diagnostics.push(Diagnostic::error(span, "internal fixup overflow"));
+        return;
+    }
+
+    bytes[offset] = match kind {
+        ByteRelocationKind::LowByte => (value & 0xFF) as u8,
+        ByteRelocationKind::HighByte => ((value >> 8) & 0xFF) as u8,
+    };
+}
+
+fn write_immediate_byte_relocation_at(
+    bytes: &mut [u8],
+    offset: usize,
+    width: usize,
+    value: u32,
+    kind: ByteRelocationKind,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if width == 0 {
+        diagnostics.push(Diagnostic::error(
+            span,
+            "immediate byte relocation requires a non-zero operand width",
+        ));
+        return;
+    }
+    let end = offset + width;
+    if end > bytes.len() {
+        diagnostics.push(Diagnostic::error(span, "internal fixup overflow"));
+        return;
+    }
+
+    write_byte_relocation_at(bytes, offset, value, kind, span, diagnostics);
 }
 
 fn format_listing_block(segment_name: &str, bytes: &[u8]) -> String {

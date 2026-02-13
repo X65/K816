@@ -81,6 +81,12 @@ pub enum AddressOperandMode {
 #[derive(Debug, Clone)]
 pub enum OperandOp {
     Immediate(i64),
+    /// Immediate operand derived from `&<label` / `&>label`.
+    /// Resolved during emit/link as a byte relocation against `label`.
+    ImmediateByteRelocation {
+        kind: ByteRelocationKind,
+        label: String,
+    },
     Address {
         value: AddressValue,
         force_far: bool,

@@ -330,6 +330,7 @@ pub fn emit_object_with_options(
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
                     Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
+                    Some(OperandOp::ImmediateByteRelocation { .. }) => OperandShape::Immediate(0),
                     Some(OperandOp::Address {
                         value,
                         force_far,
@@ -431,6 +432,28 @@ pub fn emit_object_with_options(
                                 "immediate value cannot be negative",
                             ));
                         }
+                    }
+                    Some(OperandOp::ImmediateByteRelocation { kind, label }) => {
+                        if width == 0 {
+                            diagnostics.push(Diagnostic::error(
+                                op.span,
+                                "immediate byte relocation requires a non-zero operand width",
+                            ));
+                            continue;
+                        }
+                        emit_zeroes(segment, width, op.span, &mut diagnostics);
+                        let relocation_span = relocation_span_for_label(source_map, op.span, label);
+                        fixups.push(Fixup {
+                            segment: current_segment.clone(),
+                            offset: operand_offset,
+                            width: 1,
+                            kind: match kind {
+                                ByteRelocationKind::LowByte => RelocationKind::LowByte,
+                                ByteRelocationKind::HighByte => RelocationKind::HighByte,
+                            },
+                            label: label.clone(),
+                            span: relocation_span,
+                        });
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
                         AddressValue::Literal(literal) => {
@@ -889,7 +912,10 @@ fn string_literal_text_for_emit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{AddressOperandMode, AddressValue, InstructionOp, Op, OperandOp, Program};
+    use crate::ast::ModeContract;
+    use crate::hir::{
+        AddressOperandMode, AddressValue, ByteRelocationKind, InstructionOp, Op, OperandOp, Program,
+    };
     use crate::span::{SourceId, SourceMap, Span, Spanned};
 
     fn op(node: Op) -> Spanned<Op> {
@@ -1002,6 +1028,38 @@ mod tests {
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
+    }
+
+    #[test]
+    fn link_mode_keeps_immediate_byte_relocations_for_linker() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "main { a=&<missing }\n");
+        let program = Program {
+            ops: vec![
+                op(Op::FunctionStart {
+                    name: "main".to_string(),
+                    mode_contract: ModeContract::default(),
+                    is_entry: true,
+                }),
+                op(Op::Instruction(InstructionOp {
+                    mnemonic: "lda".to_string(),
+                    operand: Some(OperandOp::ImmediateByteRelocation {
+                        kind: ByteRelocationKind::LowByte,
+                        label: "missing".to_string(),
+                    }),
+                })),
+                op(Op::FunctionEnd),
+            ],
+        };
+
+        let emitted =
+            emit_object_with_options(&program, &source_map, EmitObjectOptions::for_link())
+                .expect("link mode must keep unresolved label");
+        assert_eq!(emitted.object.symbols.len(), 0);
+        assert_eq!(emitted.object.relocations.len(), 1);
+        assert_eq!(emitted.object.relocations[0].symbol, "missing");
+        assert_eq!(emitted.object.relocations[0].kind, RelocationKind::LowByte);
+        assert_eq!(emitted.object.relocations[0].width, 1);
     }
 
     #[test]

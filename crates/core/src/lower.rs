@@ -2193,8 +2193,14 @@ fn lower_instruction(
             explicit_hash,
         }) => {
             let eval_span = immediate_expr_span(expr, span, *explicit_hash);
-            let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
-            Some(OperandOp::Immediate(value))
+            if let Some((kind, label)) =
+                resolve_symbolic_byte_relocation(expr, scope, sema, eval_span, diagnostics)
+            {
+                Some(OperandOp::ImmediateByteRelocation { kind, label })
+            } else {
+                let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
+                Some(OperandOp::Immediate(value))
+            }
         }
         Some(Operand::Value {
             expr,
@@ -2553,7 +2559,7 @@ fn resolve_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{AddressOperandMode, AddressValue, OperandOp};
+    use crate::hir::{AddressOperandMode, AddressValue, ByteRelocationKind, OperandOp};
     use crate::parser::parse;
     use crate::sema::analyze;
     use crate::span::SourceId;
@@ -2612,6 +2618,56 @@ mod tests {
             .expect("lda operand");
 
         assert!(matches!(operand, OperandOp::Immediate(0x34)));
+    }
+
+    #[test]
+    fn lowers_immediate_address_byte_symbols_to_relocations() {
+        let source = "data displist {\n  0\n}\nfunc dli {\n  rti\n}\nmain {\n  a=&<displist\n  a=&>displist\n  a=&<dli\n  a=&>dli\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let lda_operands = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(lda_operands.len(), 4);
+
+        assert!(matches!(
+            lda_operands[0],
+            OperandOp::ImmediateByteRelocation {
+                kind: ByteRelocationKind::LowByte,
+                label
+            } if label == "displist"
+        ));
+        assert!(matches!(
+            lda_operands[1],
+            OperandOp::ImmediateByteRelocation {
+                kind: ByteRelocationKind::HighByte,
+                label
+            } if label == "displist"
+        ));
+        assert!(matches!(
+            lda_operands[2],
+            OperandOp::ImmediateByteRelocation {
+                kind: ByteRelocationKind::LowByte,
+                label
+            } if label == "dli"
+        ));
+        assert!(matches!(
+            lda_operands[3],
+            OperandOp::ImmediateByteRelocation {
+                kind: ByteRelocationKind::HighByte,
+                label
+            } if label == "dli"
+        ));
     }
 
     #[test]

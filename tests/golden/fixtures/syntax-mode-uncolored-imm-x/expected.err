@@ -7,4 +7,3 @@ Error: `ldx` uses a width-dependent immediate but index width is unknown
    │ 
    │ Help: add @i8 or @i16 to the enclosing function
 ───╯
-

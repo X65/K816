@@ -5,4 +5,3 @@ Error: symbolic subscript field '.string' count must be >= 1, found -1
    │           ─┬─  
    │            ╰─── here
 ───╯
-

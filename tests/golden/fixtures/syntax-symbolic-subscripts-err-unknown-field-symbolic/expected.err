@@ -7,4 +7,3 @@ Error: unknown symbolic subscript field '.idz' on 'foo'
    │ 
    │ Help: did you mean '.idx'?
 ───╯
-

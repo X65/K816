@@ -7,4 +7,3 @@ Error: invalid index on symbolic subscript array 'foo': use '.field' or '[.field
    │ 
    │ Help: only named field access is allowed on symbolic subscript arrays
 ───╯
-

@@ -7,4 +7,3 @@ Error: invalid syntax: unexpected ':'
    │ 
    │ Help: for typed arrays, place the type before the array length (e.g. `var bar:word[20]`)
 ───╯
-

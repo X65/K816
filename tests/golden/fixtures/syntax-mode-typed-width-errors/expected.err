@@ -7,4 +7,3 @@ Error: Store to var w:word requires @a16.
    │ 
    │ Help: for byte stores, use explicit view (w:byte / (w+1):byte)
 ───╯
-

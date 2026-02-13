@@ -9,4 +9,3 @@ Error: symbolic subscript array 'VIA' is missing a base address assignment
    │     
    │     Help: append '= <constant numeric expression>' after the field list (for example: '] = $6000')
 ───╯
-

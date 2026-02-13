@@ -7,4 +7,3 @@ Error: `lda` uses a width-dependent immediate but accumulator width is unknown
    │ 
    │ Help: add @a8 or @a16 to the enclosing function
 ───╯
-

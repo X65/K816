@@ -5,4 +5,3 @@ Error: var initializer 'base_addr' must be a constant numeric expression
    │     ────┬────  
    │         ╰────── here
 ───╯
-

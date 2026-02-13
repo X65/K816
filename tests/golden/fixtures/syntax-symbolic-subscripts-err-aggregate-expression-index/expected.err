@@ -7,4 +7,3 @@ Error: invalid index on symbolic subscript array 'foo': use '.field' or '[.field
    │ 
    │ Help: did you mean '.idx'?
 ───╯
-

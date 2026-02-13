@@ -5,4 +5,3 @@ Error: symbolic subscript array index must be a constant numeric expression
    │   ─────────┬─────────  
    │            ╰─────────── here
 ───╯
-

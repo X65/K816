@@ -7,4 +7,3 @@ Error: `lda` uses a width-dependent immediate but accumulator width is unknown
    │ 
    │ Help: PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width
 ───╯
-

@@ -5,4 +5,3 @@ Error: symbolic subscript field 'foo.idx' is not an array
    │   ───────┬──────  
    │          ╰──────── here
 ───╯
-

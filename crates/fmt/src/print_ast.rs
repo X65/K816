@@ -14,6 +14,7 @@ pub fn format_ast(file: &File) -> String {
 fn format_item(out: &mut String, item: &Item, indent: usize) {
     match item {
         Item::Segment(segment) => line(out, indent, format!("segment {}", segment.name)),
+        Item::Const(const_decl) => line(out, indent, format_const(const_decl)),
         Item::Var(var) => line(out, indent, format_var(var)),
         Item::DataBlock(block) => {
             line(out, indent, "data {".to_string());
@@ -196,6 +197,14 @@ fn format_var(var: &k816_core::ast::VarDecl) -> String {
         out.push_str(&format_expr(expr));
     }
     out
+}
+
+fn format_const(const_decl: &k816_core::ast::ConstDecl) -> String {
+    format!(
+        "const {} = {}",
+        const_decl.name,
+        format_expr(&const_decl.initializer)
+    )
 }
 
 fn format_data_command(command: &DataCommand) -> String {

@@ -1,6 +1,6 @@
 use crate::ast::{
-    CodeBlock, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
-    NamedDataEntry, Operand, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    CodeBlock, ConstDecl, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item,
+    NamedDataBlock, NamedDataEntry, Operand, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::parser::parse_expression_fragment;
@@ -32,6 +32,9 @@ fn expand_item(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Item {
     match item {
+        Item::Const(const_decl) => {
+            Item::Const(expand_const(const_decl, span, source_id, diagnostics))
+        }
         Item::Var(var) => Item::Var(expand_var(var, span, source_id, diagnostics)),
         Item::CodeBlock(block) => Item::CodeBlock(expand_code_block(block, source_id, diagnostics)),
         Item::Statement(stmt) => Item::Statement(expand_stmt(stmt, span, source_id, diagnostics)),
@@ -255,6 +258,24 @@ fn expand_hla_condition(
             .rhs
             .as_ref()
             .map(|rhs| expand_expr(rhs, span, source_id, diagnostics)),
+    }
+}
+
+fn expand_const(
+    const_decl: &ConstDecl,
+    span: Span,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ConstDecl {
+    ConstDecl {
+        name: const_decl.name.clone(),
+        initializer: expand_expr(
+            &const_decl.initializer,
+            const_decl.initializer_span.unwrap_or(span),
+            source_id,
+            diagnostics,
+        ),
+        initializer_span: const_decl.initializer_span,
     }
 }
 

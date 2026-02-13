@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 
 use crate::ast::{
-    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract, Stmt,
-    SymbolicSubscriptFieldDecl, VarDecl,
+    CodeBlock, ConstDecl, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, Item, ModeContract,
+    Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::span::Span;
@@ -37,10 +37,16 @@ pub struct VarMeta {
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConstMeta {
+    pub value: i64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SemanticModel {
     pub functions: IndexMap<String, FunctionMeta>,
     pub vars: IndexMap<String, VarMeta>,
+    pub consts: IndexMap<String, ConstMeta>,
 }
 
 pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
@@ -50,6 +56,9 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
 
     for item in &file.items {
         match &item.node {
+            Item::Const(const_decl) => {
+                collect_const(const_decl, item.span, &mut model, &mut diagnostics)
+            }
             Item::Var(var) => collect_var(
                 var,
                 item.span,
@@ -128,6 +137,48 @@ fn collect_function(
     );
 }
 
+fn collect_const(
+    const_decl: &ConstDecl,
+    span: Span,
+    model: &mut SemanticModel,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !is_symbol_available(&const_decl.name, model) {
+        diagnostics.push(
+            Diagnostic::error(span, format!("duplicate symbol '{}'", const_decl.name))
+                .with_help("rename one of the consts/vars/functions to keep symbols unique"),
+        );
+        return;
+    }
+
+    let initializer_span = const_decl.initializer_span.unwrap_or(span);
+    match eval_const_expr(&const_decl.initializer, &model.consts) {
+        Ok(value) => {
+            model
+                .consts
+                .insert(const_decl.name.clone(), ConstMeta { value });
+        }
+        Err(ConstExprError::Ident(name)) => {
+            diagnostics.push(Diagnostic::error(
+                initializer_span,
+                format!("const initializer '{name}' must be a constant numeric expression"),
+            ));
+        }
+        Err(ConstExprError::EvalText) => {
+            diagnostics.push(Diagnostic::error(
+                initializer_span,
+                "internal error: eval text should be expanded before semantic analysis",
+            ));
+        }
+        Err(ConstExprError::Overflow) => {
+            diagnostics.push(Diagnostic::error(
+                initializer_span,
+                "const initializer overflows numeric literal range",
+            ));
+        }
+    }
+}
+
 fn collect_var(
     var: &VarDecl,
     span: Span,
@@ -143,10 +194,11 @@ fn collect_var(
         return;
     }
 
-    let Some(address) = eval_var_address(var, *next_auto_addr, span, diagnostics) else {
+    let Some(address) = eval_var_address(var, *next_auto_addr, span, &model.consts, diagnostics)
+    else {
         return;
     };
-    let Some(layout) = eval_var_layout(var, span, diagnostics) else {
+    let Some(layout) = eval_var_layout(var, span, &model.consts, diagnostics) else {
         return;
     };
     let Some(next_addr) = address.checked_add(layout.size) else {
@@ -176,6 +228,7 @@ fn eval_var_address(
     var: &VarDecl,
     next_auto_addr: u32,
     span: Span,
+    consts: &IndexMap<String, ConstMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
     let Some(initializer) = &var.initializer else {
@@ -196,7 +249,7 @@ fn eval_var_address(
     };
     let initializer_span = var.initializer_span.unwrap_or(span);
 
-    match eval_const_expr(initializer) {
+    match eval_const_expr(initializer, consts) {
         Ok(value) => match u32::try_from(value) {
             Ok(address) => Some(address),
             Err(_) => {
@@ -239,6 +292,7 @@ struct VarLayout {
 fn eval_var_layout(
     var: &VarDecl,
     span: Span,
+    consts: &IndexMap<String, ConstMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<VarLayout> {
     if let Some(symbolic_subscript_fields) = &var.symbolic_subscript_fields {
@@ -253,8 +307,13 @@ fn eval_var_layout(
             return None;
         }
 
-        let symbolic_subscript =
-            eval_symbolic_subscript_layout(var, symbolic_subscript_fields, span, diagnostics)?;
+        let symbolic_subscript = eval_symbolic_subscript_layout(
+            var,
+            symbolic_subscript_fields,
+            span,
+            consts,
+            diagnostics,
+        )?;
         return Some(VarLayout {
             size: symbolic_subscript.total_size,
             symbolic_subscript: Some(symbolic_subscript),
@@ -273,7 +332,7 @@ fn eval_var_layout(
         });
     };
 
-    match eval_const_expr(array_len) {
+    match eval_const_expr(array_len, consts) {
         Ok(value) => {
             if value <= 0 {
                 diagnostics.push(Diagnostic::error(
@@ -324,6 +383,7 @@ fn eval_symbolic_subscript_layout(
     var: &VarDecl,
     fields: &[SymbolicSubscriptFieldDecl],
     span: Span,
+    consts: &IndexMap<String, ConstMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SymbolicSubscriptMeta> {
     let mut offset = 0_u32;
@@ -347,7 +407,7 @@ fn eval_symbolic_subscript_layout(
             .unwrap_or(DataWidth::Byte);
 
         let count = match &field.count {
-            Some(count_expr) => match eval_const_expr(count_expr) {
+            Some(count_expr) => match eval_const_expr(count_expr, consts) {
                 Ok(value) => {
                     if value <= 0 {
                         let count_span = field.count_span.unwrap_or(field.span);
@@ -458,37 +518,45 @@ enum ConstExprError {
     Overflow,
 }
 
-fn eval_const_expr(expr: &Expr) -> Result<i64, ConstExprError> {
+fn eval_const_expr(
+    expr: &Expr,
+    consts: &IndexMap<String, ConstMeta>,
+) -> Result<i64, ConstExprError> {
     match expr {
         Expr::Number(value) => Ok(*value),
-        Expr::Ident(name) => Err(ConstExprError::Ident(name.clone())),
+        Expr::Ident(name) => consts
+            .get(name)
+            .map(|constant| constant.value)
+            .ok_or_else(|| ConstExprError::Ident(name.clone())),
         Expr::EvalText(_) => Err(ConstExprError::EvalText),
         Expr::Index { base, index } => {
-            let base = eval_const_expr(base)?;
-            let index = eval_const_expr(index)?;
+            let base = eval_const_expr(base, consts)?;
+            let index = eval_const_expr(index, consts)?;
             base.checked_add(index).ok_or(ConstExprError::Overflow)
         }
         Expr::Binary { op, lhs, rhs } => {
-            let lhs = eval_const_expr(lhs)?;
-            let rhs = eval_const_expr(rhs)?;
+            let lhs = eval_const_expr(lhs, consts)?;
+            let rhs = eval_const_expr(rhs, consts)?;
             match op {
                 ExprBinaryOp::Add => lhs.checked_add(rhs).ok_or(ConstExprError::Overflow),
                 ExprBinaryOp::Sub => lhs.checked_sub(rhs).ok_or(ConstExprError::Overflow),
             }
         }
         Expr::Unary { op, expr } => {
-            let value = eval_const_expr(expr)?;
+            let value = eval_const_expr(expr, consts)?;
             match op {
                 ExprUnaryOp::LowByte => Ok(value & 0xFF),
                 ExprUnaryOp::HighByte => Ok((value >> 8) & 0xFF),
             }
         }
-        Expr::TypedView { expr, .. } => eval_const_expr(expr),
+        Expr::TypedView { expr, .. } => eval_const_expr(expr, consts),
     }
 }
 
 fn is_symbol_available(symbol: &str, model: &SemanticModel) -> bool {
-    !model.functions.contains_key(symbol) && !model.vars.contains_key(symbol)
+    !model.functions.contains_key(symbol)
+        && !model.vars.contains_key(symbol)
+        && !model.consts.contains_key(symbol)
 }
 
 #[cfg(test)]
@@ -522,6 +590,54 @@ mod tests {
         assert_eq!(sema.vars.get("first").expect("first").address, 0);
         assert_eq!(sema.vars.get("reset").expect("reset").address, 0x100);
         assert_eq!(sema.vars.get("next").expect("next").address, 0x101);
+    }
+
+    #[test]
+    fn consts_are_collected_and_used_in_var_initializers() {
+        let source = "const BASE = 0x100\nconst NEXT = BASE + 3\nvar ptr = NEXT\nvar tail\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("BASE").expect("BASE").value, 0x100);
+        assert_eq!(sema.consts.get("NEXT").expect("NEXT").value, 0x103);
+        assert_eq!(sema.vars.get("ptr").expect("ptr").address, 0x103);
+        assert_eq!(sema.vars.get("tail").expect("tail").address, 0x104);
+    }
+
+    #[test]
+    fn const_declarations_do_not_advance_var_allocator() {
+        let source = "const C = 7\nvar first\nvar second\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.vars.get("first").expect("first").address, 0);
+        assert_eq!(sema.vars.get("second").expect("second").address, 1);
+    }
+
+    #[test]
+    fn duplicate_symbols_between_const_and_var_are_rejected() {
+        let source = "const dup = 1\nvar dup\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("duplicate symbol 'dup'"))
+        );
+    }
+
+    #[test]
+    fn const_initializer_must_be_a_constant_expression() {
+        let source = "const A = B\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let errors = analyze(&file).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("const initializer 'B' must be a constant numeric expression")
+        }));
     }
 
     #[test]

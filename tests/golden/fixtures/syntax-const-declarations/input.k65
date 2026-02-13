@@ -1,0 +1,12 @@
+const BASE = 0x200
+const A = 1, B = 2
+const OFFSET = BASE + B
+var ptr = OFFSET
+var arr[A + B]
+
+main {
+  lda #A
+  lda #B
+  lda ptr
+  lda arr
+}

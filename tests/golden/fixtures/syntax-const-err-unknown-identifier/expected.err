@@ -1,0 +1,7 @@
+Error: unknown identifier 'MISSING' in numeric expression
+   ╭─[ tests/golden/fixtures/syntax-const-err-unknown-identifier/input.k65:2:8 ]
+   │
+ 2 │   lda #MISSING
+   │        ───┬───  
+   │           ╰───── here
+───╯

@@ -1,8 +1,8 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp,
-    ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, IndexRegister,
-    Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, Operand,
-    OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    BlockKind, CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth, Expr,
+    ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt,
+    IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry,
+    Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{TokenKind, lex};
@@ -152,6 +152,22 @@ fn preprocess_source(source_text: &str) -> String {
                     let part = part.trim();
                     if !part.is_empty() {
                         out.push(format!("{indent}var {part}"));
+                    }
+                }
+                continue;
+            }
+        }
+        if trimmed.starts_with("const ") {
+            let indent = raw_line
+                .chars()
+                .take_while(|ch| ch.is_ascii_whitespace())
+                .collect::<String>();
+            let payload = trimmed.trim_start_matches("const ").trim();
+            if payload.contains(',') {
+                for part in payload.split(',') {
+                    let part = part.trim();
+                    if !part.is_empty() {
+                        out.push(format!("{indent}const {part}"));
                     }
                 }
                 continue;
@@ -334,6 +350,8 @@ where
         .ignore_then(ident_parser())
         .map(|name| Item::Segment(SegmentDecl { name }));
 
+    let const_item = const_decl_parser(source_id).map(Item::Const);
+
     let var_item = var_decl_parser(source_id).map(Item::Var);
 
     let data_item = just(TokenKind::Data).ignore_then(
@@ -383,6 +401,7 @@ where
         .or(eval_block_item)
         .or(image_binary_var_item)
         .or(segment_item)
+        .or(const_item)
         .or(var_item)
         .or(data_item)
         .or(code_block_item)
@@ -855,6 +874,23 @@ where
         TokenKind::String(value) => DataArg::Str(value),
     }
     .boxed()
+}
+
+fn const_decl_parser<'src, I>(
+    source_id: SourceId,
+) -> impl chumsky::Parser<'src, I, ConstDecl, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Const)
+        .ignore_then(ident_parser())
+        .then_ignore(just(TokenKind::Eq))
+        .then(spanned(expr_parser(), source_id))
+        .map(|(name, initializer)| ConstDecl {
+            name,
+            initializer: initializer.node,
+            initializer_span: Some(initializer.span),
+        })
 }
 
 fn data_width_parser<'src, I>() -> impl chumsky::Parser<'src, I, DataWidth, ParseExtra<'src>> + Clone
@@ -2814,7 +2850,8 @@ fn rich_error_to_diagnostic(
     context: &str,
 ) -> Diagnostic {
     let range = error.span().into_range();
-    let span = Span::new(source_id, range.start, range.end);
+    let mut span = Span::new(source_id, range.start, range.end);
+    let mut primary_label = "here";
     let (message, help) = match error.reason() {
         RichReason::Custom(custom) => {
             let custom = custom.to_string();
@@ -2824,6 +2861,15 @@ fn rich_error_to_diagnostic(
             (format!("{context}: {custom}"), help)
         }
         RichReason::ExpectedFound { expected, found } => {
+            if found
+                .as_deref()
+                .is_some_and(|token| matches!(token, TokenKind::Newline))
+            {
+                // Newline token spans include the line break byte, which renders as a cross-line
+                // highlight. Collapse to a zero-width end-of-line span for clearer diagnostics.
+                span = Span::new(source_id, range.start, range.start);
+                primary_label = "expected here";
+            }
             if found
                 .as_deref()
                 .is_some_and(|token| matches!(token, TokenKind::Question))
@@ -2867,7 +2913,7 @@ fn rich_error_to_diagnostic(
         }
     };
     let help = help.or_else(|| detect_var_width_after_array_hint(source_text, range.start));
-    let diagnostic = Diagnostic::error(span, message);
+    let diagnostic = Diagnostic::error(span, message).with_primary_label(primary_label);
     match help {
         Some(help) => diagnostic.with_help(help),
         None => diagnostic,
@@ -3008,6 +3054,7 @@ fn rich_pattern_message(pattern: &RichPattern<'_, TokenKind>) -> String {
 fn token_kind_message(token: &TokenKind) -> String {
     match token {
         TokenKind::Segment => "'segment'".to_string(),
+        TokenKind::Const => "'const'".to_string(),
         TokenKind::Var => "'var'".to_string(),
         TokenKind::Func => "'func'".to_string(),
         TokenKind::Main => "'main'".to_string(),
@@ -3187,6 +3234,53 @@ mod tests {
         assert!(matches!(var.array_len, Some(Expr::Number(16))));
         assert!(var.symbolic_subscript_fields.is_none());
         assert!(var.initializer.is_none());
+    }
+
+    #[test]
+    fn parses_const_declaration() {
+        let source = "const LIMIT = $10\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 1);
+
+        let Item::Const(const_decl) = &file.items[0].node else {
+            panic!("expected const item");
+        };
+        assert_eq!(const_decl.name, "LIMIT");
+        assert!(matches!(const_decl.initializer, Expr::Number(16)));
+        assert!(const_decl.initializer_span.is_some());
+    }
+
+    #[test]
+    fn preprocesses_comma_separated_const_declarations() {
+        let source = "const A = 1, B = 2\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 2);
+        assert!(matches!(file.items[0].node, Item::Const(_)));
+        assert!(matches!(file.items[1].node, Item::Const(_)));
+    }
+
+    #[test]
+    fn rejects_const_statement_inside_code_block() {
+        let source = "main {\n  const LIMIT = 1\n}\n";
+        let diagnostics = parse(SourceId(0), source).expect_err("expected parse error");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("unexpected 'const'")),
+            "unexpected diagnostics: {diagnostics:#?}"
+        );
+    }
+
+    #[test]
+    fn rejects_const_without_initializer() {
+        let source = "const LIMIT\n";
+        let diagnostics = parse(SourceId(0), source).expect_err("expected parse error");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.message.contains("expected '='")),
+            "unexpected diagnostics: {diagnostics:#?}"
+        );
     }
 
     #[test]

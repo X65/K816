@@ -28,6 +28,7 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
     pub primary: Span,
+    pub primary_label: String,
     pub labels: Vec<LabelledSpan>,
     pub supplements: Vec<Supplemental>,
 }
@@ -38,6 +39,7 @@ impl Diagnostic {
             severity,
             message: message.into(),
             primary,
+            primary_label: "here".to_string(),
             labels: Vec::new(),
             supplements: Vec::new(),
         }
@@ -56,6 +58,11 @@ impl Diagnostic {
             span,
             message: message.into(),
         });
+        self
+    }
+
+    pub fn with_primary_label(mut self, message: impl Into<String>) -> Self {
+        self.primary_label = message.into();
         self
     }
 
@@ -171,7 +178,7 @@ pub fn render_diagnostic_with_options(
                 .with_color(primary_color(diagnostic.severity))
                 .with_priority(100)
                 .with_order(0)
-                .with_message("here"),
+                .with_message(diagnostic.primary_label.clone()),
         );
 
     let mut colors = ColorGenerator::new();

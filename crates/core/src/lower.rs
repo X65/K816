@@ -238,6 +238,7 @@ pub fn lower(
                     &mut ops,
                 );
             }
+            Item::Const(_) => {}
             Item::Var(var) => {
                 emit_var_absolute_symbols(var, item.span, sema, &mut diagnostics, &mut ops);
             }
@@ -1843,6 +1844,9 @@ fn eval_to_number_strict(
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
+            if let Some(constant) = sema.consts.get(name) {
+                return Some(constant.value);
+            }
             match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
                 Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
@@ -2173,7 +2177,8 @@ fn lower_instruction(
     let operand = match &instruction.operand {
         None => None,
         Some(Operand::Immediate(expr)) => {
-            let value = eval_to_number(expr, scope, sema, span, diagnostics)?;
+            let eval_span = immediate_expr_span(expr, span);
+            let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
             Some(OperandOp::Immediate(value))
         }
         Some(Operand::Value {
@@ -2191,6 +2196,16 @@ fn lower_instruction(
         mnemonic: instruction.mnemonic.clone(),
         operand,
     })
+}
+
+fn immediate_expr_span(expr: &Expr, instruction_span: Span) -> Span {
+    match expr {
+        Expr::Ident(name) => {
+            let ident_start = instruction_span.end.saturating_sub(name.len());
+            Span::new(instruction_span.source_id, ident_start, instruction_span.end)
+        }
+        _ => instruction_span,
+    }
 }
 
 fn lower_address_operand(
@@ -2266,6 +2281,9 @@ fn eval_to_number(
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
+            if let Some(constant) = sema.consts.get(name) {
+                return Some(constant.value);
+            }
             match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
                 Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
@@ -2275,10 +2293,12 @@ fn eval_to_number(
                 Ok(None) => {}
             }
 
-            // Constants that are not materialized in semantic tables yet;
-            // keep lowering permissive by resolving unknown constants to 0.
             let _ = resolve_symbol(name, scope, span, diagnostics)?;
-            Some(0)
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("unknown identifier '{name}' in numeric expression"),
+            ));
+            None
         }
         Expr::EvalText(_) => {
             diagnostics.push(Diagnostic::error(
@@ -2432,6 +2452,23 @@ fn resolve_operand_ident(
             mode,
         });
     }
+    if let Some(constant) = sema.consts.get(name) {
+        let Ok(address) = u32::try_from(constant.value) else {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!(
+                    "address cannot be negative: {} (from const '{name}')",
+                    constant.value
+                ),
+            ));
+            return None;
+        };
+        return Some(OperandOp::Address {
+            value: AddressValue::Literal(address),
+            force_far,
+            mode,
+        });
+    }
 
     match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
         Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
@@ -2520,6 +2557,49 @@ mod tests {
             }
             _ => panic!("expected address operand"),
         }
+    }
+
+    #[test]
+    fn resolves_const_operand_to_immediate_value() {
+        let source = "const LIMIT = 0x34\nmain {\n  lda #LIMIT\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(0x34)));
+    }
+
+    #[test]
+    fn reports_unknown_identifier_in_numeric_expression() {
+        let source = "main {\n  lda #MISSING\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        let missing_start = source.find("MISSING").expect("MISSING start");
+        let missing_end = missing_start + "MISSING".len();
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("unknown identifier 'MISSING' in numeric expression")
+        }));
+        assert!(errors.iter().any(|error| {
+            error.primary.start == missing_start && error.primary.end == missing_end
+        }));
     }
 
     #[test]

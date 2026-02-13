@@ -10,6 +10,8 @@ use crate::span::{SourceId, Span};
 pub enum TokenKind {
     #[token("segment")]
     Segment,
+    #[token("const")]
+    Const,
     #[token("var")]
     Var,
     #[token("func")]

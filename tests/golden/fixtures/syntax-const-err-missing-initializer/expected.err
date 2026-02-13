@@ -1,0 +1,7 @@
+Error: invalid syntax: expected '=', found newline
+   ╭─[ tests/golden/fixtures/syntax-const-err-missing-initializer/input.k65:1:12 ]
+   │
+ 1 │ const LIMIT
+   │            │ 
+   │            ╰─ expected here
+───╯

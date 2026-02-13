@@ -30,6 +30,7 @@ pub struct File {
 #[derive(Debug, Clone)]
 pub enum Item {
     Segment(SegmentDecl),
+    Const(ConstDecl),
     Var(VarDecl),
     DataBlock(DataBlock),
     NamedDataBlock(NamedDataBlock),
@@ -40,6 +41,13 @@ pub enum Item {
 #[derive(Debug, Clone)]
 pub struct SegmentDecl {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstDecl {
+    pub name: String,
+    pub initializer: Expr,
+    pub initializer_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]

@@ -87,6 +87,7 @@ struct ScopeRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SymbolCategory {
     Function,
+    Constant,
     Variable,
     Label,
     DataBlock,
@@ -97,6 +98,7 @@ impl SymbolCategory {
     fn symbol_kind(self) -> SymbolKind {
         match self {
             Self::Function => SymbolKind::FUNCTION,
+            Self::Constant => SymbolKind::CONSTANT,
             Self::Variable => SymbolKind::VARIABLE,
             Self::Label => SymbolKind::CONSTANT,
             Self::DataBlock => SymbolKind::OBJECT,
@@ -107,6 +109,7 @@ impl SymbolCategory {
     fn detail(self) -> &'static str {
         match self {
             Self::Function => "function",
+            Self::Constant => "constant",
             Self::Variable => "variable",
             Self::Label => "label",
             Self::DataBlock => "data block",
@@ -135,6 +138,7 @@ struct SymbolLocation {
 #[derive(Debug, Clone, Default)]
 struct SemanticInfo {
     functions: HashMap<String, k816_core::sema::FunctionMeta>,
+    consts: HashMap<String, k816_core::sema::ConstMeta>,
     vars: HashMap<String, k816_core::sema::VarMeta>,
 }
 
@@ -959,6 +963,9 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
             for (name, meta) in model.functions {
                 semantic.functions.insert(name, meta);
             }
+            for (name, meta) in model.consts {
+                semantic.consts.insert(name, meta);
+            }
             for (name, meta) in model.vars {
                 semantic.vars.insert(name, meta);
             }
@@ -1018,6 +1025,16 @@ fn collect_symbols(file: &k816_core::ast::File) -> SymbolCollection {
                     canonical: var.name.clone(),
                     name: var.name.clone(),
                     category: SymbolCategory::Variable,
+                    selection: range,
+                    scope: None,
+                });
+            }
+            k816_core::ast::Item::Const(const_decl) => {
+                let range = ByteRange::from_span(item.span);
+                out.symbols.push(SymbolDef {
+                    canonical: const_decl.name.clone(),
+                    name: const_decl.name.clone(),
+                    category: SymbolCategory::Constant,
                     selection: range,
                     scope: None,
                 });
@@ -1104,6 +1121,7 @@ fn canonical_symbol(name: &str, scope: Option<&str>) -> String {
 fn completion_kind_for_symbol(category: SymbolCategory) -> CompletionItemKind {
     match category {
         SymbolCategory::Function => CompletionItemKind::FUNCTION,
+        SymbolCategory::Constant => CompletionItemKind::CONSTANT,
         SymbolCategory::Variable => CompletionItemKind::VARIABLE,
         SymbolCategory::Label => CompletionItemKind::CONSTANT,
         SymbolCategory::DataBlock => CompletionItemKind::VALUE,
@@ -1281,6 +1299,9 @@ fn hover_contents_for_symbol(
             }
             return lines.join("\n");
         }
+        if let Some(meta) = doc.analysis.semantic.consts.get(canonical) {
+            return format!("**constant** `{}`\n- value: `{}`", symbol.name, meta.value);
+        }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
             return format!(
                 "**variable** `{}`\n- address: `0x{:X}`\n- size: `{}`",
@@ -1313,6 +1334,7 @@ fn builtin_hover_text(token: &str) -> Option<String> {
 
     let text = match token.as_str() {
         "segment" => "Select an output segment for following code/data.",
+        "const" => "Declare a compile-time numeric constant.",
         "var" => "Declare a variable symbol (optionally typed and/or initialized).",
         "func" => "Declare a function block.",
         "main" => "Declare the program entry block.",
@@ -1345,8 +1367,8 @@ fn opcode_keywords() -> Vec<String> {
 
 fn directive_keywords() -> &'static [&'static str] {
     &[
-        "segment", "var", "func", "main", "far", "naked", "inline", "data", "align", "address",
-        "nocross", "call", "@a8", "@a16", "@i8", "@i16", ".byte",
+        "segment", "const", "var", "func", "main", "far", "naked", "inline", "data", "align",
+        "address", "nocross", "call", "@a8", "@a16", "@i8", "@i16", ".byte",
     ]
 }
 
@@ -1378,6 +1400,15 @@ fn document_symbols_from_ast(
             k816_core::ast::Item::Var(var) => Some(make_document_symbol(
                 var.name.clone(),
                 SymbolCategory::Variable,
+                item.span,
+                item.span,
+                None,
+                line_index,
+                text,
+            )),
+            k816_core::ast::Item::Const(const_decl) => Some(make_document_symbol(
+                const_decl.name.clone(),
+                SymbolCategory::Constant,
                 item.span,
                 item.span,
                 None,

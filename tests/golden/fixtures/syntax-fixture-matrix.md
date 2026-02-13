@@ -6,6 +6,7 @@ Key focus areas:
 
 - one-letter/symbolic operator forms (`a+...`, `mem=a`, `c+?{...}`, `*`)
 - data/evaluator/control-flow shorthand patterns from examples
+- const declarations and compile-time symbol resolution
 
 Primary operator-coverage fixtures:
 
@@ -18,5 +19,6 @@ Primary operator-coverage fixtures:
 - `syntax-data-address-byte-main-symbol`
 - `syntax-doc-instructions-indexed-y`
 - `syntax-c-addrmodes-indirect-xy`
+- `syntax-const-declarations`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.

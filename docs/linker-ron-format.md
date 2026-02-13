@@ -7,6 +7,16 @@ This document describes the linker configuration format used by:
 
 The format is RON and deserializes into `LinkerConfig`.
 
+## Compatibility Scope
+
+- `format: "o65-link"` identifies k816 linker-config metadata.
+- k816 object files use o65 magic/header framing, but carry a k816-defined
+  payload model.
+- As of February 13, 2026, interoperability with external o65
+  compilers/linkers is not guaranteed.
+- This document describes k816 behavior/contracts, not the canonical o65
+  specification.
+
 ## Minimal Example
 
 ```ron

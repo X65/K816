@@ -383,10 +383,29 @@ pub fn link_objects_with_options(
                     )
                 })?;
 
-            let target = symbols
-                .get(&reloc.symbol)
-                .ok_or_else(|| anyhow::anyhow!("undefined symbol '{}'", reloc.symbol))?
-                .clone();
+            let target = symbols.get(&reloc.symbol).cloned().ok_or_else(|| {
+                let detail = format!("undefined symbol '{}'", reloc.symbol);
+                let label_message = format!("symbol '{}' referenced here", reloc.symbol);
+                let anchor = reloc
+                    .source
+                    .as_ref()
+                    .map(|source| AnchorContext {
+                        symbol_name: reloc.symbol.clone(),
+                        source: Some(source.clone()),
+                    })
+                    .or_else(|| {
+                        find_section_anchor_context(objects, obj_idx, &reloc.section, reloc.offset)
+                    });
+                anyhow::anyhow!(
+                    "{}",
+                    decorate_with_anchor_with_label(
+                        &detail,
+                        anchor.as_ref(),
+                        options,
+                        Some(&label_message)
+                    )
+                )
+            })?;
 
             if reloc.kind == RelocationKind::Absolute
                 && reloc.width == 2
@@ -694,8 +713,18 @@ fn place_chunk(
 }
 
 fn find_anchor_context(objects: &[O65Object], chunk: &PlannedChunk) -> Option<AnchorContext> {
-    let object = objects.get(chunk.obj_idx)?;
-    let mut first_match_name: Option<String> = None;
+    find_section_anchor_context(objects, chunk.obj_idx, &chunk.segment, chunk.section_offset)
+}
+
+fn find_section_anchor_context(
+    objects: &[O65Object],
+    obj_idx: usize,
+    section_name: &str,
+    section_offset: u32,
+) -> Option<AnchorContext> {
+    let object = objects.get(obj_idx)?;
+    let mut best_with_source: Option<(u32, AnchorContext)> = None;
+    let mut best_without_source: Option<(u32, String)> = None;
 
     for symbol in &object.symbols {
         let Some(SymbolDefinition::Section {
@@ -706,23 +735,37 @@ fn find_anchor_context(objects: &[O65Object], chunk: &PlannedChunk) -> Option<An
         else {
             continue;
         };
-        if section != &chunk.segment || *offset != chunk.section_offset {
+        if section != section_name || *offset > section_offset {
             continue;
         }
 
-        if source.is_some() {
-            return Some(AnchorContext {
+        if let Some(source) = source {
+            let candidate = AnchorContext {
                 symbol_name: symbol.name.clone(),
-                source: source.clone(),
-            });
+                source: Some(source.clone()),
+            };
+            if best_with_source
+                .as_ref()
+                .is_none_or(|(best_offset, _)| *offset >= *best_offset)
+            {
+                best_with_source = Some((*offset, candidate));
+            }
+            continue;
         }
 
-        if first_match_name.is_none() {
-            first_match_name = Some(symbol.name.clone());
+        if best_without_source
+            .as_ref()
+            .is_none_or(|(best_offset, _)| *offset >= *best_offset)
+        {
+            best_without_source = Some((*offset, symbol.name.clone()));
         }
     }
 
-    first_match_name.map(|symbol_name| AnchorContext {
+    if let Some((_, anchor)) = best_with_source {
+        return Some(anchor);
+    }
+
+    best_without_source.map(|(_, symbol_name)| AnchorContext {
         symbol_name,
         source: None,
     })
@@ -733,19 +776,31 @@ fn decorate_with_anchor(
     anchor: Option<&AnchorContext>,
     options: LinkRenderOptions,
 ) -> String {
+    let label_message =
+        anchor.map(|anchor| format!("function '{}' defined here", anchor.symbol_name));
+    decorate_with_anchor_with_label(message, anchor, options, label_message.as_deref())
+}
+
+fn decorate_with_anchor_with_label(
+    message: &str,
+    anchor: Option<&AnchorContext>,
+    options: LinkRenderOptions,
+    label_message: Option<&str>,
+) -> String {
     let Some(anchor) = anchor else {
         return message.to_string();
     };
+    let label_message = label_message.unwrap_or("defined here");
 
     let Some(source) = &anchor.source else {
-        return format!("{message}\nfunction '{}'", anchor.symbol_name);
+        return format!("{message}\n{label_message}");
     };
 
-    let context = render_anchor_context(message, anchor, source, options);
+    let context = render_anchor_context(message, source, options, label_message);
     if context.is_empty() {
         format!(
-            "{message}\nfunction '{}' at {}:{}:{}",
-            anchor.symbol_name, source.file, source.line, source.column
+            "{message}\n{label_message} at {}:{}:{}",
+            source.file, source.line, source.column
         )
     } else {
         context
@@ -754,9 +809,9 @@ fn decorate_with_anchor(
 
 fn render_anchor_context(
     message: &str,
-    anchor: &AnchorContext,
     source: &SourceLocation,
     options: LinkRenderOptions,
+    label_message: &str,
 ) -> String {
     let file_id = source.file.clone();
     let line_len = source.line_text.len();
@@ -789,8 +844,7 @@ fn render_anchor_context(
         )
         .with_message(message.to_string())
         .with_label(
-            Label::new((file_id.clone(), start..end))
-                .with_message(format!("function '{}' defined here", anchor.symbol_name)),
+            Label::new((file_id.clone(), start..end)).with_message(label_message.to_string()),
         )
         .finish();
 
@@ -1694,6 +1748,7 @@ mod tests {
                 width: 1,
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
+                source: None,
             }],
             function_disassembly: Vec::new(),
             data_string_fragments: Vec::new(),
@@ -1740,6 +1795,7 @@ mod tests {
                 width: 2,
                 kind: RelocationKind::Absolute,
                 symbol: "abs_target".to_string(),
+                source: None,
             }],
             function_disassembly: Vec::new(),
             data_string_fragments: Vec::new(),

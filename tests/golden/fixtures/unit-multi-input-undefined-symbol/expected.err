@@ -1,1 +1,7 @@
-undefined symbol 'missing'
+Error: undefined symbol 'missing'
+   ╭─[ tests/golden/fixtures/unit-multi-input-undefined-symbol/input.10-main.k65:1:9 ]
+   │
+ 1 │     jsr missing
+   │         ───┬───  
+   │            ╰───── symbol 'missing' referenced here
+───╯

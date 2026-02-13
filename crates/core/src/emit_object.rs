@@ -306,6 +306,8 @@ pub fn emit_object_with_options(
                         ));
                         continue;
                     }
+                    let relocation_span =
+                        relocation_span_for_label(source_map, op.span, &relocation.label);
                     fixups.push(Fixup {
                         segment: current_segment.clone(),
                         offset: emit_offset + relocation.offset,
@@ -315,7 +317,7 @@ pub fn emit_object_with_options(
                             ByteRelocationKind::HighByte => RelocationKind::HighByte,
                         },
                         label: relocation.label.clone(),
-                        span: op.span,
+                        span: relocation_span,
                     });
                 }
             }
@@ -446,6 +448,8 @@ pub fn emit_object_with_options(
                         }
                         AddressValue::Label(label) => {
                             emit_zeroes(segment, width, op.span, &mut diagnostics);
+                            let relocation_span =
+                                relocation_span_for_label(source_map, op.span, label);
                             fixups.push(Fixup {
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
@@ -459,7 +463,7 @@ pub fn emit_object_with_options(
                                     RelocationKind::Absolute
                                 },
                                 label: label.clone(),
-                                span: op.span,
+                                span: relocation_span,
                             });
                         }
                     },
@@ -554,6 +558,7 @@ pub fn emit_object_with_options(
             width: fixup.width,
             kind: fixup.kind,
             symbol: fixup.label.clone(),
+            source: source_location_for_span(source_map, fixup.span),
         });
     }
 
@@ -832,6 +837,40 @@ fn source_location_for_span(source_map: &SourceMap, span: Span) -> Option<Source
         column_end: column_end as u32,
         line_text,
     })
+}
+
+fn relocation_span_for_label(source_map: &SourceMap, fallback: Span, label: &str) -> Span {
+    let Some(file) = source_map.get(fallback.source_id) else {
+        return fallback;
+    };
+
+    let text_len = file.text.len();
+    let start = fallback.start.min(text_len);
+    let end = fallback.end.min(text_len);
+    if start >= end {
+        return fallback;
+    }
+
+    let haystack = &file.text[start..end];
+    for candidate in label_span_candidates(label) {
+        if let Some(idx) = haystack.find(&candidate) {
+            return Span::new(
+                fallback.source_id,
+                start.saturating_add(idx),
+                start.saturating_add(idx).saturating_add(candidate.len()),
+            );
+        }
+    }
+
+    fallback
+}
+
+fn label_span_candidates(label: &str) -> Vec<String> {
+    let mut candidates = vec![label.to_string()];
+    if let Some(local_name) = label.split("::.").nth(1) {
+        candidates.push(format!(".{local_name}"));
+    }
+    candidates
 }
 
 fn string_literal_text_for_emit(

@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 5;
+const PAYLOAD_VERSION: u16 = 6;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -81,6 +81,7 @@ pub struct Relocation {
     pub width: u8,
     pub kind: RelocationKind,
     pub symbol: String,
+    pub source: Option<SourceLocation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +216,17 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
             RelocationKind::HighByte => 3,
         });
         write_string(&mut out, &reloc.symbol)?;
+        match &reloc.source {
+            Some(source) => {
+                out.push(1);
+                write_string(&mut out, &source.file)?;
+                write_u32(&mut out, source.line);
+                write_u32(&mut out, source.column);
+                write_u32(&mut out, source.column_end);
+                write_string(&mut out, &source.line_text)?;
+            }
+            None => out.push(0),
+        }
     }
 
     for function in &object.function_disassembly {
@@ -389,12 +401,29 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
             other => bail!("invalid relocation kind: {other}"),
         };
         let symbol = rd.read_string()?;
+        let source = if version >= 6 {
+            let has_source = rd.read_u8()? != 0;
+            if has_source {
+                Some(SourceLocation {
+                    file: rd.read_string()?,
+                    line: rd.read_u32()?,
+                    column: rd.read_u32()?,
+                    column_end: rd.read_u32()?,
+                    line_text: rd.read_string()?,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         relocations.push(Relocation {
             section,
             offset,
             width,
             kind,
             symbol,
+            source,
         });
     }
 
@@ -798,6 +827,7 @@ mod tests {
                 width: 1,
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
+                source: None,
             }],
             function_disassembly: vec![FunctionDisassembly {
                 section: "default".to_string(),
@@ -915,6 +945,7 @@ mod tests {
                 width: 1,
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
+                source: None,
             }],
             function_disassembly: Vec::new(),
             data_string_fragments: Vec::new(),

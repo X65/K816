@@ -1,0 +1,20 @@
+[obj#0 default]
+000000: 78 D8 18 FB 20 08 00 60
+
+
+[obj#1 default]
+000008: EA 80 FD 60
+
+
+[disasm obj#0 default::main]
+000000: 78          sei
+000001: D8          cld
+000002: 18          clc
+000003: FB          xce
+000004: 20 08 00    jsr $0008
+000007: 60          rts
+
+[disasm obj#1 default::app_start]
+000008: EA          nop
+000009: 80 FD       bra $000008
+00000B: 60          rts

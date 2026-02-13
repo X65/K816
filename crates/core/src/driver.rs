@@ -9,7 +9,7 @@ use crate::emit::emit;
 use crate::emit_object::{EmitObjectOptions, emit_object_with_options};
 use crate::eval_expand::expand_file;
 use crate::fold_mode::{eliminate_dead_mode_ops, fold_mode_ops};
-use crate::lower::lower;
+use crate::lower::{LowerOptions, lower, lower_with_options};
 use crate::normalize_hla::normalize_file;
 use crate::parser::parse_with_warnings;
 use crate::sema::analyze;
@@ -240,7 +240,12 @@ fn compile_source_to_object_with_fs_and_options_internal(
     let sema = analyze(&ast)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
-    let hir = lower(&ast, &sema, fs)
+    let lower_options = if emit_options.allow_undefined_symbols {
+        LowerOptions::for_link()
+    } else {
+        LowerOptions::strict()
+    };
+    let hir = lower_with_options(&ast, &sema, fs, lower_options)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
     let hir = eliminate_dead_mode_ops(&hir);
     let hir = fold_mode_ops(&hir);

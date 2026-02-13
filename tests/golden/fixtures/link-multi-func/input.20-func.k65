@@ -1,0 +1,3 @@
+func app_start {
+    { nop } always
+}

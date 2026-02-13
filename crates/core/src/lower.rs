@@ -1018,7 +1018,7 @@ fn instruction_jump_target_label(
         return None;
     }
 
-    let Expr::Ident(name) = expr else {
+    let Some(name) = expr_ident_name(expr) else {
         return None;
     };
 
@@ -1280,6 +1280,11 @@ fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
             .get(name)
             .and_then(|var| var.data_width)
             .or_else(|| symbolic_subscript_field_width(name, sema)),
+        Expr::IdentSpanned { name, .. } => sema
+            .vars
+            .get(name)
+            .and_then(|var| var.data_width)
+            .or_else(|| symbolic_subscript_field_width(name, sema)),
         Expr::Index { base, .. } => expr_data_width(base, sema),
         _ => None,
     }
@@ -1288,8 +1293,24 @@ fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
 fn base_ident(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Ident(name) => Some(name.as_str()),
+        Expr::IdentSpanned { name, .. } => Some(name.as_str()),
         Expr::Index { base, .. } => base_ident(base),
         Expr::TypedView { expr, .. } => base_ident(expr),
+        _ => None,
+    }
+}
+
+fn expr_ident_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::IdentSpanned { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+fn expr_ident_span(expr: &Expr, fallback: Span) -> Option<Span> {
+    match expr {
+        Expr::IdentSpanned { start, end, .. } => Some(Span::new(fallback.source_id, *start, *end)),
         _ => None,
     }
 }
@@ -1852,14 +1873,15 @@ fn eval_to_number_strict(
 ) -> Option<i64> {
     match expr {
         Expr::Number(value) => Some(*value),
-        Expr::Ident(name) => {
+        Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
+            let ident_span = expr_ident_span(expr, span).unwrap_or(span);
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
             if let Some(constant) = sema.consts.get(name) {
                 return Some(constant.value);
             }
-            match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+            match resolve_symbolic_subscript_name(name, sema, ident_span, diagnostics) {
                 Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     Some(i64::from(address))
@@ -1995,7 +2017,7 @@ fn resolve_symbolic_byte_relocation(
         ExprUnaryOp::HighByte => ByteRelocationKind::HighByte,
     };
 
-    let Expr::Ident(symbol) = expr.as_ref() else {
+    let Some(symbol) = expr_ident_name(expr.as_ref()) else {
         return None;
     };
 
@@ -2121,7 +2143,7 @@ fn invalid_symbolic_subscript_aggregate_index_diagnostic(
         format!("invalid index on symbolic subscript array '{base}': use '.field' or '[.field]'"),
     );
 
-    if let Expr::Ident(requested) = index
+    if let Some(requested) = expr_ident_name(index)
         && let Some(symbolic_subscript) = sema
             .vars
             .get(base)
@@ -2221,6 +2243,9 @@ fn lower_instruction(
 
 fn immediate_expr_span(expr: &Expr, instruction_span: Span, explicit_hash: bool) -> Span {
     match expr {
+        Expr::IdentSpanned { start, end, .. } => {
+            Span::new(instruction_span.source_id, *start, *end)
+        }
         Expr::Ident(name) if explicit_hash => {
             let ident_start = instruction_span.end.saturating_sub(name.len());
             Span::new(
@@ -2233,6 +2258,9 @@ fn immediate_expr_span(expr: &Expr, instruction_span: Span, explicit_hash: bool)
             op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
             expr,
         } => match expr.as_ref() {
+            Expr::IdentSpanned { start, end, .. } => {
+                Span::new(instruction_span.source_id, *start, *end)
+            }
             Expr::Ident(name) => {
                 let ident_start = instruction_span.end.saturating_sub(name.len());
                 Span::new(
@@ -2276,6 +2304,9 @@ fn lower_address_operand(
         Expr::Ident(name) => {
             resolve_operand_ident(name, scope, sema, span, diagnostics, force_far, mode)
         }
+        Expr::IdentSpanned { name, .. } => {
+            resolve_operand_ident(name, scope, sema, span, diagnostics, force_far, mode)
+        }
         // Typed views should preserve unresolved labels for relocation-aware object flows.
         Expr::TypedView { expr, .. } => {
             lower_address_operand(expr, scope, sema, span, diagnostics, force_far, mode)
@@ -2316,14 +2347,15 @@ fn eval_to_number(
 ) -> Option<i64> {
     match expr {
         Expr::Number(value) => Some(*value),
-        Expr::Ident(name) => {
+        Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
+            let ident_span = expr_ident_span(expr, span).unwrap_or(span);
             if let Some(var) = sema.vars.get(name) {
                 return Some(i64::from(var.address));
             }
             if let Some(constant) = sema.consts.get(name) {
                 return Some(constant.value);
             }
-            match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+            match resolve_symbolic_subscript_name(name, sema, ident_span, diagnostics) {
                 Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     return Some(i64::from(address));
@@ -2332,9 +2364,9 @@ fn eval_to_number(
                 Ok(None) => {}
             }
 
-            let _ = resolve_symbol(name, scope, span, diagnostics)?;
+            let _ = resolve_symbol(name, scope, ident_span, diagnostics)?;
             diagnostics.push(Diagnostic::error(
-                span,
+                ident_span,
                 format!("unknown identifier '{name}' in numeric expression"),
             ));
             None

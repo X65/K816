@@ -272,3 +272,24 @@ fn fail_with_rendered(
         rendered,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::compile_source;
+
+    #[test]
+    fn keeps_diagnostic_spans_aligned_after_eval_block_preprocess() {
+        let source = "[\n  A = 1,\n  B = 2,\n  C = (A + B) * 4,\n]\n\nmain {\n  y=[J]\n}\n";
+        let error = compile_source("test.k65", source).expect_err("must fail");
+        let diagnostic = error
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("unknown identifier 'J'"))
+            .expect("expected unknown J diagnostic");
+
+        assert_eq!(
+            &source[diagnostic.primary.start..diagnostic.primary.end],
+            "J"
+        );
+    }
+}

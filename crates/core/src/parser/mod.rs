@@ -70,6 +70,10 @@ pub fn parse_with_warnings(
 }
 
 fn preprocess_source(source_text: &str) -> String {
+    fn blank_line_like(line: &str) -> String {
+        " ".repeat(line.len())
+    }
+
     let mut out = Vec::new();
     let mut skipping_eval_block = false;
     let mut data_block_depth = 0usize;
@@ -83,6 +87,7 @@ fn preprocess_source(source_text: &str) -> String {
             if trimmed == "]" {
                 skipping_eval_block = false;
             }
+            out.push(blank_line_like(raw_line));
             continue;
         }
 
@@ -100,6 +105,7 @@ fn preprocess_source(source_text: &str) -> String {
 
         if trimmed == "[" {
             skipping_eval_block = true;
+            out.push(blank_line_like(raw_line));
             continue;
         }
 
@@ -1757,7 +1763,7 @@ where
     let value = operand_expr_parser().map(|parsed| {
         if parsed.addr_mode == OperandAddrMode::Direct
             && parsed.index.is_none()
-            && !matches!(parsed.expr, Expr::Ident(_))
+            && !matches!(parsed.expr, Expr::Ident(_) | Expr::IdentSpanned { .. })
         {
             return HlaRhs::Immediate(parsed.expr);
         }
@@ -1818,6 +1824,7 @@ where
         let lhs = lhs.to_ascii_lowercase();
         let rhs_ident = match &parsed.expr {
             Expr::Ident(value) => Some(value.to_ascii_lowercase()),
+            Expr::IdentSpanned { name, .. } => Some(name.to_ascii_lowercase()),
             _ => None,
         };
 
@@ -2519,6 +2526,9 @@ fn looks_like_constant_ident(value: &str) -> bool {
 fn expr_is_address_like(expr: &Expr) -> bool {
     match expr {
         Expr::Ident(name) => !looks_like_constant_ident(name) && !is_register_name(name),
+        Expr::IdentSpanned { name, .. } => {
+            !looks_like_constant_ident(name) && !is_register_name(name)
+        }
         Expr::Index { base, .. } => expr_is_address_like(base),
         Expr::Binary { lhs, rhs, .. } => expr_is_address_like(lhs) || expr_is_address_like(rhs),
         Expr::Unary { .. } => false,
@@ -2682,15 +2692,52 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     recursive(|expr| {
-        let base_atom = chumsky::select! {
-            TokenKind::Number(value) => Expr::Number(value),
-            TokenKind::Ident(value) => Expr::Ident(value),
-            TokenKind::Main => Expr::Ident("main".to_string()),
-            TokenKind::Eval(value) => parse_eval_expr_token(&value),
+        let number_atom = chumsky::select! {
+            TokenKind::Number(value) => value
         }
-        .or(just(TokenKind::LParen)
-            .ignore_then(expr.clone())
-            .then_ignore(just(TokenKind::RParen)));
+        .map(Expr::Number);
+
+        let ident_atom = spanned(
+            chumsky::select! { TokenKind::Ident(value) => value },
+            SourceId(0),
+        )
+        .map(|ident| {
+            let name = ident.node;
+            Expr::IdentSpanned {
+                name,
+                start: ident.span.start,
+                end: ident.span.end,
+            }
+        });
+
+        let main_atom =
+            spanned(just(TokenKind::Main).to("main".to_string()), SourceId(0)).map(|main_ident| {
+                Expr::IdentSpanned {
+                    name: main_ident.node,
+                    start: main_ident.span.start,
+                    end: main_ident.span.end,
+                }
+            });
+
+        let eval_atom = spanned(
+            chumsky::select! { TokenKind::Eval(value) => value },
+            SourceId(0),
+        )
+        .map(|eval_text| {
+            parse_eval_expr_token_with_token_bounds(
+                &eval_text.node,
+                eval_text.span.start,
+                eval_text.span.end,
+            )
+        });
+
+        let base_atom = number_atom
+            .or(ident_atom)
+            .or(main_atom)
+            .or(eval_atom)
+            .or(just(TokenKind::LParen)
+                .ignore_then(expr.clone())
+                .then_ignore(just(TokenKind::RParen)));
 
         let atom = base_atom
             .then(
@@ -2757,8 +2804,12 @@ fn apply_eval_suffixes(mut base: Expr, suffixes: Vec<String>) -> Result<Expr, St
         }
 
         if let Some(field_name) = parse_symbolic_field_subscript(trimmed) {
-            let Expr::Ident(base_name) = base else {
-                return Err("symbolic field indexing requires an identifier base".to_string());
+            let base_name = match base {
+                Expr::Ident(base_name) => base_name,
+                Expr::IdentSpanned { name, .. } => name,
+                _ => {
+                    return Err("symbolic field indexing requires an identifier base".to_string());
+                }
             };
             base = Expr::Ident(format!("{base_name}.{field_name}"));
             continue;
@@ -3140,6 +3191,30 @@ fn parse_eval_expr_token(value: &str) -> Expr {
     Expr::EvalText(trimmed.to_string())
 }
 
+fn parse_eval_expr_token_with_token_bounds(
+    value: &str,
+    token_start: usize,
+    _token_end: usize,
+) -> Expr {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Expr::Number(0);
+    }
+
+    if is_ident_text(trimmed) {
+        let leading_ws = value.len() - value.trim_start().len();
+        let start = token_start + 1 + leading_ws;
+        let end = start + trimmed.len();
+        return Expr::IdentSpanned {
+            name: trimmed.to_string(),
+            start,
+            end,
+        };
+    }
+
+    parse_eval_expr_token(value)
+}
+
 fn is_ident_text(text: &str) -> bool {
     let mut chars = text.chars();
     let Some(first) = chars.next() else {
@@ -3168,6 +3243,7 @@ fn eval_static_expr(expr: &Expr) -> Option<i64> {
     match expr {
         Expr::Number(value) => Some(*value),
         Expr::Ident(_) => None,
+        Expr::IdentSpanned { .. } => None,
         Expr::EvalText(value) => {
             if let Ok(expanded) = k816_eval::expand(value) {
                 expanded.trim().parse::<i64>().ok()
@@ -3202,6 +3278,14 @@ fn eval_static_expr(expr: &Expr) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_ident_named(expr: &Expr, expected: &str) -> bool {
+        match expr {
+            Expr::Ident(name) => name == expected,
+            Expr::IdentSpanned { name, .. } => name == expected,
+            _ => false,
+        }
+    }
 
     #[test]
     fn parses_far_function_and_call() {
@@ -3353,7 +3437,7 @@ mod tests {
         let Some(Operand::Value { expr, .. }) = &first.operand else {
             panic!("expected first value operand");
         };
-        assert!(matches!(expr, Expr::Ident(name) if name == "foo.idx"));
+        assert!(is_ident_named(expr, "foo.idx"));
 
         let Stmt::Instruction(second) = &block.body[1].node else {
             panic!("expected second instruction");
@@ -3364,7 +3448,7 @@ mod tests {
         assert!(matches!(
             expr,
             Expr::Index { base, index }
-                if matches!(base.as_ref(), Expr::Ident(name) if name == "foo.string")
+                if is_ident_named(base.as_ref(), "foo.string")
                 && matches!(index.as_ref(), Expr::Number(2))
         ));
     }
@@ -3430,14 +3514,10 @@ mod tests {
         let Stmt::Bytes(values) = &block.body[0].node else {
             panic!("expected .byte statement");
         };
-        assert_eq!(
-            values,
-            &vec![
-                Expr::Number(1),
-                Expr::Number(2),
-                Expr::Ident("symbol".to_string())
-            ]
-        );
+        assert_eq!(values.len(), 3);
+        assert!(matches!(values[0], Expr::Number(1)));
+        assert!(matches!(values[1], Expr::Number(2)));
+        assert!(is_ident_named(&values[2], "symbol"));
     }
 
     #[test]
@@ -3644,14 +3724,14 @@ mod tests {
             Expr::Unary {
                 op: ExprUnaryOp::LowByte,
                 expr
-            } if matches!(expr.as_ref(), Expr::Ident(name) if name == "main")
+            } if is_ident_named(expr.as_ref(), "main")
         ));
         assert!(matches!(
             &values[1],
             Expr::Unary {
                 op: ExprUnaryOp::HighByte,
                 expr
-            } if matches!(expr.as_ref(), Expr::Ident(name) if name == "main")
+            } if is_ident_named(expr.as_ref(), "main")
         ));
     }
 
@@ -3680,7 +3760,7 @@ mod tests {
             else {
                 panic!("expected value operand");
             };
-            assert!(matches!(expr, Expr::Ident(name) if name == "ptr"));
+            assert!(is_ident_named(expr, "ptr"));
             assert!(!force_far);
             assert_eq!(*found_index, index);
             assert_eq!(*addr_mode, mode);

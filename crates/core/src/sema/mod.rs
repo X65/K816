@@ -528,6 +528,10 @@ fn eval_const_expr(
             .get(name)
             .map(|constant| constant.value)
             .ok_or_else(|| ConstExprError::Ident(name.clone())),
+        Expr::IdentSpanned { name, .. } => consts
+            .get(name)
+            .map(|constant| constant.value)
+            .ok_or_else(|| ConstExprError::Ident(name.clone())),
         Expr::EvalText(_) => Err(ConstExprError::EvalText),
         Expr::Index { base, index } => {
             let base = eval_const_expr(base, consts)?;

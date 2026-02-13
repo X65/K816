@@ -231,6 +231,11 @@ pub struct CallStmt {
 pub enum Expr {
     Number(i64),
     Ident(String),
+    IdentSpanned {
+        name: String,
+        start: usize,
+        end: usize,
+    },
     EvalText(String),
     Index {
         base: Box<Expr>,

@@ -374,7 +374,7 @@ fn expand_expr(
                 Err(_err) => Expr::Number(0),
             }
         }
-        Expr::Number(_) | Expr::Ident(_) => expr.clone(),
+        Expr::Number(_) | Expr::Ident(_) | Expr::IdentSpanned { .. } => expr.clone(),
         Expr::Index { base, index } => Expr::Index {
             base: Box::new(expand_expr(base, span, source_id, diagnostics)),
             index: Box::new(expand_expr(index, span, source_id, diagnostics)),

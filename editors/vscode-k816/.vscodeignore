@@ -1,0 +1,10 @@
+# Source (compiled output is in out/)
+src/
+tsconfig.json
+
+# Dev config
+.gitignore
+.vscode/
+
+# Build artifacts
+*.vsix

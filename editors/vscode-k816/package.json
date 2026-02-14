@@ -2,7 +2,7 @@
   "name": "vscode-k816",
   "displayName": "k816 Language Support",
   "description": "VS Code extension wiring the k816 Language Server Protocol implementation.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "X65-Project",
   "license": "0BSD",
   "repository": {
@@ -21,13 +21,6 @@
     "onCommand:k816.restartServer"
   ],
   "main": "./out/extension.js",
-  "files": [
-    "out/**",
-    "syntaxes/**",
-    "language-configuration.json",
-    "README.md",
-    "LICENSE*"
-  ],
   "contributes": {
     "languages": [
       {

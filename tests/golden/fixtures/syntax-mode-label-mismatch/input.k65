@@ -1,5 +1,5 @@
 // goto/branch edges should bridge to the target label mode automatically.
-main @a8 @i8 {
+func main @a8 @i8 {
   c+? goto .loop
   @a16
 .loop:

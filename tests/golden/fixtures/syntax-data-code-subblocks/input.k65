@@ -12,6 +12,6 @@ data generated {
   ?
 }
 
-main {
+func main {
   a=generated
 }

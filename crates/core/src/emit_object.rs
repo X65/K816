@@ -1062,7 +1062,7 @@ mod tests {
     #[test]
     fn link_mode_keeps_immediate_byte_relocations_for_linker() {
         let mut source_map = SourceMap::default();
-        source_map.add_source("test.k65", "main { a=&<missing }\n");
+        source_map.add_source("test.k65", "func main { a=&<missing }\n");
         let program = Program {
             ops: vec![
                 op(Op::FunctionStart {

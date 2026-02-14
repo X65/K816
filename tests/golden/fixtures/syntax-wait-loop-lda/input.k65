@@ -1,6 +1,6 @@
 var ready = $1234
 
-main {
+func main {
   {
     a=ready
   } n-?

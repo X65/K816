@@ -16,8 +16,6 @@ pub enum TokenKind {
     Var,
     #[token("func")]
     Func,
-    #[token("main")]
-    Main,
     #[token("naked")]
     Naked,
     #[token("inline")]

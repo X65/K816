@@ -1,4 +1,4 @@
-main {
+func main {
   =={
     a=1
   } else {

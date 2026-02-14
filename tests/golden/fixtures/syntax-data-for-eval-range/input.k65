@@ -8,7 +8,7 @@ data ramp_down {
   for j=4..0 eval [ j ]
 }
 
-main {
+func main {
   a=ramp_up
   a=ramp_down
 }

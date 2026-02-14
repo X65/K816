@@ -10,7 +10,7 @@ data blob {
   binary "table.bin"
 }
 
-main {
+func main {
   a=gfx
   a=blob
 }

@@ -8,7 +8,7 @@ func near_target {
   nop
 }
 
-main {
+func main {
   call far_target
   call near_target
   lda #[1 + 2]

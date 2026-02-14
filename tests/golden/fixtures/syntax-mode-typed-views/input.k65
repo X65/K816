@@ -1,7 +1,7 @@
 // Typed views are explicit width adapters for typed vars.
 var w:word = 0x2000
 
-main @a8 @i8 {
+func main @a8 @i8 {
   a = w:byte
 
   @a16

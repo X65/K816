@@ -2527,7 +2527,7 @@ mod tests {
     fn listing_skips_non_data_symbols_by_source_line() {
         let mut object = object_with_single_section("default", vec![0xAA, 0xBB, 0xCC]);
         object.symbols = vec![
-            symbol_with_source("main", "default", 0, 1, 1, "main {"),
+            symbol_with_source("main", "default", 0, 1, 1, "func main {"),
             symbol_with_source("main::.loop", "default", 1, 2, 3, ".loop:"),
         ];
 
@@ -2592,7 +2592,7 @@ mod tests {
         object.symbols = vec![
             symbol_with_source("bytes", "default", 0, 1, 1, "data bytes {"),
             symbol_with_source("here", "default", 3, 4, 1, "here:"),
-            symbol_with_source("main", "default", 4, 6, 1, "main {"),
+            symbol_with_source("main", "default", 4, 6, 1, "func main {"),
         ];
 
         let linked = link_objects(&[object], &default_stub_config()).expect("link");
@@ -2610,7 +2610,7 @@ mod tests {
         );
         object.symbols = vec![
             symbol_with_source("text", "default", 0, 1, 1, "data text {"),
-            symbol_with_source("main", "default", 16, 6, 1, "main {"),
+            symbol_with_source("main", "default", 16, 6, 1, "func main {"),
         ];
         object.data_string_fragments = vec![DataStringFragment {
             section: "default".to_string(),

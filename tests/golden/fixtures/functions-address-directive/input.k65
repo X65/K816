@@ -8,7 +8,7 @@ func func_b {
   nop
 }
 
-main {
+func main {
   call func_a
   call func_b
 }

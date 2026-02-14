@@ -1,4 +1,4 @@
-main {
+func main {
   {
     x++
     < break

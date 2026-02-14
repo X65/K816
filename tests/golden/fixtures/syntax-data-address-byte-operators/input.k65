@@ -6,6 +6,6 @@ data bytes {
   &&ptr
 }
 
-main {
+func main {
   a=bytes
 }

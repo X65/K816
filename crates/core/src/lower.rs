@@ -3,7 +3,7 @@ use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    BlockKind, DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File,
+    DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File,
     HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
     NamedDataEntry, Operand, OperandAddrMode, RegWidth, Stmt,
 };
@@ -99,16 +99,17 @@ impl Default for LowerContext {
     }
 }
 
-fn initial_mode_for_block(kind: BlockKind, mode_contract: crate::ast::ModeContract) -> ModeState {
-    match kind {
-        BlockKind::Main => ModeState {
+fn initial_mode_for_block(is_entry: bool, mode_contract: crate::ast::ModeContract) -> ModeState {
+    if is_entry {
+        ModeState {
             a_width: Some(mode_contract.a_width.unwrap_or(RegWidth::W8)),
             i_width: Some(mode_contract.i_width.unwrap_or(RegWidth::W8)),
-        },
-        BlockKind::Func => ModeState {
+        }
+    } else {
+        ModeState {
             a_width: mode_contract.a_width,
             i_width: mode_contract.i_width,
-        },
+        }
     }
 }
 
@@ -191,7 +192,8 @@ pub fn lower_with_options(
                     .get(&block.name)
                     .map(|meta| meta.mode_contract)
                     .unwrap_or(block.mode_contract);
-                let initial_mode = initial_mode_for_block(block.kind, effective_contract);
+                let is_entry = block.name == "main";
+                let initial_mode = initial_mode_for_block(is_entry, effective_contract);
                 block_ctx.mode = initial_mode;
                 block_ctx.label_declared_modes = collect_label_declared_modes(
                     &block.body[body_start..],
@@ -204,7 +206,7 @@ pub fn lower_with_options(
                     Op::FunctionStart {
                         name: scope.clone(),
                         mode_contract: effective_contract,
-                        is_entry: block.kind == crate::ast::BlockKind::Main,
+                        is_entry,
                         is_far: block.is_far,
                     },
                     label_span,
@@ -213,7 +215,7 @@ pub fn lower_with_options(
                 // For entry points, emit mode setup at function entry since
                 // there is no call site to bridge from. The CPU defaults to
                 // 8-bit mode, so only emit Rep for 16-bit contracts.
-                if block.kind == BlockKind::Main {
+                if is_entry {
                     if effective_contract.a_width == Some(RegWidth::W16) {
                         ops.push(Spanned::new(Op::Rep(0x20), label_span));
                     }
@@ -260,10 +262,10 @@ pub fn lower_with_options(
                     ));
                 }
 
-                if block.kind == BlockKind::Main && block.is_far {
+                if is_entry && block.is_far {
                     diagnostics.push(
-                        Diagnostic::error(item.span, "main block cannot be declared far")
-                            .with_help("remove 'far' from main or use 'func'"),
+                        Diagnostic::error(item.span, "'func main' cannot be declared far")
+                            .with_help("remove 'far' from 'func main'"),
                     );
                 }
             }
@@ -2800,7 +2802,7 @@ mod tests {
 
     #[test]
     fn resolves_var_operand_to_literal_address() {
-        let source = "var target = 0x1234\nmain {\n  lda target\n}\n";
+        let source = "var target = 0x1234\nfunc main {\n  lda target\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -2833,7 +2835,7 @@ mod tests {
 
     #[test]
     fn resolves_const_operand_to_immediate_value() {
-        let source = "const LIMIT = 0x34\nmain {\n  lda #LIMIT\n}\n";
+        let source = "const LIMIT = 0x34\nfunc main {\n  lda #LIMIT\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -2855,7 +2857,7 @@ mod tests {
 
     #[test]
     fn resolves_top_level_evaluator_constant_to_immediate_value() {
-        let source = "[ LIMIT = 0x34 ]\nmain {\n  lda #LIMIT\n}\n";
+        let source = "[ LIMIT = 0x34 ]\nfunc main {\n  lda #LIMIT\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -2877,7 +2879,7 @@ mod tests {
 
     #[test]
     fn lowers_immediate_address_byte_symbols_to_relocations() {
-        let source = "data displist {\n  0\n}\nfunc dli {\n  rti\n}\nmain {\n  a=&<displist\n  a=&>displist\n  a=&<dli\n  a=&>dli\n}\n";
+        let source = "data displist {\n  0\n}\nfunc dli {\n  rti\n}\nfunc main {\n  a=&<displist\n  a=&>displist\n  a=&<dli\n  a=&>dli\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -2927,7 +2929,7 @@ mod tests {
 
     #[test]
     fn reports_unknown_identifier_in_numeric_expression() {
-        let source = "main {\n  lda #MISSING\n}\n";
+        let source = "func main {\n  lda #MISSING\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -2948,7 +2950,7 @@ mod tests {
 
     #[test]
     fn keeps_unresolved_identifier_as_label_operand() {
-        let source = "main {\n  lda missing\n}\n";
+        let source = "func main {\n  lda missing\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3000,7 +3002,7 @@ mod tests {
 
     #[test]
     fn emits_absolute_symbols_for_vars_and_symbolic_fields() {
-        let source = "var foo = 0x1234\nvar regs[\n  .ctrl:word\n  .status:byte\n] = 0x2100\nmain {\n  nop\n}\n";
+        let source = "var foo = 0x1234\nvar regs[\n  .ctrl:word\n  .status:byte\n] = 0x2100\nfunc main {\n  nop\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3022,7 +3024,7 @@ mod tests {
 
     #[test]
     fn resolves_symbolic_subscript_field_accesses_to_literal_addresses() {
-        let source = "var foo[\n  .field_w:byte\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\nmain {\n  lda foo.field_w\n  sta foo[.idx]\n  lda foo.string[2]\n}\n";
+        let source = "var foo[\n  .field_w:byte\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\nfunc main {\n  lda foo.field_w\n  sta foo[.idx]\n  lda foo.string[2]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3055,7 +3057,7 @@ mod tests {
 
     #[test]
     fn rejects_numeric_indexing_on_symbolic_subscript_aggregate() {
-        let source = "var foo[\n  .idx:byte\n] = 0x1234\nmain {\n  lda foo[1]\n}\n";
+        let source = "var foo[\n  .idx:byte\n] = 0x1234\nfunc main {\n  lda foo[1]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3071,7 +3073,7 @@ mod tests {
     #[test]
     fn suggests_field_for_symbolic_subscript_aggregate_expression_index() {
         let source =
-            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[idx]\n}\n";
+            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nfunc main {\n  lda foo[idx]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3095,7 +3097,7 @@ mod tests {
     #[test]
     fn keeps_generic_help_for_symbolic_subscript_aggregate_index_without_similar_field() {
         let source =
-            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo[buffer]\n}\n";
+            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nfunc main {\n  lda foo[buffer]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3123,7 +3125,7 @@ mod tests {
     #[test]
     fn reports_unknown_symbolic_subscript_field_with_suggestion() {
         let source =
-            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nmain {\n  lda foo.idz\n}\n";
+            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nfunc main {\n  lda foo.idz\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3224,7 +3226,7 @@ mod tests {
 
     #[test]
     fn lowers_wait_loop_bit_pattern_to_bit_and_bpl() {
-        let source = "var ready = 0x1234\nmain {\n  { a&?ready } n-?\n}\n";
+        let source = "var ready = 0x1234\nfunc main {\n  { a&?ready } n-?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3265,7 +3267,7 @@ mod tests {
 
     #[test]
     fn lowers_postfix_n_flag_close_without_cmp() {
-        let source = "var ready = 0x1234\nmain {\n  {\n    a=ready\n  } n-?\n}\n";
+        let source = "var ready = 0x1234\nfunc main {\n  {\n    a=ready\n  } n-?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3286,7 +3288,7 @@ mod tests {
 
     #[test]
     fn lowers_postfix_le_to_two_direct_branches() {
-        let source = "main {\n  {\n    x++\n  } <=\n}\n";
+        let source = "func main {\n  {\n    x++\n  } <=\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3307,7 +3309,7 @@ mod tests {
 
     #[test]
     fn lowers_postfix_gt_to_three_branch_sequence() {
-        let source = "main {\n  {\n    x++\n  } >\n}\n";
+        let source = "func main {\n  {\n    x++\n  } >\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -3365,7 +3367,7 @@ mod tests {
     #[test]
     fn segment_inside_code_block_restores_outer_segment() {
         let source =
-            "segment fixed_lo\nmain {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
+            "segment fixed_lo\nfunc main {\n  segment fixed_hi\n  nop\n}\ndata tail {\n  2\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;

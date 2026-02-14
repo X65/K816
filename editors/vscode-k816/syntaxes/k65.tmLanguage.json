@@ -125,7 +125,7 @@
       "patterns": [
         {
           "name": "keyword.declaration.k65",
-          "match": "\\b(?:main|func|naked|inline|far|data|segment|var|image|binary)\\b"
+          "match": "\\b(?:func|naked|inline|far|data|segment|var|image|binary)\\b"
         },
         {
           "name": "keyword.control.k65",

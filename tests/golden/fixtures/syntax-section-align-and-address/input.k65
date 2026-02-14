@@ -8,7 +8,7 @@ naked fixed {
   return_i
 }
 
-main {
+func main {
   align 128
   aligned
   fixed

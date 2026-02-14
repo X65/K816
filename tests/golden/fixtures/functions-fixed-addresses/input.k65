@@ -11,7 +11,7 @@ far func fixed_hi_fn {
 
 segment default
 
-main {
+func main {
   call fixed_lo_fn
   call fixed_hi_fn
 }

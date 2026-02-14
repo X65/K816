@@ -1,6 +1,6 @@
 // Test b><a swap operator emits XBA instruction
 
-main {
+func main {
   nop
   b><a
   nop

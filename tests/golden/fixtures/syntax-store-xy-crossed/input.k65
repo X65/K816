@@ -5,7 +5,7 @@
 // LDY supports mem,X addressing (y=mem,x)
 var zp = 0x20
 
-main {
+func main {
   zp,y=x
   zp,x=y
   x=zp,y

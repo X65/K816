@@ -1,7 +1,7 @@
 var ptr = 0x20
 var abs = 0x1234
 
-main {
+func main {
   a=1
   a=ptr
   a=abs

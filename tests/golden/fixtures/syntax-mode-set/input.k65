@@ -2,7 +2,7 @@
 // instructions are removed. Colored functions with no width-dependent body are
 // folded to colorless, so call-site bridging is also eliminated.
 
-main {
+func main {
   @a16
   nop
   @a8

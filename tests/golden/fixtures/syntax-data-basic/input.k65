@@ -8,6 +8,6 @@ data bytes {
   0
 }
 
-main {
+func main {
   a=bytes
 }

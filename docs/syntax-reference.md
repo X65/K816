@@ -57,7 +57,7 @@ A label can be placed at the beginning of a statement. During assembly, the labe
 ```k65
 var SCREEN=0x400
 
-main {
+func main {
   x=0 {
     a=hello,x z-?{ SCREEN,x=a x++ }
   } z-?
@@ -125,17 +125,6 @@ segment my_segment      // select output segment
 
 Executable code in K65 is specified in sections.
 
-### `main`
-
-Program entry point.
-
-```k65
-main {
-  a=0        // set accumulator to 0
-  {} always  // loop forever
-}
-```
-
 ### `func`
 
 User defined function, that can be called from the code. `RTS` is added automatically at the end.
@@ -144,6 +133,15 @@ User defined function, that can be called from the code. `RTS` is added automati
 func inc_x {
   x++        // increments X register and returns
 }            // RTS is added automatically
+```
+
+The special name `main` designates the program entry point. A `func main` block defaults to 8-bit register widths (matching the 65816's power-on state after XCE) and automatically emits `REP` instructions if 16-bit mode is declared.
+
+```k65
+func main {
+  a=0        // set accumulator to 0
+  {} always  // loop forever
+}
 ```
 
 ### `naked`
@@ -220,7 +218,7 @@ For cross-unit calls (when the callee is defined in a separate compilation unit)
 
 ```k65
 // main.k65
-main {
+func main {
   call far lib_init     // JSL to far function in another unit
 }
 
@@ -243,7 +241,7 @@ Raw data bytes can be emitted inline in code sections using `data { }`:
 ```k65
 var bcol=0xd020
 
-main {
+func main {
   data { 0xEA 0xEA 0xEA }
   { bcol++ } always
 }
@@ -558,7 +556,7 @@ var dst0 = 0x10
 var dst1 = 0x11
 var src = 0x12
 
-main {
+func main {
   dst0=dst1=a=src     // LDA src; STA dst1; STA dst0
   x=a=dst0            // LDA dst0; TAX
   y=x=a               // TXA; TAX ... (value propagation)

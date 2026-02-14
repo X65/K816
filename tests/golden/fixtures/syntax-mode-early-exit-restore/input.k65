@@ -1,5 +1,5 @@
 // Jumping out of a mode-scoped block must restore mode first.
-main @a8 @i8 {
+func main @a8 @i8 {
   @a16 {
     lda #1
     goto .out

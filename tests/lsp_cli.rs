@@ -173,7 +173,7 @@ fn lsp_initialize_diagnostics_definition_and_hover() {
     )
     .expect("failed to write manifest");
 
-    let source = "main {\nstart:\n  call missing\n  bra start\n}\n";
+    let source = "func main {\nstart:\n  call missing\n  bra start\n}\n";
     let source_path = src_dir.join("main.k65");
     std::fs::write(&source_path, source).expect("failed to write source");
 
@@ -289,7 +289,7 @@ fn lsp_completion_symbols_and_formatting_idempotence() {
     )
     .expect("failed to write manifest");
 
-    let source = "main {\nstart:\ncall start\n}\n";
+    let source = "func main {\nstart:\ncall start\n}\n";
     let source_path = src_dir.join("main.k65");
     std::fs::write(&source_path, source).expect("failed to write source");
 
@@ -465,7 +465,7 @@ fn lsp_did_change_publishes_debounced_diagnostics() {
     )
     .expect("failed to write manifest");
 
-    let source = "main {\nstart:\n  bra start\n}\n";
+    let source = "func main {\nstart:\n  bra start\n}\n";
     let source_path = src_dir.join("main.k65");
     std::fs::write(&source_path, source).expect("failed to write source");
 
@@ -512,7 +512,7 @@ fn lsp_did_change_publishes_debounced_diagnostics() {
             && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
     });
 
-    let changed_source = "main {\nstart:\n  call missing\n}\n";
+    let changed_source = "func main {\nstart:\n  call missing\n}\n";
     lsp.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didChange",

@@ -2,7 +2,7 @@ image SpriteSheet = "sprites.bmp"
 image "RawSprite" = "raw.bmp"
 binary Blob = "payload.bin"
 
-main {
+func main {
   a=SpriteSheet
   a=RawSprite
   a=Blob

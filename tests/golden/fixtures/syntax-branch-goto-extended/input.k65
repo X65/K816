@@ -2,7 +2,7 @@ func target {
   *
 }
 
-main {
+func main {
   c-? goto target
   c+? goto target
   z+? goto target

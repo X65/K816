@@ -1,5 +1,5 @@
 use k816_core::ast::{
-    BlockKind, DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt,
+    DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt,
     Instruction, Item, NamedDataEntry, Operand, OperandAddrMode, Stmt,
 };
 
@@ -42,14 +42,8 @@ fn format_item(out: &mut String, item: &Item, indent: usize) {
             if block.is_inline {
                 header.push_str("inline ");
             }
-            header.push_str(match block.kind {
-                BlockKind::Main => "main",
-                BlockKind::Func => "func",
-            });
-            if matches!(block.kind, BlockKind::Func) {
-                header.push(' ');
-                header.push_str(&block.name);
-            }
+            header.push_str("func ");
+            header.push_str(&block.name);
             header.push_str(" {");
             line(out, indent, header);
 

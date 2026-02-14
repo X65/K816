@@ -1,5 +1,5 @@
 const LIMIT
 
-main {
+func main {
   nop
 }

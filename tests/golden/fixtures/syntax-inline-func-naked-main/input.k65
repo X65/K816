@@ -12,7 +12,7 @@ naked no_auto_rts {
   goto normal
 }
 
-main {
+func main {
   normal
   no_auto_rts
 }

@@ -8,7 +8,7 @@ data arr {
   C = arr[2]
 ]
 
-main {
+func main {
   a=[A]
   x=[B]
   y=[C]

@@ -4,7 +4,7 @@ data vectors {
 }
 
 segment default
-main {
+func main {
   address 0x0111
   return
 }

@@ -1571,7 +1571,7 @@ mod tests {
     #[test]
     fn converts_diagnostics_with_related_info() {
         let uri = Uri::from_str("file:///tmp/test.k65").expect("uri");
-        let text = "main {\n  nop\n}\n";
+        let text = "func main {\n  nop\n}\n";
         let index = LineIndex::new(text);
         let source_id = k816_core::span::SourceId(0);
         let primary = k816_core::span::Span::new(source_id, 2, 6);
@@ -1596,7 +1596,7 @@ mod tests {
     #[test]
     fn resolves_local_label_definition_in_scope() {
         let uri = Uri::from_str("file:///tmp/test.k65").expect("uri");
-        let text = "main {\n.loop:\n  bra .loop\n}\n".to_string();
+        let text = "func main {\n.loop:\n  bra .loop\n}\n".to_string();
         let mut state = ServerState::new(PathBuf::from("/tmp"));
         state
             .upsert_document(uri.clone(), text, 1, true)
@@ -1625,7 +1625,7 @@ mod tests {
 
     #[test]
     fn completion_context_prefers_symbols_in_operand_positions() {
-        let text = "main {\n  bra\n  bra start\n}\n";
+        let text = "func main {\n  bra\n  bra start\n}\n";
         let statement_start_offset = text.find("  bra").expect("statement start") + 2;
         let operand_offset = text.find("bra start").expect("operand") + 4;
 

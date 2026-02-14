@@ -4,7 +4,7 @@
 // @a8:  lda #1 emits 2 bytes (8-bit immediate)
 // @i16/@i8: only affect index width, lda stays at current accumulator width
 
-main {
+func main {
   @a16
   lda #1
   ldy #1

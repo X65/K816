@@ -1,6 +1,6 @@
 var mem = 0x40
 
-main {
+func main {
   a+1
   a-mem
   a&0x0F

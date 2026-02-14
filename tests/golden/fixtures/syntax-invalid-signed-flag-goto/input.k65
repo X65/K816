@@ -1,4 +1,4 @@
-main {
+func main {
   s-? goto .skip
 .skip:
   return

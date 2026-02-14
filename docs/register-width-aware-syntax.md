@@ -85,7 +85,7 @@ When calling a function with a mode contract, the compiler automatically emits
 contract:
 
 ```k65
-main {
+func main {
     call wide_a         // emits REP #$20 before JSR
     call narrow         // emits SEP #$30 before JSR
     call wide_all       // emits REP #$30 before JSR
@@ -112,7 +112,7 @@ label has a known mode, the compiler emits minimal `REP`/`SEP` at the label
 site itself, immediately after the label definition.
 
 ```k65
-main @a8 @i8 {
+func main @a8 @i8 {
     c+? goto .loop
     @a16
 .loop:
@@ -141,7 +141,7 @@ contract, the compiler emits `REP` at the very beginning of the function body:
 ```k65
 @a16 @i16
 
-main {
+func main {
     lda #$1234      // entry emits REP #$30 before this
     ldx #$0001
 }
@@ -165,7 +165,7 @@ Mode can be changed temporarily with a scoped block.  The compiler emits the
 mode switch on entry and automatically restores the previous mode on exit:
 
 ```k65
-main @a8 @i8 {
+func main @a8 @i8 {
     lda #1              // 8-bit
 
     @a16 {
@@ -207,7 +207,7 @@ does not declare its own width inherits the module default:
 ```k65
 @a16
 
-main {
+func main {
     lda #1          // inherits @a16 -- 3-byte immediate
 }
 
@@ -223,7 +223,7 @@ A function-level annotation takes precedence over the module default:
 ```k65
 @a16 @i16
 
-main {
+func main {
     lda #1          // 16-bit (inherited)
     ldx #1          // 16-bit (inherited)
 }
@@ -258,7 +258,7 @@ inherited contract entirely:
 ```k65
 @a16 @i16
 
-main {
+func main {
     nop             // not width-dependent
     call helper
 }

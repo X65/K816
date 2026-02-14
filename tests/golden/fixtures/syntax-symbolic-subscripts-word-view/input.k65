@@ -4,7 +4,7 @@ var regs[
   .wide:word
 ] = 0x2200
 
-main @a16 {
+func main @a16 {
   lda regs.wide
   sta regs.wide
   lda regs.lo:word

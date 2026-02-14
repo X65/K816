@@ -75,17 +75,10 @@ pub struct SymbolicSubscriptFieldDecl {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockKind {
-    Main,
-    Func,
-}
-
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
     pub name: String,
     pub name_span: Option<Span>,
-    pub kind: BlockKind,
     pub is_far: bool,
     pub is_naked: bool,
     pub is_inline: bool,

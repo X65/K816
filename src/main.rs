@@ -710,7 +710,7 @@ fn render_manifest_template(package_name: &str) -> String {
 }
 
 fn default_main_source_template() -> &'static str {
-    "main {\n  nop\n}\n"
+    "func main {\n  nop\n}\n"
 }
 
 fn render_link_script_template(package_name: &str) -> String {

@@ -3,7 +3,7 @@
 // ImmediateM (M flag, accumulator width): ora, and, eor, adc, bit, lda, cmp, sbc
 // ImmediateX (X flag, index width): ldy, ldx, cpy, cpx
 
-main {
+func main {
   // --- ImmediateM: 16-bit ---
   @a16
   ora #$01

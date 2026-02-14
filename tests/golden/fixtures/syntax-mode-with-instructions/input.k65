@@ -1,7 +1,7 @@
 // Test mode set combined with real instructions
 // Verifies mode ops interleave correctly with instruction encoding
 
-main {
+func main {
   @a16
   nop
   lda #$12

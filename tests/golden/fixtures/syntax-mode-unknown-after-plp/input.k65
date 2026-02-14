@@ -1,5 +1,5 @@
 // PLP restores P from runtime stack; width becomes unknown until re-established.
-main @a16 @i16 {
+func main @a16 @i16 {
   p??
   lda #1
 }

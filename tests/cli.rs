@@ -38,7 +38,7 @@ fn compile_and_link_subcommands_work() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.bin");
@@ -75,7 +75,7 @@ fn compile_subcommand_allows_unresolved_symbols_for_later_linking() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  lda missing\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  lda missing\n}\n").expect("failed to write input");
     let object_file = root.join("demo.o65");
 
     let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
@@ -99,7 +99,7 @@ fn shortcut_build_keeps_strict_undefined_label_diagnostics() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  lda missing\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  lda missing\n}\n").expect("failed to write input");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
     cmd.arg(&input)
@@ -118,7 +118,7 @@ fn compile_subcommand_rejects_link_only_options() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
     cmd.arg("compile")
@@ -139,7 +139,7 @@ fn build_command_defaults_to_xex_output() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
     let out_file = root.join("demo.xex");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
@@ -160,7 +160,7 @@ fn build_command_accepts_output_option_for_linked_artifact() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
     let out_file = root.join("custom-output.bin");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
@@ -179,7 +179,7 @@ fn build_command_writes_auto_listing_when_requested() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
     cmd.arg(&input).arg("--listing").assert().success();
@@ -200,7 +200,7 @@ fn build_command_writes_listing_to_explicit_path_when_requested() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
     let listing_file = root.join("custom.lst");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
@@ -225,7 +225,7 @@ fn build_command_accepts_config_parameter() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let config = root.join("custom.ld.ron");
     std::fs::write(
@@ -280,7 +280,7 @@ fn build_infers_xex_from_output_extension_when_switch_not_present() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let config = root.join("custom.ld.ron");
     std::fs::write(
@@ -336,7 +336,7 @@ fn build_output_format_switch_overrides_extension() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let config = root.join("custom.ld.ron");
     std::fs::write(
@@ -400,7 +400,7 @@ fn build_command_uses_adjacent_config_and_rejects_ambiguous_raw_binary() {
     let input = root.join("demo.k65");
     std::fs::write(
         &input,
-        "main {\n  nop\n}\n\ndata INFO {\n  segment INFO\n  \"I\"\n}\n",
+        "func main {\n  nop\n}\n\ndata INFO {\n  segment INFO\n  \"I\"\n}\n",
     )
     .expect("failed to write input");
 
@@ -468,7 +468,7 @@ fn link_subcommand_emits_xex_when_configured() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.xex");
@@ -547,7 +547,7 @@ fn link_infers_xex_from_output_extension_when_switch_not_present() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.xex");
     let config = root.join("link.ld.ron");
@@ -622,7 +622,7 @@ fn link_output_format_switch_overrides_extension() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.bin");
     let config = root.join("link.ld.ron");
@@ -699,7 +699,7 @@ fn link_uses_output_file_from_config_when_o_missing() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let object_file = root.join("demo.o65");
     let config_dir = root.join("cfg");
@@ -773,7 +773,7 @@ fn link_requires_output_file_when_not_provided() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let object_file = root.join("demo.o65");
     let config = root.join("link.ld.ron");
@@ -846,7 +846,7 @@ fn link_writes_listing_to_explicit_path() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
 
     let object_file = root.join("demo.o65");
     let out_file = root.join("game.bin");

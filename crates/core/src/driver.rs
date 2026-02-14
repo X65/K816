@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn keeps_diagnostic_spans_aligned_after_eval_block_preprocess() {
-        let source = "[\n  A = 1,\n  B = 2,\n  C = (A + B) * 4\n]\n\nmain {\n  y=[J]\n}\n";
+        let source = "[\n  A = 1,\n  B = 2,\n  C = (A + B) * 4\n]\n\nfunc main {\n  y=[J]\n}\n";
         let error = compile_source("test.k65", source).expect_err("must fail");
         let diagnostic = error
             .diagnostics

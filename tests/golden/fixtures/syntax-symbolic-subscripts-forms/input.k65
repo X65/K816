@@ -4,7 +4,7 @@ var foo[
   .string[4]:byte,
 ] = 0x2000
 
-main @a8 {
+func main @a8 {
   lda foo[.idx]
   sta foo.idx
   lda foo.string[2]

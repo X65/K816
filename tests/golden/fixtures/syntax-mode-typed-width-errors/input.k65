@@ -1,6 +1,6 @@
 // Store to typed word requires @a16 (or explicit byte view)
 var w:word = 0x2000
 
-main @a8 @i8 {
+func main @a8 @i8 {
   w = a
 }

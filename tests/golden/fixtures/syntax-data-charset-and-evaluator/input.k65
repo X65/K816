@@ -5,6 +5,6 @@ data text_data {
   [SCALE]
 }
 
-main {
+func main {
   a=text_data
 }

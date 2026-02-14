@@ -1,5 +1,5 @@
 use crate::ast::{
-    BlockKind, CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
+    CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
     EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister,
     HlaRhs, HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock,
     NamedDataEntry, NamedDataForEvalRange, Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt,
@@ -188,7 +188,7 @@ fn collect_parser_warnings(file: &File) -> Vec<Diagnostic> {
 
         collect_hla_postfix_efficiency_warnings(block, &mut warnings);
 
-        if block.kind != BlockKind::Func || !block.body.is_empty() {
+        if block.name == "main" || !block.body.is_empty() {
             continue;
         }
 
@@ -464,20 +464,6 @@ where
 
     let mode_annotations = mode_annotation_parser();
 
-    let main = just(TokenKind::Main)
-        .ignore_then(mode_annotations.clone())
-        .then(body.clone())
-        .map(|(mode_contract, body)| CodeBlock {
-            name: "main".to_string(),
-            name_span: None,
-            kind: BlockKind::Main,
-            is_far: false,
-            is_naked: false,
-            is_inline: false,
-            mode_contract,
-            body,
-        });
-
     let func = just(TokenKind::Func)
         .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
         .then(mode_annotations.clone())
@@ -491,7 +477,6 @@ where
                 CodeBlock {
                     name,
                     name_span: Some(Span::new(source_id, range.start, range.end)),
-                    kind: BlockKind::Func,
                     is_far: false,
                     is_naked: false,
                     is_inline: false,
@@ -501,7 +486,7 @@ where
             },
         );
 
-    let explicit_block = modifiers.then(main.or(func)).map(|(mods, mut block)| {
+    let explicit_block = modifiers.then(func).map(|(mods, mut block)| {
         for modifier in mods {
             match modifier {
                 Modifier::Far => block.is_far = true,
@@ -525,7 +510,6 @@ where
                 let mut block = CodeBlock {
                     name,
                     name_span: Some(Span::new(source_id, range.start, range.end)),
-                    kind: BlockKind::Func,
                     is_far: false,
                     is_naked: false,
                     is_inline: false,
@@ -2715,15 +2699,6 @@ where
             }
         });
 
-        let main_atom =
-            spanned(just(TokenKind::Main).to("main".to_string()), SourceId(0)).map(|main_ident| {
-                Expr::IdentSpanned {
-                    name: main_ident.node,
-                    start: main_ident.span.start,
-                    end: main_ident.span.end,
-                }
-            });
-
         let eval_atom = spanned(
             chumsky::select! { TokenKind::Eval(value) => value },
             SourceId(0),
@@ -2738,7 +2713,6 @@ where
 
         let base_atom = number_atom
             .or(ident_atom)
-            .or(main_atom)
             .or(eval_atom)
             .or(just(TokenKind::LParen)
                 .ignore_then(expr.clone())
@@ -3124,7 +3098,6 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::Const => "'const'".to_string(),
         TokenKind::Var => "'var'".to_string(),
         TokenKind::Func => "'func'".to_string(),
-        TokenKind::Main => "'main'".to_string(),
         TokenKind::Naked => "'naked'".to_string(),
         TokenKind::Inline => "'inline'".to_string(),
         TokenKind::Far => "'far'".to_string(),
@@ -3295,7 +3268,7 @@ mod tests {
 
     #[test]
     fn parses_far_function_and_call() {
-        let source = "far func target {\n nop\n}\nmain {\n call target\n}\n";
+        let source = "far func target {\n nop\n}\nfunc main {\n call target\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
     }
@@ -3385,7 +3358,7 @@ mod tests {
 
     #[test]
     fn rejects_const_statement_inside_code_block() {
-        let source = "main {\n  const LIMIT = 1\n}\n";
+        let source = "func main {\n  const LIMIT = 1\n}\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse error");
         assert!(
             diagnostics
@@ -3453,7 +3426,7 @@ mod tests {
 
     #[test]
     fn parses_symbolic_subscript_forms() {
-        let source = "main {\n  a=foo[.idx]\n  a=foo.string[2]\n}\n";
+        let source = "func main {\n  a=foo[.idx]\n  a=foo.string[2]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
             panic!("expected code block");
@@ -3531,7 +3504,7 @@ mod tests {
 
     #[test]
     fn parses_byte_directive_values() {
-        let source = "main {\n .byte 1, 0x02, symbol\n}\n";
+        let source = "func main {\n .byte 1, 0x02, symbol\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 1);
 
@@ -3612,7 +3585,7 @@ mod tests {
 
     #[test]
     fn parses_label_and_instruction_statements() {
-        let source = "main {\n loop:\n nop\n}\n";
+        let source = "func main {\n loop:\n nop\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 1);
 
@@ -3635,7 +3608,7 @@ mod tests {
 
     #[test]
     fn parses_hla_statements_without_text_desugaring() {
-        let source = "main {\n  x = #0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = [$FF]\n}\n";
+        let source = "func main {\n  x = #0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = [$FF]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
             panic!("expected code block");
@@ -3668,7 +3641,7 @@ mod tests {
 
     #[test]
     fn parses_hla_do_close_with_n_flag_suffix() {
-        let source = "main {\n  {\n    a=READY\n  } n-?\n}\n";
+        let source = "func main {\n  {\n    a=READY\n  } n-?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
             panic!("expected code block");
@@ -3684,7 +3657,7 @@ mod tests {
 
     #[test]
     fn parses_hla_do_close_with_n_plus_suffix() {
-        let source = "main {\n  {\n    a=READY\n  } n+?\n}\n";
+        let source = "func main {\n  {\n    a=READY\n  } n+?\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
             panic!("expected code block");
@@ -3700,7 +3673,7 @@ mod tests {
 
     #[test]
     fn warns_for_inefficient_postfix_le_and_gt_without_condition_seed() {
-        let source = "main {\n  {\n    x++\n  } <=\n  {\n    y++\n  } >\n}\n";
+        let source = "func main {\n  {\n    x++\n  } <=\n  {\n    y++\n  } >\n}\n";
         let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
         assert_eq!(parsed.warnings.len(), 2);
         assert!(parsed.warnings[0].message.contains("`} <=`"));
@@ -3709,7 +3682,7 @@ mod tests {
 
     #[test]
     fn does_not_warn_for_postfix_ops_with_condition_seed() {
-        let source = "main {\n  {\n    a?0\n  } <=\n}\n";
+        let source = "func main {\n  {\n    a?0\n  } <=\n}\n";
         let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
         assert!(parsed.warnings.is_empty());
     }
@@ -3761,7 +3734,7 @@ mod tests {
 
     #[test]
     fn parses_main_symbol_in_address_byte_entries() {
-        let source = "data vectors {\n  &<main &>main\n}\nmain {\n  return\n}\n";
+        let source = "data vectors {\n  &<main &>main\n}\nfunc main {\n  return\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
 
@@ -3792,7 +3765,7 @@ mod tests {
 
     #[test]
     fn parses_operand_modes_with_y_and_indirect_forms() {
-        let source = "var ptr = 0x20\nmain {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
+        let source = "var ptr = 0x20\nfunc main {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
 
@@ -3852,7 +3825,7 @@ mod tests {
 
     #[test]
     fn recovers_at_block_boundary_and_continues_items() {
-        let source = "main {\n call\n}\nfar var trailing\n";
+        let source = "func main {\n call\n}\nfar var trailing\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
         assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
         assert!(
@@ -3865,7 +3838,7 @@ mod tests {
 
     #[test]
     fn parse_error_messages_are_human_readable() {
-        let diagnostics = parse(SourceId(0), "main {\n call\n}\n").expect_err("expected errors");
+        let diagnostics = parse(SourceId(0), "func main {\n call\n}\n").expect_err("expected errors");
         let message = &diagnostics[0].message;
         assert!(message.contains("expected"));
         assert!(!message.contains("TokenKind"));
@@ -3893,7 +3866,7 @@ mod tests {
 
     #[test]
     fn reports_unsupported_flag_shorthand_for_invalid_flag_goto() {
-        let source = "main {\n  s-? goto .skip\n.skip:\n  return\n}\n";
+        let source = "func main {\n  s-? goto .skip\n.skip:\n  return\n}\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
         assert!(
             diagnostics

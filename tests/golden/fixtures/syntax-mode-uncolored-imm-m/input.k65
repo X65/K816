@@ -7,6 +7,6 @@ func uncolored {
   lda #$01
 }
 
-main {
+func main {
   nop
 }

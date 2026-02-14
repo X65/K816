@@ -1,4 +1,4 @@
-main {
+func main {
   A=0
   X=A
   Y=x

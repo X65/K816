@@ -23,7 +23,7 @@ Want to get a feel for K65-style code? This is the vibe:
 ```k65
 var SCREEN = $0400
 
-main {
+func main {
   x = #0
   {
     a = hello, x
@@ -49,7 +49,7 @@ func draw @a16 @i16 {
   lda #$1234          // 16-bit immediate -- sized automatically
 }
 
-main {
+func main {
   call draw           // REP #$30 emitted before JSR
 }
 ```

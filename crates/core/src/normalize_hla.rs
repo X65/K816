@@ -27,7 +27,6 @@ fn normalize_item(item: &Item) -> Item {
             Item::CodeBlock(crate::ast::CodeBlock {
                 name: block.name.clone(),
                 name_span: block.name_span,
-                kind: block.kind,
                 is_far: block.is_far,
                 is_naked: block.is_naked,
                 is_inline: block.is_inline,

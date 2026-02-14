@@ -3,7 +3,7 @@ var regs[
   .status:byte
 ] = 0x2100
 
-main @a8 {
+func main @a8 {
   lda regs.ctrl:byte
   sta regs.ctrl:byte
   lda regs.status

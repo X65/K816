@@ -1,4 +1,4 @@
-main {
+func main {
   a=123
   a=0x1F
   a=0b10101010

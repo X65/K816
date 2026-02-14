@@ -5,7 +5,7 @@ var arr[4], arr2[2]
 var with_addr[3] = 0x300
 var verbose ?
 
-main {
+func main {
   a=base
   a=next
   a=arr

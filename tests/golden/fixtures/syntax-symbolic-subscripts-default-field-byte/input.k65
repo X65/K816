@@ -3,6 +3,6 @@ var foo[
   .w:word
 ] = 0x1234
 
-main @a8 {
+func main @a8 {
   lda foo.a
 }

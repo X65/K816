@@ -1,6 +1,6 @@
 var mem = 0x80
 
-main {
+func main {
   nocross {
     a=mem
     x++

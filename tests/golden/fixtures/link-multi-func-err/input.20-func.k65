@@ -1,4 +1,4 @@
-func app_init @a8 @i8 {
+func app_init @a16 @i16 {
     lda #1
     ldx #2
 }

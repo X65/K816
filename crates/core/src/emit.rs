@@ -107,6 +107,7 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 name,
                 mode_contract,
                 is_entry,
+                ..
             } => {
                 current_function = Some(name.clone());
                 let default = if *is_entry { Some(false) } else { None };

@@ -1,7 +1,7 @@
 Error: no free range found for relocatable chunk in segment 'free' (len=0x2)
-   ╭─[ tests/golden/fixtures/link-no-fit/input.k65:1:6 ]
-   │
- 1 │ func rel {
-   │      ─┬─  
-   │       ╰─── function 'rel' defined here
-───╯
+    ╭─[ tests/golden/fixtures/link-no-fit/input.k65:10:6 ]
+    │
+ 10 │ func rel {
+    │      ─┬─  
+    │       ╰─── function 'rel' defined here
+────╯

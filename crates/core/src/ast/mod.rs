@@ -231,6 +231,7 @@ pub enum HlaStmt {
 #[derive(Debug, Clone)]
 pub struct CallStmt {
     pub target: String,
+    pub is_far: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

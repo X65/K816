@@ -1,7 +1,7 @@
 Error: fixed chunk for segment 'default' at 0x100..0x102 overlaps existing placement near 0x100 in memory 'MAIN'
-   ╭─[ tests/golden/fixtures/link-fixed-overlap/input.k65:1:6 ]
+   ╭─[ tests/golden/fixtures/link-fixed-overlap/input.k65:6:6 ]
    │
- 1 │ func fixed_b {
+ 6 │ func fixed_b {
    │      ───┬───  
    │         ╰───── function 'fixed_b' defined here
 ───╯

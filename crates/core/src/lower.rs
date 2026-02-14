@@ -205,6 +205,7 @@ pub fn lower_with_options(
                         name: scope.clone(),
                         mode_contract: effective_contract,
                         is_entry: block.kind == crate::ast::BlockKind::Main,
+                        is_far: block.is_far,
                     },
                     label_span,
                 ));
@@ -694,8 +695,8 @@ fn lower_stmt(
                     ops,
                 );
             } else if ctx.options.allow_undefined_functions {
-                // Cross-unit call: emit default near JSR, no mode contract.
-                lower_call_with_contract(&target, false, None, None, span, ctx, ops);
+                // Cross-unit call: emit JSR or JSL based on `call far`, no mode contract.
+                lower_call_with_contract(&target, call.is_far, None, None, span, ctx, ops);
             } else {
                 diagnostics.push(
                     Diagnostic::error(span, format!("unknown function '{}'", call.target))

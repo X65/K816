@@ -5,6 +5,6 @@ main {
     xce
 
     call app_init
-    call far lib_init
-    call app_start
+    call lib_init
+    call far app_start
 }

@@ -6,8 +6,8 @@ use k816_isa65816::{
     OperandShape, operand_width_for_mode, select_encoding,
 };
 use k816_o65::{
-    DataStringFragment, FunctionDisassembly, O65Object, Relocation, RelocationKind, Section,
-    SectionChunk, SourceLocation, Symbol, SymbolDefinition,
+    CallMetadata, DataStringFragment, FunctionDisassembly, FunctionMetadata, O65Object, Relocation,
+    RelocationKind, Section, SectionChunk, SourceLocation, Symbol, SymbolDefinition,
 };
 
 use crate::diag::Diagnostic;
@@ -56,6 +56,7 @@ struct Fixup {
     kind: RelocationKind,
     label: String,
     span: Span,
+    call_metadata: Option<CallMetadata>,
 }
 
 #[derive(Debug)]
@@ -108,6 +109,7 @@ pub fn emit_object_with_options(
     let mut function_initial_modes: FxHashMap<(String, String), (bool, bool)> =
         FxHashMap::default();
     let mut data_string_fragments = Vec::new();
+    let mut function_label_metadata: FxHashMap<String, FunctionMetadata> = FxHashMap::default();
     let mut m_wide: Option<bool> = None; // accumulator width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
     let mut x_wide: Option<bool> = None; // index width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
     let mut m_unknown_cause: Option<UnknownWidthCause> = None;
@@ -139,6 +141,7 @@ pub fn emit_object_with_options(
                 name,
                 mode_contract,
                 is_entry,
+                is_far,
             } => {
                 current_function = Some(name.clone());
                 // Entry point (main) defaults to 8-bit (emulation mode).
@@ -157,6 +160,18 @@ pub fn emit_object_with_options(
                 function_initial_modes.insert(
                     (current_segment.clone(), name.clone()),
                     (m_wide.unwrap_or(false), x_wide.unwrap_or(false)),
+                );
+                function_label_metadata.insert(
+                    name.clone(),
+                    FunctionMetadata {
+                        is_far: *is_far,
+                        a_width: mode_contract
+                            .a_width
+                            .map(|w| w == crate::ast::RegWidth::W16),
+                        i_width: mode_contract
+                            .i_width
+                            .map(|w| w == crate::ast::RegWidth::W16),
+                    },
                 );
             }
             Op::FunctionEnd => {
@@ -318,6 +333,7 @@ pub fn emit_object_with_options(
                         },
                         label: relocation.label.clone(),
                         span: relocation_span,
+                        call_metadata: None,
                     });
                 }
             }
@@ -453,6 +469,7 @@ pub fn emit_object_with_options(
                             },
                             label: label.clone(),
                             span: relocation_span,
+                            call_metadata: None,
                         });
                     }
                     Some(OperandOp::Address { value, .. }) => match value {
@@ -473,6 +490,7 @@ pub fn emit_object_with_options(
                             emit_zeroes(segment, width, op.span, &mut diagnostics);
                             let relocation_span =
                                 relocation_span_for_label(source_map, op.span, label);
+                            let is_call = matches!(mnemonic.as_str(), "jsr" | "jsl");
                             fixups.push(Fixup {
                                 segment: current_segment.clone(),
                                 offset: operand_offset,
@@ -487,6 +505,14 @@ pub fn emit_object_with_options(
                                 },
                                 label: label.clone(),
                                 span: relocation_span,
+                                call_metadata: if is_call {
+                                    Some(CallMetadata {
+                                        caller_a_width: m_wide,
+                                        caller_i_width: x_wide,
+                                    })
+                                } else {
+                                    None
+                                },
                             });
                         }
                     },
@@ -556,6 +582,7 @@ pub fn emit_object_with_options(
                 offset: *offset,
                 source: source_location_for_span(source_map, *span),
             }),
+            function_metadata: function_label_metadata.get(name.as_str()).copied(),
         });
     }
     for (name, (address, span)) in &absolute_symbols {
@@ -566,6 +593,7 @@ pub fn emit_object_with_options(
                 address: *address,
                 source: source_location_for_span(source_map, *span),
             }),
+            function_metadata: None,
         });
     }
     symbols.sort_by(|a, b| a.name.cmp(&b.name));
@@ -582,6 +610,7 @@ pub fn emit_object_with_options(
             kind: fixup.kind,
             symbol: fixup.label.clone(),
             source: source_location_for_span(source_map, fixup.span),
+            call_metadata: fixup.call_metadata,
         });
     }
 
@@ -1040,6 +1069,7 @@ mod tests {
                     name: "main".to_string(),
                     mode_contract: ModeContract::default(),
                     is_entry: true,
+                    is_far: false,
                 }),
                 op(Op::Instruction(InstructionOp {
                     mnemonic: "lda".to_string(),

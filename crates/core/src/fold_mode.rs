@@ -233,6 +233,7 @@ fn process_function(
                 name,
                 mode_contract,
                 is_entry,
+                is_far,
             } => {
                 let (fn_needs_m, fn_needs_x) = effective_needs
                     .get(name.as_str())
@@ -255,6 +256,7 @@ fn process_function(
                         name: name.clone(),
                         mode_contract: new_contract,
                         is_entry: *is_entry,
+                        is_far: *is_far,
                     },
                     op.span,
                 ));
@@ -443,6 +445,7 @@ mod tests {
                         name: "main".to_string(),
                         mode_contract: ModeContract::default(),
                         is_entry: true,
+                        is_far: false,
                     },
                     span,
                 ),

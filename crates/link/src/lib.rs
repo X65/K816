@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 use k816_isa65816::{decode_instruction_with_mode, format_instruction};
-use k816_o65::{O65Object, RelocationKind, SourceLocation, SymbolDefinition};
+use k816_o65::{CallMetadata, FunctionMetadata, O65Object, RelocationKind, SourceLocation, SymbolDefinition};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -366,6 +366,19 @@ pub fn link_objects_with_options(
         symbols.insert(link_symbol.name.clone(), value);
     }
 
+    // Build function metadata lookup for calling convention / width validation
+    let mut function_metadata_map: HashMap<String, FunctionMetadata> = HashMap::new();
+    for object in objects.iter() {
+        for symbol in &object.symbols {
+            if let Some(meta) = &symbol.function_metadata {
+                function_metadata_map.insert(symbol.name.clone(), *meta);
+            }
+        }
+    }
+
+    // Validate calling convention and register width mismatches
+    validate_call_metadata(objects, &symbols, &function_metadata_map, options)?;
+
     for (obj_idx, object) in objects.iter().enumerate() {
         for reloc in &object.relocations {
             let section_key = (obj_idx, reloc.section.clone());
@@ -402,7 +415,8 @@ pub fn link_objects_with_options(
                         &detail,
                         anchor.as_ref(),
                         options,
-                        Some(&label_message)
+                        Some(&label_message),
+                        None,
                     )
                 )
             })?;
@@ -521,6 +535,148 @@ pub fn link_objects_with_options(
         kind: output_kind,
         listing: listing_blocks.join("\n\n"),
     })
+}
+
+fn validate_call_metadata(
+    objects: &[O65Object],
+    symbols: &HashMap<String, ResolvedSymbol>,
+    function_metadata_map: &HashMap<String, FunctionMetadata>,
+    options: LinkRenderOptions,
+) -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    for (obj_idx, object) in objects.iter().enumerate() {
+        for reloc in &object.relocations {
+            let Some(call_meta) = &reloc.call_metadata else {
+                continue;
+            };
+
+            // Only validate if the target symbol exists (undefined symbols
+            // are caught separately in the relocation patching loop)
+            if !symbols.contains_key(&reloc.symbol) {
+                continue;
+            }
+
+            let Some(func_meta) = function_metadata_map.get(&reloc.symbol) else {
+                continue;
+            };
+
+            let anchor = reloc
+                .source
+                .as_ref()
+                .map(|source| AnchorContext {
+                    symbol_name: reloc.symbol.clone(),
+                    source: Some(source.clone()),
+                })
+                .or_else(|| {
+                    find_section_anchor_context(objects, obj_idx, &reloc.section, reloc.offset)
+                });
+
+            // Far/near mismatch: width 2 = near JSR, width 3 = far JSL
+            if reloc.width == 2 && func_meta.is_far {
+                let detail = format!("near call to far function '{}'", reloc.symbol);
+                let help = format!("use `call far {}` instead", reloc.symbol);
+                errors.push(decorate_with_anchor_with_label(
+                    &detail,
+                    anchor.as_ref(),
+                    options,
+                    Some(&detail),
+                    Some(&help),
+                ));
+            } else if reloc.width == 3 && !func_meta.is_far {
+                let detail = format!("far call to near function '{}'", reloc.symbol);
+                let help = format!("use `call {}` instead", reloc.symbol);
+                errors.push(decorate_with_anchor_with_label(
+                    &detail,
+                    anchor.as_ref(),
+                    options,
+                    Some(&detail),
+                    Some(&help),
+                ));
+            }
+
+            // Register width mismatch
+            check_width_mismatch(
+                call_meta,
+                func_meta,
+                &reloc.symbol,
+                anchor.as_ref(),
+                options,
+                &mut errors,
+            );
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", errors.join("\n\n"));
+    }
+}
+
+fn check_width_mismatch(
+    call_meta: &CallMetadata,
+    func_meta: &FunctionMetadata,
+    symbol: &str,
+    anchor: Option<&AnchorContext>,
+    options: LinkRenderOptions,
+    errors: &mut Vec<String>,
+) {
+    fn width_name(wide: bool) -> &'static str {
+        if wide {
+            "16-bit"
+        } else {
+            "8-bit"
+        }
+    }
+
+    if let (Some(caller_a), Some(callee_a)) = (call_meta.caller_a_width, func_meta.a_width) {
+        if caller_a != callee_a {
+            let detail = format!(
+                "accumulator width mismatch calling '{}': caller is {}, callee expects {}",
+                symbol,
+                width_name(caller_a),
+                width_name(callee_a),
+            );
+            let label = format!(
+                "caller A={}, callee '{}' expects A={}",
+                width_name(caller_a),
+                symbol,
+                width_name(callee_a),
+            );
+            errors.push(decorate_with_anchor_with_label(
+                &detail,
+                anchor,
+                options,
+                Some(&label),
+                None,
+            ));
+        }
+    }
+
+    if let (Some(caller_i), Some(callee_i)) = (call_meta.caller_i_width, func_meta.i_width) {
+        if caller_i != callee_i {
+            let detail = format!(
+                "index register width mismatch calling '{}': caller is {}, callee expects {}",
+                symbol,
+                width_name(caller_i),
+                width_name(callee_i),
+            );
+            let label = format!(
+                "caller I={}, callee '{}' expects I={}",
+                width_name(caller_i),
+                symbol,
+                width_name(callee_i),
+            );
+            errors.push(decorate_with_anchor_with_label(
+                &detail,
+                anchor,
+                options,
+                Some(&label),
+                None,
+            ));
+        }
+    }
 }
 
 fn choose_reloc_base(
@@ -778,7 +934,7 @@ fn decorate_with_anchor(
 ) -> String {
     let label_message =
         anchor.map(|anchor| format!("function '{}' defined here", anchor.symbol_name));
-    decorate_with_anchor_with_label(message, anchor, options, label_message.as_deref())
+    decorate_with_anchor_with_label(message, anchor, options, label_message.as_deref(), None)
 }
 
 fn decorate_with_anchor_with_label(
@@ -786,9 +942,13 @@ fn decorate_with_anchor_with_label(
     anchor: Option<&AnchorContext>,
     options: LinkRenderOptions,
     label_message: Option<&str>,
+    help: Option<&str>,
 ) -> String {
     let Some(anchor) = anchor else {
-        return message.to_string();
+        return match help {
+            Some(help) => format!("{message}\n\n Help: {help}"),
+            None => message.to_string(),
+        };
     };
     let label_message = label_message.unwrap_or("defined here");
 
@@ -796,7 +956,7 @@ fn decorate_with_anchor_with_label(
         return format!("{message}\n{label_message}");
     };
 
-    let context = render_anchor_context(message, source, options, label_message);
+    let context = render_anchor_context(message, source, options, label_message, help);
     if context.is_empty() {
         format!(
             "{message}\n{label_message} at {}:{}:{}",
@@ -812,6 +972,7 @@ fn render_anchor_context(
     source: &SourceLocation,
     options: LinkRenderOptions,
     label_message: &str,
+    help: Option<&str>,
 ) -> String {
     let file_id = source.file.clone();
     let line_len = source.line_text.len();
@@ -830,23 +991,35 @@ fn render_anchor_context(
         end = start + 1;
     }
 
+    // Prefix with (line - 1) newlines so ariadne renders the correct line number.
+    let line_prefix = "\n".repeat(source.line.saturating_sub(1) as usize);
+    let padded_source = format!("{line_prefix}{}", source.line_text);
+    let byte_offset = line_prefix.len();
+
     let mut cache = SingleSourceCache {
         id: file_id.clone(),
-        source: Source::from(source.line_text.clone()),
+        source: Source::from(padded_source),
     };
     let mut output = Vec::new();
 
-    let report = Report::build(ReportKind::Error, (file_id.clone(), start..end))
-        .with_config(
-            Config::default()
-                .with_index_type(IndexType::Byte)
-                .with_color(options.color),
-        )
-        .with_message(message.to_string())
-        .with_label(
-            Label::new((file_id.clone(), start..end)).with_message(label_message.to_string()),
-        )
-        .finish();
+    let mut report = Report::build(
+        ReportKind::Error,
+        (file_id.clone(), byte_offset + start..byte_offset + end),
+    )
+    .with_config(
+        Config::default()
+            .with_index_type(IndexType::Byte)
+            .with_color(options.color),
+    )
+    .with_message(message.to_string())
+    .with_label(
+        Label::new((file_id.clone(), byte_offset + start..byte_offset + end))
+            .with_message(label_message.to_string()),
+    );
+    if let Some(help) = help {
+        report = report.with_help(help.to_string());
+    }
+    let report = report.finish();
 
     if report.write(&mut cache, &mut output).is_ok() {
         String::from_utf8_lossy(&output).into_owned()
@@ -1714,6 +1887,7 @@ mod tests {
                     line_text: line_text.to_string(),
                 }),
             }),
+            function_metadata: None,
         }
     }
 
@@ -1741,6 +1915,7 @@ mod tests {
                     offset: 2,
                     source: None,
                 }),
+                function_metadata: None,
             }],
             relocations: vec![Relocation {
                 section: "default".to_string(),
@@ -1749,6 +1924,7 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
                 source: None,
+                call_metadata: None,
             }],
             function_disassembly: Vec::new(),
             data_string_fragments: Vec::new(),
@@ -1788,6 +1964,7 @@ mod tests {
                     address: 0x1234,
                     source: None,
                 }),
+                function_metadata: None,
             }],
             relocations: vec![Relocation {
                 section: "default".to_string(),
@@ -1796,6 +1973,7 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "abs_target".to_string(),
                 source: None,
+                call_metadata: None,
             }],
             function_disassembly: Vec::new(),
             data_string_fragments: Vec::new(),
@@ -2368,6 +2546,7 @@ mod tests {
                 offset: 0,
                 source: None,
             }),
+            function_metadata: None,
         }];
 
         let linked = link_objects(&[object], &default_stub_config()).expect("link");

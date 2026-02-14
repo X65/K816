@@ -216,6 +216,26 @@ func caller {
 }
 ```
 
+For cross-unit calls (when the callee is defined in a separate compilation unit), use the `call far` syntax:
+
+```k65
+// main.k65
+main {
+  call far lib_init     // JSL to far function in another unit
+}
+
+// lib.k65
+far func lib_init @a8 @i8 {
+  nop
+}
+```
+
+The linker validates calling convention consistency across units:
+
+- A near `call` to a `far func` produces a linker error.
+- A `call far` to a regular (near) `func` produces a linker error.
+- Register width mismatches (caller's A/I width differs from callee's declared `@a8`/`@a16`/`@i8`/`@i16` contract) produce linker errors.
+
 ## Raw Data
 
 Raw data bytes can be emitted inline in code sections using `data { }`:
@@ -1888,8 +1908,9 @@ Within loop blocks:
 ```k65
 goto label             // JMP absolute
 goto (vec)             // JMP indirect
-call label             // JSR
-far label              // far call (JSL, 24-bit addressing)
+call label             // JSR (near call)
+call far label         // JSL (far call, 24-bit addressing)
+far label              // JSL (far call, alternative syntax)
 return                 // RTS
 return_i               // RTI
 ```

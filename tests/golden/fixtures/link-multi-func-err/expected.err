@@ -1,0 +1,38 @@
+Error: accumulator width mismatch calling 'app_init': caller is 8-bit, callee expects 16-bit
+   ╭─[ tests/golden/fixtures/link-multi-func-err/input.10-main.k65:7:10 ]
+   │
+ 7 │     call app_init
+   │          ────┬───  
+   │              ╰───── caller A=8-bit, callee 'app_init' expects A=16-bit
+───╯
+
+
+Error: index register width mismatch calling 'app_init': caller is 8-bit, callee expects 16-bit
+   ╭─[ tests/golden/fixtures/link-multi-func-err/input.10-main.k65:7:10 ]
+   │
+ 7 │     call app_init
+   │          ────┬───  
+   │              ╰───── caller I=8-bit, callee 'app_init' expects I=16-bit
+───╯
+
+
+Error: near call to far function 'lib_init'
+   ╭─[ tests/golden/fixtures/link-multi-func-err/input.10-main.k65:8:10 ]
+   │
+ 8 │     call lib_init
+   │          ────┬───  
+   │              ╰───── near call to far function 'lib_init'
+   │ 
+   │ Help: use `call far lib_init` instead
+───╯
+
+
+Error: far call to near function 'app_start'
+   ╭─[ tests/golden/fixtures/link-multi-func-err/input.10-main.k65:9:14 ]
+   │
+ 9 │     call far app_start
+   │              ────┬────  
+   │                  ╰────── far call to near function 'app_start'
+   │ 
+   │ Help: use `call app_start` instead
+───╯

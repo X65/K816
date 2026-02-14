@@ -247,3 +247,43 @@ output: (
   file: Some("game.bin"),
 )
 ```
+
+## Cross-Unit Function Call Validation
+
+When linking multiple compilation units, the linker validates calling convention
+and register width consistency at each call site.
+
+### Calling Convention Mismatch
+
+The linker checks that near calls (`JSR`, 2-byte operand) target near functions
+(`func`) and far calls (`JSL`, 3-byte operand) target far functions
+(`far func`). Mismatches produce errors:
+
+```
+error: near call to far function 'lib_init': use `call far lib_init` instead
+error: far call to near function 'app_start': use `call app_start` instead
+```
+
+### Register Width Mismatch
+
+Within a single compilation unit, the compiler automatically inserts `REP`/`SEP`
+instructions when the caller's accumulator or index register width differs from
+the callee's declared contract (`@a8`, `@a16`, `@i8`, `@i16`).
+
+Across compilation units, the compiler cannot see the callee's contract and
+assumes a match. The linker verifies this assumption by comparing the caller's
+register width state at each call site against the callee's declared contract.
+When both are specified and they differ, the linker reports an error:
+
+```
+error: accumulator width mismatch calling 'app_init': caller is 8-bit, callee expects 16-bit
+error: index register width mismatch calling 'app_init': caller is 8-bit, callee expects 16-bit
+```
+
+### Metadata Encoding
+
+Function metadata (calling convention, register width contract) is stored in the
+o65 object file alongside symbol definitions. Call-site metadata (caller's
+register width state) is stored alongside relocations. Both are encoded under
+payload version 7 and are backward-compatible — older objects without metadata
+are linked without validation.

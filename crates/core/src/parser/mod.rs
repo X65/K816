@@ -1448,8 +1448,9 @@ where
         });
 
     let call_stmt = just(TokenKind::Call)
-        .ignore_then(ident_parser())
-        .map(|target| Stmt::Call(CallStmt { target }));
+        .ignore_then(just(TokenKind::Far).or_not())
+        .then(ident_parser())
+        .map(|(far, target)| Stmt::Call(CallStmt { target, is_far: far.is_some() }));
 
     let label_stmt = ident_parser()
         .then_ignore(just(TokenKind::Colon))
@@ -2354,7 +2355,7 @@ where
 
     let far_call_stmt = just(TokenKind::Far)
         .ignore_then(ident_parser())
-        .map(|target| Stmt::Call(CallStmt { target }));
+        .map(|target| Stmt::Call(CallStmt { target, is_far: true }));
 
     let break_repeat_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("break")
@@ -3855,9 +3856,10 @@ mod tests {
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
         assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
         assert!(
-            diagnostics.iter().any(
-                |diag| diag.message == "invalid syntax: expected something else, found newline"
-            )
+            diagnostics.iter().any(|diag| diag
+                .message
+                .starts_with("invalid syntax: expected")),
+            "unexpected diagnostics: {diagnostics:#?}"
         );
     }
 

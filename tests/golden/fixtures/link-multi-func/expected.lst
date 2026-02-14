@@ -1,9 +1,9 @@
 [obj#0 default]
-000000: 78 D8 18 FB 20 08 00 60
+000000: 78 D8 18 FB 20 0F 00 22 14 00 00 20 17 00 60
 
 
 [obj#1 default]
-000008: EA 80 FD 60
+00000F: A9 01 A2 02 60 EA EB 6B EA 80 FD 60
 
 
 [disasm obj#0 default::main]
@@ -11,10 +11,22 @@
 000001: D8          cld
 000002: 18          clc
 000003: FB          xce
-000004: 20 08 00    jsr $0008
-000007: 60          rts
+000004: 20 0F 00    jsr $000F
+000007: 22 14 00 00 jsl $000014
+00000B: 20 17 00    jsr $0017
+00000E: 60          rts
+
+[disasm obj#1 default::app_init]
+00000F: A9 01       lda #$01
+000011: A2 02       ldx #$02
+000013: 60          rts
+
+[disasm obj#1 default::lib_init]
+000014: EA          nop
+000015: EB          xba
+000016: 6B          rtl
 
 [disasm obj#1 default::app_start]
-000008: EA          nop
-000009: 80 FD       bra $000008
-00000B: 60          rts
+000017: EA          nop
+000018: 80 FD       bra $000017
+00001A: 60          rts

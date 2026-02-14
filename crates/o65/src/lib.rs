@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 6;
+const PAYLOAD_VERSION: u16 = 7;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -50,6 +50,16 @@ pub struct Symbol {
     pub name: String,
     pub global: bool,
     pub definition: Option<SymbolDefinition>,
+    pub function_metadata: Option<FunctionMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FunctionMetadata {
+    pub is_far: bool,
+    /// None = unspecified, Some(false) = 8-bit, Some(true) = 16-bit.
+    pub a_width: Option<bool>,
+    /// None = unspecified, Some(false) = 8-bit, Some(true) = 16-bit.
+    pub i_width: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +92,17 @@ pub struct Relocation {
     pub kind: RelocationKind,
     pub symbol: String,
     pub source: Option<SourceLocation>,
+    pub call_metadata: Option<CallMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallMetadata {
+    /// Caller's accumulator width at the call site.
+    /// None = unknown, Some(false) = 8-bit, Some(true) = 16-bit.
+    pub caller_a_width: Option<bool>,
+    /// Caller's index register width at the call site.
+    /// None = unknown, Some(false) = 8-bit, Some(true) = 16-bit.
+    pub caller_i_width: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +224,15 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
             }
             None => out.push(0),
         }
+        match &symbol.function_metadata {
+            Some(meta) => {
+                out.push(1);
+                out.push(meta.is_far as u8);
+                out.push(encode_optional_width(meta.a_width));
+                out.push(encode_optional_width(meta.i_width));
+            }
+            None => out.push(0),
+        }
     }
 
     for reloc in &object.relocations {
@@ -224,6 +254,14 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
                 write_u32(&mut out, source.column);
                 write_u32(&mut out, source.column_end);
                 write_string(&mut out, &source.line_text)?;
+            }
+            None => out.push(0),
+        }
+        match &reloc.call_metadata {
+            Some(meta) => {
+                out.push(1);
+                out.push(encode_optional_width(meta.caller_a_width));
+                out.push(encode_optional_width(meta.caller_i_width));
             }
             None => out.push(0),
         }
@@ -381,10 +419,25 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         } else {
             None
         };
+        let function_metadata = if version >= 7 {
+            let has_meta = rd.read_u8()? != 0;
+            if has_meta {
+                Some(FunctionMetadata {
+                    is_far: rd.read_u8()? != 0,
+                    a_width: decode_optional_width(rd.read_u8()?)?,
+                    i_width: decode_optional_width(rd.read_u8()?)?,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         symbols.push(Symbol {
             name,
             global,
             definition,
+            function_metadata,
         });
     }
 
@@ -417,6 +470,19 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         } else {
             None
         };
+        let call_metadata = if version >= 7 {
+            let has_meta = rd.read_u8()? != 0;
+            if has_meta {
+                Some(CallMetadata {
+                    caller_a_width: decode_optional_width(rd.read_u8()?)?,
+                    caller_i_width: decode_optional_width(rd.read_u8()?)?,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         relocations.push(Relocation {
             section,
             offset,
@@ -424,6 +490,7 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
             kind,
             symbol,
             source,
+            call_metadata,
         });
     }
 
@@ -701,6 +768,23 @@ fn section_contains_range(section: &Section, start: u32, end: u32) -> Result<boo
     Ok(false)
 }
 
+fn encode_optional_width(width: Option<bool>) -> u8 {
+    match width {
+        None => 0,
+        Some(false) => 1, // 8-bit
+        Some(true) => 2,  // 16-bit
+    }
+}
+
+fn decode_optional_width(byte: u8) -> Result<Option<bool>> {
+    match byte {
+        0 => Ok(None),
+        1 => Ok(Some(false)), // 8-bit
+        2 => Ok(Some(true)),  // 16-bit
+        other => bail!("invalid optional width value: {other}"),
+    }
+}
+
 fn write_u16(out: &mut Vec<u8>, value: u16) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -820,6 +904,7 @@ mod tests {
                     offset: 2,
                     source: None,
                 }),
+                function_metadata: None,
             }],
             relocations: vec![Relocation {
                 section: "default".to_string(),
@@ -828,6 +913,7 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
                 source: None,
+                call_metadata: None,
             }],
             function_disassembly: vec![FunctionDisassembly {
                 section: "default".to_string(),
@@ -869,6 +955,7 @@ mod tests {
                     address: 0x1234,
                     source: None,
                 }),
+                function_metadata: None,
             }],
             relocations: Vec::new(),
             function_disassembly: Vec::new(),
@@ -946,6 +1033,7 @@ mod tests {
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
                 source: None,
+                call_metadata: None,
             }],
             function_disassembly: Vec::new(),
             data_string_fragments: Vec::new(),

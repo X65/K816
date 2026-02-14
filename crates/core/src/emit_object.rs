@@ -21,24 +21,6 @@ pub struct EmitObjectOutput {
     pub object: O65Object,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EmitObjectOptions {
-    pub allow_undefined_symbols: bool,
-}
-
-impl EmitObjectOptions {
-    pub const fn strict() -> Self {
-        Self {
-            allow_undefined_symbols: false,
-        }
-    }
-
-    pub const fn for_link() -> Self {
-        Self {
-            allow_undefined_symbols: true,
-        }
-    }
-}
 
 #[derive(Debug)]
 struct SegmentState {
@@ -89,14 +71,6 @@ fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
 pub fn emit_object(
     program: &Program,
     source_map: &SourceMap,
-) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
-    emit_object_with_options(program, source_map, EmitObjectOptions::strict())
-}
-
-pub fn emit_object_with_options(
-    program: &Program,
-    source_map: &SourceMap,
-    options: EmitObjectOptions,
 ) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
@@ -530,17 +504,6 @@ pub fn emit_object_with_options(
                     x_unknown_cause = Some(cause);
                 }
             }
-        }
-    }
-
-    for fixup in &fixups {
-        let is_defined =
-            labels.contains_key(&fixup.label) || absolute_symbols.contains_key(&fixup.label);
-        if !is_defined && !options.allow_undefined_symbols {
-            diagnostics.push(Diagnostic::error(
-                fixup.span,
-                format!("undefined label '{}'", fixup.label),
-            ));
         }
     }
 
@@ -1014,30 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_mode_rejects_unresolved_labels() {
-        let mut source_map = SourceMap::default();
-        source_map.add_source("test.k65", "func a {}\n");
-        let program = Program {
-            ops: vec![op(Op::Instruction(InstructionOp {
-                mnemonic: "lda".to_string(),
-                operand: Some(OperandOp::Address {
-                    value: AddressValue::Label("missing".to_string()),
-                    force_far: false,
-                    mode: AddressOperandMode::Direct { index: None },
-                }),
-            }))],
-        };
-
-        let errors = emit_object(&program, &source_map).expect_err("strict mode must fail");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.contains("undefined label 'missing'"))
-        );
-    }
-
-    #[test]
-    fn link_mode_keeps_unresolved_labels_for_linker() {
+    fn keeps_unresolved_labels_for_linker() {
         let mut source_map = SourceMap::default();
         source_map.add_source("test.k65", "func a {}\n");
         let program = Program {
@@ -1052,15 +992,14 @@ mod tests {
         };
 
         let emitted =
-            emit_object_with_options(&program, &source_map, EmitObjectOptions::for_link())
-                .expect("link mode must keep unresolved label");
+            emit_object(&program, &source_map).expect("unresolved labels deferred to linker");
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
     }
 
     #[test]
-    fn link_mode_keeps_immediate_byte_relocations_for_linker() {
+    fn keeps_immediate_byte_relocations_for_linker() {
         let mut source_map = SourceMap::default();
         source_map.add_source("test.k65", "func main { a=&<missing }\n");
         let program = Program {
@@ -1083,8 +1022,7 @@ mod tests {
         };
 
         let emitted =
-            emit_object_with_options(&program, &source_map, EmitObjectOptions::for_link())
-                .expect("link mode must keep unresolved label");
+            emit_object(&program, &source_map).expect("unresolved labels deferred to linker");
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");

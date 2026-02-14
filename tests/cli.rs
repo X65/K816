@@ -90,7 +90,7 @@ fn compile_subcommand_allows_unresolved_symbols_for_later_linking() {
 }
 
 #[test]
-fn shortcut_build_keeps_strict_undefined_label_diagnostics() {
+fn shortcut_build_reports_undefined_symbol_diagnostics() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time should move forward")
@@ -105,7 +105,7 @@ fn shortcut_build_keeps_strict_undefined_label_diagnostics() {
     cmd.arg(&input)
         .assert()
         .failure()
-        .stderr(contains("undefined label 'missing'"));
+        .stderr(contains("undefined symbol 'missing'"));
 }
 
 #[test]

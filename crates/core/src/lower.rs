@@ -16,28 +16,6 @@ use crate::hir::{
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
 
-/// Options that control lowering behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LowerOptions {
-    /// When true, unknown function calls emit a default near JSR with an
-    /// unresolved label instead of reporting an error.  Used when compiling
-    /// for linking, where the function may be defined in another compilation unit.
-    pub allow_undefined_functions: bool,
-}
-
-impl LowerOptions {
-    pub const fn strict() -> Self {
-        Self {
-            allow_undefined_functions: false,
-        }
-    }
-
-    pub const fn for_link() -> Self {
-        Self {
-            allow_undefined_functions: true,
-        }
-    }
-}
 
 /// Tracked CPU register width state during lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -53,7 +31,6 @@ struct ModeFrame {
 
 #[derive(Debug)]
 struct LowerContext {
-    options: LowerOptions,
     next_label: usize,
     do_loop_targets: Vec<String>,
     mode: ModeState,
@@ -85,7 +62,6 @@ impl LowerContext {
 impl Default for LowerContext {
     fn default() -> Self {
         Self {
-            options: LowerOptions::strict(),
             next_label: 0,
             do_loop_targets: Vec::new(),
             mode: ModeState::default(),
@@ -118,19 +94,9 @@ pub fn lower(
     sema: &SemanticModel,
     fs: &dyn AssetFS,
 ) -> Result<Program, Vec<Diagnostic>> {
-    lower_with_options(file, sema, fs, LowerOptions::strict())
-}
-
-pub fn lower_with_options(
-    file: &File,
-    sema: &SemanticModel,
-    fs: &dyn AssetFS,
-    options: LowerOptions,
-) -> Result<Program, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut ops = Vec::new();
     let mut top_level_ctx = LowerContext {
-        options,
         ..Default::default()
     };
     let mut current_segment = "default".to_string();
@@ -159,10 +125,7 @@ pub fn lower_with_options(
                 );
             }
             Item::CodeBlock(block) => {
-                let mut block_ctx = LowerContext {
-                    options,
-                    ..Default::default()
-                };
+                let mut block_ctx = LowerContext::default();
                 let scope = block.name.clone();
                 block_ctx.label_depths =
                     collect_label_depths(&block.body, Some(scope.as_str()), 0, &mut diagnostics);
@@ -696,14 +659,10 @@ fn lower_stmt(
                     ctx,
                     ops,
                 );
-            } else if ctx.options.allow_undefined_functions {
-                // Cross-unit call: emit JSR or JSL based on `call far`, no mode contract.
-                lower_call_with_contract(&target, call.is_far, None, None, span, ctx, ops);
             } else {
-                diagnostics.push(
-                    Diagnostic::error(span, format!("unknown function '{}'", call.target))
-                        .with_help("declare the function before calling it"),
-                );
+                // Unknown function: emit JSR or JSL based on `call far`.
+                // The linker will resolve or report the missing symbol.
+                lower_call_with_contract(&target, call.is_far, None, None, span, ctx, ops);
             }
         }
         Stmt::Bytes(values) => {

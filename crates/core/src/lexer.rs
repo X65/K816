@@ -112,6 +112,7 @@ pub enum TokenKind {
     String(String),
 
     #[regex(r"%[01]+|0b[01]+|0x[0-9a-fA-F]+|\$[0-9a-fA-F]+|[0-9]+", parse_number)]
+    #[regex(r"'([^'\\]|\\.)'", parse_char)]
     Number(i64),
 
     #[regex(
@@ -227,6 +228,25 @@ fn parse_string(lex: &mut logos::Lexer<TokenKind>) -> String {
     out
 }
 
+fn parse_char(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {
+    let slice = lex.slice();
+    let content = &slice[1..slice.len() - 1];
+    let mut chars = content.chars();
+    let ch = match chars.next()? {
+        '\\' => match chars.next()? {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            '\'' => '\'',
+            '0' => '\0',
+            other => other,
+        },
+        ch => ch,
+    };
+    Some(ch as i64)
+}
+
 fn format_token_for_message(token: &str) -> String {
     let escaped: String = token.chars().flat_map(char::escape_default).collect();
     format!("'{escaped}'")
@@ -279,5 +299,26 @@ mod tests {
         let tokens = lex(SourceId(0), "%01001010").expect("lex");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].kind, TokenKind::Number(0x4A)));
+    }
+
+    #[test]
+    fn lexes_char_literal() {
+        let tokens = lex(SourceId(0), "'A'").expect("lex");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].kind, TokenKind::Number(65)));
+    }
+
+    #[test]
+    fn lexes_char_literal_escape() {
+        let tokens = lex(SourceId(0), "'\\n'").expect("lex");
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].kind, TokenKind::Number(10)));
+    }
+
+    #[test]
+    fn lexes_char_literal_as_immediate() {
+        let tokens = lex(SourceId(0), "lda #'s'").expect("lex");
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Hash)));
+        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Number(115))));
     }
 }

@@ -313,11 +313,56 @@ impl<'a> Lexer<'a> {
             '0' if matches!(self.peek_char(1), Some('b' | 'B')) => self.lex_base_prefixed_binary(),
             '0'..='9' => self.lex_decimal_or_float(),
             'a'..='z' | 'A'..='Z' | '_' => self.lex_ident(),
+            '\'' => self.lex_char_literal(),
             _ => Err(EvalError::UnexpectedToken {
                 column: start + 1,
                 token: format_token_for_message(&ch.to_string()),
             }),
         }
+    }
+
+    fn lex_char_literal(&mut self) -> Result<Token, EvalError> {
+        let start = self.pos;
+        self.pos += 1; // consume opening '
+        if self.pos >= self.bytes.len() {
+            return Err(EvalError::UnexpectedToken {
+                column: start + 1,
+                token: "'".to_string(),
+            });
+        }
+        let ch = if self.bytes[self.pos] == b'\\' {
+            self.pos += 1;
+            let escaped = self.bytes.get(self.pos).copied().ok_or(EvalError::UnexpectedToken {
+                column: start + 1,
+                token: "'\\".to_string(),
+            })?;
+            self.pos += 1;
+            match escaped {
+                b'n' => b'\n',
+                b'r' => b'\r',
+                b't' => b'\t',
+                b'\\' => b'\\',
+                b'\'' => b'\'',
+                b'0' => 0,
+                other => other,
+            }
+        } else {
+            let b = self.bytes[self.pos];
+            self.pos += 1;
+            b
+        };
+        if self.bytes.get(self.pos).copied() != Some(b'\'') {
+            return Err(EvalError::UnexpectedToken {
+                column: start + 1,
+                token: format!("'{}", ch as char),
+            });
+        }
+        self.pos += 1; // consume closing '
+        Ok(Token {
+            kind: TokenKind::Number(Number::Int(ch as i64)),
+            start,
+            end: self.pos,
+        })
     }
 
     fn lex_prefixed_hex(&mut self) -> Result<Token, EvalError> {
@@ -1576,5 +1621,52 @@ mod tests {
             err,
             EvalError::DeferredFunction { name, .. } if name == "rnd"
         ));
+    }
+
+    #[test]
+    fn parses_char_literals() {
+        let mut context = EvalContext::default();
+        assert_eq!(
+            evaluate("'A'", &mut context).expect("eval").value,
+            Number::Int(65)
+        );
+        assert_eq!(
+            evaluate("'0'", &mut context).expect("eval").value,
+            Number::Int(48)
+        );
+        assert_eq!(
+            evaluate("' '", &mut context).expect("eval").value,
+            Number::Int(32)
+        );
+    }
+
+    #[test]
+    fn parses_char_literal_escapes() {
+        let mut context = EvalContext::default();
+        assert_eq!(
+            evaluate("'\\n'", &mut context).expect("eval").value,
+            Number::Int(10)
+        );
+        assert_eq!(
+            evaluate("'\\\\'"  , &mut context).expect("eval").value,
+            Number::Int(92)
+        );
+        assert_eq!(
+            evaluate("'\\''"  , &mut context).expect("eval").value,
+            Number::Int(39)
+        );
+        assert_eq!(
+            evaluate("'\\0'", &mut context).expect("eval").value,
+            Number::Int(0)
+        );
+    }
+
+    #[test]
+    fn char_literal_in_expression() {
+        let mut context = EvalContext::default();
+        assert_eq!(
+            evaluate("'A' + 1", &mut context).expect("eval").value,
+            Number::Int(66)
+        );
     }
 }

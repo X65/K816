@@ -1,0 +1,41 @@
+(
+  format: "o65-link",
+  target: Some("golden"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    (
+      id: "VECTORS",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(0xFFE0),
+      offset: None,
+      optional: false,
+      segment: Some("VECTORS"),
+    ),
+    (
+      id: "DEFAULT",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+  symbols: [],
+  output: (
+    kind: Xex,
+    file: Some("expected.xex"),
+  ),
+  entry: None,
+)

@@ -1,0 +1,28 @@
+data VECTORS {
+    segment VECTORS
+    $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 $00 $00 $00 $00
+    $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 &<RESET_HDL &>RESET_HDL $00 $00
+}
+
+func main {
+    address 0x2000
+    {} always
+}
+
+naked RESET_HDL {
+    sei
+
+    clc
+    xce
+
+    @a8 @i8
+
+    ldx #$ff
+    txs
+
+    lda #00
+    pha
+    plb
+
+    call main
+}

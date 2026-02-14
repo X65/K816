@@ -2171,7 +2171,9 @@ fn resolve_symbolic_byte_relocation(
         return None;
     };
 
-    if sema.vars.contains_key(symbol) || looks_like_constant_ident(symbol) {
+    if sema.vars.contains_key(symbol)
+        || (looks_like_constant_ident(symbol) && !sema.functions.contains_key(symbol))
+    {
         return None;
     }
 

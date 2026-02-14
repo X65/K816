@@ -2,10 +2,14 @@ func main {
   A=0
   X=A
   Y=x
-  S=a
+  S=c
+
+  D=C
 
   C+
+  C-
+  D+
   D-
   I+
-  O-
+  V-
 }

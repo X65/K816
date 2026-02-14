@@ -1,7 +1,0 @@
-Error: unknown identifier 'x' in numeric expression
-   ╭─[ tests/golden/fixtures/syntax-mixed-case-registers-and-flags/input.k65:4:5 ]
-   │
- 4 │   Y=x
-   │     ┬  
-   │     ╰── here
-───╯

@@ -124,6 +124,10 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             line(out, indent, "}".to_string());
         }
         Stmt::SwapAB => line(out, indent, "b><a".to_string()),
+        Stmt::TransferChain(instrs) => {
+            let chain = instrs.iter().map(format_instruction).collect::<Vec<_>>().join(" ; ");
+            line(out, indent, chain);
+        }
         Stmt::Hla(stmt) => line(out, indent, format_hla_stmt(stmt)),
         Stmt::Empty => line(out, indent, String::new()),
     }
@@ -147,6 +151,9 @@ fn format_instruction(instr: &Instruction) -> String {
             } else {
                 format!("{} {}", instr.mnemonic, value)
             }
+        }
+        Some(Operand::Auto { expr }) => {
+            format!("{} {}", instr.mnemonic, format_expr(expr))
         }
     }
 }

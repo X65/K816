@@ -1482,6 +1482,13 @@ where
     let invalid_flag_goto_stmt = invalid_flag_goto_stmt_parser();
     let nop_stmt = nop_stmt_parser();
     let chain_stmt = chain_stmt_parser();
+    // Catch-all for non-register ident chains (e.g. dst0=dst1=a=src) — stub
+    let ident_chain_stub = ident_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .then_ignore(ident_parser())
+        .then_ignore(just(TokenKind::Eq))
+        .then_ignore(line_tail_parser())
+        .to(Stmt::Empty);
     let bare_rbrace_stmt = bare_rbrace_stmt_parser();
     let discard_stmt = discard_stmt_parser();
 
@@ -1504,11 +1511,11 @@ where
         }));
 
     let swap_ab_stmt = chumsky::select! {
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("b") => ()
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("b") || value.eq_ignore_ascii_case("a") => value
     }
-    .ignore_then(just(TokenKind::SwapOp))
-    .ignore_then(chumsky::select! {
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
+    .then(just(TokenKind::SwapOp))
+    .then(chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") || value.eq_ignore_ascii_case("b") => ()
     })
     .to(Stmt::SwapAB);
 
@@ -1575,6 +1582,7 @@ where
         .or(hla_store_from_a_stmt)
         .or(chain_stmt)
         .or(assign_stmt)
+        .or(ident_chain_stub)
         .or(store_stmt)
         .or(alu_stmt)
         .or(incdec_stmt)
@@ -1792,76 +1800,165 @@ fn chain_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtr
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
-        .then_ignore(just(TokenKind::Eq))
-        .then(ident_parser())
-        .then_ignore(just(TokenKind::Eq))
-        .then(line_tail_parser())
-        .to(Stmt::Empty)
+    let stmt_boundary = line_sep_parser()
+        .ignored()
+        .or(just(TokenKind::RBrace).ignored())
+        .or(end().ignored())
+        .rewind();
+
+    // Three-register chain: reg = reg = reg (all token-level Ident detection)
+    let three_reg = chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    }
+    .then_ignore(just(TokenKind::Eq))
+    .then(chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    })
+    .then_ignore(just(TokenKind::Eq))
+    .then(chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    })
+    .then_ignore(stmt_boundary.clone())
+    .try_map(|((dest, mid), src), span| {
+        let dest = dest.to_ascii_lowercase();
+        let mid = mid.to_ascii_lowercase();
+        let src = src.to_ascii_lowercase();
+        let inner_mnemonic = resolve_transfer(&mid, &src).ok_or_else(|| {
+            Rich::custom(
+                span,
+                format!("unsupported inner transfer '{mid}={src}' in chain"),
+            )
+        })?;
+        let outer_mnemonic = resolve_transfer(&dest, &mid).ok_or_else(|| {
+            Rich::custom(
+                span,
+                format!("unsupported outer transfer '{dest}={mid}' in chain"),
+            )
+        })?;
+        Ok(Stmt::TransferChain(vec![
+            Instruction {
+                mnemonic: inner_mnemonic.to_string(),
+                operand: None,
+            },
+            Instruction {
+                mnemonic: outer_mnemonic.to_string(),
+                operand: None,
+            },
+        ]))
+    });
+
+    // Load-and-transfer chain: reg = reg = expr
+    let load_transfer = chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    }
+    .then_ignore(just(TokenKind::Eq))
+    .then(chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    })
+    .then_ignore(just(TokenKind::Eq))
+    .then(operand_expr_parser())
+    .try_map(|((dest, mid), rhs_parsed), span| {
+        let dest = dest.to_ascii_lowercase();
+        let mid = mid.to_ascii_lowercase();
+        let load_mnemonic = match mid.as_str() {
+            "a" => "lda",
+            "x" => "ldx",
+            "y" => "ldy",
+            _ => {
+                return Err(Rich::custom(
+                    span,
+                    format!("register '{mid}' cannot be loaded from memory"),
+                ))
+            }
+        };
+        let inner = Instruction {
+            mnemonic: load_mnemonic.to_string(),
+            operand: Some(parsed_operand_to_operand(rhs_parsed)),
+        };
+        let outer_mnemonic = resolve_transfer(&dest, &mid).ok_or_else(|| {
+            Rich::custom(
+                span,
+                format!("unsupported outer transfer '{dest}={mid}' in chain"),
+            )
+        })?;
+        let outer = Instruction {
+            mnemonic: outer_mnemonic.to_string(),
+            operand: None,
+        };
+        Ok(Stmt::TransferChain(vec![inner, outer]))
+    });
+
+    three_reg.or(load_transfer)
 }
 
 fn assign_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! {
+    let stmt_boundary = line_sep_parser()
+        .ignored()
+        .or(just(TokenKind::RBrace).ignored())
+        .or(end().ignored())
+        .rewind();
+
+    // Register-to-register transfer: both sides are Ident tokens (not eval expressions).
+    // The boundary check ensures `a=x,y` falls through to the load alternative.
+    // Uses .validate() instead of .try_map() so the error is emitted but the parser
+    // still succeeds (preventing backtracking to store_stmt for `s=y`).
+    let register_transfer = chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    }
+    .then_ignore(just(TokenKind::Eq))
+    .then(chumsky::select! {
+        TokenKind::Ident(value) if is_register_name(&value) => value
+    })
+    .then_ignore(stmt_boundary)
+    .validate(|(lhs, rhs), extra, emitter| {
+        let lhs_lc = lhs.to_ascii_lowercase();
+        let rhs_lc = rhs.to_ascii_lowercase();
+        if let Some(mnemonic) = resolve_transfer(&lhs_lc, &rhs_lc) {
+            return instruction_stmt(mnemonic, None);
+        }
+        let rhs_upper = rhs_lc.to_ascii_uppercase();
+        let lhs_upper = lhs_lc.to_ascii_uppercase();
+        let msg =
+            format!("transfer '{rhs_upper}' to '{lhs_upper}' is not directly supported");
+        emitter.emit(Rich::custom(
+            extra.span(),
+            match invalid_transfer_hint(&lhs_lc, &rhs_lc) {
+                Some(hint) => format!("{msg}; hint: {hint}"),
+                None => msg,
+            },
+        ));
+        Stmt::Empty
+    });
+
+    // Register load from expression (LDA/LDX/LDY, error for C, Empty for B/D/S).
+    let register_load = chumsky::select! {
         TokenKind::Ident(value) if is_register_name(&value) => value
     }
     .then_ignore(just(TokenKind::Eq))
     .then(operand_expr_parser())
-    .map(|(lhs, parsed)| {
+    .validate(|(lhs, parsed), extra, emitter| {
         let lhs = lhs.to_ascii_lowercase();
-        let rhs_ident = match &parsed.expr {
-            Expr::Ident(value) => Some(value.to_ascii_lowercase()),
-            Expr::IdentSpanned { name, .. } => Some(name.to_ascii_lowercase()),
-            _ => None,
-        };
-
-        let transfer = match (
-            lhs.as_str(),
-            rhs_ident.as_deref(),
-            parsed.addr_mode,
-            parsed.index,
-        ) {
-            ("x", Some("a"), OperandAddrMode::Direct, None) => Some("tax"),
-            ("y", Some("a"), OperandAddrMode::Direct, None) => Some("tay"),
-            ("a", Some("x"), OperandAddrMode::Direct, None) => Some("txa"),
-            ("a", Some("y"), OperandAddrMode::Direct, None) => Some("tya"),
-            ("x", Some("s"), OperandAddrMode::Direct, None) => Some("tsx"),
-            ("s", Some("x"), OperandAddrMode::Direct, None) => Some("txs"),
-            _ => None,
-        };
-
-        if let Some(mnemonic) = transfer {
-            return instruction_stmt(mnemonic, None);
-        }
-
         let mnemonic = match lhs.as_str() {
             "a" => "lda",
             "x" => "ldx",
             "y" => "ldy",
+            "c" => {
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    "C is the 16-bit accumulator; hint: use a=expr for loads",
+                ));
+                return Stmt::Empty;
+            }
             _ => return Stmt::Empty,
         };
-
-        let is_value = parsed.addr_mode != OperandAddrMode::Direct
-            || parsed.index.is_some()
-            || expr_is_address_like(&parsed.expr);
-        let operand = if is_value {
-            Operand::Value {
-                expr: parsed.expr,
-                force_far: false,
-                index: parsed.index,
-                addr_mode: parsed.addr_mode,
-            }
-        } else {
-            Operand::Immediate {
-                expr: parsed.expr,
-                explicit_hash: false,
-            }
-        };
-
+        let operand = parsed_operand_to_operand(parsed);
         instruction_stmt(mnemonic, Some(operand))
-    })
+    });
+
+    register_transfer.or(register_load)
 }
 
 fn store_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -2162,7 +2259,7 @@ where
                 ("d", false) => Ok(instruction_stmt("cld", None)),
                 ("i", true) => Ok(instruction_stmt("sei", None)),
                 ("i", false) => Ok(instruction_stmt("cli", None)),
-                ("o", false) => Ok(instruction_stmt("clv", None)),
+                ("v", false) => Ok(instruction_stmt("clv", None)),
                 _ => Err(Rich::custom(
                     span,
                     format!("unsupported flag shorthand '{shorthand}'"),
@@ -2457,21 +2554,26 @@ fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
 }
 
 fn parsed_operand_to_operand(parsed: ParsedOperandExpr) -> Operand {
-    let is_value = parsed.addr_mode != OperandAddrMode::Direct
-        || parsed.index.is_some()
-        || expr_is_address_like(&parsed.expr);
-    if is_value {
-        Operand::Value {
+    if parsed.addr_mode != OperandAddrMode::Direct || parsed.index.is_some() {
+        return Operand::Value {
             expr: parsed.expr,
             force_far: false,
             index: parsed.index,
             addr_mode: parsed.addr_mode,
-        }
-    } else {
-        Operand::Immediate {
+        };
+    }
+    match &parsed.expr {
+        Expr::Index { .. } => Operand::Value {
+            expr: parsed.expr,
+            force_far: false,
+            index: None,
+            addr_mode: OperandAddrMode::Direct,
+        },
+        Expr::Unary { .. } => Operand::Immediate {
             expr: parsed.expr,
             explicit_hash: false,
-        }
+        },
+        _ => Operand::Auto { expr: parsed.expr },
     }
 }
 
@@ -2492,37 +2594,58 @@ fn parse_index_register<'src>(
 
 fn is_register_name(value: &str) -> bool {
     value.eq_ignore_ascii_case("a")
+        || value.eq_ignore_ascii_case("b")
+        || value.eq_ignore_ascii_case("c")
+        || value.eq_ignore_ascii_case("d")
         || value.eq_ignore_ascii_case("x")
         || value.eq_ignore_ascii_case("y")
         || value.eq_ignore_ascii_case("s")
 }
 
-fn looks_like_constant_ident(value: &str) -> bool {
-    let mut has_alpha = false;
-    for ch in value.chars() {
-        if ch.is_ascii_alphabetic() {
-            has_alpha = true;
-            if !ch.is_ascii_uppercase() {
-                return false;
-            }
-        } else if !(ch.is_ascii_digit() || ch == '_') {
-            return false;
-        }
+fn resolve_transfer(dest: &str, src: &str) -> Option<&'static str> {
+    match (dest, src) {
+        ("x", "a") => Some("tax"),
+        ("y", "a") => Some("tay"),
+        ("a", "x") => Some("txa"),
+        ("a", "y") => Some("tya"),
+        ("x", "s") => Some("tsx"),
+        ("s", "x") => Some("txs"),
+        ("y", "x") => Some("txy"),
+        ("x", "y") => Some("tyx"),
+        // 16-bit accumulator C transfers (TCD, TCS, TDC, TSC)
+        ("d", "c") => Some("tcd"),
+        ("s", "c") => Some("tcs"),
+        ("c", "d") => Some("tdc"),
+        ("c", "s") => Some("tsc"),
+        _ => None,
     }
-    has_alpha
 }
 
-fn expr_is_address_like(expr: &Expr) -> bool {
-    match expr {
-        Expr::Ident(name) => !looks_like_constant_ident(name) && !is_register_name(name),
-        Expr::IdentSpanned { name, .. } => {
-            !looks_like_constant_ident(name) && !is_register_name(name)
+fn invalid_transfer_hint(dest: &str, src: &str) -> Option<&'static str> {
+    match (dest, src) {
+        // A↔D/S: point to 16-bit accumulator C
+        ("d", "a") => Some("use d=c"),
+        ("s", "a") => Some("use s=c"),
+        ("a", "d") => Some("use c=d"),
+        ("a", "s") => Some("use c=s"),
+        // D/S chains via C
+        ("d", "s") => Some("use d=c=s"),
+        ("s", "d") => Some("use s=c=d"),
+        // D/S chains requiring two statements
+        ("d", "x") => Some("use a=x then d=c"),
+        ("d", "y") => Some("use a=y then d=c"),
+        // Existing valid chains
+        ("s", "y") => Some("use s=x=y"),
+        ("y", "s") => Some("use y=x=s"),
+        ("y", "d") => Some("use c=d then y=a"),
+        ("x", "d") => Some("use c=d then x=a"),
+        // B swap
+        ("b", _) | (_, "b") => Some("use b><a to swap A and B"),
+        // C is only for 16-bit transfers with D and S
+        ("c", _) | (_, "c") => {
+            Some("C is the 16-bit accumulator; only d=c, s=c, c=d, c=s are valid")
         }
-        Expr::Index { base, .. } => expr_is_address_like(base),
-        Expr::Binary { lhs, rhs, .. } => expr_is_address_like(lhs) || expr_is_address_like(rhs),
-        Expr::Unary { .. } => false,
-        Expr::Number(_) | Expr::EvalText(_) => false,
-        Expr::TypedView { expr, .. } => expr_is_address_like(expr),
+        _ => None,
     }
 }
 
@@ -2640,10 +2763,7 @@ where
         .then_ignore(just(TokenKind::Question))
         .then(operand_expr_parser())
         .map(|(_ident, parsed)| {
-            if parsed.index.is_some()
-                || parsed.addr_mode != OperandAddrMode::Direct
-                || expr_is_address_like(&parsed.expr)
-            {
+            if parsed.index.is_some() || parsed.addr_mode != OperandAddrMode::Direct {
                 instruction_stmt("cmp", Some(parsed_operand_to_operand(parsed)))
             } else {
                 Stmt::Hla(HlaStmt::ConditionSeed {
@@ -2896,10 +3016,20 @@ fn rich_error_to_diagnostic(
     let (message, help) = match error.reason() {
         RichReason::Custom(custom) => {
             let custom = custom.to_string();
-            let help = custom
-                .starts_with("unsupported flag shorthand '")
-                .then_some("expected one of c+, c-, d+, d-, i+, i-, or o-".to_string());
-            (format!("{context}: {custom}"), help)
+            // Extract embedded hint from "; hint: " separator
+            let (message_part, embedded_hint) = match custom.find("; hint: ") {
+                Some(idx) => (
+                    custom[..idx].to_string(),
+                    Some(custom[idx + 8..].to_string()),
+                ),
+                None => (custom.clone(), None),
+            };
+            let help = embedded_hint.or_else(|| {
+                custom
+                    .starts_with("unsupported flag shorthand '")
+                    .then_some("expected one of c+, c-, d+, d-, i+, i-, or v-".to_string())
+            });
+            (format!("{context}: {message_part}"), help)
         }
         RichReason::ExpectedFound { expected, found } => {
             if found
@@ -2919,7 +3049,7 @@ fn rich_error_to_diagnostic(
                     detect_invalid_flag_goto_shorthand(source_text, range.start)
                 {
                     let message = format!("{context}: unsupported flag shorthand '{shorthand}'");
-                    let help = "expected one of c+, c-, d+, d-, i+, i-, or o-".to_string();
+                    let help = "expected one of c+, c-, d+, d-, i+, i-, or v-".to_string();
                     (message, Some(help))
                 } else {
                     let found = found
@@ -3436,8 +3566,8 @@ mod tests {
         let Stmt::Instruction(first) = &block.body[0].node else {
             panic!("expected first instruction");
         };
-        let Some(Operand::Value { expr, .. }) = &first.operand else {
-            panic!("expected first value operand");
+        let Some(Operand::Auto { expr }) = &first.operand else {
+            panic!("expected first auto operand");
         };
         assert!(is_ident_named(expr, "foo.idx"));
 
@@ -3879,7 +4009,7 @@ mod tests {
                 matches!(
                     supplement,
                     crate::diag::Supplemental::Help(help)
-                        if help == "expected one of c+, c-, d+, d-, i+, i-, or o-"
+                        if help == "expected one of c+, c-, d+, d-, i+, i-, or v-"
                 )
             })
         }));

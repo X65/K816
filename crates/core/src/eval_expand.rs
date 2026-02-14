@@ -117,6 +117,7 @@ fn expand_stmt(
                 .collect(),
         },
         Stmt::SwapAB => Stmt::SwapAB,
+        Stmt::TransferChain(instrs) => Stmt::TransferChain(instrs.clone()),
         Stmt::Hla(stmt) => Stmt::Hla(expand_hla_stmt(stmt, span, source_id, diagnostics)),
         Stmt::Empty => Stmt::Empty,
     }
@@ -356,6 +357,9 @@ fn expand_instruction(
             force_far: *force_far,
             index: *index,
             addr_mode: *addr_mode,
+        },
+        Operand::Auto { expr } => Operand::Auto {
+            expr: expand_expr(expr, span, source_id, diagnostics),
         },
     });
 

@@ -10,7 +10,7 @@ Key focus areas:
 
 Primary operator-coverage fixtures:
 
-- `syntax-one-letter-operators-legacy`
+- `syntax-one-letter-operators`
 - `syntax-wait-loop-bit`
 - `syntax-wait-loop-lda`
 - `syntax-postfix-le-efficiency-warning`

@@ -784,6 +784,11 @@ fn lower_stmt(
                 span,
             ));
         }
+        Stmt::TransferChain(instructions) => {
+            for instr in instructions {
+                lower_instruction_and_push(instr, scope, sema, span, diagnostics, ops);
+            }
+        }
         Stmt::Var(var) => {
             emit_var_absolute_symbols(var, span, sema, diagnostics, ops);
         }
@@ -1075,19 +1080,21 @@ fn instruction_jump_target_label(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<String> {
-    let Operand::Value {
-        expr,
-        addr_mode,
-        index,
-        ..
-    } = instruction.operand.as_ref()?
-    else {
-        return None;
+    let expr = match instruction.operand.as_ref()? {
+        Operand::Value {
+            expr,
+            addr_mode,
+            index,
+            ..
+        } => {
+            if *addr_mode != OperandAddrMode::Direct || index.is_some() {
+                return None;
+            }
+            expr
+        }
+        Operand::Auto { expr } => expr,
+        Operand::Immediate { .. } => return None,
     };
-
-    if *addr_mode != OperandAddrMode::Direct || index.is_some() {
-        return None;
-    }
 
     let Some(name) = expr_ident_name(expr) else {
         return None;
@@ -1196,7 +1203,18 @@ fn validate_instruction_width_rules(
         return;
     };
 
-    if let Operand::Immediate { expr, .. } = operand {
+    let is_immediate = match operand {
+        Operand::Immediate { .. } => true,
+        Operand::Auto { expr } => is_immediate_expression(expr, sema),
+        Operand::Value { .. } => false,
+    };
+
+    let imm_expr = match operand {
+        Operand::Immediate { expr, .. } | Operand::Auto { expr } if is_immediate => Some(expr),
+        _ => None,
+    };
+
+    if let Some(expr) = imm_expr {
         let reg_mode = match mnemonic.as_str() {
             "lda" => mode.a_width,
             "ldx" | "ldy" => mode.i_width,
@@ -1216,7 +1234,12 @@ fn validate_instruction_width_rules(
         }
     }
 
-    let Operand::Value { expr, .. } = operand else {
+    let addr_expr = match operand {
+        Operand::Value { expr, .. } => Some(expr),
+        Operand::Auto { expr } if !is_immediate => Some(expr),
+        _ => None,
+    };
+    let Some(expr) = addr_expr else {
         return;
     };
 
@@ -1489,12 +1512,20 @@ fn lower_hla_stmt(
                         expr,
                         index,
                         addr_mode,
-                    } => Operand::Value {
-                        expr: expr.clone(),
-                        force_far: false,
-                        index: *index,
-                        addr_mode: *addr_mode,
-                    },
+                    } => {
+                        if *addr_mode == OperandAddrMode::Direct && index.is_none() {
+                            Operand::Auto {
+                                expr: expr.clone(),
+                            }
+                        } else {
+                            Operand::Value {
+                                expr: expr.clone(),
+                                force_far: false,
+                                index: *index,
+                                addr_mode: *addr_mode,
+                            }
+                        }
+                    }
                 }),
             };
             if !lower_instruction_and_push(&lhs_instruction, scope, sema, span, diagnostics, ops) {
@@ -1537,9 +1568,8 @@ fn lower_hla_stmt(
             if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
                 let instruction = Instruction {
                     mnemonic: "cmp".to_string(),
-                    operand: Some(Operand::Immediate {
+                    operand: Some(Operand::Auto {
                         expr: rhs.clone(),
-                        explicit_hash: false,
                     }),
                 };
                 let _ =
@@ -2171,9 +2201,7 @@ fn resolve_symbolic_byte_relocation(
         return None;
     };
 
-    if sema.vars.contains_key(symbol)
-        || (looks_like_constant_ident(symbol) && !sema.functions.contains_key(symbol))
-    {
+    if sema.vars.contains_key(symbol) || sema.consts.contains_key(symbol) {
         return None;
     }
 
@@ -2186,19 +2214,20 @@ fn resolve_symbolic_byte_relocation(
     Some((kind, resolved))
 }
 
-fn looks_like_constant_ident(value: &str) -> bool {
-    let mut has_alpha = false;
-    for ch in value.chars() {
-        if ch.is_ascii_alphabetic() {
-            has_alpha = true;
-            if !ch.is_ascii_uppercase() {
-                return false;
-            }
-        } else if !(ch.is_ascii_digit() || ch == '_') {
-            return false;
+/// Determines whether an expression should be treated as an immediate value
+/// (compile-time constant) rather than a memory address. Uses the semantic model
+/// for deterministic classification instead of naming-convention heuristics.
+fn is_immediate_expression(expr: &Expr, sema: &SemanticModel) -> bool {
+    match expr {
+        Expr::Number(_) => true,
+        Expr::Ident(name) | Expr::IdentSpanned { name, .. } => sema.consts.contains_key(name),
+        Expr::Binary { lhs, rhs, .. } => {
+            is_immediate_expression(lhs, sema) && is_immediate_expression(rhs, sema)
         }
+        Expr::Unary { .. } => true,
+        Expr::Index { .. } | Expr::EvalText(_) => false,
+        Expr::TypedView { expr, .. } => is_immediate_expression(expr, sema),
     }
-    has_alpha
 }
 
 #[derive(Debug, Clone)]
@@ -2384,6 +2413,22 @@ fn lower_instruction(
         }) => {
             let mode = lower_operand_mode(*addr_mode, *index);
             lower_address_operand(expr, scope, sema, span, diagnostics, *force_far, mode)
+        }
+        Some(Operand::Auto { expr }) => {
+            if is_immediate_expression(expr, sema) {
+                let eval_span = immediate_expr_span(expr, span, false);
+                if let Some((kind, label)) =
+                    resolve_symbolic_byte_relocation(expr, scope, sema, eval_span, diagnostics)
+                {
+                    Some(OperandOp::ImmediateByteRelocation { kind, label })
+                } else {
+                    let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
+                    Some(OperandOp::Immediate(value))
+                }
+            } else {
+                let mode = lower_operand_mode(OperandAddrMode::Direct, None);
+                lower_address_operand(expr, scope, sema, span, diagnostics, false, mode)
+            }
         }
     };
 

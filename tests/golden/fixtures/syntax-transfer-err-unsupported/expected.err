@@ -1,0 +1,9 @@
+Error: invalid syntax: transfer 'Y' to 'S' is not directly supported
+   ╭─[ tests/golden/fixtures/syntax-transfer-err-unsupported/input.k65:2:3 ]
+   │
+ 2 │   s=y
+   │   ─┬─  
+   │    ╰─── here
+   │ 
+   │ Help: use s=x=y
+───╯

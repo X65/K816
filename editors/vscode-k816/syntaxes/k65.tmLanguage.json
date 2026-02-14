@@ -157,11 +157,11 @@
       "patterns": [
         {
           "name": "variable.language.register.k65",
-          "match": "(?i)\\b(?:a|x|y|sp|pc)\\b"
+          "match": "(?i)\\b(?:a|b|c|d|x|y|s|sp|pc)\\b"
         },
         {
           "name": "constant.language.flag.k65",
-          "match": "(?i)\\b(?:n|v|d|i|z|c)\\b"
+          "match": "(?i)\\b(?:n|v|m|x|b|d|i|z|c|e)\\b"
         }
       ]
     },

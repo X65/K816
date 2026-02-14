@@ -5,5 +5,5 @@ Error: invalid syntax: unsupported flag shorthand 's-?'
    │     ┬  
    │     ╰── here
    │ 
-   │ Help: expected one of c+, c-, d+, d-, i+, i-, or o-
+   │ Help: expected one of c+, c-, d+, d-, i+, i-, or v-
 ───╯

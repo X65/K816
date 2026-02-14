@@ -109,6 +109,7 @@ pub enum Stmt {
         body: Vec<Spanned<Stmt>>,
     },
     SwapAB,
+    TransferChain(Vec<Instruction>),
     Empty,
 }
 
@@ -148,6 +149,12 @@ pub enum Operand {
         force_far: bool,
         index: Option<IndexRegister>,
         addr_mode: OperandAddrMode,
+    },
+    /// Bare HLA expression where addressing mode is deferred to lowering.
+    /// The semantic model determines whether this is immediate (consts/numbers)
+    /// or absolute (vars/functions/labels).
+    Auto {
+        expr: Expr,
     },
 }
 

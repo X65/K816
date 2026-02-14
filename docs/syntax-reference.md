@@ -559,8 +559,18 @@ var src = 0x12
 func main {
   dst0=dst1=a=src     // LDA src; STA dst1; STA dst0
   x=a=dst0            // LDA dst0; TAX
-  y=x=a               // TXA; TAX ... (value propagation)
   COLPF2=a=VCOUNT     // LDA VCOUNT; STA COLPF2
+}
+```
+
+Register-to-register chains produce optimal transfer sequences:
+
+```k65
+func main {
+  y=x=a               // TAX; TXY (transfer A through X to Y)
+  d=c=s               // TSC; TCD (transfer S through C to D)
+  s=x=y               // TYX; TXS (set stack pointer from Y via X)
+  x=a=some_var        // LDA some_var; TAX (load and transfer)
 }
 ```
 
@@ -596,27 +606,38 @@ Page transitions may occur and add an extra cycle to the exucution.
 
 ### Registers
 
+- `A` accumulator (8/16 bit)
+- `B` high byte of 16bit accumulator (8 bit, can be swapped with A via `b><a`)
+- `C` full 16-bit accumulator (16bit, available only to register transfer instructions)
+- `X` index register X (8/16 bit)
+- `Y` index register Y (8/16 bit)
+- `D` direct page register (16 bit)
+- `S` stack pointer (16 bit)
 - `PC` program counter (16 bit)
-- `AC` accumulator (8 bit)
-- `X` X register  (8 bit)
-- `Y` Y register  (8 bit)
-- `SR` status register **NV-BDIZC** (8 bit)
-- `SP` stack pointer (8 bit)
+- `DBR` data bank register
+- `PBR` program bank register
+- `P` processor status register **NVMXDIZC** (8 bit)
 
-### SR Flags NV-BDIZC
+In K65 HLA syntax, single-letter register names (A, B, X, Y, D, S) are native symbols used in assignment and transfer expressions.
+
+### SR Flags NVMXDIZC
 
 ```
 bit 7 to bit 0
 
 N ....  Negative
 V ....  Overflow
-- ....  ignored
-B ....  Break
+M ....  Accumulator/Memory width (65816: 0=16-bit, 1=8-bit)
+X ....  Index register width (65816: 0=16-bit, 1=8-bit)
 D ....  Decimal (use BCD for arithmetics)
 I ....  Interrupt (IRQ disable)
 Z ....  Zero
 C ....  Carry
+
+E ....  Emulation mode (65816, hidden, can be exchanged with Carry flag via XCE instruction)
 ```
+
+Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` (SEI), `i-` (CLI), `v-` (CLV).
 
 ### Processor Stack
 
@@ -987,7 +1008,7 @@ CLI  Clear Interrupt Disable Bit
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`o-`|||||||
+|`v-`|||||||
 
 ```none
 CLV  Clear Overflow Flag
@@ -1819,6 +1840,164 @@ TYA  Transfer Index Y to Accumulator
 
 ---
 
+### 65816 Transfer Instructions
+
+The 65816 adds register-to-register transfers for the D (direct page), S (stack pointer), and B (data bank) registers:
+
+#### `TCD` transfer accumulator to direct page
+
+Acc|Implied
+:---:|:---:
+|`d=c`
+
+```none
+TCD  Transfer 16-Bit Accumulator to Direct Page Register
+
+     C -> D                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       TCD           5B    1     2
+```
+
+---
+
+#### `TCS` transfer accumulator to stack pointer
+
+Acc|Implied
+:---:|:---:
+|`s=c`
+
+```none
+TCS  Transfer 16-Bit Accumulator to Stack Pointer
+
+     C -> S                           N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       TCS           1B    1     2
+```
+
+---
+
+#### `TDC` transfer direct page to accumulator
+
+Acc|Implied
+:---:|:---:
+|`c=d`
+
+```none
+TDC  Transfer Direct Page Register to 16-Bit Accumulator
+
+     D -> C                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       TDC           7B    1     2
+```
+
+---
+
+#### `TSC` transfer stack pointer to accumulator
+
+Acc|Implied
+:---:|:---:
+|`c=s`
+
+```none
+TSC  Transfer Stack Pointer to 16-Bit Accumulator
+
+     S -> C                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       TSC           3B    1     2
+```
+
+---
+
+#### `TXY` transfer X to Y
+
+Acc|Implied
+:---:|:---:
+|`y=x`
+
+```none
+TXY  Transfer Index Register X to Index Register Y
+
+     X -> Y                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       TXY           9B    1     2
+```
+
+---
+
+#### `TYX` transfer Y to X
+
+Acc|Implied
+:---:|:---:
+|`x=y`
+
+```none
+TYX  Transfer Index Register Y to Index Register X
+
+     Y -> X                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       TYX           BB    1     2
+```
+
+---
+
+#### `XBA` exchange B and A accumulators
+
+Acc|Implied
+:---:|:---:
+|`b><a` or `a><b`
+
+```none
+XBA  Exchange B and A Accumulators
+
+     B <-> A                          N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       XBA           EB    1     3
+```
+
+---
+
+### Complete Register Transfer Table
+
+Source \ Dest|A|B|C|D|X|Y|S
+:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+A|-|`b><a`|-|`x=a` TAX|`y=a` TAY|-
+B|`b><a`|-|-|-|-|-|-
+C|-|-|-|`d=c` TCD|-|-|`s=c` TCS
+D|-|-|`c=d` TDC|-|-|-|-
+X|`a=x` TXA|-|-|-|-|`y=x` TXY|`s=x` TXS
+Y|`a=y` TYA|-|-|-|`x=y` TYX|-|-
+S|-|-|`c=s` TSC|-|`x=s` TSX|-|-
+
+Unsupported direct transfers (e.g. `s=y`, `d=x`) produce a compile error with a hint suggesting a two-step chain:
+
+```k65
+s=x=y                  // s=y is not supported; use s=x=y instead (TYX + TXS)
+d=c=s                  // d=s is not supported; use d=c=s instead (TSC + TCD)
+```
+
+---
+
 ## Branch and Flow Control
 
 ### Branch Operator Mapping
@@ -1979,11 +2158,13 @@ a=0; x=a; y=a;;         // multiple statements per line, empty statements ignore
 
 ### Mixed-Case Registers and Flags
 
-Register and flag names are case-insensitive:
+Register names (A, B, C, D, X, Y, S) and flag names (C, D, I, V, N, Z) are case-insensitive. C and D serve dual roles — register in assignment context, flag with `+`/`-` suffix:
 
 ```k65
 A=0 X=A Y=x            // uppercase and lowercase registers
-C+ D- I+               // uppercase flags
+d=c s=x                // 65816 register transfers
+C+ D- I+ V-            // flag operations (set/clear)
+a><b                   // swap A and B accumulators (XBA)
 ```
 
 ### Variable+Offset Addressing

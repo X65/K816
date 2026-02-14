@@ -97,6 +97,7 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
             body: normalize_stmt_sequence(body),
         },
         Stmt::SwapAB => Stmt::SwapAB,
+        Stmt::TransferChain(instrs) => Stmt::TransferChain(instrs.clone()),
         Stmt::Empty => Stmt::Empty,
         Stmt::Hla(stmt) => Stmt::Hla(normalize_hla_stmt(stmt)),
     }

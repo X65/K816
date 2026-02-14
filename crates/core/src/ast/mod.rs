@@ -197,7 +197,7 @@ pub enum HlaStmt {
     },
     XIncrement,
     StoreFromA {
-        dest: String,
+        dests: Vec<String>,
         rhs: HlaRhs,
     },
     WaitLoopWhileNFlagClear {
@@ -221,10 +221,17 @@ pub enum HlaStmt {
     DoCloseBranch {
         mnemonic: String,
     },
+    LoopBreak {
+        mnemonic: String,
+    },
+    LoopRepeat {
+        mnemonic: String,
+    },
     RepeatNop(usize),
     PrefixConditional {
         skip_mnemonic: String,
         body: Vec<Spanned<Stmt>>,
+        else_body: Option<Vec<Spanned<Stmt>>>,
     },
 }
 

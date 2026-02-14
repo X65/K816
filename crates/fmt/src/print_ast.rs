@@ -299,7 +299,10 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
     match stmt {
         HlaStmt::XAssignImmediate { rhs } => format!("x = #{}", format_expr(rhs)),
         HlaStmt::XIncrement => "x++".to_string(),
-        HlaStmt::StoreFromA { dest, rhs } => format!("{dest} = a = {}", format_hla_rhs(rhs)),
+        HlaStmt::StoreFromA { dests, rhs } => {
+            let dest_chain = dests.join(" = ");
+            format!("{dest_chain} = a = {}", format_hla_rhs(rhs))
+        }
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => format!("{{ a&?{symbol} }} n-?"),
         HlaStmt::ConditionSeed { lhs, rhs } => {
             let lhs = match lhs {
@@ -315,9 +318,31 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
         HlaStmt::DoCloseAlways => "} always".to_string(),
         HlaStmt::DoCloseNever => "} never".to_string(),
         HlaStmt::DoCloseBranch { mnemonic } => format!("}} {mnemonic}"),
+        HlaStmt::LoopBreak { mnemonic } => {
+            if mnemonic == "bra" {
+                "break".to_string()
+            } else {
+                format!("{} break", mnemonic_to_condition(mnemonic))
+            }
+        }
+        HlaStmt::LoopRepeat { mnemonic } => {
+            if mnemonic == "bra" {
+                "repeat".to_string()
+            } else {
+                format!("{} repeat", mnemonic_to_condition(mnemonic))
+            }
+        }
         HlaStmt::RepeatNop(n) => format!("* {n}"),
-        HlaStmt::PrefixConditional { skip_mnemonic, .. } => {
-            format!("prefix({skip_mnemonic}) {{ ... }}")
+        HlaStmt::PrefixConditional {
+            skip_mnemonic,
+            else_body,
+            ..
+        } => {
+            if else_body.is_some() {
+                format!("prefix({skip_mnemonic}) {{ ... }} else {{ ... }}")
+            } else {
+                format!("prefix({skip_mnemonic}) {{ ... }}")
+            }
         }
     }
 }
@@ -359,6 +384,20 @@ fn line(out: &mut String, indent: usize, text: String) {
     out.push_str(&" ".repeat(indent));
     out.push_str(&text);
     out.push('\n');
+}
+
+fn mnemonic_to_condition(mnemonic: &str) -> &str {
+    match mnemonic {
+        "bcc" => "<",
+        "bcs" => ">=",
+        "beq" => "==",
+        "bne" => "!=",
+        "bmi" => "<0",
+        "bpl" => ">=0",
+        "bvs" => "<<=",
+        "bvc" => ">>=",
+        _ => mnemonic,
+    }
 }
 
 fn format_address_operand(

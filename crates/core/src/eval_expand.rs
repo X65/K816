@@ -188,8 +188,8 @@ fn expand_hla_stmt(
             rhs: expand_expr(rhs, span, source_id, diagnostics),
         },
         HlaStmt::XIncrement => HlaStmt::XIncrement,
-        HlaStmt::StoreFromA { dest, rhs } => HlaStmt::StoreFromA {
-            dest: dest.clone(),
+        HlaStmt::StoreFromA { dests, rhs } => HlaStmt::StoreFromA {
+            dests: dests.clone(),
             rhs: expand_hla_rhs(rhs, span, source_id, diagnostics),
         },
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => HlaStmt::WaitLoopWhileNFlagClear {
@@ -211,10 +211,17 @@ fn expand_hla_stmt(
         HlaStmt::DoCloseBranch { mnemonic } => HlaStmt::DoCloseBranch {
             mnemonic: mnemonic.clone(),
         },
+        HlaStmt::LoopBreak { mnemonic } => HlaStmt::LoopBreak {
+            mnemonic: mnemonic.clone(),
+        },
+        HlaStmt::LoopRepeat { mnemonic } => HlaStmt::LoopRepeat {
+            mnemonic: mnemonic.clone(),
+        },
         HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
         HlaStmt::PrefixConditional {
             skip_mnemonic,
             body,
+            else_body,
         } => {
             let expanded_body = body
                 .iter()
@@ -225,9 +232,21 @@ fn expand_hla_stmt(
                     )
                 })
                 .collect();
+            let expanded_else = else_body.as_ref().map(|stmts| {
+                stmts
+                    .iter()
+                    .map(|s| {
+                        crate::span::Spanned::new(
+                            expand_stmt(&s.node, s.span, source_id, diagnostics),
+                            s.span,
+                        )
+                    })
+                    .collect()
+            });
             HlaStmt::PrefixConditional {
                 skip_mnemonic: skip_mnemonic.clone(),
                 body: expanded_body,
+                else_body: expanded_else,
             }
         }
     }

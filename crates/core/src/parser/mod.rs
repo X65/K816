@@ -61,12 +61,29 @@ pub fn parse_with_warnings(
         .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax"))
         .collect::<Vec<_>>();
 
-    if diagnostics.is_empty() {
-        let file = output.unwrap_or_default();
-        let warnings = collect_parser_warnings(&file);
-        Ok(ParseOutput { file, warnings })
-    } else {
-        Err(diagnostics)
+    match output {
+        Some(file) => {
+            // Parse produced output — partition diagnostics by severity.
+            // Warnings (from [warn]-tagged .validate() emitters) are non-fatal.
+            // Errors (from real parse failures or error-tagged .validate()) are fatal.
+            let mut warnings = collect_parser_warnings(&file);
+            let mut errors = Vec::new();
+            for diag in diagnostics {
+                match diag.severity {
+                    crate::diag::Severity::Warning => warnings.push(diag),
+                    crate::diag::Severity::Error => errors.push(diag),
+                }
+            }
+            if errors.is_empty() {
+                Ok(ParseOutput { file, warnings })
+            } else {
+                Err(errors)
+            }
+        }
+        None => {
+            // Parse truly failed — no output produced
+            Err(diagnostics)
+        }
     }
 }
 
@@ -134,6 +151,8 @@ fn preprocess_source(source_text: &str) -> String {
             if payload.ends_with('?') {
                 payload.pop();
                 payload = payload.trim_end().to_string();
+                line = format!("{indent}var {payload}");
+                trimmed = line.trim();
             }
             if payload.contains(',') {
                 for part in payload.split(',') {
@@ -354,7 +373,13 @@ where
 
     let preproc_item = just(TokenKind::Hash)
         .then(line_tail_parser())
-        .to(Item::Statement(Stmt::Empty));
+        .validate(|_, extra, emitter| {
+            emitter.emit(Rich::custom(
+                extra.span(),
+                "[warn] preprocessor directive not processed",
+            ));
+            Item::Statement(Stmt::Empty)
+        });
 
     let eval_block_item = chumsky::select! { TokenKind::Eval(value) => value }
         .map(|text| Item::EvaluatorBlock(EvaluatorBlock { text }));
@@ -370,7 +395,7 @@ where
             .or_not()
             .then_ignore(line_tail_parser()),
     )
-    .map(|name| {
+    .validate(|name, extra, emitter| {
         if let Some(name) = name {
             Item::Var(VarDecl {
                 name,
@@ -381,6 +406,10 @@ where
                 initializer_span: None,
             })
         } else {
+            emitter.emit(Rich::custom(
+                extra.span(),
+                "expected name after 'image'/'binary'",
+            ));
             Item::Statement(Stmt::Empty)
         }
     });
@@ -1464,8 +1493,11 @@ where
                 .to(Stmt::Hla(HlaStmt::DoCloseNever)),
         );
     let hla_do_close_stmt = just(TokenKind::RBrace)
-        .then(hla_do_close_suffix.clone())
+        .then(hla_do_close_suffix.clone().or_not())
         .rewind()
+        .try_map(|(_, suffix), span| {
+            suffix.ok_or_else(|| Rich::custom(span, "unexpected '}'"))
+        })
         .ignore_then(just(TokenKind::RBrace).ignore_then(hla_do_close_suffix));
     let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();
     let hla_x_assign_stmt = hla_x_assign_stmt_parser();
@@ -1482,14 +1514,6 @@ where
     let invalid_flag_goto_stmt = invalid_flag_goto_stmt_parser();
     let nop_stmt = nop_stmt_parser();
     let chain_stmt = chain_stmt_parser();
-    // Catch-all for non-register ident chains (e.g. dst0=dst1=a=src) — stub
-    let ident_chain_stub = ident_parser()
-        .then_ignore(just(TokenKind::Eq))
-        .then_ignore(ident_parser())
-        .then_ignore(just(TokenKind::Eq))
-        .then_ignore(line_tail_parser())
-        .to(Stmt::Empty);
-    let bare_rbrace_stmt = bare_rbrace_stmt_parser();
     let discard_stmt = discard_stmt_parser();
 
     let mode_set_stmt = just(TokenKind::ModeA8)
@@ -1582,7 +1606,6 @@ where
         .or(hla_store_from_a_stmt)
         .or(chain_stmt)
         .or(assign_stmt)
-        .or(ident_chain_stub)
         .or(store_stmt)
         .or(alu_stmt)
         .or(incdec_stmt)
@@ -1602,7 +1625,6 @@ where
     let base_stmt = common_stmt
         .or(hla_wait_stmt)
         .or(hla_do_close_stmt)
-        .or(bare_rbrace_stmt)
         .or(hla_do_open_stmt)
         .boxed();
 
@@ -1620,13 +1642,21 @@ where
                 )
                 .then_ignore(just(TokenKind::RBrace));
 
+            let else_body_inner = chumsky::select! {
+                TokenKind::Ident(value) if value.eq_ignore_ascii_case("else") => ()
+            }
+            .ignore_then(block_body.clone())
+            .or_not();
+
             let prefix_conditional =
                 prefix_condition_parser()
                     .then(block_body.clone())
-                    .map(|(skip_mnemonic, body)| {
+                    .then(else_body_inner)
+                    .map(|((skip_mnemonic, body), else_body)| {
                         Stmt::Hla(HlaStmt::PrefixConditional {
                             skip_mnemonic: skip_mnemonic.to_string(),
                             body,
+                            else_body,
                         })
                     });
 
@@ -1655,13 +1685,21 @@ where
         )
         .then_ignore(just(TokenKind::RBrace));
 
+    let else_body_top = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("else") => ()
+    }
+    .ignore_then(block_body_top.clone())
+    .or_not();
+
     let prefix_conditional_top =
         prefix_condition_parser()
             .then(block_body_top.clone())
-            .map(|(skip_mnemonic, body)| {
+            .then(else_body_top)
+            .map(|((skip_mnemonic, body), else_body)| {
                 Stmt::Hla(HlaStmt::PrefixConditional {
                     skip_mnemonic: skip_mnemonic.to_string(),
                     body,
+                    else_body,
                 })
             });
 
@@ -1780,19 +1818,23 @@ fn hla_store_from_a_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
+    // Parse: dest1=dest2=...=a=rhs (one or more non-register store destinations)
     chumsky::select! { TokenKind::Ident(value) if !is_register_name(&value) => value }
         .then_ignore(just(TokenKind::Eq))
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
         .then(ident_parser())
         .then_ignore(just(TokenKind::Eq))
         .then(hla_store_rhs_parser())
-        .try_map(|((dest, middle), rhs), span| {
+        .try_map(|((dests, middle), rhs), span| {
             if !middle.eq_ignore_ascii_case("a") {
                 return Err(Rich::custom(
                     span,
                     format!("expected 'a' in store-from-a assignment, found '{middle}'"),
                 ));
             }
-            Ok(Stmt::Hla(HlaStmt::StoreFromA { dest, rhs }))
+            Ok(Stmt::Hla(HlaStmt::StoreFromA { dests, rhs }))
         })
 }
 
@@ -1933,7 +1975,7 @@ where
         Stmt::Empty
     });
 
-    // Register load from expression (LDA/LDX/LDY, error for C, Empty for B/D/S).
+    // Register load from expression (LDA/LDX/LDY, error for unsupported registers).
     let register_load = chumsky::select! {
         TokenKind::Ident(value) if is_register_name(&value) => value
     }
@@ -1952,7 +1994,14 @@ where
                 ));
                 return Stmt::Empty;
             }
-            _ => return Stmt::Empty,
+            _ => {
+                let reg = lhs.to_ascii_uppercase();
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    format!("cannot load register '{reg}' with expression"),
+                ));
+                return Stmt::Empty;
+            }
         };
         let operand = parsed_operand_to_operand(parsed);
         instruction_stmt(mnemonic, Some(operand))
@@ -2438,11 +2487,43 @@ where
         .ignore_then(ident_parser())
         .map(|target| Stmt::Call(CallStmt { target, is_far: true }));
 
-    let break_repeat_stmt = chumsky::select! {
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("break")
-            || value.eq_ignore_ascii_case("repeat") => ()
-    }
-    .to(Stmt::Empty);
+    let break_kw =
+        chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("break") => () };
+    let repeat_kw =
+        chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("repeat") => () };
+
+    let branch_condition = just(TokenKind::Lt)
+        .ignore_then(just(TokenKind::Number(0)).or_not())
+        .map(|zero| if zero.is_some() { "bmi" } else { "bcc" })
+        .or(just(TokenKind::GtEq)
+            .ignore_then(just(TokenKind::Number(0)).or_not())
+            .map(|zero| if zero.is_some() { "bpl" } else { "bcs" }))
+        .or(just(TokenKind::EqEq).to("beq"))
+        .or(just(TokenKind::BangEq).to("bne"))
+        .or(just(TokenKind::LtLtEq).to("bvs"))
+        .or(just(TokenKind::GtGtEq).to("bvc"));
+
+    let conditional_break = branch_condition
+        .clone()
+        .then_ignore(break_kw.clone())
+        .map(|m| Stmt::Hla(HlaStmt::LoopBreak { mnemonic: m.to_string() }));
+
+    let conditional_repeat = branch_condition
+        .then_ignore(repeat_kw.clone())
+        .map(|m| Stmt::Hla(HlaStmt::LoopRepeat { mnemonic: m.to_string() }));
+
+    let unconditional_break = break_kw.to(Stmt::Hla(HlaStmt::LoopBreak {
+        mnemonic: "bra".to_string(),
+    }));
+
+    let unconditional_repeat = repeat_kw.to(Stmt::Hla(HlaStmt::LoopRepeat {
+        mnemonic: "bra".to_string(),
+    }));
+
+    let break_repeat_stmt = conditional_break
+        .or(conditional_repeat)
+        .or(unconditional_break)
+        .or(unconditional_repeat);
 
     goto_stmt
         .or(branch_goto_stmt)
@@ -2506,45 +2587,46 @@ fn discard_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseEx
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let else_clause = just(TokenKind::RBrace)
-        .then(
-            chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("else") => () },
-        )
+    let preprocessor = just(TokenKind::Hash)
         .then(line_tail_parser())
-        .to(Stmt::Empty);
+        .validate(|_, extra, emitter| {
+            emitter.emit(Rich::custom(
+                extra.span(),
+                "[warn] preprocessor directive not processed",
+            ));
+            Stmt::Empty
+        });
 
-    let generic = just(TokenKind::Hash)
-        .to(())
-        .or(just(TokenKind::EqEq).to(()))
-        .or(just(TokenKind::BangEq).to(()))
-        .or(just(TokenKind::LtLtEq).to(()))
-        .or(just(TokenKind::GtGtEq).to(()))
-        .or(just(TokenKind::LtEq).to(()))
-        .or(just(TokenKind::GtEq).to(()))
-        .or(just(TokenKind::Lt).to(()))
-        .or(just(TokenKind::Gt).to(()))
-        .or(chumsky::select! {
-            TokenKind::Ident(value) if is_discard_keyword(&value) => ()
-        })
-        .or(just(TokenKind::Question).to(()))
+    let operator = just(TokenKind::EqEq)
+        .to("==")
+        .or(just(TokenKind::BangEq).to("!="))
+        .or(just(TokenKind::LtLtEq).to("<<="))
+        .or(just(TokenKind::GtGtEq).to(">>="))
+        .or(just(TokenKind::LtEq).to("<="))
+        .or(just(TokenKind::GtEq).to(">="))
+        .or(just(TokenKind::Lt).to("<"))
+        .or(just(TokenKind::Gt).to(">"));
+
+    let keyword = chumsky::select! {
+        TokenKind::Ident(value) if is_discard_keyword(&value) => value
+    };
+
+    let generic = operator
+        .map(|s| s.to_string())
+        .or(keyword)
+        .or(just(TokenKind::Question).to("?".to_string()))
         .then(line_tail_parser())
-        .to(Stmt::Empty);
+        .validate(|(token, _), extra, emitter| {
+            emitter.emit(Rich::custom(
+                extra.span(),
+                format!("unexpected '{token}'"),
+            ));
+            Stmt::Empty
+        });
 
-    else_clause.or(generic)
+    preprocessor.or(generic)
 }
 
-fn bare_rbrace_stmt_parser<'src, I>()
--> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
-where
-    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
-{
-    just(TokenKind::RBrace)
-        .then_ignore(line_sep_parser().repeated())
-        .then(just(TokenKind::RBrace))
-        .rewind()
-        .ignore_then(just(TokenKind::RBrace))
-        .to(Stmt::Empty)
-}
 
 fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
     Stmt::Instruction(Instruction {
@@ -3013,9 +3095,15 @@ fn rich_error_to_diagnostic(
     let range = error.span().into_range();
     let mut span = Span::new(source_id, range.start, range.end);
     let mut primary_label = "here";
-    let (message, help) = match error.reason() {
+    let (is_warning, message, help) = match error.reason() {
         RichReason::Custom(custom) => {
             let custom = custom.to_string();
+            // Detect [warn] prefix — these become Warning severity diagnostics
+            let (is_warning, custom) = if let Some(rest) = custom.strip_prefix("[warn] ") {
+                (true, rest.to_string())
+            } else {
+                (false, custom)
+            };
             // Extract embedded hint from "; hint: " separator
             let (message_part, embedded_hint) = match custom.find("; hint: ") {
                 Some(idx) => (
@@ -3029,7 +3117,7 @@ fn rich_error_to_diagnostic(
                     .starts_with("unsupported flag shorthand '")
                     .then_some("expected one of c+, c-, d+, d-, i+, i-, or v-".to_string())
             });
-            (format!("{context}: {message_part}"), help)
+            (is_warning, format!("{context}: {message_part}"), help)
         }
         RichReason::ExpectedFound { expected, found } => {
             if found
@@ -3050,7 +3138,7 @@ fn rich_error_to_diagnostic(
                 {
                     let message = format!("{context}: unsupported flag shorthand '{shorthand}'");
                     let help = "expected one of c+, c-, d+, d-, i+, i-, or v-".to_string();
-                    (message, Some(help))
+                    (false, message, Some(help))
                 } else {
                     let found = found
                         .as_deref()
@@ -3058,9 +3146,10 @@ fn rich_error_to_diagnostic(
                         .unwrap_or_else(|| "end of input".to_string());
                     let expected = format_expected_patterns(expected);
                     if expected.len() > 80 {
-                        (format!("{context}: unexpected {found}"), None)
+                        (false, format!("{context}: unexpected {found}"), None)
                     } else {
                         (
+                            false,
                             format!("{context}: expected {expected}, found {found}"),
                             None,
                         )
@@ -3073,9 +3162,10 @@ fn rich_error_to_diagnostic(
                     .unwrap_or_else(|| "end of input".to_string());
                 let expected = format_expected_patterns(expected);
                 if expected.len() > 80 {
-                    (format!("{context}: unexpected {found}"), None)
+                    (false, format!("{context}: unexpected {found}"), None)
                 } else {
                     (
+                        false,
                         format!("{context}: expected {expected}, found {found}"),
                         None,
                     )
@@ -3084,7 +3174,12 @@ fn rich_error_to_diagnostic(
         }
     };
     let help = help.or_else(|| detect_var_width_after_array_hint(source_text, range.start));
-    let diagnostic = Diagnostic::error(span, message).with_primary_label(primary_label);
+    let make_diagnostic = if is_warning {
+        Diagnostic::warning
+    } else {
+        Diagnostic::error
+    };
+    let diagnostic = make_diagnostic(span, message).with_primary_label(primary_label);
     match help {
         Some(help) => diagnostic.with_help(help),
         None => diagnostic,

@@ -32,7 +32,8 @@ struct ModeFrame {
 #[derive(Debug)]
 struct LowerContext {
     next_label: usize,
-    do_loop_targets: Vec<String>,
+    do_loop_targets: Vec<(String, usize)>,
+    break_targets: Vec<String>,
     mode: ModeState,
     mode_frames: Vec<ModeFrame>,
     label_entry_modes: FxHashMap<String, ModeState>,
@@ -64,6 +65,7 @@ impl Default for LowerContext {
         Self {
             next_label: 0,
             do_loop_targets: Vec::new(),
+            break_targets: Vec::new(),
             mode: ModeState::default(),
             mode_frames: Vec::new(),
             label_entry_modes: FxHashMap::default(),
@@ -300,8 +302,13 @@ fn collect_label_depths_into(
             Stmt::ModeScopedBlock { body, .. } => {
                 collect_label_depths_into(body, scope, depth + 1, diagnostics, out);
             }
-            Stmt::Hla(HlaStmt::PrefixConditional { body, .. }) => {
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                body, else_body, ..
+            }) => {
                 collect_label_depths_into(body, scope, depth, diagnostics, out);
+                if let Some(else_body) = else_body {
+                    collect_label_depths_into(else_body, scope, depth, diagnostics, out);
+                }
             }
             _ => {}
         }
@@ -351,9 +358,21 @@ fn collect_label_declared_modes_into(
                     *mode = ModeState::default();
                 }
             }
-            Stmt::Hla(HlaStmt::PrefixConditional { body, .. }) => {
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                body, else_body, ..
+            }) => {
                 let mut inner_mode = *mode;
                 collect_label_declared_modes_into(body, scope, &mut inner_mode, diagnostics, out);
+                if let Some(else_body) = else_body {
+                    let mut else_mode = *mode;
+                    collect_label_declared_modes_into(
+                        else_body,
+                        scope,
+                        &mut else_mode,
+                        diagnostics,
+                        out,
+                    );
+                }
             }
             _ => {}
         }
@@ -694,49 +713,112 @@ fn lower_stmt(
         Stmt::Hla(HlaStmt::PrefixConditional {
             skip_mnemonic,
             body,
+            else_body,
         }) => {
-            let Some(skip_label) = fresh_local_label("prefix_skip", ctx, scope, span, diagnostics)
-            else {
-                return;
-            };
-            emit_branch_to_label(
-                skip_mnemonic,
-                &skip_label,
-                scope,
-                sema,
-                span,
-                ctx,
-                diagnostics,
-                ops,
-            );
-            for s in body {
-                lower_stmt(
-                    &s.node,
-                    s.span,
+            if let Some(else_body) = else_body {
+                // if-else form: condition skips to else, then-body jumps over else
+                let Some(else_label) =
+                    fresh_local_label("else", ctx, scope, span, diagnostics)
+                else {
+                    return;
+                };
+                let Some(end_label) =
+                    fresh_local_label("endif", ctx, scope, span, diagnostics)
+                else {
+                    return;
+                };
+                emit_branch_to_label(
+                    skip_mnemonic,
+                    &else_label,
                     scope,
                     sema,
-                    fs,
-                    current_segment,
+                    span,
                     ctx,
                     diagnostics,
                     ops,
                 );
-            }
-            if let Some(incoming_mode) = ctx.label_entry_modes.get(&skip_label).copied() {
-                if ctx.reachable && ctx.mode != incoming_mode {
-                    diagnostics.push(mode_mismatch_diagnostic(
-                        span,
-                        &skip_label,
-                        ctx.mode,
-                        incoming_mode,
-                    ));
+                for s in body {
+                    lower_stmt(
+                        &s.node, s.span, scope, sema, fs, current_segment, ctx,
+                        diagnostics, ops,
+                    );
                 }
-                ctx.mode = incoming_mode;
-                ctx.reachable = true;
-            } else if ctx.reachable {
-                ctx.label_entry_modes.insert(skip_label.clone(), ctx.mode);
+                emit_branch_to_label(
+                    "bra",
+                    &end_label,
+                    scope,
+                    sema,
+                    span,
+                    ctx,
+                    diagnostics,
+                    ops,
+                );
+                if let Some(incoming_mode) = ctx.label_entry_modes.get(&else_label).copied() {
+                    if ctx.reachable && ctx.mode != incoming_mode {
+                        diagnostics.push(mode_mismatch_diagnostic(
+                            span, &else_label, ctx.mode, incoming_mode,
+                        ));
+                    }
+                    ctx.mode = incoming_mode;
+                    ctx.reachable = true;
+                } else if ctx.reachable {
+                    ctx.label_entry_modes.insert(else_label.clone(), ctx.mode);
+                }
+                ops.push(Spanned::new(Op::Label(else_label), span));
+                for s in else_body {
+                    lower_stmt(
+                        &s.node, s.span, scope, sema, fs, current_segment, ctx,
+                        diagnostics, ops,
+                    );
+                }
+                if let Some(incoming_mode) = ctx.label_entry_modes.get(&end_label).copied() {
+                    if ctx.reachable && ctx.mode != incoming_mode {
+                        diagnostics.push(mode_mismatch_diagnostic(
+                            span, &end_label, ctx.mode, incoming_mode,
+                        ));
+                    }
+                    ctx.mode = incoming_mode;
+                    ctx.reachable = true;
+                } else if ctx.reachable {
+                    ctx.label_entry_modes.insert(end_label.clone(), ctx.mode);
+                }
+                ops.push(Spanned::new(Op::Label(end_label), span));
+            } else {
+                // Simple skip form (no else)
+                let Some(skip_label) =
+                    fresh_local_label("prefix_skip", ctx, scope, span, diagnostics)
+                else {
+                    return;
+                };
+                emit_branch_to_label(
+                    skip_mnemonic,
+                    &skip_label,
+                    scope,
+                    sema,
+                    span,
+                    ctx,
+                    diagnostics,
+                    ops,
+                );
+                for s in body {
+                    lower_stmt(
+                        &s.node, s.span, scope, sema, fs, current_segment, ctx,
+                        diagnostics, ops,
+                    );
+                }
+                if let Some(incoming_mode) = ctx.label_entry_modes.get(&skip_label).copied() {
+                    if ctx.reachable && ctx.mode != incoming_mode {
+                        diagnostics.push(mode_mismatch_diagnostic(
+                            span, &skip_label, ctx.mode, incoming_mode,
+                        ));
+                    }
+                    ctx.mode = incoming_mode;
+                    ctx.reachable = true;
+                } else if ctx.reachable {
+                    ctx.label_entry_modes.insert(skip_label.clone(), ctx.mode);
+                }
+                ops.push(Spanned::new(Op::Label(skip_label), span));
             }
-            ops.push(Spanned::new(Op::Label(skip_label), span));
         }
         Stmt::Hla(stmt) => {
             lower_hla_stmt(stmt, span, scope, sema, ctx, diagnostics, ops);
@@ -1500,8 +1582,8 @@ fn lower_hla_stmt(
             };
             lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
         }
-        HlaStmt::StoreFromA { dest, rhs } => {
-            let lhs_instruction = Instruction {
+        HlaStmt::StoreFromA { dests, rhs } => {
+            let lda_instruction = Instruction {
                 mnemonic: "lda".to_string(),
                 operand: Some(match rhs {
                     HlaRhs::Immediate(expr) => Operand::Immediate {
@@ -1528,20 +1610,23 @@ fn lower_hla_stmt(
                     }
                 }),
             };
-            if !lower_instruction_and_push(&lhs_instruction, scope, sema, span, diagnostics, ops) {
+            if !lower_instruction_and_push(&lda_instruction, scope, sema, span, diagnostics, ops) {
                 return;
             }
 
-            let rhs_instruction = Instruction {
-                mnemonic: "sta".to_string(),
-                operand: Some(Operand::Value {
-                    expr: Expr::Ident(dest.clone()),
-                    force_far: false,
-                    index: None,
-                    addr_mode: OperandAddrMode::Direct,
-                }),
-            };
-            lower_instruction_and_push(&rhs_instruction, scope, sema, span, diagnostics, ops);
+            // Store to each destination in reverse order (innermost first)
+            for dest in dests.iter().rev() {
+                let sta_instruction = Instruction {
+                    mnemonic: "sta".to_string(),
+                    operand: Some(Operand::Value {
+                        expr: Expr::Ident(dest.clone()),
+                        force_far: false,
+                        index: None,
+                        addr_mode: OperandAddrMode::Direct,
+                    }),
+                };
+                lower_instruction_and_push(&sta_instruction, scope, sema, span, diagnostics, ops);
+            }
         }
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => {
             let Some(wait_label) = fresh_local_label("wait", ctx, scope, span, diagnostics) else {
@@ -1580,11 +1665,12 @@ fn lower_hla_stmt(
             let Some(loop_label) = fresh_local_label("loop", ctx, scope, span, diagnostics) else {
                 return;
             };
-            ctx.do_loop_targets.push(loop_label.clone());
+            let break_depth = ctx.break_targets.len();
+            ctx.do_loop_targets.push((loop_label.clone(), break_depth));
             ops.push(Spanned::new(Op::Label(loop_label), span));
         }
         HlaStmt::DoCloseNFlagClear => {
-            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
@@ -1601,9 +1687,10 @@ fn lower_hla_stmt(
                 diagnostics,
                 ops,
             );
+            resolve_break_labels(break_depth, ctx, span, ops);
         }
         HlaStmt::DoCloseNFlagSet => {
-            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
@@ -1620,9 +1707,10 @@ fn lower_hla_stmt(
                 diagnostics,
                 ops,
             );
+            resolve_break_labels(break_depth, ctx, span, ops);
         }
         HlaStmt::DoCloseWithOp { op } => {
-            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
@@ -1639,9 +1727,10 @@ fn lower_hla_stmt(
                 diagnostics,
                 ops,
             );
+            resolve_break_labels(break_depth, ctx, span, ops);
         }
         HlaStmt::DoClose { condition } => {
-            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
@@ -1658,9 +1747,10 @@ fn lower_hla_stmt(
                 diagnostics,
                 ops,
             );
+            resolve_break_labels(break_depth, ctx, span, ops);
         }
         HlaStmt::DoCloseAlways => {
-            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
@@ -1677,24 +1767,71 @@ fn lower_hla_stmt(
                 diagnostics,
                 ops,
             );
+            resolve_break_labels(break_depth, ctx, span, ops);
         }
         HlaStmt::DoCloseNever => {
-            let Some(_loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((_loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
                 );
                 return;
             };
+            resolve_break_labels(break_depth, ctx, span, ops);
         }
         HlaStmt::DoCloseBranch { mnemonic } => {
-            let Some(loop_target) = ctx.do_loop_targets.pop() else {
+            let Some((loop_target, break_depth)) = ctx.do_loop_targets.pop() else {
                 diagnostics.push(
                     Diagnostic::error(span, "HLA do/while close without matching '{'")
                         .with_help("open loop with a standalone '{' line before the condition"),
                 );
                 return;
             };
+            emit_branch_to_label(
+                mnemonic,
+                &loop_target,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
+            resolve_break_labels(break_depth, ctx, span, ops);
+        }
+        HlaStmt::LoopBreak { mnemonic } => {
+            if ctx.do_loop_targets.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(span, "'break' outside loop")
+                        .with_help("'break' can only be used inside a '{' ... '}' loop"),
+                );
+                return;
+            }
+            let Some(break_label) = fresh_local_label("break", ctx, scope, span, diagnostics)
+            else {
+                return;
+            };
+            ctx.break_targets.push(break_label.clone());
+            emit_branch_to_label(
+                mnemonic,
+                &break_label,
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
+        }
+        HlaStmt::LoopRepeat { mnemonic } => {
+            let Some((loop_target, _)) = ctx.do_loop_targets.last() else {
+                diagnostics.push(
+                    Diagnostic::error(span, "'repeat' outside loop")
+                        .with_help("'repeat' can only be used inside a '{' ... '}' loop"),
+                );
+                return;
+            };
+            let loop_target = loop_target.clone();
             emit_branch_to_label(
                 mnemonic,
                 &loop_target,
@@ -1881,6 +2018,18 @@ fn emit_branch_to_label(
         }),
     };
     lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+}
+
+fn resolve_break_labels(
+    break_depth: usize,
+    ctx: &mut LowerContext,
+    span: Span,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    while ctx.break_targets.len() > break_depth {
+        let label = ctx.break_targets.pop().unwrap();
+        ops.push(Spanned::new(Op::Label(label), span));
+    }
 }
 
 fn fresh_local_label(

@@ -1,0 +1,15 @@
+Error: invalid syntax: unexpected '>'
+   ╭─[ tests/golden/fixtures/syntax-warn-stray-operator/input.k65:3:3 ]
+   │
+ 3 │   > 42
+   │   ──┬─  
+   │     ╰─── here
+───╯
+
+Error: invalid syntax: unexpected 'charset'
+   ╭─[ tests/golden/fixtures/syntax-warn-stray-operator/input.k65:4:3 ]
+   │
+ 4 │   charset ABC
+   │   ─────┬─────  
+   │        ╰─────── here
+───╯

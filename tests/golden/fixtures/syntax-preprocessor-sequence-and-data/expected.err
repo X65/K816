@@ -1,0 +1,23 @@
+Warning: invalid syntax: preprocessor directive not processed
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:2:1 ]
+   │
+ 2 │ #if 1
+   │ ──┬──  
+   │   ╰──── here
+───╯
+
+Warning: invalid syntax: preprocessor directive not processed
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:4:1 ]
+   │
+ 4 │ #else
+   │ ──┬──  
+   │   ╰──── here
+───╯
+
+Warning: invalid syntax: preprocessor directive not processed
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:6:1 ]
+   │
+ 6 │ #endif
+   │ ───┬──  
+   │    ╰──── here
+───╯

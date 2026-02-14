@@ -1,0 +1,7 @@
+Error: invalid syntax: expected name after 'image'/'binary'
+   ╭─[ tests/golden/fixtures/syntax-warn-malformed-image-binary/input.k65:1:1 ]
+   │
+ 1 │ image
+   │ ──┬──  
+   │   ╰──── here
+───╯

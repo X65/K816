@@ -1,0 +1,7 @@
+Error: invalid syntax: unexpected '}'
+   ╭─[ tests/golden/fixtures/syntax-warn-bare-closing-brace/input.k65:4:1 ]
+   │
+ 4 │ }
+   │ ┬  
+   │ ╰── here
+───╯

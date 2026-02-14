@@ -139,8 +139,8 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
     match stmt {
         HlaStmt::XAssignImmediate { rhs } => HlaStmt::XAssignImmediate { rhs: rhs.clone() },
         HlaStmt::XIncrement => HlaStmt::XIncrement,
-        HlaStmt::StoreFromA { dest, rhs } => HlaStmt::StoreFromA {
-            dest: dest.clone(),
+        HlaStmt::StoreFromA { dests, rhs } => HlaStmt::StoreFromA {
+            dests: dests.clone(),
             rhs: rhs.clone(),
         },
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => HlaStmt::WaitLoopWhileNFlagClear {
@@ -162,13 +162,21 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         HlaStmt::DoCloseBranch { mnemonic } => HlaStmt::DoCloseBranch {
             mnemonic: mnemonic.clone(),
         },
+        HlaStmt::LoopBreak { mnemonic } => HlaStmt::LoopBreak {
+            mnemonic: mnemonic.clone(),
+        },
+        HlaStmt::LoopRepeat { mnemonic } => HlaStmt::LoopRepeat {
+            mnemonic: mnemonic.clone(),
+        },
         HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
         HlaStmt::PrefixConditional {
             skip_mnemonic,
             body,
+            else_body,
         } => HlaStmt::PrefixConditional {
             skip_mnemonic: skip_mnemonic.clone(),
             body: normalize_stmt_sequence(body),
+            else_body: else_body.as_ref().map(|stmts| normalize_stmt_sequence(stmts)),
         },
     }
 }

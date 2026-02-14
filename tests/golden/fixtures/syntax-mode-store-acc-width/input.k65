@@ -1,0 +1,18 @@
+// STA/STZ/TRB/TSB are accumulator-width sensitive (M flag).
+// Even with memory operands (encoding unchanged by width), mode ops must be preserved.
+
+var zp = 0x20
+
+func main {
+  @a16
+  sta zp
+  stz zp
+  trb zp
+  tsb zp
+
+  @a8
+  sta zp
+  stz zp
+  trb zp
+  tsb zp
+}

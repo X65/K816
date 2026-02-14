@@ -1,0 +1,16 @@
+[default]
+000000: C2 10 BA 9A 9B BB E2 10 BA 9A 9B BB 60
+
+
+[disasm obj#0 default::main]
+000000: C2 10       rep #$10
+000002: BA          tsx
+000003: 9A          txs
+000004: 9B          txy
+000005: BB          tyx
+000006: E2 10       sep #$10
+000008: BA          tsx
+000009: 9A          txs
+00000A: 9B          txy
+00000B: BB          tyx
+00000C: 60          rts

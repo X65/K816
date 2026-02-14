@@ -1,0 +1,16 @@
+[default]
+000000: C2 10 E8 CA C8 88 E2 10 E8 CA C8 88 60
+
+
+[disasm obj#0 default::main]
+000000: C2 10       rep #$10
+000002: E8          inx
+000003: CA          dex
+000004: C8          iny
+000005: 88          dey
+000006: E2 10       sep #$10
+000008: E8          inx
+000009: CA          dex
+00000A: C8          iny
+00000B: 88          dey
+00000C: 60          rts

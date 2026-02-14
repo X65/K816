@@ -1,0 +1,15 @@
+// TSX/TXS/TXY/TYX are index-width sensitive (X flag).
+
+func main {
+  @i16
+  tsx
+  txs
+  txy
+  tyx
+
+  @i8
+  tsx
+  txs
+  txy
+  tyx
+}

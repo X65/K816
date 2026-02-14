@@ -1,0 +1,23 @@
+[default]
+000000: C2 20 48 68 E2 20 48 68 C2 10 DA FA 5A 7A E2 10
+000010: DA FA 5A 7A 60
+
+
+[disasm obj#0 default::main]
+000000: C2 20       rep #$20
+000002: 48          pha
+000003: 68          pla
+000004: E2 20       sep #$20
+000006: 48          pha
+000007: 68          pla
+000008: C2 10       rep #$10
+00000A: DA          phx
+00000B: FA          plx
+00000C: 5A          phy
+00000D: 7A          ply
+00000E: E2 10       sep #$10
+000010: DA          phx
+000011: FA          plx
+000012: 5A          phy
+000013: 7A          ply
+000014: 60          rts

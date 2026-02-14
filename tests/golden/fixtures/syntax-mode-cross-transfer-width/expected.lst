@@ -1,0 +1,16 @@
+[default]
+000000: C2 30 AA A8 8A 98 E2 30 AA A8 8A 98 60
+
+
+[disasm obj#0 default::main]
+000000: C2 30       rep #$30
+000002: AA          tax
+000003: A8          tay
+000004: 8A          txa
+000005: 98          tya
+000006: E2 30       sep #$30
+000008: AA          tax
+000009: A8          tay
+00000A: 8A          txa
+00000B: 98          tya
+00000C: 60          rts

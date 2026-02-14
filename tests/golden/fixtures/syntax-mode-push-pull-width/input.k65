@@ -1,0 +1,32 @@
+// Test that push/pull instructions are treated as register width dependent.
+// Mode ops (@a8/@a16/@i8/@i16) must NOT be eliminated before these instructions.
+// Contrast with syntax-mode-set where mode ops before nop ARE eliminated.
+//
+// PHA/PLA depend on accumulator width (M flag).
+// PHX/PLX/PHY/PLY depend on index width (X flag).
+
+func main {
+  // --- Accumulator push/pull: 16-bit mode ---
+  @a16
+  pha
+  pla
+
+  // --- Accumulator push/pull: 8-bit mode ---
+  @a8
+  pha
+  pla
+
+  // --- Index push/pull: 16-bit mode ---
+  @i16
+  phx
+  plx
+  phy
+  ply
+
+  // --- Index push/pull: 8-bit mode ---
+  @i8
+  phx
+  plx
+  phy
+  ply
+}

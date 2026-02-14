@@ -1,0 +1,16 @@
+// DEX/DEY/INX/INY are index-width sensitive (X flag).
+// Mode ops must NOT be eliminated before them.
+
+func main {
+  @i16
+  inx
+  dex
+  iny
+  dey
+
+  @i8
+  inx
+  dex
+  iny
+  dey
+}

@@ -1,0 +1,20 @@
+// Accumulator-form shifts/rotates/inc/dec are M-flag sensitive ONLY when
+// they have no operand (accumulator addressing). Mode ops must be preserved.
+
+func main {
+  @a16
+  asl
+  lsr
+  rol
+  ror
+  inc
+  dec
+
+  @a8
+  asl
+  lsr
+  rol
+  ror
+  inc
+  dec
+}

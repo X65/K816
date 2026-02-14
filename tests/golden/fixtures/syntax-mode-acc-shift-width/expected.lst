@@ -1,0 +1,21 @@
+[default]
+000000: C2 20 0A 4A 2A 6A 1A 3A E2 20 0A 4A 2A 6A 1A 3A
+000010: 60
+
+
+[disasm obj#0 default::main]
+000000: C2 20       rep #$20
+000002: 0A          asl A
+000003: 4A          lsr A
+000004: 2A          rol A
+000005: 6A          ror A
+000006: 1A          inc A
+000007: 3A          dec A
+000008: E2 20       sep #$20
+00000A: 0A          asl A
+00000B: 4A          lsr A
+00000C: 2A          rol A
+00000D: 6A          ror A
+00000E: 1A          inc A
+00000F: 3A          dec A
+000010: 60          rts

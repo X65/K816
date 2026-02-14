@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -28,6 +29,11 @@ use lsp_types::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use walkdir::WalkDir;
+
+static INSTRUCTION_DESCRIPTIONS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../../docs/instructions-description.json"))
+        .expect("embedded instruction descriptions must be valid JSON")
+});
 
 const PROJECT_MANIFEST: &str = "k816.toml";
 const PROJECT_SRC_DIR: &str = "src";
@@ -457,15 +463,22 @@ impl ServerState {
         let scope = doc.analysis.scope_at_offset(offset);
         let allow_symbol_completions = in_symbol_completion_context(&doc.text, offset);
 
-        let mut candidates: Vec<(String, CompletionItemKind, &'static str)> = opcode_keywords()
-            .into_iter()
-            .map(|mnemonic| (mnemonic, CompletionItemKind::KEYWORD, "opcode"))
-            .collect();
+        let mut candidates: Vec<(String, CompletionItemKind, &'static str, Option<String>)> =
+            opcode_keywords()
+                .into_iter()
+                .map(|mnemonic| {
+                    let doc = INSTRUCTION_DESCRIPTIONS
+                        .get(&mnemonic.to_ascii_uppercase())
+                        .cloned();
+                    (mnemonic, CompletionItemKind::KEYWORD, "opcode", doc)
+                })
+                .collect();
         candidates.extend(directive_keywords().iter().map(|directive| {
             (
                 (*directive).to_string(),
                 CompletionItemKind::KEYWORD,
                 "directive",
+                None,
             )
         }));
 
@@ -493,6 +506,7 @@ impl ServerState {
                     name,
                     completion_kind_for_symbol(category),
                     category.detail(),
+                    None,
                 )
             }));
         }
@@ -500,17 +514,23 @@ impl ServerState {
         let mut seen = BTreeSet::new();
         let items = candidates
             .into_iter()
-            .filter(|(label, _, _)| {
+            .filter(|(label, _, _, _)| {
                 if prefix.is_empty() {
                     return true;
                 }
                 label.to_ascii_lowercase().starts_with(&prefix)
             })
-            .filter(|(label, _, _)| seen.insert(label.clone()))
-            .map(|(label, kind, detail)| CompletionItem {
+            .filter(|(label, _, _, _)| seen.insert(label.clone()))
+            .map(|(label, kind, detail, documentation)| CompletionItem {
                 label,
                 kind: Some(kind),
                 detail: Some(detail.to_string()),
+                documentation: documentation.map(|text| {
+                    lsp_types::Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: text,
+                    })
+                }),
                 ..CompletionItem::default()
             })
             .collect::<Vec<_>>();
@@ -1328,9 +1348,11 @@ fn reg_width_name(width: k816_core::ast::RegWidth) -> &'static str {
 fn builtin_hover_text(token: &str) -> Option<String> {
     let token = token.to_ascii_lowercase();
     if opcode_keywords().iter().any(|opcode| opcode == &token) {
-        return Some(format!(
-            "**opcode** `{token}`\nWDC 65816 instruction mnemonic."
-        ));
+        let description = INSTRUCTION_DESCRIPTIONS
+            .get(&token.to_ascii_uppercase())
+            .map(|d| d.as_str())
+            .unwrap_or("WDC 65816 instruction mnemonic.");
+        return Some(format!("**opcode** `{token}`\n\n{description}"));
     }
 
     let text = match token.as_str() {

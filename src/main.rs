@@ -13,7 +13,6 @@ const PROJECT_DEFAULT_LINK_SCRIPT: &str = "link.ron";
 const PROJECT_SRC_DIR: &str = "src";
 const PROJECT_MAIN_SOURCE: &str = "main.k65";
 const PROJECT_TARGET_DIR: &str = "target";
-const PROJECT_PROFILE_DIR: &str = "debug";
 const PROJECT_OBJECT_DIR: &str = "obj";
 
 #[derive(Debug, Parser)]
@@ -856,10 +855,8 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
     }
     sources.sort();
 
-    let profile_dir = project_root
-        .join(PROJECT_TARGET_DIR)
-        .join(PROJECT_PROFILE_DIR);
-    let object_root = profile_dir.join(PROJECT_OBJECT_DIR);
+    let target_dir = project_root.join(PROJECT_TARGET_DIR);
+    let object_root = target_dir.join(PROJECT_OBJECT_DIR);
     std::fs::create_dir_all(&object_root)
         .with_context(|| format!("failed to create '{}'", object_root.display()))?;
 
@@ -888,7 +885,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
     };
     config.output.kind = resolve_output_kind(config.output.kind, None, link_options.output_format);
 
-    let artifact_path = profile_dir.join(format!(
+    let artifact_path = target_dir.join(format!(
         "{}.{}",
         manifest.package.name,
         output_extension(config.output.kind)

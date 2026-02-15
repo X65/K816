@@ -901,8 +901,8 @@ fn init_scaffolds_project_and_builds_default_target() {
     let mut build = Command::new(env!("CARGO_BIN_EXE_k816"));
     build.current_dir(&project).arg("build").assert().success();
 
-    assert!(project.join("target/debug/hello.xex").exists());
-    assert!(project.join("target/debug/obj/main.o65").exists());
+    assert!(project.join("target/hello.xex").exists());
+    assert!(project.join("target/obj/main.o65").exists());
 }
 
 #[test]
@@ -930,8 +930,8 @@ fn build_discovers_nested_k65_sources() {
     let mut build = Command::new(env!("CARGO_BIN_EXE_k816"));
     build.current_dir(&project).arg("build").assert().success();
 
-    assert!(project.join("target/debug/discovery.xex").exists());
-    assert!(project.join("target/debug/obj/modules/extra.o65").exists());
+    assert!(project.join("target/discovery.xex").exists());
+    assert!(project.join("target/obj/modules/extra.o65").exists());
 }
 
 #[test]
@@ -976,12 +976,12 @@ args = ["-c", "printf '%s\n' \"$@\" > runner.args", "--"]
         .assert()
         .success();
 
-    assert!(project.join("target/debug/runner.xex").exists());
+    assert!(project.join("target/runner.xex").exists());
 
     let recorded = std::fs::read_to_string(project.join("runner.args"))
         .expect("runner should emit forwarded args");
     let mut args = recorded.lines();
-    assert_eq!(args.next(), Some("target/debug/runner.xex"));
+    assert_eq!(args.next(), Some("target/runner.xex"));
     assert_eq!(args.next(), Some("foo"));
     assert_eq!(args.next(), Some("bar"));
     assert_eq!(args.next(), None);

@@ -992,8 +992,6 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
     let source_id = source_map.add_source(source_name, source_text);
 
     let mut ast = None;
-    let mut symbols = Vec::new();
-    let mut scopes = Vec::new();
     let mut semantic = SemanticInfo::default();
 
     let (parsed_file, parse_diagnostics) =
@@ -1002,10 +1000,8 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
         diagnostics.extend(parse_diagnostics);
     }
 
-    if let Some(parsed_file) = parsed_file {
+    let (symbols, scopes) = if let Some(parsed_file) = parsed_file {
         let symbol_collection = collect_symbols(&parsed_file);
-        symbols = symbol_collection.symbols;
-        scopes = symbol_collection.scopes;
         ast = Some(parsed_file.clone());
 
         if let Ok(expanded) = k816_core::eval_expand::expand_file(&parsed_file, source_id)
@@ -1022,7 +1018,12 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
                 semantic.vars.insert(name, meta);
             }
         }
-    }
+        (symbol_collection.symbols, symbol_collection.scopes)
+    } else {
+        // Parser completely failed — fall back to token-level symbol extraction
+        let fallback = scan_tokens_for_symbols(source_id, source_text);
+        (fallback.symbols, fallback.scopes)
+    };
 
     dedup_diagnostics(&mut diagnostics);
 
@@ -1162,6 +1163,178 @@ fn collect_stmt_symbols(
     }
 }
 
+/// Fallback symbol extraction from the token stream when the parser
+/// completely fails to produce an AST. Scans for patterns like
+/// `func IDENT`, `naked IDENT`, `var IDENT`, etc.
+fn scan_tokens_for_symbols(source_id: k816_core::span::SourceId, source_text: &str) -> SymbolCollection {
+    use k816_core::lexer::{TokenKind, lex_lenient};
+
+    let (tokens, _) = lex_lenient(source_id, source_text);
+    let mut out = SymbolCollection::default();
+
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        match &token.kind {
+            TokenKind::Func => {
+                if let Some(name_token) = tokens.get(i + 1)
+                    && let TokenKind::Ident(name) = &name_token.kind
+                {
+                    let selection = ByteRange::from_span(name_token.span);
+                    let scope_range = find_brace_scope(&tokens, i + 2);
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::Function,
+                        selection,
+                        scope: None,
+                    });
+                    if let Some(scope_range) = scope_range {
+                        out.scopes.push(ScopeRange {
+                            name: name.clone(),
+                            range: scope_range,
+                        });
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            TokenKind::Far | TokenKind::Naked | TokenKind::Inline => {
+                // Skip modifiers to find the name: [far] [naked] [inline] [func] IDENT
+                let mut j = i + 1;
+                while j < tokens.len() {
+                    match &tokens[j].kind {
+                        TokenKind::Far | TokenKind::Naked | TokenKind::Inline | TokenKind::Func => {
+                            j += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                if let Some(name_token) = tokens.get(j)
+                    && let TokenKind::Ident(name) = &name_token.kind
+                {
+                    let selection = ByteRange::from_span(name_token.span);
+                    let scope_range = find_brace_scope(&tokens, j + 1);
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::Function,
+                        selection,
+                        scope: None,
+                    });
+                    if let Some(scope_range) = scope_range {
+                        out.scopes.push(ScopeRange {
+                            name: name.clone(),
+                            range: scope_range,
+                        });
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+            TokenKind::Var => {
+                if let Some(name_token) = tokens.get(i + 1)
+                    && let TokenKind::Ident(name) = &name_token.kind
+                {
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::Variable,
+                        selection: ByteRange::from_span(name_token.span),
+                        scope: None,
+                    });
+                    i += 2;
+                    continue;
+                }
+            }
+            TokenKind::Const => {
+                if let Some(name_token) = tokens.get(i + 1)
+                    && let TokenKind::Ident(name) = &name_token.kind
+                {
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::Constant,
+                        selection: ByteRange::from_span(name_token.span),
+                        scope: None,
+                    });
+                    i += 2;
+                    continue;
+                }
+            }
+            TokenKind::Data => {
+                if let Some(name_token) = tokens.get(i + 1)
+                    && let TokenKind::Ident(name) = &name_token.kind
+                {
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::DataBlock,
+                        selection: ByteRange::from_span(name_token.span),
+                        scope: None,
+                    });
+                    i += 2;
+                    continue;
+                }
+            }
+            TokenKind::Segment => {
+                if let Some(name_token) = tokens.get(i + 1)
+                    && let TokenKind::Ident(name) = &name_token.kind
+                {
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::Segment,
+                        selection: ByteRange::from_span(name_token.span),
+                        scope: None,
+                    });
+                    i += 2;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Scan forward from token index to find the byte range of a `{ ... }` block.
+fn find_brace_scope(tokens: &[k816_core::lexer::Token], start: usize) -> Option<ByteRange> {
+    use k816_core::lexer::TokenKind;
+
+    // Skip mode annotations and newlines to find LBrace
+    let mut j = start;
+    while j < tokens.len() {
+        match &tokens[j].kind {
+            TokenKind::ModeA8 | TokenKind::ModeA16 | TokenKind::ModeI8 | TokenKind::ModeI16
+            | TokenKind::Newline => {
+                j += 1;
+            }
+            _ => break,
+        }
+    }
+    if j >= tokens.len() || tokens[j].kind != TokenKind::LBrace {
+        return None;
+    }
+    let block_start = tokens[j].span.start;
+    let mut depth = 1usize;
+    j += 1;
+    while j < tokens.len() && depth > 0 {
+        match &tokens[j].kind {
+            TokenKind::LBrace => depth += 1,
+            TokenKind::RBrace => depth -= 1,
+            _ => {}
+        }
+        j += 1;
+    }
+    let block_end = if j > 0 { tokens[j - 1].span.end } else { block_start };
+    Some(ByteRange {
+        start: block_start,
+        end: block_end,
+    })
+}
+
 fn canonical_symbol(name: &str, scope: Option<&str>) -> String {
     if name.starts_with('.')
         && let Some(scope) = scope
@@ -1176,10 +1349,10 @@ fn extract_unknown_identifier_name(message: &str) -> Option<String> {
         "unknown identifier '",
     ];
     for prefix in prefixes {
-        if let Some(rest) = message.strip_prefix(prefix) {
-            if let Some(end) = rest.find('\'') {
-                return Some(rest[..end].to_string());
-            }
+        if let Some(rest) = message.strip_prefix(prefix)
+            && let Some(end) = rest.find('\'')
+        {
+            return Some(rest[..end].to_string());
         }
     }
     None
@@ -1406,7 +1579,6 @@ fn builtin_hover_text(token: &str) -> Option<String> {
         "const" => "Declare a compile-time numeric constant.",
         "var" => "Declare a variable symbol (optionally typed and/or initialized).",
         "func" => "Declare a function block.",
-        "main" => "Program entry point. Defaults to 8-bit register widths.",
         "far" => "Marks a function for far call/return semantics.",
         "naked" => "Disables automatic function epilogue emission.",
         "inline" => "Marks function as inline-capable in HLA lowering.",
@@ -1448,7 +1620,7 @@ fn opcode_keywords() -> Vec<String> {
 
 fn directive_keywords() -> &'static [&'static str] {
     &[
-        "segment", "const", "var", "func", "main", "far", "naked", "inline", "data", "align",
+        "segment", "const", "var", "func", "far", "naked", "inline", "data", "align",
         "address", "nocross", "call", "goto", "return", "return_i", "else", "break", "repeat",
         "always", "never", "charset", "image", "binary", "code", "@a8", "@a16", "@i8", "@i16",
     ]
@@ -1827,6 +1999,65 @@ mod tests {
         assert!(
             state.symbols.contains_key("main"),
             "main should be in the symbol index even when file has errors, got: {:?}",
+            state.symbols.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn symbols_extracted_despite_lex_errors() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        // File has a valid func followed by an unrecognized token (~ is not in the lexer)
+        let text = "func main {\n  nop\n}\n\nfunc other {\n  lda ~bogus\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("doc");
+
+        assert!(
+            state.symbols.contains_key("main"),
+            "main should be in the symbol index despite lex errors, got: {:?}",
+            state.symbols.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn symbols_extracted_with_double_colon_errors() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        // Uses TCB::name syntax that produces parse errors
+        let text = "\
+func test {
+    nop
+}
+
+func main @a16 @i16 {
+    call task_init
+    lda #dbg_task
+    sta reg_pc,x
+    @a8 {
+        lda #0
+        sta TASKS+TCB::name+0,y
+        sta TASKS+TCB::state,y
+    }
+    cli
+    {} always
+}
+"
+        .to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("doc");
+
+        assert!(
+            state.symbols.contains_key("test"),
+            "test should be in the symbol index despite :: errors, got: {:?}",
+            state.symbols.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            state.symbols.contains_key("main"),
+            "main should be in the symbol index despite :: errors, got: {:?}",
             state.symbols.keys().collect::<Vec<_>>()
         );
     }

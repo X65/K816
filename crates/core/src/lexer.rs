@@ -130,6 +130,15 @@ pub struct Token {
 }
 
 pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
+    let (tokens, diagnostics) = lex_lenient(source_id, input);
+    if diagnostics.is_empty() {
+        Ok(tokens)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+pub fn lex_lenient(source_id: SourceId, input: &str) -> (Vec<Token>, Vec<Diagnostic>) {
     let mut lexer = TokenKind::lexer(input);
     let mut tokens = Vec::new();
     let mut diagnostics = Vec::new();
@@ -155,11 +164,7 @@ pub fn lex(source_id: SourceId, input: &str) -> Result<Vec<Token>, Vec<Diagnosti
         }
     }
 
-    if diagnostics.is_empty() {
-        Ok(tokens)
-    } else {
-        Err(diagnostics)
-    }
+    (tokens, diagnostics)
 }
 
 fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {

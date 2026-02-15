@@ -6,7 +6,7 @@ use crate::ast::{
     SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
-use crate::lexer::{TokenKind, lex};
+use crate::lexer::{TokenKind, lex, lex_lenient};
 use crate::span::{SourceId, Span, Spanned};
 use chumsky::{
     IterParser, Parser as _,
@@ -96,10 +96,7 @@ pub fn parse_lenient(
 ) -> (Option<File>, Vec<Diagnostic>) {
     let preprocessed = preprocess_source(source_text);
     let source_text = preprocessed.as_str();
-    let tokens = match lex(source_id, source_text) {
-        Ok(tokens) => tokens,
-        Err(diagnostics) => return (None, diagnostics),
-    };
+    let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -112,10 +109,12 @@ pub fn parse_lenient(
     let (output, errors) = file_parser(source_id)
         .parse(token_stream)
         .into_output_errors();
-    let mut diagnostics: Vec<Diagnostic> = errors
-        .into_iter()
-        .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax"))
-        .collect();
+    let mut diagnostics: Vec<Diagnostic> = lex_diagnostics;
+    diagnostics.extend(
+        errors
+            .into_iter()
+            .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax")),
+    );
 
     if let Some(ref file) = output {
         let mut warnings = collect_parser_warnings(file);

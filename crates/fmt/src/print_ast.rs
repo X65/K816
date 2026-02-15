@@ -279,6 +279,9 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
         NamedDataEntry::Bytes(values) => {
             values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
         }
+        NamedDataEntry::Words(values) => {
+            format!("word {}", values.iter().map(format_expr).collect::<Vec<_>>().join(" "))
+        }
         NamedDataEntry::ForEvalRange(range) => format!(
             "for {}={}..{} eval [{}]",
             range.iterator,

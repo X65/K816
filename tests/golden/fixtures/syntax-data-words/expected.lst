@@ -1,0 +1,28 @@
+[default]
+002000: 80 FE 60 78 18 FB E2 30 A2 FF 9A A9 00 48 AB 4C
+002010: 00 20
+
+
+[VECTORS]
+00FFE0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00FFF0: 00 00 00 00 00 00 00 00 00 00 00 00 03 20 00 00
+
+
+[data obj#0 VECTORS::VECTORS]
+00FFE0: <32 bytes of data>
+
+[disasm obj#0 default::main]
+002000: 80 FE       bra $002000
+002002: 60          rts
+
+[disasm obj#0 default::RESET_HDL]
+002003: 78          sei
+002004: 18          clc
+002005: FB          xce
+002006: E2 30       sep #$30
+002008: A2 FF       ldx #$FF
+00200A: 9A          txs
+00200B: A9 00       lda #$00
+00200D: 48          pha
+00200E: AB          plb
+00200F: 4C 00 20    jmp $2000

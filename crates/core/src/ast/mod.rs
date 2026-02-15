@@ -307,6 +307,7 @@ pub enum NamedDataEntry {
     Align(u16),
     Nocross(u16),
     Bytes(Vec<Expr>),
+    Words(Vec<Expr>),
     ForEvalRange(NamedDataForEvalRange),
     String(String),
     Repeat {

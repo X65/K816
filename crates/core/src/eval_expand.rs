@@ -154,6 +154,12 @@ fn expand_named_data_entry(
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
+        NamedDataEntry::Words(values) => NamedDataEntry::Words(
+            values
+                .iter()
+                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
+                .collect(),
+        ),
         NamedDataEntry::ForEvalRange(range) => {
             NamedDataEntry::ForEvalRange(NamedDataForEvalRange {
                 iterator: range.iterator.clone(),

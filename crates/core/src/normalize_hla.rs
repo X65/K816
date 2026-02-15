@@ -62,6 +62,7 @@ fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
         NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
         NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
         NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
+        NamedDataEntry::Words(values) => NamedDataEntry::Words(values.clone()),
         NamedDataEntry::ForEvalRange(range) => NamedDataEntry::ForEvalRange(range.clone()),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {

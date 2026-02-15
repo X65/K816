@@ -491,6 +491,7 @@ pub fn link_objects_with_options(
                 && reloc.width == 2
                 && target.segment != ABSOLUTE_SYMBOL_SEGMENT
                 && reloc.section != target.segment
+                && reloc.call_metadata.is_some()
             {
                 bail!(
                     "16-bit relocation from segment '{}' to '{}' requires far addressing",

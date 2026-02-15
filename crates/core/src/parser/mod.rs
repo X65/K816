@@ -762,6 +762,23 @@ where
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
 
+    let word_value = number_parser()
+        .map(|value| vec![Expr::Number(value)])
+        .or(address_byte_expr.clone())
+        .or(undef_byte.clone())
+        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+
+    let word_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
+    }
+    .ignore_then(
+        word_value
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>(),
+    )
+    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
+
     let bytes_entry = number_parser()
         .map(|value| vec![Expr::Number(value)])
         .or(address_byte_expr)
@@ -886,6 +903,7 @@ where
         .or(code_entry)
         .or(evaluator_entry)
         .or(charset_entry)
+        .or(word_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
         .or(ident_entry)
@@ -995,6 +1013,23 @@ where
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
 
+    let word_value = number_parser()
+        .map(|value| vec![Expr::Number(value)])
+        .or(address_byte_expr.clone())
+        .or(undef_byte.clone())
+        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+
+    let word_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
+    }
+    .ignore_then(
+        word_value
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>(),
+    )
+    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
+
     let bytes_entry = number_parser()
         .map(|value| vec![Expr::Number(value)])
         .or(address_byte_expr)
@@ -1023,6 +1058,7 @@ where
         .or(align_entry)
         .or(nocross_entry)
         .or(charset_entry)
+        .or(word_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
         .or(ident_entry)

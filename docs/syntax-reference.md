@@ -313,12 +313,53 @@ data bytes {
 }
 ```
 
+For emitting full 16-bit addresses in data blocks, consider using the `word` prefix instead (see below).
+
 In code, address byte operators are used to load address parts as immediates:
 
 ```k65
 a=&<addr               // LDA #<addr (low byte)
 a=&>addr               // LDA #>addr (high byte)
 ```
+
+### `word` (16-bit Word Entries)
+
+The `word` prefix emits each value as a 16-bit little-endian word (2 bytes). This is particularly useful for interrupt vector tables and address lookup tables where every entry is a 16-bit address.
+
+```k65
+data VECTORS {
+  segment VECTORS
+  word 0 0 0 0 0 0 0 0
+  word 0 0 0 0 0 0 RESET_HDL 0
+}
+```
+
+Each value on a `word` line emits 2 bytes in little-endian order. Values can be:
+
+- **Numeric literals** (validated to fit in 16 bits): `word 0 $1234 255`
+- **Symbol references** (resolved to full 16-bit addresses): `word main RESET_HDL`
+- **Address byte operators**: `word &<ptr &>ptr` (still emit single bytes within the word context)
+- **Evaluator expressions**: `word [2+2] [SOME_CONST]`
+
+This replaces the verbose byte-splitting pattern using `&<` and `&>`:
+
+```k65
+// Before: manually split addresses into low/high bytes
+data VECTORS {
+  segment VECTORS
+  $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 $00 $00 $00 $00
+  $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 &<main &>main $00 $00
+}
+
+// After: clean 16-bit word entries
+data VECTORS {
+  segment VECTORS
+  word 0 0 0 0 0 0 0 0
+  word 0 0 0 0 0 0 main 0
+}
+```
+
+Note that since each `word` value is 2 bytes, a line of 8 words produces 16 bytes — the same as 16 individual byte values.
 
 ### `code { }` Subblocks
 

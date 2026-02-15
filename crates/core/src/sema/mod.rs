@@ -297,6 +297,13 @@ fn try_collect_named_data_block_values(
                     out.push(Number::Int(i64::from(byte)));
                 }
             }
+            NamedDataEntry::Words(values) => {
+                for expr in values {
+                    let value = eval_const_expr_to_int(expr, consts).ok()?;
+                    let word = u16::try_from(value).ok()?;
+                    out.push(Number::Int(i64::from(word)));
+                }
+            }
             NamedDataEntry::ForEvalRange(range) => {
                 out.extend(try_collect_named_data_range_values(
                     range,

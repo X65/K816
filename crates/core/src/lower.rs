@@ -494,6 +494,19 @@ fn lower_named_data_entry(
                 ops.push(Spanned::new(op, span));
             }
         }
+        NamedDataEntry::Words(values) => {
+            if let Some(evaluated) = evaluate_word_exprs(values, None, sema, span, diagnostics) {
+                let op = if evaluated.relocations.is_empty() {
+                    Op::EmitBytes(evaluated.bytes)
+                } else {
+                    Op::EmitRelocBytes {
+                        bytes: evaluated.bytes,
+                        relocations: evaluated.relocations,
+                    }
+                };
+                ops.push(Spanned::new(op, span));
+            }
+        }
         NamedDataEntry::ForEvalRange(range) => {
             let Some(start) = eval_to_number_strict(&range.start, sema, span, diagnostics) else {
                 return;
@@ -2170,6 +2183,106 @@ fn evaluate_byte_exprs(
                 diagnostics.push(Diagnostic::error(
                     span,
                     format!("byte literal out of range: {number}"),
+                ));
+                return None;
+            }
+        }
+    }
+
+    Some(EvaluatedBytes { bytes, relocations })
+}
+
+fn evaluate_word_exprs(
+    values: &[Expr],
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<EvaluatedBytes> {
+    let mut bytes = Vec::with_capacity(values.len() * 2);
+    let mut relocations = Vec::new();
+
+    for value in values {
+        // Try to resolve as a compile-time number (literal, const, var address, expr).
+        if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
+            match u16::try_from(number) {
+                Ok(word) => bytes.extend_from_slice(&word.to_le_bytes()),
+                Err(_) => {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("word literal out of range: {number}"),
+                    ));
+                    return None;
+                }
+            }
+            continue;
+        }
+
+        // &< / &> unary: emit single-byte relocation (same as in bytes context).
+        if matches!(
+            value,
+            Expr::Unary {
+                op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
+                ..
+            }
+        ) {
+            if let Some((kind, label)) =
+                resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
+            {
+                let offset =
+                    u32::try_from(bytes.len()).expect("word expression offset should fit in u32");
+                bytes.extend_from_slice(&[0, 0]);
+                relocations.push(ByteRelocation {
+                    offset,
+                    kind,
+                    label,
+                });
+                continue;
+            }
+
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    "low/high-byte expression must be a constant or plain symbol reference",
+                )
+                .with_help("supported symbolic forms are '&<label' and '&>label'"),
+            );
+            return None;
+        }
+
+        // Bare ident that is a label: emit a full 16-bit word relocation.
+        if let Some(symbol) = expr_ident_name(value) {
+            if !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
+                match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+                    Ok(Some(_)) | Err(()) => {}
+                    Ok(None) => {
+                        if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
+                            let offset = u32::try_from(bytes.len())
+                                .expect("word expression offset should fit in u32");
+                            bytes.extend_from_slice(&[0, 0]);
+                            relocations.push(ByteRelocation {
+                                offset,
+                                kind: ByteRelocationKind::FullWord,
+                                label: resolved,
+                            });
+                            continue;
+                        }
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Fallback: try general numeric evaluation.
+        let Some(number) = eval_to_number(value, scope, sema, span, diagnostics) else {
+            return None;
+        };
+        match u16::try_from(number) {
+            Ok(word) => bytes.extend_from_slice(&word.to_le_bytes()),
+            Err(_) => {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("word literal out of range: {number}"),
                 ));
                 return None;
             }

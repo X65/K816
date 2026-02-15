@@ -798,10 +798,23 @@ fn write_byte_relocation_at(
         return;
     }
 
-    bytes[offset] = match kind {
-        ByteRelocationKind::LowByte => (value & 0xFF) as u8,
-        ByteRelocationKind::HighByte => ((value >> 8) & 0xFF) as u8,
-    };
+    match kind {
+        ByteRelocationKind::LowByte => {
+            bytes[offset] = (value & 0xFF) as u8;
+        }
+        ByteRelocationKind::HighByte => {
+            bytes[offset] = ((value >> 8) & 0xFF) as u8;
+        }
+        ByteRelocationKind::FullWord => {
+            if offset + 1 >= bytes.len() {
+                diagnostics.push(Diagnostic::error(span, "internal fixup overflow"));
+                return;
+            }
+            let le = (value as u16).to_le_bytes();
+            bytes[offset] = le[0];
+            bytes[offset + 1] = le[1];
+        }
+    }
 }
 
 fn write_immediate_byte_relocation_at(

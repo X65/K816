@@ -48,6 +48,7 @@ pub fn format_ir(program: &Program) -> String {
                     let kind = match relocation.kind {
                         ByteRelocationKind::LowByte => "lo",
                         ByteRelocationKind::HighByte => "hi",
+                        ByteRelocationKind::FullWord => "word",
                     };
                     out.push_str(&format!(
                         "  reloc {kind} +{} {}\n",
@@ -65,6 +66,7 @@ pub fn format_ir(program: &Program) -> String {
                             let prefix = match kind {
                                 ByteRelocationKind::LowByte => "&<",
                                 ByteRelocationKind::HighByte => "&>",
+                                ByteRelocationKind::FullWord => "&&",
                             };
                             out.push('#');
                             out.push_str(prefix);

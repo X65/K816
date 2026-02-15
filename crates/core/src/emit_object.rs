@@ -308,14 +308,16 @@ pub fn emit_object(
                     }
                     let relocation_span =
                         relocation_span_for_label(source_map, op.span, &relocation.label);
+                    let (width, kind) = match relocation.kind {
+                        ByteRelocationKind::LowByte => (1, RelocationKind::LowByte),
+                        ByteRelocationKind::HighByte => (1, RelocationKind::HighByte),
+                        ByteRelocationKind::FullWord => (2, RelocationKind::Absolute),
+                    };
                     fixups.push(Fixup {
                         segment: current_segment.clone(),
                         offset: emit_offset + relocation.offset,
-                        width: 1,
-                        kind: match relocation.kind {
-                            ByteRelocationKind::LowByte => RelocationKind::LowByte,
-                            ByteRelocationKind::HighByte => RelocationKind::HighByte,
-                        },
+                        width,
+                        kind,
                         label: relocation.label.clone(),
                         span: relocation_span,
                         call_metadata: None,
@@ -444,14 +446,16 @@ pub fn emit_object(
                         }
                         emit_zeroes(segment, width, op.span, &mut diagnostics);
                         let relocation_span = relocation_span_for_label(source_map, op.span, label);
+                        let (reloc_width, reloc_kind) = match kind {
+                            ByteRelocationKind::LowByte => (1, RelocationKind::LowByte),
+                            ByteRelocationKind::HighByte => (1, RelocationKind::HighByte),
+                            ByteRelocationKind::FullWord => (2, RelocationKind::Absolute),
+                        };
                         fixups.push(Fixup {
                             segment: current_segment.clone(),
                             offset: operand_offset,
-                            width: 1,
-                            kind: match kind {
-                                ByteRelocationKind::LowByte => RelocationKind::LowByte,
-                                ByteRelocationKind::HighByte => RelocationKind::HighByte,
-                            },
+                            width: reloc_width,
+                            kind: reloc_kind,
                             label: label.clone(),
                             span: relocation_span,
                             call_metadata: None,

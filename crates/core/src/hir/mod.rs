@@ -61,6 +61,7 @@ pub struct ByteRelocation {
 pub enum ByteRelocationKind {
     LowByte,
     HighByte,
+    FullWord,
 }
 
 #[derive(Debug, Clone)]

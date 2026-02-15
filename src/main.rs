@@ -850,26 +850,11 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         );
     }
 
-    let main_source = source_root.join(PROJECT_MAIN_SOURCE);
-    if !main_source.is_file() {
-        anyhow::bail!(
-            "missing default entry source '{}'",
-            display_project_path(&project_root, &main_source)
-        );
-    }
-
     let mut sources = discover_sources(&source_root)?;
     if sources.is_empty() {
         anyhow::bail!("no .k65 sources found under '{}'", PROJECT_SRC_DIR);
     }
     sources.sort();
-
-    if !sources.iter().any(|path| path == &main_source) {
-        anyhow::bail!(
-            "missing default entry source '{}'",
-            display_project_path(&project_root, &main_source)
-        );
-    }
 
     let profile_dir = project_root
         .join(PROJECT_TARGET_DIR)

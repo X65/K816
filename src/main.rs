@@ -908,6 +908,8 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         manifest.package.name,
         output_extension(config.output.kind)
     ));
+    let objects = k816_link::bfs_reorder(objects)?;
+
     println!(
         "link {} -> {}",
         objects.len(),

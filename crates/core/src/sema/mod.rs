@@ -273,8 +273,7 @@ fn try_collect_named_data_block_values(
             NamedDataEntry::Segment(_)
             | NamedDataEntry::Address(_)
             | NamedDataEntry::Align(_)
-            | NamedDataEntry::Nocross(_)
-            | NamedDataEntry::Ignored => {}
+            | NamedDataEntry::Nocross(_) => {}
             NamedDataEntry::String(value) => {
                 out.extend(value.bytes().map(|byte| Number::Int(i64::from(byte))));
             }
@@ -292,7 +291,6 @@ fn try_collect_named_data_block_values(
                     evaluator_context,
                 )?);
             }
-            NamedDataEntry::Convert { .. } => return None,
         }
     }
     Some(out)

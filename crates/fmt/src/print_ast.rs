@@ -74,14 +74,6 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
         Stmt::Nocross(value) => line(out, indent, format!("nocross {value}")),
         Stmt::Instruction(instr) => line(out, indent, format_instruction(instr)),
         Stmt::Call(call) => line(out, indent, format!("call {}", call.target)),
-        Stmt::Bytes(values) => {
-            let values = values
-                .iter()
-                .map(format_expr)
-                .collect::<Vec<_>>()
-                .join(", ");
-            line(out, indent, format!(".byte {values}"));
-        }
         Stmt::ModeSet { a_width, i_width } => {
             let mut parts = Vec::new();
             if let Some(w) = a_width {
@@ -216,6 +208,11 @@ fn format_data_command(command: &DataCommand) -> String {
         DataCommand::Align(value) => format!("align {value}"),
         DataCommand::Address(value) => format!("address {value}"),
         DataCommand::Nocross(value) => format!("nocross {value}"),
+        DataCommand::Bytes(values) => values
+            .iter()
+            .map(|v| format!("${v:02X}"))
+            .collect::<Vec<_>>()
+            .join(" "),
         DataCommand::Convert { kind, args } => {
             let args = args
                 .iter()
@@ -283,15 +280,6 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
             range.eval
         ),
         NamedDataEntry::String(value) => format!("\"{}\"", value.replace('\"', "\\\"")),
-        NamedDataEntry::Convert { kind, args } => {
-            let args = args
-                .iter()
-                .map(format_data_arg)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("{kind}({args})")
-        }
-        NamedDataEntry::Ignored => "<ignored>".to_string(),
     }
 }
 

@@ -12,7 +12,7 @@ pub enum Op {
     FunctionStart {
         name: String,
         mode_contract: ModeContract,
-        /// True for `main` blocks — defaults to 8-bit mode when uncolored.
+        /// True for `func main` blocks — defaults to 8-bit mode when uncolored.
         is_entry: bool,
         /// True for `far func` blocks — uses JSL/RTL calling convention.
         is_far: bool,

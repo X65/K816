@@ -3,7 +3,7 @@ use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    DataBlock, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File,
+    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File,
     HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
     NamedDataEntry, Operand, OperandAddrMode, RegWidth, Stmt,
 };
@@ -120,7 +120,6 @@ pub fn lower(
                 lower_named_data_block(
                     block,
                     sema,
-                    fs,
                     &current_segment,
                     &mut diagnostics,
                     &mut ops,
@@ -382,7 +381,6 @@ fn collect_label_declared_modes_into(
 fn lower_named_data_block(
     block: &NamedDataBlock,
     sema: &SemanticModel,
-    fs: &dyn AssetFS,
     outer_segment: &str,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
@@ -407,7 +405,6 @@ fn lower_named_data_block(
                 &entry.node,
                 entry.span,
                 sema,
-                fs,
                 &mut block_segment,
                 diagnostics,
                 ops,
@@ -424,7 +421,6 @@ fn lower_named_data_block(
             &entry.node,
             entry.span,
             sema,
-            fs,
             &mut block_segment,
             diagnostics,
             ops,
@@ -446,7 +442,6 @@ fn lower_named_data_entry(
     entry: &NamedDataEntry,
     span: Span,
     sema: &SemanticModel,
-    fs: &dyn AssetFS,
     current_segment: &mut String,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
@@ -546,22 +541,6 @@ fn lower_named_data_entry(
         NamedDataEntry::String(value) => {
             ops.push(Spanned::new(Op::EmitBytes(value.as_bytes().to_vec()), span));
         }
-        NamedDataEntry::Convert { kind, args } => {
-            let data_block = DataBlock {
-                commands: vec![Spanned::new(
-                    DataCommand::Convert {
-                        kind: kind.clone(),
-                        args: args.clone(),
-                    },
-                    span,
-                )],
-            };
-            match lower_data_block(&data_block, fs) {
-                Ok(mut lowered) => ops.append(&mut lowered),
-                Err(mut errs) => diagnostics.append(&mut errs),
-            }
-        }
-        NamedDataEntry::Ignored => {}
     }
 }
 
@@ -682,19 +661,6 @@ fn lower_stmt(
                 // Unknown function: emit JSR or JSL based on `call far`.
                 // The linker will resolve or report the missing symbol.
                 lower_call_with_contract(&target, call.is_far, None, None, span, ctx, ops);
-            }
-        }
-        Stmt::Bytes(values) => {
-            if let Some(evaluated) = evaluate_byte_exprs(values, scope, sema, span, diagnostics) {
-                let op = if evaluated.relocations.is_empty() {
-                    Op::EmitBytes(evaluated.bytes)
-                } else {
-                    Op::EmitRelocBytes {
-                        bytes: evaluated.bytes,
-                        relocations: evaluated.relocations,
-                    }
-                };
-                ops.push(Spanned::new(op, span));
             }
         }
         Stmt::DataBlock(block) => match lower_data_block(block, fs) {

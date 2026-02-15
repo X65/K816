@@ -256,10 +256,23 @@ impl ServerState {
     }
 
     fn initialize_workspace(&mut self) -> Result<()> {
-        for path in discover_workspace_sources(&self.workspace_root)? {
-            self.load_from_disk(path)?;
+        let sources = discover_workspace_sources(&self.workspace_root)?;
+        eprintln!(
+            "k816-lsp: workspace '{}', discovered {} source file(s)",
+            self.workspace_root.display(),
+            sources.len(),
+        );
+        for path in sources {
+            if let Err(error) = self.load_from_disk(path.clone()) {
+                eprintln!("k816-lsp: skipping '{}': {error}", path.display());
+            }
         }
         self.rebuild_symbol_index();
+        eprintln!(
+            "k816-lsp: indexed {} unique symbol(s) across {} document(s)",
+            self.symbols.len(),
+            self.documents.len(),
+        );
         Ok(())
     }
 
@@ -271,6 +284,7 @@ impl ServerState {
             .source_index
             .ensure_file_id(uri.clone(), Some(path.clone()));
         let source_name = path.display().to_string();
+        eprintln!("k816-lsp: analyzing '{source_name}'");
         let analysis = analyze_document(&source_name, &text);
         self.documents.insert(
             uri.clone(),
@@ -333,7 +347,13 @@ impl ServerState {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| doc.uri.to_string());
-        doc.analysis = analyze_document(&source_name, &doc.text);
+        eprintln!("k816-lsp: analyzing '{source_name}'");
+        let mut new_analysis = analyze_document(&source_name, &doc.text);
+        if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
+            new_analysis.symbols = doc.analysis.symbols.clone();
+            new_analysis.scopes = doc.analysis.scopes.clone();
+        }
+        doc.analysis = new_analysis;
         self.rebuild_symbol_index();
     }
 
@@ -390,8 +410,19 @@ impl ServerState {
         doc.analysis
             .diagnostics
             .iter()
+            .filter(|diag| !self.is_cross_module_false_positive(diag))
             .map(|diag| diagnostic_to_lsp(diag, &doc.uri, &doc.line_index, &doc.text))
             .collect()
+    }
+
+    fn is_cross_module_false_positive(&self, diag: &k816_core::diag::Diagnostic) -> bool {
+        if diag.severity != k816_core::diag::Severity::Error {
+            return false;
+        }
+        if let Some(name) = extract_unknown_identifier_name(&diag.message) {
+            return self.symbols.contains_key(&name);
+        }
+        false
     }
 
     fn definition(&self, uri: &Uri, position: Position) -> Option<GotoDefinitionResponse> {
@@ -965,12 +996,13 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
     let mut scopes = Vec::new();
     let mut semantic = SemanticInfo::default();
 
-    if let Ok(parsed) = k816_core::parser::parse_with_warnings(source_id, source_text) {
-        if compile_failed {
-            diagnostics.extend(parsed.warnings);
-        }
+    let (parsed_file, parse_diagnostics) =
+        k816_core::parser::parse_lenient(source_id, source_text);
+    if compile_failed {
+        diagnostics.extend(parse_diagnostics);
+    }
 
-        let parsed_file = parsed.file;
+    if let Some(parsed_file) = parsed_file {
         let symbol_collection = collect_symbols(&parsed_file);
         symbols = symbol_collection.symbols;
         scopes = symbol_collection.scopes;
@@ -1137,6 +1169,20 @@ fn canonical_symbol(name: &str, scope: Option<&str>) -> String {
         return format!("{scope}::{name}");
     }
     name.to_string()
+}
+
+fn extract_unknown_identifier_name(message: &str) -> Option<String> {
+    let prefixes = [
+        "unknown identifier '",
+    ];
+    for prefix in prefixes {
+        if let Some(rest) = message.strip_prefix(prefix) {
+            if let Some(end) = rest.find('\'') {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    None
 }
 
 fn completion_kind_for_symbol(category: SymbolCategory) -> CompletionItemKind {
@@ -1360,7 +1406,7 @@ fn builtin_hover_text(token: &str) -> Option<String> {
         "const" => "Declare a compile-time numeric constant.",
         "var" => "Declare a variable symbol (optionally typed and/or initialized).",
         "func" => "Declare a function block.",
-        "main" => "Declare the program entry block.",
+        "main" => "Program entry point. Defaults to 8-bit register widths.",
         "far" => "Marks a function for far call/return semantics.",
         "naked" => "Disables automatic function epilogue emission.",
         "inline" => "Marks function as inline-capable in HLA lowering.",
@@ -1369,6 +1415,18 @@ fn builtin_hover_text(token: &str) -> Option<String> {
         "address" => "Set absolute output address for following bytes.",
         "nocross" => "Prevent emitted bytes from crossing boundary size.",
         "call" => "Call a known function symbol.",
+        "goto" => "Jump to an absolute address or indirect through a vector.",
+        "return" => "Return from subroutine (RTS).",
+        "return_i" => "Return from interrupt (RTI).",
+        "else" => "Alternate branch for conditional blocks.",
+        "break" => "Exit the current loop block.",
+        "repeat" => "Restart the current loop block or repeat data in a data block.",
+        "always" => "Unconditional loop (JMP back to start).",
+        "never" => "One-shot block with no branch back.",
+        "charset" => "Define character mapping for subsequent string data.",
+        "image" => "Load pixel data from bitmap images.",
+        "binary" => "Embed raw binary file contents.",
+        "code" => "Embed executable code within a data block.",
         "@a8" => "Set accumulator width contract to 8-bit.",
         "@a16" => "Set accumulator width contract to 16-bit.",
         "@i8" => "Set index width contract to 8-bit.",
@@ -1391,7 +1449,8 @@ fn opcode_keywords() -> Vec<String> {
 fn directive_keywords() -> &'static [&'static str] {
     &[
         "segment", "const", "var", "func", "main", "far", "naked", "inline", "data", "align",
-        "address", "nocross", "call", "@a8", "@a16", "@i8", "@i16", ".byte",
+        "address", "nocross", "call", "goto", "return", "return_i", "else", "break", "repeat",
+        "always", "never", "charset", "image", "binary", "code", "@a8", "@a16", "@i8", "@i16",
     ]
 }
 
@@ -1635,6 +1694,141 @@ mod tests {
             GotoDefinitionResponse::Array(locations) => assert_eq!(locations.len(), 1),
             _ => panic!("unexpected response shape"),
         }
+    }
+
+    #[test]
+    fn resolves_cross_file_function_definition() {
+        let uri_main = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text_main = "func main {\n  call app_init\n}\n".to_string();
+
+        let uri_func = Uri::from_str("file:///project/src/func.k65").expect("uri");
+        let text_func = "func app_init @a8 @i8 {\n  lda #1\n  ldx #2\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri_func.clone(), text_func, 1, false)
+            .expect("func doc");
+        state
+            .upsert_document(uri_main.clone(), text_main.clone(), 1, true)
+            .expect("main doc");
+
+        let doc = state.documents.get(&uri_main).expect("main doc");
+        let offset = text_main.find("app_init").expect("app_init");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let response = state
+            .definition(&uri_main, position)
+            .expect("definition should resolve to func.k65");
+
+        match response {
+            GotoDefinitionResponse::Array(locations) => {
+                assert_eq!(locations.len(), 1, "expected exactly one definition");
+                assert_eq!(locations[0].uri, uri_func, "definition should be in func.k65");
+            }
+            _ => panic!("unexpected response shape"),
+        }
+    }
+
+    #[test]
+    fn resolves_cross_file_variable_definition() {
+        let uri_vars = Uri::from_str("file:///project/src/vars.k65").expect("uri");
+        let text_vars = "var foo = $1234\n".to_string();
+
+        let uri_test = Uri::from_str("file:///project/src/test.k65").expect("uri");
+        let text_test = "func test @a8 {\n  lda foo\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri_vars.clone(), text_vars, 1, false)
+            .expect("vars doc");
+        state
+            .upsert_document(uri_test.clone(), text_test.clone(), 1, true)
+            .expect("test doc");
+
+        let doc = state.documents.get(&uri_test).expect("test doc");
+        let foo_offset = text_test.find("foo").expect("foo");
+        let position = doc.line_index.to_position(&doc.text, foo_offset);
+        let response = state
+            .definition(&uri_test, position)
+            .expect("definition should resolve to vars.k65");
+
+        match response {
+            GotoDefinitionResponse::Array(locations) => {
+                assert_eq!(locations.len(), 1);
+                assert_eq!(locations[0].uri, uri_vars);
+            }
+            _ => panic!("unexpected response shape"),
+        }
+    }
+
+    #[test]
+    fn suppresses_cross_module_undefined_symbol_diagnostic() {
+        let uri_vars = Uri::from_str("file:///project/src/vars.k65").expect("uri");
+        let text_vars = "var foo = $1234\n".to_string();
+
+        let uri_test = Uri::from_str("file:///project/src/test.k65").expect("uri");
+        let text_test = "func test @a8 {\n  lda foo\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri_vars.clone(), text_vars, 1, false)
+            .expect("vars doc");
+        state
+            .upsert_document(uri_test.clone(), text_test, 1, true)
+            .expect("test doc");
+
+        let diagnostics = state.lsp_diagnostics(&uri_test);
+        let has_foo_error = diagnostics
+            .iter()
+            .any(|d| d.message.contains("unknown identifier 'foo'"));
+        assert!(
+            !has_foo_error,
+            "cross-module reference to 'foo' should not produce a diagnostic, got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn symbols_survive_parse_failure() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let good_text = "func main {\n  nop\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), good_text, 1, true)
+            .expect("good doc");
+        assert!(
+            state.symbols.contains_key("main"),
+            "main should be in the symbol index after good parse"
+        );
+
+        // Introduce a syntax error — symbols should be preserved
+        let bad_text = "func main {\n  <<<broken>>>\n}\n".to_string();
+        state
+            .upsert_document(uri.clone(), bad_text, 2, true)
+            .expect("bad doc");
+        assert!(
+            state.symbols.contains_key("main"),
+            "main should still be in the symbol index after failed parse"
+        );
+    }
+
+    #[test]
+    fn symbols_extracted_from_file_opened_with_errors() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        // File has a valid func definition followed by a syntax error
+        let text = "func main {\n  nop\n}\n\nfunc broken {\n  <<<bad>>>\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("doc");
+
+        // The parser should recover and still extract "main" (and possibly "broken")
+        assert!(
+            state.symbols.contains_key("main"),
+            "main should be in the symbol index even when file has errors, got: {:?}",
+            state.symbols.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]

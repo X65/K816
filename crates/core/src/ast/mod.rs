@@ -97,7 +97,6 @@ pub enum Stmt {
     Nocross(u16),
     Instruction(Instruction),
     Call(CallStmt),
-    Bytes(Vec<Expr>),
     Hla(HlaStmt),
     ModeSet {
         a_width: Option<RegWidth>,
@@ -306,8 +305,6 @@ pub enum NamedDataEntry {
     Bytes(Vec<Expr>),
     ForEvalRange(NamedDataForEvalRange),
     String(String),
-    Convert { kind: String, args: Vec<DataArg> },
-    Ignored,
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +317,7 @@ pub enum DataCommand {
     Align(u16),
     Address(u32),
     Nocross(u16),
+    Bytes(Vec<i64>),
     Convert { kind: String, args: Vec<DataArg> },
     Ignored,
 }

@@ -30,7 +30,7 @@ Chosen direction:
   - atoms/expr (`number`, `ident`, `eval`)
   - var declarations
   - data args/commands/blocks
-  - statements (`call`, label, instruction, `.byte`, nested `data`, `var`)
+  - statements (`call`, label, instruction, nested `data`, `var`)
   - items (`bank`, `var`, `data`, function/main blocks, top-level stmt)
 - Use `recursive(...)` and `choice(...)` idioms from `chumsky 0.12`.
 
@@ -59,7 +59,6 @@ Chosen direction:
 - Add focused tests for every grammar area:
   - block modifiers and ordering
   - labels vs instructions disambiguation
-  - `.byte` list parsing
   - `data` command variants and typed bounds (`u16`, `u32`)
   - var array length eval fragments
   - trailing/leading separator handling.

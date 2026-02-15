@@ -87,13 +87,6 @@ fn expand_stmt(
             source_id,
             diagnostics,
         )),
-        Stmt::Bytes(values) => {
-            let expanded = values
-                .iter()
-                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
-                .collect();
-            Stmt::Bytes(expanded)
-        }
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
         Stmt::Address(value) => Stmt::Address(*value),
         Stmt::Align(value) => Stmt::Align(*value),
@@ -169,11 +162,6 @@ fn expand_named_data_entry(
             })
         }
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
-        NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
-            kind: kind.clone(),
-            args: args.clone(),
-        },
-        NamedDataEntry::Ignored => NamedDataEntry::Ignored,
     }
 }
 

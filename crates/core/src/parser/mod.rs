@@ -87,6 +87,45 @@ pub fn parse_with_warnings(
     }
 }
 
+/// Like `parse_with_warnings` but returns a partial AST even when there are
+/// parse errors. Used by the LSP to extract symbol definitions from files that
+/// contain syntax errors.
+pub fn parse_lenient(
+    source_id: SourceId,
+    source_text: &str,
+) -> (Option<File>, Vec<Diagnostic>) {
+    let preprocessed = preprocess_source(source_text);
+    let source_text = preprocessed.as_str();
+    let tokens = match lex(source_id, source_text) {
+        Ok(tokens) => tokens,
+        Err(diagnostics) => return (None, diagnostics),
+    };
+    let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
+    let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
+        let span = (token.span.start..token.span.end).into();
+        (token.kind, span)
+    }))
+    .map((end_offset..end_offset).into(), |(kind, span): (_, _)| {
+        (kind, span)
+    });
+
+    let (output, errors) = file_parser(source_id)
+        .parse(token_stream)
+        .into_output_errors();
+    let mut diagnostics: Vec<Diagnostic> = errors
+        .into_iter()
+        .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax"))
+        .collect();
+
+    if let Some(ref file) = output {
+        let mut warnings = collect_parser_warnings(file);
+        warnings.extend(diagnostics.drain(..));
+        return (output, warnings);
+    }
+
+    (output, diagnostics)
+}
+
 fn preprocess_source(source_text: &str) -> String {
     let mut out = Vec::new();
     let mut data_block_depth = 0usize;
@@ -676,24 +715,8 @@ where
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
         });
 
-    let byte_entry = just(TokenKind::Ident(".byte".to_string()))
-        .ignore_then(
-            expr_parser()
-                .separated_by(just(TokenKind::Comma))
-                .at_least(1)
-                .collect::<Vec<_>>(),
-        )
-        .map(NamedDataEntry::Bytes);
-
     let string_entry = chumsky::select! { TokenKind::String(value) => value }
-        .then(expr_parser().repeated().collect::<Vec<_>>())
-        .map(|(value, extra)| {
-            if extra.is_empty() {
-                NamedDataEntry::String(value)
-            } else {
-                NamedDataEntry::Ignored
-            }
-        });
+        .map(NamedDataEntry::String);
 
     let address_byte_expr = just(TokenKind::Amp).ignore_then(
         just(TokenKind::Lt)
@@ -762,44 +785,14 @@ where
         })
     });
 
-    let args = data_arg_parser()
-        .separated_by(just(TokenKind::Comma))
-        .collect::<Vec<_>>()
-        .or_not()
-        .map(|args: Option<Vec<DataArg>>| args.unwrap_or_default());
-    let convert_entry = ident_parser()
-        .then(
-            just(TokenKind::LParen)
-                .ignore_then(args)
-                .then_ignore(just(TokenKind::RParen)),
-        )
-        .map(|(kind, args)| NamedDataEntry::Convert { kind, args });
-
-    let label_ignored_entry = ident_parser()
-        .then_ignore(just(TokenKind::Colon))
-        .to(NamedDataEntry::Ignored);
-
-    let directive_ignored_entry = chumsky::select! {
-        TokenKind::Ident(value) if is_discard_keyword(&value)
-            || value.eq_ignore_ascii_case("image")
-            || value.eq_ignore_ascii_case("binary")
-            || value.eq_ignore_ascii_case("repeat") => ()
-    }
-    .then(line_tail_parser())
-    .to(NamedDataEntry::Ignored);
-
     string_entry
         .or(segment_entry)
         .or(address_entry)
         .or(align_entry)
         .or(nocross_entry)
-        .or(byte_entry)
         .or(for_eval_entry)
-        .or(convert_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
-        .or(label_ignored_entry)
-        .or(directive_ignored_entry)
         .boxed()
 }
 
@@ -860,31 +853,13 @@ where
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
-        .map(|values| DataCommand::Convert {
-            kind: "bytes".to_string(),
-            args: values.into_iter().map(DataArg::Int).collect::<Vec<_>>(),
-        });
-
-    let directive_ignored = chumsky::select! {
-        TokenKind::Ident(value) if is_discard_keyword(&value)
-            || value.eq_ignore_ascii_case("image")
-            || value.eq_ignore_ascii_case("binary")
-            || value.eq_ignore_ascii_case("repeat") => ()
-    }
-    .then(line_tail_parser())
-    .to(DataCommand::Ignored);
-
-    let preproc_ignored = just(TokenKind::Hash)
-        .then(line_tail_parser())
-        .to(DataCommand::Ignored);
+        .map(DataCommand::Bytes);
 
     align
         .or(address)
         .or(nocross)
         .or(convert)
         .or(bytes)
-        .or(directive_ignored)
-        .or(preproc_ignored)
         .boxed()
 }
 
@@ -1469,15 +1444,6 @@ where
         .then_ignore(just(TokenKind::Colon))
         .map(|name| Stmt::Label(LabelDecl { name }));
 
-    let byte_stmt = just(TokenKind::Ident(".byte".to_string()))
-        .ignore_then(
-            expr_parser()
-                .separated_by(just(TokenKind::Comma))
-                .at_least(1)
-                .collect::<Vec<_>>(),
-        )
-        .map(Stmt::Bytes);
-
     let hla_wait_stmt = hla_wait_loop_stmt_parser();
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
     let hla_do_close_suffix = hla_condition_parser()
@@ -1543,15 +1509,8 @@ where
     })
     .to(Stmt::SwapAB);
 
-    let mnemonic = ident_parser().try_map(|mnemonic, span| {
-        if mnemonic == ".byte" {
-            Err(Rich::custom(
-                span,
-                "expected one or more expressions after '.byte'",
-            ))
-        } else {
-            Ok(mnemonic)
-        }
+    let mnemonic = ident_parser().try_map(|mnemonic, _span| {
+        Ok(mnemonic)
     });
 
     let operand_boundary = line_sep_parser()
@@ -1598,7 +1557,6 @@ where
         .or(align_stmt)
         .or(nocross_stmt)
         .or(call_stmt)
-        .or(byte_stmt)
         .or(invalid_flag_goto_stmt)
         .or(hla_condition_seed_stmt)
         .or(hla_x_increment_stmt)
@@ -2607,13 +2565,8 @@ where
         .or(just(TokenKind::Lt).to("<"))
         .or(just(TokenKind::Gt).to(">"));
 
-    let keyword = chumsky::select! {
-        TokenKind::Ident(value) if is_discard_keyword(&value) => value
-    };
-
     let generic = operator
         .map(|s| s.to_string())
-        .or(keyword)
         .or(just(TokenKind::Question).to("?".to_string()))
         .then(line_tail_parser())
         .validate(|(token, _), extra, emitter| {
@@ -2729,20 +2682,6 @@ fn invalid_transfer_hint(dest: &str, src: &str) -> Option<&'static str> {
         }
         _ => None,
     }
-}
-
-fn is_discard_keyword(value: &str) -> bool {
-    value.eq_ignore_ascii_case("else")
-        || value.eq_ignore_ascii_case("always")
-        || value.eq_ignore_ascii_case("never")
-        || value.eq_ignore_ascii_case("evaluator")
-        || value.eq_ignore_ascii_case("charset")
-        || value.eq_ignore_ascii_case("for")
-        || value.eq_ignore_ascii_case("code")
-        || value.eq_ignore_ascii_case("tiles")
-        || value.eq_ignore_ascii_case("colormode")
-        || value.eq_ignore_ascii_case("imgwave")
-        || value.eq_ignore_ascii_case("inv")
 }
 
 fn hla_compare_op_parser<'src, I>()
@@ -3728,26 +3667,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_byte_directive_values() {
-        let source = "func main {\n .byte 1, 0x02, symbol\n}\n";
-        let file = parse(SourceId(0), source).expect("parse");
-        assert_eq!(file.items.len(), 1);
-
-        let Item::CodeBlock(block) = &file.items[0].node else {
-            panic!("expected code block");
-        };
-        assert_eq!(block.body.len(), 1);
-
-        let Stmt::Bytes(values) = &block.body[0].node else {
-            panic!("expected .byte statement");
-        };
-        assert_eq!(values.len(), 3);
-        assert!(matches!(values[0], Expr::Number(1)));
-        assert!(matches!(values[1], Expr::Number(2)));
-        assert!(is_ident_named(&values[2], "symbol"));
-    }
-
-    #[test]
     fn parses_data_block_commands() {
         let source =
             "data {\n align 16\n address 0x1234\n nocross 0x100\n binary(\"tiles\", 3)\n}\n";
@@ -3914,21 +3833,16 @@ mod tests {
 
     #[test]
     fn parses_named_data_block_entries() {
-        let source = "data text {\n  segment INFO\n  \"Hello\"\n  $0D $0A $00\n  .byte 1, 2, 3\n  bytes(4, 5)\n}\n";
+        let source = "data text {\n  segment INFO\n  \"Hello\"\n  $0D 'A' $00\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::NamedDataBlock(block) = &file.items[0].node else {
             panic!("expected named data block");
         };
         assert_eq!(block.name, "text");
-        assert_eq!(block.entries.len(), 5);
+        assert_eq!(block.entries.len(), 3);
         assert!(matches!(block.entries[0].node, NamedDataEntry::Segment(_)));
         assert!(matches!(block.entries[1].node, NamedDataEntry::String(_)));
         assert!(matches!(block.entries[2].node, NamedDataEntry::Bytes(_)));
-        assert!(matches!(block.entries[3].node, NamedDataEntry::Bytes(_)));
-        assert!(matches!(
-            block.entries[4].node,
-            NamedDataEntry::Convert { .. }
-        ));
     }
 
     #[test]

@@ -31,17 +31,28 @@ pub fn lower_data_block(
             DataCommand::Nocross(value) => {
                 ops.push(Spanned::new(Op::Nocross(*value), command.span));
             }
-            DataCommand::Convert { kind, args } if kind == "bytes" => {
-                match collect_byte_args(args, command.span) {
-                    Ok(bytes) => ops.push(Spanned::new(Op::EmitBytes(bytes), command.span)),
-                    Err(diag) => diagnostics.push(*diag),
+            DataCommand::Bytes(values) => {
+                let mut bytes = Vec::with_capacity(values.len());
+                for (idx, value) in values.iter().enumerate() {
+                    match u8::try_from(*value) {
+                        Ok(byte) => bytes.push(byte),
+                        Err(_) => {
+                            diagnostics.push(Diagnostic::error(
+                                command.span,
+                                format!("byte value at index {idx} must fit in u8"),
+                            ));
+                        }
+                    }
+                }
+                if bytes.len() == values.len() {
+                    ops.push(Spanned::new(Op::EmitBytes(bytes), command.span));
                 }
             }
             DataCommand::Convert { kind, args } => {
                 let Some(converter) = by_kind.get(kind.as_str()) else {
                     diagnostics.push(
                         Diagnostic::error(command.span, format!("unknown data converter '{kind}'"))
-                            .with_help("expected one of: binary, charset, image, bytes"),
+                            .with_help("expected one of: binary, charset, image"),
                     );
                     continue;
                 };
@@ -77,33 +88,6 @@ pub fn lower_data_block(
     } else {
         Err(diagnostics)
     }
-}
-
-fn collect_byte_args(
-    args: &[DataArg],
-    span: crate::span::Span,
-) -> Result<Vec<u8>, Box<Diagnostic>> {
-    let mut out = Vec::with_capacity(args.len());
-    for (idx, arg) in args.iter().enumerate() {
-        match arg {
-            DataArg::Int(value) => {
-                let byte = u8::try_from(*value).map_err(|_| {
-                    Box::new(Diagnostic::error(
-                        span,
-                        format!("bytes() argument at index {idx} must fit in u8"),
-                    ))
-                })?;
-                out.push(byte);
-            }
-            DataArg::Str(_) => {
-                return Err(Box::new(Diagnostic::error(
-                    span,
-                    format!("bytes() argument at index {idx} must be integer"),
-                )));
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn convert_arg(arg: &DataArg) -> Arg {

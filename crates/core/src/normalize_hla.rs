@@ -63,11 +63,6 @@ fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
         NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
         NamedDataEntry::ForEvalRange(range) => NamedDataEntry::ForEvalRange(range.clone()),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
-        NamedDataEntry::Convert { kind, args } => NamedDataEntry::Convert {
-            kind: kind.clone(),
-            args: args.clone(),
-        },
-        NamedDataEntry::Ignored => NamedDataEntry::Ignored,
     }
 }
 
@@ -82,7 +77,6 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
         Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Instruction(instruction) => Stmt::Instruction(instruction.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
-        Stmt::Bytes(values) => Stmt::Bytes(values.clone()),
         Stmt::ModeSet { a_width, i_width } => Stmt::ModeSet {
             a_width: *a_width,
             i_width: *i_width,

@@ -1,7 +1,7 @@
 use crate::ast::{
-    CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
-    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister,
-    HlaRhs, HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock,
+    CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth, EvaluatorBlock,
+    Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs,
+    HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock,
     NamedDataEntry, NamedDataForEvalRange, Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt,
     SymbolicSubscriptFieldDecl, VarDecl,
 };
@@ -90,10 +90,7 @@ pub fn parse_with_warnings(
 /// Like `parse_with_warnings` but returns a partial AST even when there are
 /// parse errors. Used by the LSP to extract symbol definitions from files that
 /// contain syntax errors.
-pub fn parse_lenient(
-    source_id: SourceId,
-    source_text: &str,
-) -> (Option<File>, Vec<Diagnostic>) {
+pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, Vec<Diagnostic>) {
     let preprocessed = preprocess_source(source_text);
     let source_text = preprocessed.as_str();
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
@@ -166,7 +163,6 @@ fn preprocess_source(source_text: &str) -> String {
             skipped_nested_block_depth = 1;
             continue;
         }
-
 
         if trimmed.starts_with("var ") {
             let indent = raw_line
@@ -397,15 +393,16 @@ where
 
     let stmt_item = stmt_parser(source_id).map(Item::Statement);
 
-    let preproc_item = just(TokenKind::Hash)
-        .then(line_tail_parser())
-        .validate(|_, extra, emitter| {
-            emitter.emit(Rich::custom(
-                extra.span(),
-                "[warn] preprocessor directive not processed",
-            ));
-            Item::Statement(Stmt::Empty)
-        });
+    let preproc_item =
+        just(TokenKind::Hash)
+            .then(line_tail_parser())
+            .validate(|_, extra, emitter| {
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    "[warn] preprocessor directive not processed",
+                ));
+                Item::Statement(Stmt::Empty)
+            });
 
     let eval_block_item = chumsky::select! { TokenKind::Eval(value) => value }
         .map(|text| Item::EvaluatorBlock(EvaluatorBlock { text }));
@@ -682,10 +679,7 @@ where
             if is_label {
                 NamedDataEntry::Label(name)
             } else {
-                emitter.emit(Rich::custom(
-                    extra.span(),
-                    format!("unexpected '{name}'"),
-                ));
+                emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
                 NamedDataEntry::Bytes(vec![])
             }
         });
@@ -726,8 +720,8 @@ where
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
         });
 
-    let string_entry = chumsky::select! { TokenKind::String(value) => value }
-        .map(NamedDataEntry::String);
+    let string_entry =
+        chumsky::select! { TokenKind::String(value) => value }.map(NamedDataEntry::String);
 
     let address_byte_expr = just(TokenKind::Amp).ignore_then(
         just(TokenKind::Lt)
@@ -762,6 +756,16 @@ where
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
 
+    let far_value = number_parser()
+        .map(|value| vec![Expr::Number(value)])
+        .or(address_byte_expr.clone())
+        .or(undef_byte.clone())
+        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+
+    let far_entry = just(TokenKind::Far)
+        .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
+        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
+
     let word_value = number_parser()
         .map(|value| vec![Expr::Number(value)])
         .or(address_byte_expr.clone())
@@ -771,12 +775,7 @@ where
     let word_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
-    .ignore_then(
-        word_value
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>(),
-    )
+    .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
     .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let bytes_entry = number_parser()
@@ -847,8 +846,8 @@ where
     .try_map(|(count_expr, body), span| {
         let count = eval_static_expr(&count_expr)
             .ok_or_else(|| Rich::custom(span, "repeat count must be a constant expression"))?;
-        let count = u16::try_from(count)
-            .map_err(|_| Rich::custom(span, "repeat count must fit in u16"))?;
+        let count =
+            u16::try_from(count).map_err(|_| Rich::custom(span, "repeat count must fit in u16"))?;
         Ok(NamedDataEntry::Repeat { count, body })
     });
 
@@ -903,6 +902,7 @@ where
         .or(code_entry)
         .or(evaluator_entry)
         .or(charset_entry)
+        .or(far_entry)
         .or(word_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
@@ -911,8 +911,8 @@ where
 }
 
 /// Flat (non-recursive) named data entry parser for nested contexts like repeat bodies.
-fn named_data_entry_flat_parser<'src, I>(
-) -> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
+fn named_data_entry_flat_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -933,10 +933,7 @@ where
             if is_label {
                 NamedDataEntry::Label(name)
             } else {
-                emitter.emit(Rich::custom(
-                    extra.span(),
-                    format!("unexpected '{name}'"),
-                ));
+                emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
                 NamedDataEntry::Bytes(vec![])
             }
         });
@@ -977,8 +974,8 @@ where
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
         });
 
-    let string_entry = chumsky::select! { TokenKind::String(value) => value }
-        .map(NamedDataEntry::String);
+    let string_entry =
+        chumsky::select! { TokenKind::String(value) => value }.map(NamedDataEntry::String);
 
     let address_byte_expr = just(TokenKind::Amp).ignore_then(
         just(TokenKind::Lt)
@@ -1013,6 +1010,16 @@ where
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
 
+    let far_value = number_parser()
+        .map(|value| vec![Expr::Number(value)])
+        .or(address_byte_expr.clone())
+        .or(undef_byte.clone())
+        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+
+    let far_entry = just(TokenKind::Far)
+        .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
+        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
+
     let word_value = number_parser()
         .map(|value| vec![Expr::Number(value)])
         .or(address_byte_expr.clone())
@@ -1022,12 +1029,7 @@ where
     let word_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
-    .ignore_then(
-        word_value
-            .repeated()
-            .at_least(1)
-            .collect::<Vec<_>>(),
-    )
+    .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
     .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let bytes_entry = number_parser()
@@ -1058,6 +1060,7 @@ where
         .or(align_entry)
         .or(nocross_entry)
         .or(charset_entry)
+        .or(far_entry)
         .or(word_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
@@ -1125,12 +1128,7 @@ where
         .collect::<Vec<_>>()
         .map(DataCommand::Bytes);
 
-    align
-        .or(address)
-        .or(nocross)
-        .or(convert)
-        .or(bytes)
-        .boxed()
+    align.or(address).or(nocross).or(convert).or(bytes).boxed()
 }
 
 fn data_arg_parser<'src, I>() -> impl chumsky::Parser<'src, I, DataArg, ParseExtra<'src>> + Clone
@@ -1168,6 +1166,7 @@ where
     just(TokenKind::Colon).ignore_then(chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => DataWidth::Byte,
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => DataWidth::Word,
+        TokenKind::Far => DataWidth::Far,
     })
 }
 
@@ -1568,6 +1567,8 @@ fn parse_symbolic_subscript_field_entry(
             Some(DataWidth::Byte)
         } else if type_name.eq_ignore_ascii_case("word") {
             Some(DataWidth::Word)
+        } else if type_name.eq_ignore_ascii_case("far") {
+            Some(DataWidth::Far)
         } else {
             return Err(BracketPayloadParseError::new(
                 type_span,
@@ -1719,7 +1720,12 @@ where
     let call_stmt = just(TokenKind::Call)
         .ignore_then(just(TokenKind::Far).or_not())
         .then(ident_parser())
-        .map(|(far, target)| Stmt::Call(CallStmt { target, is_far: far.is_some() }));
+        .map(|(far, target)| {
+            Stmt::Call(CallStmt {
+                target,
+                is_far: far.is_some(),
+            })
+        });
 
     let label_stmt = ident_parser()
         .then_ignore(just(TokenKind::Colon))
@@ -1742,9 +1748,7 @@ where
     let hla_do_close_stmt = just(TokenKind::RBrace)
         .then(hla_do_close_suffix.clone().or_not())
         .rewind()
-        .try_map(|(_, suffix), span| {
-            suffix.ok_or_else(|| Rich::custom(span, "unexpected '}'"))
-        })
+        .try_map(|(_, suffix), span| suffix.ok_or_else(|| Rich::custom(span, "unexpected '}'")))
         .ignore_then(just(TokenKind::RBrace).ignore_then(hla_do_close_suffix));
     let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();
     let hla_x_assign_stmt = hla_x_assign_stmt_parser();
@@ -1790,9 +1794,7 @@ where
     })
     .to(Stmt::SwapAB);
 
-    let mnemonic = ident_parser().try_map(|mnemonic, _span| {
-        Ok(mnemonic)
-    });
+    let mnemonic = ident_parser().try_map(|mnemonic, _span| Ok(mnemonic));
 
     let operand_boundary = line_sep_parser()
         .ignored()
@@ -1887,17 +1889,16 @@ where
             .ignore_then(block_body.clone())
             .or_not();
 
-            let prefix_conditional =
-                prefix_condition_parser()
-                    .then(block_body.clone())
-                    .then(else_body_inner)
-                    .map(|((skip_mnemonic, body), else_body)| {
-                        Stmt::Hla(HlaStmt::PrefixConditional {
-                            skip_mnemonic: skip_mnemonic.to_string(),
-                            body,
-                            else_body,
-                        })
-                    });
+            let prefix_conditional = prefix_condition_parser()
+                .then(block_body.clone())
+                .then(else_body_inner)
+                .map(|((skip_mnemonic, body), else_body)| {
+                    Stmt::Hla(HlaStmt::PrefixConditional {
+                        skip_mnemonic: skip_mnemonic.to_string(),
+                        body,
+                        else_body,
+                    })
+                });
 
             let mode_scoped_block = mode_annotation_parser()
                 .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
@@ -1914,7 +1915,10 @@ where
             .ignore_then(block_body)
             .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
 
-            let inner_stmt = mode_scoped_block.or(prefix_conditional).or(never_block).or(flat_stmt_inner);
+            let inner_stmt = mode_scoped_block
+                .or(prefix_conditional)
+                .or(never_block)
+                .or(flat_stmt_inner);
 
             spanned(inner_stmt, source_id)
         });
@@ -1936,17 +1940,16 @@ where
     .ignore_then(block_body_top.clone())
     .or_not();
 
-    let prefix_conditional_top =
-        prefix_condition_parser()
-            .then(block_body_top.clone())
-            .then(else_body_top)
-            .map(|((skip_mnemonic, body), else_body)| {
-                Stmt::Hla(HlaStmt::PrefixConditional {
-                    skip_mnemonic: skip_mnemonic.to_string(),
-                    body,
-                    else_body,
-                })
-            });
+    let prefix_conditional_top = prefix_condition_parser()
+        .then(block_body_top.clone())
+        .then(else_body_top)
+        .map(|((skip_mnemonic, body), else_body)| {
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic: skip_mnemonic.to_string(),
+                body,
+                else_body,
+            })
+        });
 
     let mode_scoped_block_top = mode_annotation_parser()
         .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
@@ -2121,9 +2124,7 @@ where
         .at_least(2)
         .collect::<Vec<_>>()
         .then(operand_expr_parser())
-        .try_map(|(prefix, rhs), span| {
-            resolve_chain(&prefix, Some(rhs), span)
-        });
+        .try_map(|(prefix, rhs), span| resolve_chain(&prefix, Some(rhs), span));
 
     all_ident.or(with_expr)
 }
@@ -2269,8 +2270,7 @@ where
         }
         let rhs_upper = rhs_lc.to_ascii_uppercase();
         let lhs_upper = lhs_lc.to_ascii_uppercase();
-        let msg =
-            format!("transfer '{rhs_upper}' to '{lhs_upper}' is not directly supported");
+        let msg = format!("transfer '{rhs_upper}' to '{lhs_upper}' is not directly supported");
         emitter.emit(Rich::custom(
             extra.span(),
             match invalid_transfer_hint(&lhs_lc, &rhs_lc) {
@@ -2808,7 +2808,12 @@ where
 
     let far_call_stmt = just(TokenKind::Far)
         .ignore_then(ident_parser())
-        .map(|target| Stmt::Call(CallStmt { target, is_far: true }));
+        .map(|target| {
+            Stmt::Call(CallStmt {
+                target,
+                is_far: true,
+            })
+        });
 
     let break_kw =
         chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("break") => () };
@@ -2829,11 +2834,17 @@ where
     let conditional_break = branch_condition
         .clone()
         .then_ignore(break_kw.clone())
-        .map(|m| Stmt::Hla(HlaStmt::LoopBreak { mnemonic: m.to_string() }));
+        .map(|m| {
+            Stmt::Hla(HlaStmt::LoopBreak {
+                mnemonic: m.to_string(),
+            })
+        });
 
-    let conditional_repeat = branch_condition
-        .then_ignore(repeat_kw.clone())
-        .map(|m| Stmt::Hla(HlaStmt::LoopRepeat { mnemonic: m.to_string() }));
+    let conditional_repeat = branch_condition.then_ignore(repeat_kw.clone()).map(|m| {
+        Stmt::Hla(HlaStmt::LoopRepeat {
+            mnemonic: m.to_string(),
+        })
+    });
 
     let unconditional_break = break_kw.to(Stmt::Hla(HlaStmt::LoopBreak {
         mnemonic: "bra".to_string(),
@@ -2911,15 +2922,16 @@ fn discard_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseEx
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let preprocessor = just(TokenKind::Hash)
-        .then(line_tail_parser())
-        .validate(|_, extra, emitter| {
-            emitter.emit(Rich::custom(
-                extra.span(),
-                "[warn] preprocessor directive not processed",
-            ));
-            Stmt::Empty
-        });
+    let preprocessor =
+        just(TokenKind::Hash)
+            .then(line_tail_parser())
+            .validate(|_, extra, emitter| {
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    "[warn] preprocessor directive not processed",
+                ));
+                Stmt::Empty
+            });
 
     let operator = just(TokenKind::EqEq)
         .to("==")
@@ -2940,10 +2952,7 @@ where
     }
     .then(line_tail_parser())
     .validate(|(token, _), extra, emitter| {
-        emitter.emit(Rich::custom(
-            extra.span(),
-            format!("unexpected '{token}'"),
-        ));
+        emitter.emit(Rich::custom(extra.span(), format!("unexpected '{token}'")));
         Stmt::Empty
     });
 
@@ -2952,16 +2961,12 @@ where
         .or(just(TokenKind::Question).to("?".to_string()))
         .then(line_tail_parser())
         .validate(|(token, _), extra, emitter| {
-            emitter.emit(Rich::custom(
-                extra.span(),
-                format!("unexpected '{token}'"),
-            ));
+            emitter.emit(Rich::custom(extra.span(), format!("unexpected '{token}'")));
             Stmt::Empty
         });
 
     preprocessor.or(data_keyword).or(generic)
 }
-
 
 fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
     Stmt::Instruction(Instruction {
@@ -4264,7 +4269,9 @@ mod tests {
             let (file, _diagnostics) = parse_lenient(SourceId(0), source);
             let file = file.expect("should produce AST despite errors");
             assert!(
-                file.items.iter().any(|i| matches!(&i.node, Item::NamedDataBlock(_))),
+                file.items
+                    .iter()
+                    .any(|i| matches!(&i.node, Item::NamedDataBlock(_))),
                 "data block not found in AST for: {source:?}",
             );
         }
@@ -4303,7 +4310,8 @@ mod tests {
 
     #[test]
     fn parses_operand_modes_with_y_and_indirect_forms() {
-        let source = "var ptr = 0x20\nfunc main {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
+        let source =
+            "var ptr = 0x20\nfunc main {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         assert_eq!(file.items.len(), 2);
 
@@ -4367,16 +4375,17 @@ mod tests {
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");
         assert_eq!(diagnostics.len(), 2, "expected exactly two diagnostics");
         assert!(
-            diagnostics.iter().any(|diag| diag
-                .message
-                .starts_with("invalid syntax: expected")),
+            diagnostics
+                .iter()
+                .any(|diag| diag.message.starts_with("invalid syntax: expected")),
             "unexpected diagnostics: {diagnostics:#?}"
         );
     }
 
     #[test]
     fn parse_error_messages_are_human_readable() {
-        let diagnostics = parse(SourceId(0), "func main {\n call\n}\n").expect_err("expected errors");
+        let diagnostics =
+            parse(SourceId(0), "func main {\n call\n}\n").expect_err("expected errors");
         let message = &diagnostics[0].message;
         assert!(message.contains("expected"));
         assert!(!message.contains("TokenKind"));

@@ -332,10 +332,14 @@ impl<'a> Lexer<'a> {
         }
         let ch = if self.bytes[self.pos] == b'\\' {
             self.pos += 1;
-            let escaped = self.bytes.get(self.pos).copied().ok_or(EvalError::UnexpectedToken {
-                column: start + 1,
-                token: "'\\".to_string(),
-            })?;
+            let escaped = self
+                .bytes
+                .get(self.pos)
+                .copied()
+                .ok_or(EvalError::UnexpectedToken {
+                    column: start + 1,
+                    token: "'\\".to_string(),
+                })?;
             self.pos += 1;
             match escaped {
                 b'n' => b'\n',
@@ -1648,11 +1652,11 @@ mod tests {
             Number::Int(10)
         );
         assert_eq!(
-            evaluate("'\\\\'"  , &mut context).expect("eval").value,
+            evaluate("'\\\\'", &mut context).expect("eval").value,
             Number::Int(92)
         );
         assert_eq!(
-            evaluate("'\\''"  , &mut context).expect("eval").value,
+            evaluate("'\\''", &mut context).expect("eval").value,
             Number::Int(39)
         );
         assert_eq!(

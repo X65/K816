@@ -63,17 +63,17 @@ fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
         NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
         NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
         NamedDataEntry::Words(values) => NamedDataEntry::Words(values.clone()),
+        NamedDataEntry::Fars(values) => NamedDataEntry::Fars(values.clone()),
         NamedDataEntry::ForEvalRange(range) => NamedDataEntry::ForEvalRange(range.clone()),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {
             count: *count,
-            body: body.iter().map(|e| {
-                crate::span::Spanned::new(normalize_named_data_entry(&e.node), e.span)
-            }).collect(),
+            body: body
+                .iter()
+                .map(|e| crate::span::Spanned::new(normalize_named_data_entry(&e.node), e.span))
+                .collect(),
         },
-        NamedDataEntry::Code(stmts) => NamedDataEntry::Code(
-            normalize_stmt_sequence(stmts),
-        ),
+        NamedDataEntry::Code(stmts) => NamedDataEntry::Code(normalize_stmt_sequence(stmts)),
         NamedDataEntry::Evaluator(text) => NamedDataEntry::Evaluator(text.clone()),
         NamedDataEntry::Charset(value) => NamedDataEntry::Charset(value.clone()),
     }
@@ -86,7 +86,10 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
         Stmt::Var(var) => Stmt::Var(var.clone()),
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
         Stmt::Address(value) => Stmt::Address(*value),
-        Stmt::Align { boundary, offset } => Stmt::Align { boundary: *boundary, offset: *offset },
+        Stmt::Align { boundary, offset } => Stmt::Align {
+            boundary: *boundary,
+            offset: *offset,
+        },
         Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Instruction(instruction) => Stmt::Instruction(instruction.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
@@ -186,7 +189,9 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         } => HlaStmt::PrefixConditional {
             skip_mnemonic: skip_mnemonic.clone(),
             body: normalize_stmt_sequence(body),
-            else_body: else_body.as_ref().map(|stmts| normalize_stmt_sequence(stmts)),
+            else_body: else_body
+                .as_ref()
+                .map(|stmts| normalize_stmt_sequence(stmts)),
         },
     }
 }

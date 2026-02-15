@@ -5,6 +5,7 @@ use crate::span::{Span, Spanned};
 pub enum DataWidth {
     Byte,
     Word,
+    Far,
 }
 
 /// CPU register width (8 or 16 bits).
@@ -93,7 +94,10 @@ pub enum Stmt {
     Var(VarDecl),
     DataBlock(DataBlock),
     Address(u32),
-    Align { boundary: u16, offset: u16 },
+    Align {
+        boundary: u16,
+        offset: u16,
+    },
     Nocross(u16),
     Instruction(Instruction),
     Call(CallStmt),
@@ -308,6 +312,7 @@ pub enum NamedDataEntry {
     Nocross(u16),
     Bytes(Vec<Expr>),
     Words(Vec<Expr>),
+    Fars(Vec<Expr>),
     ForEvalRange(NamedDataForEvalRange),
     String(String),
     Repeat {

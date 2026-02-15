@@ -994,8 +994,7 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
     let mut ast = None;
     let mut semantic = SemanticInfo::default();
 
-    let (parsed_file, parse_diagnostics) =
-        k816_core::parser::parse_lenient(source_id, source_text);
+    let (parsed_file, parse_diagnostics) = k816_core::parser::parse_lenient(source_id, source_text);
     if compile_failed {
         diagnostics.extend(parse_diagnostics);
     }
@@ -1166,7 +1165,10 @@ fn collect_stmt_symbols(
 /// Fallback symbol extraction from the token stream when the parser
 /// completely fails to produce an AST. Scans for patterns like
 /// `func IDENT`, `naked IDENT`, `var IDENT`, etc.
-fn scan_tokens_for_symbols(source_id: k816_core::span::SourceId, source_text: &str) -> SymbolCollection {
+fn scan_tokens_for_symbols(
+    source_id: k816_core::span::SourceId,
+    source_text: &str,
+) -> SymbolCollection {
     use k816_core::lexer::{TokenKind, lex_lenient};
 
     let (tokens, _) = lex_lenient(source_id, source_text);
@@ -1307,7 +1309,10 @@ fn find_brace_scope(tokens: &[k816_core::lexer::Token], start: usize) -> Option<
     let mut j = start;
     while j < tokens.len() {
         match &tokens[j].kind {
-            TokenKind::ModeA8 | TokenKind::ModeA16 | TokenKind::ModeI8 | TokenKind::ModeI16
+            TokenKind::ModeA8
+            | TokenKind::ModeA16
+            | TokenKind::ModeI8
+            | TokenKind::ModeI16
             | TokenKind::Newline => {
                 j += 1;
             }
@@ -1328,7 +1333,11 @@ fn find_brace_scope(tokens: &[k816_core::lexer::Token], start: usize) -> Option<
         }
         j += 1;
     }
-    let block_end = if j > 0 { tokens[j - 1].span.end } else { block_start };
+    let block_end = if j > 0 {
+        tokens[j - 1].span.end
+    } else {
+        block_start
+    };
     Some(ByteRange {
         start: block_start,
         end: block_end,
@@ -1345,9 +1354,7 @@ fn canonical_symbol(name: &str, scope: Option<&str>) -> String {
 }
 
 fn extract_unknown_identifier_name(message: &str) -> Option<String> {
-    let prefixes = [
-        "unknown identifier '",
-    ];
+    let prefixes = ["unknown identifier '"];
     for prefix in prefixes {
         if let Some(rest) = message.strip_prefix(prefix)
             && let Some(end) = rest.find('\'')
@@ -1620,9 +1627,9 @@ fn opcode_keywords() -> Vec<String> {
 
 fn directive_keywords() -> &'static [&'static str] {
     &[
-        "segment", "const", "var", "func", "far", "naked", "inline", "data", "align",
-        "address", "nocross", "call", "goto", "return", "return_i", "else", "break", "repeat",
-        "always", "never", "charset", "image", "binary", "code", "@a8", "@a16", "@i8", "@i16",
+        "segment", "const", "var", "func", "far", "naked", "inline", "data", "align", "address",
+        "nocross", "call", "goto", "return", "return_i", "else", "break", "repeat", "always",
+        "never", "charset", "image", "binary", "code", "@a8", "@a16", "@i8", "@i16",
     ]
 }
 
@@ -1894,7 +1901,10 @@ mod tests {
         match response {
             GotoDefinitionResponse::Array(locations) => {
                 assert_eq!(locations.len(), 1, "expected exactly one definition");
-                assert_eq!(locations[0].uri, uri_func, "definition should be in func.k65");
+                assert_eq!(
+                    locations[0].uri, uri_func,
+                    "definition should be in func.k65"
+                );
             }
             _ => panic!("unexpected response shape"),
         }

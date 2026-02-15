@@ -1,0 +1,18 @@
+data jump_table {
+    far handler_a handler_b $01C000
+}
+
+func main @a16 {
+    *
+}
+
+naked handler_a {
+    nop
+    rtl
+}
+
+naked handler_b {
+    nop
+    nop
+    rtl
+}

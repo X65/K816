@@ -1,0 +1,19 @@
+[default]
+000000: 0B 00 00 0D 00 00 00 C0 01 EA 60 EA 6B EA EA 6B
+
+
+[data obj#0 default::jump_table]
+000000: <9 bytes of data>
+
+[disasm obj#0 default::main]
+000009: EA          nop
+00000A: 60          rts
+
+[disasm obj#0 default::handler_a]
+00000B: EA          nop
+00000C: 6B          rtl
+
+[disasm obj#0 default::handler_b]
+00000D: EA          nop
+00000E: EA          nop
+00000F: 6B          rtl

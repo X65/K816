@@ -3,9 +3,9 @@ use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File,
-    HlaCompareOp, HlaCondition, HlaRegister, HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock,
-    NamedDataEntry, Operand, OperandAddrMode, RegWidth, Stmt,
+    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister,
+    HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry, Operand, OperandAddrMode,
+    RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -15,7 +15,6 @@ use crate::hir::{
 };
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
-
 
 /// Tracked CPU register width state during lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -476,7 +475,13 @@ fn lower_named_data_entry(
             ops.push(Spanned::new(Op::Address(*value), span));
         }
         NamedDataEntry::Align(value) => {
-            ops.push(Spanned::new(Op::Align { boundary: *value, offset: 0 }, span));
+            ops.push(Spanned::new(
+                Op::Align {
+                    boundary: *value,
+                    offset: 0,
+                },
+                span,
+            ));
         }
         NamedDataEntry::Nocross(value) => {
             ops.push(Spanned::new(Op::Nocross(*value), span));
@@ -496,6 +501,19 @@ fn lower_named_data_entry(
         }
         NamedDataEntry::Words(values) => {
             if let Some(evaluated) = evaluate_word_exprs(values, None, sema, span, diagnostics) {
+                let op = if evaluated.relocations.is_empty() {
+                    Op::EmitBytes(evaluated.bytes)
+                } else {
+                    Op::EmitRelocBytes {
+                        bytes: evaluated.bytes,
+                        relocations: evaluated.relocations,
+                    }
+                };
+                ops.push(Spanned::new(op, span));
+            }
+        }
+        NamedDataEntry::Fars(values) => {
+            if let Some(evaluated) = evaluate_far_exprs(values, None, sema, span, diagnostics) {
                 let op = if evaluated.relocations.is_empty() {
                     Op::EmitBytes(evaluated.bytes)
                 } else {
@@ -576,9 +594,7 @@ fn lower_named_data_entry(
             let bytes = if let &mut Some(ref cs) = charset {
                 value
                     .chars()
-                    .map(|ch| {
-                        cs.find(ch).map(|idx| idx as u8).unwrap_or(0)
-                    })
+                    .map(|ch| cs.find(ch).map(|idx| idx as u8).unwrap_or(0))
                     .collect()
             } else {
                 value.as_bytes().to_vec()
@@ -763,14 +779,19 @@ fn lower_stmt(
             ops.push(Spanned::new(Op::Address(*address), span));
         }
         Stmt::Align { boundary, offset } => {
-            ops.push(Spanned::new(Op::Align { boundary: *boundary, offset: *offset }, span));
+            ops.push(Spanned::new(
+                Op::Align {
+                    boundary: *boundary,
+                    offset: *offset,
+                },
+                span,
+            ));
         }
         Stmt::Nocross(nocross) => {
             ops.push(Spanned::new(Op::Nocross(*nocross), span));
         }
         Stmt::Hla(HlaStmt::NeverBlock { body }) => {
-            let Some(skip_label) =
-                fresh_local_label("never_end", ctx, scope, span, diagnostics)
+            let Some(skip_label) = fresh_local_label("never_end", ctx, scope, span, diagnostics)
             else {
                 return;
             };
@@ -780,8 +801,15 @@ fn lower_stmt(
             ctx.reachable = false;
             for s in body {
                 lower_stmt(
-                    &s.node, s.span, scope, sema, fs, current_segment, ctx,
-                    diagnostics, ops,
+                    &s.node,
+                    s.span,
+                    scope,
+                    sema,
+                    fs,
+                    current_segment,
+                    ctx,
+                    diagnostics,
+                    ops,
                 );
             }
             ctx.reachable = saved_reachable;
@@ -794,13 +822,11 @@ fn lower_stmt(
         }) => {
             if let Some(else_body) = else_body {
                 // if-else form: condition skips to else, then-body jumps over else
-                let Some(else_label) =
-                    fresh_local_label("else", ctx, scope, span, diagnostics)
+                let Some(else_label) = fresh_local_label("else", ctx, scope, span, diagnostics)
                 else {
                     return;
                 };
-                let Some(end_label) =
-                    fresh_local_label("endif", ctx, scope, span, diagnostics)
+                let Some(end_label) = fresh_local_label("endif", ctx, scope, span, diagnostics)
                 else {
                     return;
                 };
@@ -816,24 +842,25 @@ fn lower_stmt(
                 );
                 for s in body {
                     lower_stmt(
-                        &s.node, s.span, scope, sema, fs, current_segment, ctx,
-                        diagnostics, ops,
+                        &s.node,
+                        s.span,
+                        scope,
+                        sema,
+                        fs,
+                        current_segment,
+                        ctx,
+                        diagnostics,
+                        ops,
                     );
                 }
-                emit_branch_to_label(
-                    "bra",
-                    &end_label,
-                    scope,
-                    sema,
-                    span,
-                    ctx,
-                    diagnostics,
-                    ops,
-                );
+                emit_branch_to_label("bra", &end_label, scope, sema, span, ctx, diagnostics, ops);
                 if let Some(incoming_mode) = ctx.label_entry_modes.get(&else_label).copied() {
                     if ctx.reachable && ctx.mode != incoming_mode {
                         diagnostics.push(mode_mismatch_diagnostic(
-                            span, &else_label, ctx.mode, incoming_mode,
+                            span,
+                            &else_label,
+                            ctx.mode,
+                            incoming_mode,
                         ));
                     }
                     ctx.mode = incoming_mode;
@@ -844,14 +871,24 @@ fn lower_stmt(
                 ops.push(Spanned::new(Op::Label(else_label), span));
                 for s in else_body {
                     lower_stmt(
-                        &s.node, s.span, scope, sema, fs, current_segment, ctx,
-                        diagnostics, ops,
+                        &s.node,
+                        s.span,
+                        scope,
+                        sema,
+                        fs,
+                        current_segment,
+                        ctx,
+                        diagnostics,
+                        ops,
                     );
                 }
                 if let Some(incoming_mode) = ctx.label_entry_modes.get(&end_label).copied() {
                     if ctx.reachable && ctx.mode != incoming_mode {
                         diagnostics.push(mode_mismatch_diagnostic(
-                            span, &end_label, ctx.mode, incoming_mode,
+                            span,
+                            &end_label,
+                            ctx.mode,
+                            incoming_mode,
                         ));
                     }
                     ctx.mode = incoming_mode;
@@ -879,14 +916,24 @@ fn lower_stmt(
                 );
                 for s in body {
                     lower_stmt(
-                        &s.node, s.span, scope, sema, fs, current_segment, ctx,
-                        diagnostics, ops,
+                        &s.node,
+                        s.span,
+                        scope,
+                        sema,
+                        fs,
+                        current_segment,
+                        ctx,
+                        diagnostics,
+                        ops,
                     );
                 }
                 if let Some(incoming_mode) = ctx.label_entry_modes.get(&skip_label).copied() {
                     if ctx.reachable && ctx.mode != incoming_mode {
                         diagnostics.push(mode_mismatch_diagnostic(
-                            span, &skip_label, ctx.mode, incoming_mode,
+                            span,
+                            &skip_label,
+                            ctx.mode,
+                            incoming_mode,
                         ));
                     }
                     ctx.mode = incoming_mode;
@@ -1405,7 +1452,23 @@ fn validate_instruction_width_rules(
     let Some(data_width) = expr_data_width(expr, sema) else {
         return;
     };
-    let required_width = data_width_to_reg_width(data_width);
+    let Some(required_width) = data_width_to_reg_width(data_width) else {
+        let var_name = base_ident(expr);
+        let msg = if let Some(name) = var_name {
+            format!(
+                "Cannot directly load/store :far value '{name}' — use explicit :byte or :word view"
+            )
+        } else {
+            "Cannot directly load/store :far value — use explicit :byte or :word view".to_string()
+        };
+        let help = if let Some(name) = var_name {
+            format!("e.g. {name}:word for low 16 bits, ({name}+2):byte for bank byte")
+        } else {
+            "e.g. name:word for low 16 bits, (name+2):byte for bank byte".to_string()
+        };
+        diagnostics.push(Diagnostic::error(span, msg).with_help(help));
+        return;
+    };
     let var_name = base_ident(expr);
 
     match mnemonic.as_str() {
@@ -1578,10 +1641,11 @@ fn symbolic_subscript_field_width(name: &str, sema: &SemanticModel) -> Option<Da
         .map(|field| field.data_width)
 }
 
-fn data_width_to_reg_width(width: DataWidth) -> RegWidth {
+fn data_width_to_reg_width(width: DataWidth) -> Option<RegWidth> {
     match width {
-        DataWidth::Byte => RegWidth::W8,
-        DataWidth::Word => RegWidth::W16,
+        DataWidth::Byte => Some(RegWidth::W8),
+        DataWidth::Word => Some(RegWidth::W16),
+        DataWidth::Far => None,
     }
 }
 
@@ -1589,6 +1653,7 @@ fn data_width_name(width: DataWidth) -> &'static str {
     match width {
         DataWidth::Byte => "byte",
         DataWidth::Word => "word",
+        DataWidth::Far => "far",
     }
 }
 
@@ -1673,9 +1738,7 @@ fn lower_hla_stmt(
                         addr_mode,
                     } => {
                         if *addr_mode == OperandAddrMode::Direct && index.is_none() {
-                            Operand::Auto {
-                                expr: expr.clone(),
-                            }
+                            Operand::Auto { expr: expr.clone() }
                         } else {
                             Operand::Value {
                                 expr: expr.clone(),
@@ -1730,9 +1793,7 @@ fn lower_hla_stmt(
             if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
                 let instruction = Instruction {
                     mnemonic: "cmp".to_string(),
-                    operand: Some(Operand::Auto {
-                        expr: rhs.clone(),
-                    }),
+                    operand: Some(Operand::Auto { expr: rhs.clone() }),
                 };
                 let _ =
                     lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
@@ -2292,6 +2353,104 @@ fn evaluate_word_exprs(
     Some(EvaluatedBytes { bytes, relocations })
 }
 
+fn evaluate_far_exprs(
+    values: &[Expr],
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<EvaluatedBytes> {
+    let mut bytes = Vec::with_capacity(values.len() * 3);
+    let mut relocations = Vec::new();
+
+    for value in values {
+        // Try to resolve as a compile-time number (literal, const, var address, expr).
+        if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
+            if !(0..=0xFFFFFF).contains(&number) {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("far address literal out of range: {number}"),
+                ));
+                return None;
+            }
+            let le = (number as u32).to_le_bytes();
+            bytes.extend_from_slice(&le[..3]);
+            continue;
+        }
+
+        // &< / &> unary: emit single-byte relocation (same as in bytes context).
+        if matches!(
+            value,
+            Expr::Unary {
+                op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
+                ..
+            }
+        ) {
+            if let Some((kind, label)) =
+                resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
+            {
+                let offset =
+                    u32::try_from(bytes.len()).expect("far expression offset should fit in u32");
+                bytes.extend_from_slice(&[0, 0, 0]);
+                relocations.push(ByteRelocation {
+                    offset,
+                    kind,
+                    label,
+                });
+                continue;
+            }
+
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    "low/high-byte expression must be a constant or plain symbol reference",
+                )
+                .with_help("supported symbolic forms are '&<label' and '&>label'"),
+            );
+            return None;
+        }
+
+        // Bare ident that is a label: emit a full 24-bit far relocation.
+        if let Some(symbol) = expr_ident_name(value) {
+            if !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
+                match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+                    Ok(Some(_)) | Err(()) => {}
+                    Ok(None) => {
+                        if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
+                            let offset = u32::try_from(bytes.len())
+                                .expect("far expression offset should fit in u32");
+                            bytes.extend_from_slice(&[0, 0, 0]);
+                            relocations.push(ByteRelocation {
+                                offset,
+                                kind: ByteRelocationKind::FullLong,
+                                label: resolved,
+                            });
+                            continue;
+                        }
+                        return None;
+                    }
+                }
+            }
+        }
+
+        // Fallback: try general numeric evaluation.
+        let Some(number) = eval_to_number(value, scope, sema, span, diagnostics) else {
+            return None;
+        };
+        if !(0..=0xFFFFFF).contains(&number) {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("far address literal out of range: {number}"),
+            ));
+            return None;
+        }
+        let le = (number as u32).to_le_bytes();
+        bytes.extend_from_slice(&le[..3]);
+    }
+
+    Some(EvaluatedBytes { bytes, relocations })
+}
+
 fn eval_to_number_strict(
     expr: &Expr,
     sema: &SemanticModel,
@@ -2486,6 +2645,7 @@ fn eval_index_expr_strict(
                 let scale = match data_width {
                     DataWidth::Byte => 1_i64,
                     DataWidth::Word => 2_i64,
+                    DataWidth::Far => 3_i64,
                 };
                 let byte_offset = index_value.checked_mul(scale).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
@@ -2983,6 +3143,7 @@ fn eval_index_expr(
                 let scale = match data_width {
                     DataWidth::Byte => 1_i64,
                     DataWidth::Word => 2_i64,
+                    DataWidth::Far => 3_i64,
                 };
                 let byte_offset = index_value.checked_mul(scale).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
@@ -3428,8 +3589,7 @@ mod tests {
 
     #[test]
     fn keeps_generic_help_for_symbolic_subscript_aggregate_index_without_similar_field() {
-        let source =
-            "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nfunc main {\n  lda foo[buffer]\n}\n";
+        let source = "var foo[\n  .idx:byte\n  .status:byte\n] = 0x1234\nfunc main {\n  lda foo[buffer]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;

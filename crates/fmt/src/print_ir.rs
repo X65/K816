@@ -49,6 +49,7 @@ pub fn format_ir(program: &Program) -> String {
                         ByteRelocationKind::LowByte => "lo",
                         ByteRelocationKind::HighByte => "hi",
                         ByteRelocationKind::FullWord => "word",
+                        ByteRelocationKind::FullLong => "far",
                     };
                     out.push_str(&format!(
                         "  reloc {kind} +{} {}\n",
@@ -67,6 +68,7 @@ pub fn format_ir(program: &Program) -> String {
                                 ByteRelocationKind::LowByte => "&<",
                                 ByteRelocationKind::HighByte => "&>",
                                 ByteRelocationKind::FullWord => "&&",
+                                ByteRelocationKind::FullLong => "&&&",
                             };
                             out.push('#');
                             out.push_str(prefix);

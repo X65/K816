@@ -304,6 +304,15 @@ fn try_collect_named_data_block_values(
                     out.push(Number::Int(i64::from(word)));
                 }
             }
+            NamedDataEntry::Fars(values) => {
+                for expr in values {
+                    let value = eval_const_expr_to_int(expr, consts).ok()?;
+                    if !(0..=0xFFFFFF).contains(&value) {
+                        return None;
+                    }
+                    out.push(Number::Int(value));
+                }
+            }
             NamedDataEntry::ForEvalRange(range) => {
                 out.extend(try_collect_named_data_range_values(
                     range,
@@ -589,6 +598,7 @@ fn eval_var_layout(
     }
 
     let element_size: u32 = match var.data_width {
+        Some(DataWidth::Far) => 3,
         Some(DataWidth::Word) => 2,
         Some(DataWidth::Byte) | None => 1,
     };
@@ -764,6 +774,7 @@ fn eval_symbolic_subscript_layout(
         let element_size = match data_width {
             DataWidth::Byte => 1_u32,
             DataWidth::Word => 2_u32,
+            DataWidth::Far => 3_u32,
         };
         let Some(size) = count.checked_mul(element_size) else {
             diagnostics.push(Diagnostic::error(

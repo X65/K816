@@ -40,8 +40,10 @@ var baz:byte[
 
 - `.name :byte`
 - `.name :word`
+- `.name :far`
 - `.name[count] :byte`
 - `.name[count] :word`
+- `.name[count] :far`
 - `.name` (defaults to `:byte` when omitted)
 
 Separators inside the field list:
@@ -74,7 +76,7 @@ Layout is packed and sequential:
 - first field offset = `0`
 - next field offset = `previous_offset + previous_size`
 - field size = `element_width * count` (`count=1` when omitted)
-- `:byte` width = 1, `:word` width = 2
+- `:byte` width = 1, `:word` width = 2, `:far` width = 3
 
 For each field access, lowering computes:
 

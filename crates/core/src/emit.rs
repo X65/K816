@@ -814,6 +814,16 @@ fn write_byte_relocation_at(
             bytes[offset] = le[0];
             bytes[offset + 1] = le[1];
         }
+        ByteRelocationKind::FullLong => {
+            if offset + 2 >= bytes.len() {
+                diagnostics.push(Diagnostic::error(span, "internal fixup overflow"));
+                return;
+            }
+            let le = value.to_le_bytes();
+            bytes[offset] = le[0];
+            bytes[offset + 1] = le[1];
+            bytes[offset + 2] = le[2];
+        }
     }
 }
 

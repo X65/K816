@@ -21,7 +21,6 @@ pub struct EmitObjectOutput {
     pub object: O65Object,
 }
 
-
 #[derive(Debug)]
 struct SegmentState {
     chunks: Vec<SectionChunk>,
@@ -312,6 +311,7 @@ pub fn emit_object(
                         ByteRelocationKind::LowByte => (1, RelocationKind::LowByte),
                         ByteRelocationKind::HighByte => (1, RelocationKind::HighByte),
                         ByteRelocationKind::FullWord => (2, RelocationKind::Absolute),
+                        ByteRelocationKind::FullLong => (3, RelocationKind::Absolute),
                     };
                     fixups.push(Fixup {
                         segment: current_segment.clone(),
@@ -450,6 +450,7 @@ pub fn emit_object(
                             ByteRelocationKind::LowByte => (1, RelocationKind::LowByte),
                             ByteRelocationKind::HighByte => (1, RelocationKind::HighByte),
                             ByteRelocationKind::FullWord => (2, RelocationKind::Absolute),
+                            ByteRelocationKind::FullLong => (3, RelocationKind::Absolute),
                         };
                         fixups.push(Fixup {
                             segment: current_segment.clone(),

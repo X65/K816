@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail};
 use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
 use k816_isa65816::{decode_instruction_with_mode, format_instruction};
-use k816_o65::{CallMetadata, FunctionMetadata, O65Object, RelocationKind, SourceLocation, SymbolDefinition};
+use k816_o65::{
+    CallMetadata, FunctionMetadata, O65Object, RelocationKind, SourceLocation, SymbolDefinition,
+};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -223,9 +225,9 @@ pub fn bfs_reorder(objects: Vec<O65Object>) -> Result<Vec<O65Object>> {
     }
 
     // Find the object containing "main"
-    let main_idx = *symbol_to_obj.get("main").ok_or_else(|| {
-        anyhow::anyhow!("no object defines 'main'")
-    })?;
+    let main_idx = *symbol_to_obj
+        .get("main")
+        .ok_or_else(|| anyhow::anyhow!("no object defines 'main'"))?;
 
     // BFS traversal following external relocations
     let mut order: Vec<usize> = vec![main_idx];
@@ -690,11 +692,7 @@ fn check_width_mismatch(
     errors: &mut Vec<String>,
 ) {
     fn width_name(wide: bool) -> &'static str {
-        if wide {
-            "16-bit"
-        } else {
-            "8-bit"
-        }
+        if wide { "16-bit" } else { "8-bit" }
     }
 
     if let (Some(caller_a), Some(callee_a)) = (call_meta.caller_a_width, func_meta.a_width) {

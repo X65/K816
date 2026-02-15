@@ -35,6 +35,16 @@ var bar3 ?              // adding '?' at the end makes the compiler print var ad
 
 When no address is specified, the variable is placed at the next address following the previous variable. The `[N]` suffix reserves N bytes starting at the variable address, and advances the auto-address counter accordingly.
 
+Variables can have a typed width annotation (`:byte`, `:word`, or `:far`) that controls element size and enables register width checking:
+
+```k65
+var w:word = 0x2000    // 2-byte variable — requires @a16 for load/store
+var ptr:far = 0x3000   // 3-byte variable (24-bit far address)
+                       // direct lda/sta is an error — use ptr:word or (ptr+2):byte
+```
+
+The `:far` width is for 24-bit cross-bank addresses on the 65c816. Since the CPU has no 24-bit register mode, direct register access of `:far` variables is an error — use explicit `:byte` or `:word` views for partial access.
+
 K65 also supports symbolic subscript arrays with named `.field` entries inside `var name[...] = <addr>`. This feature is inspired by the Pawn language's named-field array style.
 
 ## Constant Declaration
@@ -360,6 +370,26 @@ data VECTORS {
 ```
 
 Note that since each `word` value is 2 bytes, a line of 8 words produces 16 bytes — the same as 16 individual byte values.
+
+### `far` (24-bit Far Address Entries)
+
+The `far` prefix emits each value as a 24-bit little-endian address (3 bytes). This is used for far (cross-bank) addressing on the 65c816 CPU, where the full 24-bit address space spans 256 banks of 64KB each.
+
+```k65
+data FAR_TABLE {
+  far handler_a handler_b handler_c
+  far $01C000 $02D000
+}
+```
+
+Each value on a `far` line emits 3 bytes in little-endian order. Values can be:
+
+- **Numeric literals** (validated to fit in 24 bits): `far 0 $01C000 $ABCDEF`
+- **Symbol references** (resolved to full 24-bit addresses): `far main RESET_HDL`
+- **Address byte operators**: `far &<ptr &>ptr` (still emit single bytes within the far context)
+- **Evaluator expressions**: `far [2+2] [SOME_CONST]`
+
+Note that since each `far` value is 3 bytes, a line of 8 far values produces 24 bytes.
 
 ### `code { }` Subblocks
 

@@ -1,6 +1,6 @@
 use k816_core::ast::{
-    DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt,
-    Instruction, Item, NamedDataEntry, Operand, OperandAddrMode, Stmt,
+    DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt, Instruction,
+    Item, NamedDataEntry, Operand, OperandAddrMode, Stmt,
 };
 
 pub fn format_ast(file: &File) -> String {
@@ -123,7 +123,11 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
         }
         Stmt::SwapAB => line(out, indent, "b><a".to_string()),
         Stmt::TransferChain(instrs) => {
-            let chain = instrs.iter().map(format_instruction).collect::<Vec<_>>().join(" ; ");
+            let chain = instrs
+                .iter()
+                .map(format_instruction)
+                .collect::<Vec<_>>()
+                .join(" ; ");
             line(out, indent, chain);
         }
         Stmt::Hla(stmt) => line(out, indent, format_hla_stmt(stmt)),
@@ -163,6 +167,7 @@ fn format_var(var: &k816_core::ast::VarDecl) -> String {
         out.push_str(match width {
             k816_core::ast::DataWidth::Byte => "byte",
             k816_core::ast::DataWidth::Word => "word",
+            k816_core::ast::DataWidth::Far => "far",
         });
     }
     if let Some(fields) = &var.symbolic_subscript_fields {
@@ -181,6 +186,7 @@ fn format_var(var: &k816_core::ast::VarDecl) -> String {
                     value.push_str(match width {
                         k816_core::ast::DataWidth::Byte => "byte",
                         k816_core::ast::DataWidth::Word => "word",
+                        k816_core::ast::DataWidth::Far => "far",
                     });
                 }
                 value
@@ -263,6 +269,7 @@ fn format_expr(expr: &Expr) -> String {
             let suffix = match width {
                 k816_core::ast::DataWidth::Byte => ":byte",
                 k816_core::ast::DataWidth::Word => ":word",
+                k816_core::ast::DataWidth::Far => ":far",
             };
             format!("{}{suffix}", format_expr(expr))
         }
@@ -280,7 +287,16 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
             values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
         }
         NamedDataEntry::Words(values) => {
-            format!("word {}", values.iter().map(format_expr).collect::<Vec<_>>().join(" "))
+            format!(
+                "word {}",
+                values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
+            )
+        }
+        NamedDataEntry::Fars(values) => {
+            format!(
+                "far {}",
+                values.iter().map(format_expr).collect::<Vec<_>>().join(" ")
+            )
         }
         NamedDataEntry::ForEvalRange(range) => format!(
             "for {}={}..{} eval [{}]",

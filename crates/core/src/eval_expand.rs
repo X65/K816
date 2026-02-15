@@ -89,7 +89,10 @@ fn expand_stmt(
         )),
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
         Stmt::Address(value) => Stmt::Address(*value),
-        Stmt::Align { boundary, offset } => Stmt::Align { boundary: *boundary, offset: *offset },
+        Stmt::Align { boundary, offset } => Stmt::Align {
+            boundary: *boundary,
+            offset: *offset,
+        },
         Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Label(label) => Stmt::Label(label.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
@@ -160,6 +163,12 @@ fn expand_named_data_entry(
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
+        NamedDataEntry::Fars(values) => NamedDataEntry::Fars(
+            values
+                .iter()
+                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
+                .collect(),
+        ),
         NamedDataEntry::ForEvalRange(range) => {
             NamedDataEntry::ForEvalRange(NamedDataForEvalRange {
                 iterator: range.iterator.clone(),
@@ -171,20 +180,26 @@ fn expand_named_data_entry(
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
         NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {
             count: *count,
-            body: body.iter().map(|e| {
-                crate::span::Spanned::new(
-                    expand_named_data_entry(&e.node, e.span, source_id, diagnostics),
-                    e.span,
-                )
-            }).collect(),
+            body: body
+                .iter()
+                .map(|e| {
+                    crate::span::Spanned::new(
+                        expand_named_data_entry(&e.node, e.span, source_id, diagnostics),
+                        e.span,
+                    )
+                })
+                .collect(),
         },
         NamedDataEntry::Code(stmts) => NamedDataEntry::Code(
-            stmts.iter().map(|s| {
-                crate::span::Spanned::new(
-                    expand_stmt(&s.node, s.span, source_id, diagnostics),
-                    s.span,
-                )
-            }).collect(),
+            stmts
+                .iter()
+                .map(|s| {
+                    crate::span::Spanned::new(
+                        expand_stmt(&s.node, s.span, source_id, diagnostics),
+                        s.span,
+                    )
+                })
+                .collect(),
         ),
         NamedDataEntry::Evaluator(text) => NamedDataEntry::Evaluator(text.clone()),
         NamedDataEntry::Charset(value) => NamedDataEntry::Charset(value.clone()),

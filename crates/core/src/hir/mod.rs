@@ -25,7 +25,10 @@ pub enum Op {
         bytes: Vec<u8>,
         relocations: Vec<ByteRelocation>,
     },
-    Align { boundary: u16, offset: u16 },
+    Align {
+        boundary: u16,
+        offset: u16,
+    },
     Address(u32),
     Nocross(u16),
     /// REP pseudo-op: clear processor status bits (set register to 16-bit).
@@ -62,6 +65,7 @@ pub enum ByteRelocationKind {
     LowByte,
     HighByte,
     FullWord,
+    FullLong,
 }
 
 #[derive(Debug, Clone)]

@@ -324,6 +324,10 @@ mod tests {
     fn lexes_char_literal_as_immediate() {
         let tokens = lex(SourceId(0), "lda #'s'").expect("lex");
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Hash)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Number(115))));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::Number(115)))
+        );
     }
 }

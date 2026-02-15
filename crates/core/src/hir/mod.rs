@@ -25,7 +25,7 @@ pub enum Op {
         bytes: Vec<u8>,
         relocations: Vec<ByteRelocation>,
     },
-    Align(u16),
+    Align { boundary: u16, offset: u16 },
     Address(u32),
     Nocross(u16),
     /// REP pseudo-op: clear processor status bits (set register to 16-bit).
@@ -45,6 +45,9 @@ pub enum Op {
         name: String,
         address: u32,
     },
+    /// Sets the register width state for the emitter without emitting any bytes.
+    /// Used by code blocks inside data sections where 8-bit mode is implied.
+    SetMode(ModeContract),
 }
 
 #[derive(Debug, Clone)]

@@ -142,15 +142,26 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 }
             }
             Op::DefineAbsoluteSymbol { .. } => {}
-            Op::Align(align) => {
-                if *align == 0 {
+            Op::SetMode(mode_contract) => {
+                m_wide = mode_contract
+                    .a_width
+                    .map(|w| w == crate::ast::RegWidth::W16);
+                x_wide = mode_contract
+                    .i_width
+                    .map(|w| w == crate::ast::RegWidth::W16);
+                m_unknown_cause = None;
+                x_unknown_cause = None;
+            }
+            Op::Align { boundary, offset } => {
+                if *boundary == 0 {
                     diagnostics.push(Diagnostic::error(op.span, "align value must be non-zero"));
                     continue;
                 }
                 let segment = segments
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
-                while !segment.bytes.len().is_multiple_of(usize::from(*align)) {
+                let offset = usize::from(*offset);
+                while (segment.bytes.len().wrapping_sub(offset)) % usize::from(*boundary) != 0 {
                     segment.bytes.push(0);
                 }
             }

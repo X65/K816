@@ -70,7 +70,13 @@ fn format_stmt(out: &mut String, stmt: &Stmt, indent: usize) {
             line(out, indent, "}".to_string());
         }
         Stmt::Address(value) => line(out, indent, format!("address {value}")),
-        Stmt::Align(value) => line(out, indent, format!("align {value}")),
+        Stmt::Align { boundary, offset } => {
+            if *offset == 0 {
+                line(out, indent, format!("align {boundary}"));
+            } else {
+                line(out, indent, format!("align {boundary} + {offset}"));
+            }
+        }
         Stmt::Nocross(value) => line(out, indent, format!("nocross {value}")),
         Stmt::Instruction(instr) => line(out, indent, format_instruction(instr)),
         Stmt::Call(call) => line(out, indent, format!("call {}", call.target)),
@@ -266,6 +272,7 @@ fn format_expr(expr: &Expr) -> String {
 fn format_named_data_entry(entry: &NamedDataEntry) -> String {
     match entry {
         NamedDataEntry::Segment(segment) => format!("segment {}", segment.name),
+        NamedDataEntry::Label(name) => format!("{name}:"),
         NamedDataEntry::Address(value) => format!("address {value}"),
         NamedDataEntry::Align(value) => format!("align {value}"),
         NamedDataEntry::Nocross(value) => format!("nocross {value}"),
@@ -280,6 +287,10 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
             range.eval
         ),
         NamedDataEntry::String(value) => format!("\"{}\"", value.replace('\"', "\\\"")),
+        NamedDataEntry::Repeat { count, .. } => format!("repeat {count} {{ ... }}"),
+        NamedDataEntry::Code(_) => "code { ... }".to_string(),
+        NamedDataEntry::Evaluator(text) => format!("evaluator [{text}]"),
+        NamedDataEntry::Charset(value) => format!("charset \"{}\"", value.replace('\"', "\\\"")),
     }
 }
 
@@ -320,6 +331,7 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
                 format!("{} repeat", mnemonic_to_condition(mnemonic))
             }
         }
+        HlaStmt::NeverBlock { .. } => "never { ... }".to_string(),
         HlaStmt::RepeatNop(n) => format!("* {n}"),
         HlaStmt::PrefixConditional {
             skip_mnemonic,

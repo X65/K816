@@ -23,7 +23,7 @@ pub fn lower_data_block(
     for command in &block.commands {
         match &command.node {
             DataCommand::Align(value) => {
-                ops.push(Spanned::new(Op::Align(*value), command.span));
+                ops.push(Spanned::new(Op::Align { boundary: *value, offset: 0 }, command.span));
             }
             DataCommand::Address(value) => {
                 ops.push(Spanned::new(Op::Address(*value), command.span));

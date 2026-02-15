@@ -120,6 +120,7 @@ pub fn lower(
                 lower_named_data_block(
                     block,
                     sema,
+                    fs,
                     &current_segment,
                     &mut diagnostics,
                     &mut ops,
@@ -301,6 +302,9 @@ fn collect_label_depths_into(
             Stmt::ModeScopedBlock { body, .. } => {
                 collect_label_depths_into(body, scope, depth + 1, diagnostics, out);
             }
+            Stmt::Hla(HlaStmt::NeverBlock { body }) => {
+                collect_label_depths_into(body, scope, depth, diagnostics, out);
+            }
             Stmt::Hla(HlaStmt::PrefixConditional {
                 body, else_body, ..
             }) => {
@@ -357,6 +361,10 @@ fn collect_label_declared_modes_into(
                     *mode = ModeState::default();
                 }
             }
+            Stmt::Hla(HlaStmt::NeverBlock { body }) => {
+                let mut inner_mode = *mode;
+                collect_label_declared_modes_into(body, scope, &mut inner_mode, diagnostics, out);
+            }
             Stmt::Hla(HlaStmt::PrefixConditional {
                 body, else_body, ..
             }) => {
@@ -381,6 +389,7 @@ fn collect_label_declared_modes_into(
 fn lower_named_data_block(
     block: &NamedDataBlock,
     sema: &SemanticModel,
+    fs: &dyn AssetFS,
     outer_segment: &str,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
@@ -390,6 +399,7 @@ fn lower_named_data_block(
     };
     let mut label_emitted = false;
     let mut block_segment = outer_segment.to_string();
+    let mut charset: Option<String> = None;
 
     for entry in &block.entries {
         if !label_emitted
@@ -405,7 +415,9 @@ fn lower_named_data_block(
                 &entry.node,
                 entry.span,
                 sema,
+                fs,
                 &mut block_segment,
+                &mut charset,
                 diagnostics,
                 ops,
             );
@@ -421,7 +433,9 @@ fn lower_named_data_block(
             &entry.node,
             entry.span,
             sema,
+            fs,
             &mut block_segment,
+            &mut charset,
             diagnostics,
             ops,
         );
@@ -442,7 +456,9 @@ fn lower_named_data_entry(
     entry: &NamedDataEntry,
     span: Span,
     sema: &SemanticModel,
+    fs: &dyn AssetFS,
     current_segment: &mut String,
+    charset: &mut Option<String>,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
@@ -451,11 +467,16 @@ fn lower_named_data_entry(
             ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), span));
             *current_segment = segment.name.clone();
         }
+        NamedDataEntry::Label(name) => {
+            if let Some(resolved) = resolve_symbol(name, None, span, diagnostics) {
+                ops.push(Spanned::new(Op::Label(resolved), span));
+            }
+        }
         NamedDataEntry::Address(value) => {
             ops.push(Spanned::new(Op::Address(*value), span));
         }
         NamedDataEntry::Align(value) => {
-            ops.push(Spanned::new(Op::Align(*value), span));
+            ops.push(Spanned::new(Op::Align { boundary: *value, offset: 0 }, span));
         }
         NamedDataEntry::Nocross(value) => {
             ops.push(Spanned::new(Op::Nocross(*value), span));
@@ -539,7 +560,65 @@ fn lower_named_data_entry(
             ops.push(Spanned::new(Op::EmitBytes(bytes), span));
         }
         NamedDataEntry::String(value) => {
-            ops.push(Spanned::new(Op::EmitBytes(value.as_bytes().to_vec()), span));
+            let bytes = if let &mut Some(ref cs) = charset {
+                value
+                    .chars()
+                    .map(|ch| {
+                        cs.find(ch).map(|idx| idx as u8).unwrap_or(0)
+                    })
+                    .collect()
+            } else {
+                value.as_bytes().to_vec()
+            };
+            ops.push(Spanned::new(Op::EmitBytes(bytes), span));
+        }
+        NamedDataEntry::Repeat { count, body } => {
+            for _ in 0..*count {
+                for entry in body {
+                    lower_named_data_entry(
+                        &entry.node,
+                        entry.span,
+                        sema,
+                        fs,
+                        current_segment,
+                        charset,
+                        diagnostics,
+                        ops,
+                    );
+                }
+            }
+        }
+        NamedDataEntry::Code(stmts) => {
+            let mode_contract = crate::ast::ModeContract {
+                a_width: Some(RegWidth::W8),
+                i_width: Some(RegWidth::W8),
+            };
+            ops.push(Spanned::new(Op::SetMode(mode_contract), span));
+            let mut code_ctx = LowerContext::default();
+            code_ctx.mode = ModeState {
+                a_width: Some(RegWidth::W8),
+                i_width: Some(RegWidth::W8),
+            };
+            let mut code_segment = current_segment.clone();
+            for stmt in stmts {
+                lower_stmt(
+                    &stmt.node,
+                    stmt.span,
+                    None,
+                    sema,
+                    fs,
+                    &mut code_segment,
+                    &mut code_ctx,
+                    diagnostics,
+                    ops,
+                );
+            }
+        }
+        NamedDataEntry::Evaluator(_text) => {
+            // Evaluator blocks are handled at the sema level; no lowering needed.
+        }
+        NamedDataEntry::Charset(value) => {
+            *charset = Some(value.clone());
         }
     }
 }
@@ -670,11 +749,30 @@ fn lower_stmt(
         Stmt::Address(address) => {
             ops.push(Spanned::new(Op::Address(*address), span));
         }
-        Stmt::Align(align) => {
-            ops.push(Spanned::new(Op::Align(*align), span));
+        Stmt::Align { boundary, offset } => {
+            ops.push(Spanned::new(Op::Align { boundary: *boundary, offset: *offset }, span));
         }
         Stmt::Nocross(nocross) => {
             ops.push(Spanned::new(Op::Nocross(*nocross), span));
+        }
+        Stmt::Hla(HlaStmt::NeverBlock { body }) => {
+            let Some(skip_label) =
+                fresh_local_label("never_end", ctx, scope, span, diagnostics)
+            else {
+                return;
+            };
+            // Emit JMP over the block body
+            emit_branch_to_label("jmp", &skip_label, scope, sema, span, ctx, diagnostics, ops);
+            let saved_reachable = ctx.reachable;
+            ctx.reachable = false;
+            for s in body {
+                lower_stmt(
+                    &s.node, s.span, scope, sema, fs, current_segment, ctx,
+                    diagnostics, ops,
+                );
+            }
+            ctx.reachable = saved_reachable;
+            ops.push(Spanned::new(Op::Label(skip_label), span));
         }
         Stmt::Hla(HlaStmt::PrefixConditional {
             skip_mnemonic,
@@ -1818,7 +1916,7 @@ fn lower_hla_stmt(
                 lower_instruction_and_push(&nop, scope, sema, span, diagnostics, ops);
             }
         }
-        HlaStmt::PrefixConditional { .. } => {
+        HlaStmt::NeverBlock { .. } | HlaStmt::PrefixConditional { .. } => {
             // Handled in lower_stmt directly (needs fs and current_segment parameters)
         }
     }
@@ -3306,7 +3404,7 @@ mod tests {
         let align_index = program
             .ops
             .iter()
-            .position(|op| matches!(&op.node, Op::Align(16)))
+            .position(|op| matches!(&op.node, Op::Align { boundary: 16, .. }))
             .expect("align directive");
         let label_index = program
             .ops

@@ -108,6 +108,18 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 }
             }
             Item::NamedDataBlock(block) => {
+                for entry in &block.entries {
+                    if let NamedDataEntry::Evaluator(text) = &entry.node {
+                        let eval_block = EvaluatorBlock { text: text.clone() };
+                        collect_evaluator_block(
+                            &eval_block,
+                            entry.span,
+                            &mut model,
+                            &mut evaluator_context,
+                            &mut diagnostics,
+                        );
+                    }
+                }
                 collect_named_data_block_array(block, &model.consts, &mut evaluator_context)
             }
             _ => {}
@@ -271,6 +283,7 @@ fn try_collect_named_data_block_values(
     for entry in &block.entries {
         match &entry.node {
             NamedDataEntry::Segment(_)
+            | NamedDataEntry::Label(_)
             | NamedDataEntry::Address(_)
             | NamedDataEntry::Align(_)
             | NamedDataEntry::Nocross(_) => {}
@@ -290,6 +303,21 @@ fn try_collect_named_data_block_values(
                     consts,
                     evaluator_context,
                 )?);
+            }
+            NamedDataEntry::Repeat { count, body } => {
+                let inner = NamedDataBlock {
+                    name: String::new(),
+                    name_span: entry.span,
+                    entries: body.clone(),
+                };
+                let inner_values =
+                    try_collect_named_data_block_values(&inner, consts, evaluator_context)?;
+                for _ in 0..*count {
+                    out.extend(inner_values.iter().cloned());
+                }
+            }
+            NamedDataEntry::Code(_) | NamedDataEntry::Evaluator(_) | NamedDataEntry::Charset(_) => {
+                // Code blocks, evaluator and charset directives don't contribute to static data values
             }
         }
     }

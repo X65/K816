@@ -10,7 +10,13 @@ pub fn format_ir(program: &Program) -> String {
             Op::FunctionStart { name, .. } => out.push_str(&format!("function_start {name}\n")),
             Op::FunctionEnd => out.push_str("function_end\n"),
             Op::Label(name) => out.push_str(&format!("label {name}\n")),
-            Op::Align(value) => out.push_str(&format!("align {value}\n")),
+            Op::Align { boundary, offset } => {
+                if *offset == 0 {
+                    out.push_str(&format!("align {boundary}\n"));
+                } else {
+                    out.push_str(&format!("align {boundary} + {offset}\n"));
+                }
+            }
             Op::Address(value) => out.push_str(&format!("address {value}\n")),
             Op::Nocross(value) => out.push_str(&format!("nocross {value}\n")),
             Op::Rep(mask) => out.push_str(&format!("rep #{mask:#04X}\n")),
@@ -19,6 +25,9 @@ pub fn format_ir(program: &Program) -> String {
             Op::FixedSep(mask) => out.push_str(&format!("fixed_sep #{mask:#04X}\n")),
             Op::DefineAbsoluteSymbol { name, address } => {
                 out.push_str(&format!("abs_symbol {name} {address:#X}\n"));
+            }
+            Op::SetMode(_) => {
+                out.push_str("set_mode\n");
             }
             Op::EmitBytes(bytes) => {
                 let data = bytes

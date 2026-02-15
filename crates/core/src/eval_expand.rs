@@ -89,7 +89,7 @@ fn expand_stmt(
         )),
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
         Stmt::Address(value) => Stmt::Address(*value),
-        Stmt::Align(value) => Stmt::Align(*value),
+        Stmt::Align { boundary, offset } => Stmt::Align { boundary: *boundary, offset: *offset },
         Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Label(label) => Stmt::Label(label.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
@@ -144,6 +144,7 @@ fn expand_named_data_entry(
 ) -> NamedDataEntry {
     match entry {
         NamedDataEntry::Segment(segment) => NamedDataEntry::Segment(segment.clone()),
+        NamedDataEntry::Label(name) => NamedDataEntry::Label(name.clone()),
         NamedDataEntry::Address(value) => NamedDataEntry::Address(*value),
         NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
         NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
@@ -162,6 +163,25 @@ fn expand_named_data_entry(
             })
         }
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
+        NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {
+            count: *count,
+            body: body.iter().map(|e| {
+                crate::span::Spanned::new(
+                    expand_named_data_entry(&e.node, e.span, source_id, diagnostics),
+                    e.span,
+                )
+            }).collect(),
+        },
+        NamedDataEntry::Code(stmts) => NamedDataEntry::Code(
+            stmts.iter().map(|s| {
+                crate::span::Spanned::new(
+                    expand_stmt(&s.node, s.span, source_id, diagnostics),
+                    s.span,
+                )
+            }).collect(),
+        ),
+        NamedDataEntry::Evaluator(text) => NamedDataEntry::Evaluator(text.clone()),
+        NamedDataEntry::Charset(value) => NamedDataEntry::Charset(value.clone()),
     }
 }
 
@@ -205,6 +225,20 @@ fn expand_hla_stmt(
         HlaStmt::LoopRepeat { mnemonic } => HlaStmt::LoopRepeat {
             mnemonic: mnemonic.clone(),
         },
+        HlaStmt::NeverBlock { body } => {
+            let expanded_body = body
+                .iter()
+                .map(|s| {
+                    crate::span::Spanned::new(
+                        expand_stmt(&s.node, s.span, source_id, diagnostics),
+                        s.span,
+                    )
+                })
+                .collect();
+            HlaStmt::NeverBlock {
+                body: expanded_body,
+            }
+        }
         HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
         HlaStmt::PrefixConditional {
             skip_mnemonic,

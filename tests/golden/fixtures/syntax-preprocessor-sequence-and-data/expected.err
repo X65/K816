@@ -1,3 +1,11 @@
+Error: invalid syntax: expected something else, '+', '-', ':', ',', or '=', found number literal
+    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:7 ]
+    │
+ 10 │     3 4
+    │       ┬  
+    │       ╰── here
+────╯
+
 Warning: invalid syntax: preprocessor directive not processed
    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:2:1 ]
    │
@@ -21,3 +29,27 @@ Warning: invalid syntax: preprocessor directive not processed
    │ ───┬──  
    │    ╰──── here
 ───╯
+
+Error: invalid syntax: expected newline, ';', 'align', 'address', 'nocross', something else, '?', or '}', found '#'
+    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:13:1 ]
+    │
+ 13 │ #else
+    │ ┬  
+    │ ╰── here
+────╯
+
+Warning: invalid syntax: preprocessor directive not processed
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:9:1 ]
+   │
+ 9 │ #if !0
+   │ ───┬──  
+   │    ╰──── here
+───╯
+
+Error: invalid syntax: expected something else, '+', '-', ':', ',', or '=', found number literal
+    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:7 ]
+    │
+ 10 │     3 4
+    │       ┬  
+    │       ╰── here
+────╯

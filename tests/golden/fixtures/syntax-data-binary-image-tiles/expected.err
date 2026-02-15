@@ -1,0 +1,47 @@
+Error: invalid syntax: unexpected 'image'
+   ╭─[ tests/golden/fixtures/syntax-data-binary-image-tiles/input.k65:2:3 ]
+   │
+ 2 │   image sprites 0 0 8> 16v
+   │   ────────────┬───────────  
+   │               ╰───────────── here
+───╯
+
+Error: invalid syntax: unexpected 'image'
+   ╭─[ tests/golden/fixtures/syntax-data-binary-image-tiles/input.k65:3:3 ]
+   │
+ 3 │   image "sprites_alt" 8 0 8> 8v inv
+   │   ────────────────┬────────────────  
+   │                   ╰────────────────── here
+───╯
+
+Error: invalid syntax: unexpected 'tiles'
+   ╭─[ tests/golden/fixtures/syntax-data-binary-image-tiles/input.k65:4:3 ]
+   │
+ 4 │   tiles 8 0 4
+   │   ─────┬─────  
+   │        ╰─────── here
+───╯
+
+Error: invalid syntax: unexpected 'colormode'
+   ╭─[ tests/golden/fixtures/syntax-data-binary-image-tiles/input.k65:5:3 ]
+   │
+ 5 │   colormode 1
+   │   ─────┬─────  
+   │        ╰─────── here
+───╯
+
+Error: invalid syntax: unexpected 'imgwave'
+   ╭─[ tests/golden/fixtures/syntax-data-binary-image-tiles/input.k65:6:3 ]
+   │
+ 6 │   imgwave 1 2 "3" 4
+   │   ────────┬────────  
+   │           ╰────────── here
+───╯
+
+Error: invalid syntax: unexpected 'binary'
+    ╭─[ tests/golden/fixtures/syntax-data-binary-image-tiles/input.k65:10:3 ]
+    │
+ 10 │   binary "table.bin"
+    │   ─────────┬────────  
+    │            ╰────────── here
+────╯

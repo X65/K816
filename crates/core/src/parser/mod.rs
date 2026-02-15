@@ -163,23 +163,11 @@ fn preprocess_source(source_text: &str) -> String {
             trimmed = line.trim();
         }
 
-        if data_block_depth > 0
-            && (trimmed.starts_with("code {")
-                || trimmed.starts_with("nocross code {")
-                || trimmed.starts_with("repeat ") && trimmed.ends_with('{')
-                || trimmed == "nocross {")
-        {
+        if data_block_depth > 0 && trimmed == "nocross {" {
             skipped_nested_block_depth = 1;
             continue;
         }
 
-        if data_block_depth > 0 && trimmed.starts_with('[') && trimmed.ends_with(']') {
-            continue;
-        }
-
-        if data_block_depth > 0 && trimmed == "?" {
-            continue;
-        }
 
         if trimmed.starts_with("var ") {
             let indent = raw_line
@@ -429,8 +417,11 @@ where
     .ignore_then(
         ident_parser()
             .or(chumsky::select! { TokenKind::String(value) => value })
-            .then_ignore(just(TokenKind::Eq))
-            .then_ignore(chumsky::select! { TokenKind::String(_value) => () })
+            .then_ignore(
+                just(TokenKind::Eq)
+                    .then_ignore(chumsky::select! { TokenKind::String(_value) => () })
+                    .or_not(),
+            )
             .or_not()
             .then_ignore(line_tail_parser()),
     )
@@ -670,7 +661,7 @@ where
 }
 
 fn named_data_entry_parser<'src, I>(
-    _source_id: SourceId,
+    source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -678,6 +669,27 @@ where
     let segment_entry = just(TokenKind::Segment)
         .ignore_then(ident_parser())
         .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
+
+    // Ident-based entry: label (ident:) or unknown (ident ...).
+    // Unknown idents consume the rest of the line and emit an error,
+    // preventing the data block parser from breaking on unrecognized directives.
+    let ident_entry = ident_parser()
+        .then(
+            just(TokenKind::Colon)
+                .to(true)
+                .or(line_tail_parser().to(false)),
+        )
+        .validate(|(name, is_label), extra, emitter| {
+            if is_label {
+                NamedDataEntry::Label(name)
+            } else {
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    format!("unexpected '{name}'"),
+                ));
+                NamedDataEntry::Bytes(vec![])
+            }
+        });
 
     let address_entry =
         just(TokenKind::Address)
@@ -749,9 +761,12 @@ where
                 })),
     );
 
+    let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
+
     let bytes_entry = number_parser()
         .map(|value| vec![Expr::Number(value)])
         .or(address_byte_expr)
+        .or(undef_byte)
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
@@ -785,14 +800,233 @@ where
         })
     });
 
+    let separators_data = line_sep_parser().repeated();
+
+    // repeat N { ... } - repeats data entries N times
+    let data_body = |src_id| {
+        let inner_entry = spanned(named_data_entry_flat_parser(), src_id);
+        let inner_boundary = line_sep_parser()
+            .ignored()
+            .or(just(TokenKind::RBrace).ignored())
+            .or(end().ignored());
+        let recover_inner =
+            inner_entry.recover_with(skip_then_retry_until(any().ignored(), inner_boundary));
+        let seps = line_sep_parser().repeated();
+        just(TokenKind::LBrace)
+            .ignore_then(seps.clone())
+            .ignore_then(
+                recover_inner
+                    .then_ignore(seps)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(TokenKind::RBrace))
+    };
+
+    let repeat_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("repeat") => ()
+    }
+    .ignore_then(expr_parser())
+    .then(data_body(source_id))
+    .try_map(|(count_expr, body), span| {
+        let count = eval_static_expr(&count_expr)
+            .ok_or_else(|| Rich::custom(span, "repeat count must be a constant expression"))?;
+        let count = u16::try_from(count)
+            .map_err(|_| Rich::custom(span, "repeat count must fit in u16"))?;
+        Ok(NamedDataEntry::Repeat { count, body })
+    });
+
+    // code { ... } - embed code instructions within data section
+    let code_body = {
+        let stmt = spanned(stmt_parser(source_id), source_id);
+        let stmt_boundary = line_sep_parser()
+            .ignored()
+            .or(just(TokenKind::RBrace).ignored())
+            .or(end().ignored());
+        let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
+        just(TokenKind::LBrace)
+            .ignore_then(separators_data.clone())
+            .ignore_then(
+                recover_stmt
+                    .then_ignore(separators_data.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(TokenKind::RBrace))
+    };
+
+    let code_entry = just(TokenKind::Nocross)
+        .or_not()
+        .ignore_then(chumsky::select! {
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("code") => ()
+        })
+        .ignore_then(code_body)
+        .map(NamedDataEntry::Code);
+
+    // evaluator [ code ] - inline evaluator in data context
+    let evaluator_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("evaluator") => ()
+    }
+    .ignore_then(chumsky::select! { TokenKind::Eval(value) => value })
+    .map(NamedDataEntry::Evaluator);
+
+    // charset "string" - character-to-index mapping for subsequent strings
+    let charset_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset") => ()
+    }
+    .ignore_then(chumsky::select! { TokenKind::String(value) => value })
+    .map(NamedDataEntry::Charset);
+
     string_entry
         .or(segment_entry)
         .or(address_entry)
         .or(align_entry)
         .or(nocross_entry)
         .or(for_eval_entry)
+        .or(repeat_entry)
+        .or(code_entry)
+        .or(evaluator_entry)
+        .or(charset_entry)
         .or(bytes_entry)
         .or(eval_bytes_entry)
+        .or(ident_entry)
+        .boxed()
+}
+
+/// Flat (non-recursive) named data entry parser for nested contexts like repeat bodies.
+fn named_data_entry_flat_parser<'src, I>(
+) -> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let segment_entry = just(TokenKind::Segment)
+        .ignore_then(ident_parser())
+        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
+
+    // Ident-based entry: label (ident:) or unknown (ident ...).
+    // Unknown idents consume the rest of the line and emit an error,
+    // preventing the data block parser from breaking on unrecognized directives.
+    let ident_entry = ident_parser()
+        .then(
+            just(TokenKind::Colon)
+                .to(true)
+                .or(line_tail_parser().to(false)),
+        )
+        .validate(|(name, is_label), extra, emitter| {
+            if is_label {
+                NamedDataEntry::Label(name)
+            } else {
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    format!("unexpected '{name}'"),
+                ));
+                NamedDataEntry::Bytes(vec![])
+            }
+        });
+
+    let address_entry =
+        just(TokenKind::Address)
+            .ignore_then(expr_parser())
+            .try_map(|value, span| {
+                let value = eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "address value must be a constant expression")
+                })?;
+                u32::try_from(value)
+                    .map(NamedDataEntry::Address)
+                    .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+            });
+
+    let align_entry = just(TokenKind::Align)
+        .ignore_then(expr_parser())
+        .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
+            u16::try_from(value)
+                .map(NamedDataEntry::Align)
+                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+        });
+
+    let nocross_entry = just(TokenKind::Nocross)
+        .ignore_then(expr_parser().or_not())
+        .try_map(|value, span| {
+            let value = match value {
+                Some(value) => eval_static_expr(&value).ok_or_else(|| {
+                    Rich::custom(span, "nocross value must be a constant expression")
+                })?,
+                None => 256,
+            };
+            u16::try_from(value)
+                .map(NamedDataEntry::Nocross)
+                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        });
+
+    let string_entry = chumsky::select! { TokenKind::String(value) => value }
+        .map(NamedDataEntry::String);
+
+    let address_byte_expr = just(TokenKind::Amp).ignore_then(
+        just(TokenKind::Lt)
+            .ignore_then(expr_parser())
+            .map(|expr| {
+                vec![Expr::Unary {
+                    op: ExprUnaryOp::LowByte,
+                    expr: Box::new(expr),
+                }]
+            })
+            .or(just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
+                vec![Expr::Unary {
+                    op: ExprUnaryOp::HighByte,
+                    expr: Box::new(expr),
+                }]
+            }))
+            .or(just(TokenKind::Amp)
+                .ignore_then(ident_parser())
+                .map(|name| {
+                    vec![
+                        Expr::Unary {
+                            op: ExprUnaryOp::LowByte,
+                            expr: Box::new(Expr::Ident(name.clone())),
+                        },
+                        Expr::Unary {
+                            op: ExprUnaryOp::HighByte,
+                            expr: Box::new(Expr::Ident(name)),
+                        },
+                    ]
+                })),
+    );
+
+    let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
+
+    let bytes_entry = number_parser()
+        .map(|value| vec![Expr::Number(value)])
+        .or(address_byte_expr)
+        .or(undef_byte)
+        .repeated()
+        .at_least(1)
+        .collect::<Vec<_>>()
+        .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
+
+    let eval_bytes_entry =
+        chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>()
+            .map(NamedDataEntry::Bytes);
+
+    let charset_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset") => ()
+    }
+    .ignore_then(chumsky::select! { TokenKind::String(value) => value })
+    .map(NamedDataEntry::Charset);
+
+    string_entry
+        .or(segment_entry)
+        .or(address_entry)
+        .or(align_entry)
+        .or(nocross_entry)
+        .or(charset_entry)
+        .or(bytes_entry)
+        .or(eval_bytes_entry)
+        .or(ident_entry)
         .boxed()
 }
 
@@ -850,6 +1084,7 @@ where
         .map(|(kind, args)| DataCommand::Convert { kind, args });
 
     let bytes = number_parser()
+        .or(just(TokenKind::Question).to(0i64))
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
@@ -1356,9 +1591,9 @@ where
                         .to("bmi")), // execute when N=0, skip when N=1
             );
 
-    // v+? v-? (with trailing ?)
+    // v+? v-? (with trailing ?); also accepts o+?/o-? as alias
     let v_flag =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
             .ignore_then(
                 just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
@@ -1413,12 +1648,23 @@ where
 
     let align_stmt = just(TokenKind::Align)
         .ignore_then(expr_parser())
-        .try_map(|value, span| {
+        .then(just(TokenKind::Plus).ignore_then(expr_parser()).or_not())
+        .try_map(|(value, offset), span| {
             let value = eval_static_expr(&value)
                 .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
-            u16::try_from(value)
-                .map(Stmt::Align)
-                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+            let boundary = u16::try_from(value)
+                .map_err(|_| Rich::custom(span, "align value must fit in u16"))?;
+            let offset = match offset {
+                Some(offset_expr) => {
+                    let offset_val = eval_static_expr(&offset_expr).ok_or_else(|| {
+                        Rich::custom(span, "align offset must be a constant expression")
+                    })?;
+                    u16::try_from(offset_val)
+                        .map_err(|_| Rich::custom(span, "align offset must fit in u16"))?
+                }
+                None => 0,
+            };
+            Ok(Stmt::Align { boundary, offset })
         });
 
     let nocross_stmt = just(TokenKind::Nocross)
@@ -1620,14 +1866,20 @@ where
 
             let mode_scoped_block = mode_annotation_parser()
                 .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
-                .then(block_body)
+                .then(block_body.clone())
                 .map(|(contract, body)| Stmt::ModeScopedBlock {
                     a_width: contract.a_width,
                     i_width: contract.i_width,
                     body,
                 });
 
-            let inner_stmt = mode_scoped_block.or(prefix_conditional).or(flat_stmt_inner);
+            let never_block = chumsky::select! {
+                TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => ()
+            }
+            .ignore_then(block_body)
+            .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
+
+            let inner_stmt = mode_scoped_block.or(prefix_conditional).or(never_block).or(flat_stmt_inner);
 
             spanned(inner_stmt, source_id)
         });
@@ -1663,15 +1915,22 @@ where
 
     let mode_scoped_block_top = mode_annotation_parser()
         .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
-        .then(block_body_top)
+        .then(block_body_top.clone())
         .map(|(contract, body)| Stmt::ModeScopedBlock {
             a_width: contract.a_width,
             i_width: contract.i_width,
             body,
         });
 
+    let never_block_top = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => ()
+    }
+    .ignore_then(block_body_top)
+    .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
+
     mode_scoped_block_top
         .or(prefix_conditional_top)
+        .or(never_block_top)
         .or(base_stmt)
         .boxed()
 }
@@ -1806,89 +2065,143 @@ where
         .or(end().ignored())
         .rewind();
 
-    // Three-register chain: reg = reg = reg (all token-level Ident detection)
-    let three_reg = chumsky::select! {
-        TokenKind::Ident(value) if is_register_name(&value) => value
-    }
-    .then_ignore(just(TokenKind::Eq))
-    .then(chumsky::select! {
-        TokenKind::Ident(value) if is_register_name(&value) => value
-    })
-    .then_ignore(just(TokenKind::Eq))
-    .then(chumsky::select! {
-        TokenKind::Ident(value) if is_register_name(&value) => value
-    })
-    .then_ignore(stmt_boundary.clone())
-    .try_map(|((dest, mid), src), span| {
-        let dest = dest.to_ascii_lowercase();
-        let mid = mid.to_ascii_lowercase();
-        let src = src.to_ascii_lowercase();
-        let inner_mnemonic = resolve_transfer(&mid, &src).ok_or_else(|| {
-            Rich::custom(
-                span,
-                format!("unsupported inner transfer '{mid}={src}' in chain"),
-            )
-        })?;
-        let outer_mnemonic = resolve_transfer(&dest, &mid).ok_or_else(|| {
-            Rich::custom(
-                span,
-                format!("unsupported outer transfer '{dest}={mid}' in chain"),
-            )
-        })?;
-        Ok(Stmt::TransferChain(vec![
-            Instruction {
-                mnemonic: inner_mnemonic.to_string(),
-                operand: None,
-            },
-            Instruction {
-                mnemonic: outer_mnemonic.to_string(),
-                operand: None,
-            },
-        ]))
-    });
+    // All-ident chain: ident = ident = ... = ident (3+ operands at statement boundary)
+    let all_ident = ident_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .repeated()
+        .at_least(2)
+        .collect::<Vec<_>>()
+        .then(ident_parser())
+        .then_ignore(stmt_boundary)
+        .try_map(|(prefix, last), span| {
+            let mut operands = prefix;
+            operands.push(last);
+            resolve_chain(&operands, None, span)
+        });
 
-    // Load-and-transfer chain: reg = reg = expr
-    let load_transfer = chumsky::select! {
-        TokenKind::Ident(value) if is_register_name(&value) => value
-    }
-    .then_ignore(just(TokenKind::Eq))
-    .then(chumsky::select! {
-        TokenKind::Ident(value) if is_register_name(&value) => value
-    })
-    .then_ignore(just(TokenKind::Eq))
-    .then(operand_expr_parser())
-    .try_map(|((dest, mid), rhs_parsed), span| {
-        let dest = dest.to_ascii_lowercase();
-        let mid = mid.to_ascii_lowercase();
-        let load_mnemonic = match mid.as_str() {
-            "a" => "lda",
-            "x" => "ldx",
-            "y" => "ldy",
-            _ => {
-                return Err(Rich::custom(
-                    span,
-                    format!("register '{mid}' cannot be loaded from memory"),
-                ))
+    // Ident chain ending with expression: ident = ident = ... = expr (3+ operands)
+    let with_expr = ident_parser()
+        .then_ignore(just(TokenKind::Eq))
+        .repeated()
+        .at_least(2)
+        .collect::<Vec<_>>()
+        .then(operand_expr_parser())
+        .try_map(|(prefix, rhs), span| {
+            resolve_chain(&prefix, Some(rhs), span)
+        });
+
+    all_ident.or(with_expr)
+}
+
+/// Resolve a chain of assignments using pair-based decomposition.
+///
+/// `a=b=c=d` is decomposed into adjacent pairs processed right-to-left:
+/// `(c,d)`, `(b,c)`, `(a,b)`. Each pair is resolved as a load, store, or transfer.
+/// If a direct pair isn't supported (e.g. memory-to-memory), the algorithm tries
+/// the next source to the right: `(a,c)`, then `(a,d)`.
+fn resolve_chain<'src>(
+    idents: &[String],
+    tail_expr: Option<ParsedOperandExpr>,
+    span: SimpleSpan,
+) -> Result<Stmt, Rich<'src, TokenKind>> {
+    let n = idents.len();
+    let has_tail = tail_expr.is_some();
+    let total = n + if has_tail { 1 } else { 0 };
+
+    let mut instrs = Vec::new();
+
+    // Process pairs right-to-left: from the rightmost pair to the leftmost.
+    // The last operand is source-only (never a destination).
+    for i in (0..(total - 1)).rev() {
+        // For position i, try pairing with position i+1, then i+2, etc.
+        let dest = &idents[i];
+        let mut resolved = false;
+
+        for j in (i + 1)..total {
+            let result = if j == n && has_tail {
+                try_resolve_pair_expr(dest, tail_expr.as_ref().unwrap())
+            } else {
+                try_resolve_pair_ident(dest, &idents[j])
+            };
+
+            if let Some(instr) = result {
+                instrs.push(instr);
+                resolved = true;
+                break;
             }
-        };
-        let inner = Instruction {
-            mnemonic: load_mnemonic.to_string(),
-            operand: Some(parsed_operand_to_operand(rhs_parsed)),
-        };
-        let outer_mnemonic = resolve_transfer(&dest, &mid).ok_or_else(|| {
-            Rich::custom(
-                span,
-                format!("unsupported outer transfer '{dest}={mid}' in chain"),
-            )
-        })?;
-        let outer = Instruction {
-            mnemonic: outer_mnemonic.to_string(),
-            operand: None,
-        };
-        Ok(Stmt::TransferChain(vec![inner, outer]))
-    });
+        }
 
-    three_reg.or(load_transfer)
+        if !resolved {
+            return Err(Rich::custom(
+                span,
+                format!("cannot resolve assignment for '{dest}' in chain"),
+            ));
+        }
+    }
+
+    Ok(Stmt::TransferChain(instrs))
+}
+
+/// Try to resolve a single `dest=src` pair where both are identifiers.
+fn try_resolve_pair_ident(dest: &str, src: &str) -> Option<Instruction> {
+    let dest_lc = dest.to_ascii_lowercase();
+    let src_lc = src.to_ascii_lowercase();
+    let dest_is_reg = is_register_name(dest);
+    let src_is_reg = is_register_name(src);
+
+    if dest_is_reg && src_is_reg {
+        resolve_transfer(&dest_lc, &src_lc).map(|m| Instruction {
+            mnemonic: m.to_string(),
+            operand: None,
+        })
+    } else if dest_is_reg {
+        load_mnemonic_for_reg(&dest_lc).map(|m| Instruction {
+            mnemonic: m.to_string(),
+            operand: Some(Operand::Auto {
+                expr: Expr::Ident(src.to_string()),
+            }),
+        })
+    } else if src_is_reg {
+        store_mnemonic_for_reg(&src_lc).map(|m| Instruction {
+            mnemonic: m.to_string(),
+            operand: Some(Operand::Auto {
+                expr: Expr::Ident(dest.to_string()),
+            }),
+        })
+    } else {
+        None
+    }
+}
+
+/// Try to resolve a `dest=expr` pair where dest is an identifier and src is an expression.
+fn try_resolve_pair_expr(dest: &str, src: &ParsedOperandExpr) -> Option<Instruction> {
+    let dest_lc = dest.to_ascii_lowercase();
+    if is_register_name(dest) {
+        load_mnemonic_for_reg(&dest_lc).map(|m| Instruction {
+            mnemonic: m.to_string(),
+            operand: Some(parsed_operand_to_operand(src.clone())),
+        })
+    } else {
+        None
+    }
+}
+
+fn load_mnemonic_for_reg(reg: &str) -> Option<&'static str> {
+    match reg {
+        "a" => Some("lda"),
+        "x" => Some("ldx"),
+        "y" => Some("ldy"),
+        _ => None,
+    }
+}
+
+fn store_mnemonic_for_reg(reg: &str) -> Option<&'static str> {
+    match reg {
+        "a" => Some("sta"),
+        "x" => Some("stx"),
+        "y" => Some("sty"),
+        _ => None,
+    }
 }
 
 fn assign_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -2266,7 +2579,7 @@ where
                 ("d", false) => Ok(instruction_stmt("cld", None)),
                 ("i", true) => Ok(instruction_stmt("sei", None)),
                 ("i", false) => Ok(instruction_stmt("cli", None)),
-                ("v", false) => Ok(instruction_stmt("clv", None)),
+                ("v" | "o", false) => Ok(instruction_stmt("clv", None)),
                 _ => Err(Rich::custom(
                     span,
                     format!("unsupported flag shorthand '{shorthand}'"),
@@ -2366,6 +2679,8 @@ where
             ("z", false) => "bne",
             ("n", true) => "bmi",
             ("n", false) => "bpl",
+            ("v" | "o", true) => "bvs",
+            ("v" | "o", false) => "bvc",
             _ => {
                 let sign = if plus { '+' } else { '-' };
                 return Err(Rich::custom(
@@ -2385,9 +2700,9 @@ where
         ))
     });
 
-    // v+ and v- have no trailing ?
+    // v+ and v- have no trailing ?; also accepts o+/o- as alias
     let v_flag_goto =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
             .ignore_then(
                 just(TokenKind::Plus)
                     .to("bvs")
@@ -2441,6 +2756,21 @@ where
         }
     });
 
+    let far_goto_stmt = just(TokenKind::Far)
+        .ignore_then(goto_kw.clone())
+        .ignore_then(expr_parser())
+        .map(|target| {
+            instruction_stmt(
+                "jml",
+                Some(Operand::Value {
+                    expr: target,
+                    force_far: true,
+                    index: None,
+                    addr_mode: OperandAddrMode::Direct,
+                }),
+            )
+        });
+
     let far_call_stmt = just(TokenKind::Far)
         .ignore_then(ident_parser())
         .map(|target| Stmt::Call(CallStmt { target, is_far: true }));
@@ -2486,6 +2816,7 @@ where
     goto_stmt
         .or(branch_goto_stmt)
         .or(return_stmt)
+        .or(far_goto_stmt)
         .or(far_call_stmt)
         .or(break_repeat_stmt)
 }
@@ -2565,6 +2896,22 @@ where
         .or(just(TokenKind::Lt).to("<"))
         .or(just(TokenKind::Gt).to(">"));
 
+    let data_keyword = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset")
+            || value.eq_ignore_ascii_case("tiles")
+            || value.eq_ignore_ascii_case("colormode")
+            || value.eq_ignore_ascii_case("imgwave")
+            || value.eq_ignore_ascii_case("inv") => value
+    }
+    .then(line_tail_parser())
+    .validate(|(token, _), extra, emitter| {
+        emitter.emit(Rich::custom(
+            extra.span(),
+            format!("unexpected '{token}'"),
+        ));
+        Stmt::Empty
+    });
+
     let generic = operator
         .map(|s| s.to_string())
         .or(just(TokenKind::Question).to("?".to_string()))
@@ -2577,7 +2924,7 @@ where
             Stmt::Empty
         });
 
-    preprocessor.or(generic)
+    preprocessor.or(data_keyword).or(generic)
 }
 
 
@@ -2745,9 +3092,9 @@ where
                         .to(do_close_branch("bne"))),
             );
 
-    // v+ → BVS, v- → BVC (no trailing ?)
+    // v+ → BVS, v- → BVC (no trailing ?); also accepts o+/o- as alias
     let v_flag =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
             .ignore_then(
                 just(TokenKind::Plus)
                     .to(do_close_branch("bvs"))
@@ -3144,7 +3491,7 @@ fn detect_invalid_flag_goto_shorthand(source_text: &str, question_offset: usize)
         return None;
     }
 
-    if matches!(flag.to_ascii_lowercase(), 'c' | 'z' | 'n') {
+    if matches!(flag.to_ascii_lowercase(), 'c' | 'z' | 'n' | 'v' | 'o') {
         return None;
     }
 
@@ -3869,6 +4216,23 @@ mod tests {
         assert!(matches!(reverse.start, Expr::Number(4)));
         assert!(matches!(reverse.end, Expr::Number(0)));
         assert_eq!(reverse.eval.trim(), "j");
+    }
+
+    #[test]
+    fn data_block_recovers_from_unknown_entries() {
+        let cases = [
+            "data gfx {\n  foo\n}\nfunc main {\n  a=0\n}\n",
+            "data gfx {\n  image sprites 0 0\n  tiles 8 0 4\n}\nfunc main {\n  a=0\n}\n",
+            "data gfx {\n  image\n}\nfunc main {\n  a=0\n}\n",
+        ];
+        for source in cases {
+            let (file, _diagnostics) = parse_lenient(SourceId(0), source);
+            let file = file.expect("should produce AST despite errors");
+            assert!(
+                file.items.iter().any(|i| matches!(&i.node, Item::NamedDataBlock(_))),
+                "data block not found in AST for: {source:?}",
+            );
+        }
     }
 
     #[test]

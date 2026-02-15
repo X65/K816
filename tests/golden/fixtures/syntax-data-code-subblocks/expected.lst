@@ -1,10 +1,10 @@
 [default]
-000000: AD 00 00 60
+000000: A9 01 A2 02 A0 03 04 04 04 00 AD 00 00 60
 
 
 [data obj#0 default::generated]
-000000: <4 bytes of data>
+000000: <10 bytes of data>
 
 [disasm obj#0 default::main]
-000000: AD 00 00    lda $0000
-000003: 60          rts
+00000A: AD 00 00    lda $0000
+00000D: 60          rts

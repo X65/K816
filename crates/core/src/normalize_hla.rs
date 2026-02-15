@@ -57,12 +57,24 @@ fn normalize_named_data_block(block: &NamedDataBlock) -> NamedDataBlock {
 fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
     match entry {
         NamedDataEntry::Segment(segment) => NamedDataEntry::Segment(segment.clone()),
+        NamedDataEntry::Label(name) => NamedDataEntry::Label(name.clone()),
         NamedDataEntry::Address(value) => NamedDataEntry::Address(*value),
         NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
         NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
         NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
         NamedDataEntry::ForEvalRange(range) => NamedDataEntry::ForEvalRange(range.clone()),
         NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
+        NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {
+            count: *count,
+            body: body.iter().map(|e| {
+                crate::span::Spanned::new(normalize_named_data_entry(&e.node), e.span)
+            }).collect(),
+        },
+        NamedDataEntry::Code(stmts) => NamedDataEntry::Code(
+            normalize_stmt_sequence(stmts),
+        ),
+        NamedDataEntry::Evaluator(text) => NamedDataEntry::Evaluator(text.clone()),
+        NamedDataEntry::Charset(value) => NamedDataEntry::Charset(value.clone()),
     }
 }
 
@@ -73,7 +85,7 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
         Stmt::Var(var) => Stmt::Var(var.clone()),
         Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
         Stmt::Address(value) => Stmt::Address(*value),
-        Stmt::Align(value) => Stmt::Align(*value),
+        Stmt::Align { boundary, offset } => Stmt::Align { boundary: *boundary, offset: *offset },
         Stmt::Nocross(value) => Stmt::Nocross(*value),
         Stmt::Instruction(instruction) => Stmt::Instruction(instruction.clone()),
         Stmt::Call(call) => Stmt::Call(call.clone()),
@@ -161,6 +173,9 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         },
         HlaStmt::LoopRepeat { mnemonic } => HlaStmt::LoopRepeat {
             mnemonic: mnemonic.clone(),
+        },
+        HlaStmt::NeverBlock { body } => HlaStmt::NeverBlock {
+            body: normalize_stmt_sequence(body),
         },
         HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
         HlaStmt::PrefixConditional {

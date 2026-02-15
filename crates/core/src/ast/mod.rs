@@ -93,7 +93,7 @@ pub enum Stmt {
     Var(VarDecl),
     DataBlock(DataBlock),
     Address(u32),
-    Align(u16),
+    Align { boundary: u16, offset: u16 },
     Nocross(u16),
     Instruction(Instruction),
     Call(CallStmt),
@@ -226,6 +226,9 @@ pub enum HlaStmt {
     LoopRepeat {
         mnemonic: String,
     },
+    NeverBlock {
+        body: Vec<Spanned<Stmt>>,
+    },
     RepeatNop(usize),
     PrefixConditional {
         skip_mnemonic: String,
@@ -299,12 +302,20 @@ pub struct NamedDataForEvalRange {
 #[derive(Debug, Clone)]
 pub enum NamedDataEntry {
     Segment(SegmentDecl),
+    Label(String),
     Address(u32),
     Align(u16),
     Nocross(u16),
     Bytes(Vec<Expr>),
     ForEvalRange(NamedDataForEvalRange),
     String(String),
+    Repeat {
+        count: u16,
+        body: Vec<Spanned<NamedDataEntry>>,
+    },
+    Code(Vec<Spanned<Stmt>>),
+    Evaluator(String),
+    Charset(String),
 }
 
 #[derive(Debug, Clone)]

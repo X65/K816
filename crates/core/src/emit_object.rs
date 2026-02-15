@@ -183,8 +183,18 @@ pub fn emit_object(
                     );
                 }
             }
-            Op::Align(align) => {
-                if *align == 0 {
+            Op::SetMode(mode_contract) => {
+                m_wide = mode_contract
+                    .a_width
+                    .map(|w| w == crate::ast::RegWidth::W16);
+                x_wide = mode_contract
+                    .i_width
+                    .map(|w| w == crate::ast::RegWidth::W16);
+                m_unknown_cause = None;
+                x_unknown_cause = None;
+            }
+            Op::Align { boundary, offset } => {
+                if *boundary == 0 {
                     diagnostics.push(Diagnostic::error(op.span, "align value must be non-zero"));
                     continue;
                 }
@@ -194,8 +204,9 @@ pub fn emit_object(
                     .expect("current segment must exist during emit");
 
                 let cursor = active_cursor(segment);
-                let align = u32::from(*align);
-                let rem = cursor % align;
+                let align = u32::from(*boundary);
+                let offset = u32::from(*offset);
+                let rem = (cursor.wrapping_sub(offset)) % align;
                 let pad = if rem == 0 { 0 } else { align - rem };
 
                 if pad > 0 {

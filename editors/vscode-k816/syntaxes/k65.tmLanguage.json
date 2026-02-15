@@ -161,7 +161,7 @@
         },
         {
           "name": "constant.language.flag.k65",
-          "match": "(?i)\\b(?:n|v|m|x|b|d|i|z|c|e)\\b"
+          "match": "(?i)\\b(?:n|v|o|m|x|b|d|i|z|c|e)\\b"
         }
       ]
     },

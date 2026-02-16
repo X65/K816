@@ -169,13 +169,15 @@ function formatError(error: unknown): string {
 
 class K816DebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
   createDebugAdapterDescriptor(
-    _session: vscode.DebugSession,
+    session: vscode.DebugSession,
   ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
     const config = vscode.workspace.getConfiguration("k816");
     const command = config.get<string>("debugger.path", "emu");
-    const args = config.get<string[]>("debugger.args", ["--dap"]);
+    const configuredArgs = config.get<string[]>("debugger.args", ["--dap"]);
+    const program = session.configuration.program;
+    const execArgs = program ? [...configuredArgs, program] : configuredArgs;
     const env = resolveDebuggerEnv(config);
-    return new vscode.DebugAdapterExecutable(command, args, { env });
+    return new vscode.DebugAdapterExecutable(command, execArgs, { env });
   }
 }
 

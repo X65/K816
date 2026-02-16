@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import {
   LanguageClient,
-  LanguageClientOptions,
+  type LanguageClientOptions,
   RevealOutputChannelOn,
-  ServerOptions,
+  type ServerOptions,
   Trace,
 } from "vscode-languageclient/node";
 
@@ -11,7 +11,9 @@ let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 let spawnNotFoundShown = false;
 
-export async function activate(context: vscode.ExtensionContext): Promise<void> {
+export async function activate(
+  context: vscode.ExtensionContext,
+): Promise<void> {
   const channel = ensureOutputChannel();
   context.subscriptions.push(channel);
 
@@ -21,6 +23,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await stopClient();
       await startClient();
     }),
+  );
+
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterDescriptorFactory(
+      "k816",
+      new K816DebugAdapterFactory(),
+    ),
+    vscode.debug.registerDebugConfigurationProvider(
+      "k816",
+      new K816DebugConfigProvider(),
+    ),
   );
 
   await startClient();
@@ -95,7 +108,9 @@ function ensureOutputChannel(): vscode.OutputChannel {
   return outputChannel;
 }
 
-function resolveServerEnv(config: vscode.WorkspaceConfiguration): NodeJS.ProcessEnv {
+function resolveServerEnv(
+  config: vscode.WorkspaceConfiguration,
+): NodeJS.ProcessEnv {
   const rawEnv = config.get<Record<string, unknown>>("server.env", {});
   const extraEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(rawEnv)) {
@@ -107,6 +122,24 @@ function resolveServerEnv(config: vscode.WorkspaceConfiguration): NodeJS.Process
     ...process.env,
     ...extraEnv,
   };
+}
+
+function resolveDebuggerEnv(
+  config: vscode.WorkspaceConfiguration,
+): Record<string, string> {
+  const base: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      base[key] = value;
+    }
+  }
+  const rawEnv = config.get<Record<string, unknown>>("debugger.env", {});
+  for (const [key, value] of Object.entries(rawEnv)) {
+    if (typeof value === "string") {
+      base[key] = value;
+    }
+  }
+  return base;
 }
 
 function traceLevel(value: string): Trace {
@@ -132,4 +165,45 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+class K816DebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
+  createDebugAdapterDescriptor(
+    _session: vscode.DebugSession,
+  ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+    const config = vscode.workspace.getConfiguration("k816");
+    const command = config.get<string>("debugger.path", "emu");
+    const args = config.get<string[]>("debugger.args", ["--dap"]);
+    const env = resolveDebuggerEnv(config);
+    return new vscode.DebugAdapterExecutable(command, args, { env });
+  }
+}
+
+class K816DebugConfigProvider implements vscode.DebugConfigurationProvider {
+  async resolveDebugConfiguration(
+    _folder: vscode.WorkspaceFolder | undefined,
+    config: vscode.DebugConfiguration,
+  ): Promise<vscode.DebugConfiguration | undefined> {
+    if (!config.type && !config.request && !config.name) {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && editor.document.languageId === "k65") {
+        config.type = "k816";
+        config.request = "launch";
+        config.name = "Debug K65 Program";
+      }
+    }
+    if (config.type === "k816" && !config.program) {
+      const uris = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectMany: false,
+        title: "Select program binary to debug",
+        filters: { "XEX binaries": ["xex"], "All files": ["*"] },
+      });
+      if (!uris || uris.length === 0) {
+        return undefined;
+      }
+      config.program = uris[0].fsPath;
+    }
+    return config;
+  }
 }

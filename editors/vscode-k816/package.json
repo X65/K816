@@ -14,14 +14,68 @@
     "vscode": "^1.96.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
   ],
   "activationEvents": [
     "onLanguage:k65",
-    "onCommand:k816.restartServer"
+    "onCommand:k816.restartServer",
+    "onDebugResolve:k816"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "breakpoints": [
+      {
+        "language": "k65"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "k816",
+        "label": "K816 Debugger",
+        "languages": [
+          "k65"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .k65 file to debug."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Pause execution on the first instruction.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "k816",
+            "request": "launch",
+            "name": "Debug K65 Program",
+            "program": "${workspaceFolder}/path/to/output.xex"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "K816: Launch",
+            "description": "Launch and debug a K65 program.",
+            "body": {
+              "type": "k816",
+              "request": "launch",
+              "name": "Debug K65 Program",
+              "program": "^\"\\${workspaceFolder}/path/to/output.xex\""
+            }
+          }
+        ]
+      }
+    ],
     "languages": [
       {
         "id": "k65",
@@ -73,6 +127,29 @@
           },
           "default": {},
           "description": "Extra environment variables merged into the language server process environment."
+        },
+        "k816.debugger.path": {
+          "type": "string",
+          "default": "emu",
+          "description": "Path to the emulator executable used as the debug adapter."
+        },
+        "k816.debugger.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "--dap"
+          ],
+          "description": "Arguments passed to the emulator executable when starting the debug adapter."
+        },
+        "k816.debugger.env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra environment variables merged into the debug adapter process environment."
         },
         "k816.trace.server": {
           "type": "string",

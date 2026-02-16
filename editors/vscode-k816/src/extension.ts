@@ -34,6 +34,10 @@ export async function activate(
       "k816",
       new K816DebugConfigProvider(),
     ),
+    vscode.debug.registerDebugAdapterTrackerFactory(
+      "k816",
+      new K816DebugAdapterTrackerFactory(),
+    ),
   );
 
   await startClient();
@@ -178,6 +182,47 @@ class K816DebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
     const execArgs = program ? [...configuredArgs, program] : configuredArgs;
     const env = resolveDebuggerEnv(config);
     return new vscode.DebugAdapterExecutable(command, execArgs, { env });
+  }
+}
+
+class K816DebugAdapterTrackerFactory
+  implements vscode.DebugAdapterTrackerFactory
+{
+  private channel: vscode.OutputChannel | undefined;
+
+  createDebugAdapterTracker(
+    _session: vscode.DebugSession,
+  ): vscode.ProviderResult<vscode.DebugAdapterTracker> {
+    const level = vscode.workspace
+      .getConfiguration("k816")
+      .get<string>("trace.debugger", "off");
+    if (level === "off") {
+      return undefined;
+    }
+    const verbose = level === "verbose";
+    if (!this.channel) {
+      this.channel = vscode.window.createOutputChannel("k816 DAP");
+    }
+    const ch = this.channel;
+    ch.show(true);
+    return {
+      onWillReceiveMessage(msg: unknown) {
+        ch.appendLine(
+          `[VSCode → emu] ${verbose ? JSON.stringify(msg, undefined, 2) : JSON.stringify(msg)}`,
+        );
+      },
+      onDidSendMessage(msg: unknown) {
+        ch.appendLine(
+          `[emu → VSCode] ${verbose ? JSON.stringify(msg, undefined, 2) : JSON.stringify(msg)}`,
+        );
+      },
+      onError(error: Error) {
+        ch.appendLine(`[error] ${error.message}`);
+      },
+      onExit(code: number | undefined, signal: string | undefined) {
+        ch.appendLine(`[exit] code=${code} signal=${signal}`);
+      },
+    };
   }
 }
 

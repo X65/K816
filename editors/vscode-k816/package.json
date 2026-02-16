@@ -59,7 +59,7 @@
             "type": "k816",
             "request": "launch",
             "name": "Debug K65 Program",
-            "program": "${workspaceFolder}/path/to/output.xex"
+            "program": "${workspaceFolder}/target/output.xex"
           }
         ],
         "configurationSnippets": [
@@ -70,7 +70,7 @@
               "type": "k816",
               "request": "launch",
               "name": "Debug K65 Program",
-              "program": "^\"\\${workspaceFolder}/path/to/output.xex\""
+              "program": "^\"\\${workspaceFolder}/target/output.xex\""
             }
           }
         ]
@@ -160,6 +160,16 @@
           ],
           "default": "off",
           "description": "Trace level forwarded to the language server client."
+        },
+        "k816.trace.debugger": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace DAP messages between VS Code and the debug adapter."
         }
       }
     }

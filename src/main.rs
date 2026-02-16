@@ -488,9 +488,11 @@ fn resolve_listing_path(output_path: &Path, listing_arg: Option<&str>) -> Option
 fn write_link_output(
     output_path: &Path,
     listing_path: Option<&Path>,
-    linked: &k816_link::LinkOutput,
+    linked: &k816_link::LinkedLayout,
+    output_kind: k816_link::OutputKind,
 ) -> anyhow::Result<()> {
-    std::fs::write(output_path, &linked.bytes)?;
+    let bytes = k816_link::render_linked_output(linked, output_kind)?;
+    std::fs::write(output_path, &bytes)?;
     if let Some(path) = listing_path {
         std::fs::write(path, &linked.listing)?;
     }
@@ -577,7 +579,12 @@ fn link_command(
     )?;
 
     let listing_path = resolve_listing_path(&output_path, options.listing.as_deref());
-    write_link_output(&output_path, listing_path.as_deref(), &linked)
+    write_link_output(
+        &output_path,
+        listing_path.as_deref(),
+        &linked,
+        config.output.kind,
+    )
 }
 
 fn single_file_build_command(
@@ -611,9 +618,9 @@ fn single_file_build_command(
     )?;
     let output_path = output
         .or(config_output_path)
-        .unwrap_or_else(|| default_build_output_path(&input_path, linked.kind));
+        .unwrap_or_else(|| default_build_output_path(&input_path, output_kind));
     let listing_path = resolve_listing_path(&output_path, link_options.listing.as_deref());
-    write_link_output(&output_path, listing_path.as_deref(), &linked)
+    write_link_output(&output_path, listing_path.as_deref(), &linked, output_kind)
 }
 
 #[derive(Debug, Deserialize)]
@@ -973,7 +980,12 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         ListingOption::Bool(true) => Some(artifact_path.with_extension("lst")),
         ListingOption::Path(path) => Some(project_root.join(path)),
     };
-    write_link_output(&artifact_path, listing_path.as_deref(), &linked)?;
+    write_link_output(
+        &artifact_path,
+        listing_path.as_deref(),
+        &linked,
+        config.output.kind,
+    )?;
 
     Ok(ProjectBuildResult {
         project_root,

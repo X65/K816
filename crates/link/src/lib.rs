@@ -107,9 +107,15 @@ pub enum OutputKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct LinkOutput {
+pub struct LinkedRun {
+    pub memory_name: String,
+    pub start_addr: u32,
     pub bytes: Vec<u8>,
-    pub kind: OutputKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinkedLayout {
+    pub runs: Vec<LinkedRun>,
     pub listing: String,
     pub symbols: HashMap<String, u32>,
     pub section_placements: HashMap<(usize, String), Vec<PlacedChunk>>,
@@ -274,7 +280,7 @@ pub fn bfs_reorder(objects: Vec<O65Object>) -> Result<Vec<O65Object>> {
     Ok(result)
 }
 
-pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<LinkOutput> {
+pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<LinkedLayout> {
     link_objects_with_options(objects, config, LinkRenderOptions::plain())
 }
 
@@ -282,7 +288,7 @@ pub fn link_objects_with_options(
     objects: &[O65Object],
     config: &LinkerConfig,
     options: LinkRenderOptions,
-) -> Result<LinkOutput> {
+) -> Result<LinkedLayout> {
     if config.memory.is_empty() {
         bail!("linker config must contain at least one memory area");
     }
@@ -566,7 +572,7 @@ pub fn link_objects_with_options(
         }
     }
 
-    let (output_kind, bytes) = render_link_output(config, &memory_map)?;
+    let runs = collect_linked_runs(config, &memory_map)?;
 
     let mut listing_blocks = Vec::new();
     let include_object_index = objects.len() > 1;
@@ -601,11 +607,13 @@ pub fn link_objects_with_options(
         &memory_map,
     )?);
 
-    Ok(LinkOutput {
-        bytes,
-        kind: output_kind,
+    Ok(LinkedLayout {
+        runs,
         listing: listing_blocks.join("\n\n"),
-        symbols: symbols.into_iter().map(|(name, rs)| (name, rs.addr)).collect(),
+        symbols: symbols
+            .into_iter()
+            .map(|(name, rs)| (name, rs.addr))
+            .collect(),
         section_placements: placed_by_section,
     })
 }
@@ -1178,116 +1186,120 @@ fn used_runs(used: &[bool]) -> Vec<(usize, usize)> {
     out
 }
 
-fn render_link_output(
+fn collect_linked_runs(
     config: &LinkerConfig,
     memory_map: &HashMap<String, MemoryState>,
-) -> Result<(OutputKind, Vec<u8>)> {
-    let bytes = match config.output.kind {
-        OutputKind::RawBinary => render_raw_output(config, memory_map)?,
-        OutputKind::Xex => render_xex_output(config, memory_map)?,
-    };
-    Ok((config.output.kind, bytes))
-}
-
-fn render_raw_output(
-    config: &LinkerConfig,
-    memory_map: &HashMap<String, MemoryState>,
-) -> Result<Vec<u8>> {
-    let mut used_states: Vec<(&str, &MemoryState)> = Vec::new();
-    let mut used_names = Vec::new();
-
+) -> Result<Vec<LinkedRun>> {
+    let mut runs = Vec::new();
     for mem in &config.memory {
         let state = memory_map.get(&mem.name).ok_or_else(|| {
             anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
         })?;
-        if state.used.iter().any(|used| *used) {
-            used_states.push((&mem.name, state));
-            used_names.push(mem.name.clone());
-        }
-    }
-
-    match used_states.as_slice() {
-        [] => Ok(Vec::new()),
-        [(name, state)] => {
-            let runs = used_runs(&state.used);
-            if runs.len() > 1 {
-                bail!(
-                    "raw binary output is ambiguous: data placed in multiple ranges in memory area '{}'",
-                    name
-                );
-            }
-            Ok(compact_memory_runs(state))
-        }
-        _ => bail!(
-            "raw binary output is ambiguous: data placed in multiple memory areas ({})",
-            used_names.join(", ")
-        ),
-    }
-}
-
-fn compact_memory_runs(state: &MemoryState) -> Vec<u8> {
-    let mut compact = Vec::new();
-    for (start, end) in used_runs(&state.used) {
-        compact.extend_from_slice(&state.bytes[start..end]);
-    }
-    compact
-}
-
-fn render_xex_output(
-    config: &LinkerConfig,
-    memory_map: &HashMap<String, MemoryState>,
-) -> Result<Vec<u8>> {
-    let mut xex = Vec::new();
-    let mut wrote_header = false;
-
-    for mem in &config.memory {
-        let state = memory_map.get(&mem.name).ok_or_else(|| {
-            anyhow::anyhow!("internal linker error: memory '{}' missing", mem.name)
-        })?;
-
         for (start, end) in used_runs(&state.used) {
-            if !wrote_header {
-                xex.extend_from_slice(&0xFFFFu16.to_le_bytes());
-                wrote_header = true;
-            }
-
             let run_start: u32 = start
                 .try_into()
                 .context("used run start does not fit in u32")?;
-            let run_end_exclusive: u32 =
-                end.try_into().context("used run end does not fit in u32")?;
-
             let start_addr = state
                 .spec
                 .start
                 .checked_add(run_start)
-                .ok_or_else(|| anyhow::anyhow!("xex run start address overflow"))?;
-            let end_addr_exclusive = state
-                .spec
-                .start
-                .checked_add(run_end_exclusive)
-                .ok_or_else(|| anyhow::anyhow!("xex run end address overflow"))?;
-            let end_addr = end_addr_exclusive
-                .checked_sub(1)
-                .ok_or_else(|| anyhow::anyhow!("xex run end underflow"))?;
-
-            let start16 = u16::try_from(start_addr).with_context(|| {
-                format!(
-                    "xex output supports 16-bit load addresses, got start {start_addr:#X} in memory '{}'",
-                    mem.name
-                )
-            })?;
-            let end16 = u16::try_from(end_addr).with_context(|| {
-                format!(
-                    "xex output supports 16-bit load addresses, got end {end_addr:#X} in memory '{}'",
-                    mem.name
-                )
-            })?;
-
-            xex.extend_from_slice(&start16.to_le_bytes());
-            xex.extend_from_slice(&end16.to_le_bytes());
-            xex.extend_from_slice(&state.bytes[start..end]);
+                .ok_or_else(|| anyhow::anyhow!("linked run start address overflow"))?;
+            runs.push(LinkedRun {
+                memory_name: mem.name.clone(),
+                start_addr,
+                bytes: state.bytes[start..end].to_vec(),
+            });
         }
+    }
+    Ok(runs)
+}
+
+pub fn render_linked_output(layout: &LinkedLayout, kind: OutputKind) -> Result<Vec<u8>> {
+    match kind {
+        OutputKind::RawBinary => render_raw_output(layout),
+        OutputKind::Xex => render_xex_output(layout),
+    }
+}
+
+fn render_raw_output(layout: &LinkedLayout) -> Result<Vec<u8>> {
+    if layout.runs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let first_memory = layout
+        .runs
+        .first()
+        .map(|run| run.memory_name.as_str())
+        .unwrap_or_default();
+    let multiple_memories = layout
+        .runs
+        .iter()
+        .any(|run| run.memory_name.as_str() != first_memory);
+    if multiple_memories {
+        let mut used_names: Vec<String> = layout
+            .runs
+            .iter()
+            .map(|run| run.memory_name.clone())
+            .collect();
+        used_names.sort();
+        used_names.dedup();
+        bail!(
+            "raw binary output is ambiguous: data placed in multiple memory areas ({})",
+            used_names.join(", ")
+        );
+    }
+
+    if layout.runs.len() > 1 {
+        bail!(
+            "raw binary output is ambiguous: data placed in multiple ranges in memory area '{}'",
+            first_memory
+        );
+    }
+
+    Ok(layout
+        .runs
+        .first()
+        .map(|run| run.bytes.clone())
+        .unwrap_or_default())
+}
+
+fn render_xex_output(layout: &LinkedLayout) -> Result<Vec<u8>> {
+    let mut xex = Vec::new();
+    if layout.runs.is_empty() {
+        return Ok(xex);
+    }
+    xex.extend_from_slice(&0xFFFFu16.to_le_bytes());
+
+    for run in &layout.runs {
+        let run_len: u32 = run
+            .bytes
+            .len()
+            .try_into()
+            .context("xex run length does not fit in u32")?;
+        let end_addr_exclusive = run
+            .start_addr
+            .checked_add(run_len)
+            .ok_or_else(|| anyhow::anyhow!("xex run end address overflow"))?;
+        let end_addr = end_addr_exclusive
+            .checked_sub(1)
+            .ok_or_else(|| anyhow::anyhow!("xex run end underflow"))?;
+
+        let start16 = u16::try_from(run.start_addr).with_context(|| {
+            format!(
+                "xex output supports 16-bit load addresses, got start {:#X} in memory '{}'",
+                run.start_addr, run.memory_name
+            )
+        })?;
+        let end16 = u16::try_from(end_addr).with_context(|| {
+            format!(
+                "xex output supports 16-bit load addresses, got end {end_addr:#X} in memory '{}'",
+                run.memory_name
+            )
+        })?;
+
+        xex.extend_from_slice(&start16.to_le_bytes());
+        xex.extend_from_slice(&end16.to_le_bytes());
+        xex.extend_from_slice(&run.bytes);
     }
 
     Ok(xex)
@@ -1960,6 +1972,10 @@ mod tests {
         }
     }
 
+    fn render(layout: &LinkedLayout, kind: OutputKind) -> Vec<u8> {
+        render_linked_output(layout, kind).expect("render")
+    }
+
     #[test]
     fn links_absolute_relocation() {
         let mut sections = IndexMap::new();
@@ -2006,8 +2022,7 @@ mod tests {
             file: None,
         };
         let linked = link_objects(&[object], &config).expect("link");
-        assert_eq!(linked.kind, OutputKind::RawBinary);
-        assert_eq!(linked.bytes, vec![0xEA, 0x02, 0x00]);
+        assert_eq!(render(&linked, config.output.kind), vec![0xEA, 0x02, 0x00]);
     }
 
     #[test]
@@ -2055,7 +2070,7 @@ mod tests {
             file: None,
         };
         let linked = link_objects(&[object], &config).expect("link");
-        assert_eq!(linked.bytes, vec![0xAD, 0x34, 0x12]);
+        assert_eq!(render(&linked, config.output.kind), vec![0xAD, 0x34, 0x12]);
     }
 
     #[test]
@@ -2081,9 +2096,12 @@ mod tests {
             listing: String::new(),
         };
 
-        let linked = link_objects(&[object], &default_stub_config()).expect("link");
-        assert_eq!(linked.kind, OutputKind::Xex);
-        assert_eq!(linked.bytes, vec![0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xEA]);
+        let config = default_stub_config();
+        let linked = link_objects(&[object], &config).expect("link");
+        assert_eq!(
+            render(&linked, config.output.kind),
+            vec![0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xEA]
+        );
     }
 
     #[test]
@@ -2247,7 +2265,7 @@ mod tests {
             file: None,
         };
         let linked = link_objects(&[object], &config).expect("link");
-        assert_eq!(linked.bytes, vec![0xAA, 0xBB]);
+        assert_eq!(render(&linked, config.output.kind), vec![0xAA, 0xBB]);
         assert!(linked.listing.contains("000020: AA"));
         assert!(linked.listing.contains("000021: BB"));
     }
@@ -2419,7 +2437,9 @@ mod tests {
             listing: String::new(),
         };
 
-        let err = link_objects(&[object], &config).expect_err("expected ambiguity error");
+        let linked = link_objects(&[object], &config).expect("link");
+        let err = render_linked_output(&linked, OutputKind::RawBinary)
+            .expect_err("expected ambiguity error");
         assert!(err.to_string().contains("raw binary output is ambiguous"));
     }
 
@@ -2484,7 +2504,9 @@ mod tests {
             listing: String::new(),
         };
 
-        let err = link_objects(&[object], &config).expect_err("expected ambiguity error");
+        let linked = link_objects(&[object], &config).expect("link");
+        let err = render_linked_output(&linked, OutputKind::RawBinary)
+            .expect_err("expected ambiguity error");
         assert!(err.to_string().contains("raw binary output is ambiguous"));
     }
 
@@ -2525,11 +2547,10 @@ mod tests {
         };
 
         let linked = link_objects(&[object], &config).expect("link");
-        assert_eq!(linked.kind, OutputKind::Xex);
-        let xex = &linked.bytes;
+        let xex = render(&linked, config.output.kind);
         assert_eq!(
             xex,
-            &vec![
+            vec![
                 0xFF, 0xFF, // XEX header
                 0x00, 0x02, 0x00, 0x02, 0xAA, // block at $0200
                 0x10, 0x02, 0x11, 0x02, 0xBB, 0xCC, // block at $0210-$0211
@@ -2568,7 +2589,9 @@ mod tests {
             listing: String::new(),
         };
 
-        let err = link_objects(&[object], &config).expect_err("expected xex address error");
+        let linked = link_objects(&[object], &config).expect("link");
+        let err =
+            render_linked_output(&linked, OutputKind::Xex).expect_err("expected xex address error");
         assert!(
             err.to_string()
                 .contains("xex output supports 16-bit load addresses")

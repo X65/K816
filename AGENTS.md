@@ -40,7 +40,7 @@ Equivalent native/HLA constructs produce equivalent machine output, but they sta
 
 Convergence happens in lowering (AST -> HIR), not in parsing.
 
-Current frontend/backend flow (see `crates/core/src/driver.rs`):
+Current frontend/backend flow (see `crates/core/src/driver.rs` and `crates/link/src/lib.rs`):
 
 1. Parse with warnings (`parse_with_warnings`) into AST.
 2. Expand evaluator-backed expression fragments (`eval_expand::expand_file`).
@@ -48,15 +48,17 @@ Current frontend/backend flow (see `crates/core/src/driver.rs`):
 4. Run semantic analysis (`sema::analyze`) to build validated symbol/function/const/var metadata.
 5. Lower AST + semantic model into operation-level HIR (`lower::lower`), translating HLA nodes and native instructions through the same instruction/mode validation path.
 6. Optimize mode ops with `eliminate_dead_mode_ops` and `fold_mode_ops`.
-7. Emit either:
-   - flat segment bytes + listing (`emit`), or
-   - relocatable o65 object + relocation metadata (`emit_object`).
+7. Emit relocatable object/chunk metadata via `emit_object`.
+8. Link object(s) into canonical placed layout (symbols/placements/listing), format-agnostic.
+9. Render final container format (`raw`/`xex`) only at output write time.
 
 - AST is syntax-oriented: spans, comments, numeric literal formats, and source-level constructs for diagnostics/formatting are preserved.
 - Semantic analysis resolves symbols, const values, variable layouts, and function mode contracts before lowering.
 - HIR (`hir::Program`) is operation-oriented: segments, labels, instructions, emitted bytes, mode ops, and relocatable byte fixups.
 - Width/mode-sensitive diagnostics (typed loads/stores, `:far` direct access rejection, etc.) are enforced during lowering for both native and HLA forms.
-- Emission handles instruction selection/encoding and fixup materialization; linker resolution is handled in the `link` crate from RON config.
+- Core compile backend is single-path object/chunk emission (`emit_object`-style).
+- Linker output is layout-first; `raw`/`xex` are render targets selected at final write time, not compile backends.
+- Emission handles instruction selection/encoding and fixup materialization; linker placement and symbol resolution are handled in the `link` crate from RON config.
 - Structured top-level blocks (`func`, `data`, named data blocks) remain the units used by lowering and downstream placement/link flows.
 
 ## Build and Test

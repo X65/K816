@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 
 struct PipelineOutput {
-    linked: k816_link::LinkOutput,
+    linked: k816_link::LinkedLayout,
     warnings: String,
 }
 
@@ -351,7 +351,9 @@ fn bless_case_internal(
             }
 
             let expected_binary_path = expected_binary.path(&fixture_dir);
-            if write_bytes_if_changed(&expected_binary_path, &pipeline.linked.bytes)? {
+            let rendered =
+                k816_link::render_linked_output(&pipeline.linked, expected_binary.kind())?;
+            if write_bytes_if_changed(&expected_binary_path, &rendered)? {
                 updated.push(expected_binary_path);
             }
             if expected_listing_path.exists()
@@ -397,7 +399,8 @@ fn bless_case_internal(
         Some(expected_binary.kind()),
     )?;
     let expected_binary_path = expected_binary.path(&fixture_dir);
-    if write_bytes_if_changed(&expected_binary_path, &pipeline.linked.bytes)? {
+    let rendered = k816_link::render_linked_output(&pipeline.linked, expected_binary.kind())?;
+    if write_bytes_if_changed(&expected_binary_path, &rendered)? {
         updated.push(expected_binary_path);
     }
     if expected_listing_path.exists()
@@ -555,26 +558,18 @@ fn compile_and_link(
 fn compare_binary_output(
     fixture_dir: &Path,
     expected_binary: ExpectedBinary,
-    linked: &k816_link::LinkOutput,
+    linked: &k816_link::LinkedLayout,
 ) -> Result<()> {
-    if linked.kind != expected_binary.kind() {
-        return Err(anyhow!(
-            "linked output kind mismatch in fixture '{}': expected {:?}, got {:?}",
-            fixture_dir.display(),
-            expected_binary.kind(),
-            linked.kind
-        ));
-    }
-
     let expected_path = expected_binary.path(fixture_dir);
     let expected = read_non_empty_bytes(&expected_path, expected_binary.label())?;
-    if linked.bytes != expected {
+    let rendered = k816_link::render_linked_output(linked, expected_binary.kind())?;
+    if rendered != expected {
         return Err(anyhow!(
             "{} mismatch in fixture '{}': expected {} bytes, got {} bytes",
             expected_binary.label(),
             fixture_dir.display(),
             expected.len(),
-            linked.bytes.len(),
+            rendered.len(),
         ));
     }
     Ok(())

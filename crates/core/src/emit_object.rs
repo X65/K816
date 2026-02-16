@@ -17,8 +17,16 @@ use crate::hir::{
 use crate::span::{SourceMap, Span};
 
 #[derive(Debug, Clone)]
+pub struct AddressableSite {
+    pub segment: String,
+    pub offset: u32,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
 pub struct EmitObjectOutput {
     pub object: O65Object,
+    pub addressable_sites: Vec<AddressableSite>,
 }
 
 #[derive(Debug)]
@@ -82,6 +90,7 @@ pub fn emit_object(
     let mut function_initial_modes: FxHashMap<(String, String), (bool, bool)> =
         FxHashMap::default();
     let mut data_string_fragments = Vec::new();
+    let mut addressable_sites: Vec<AddressableSite> = Vec::new();
     let mut function_label_metadata: FxHashMap<String, FunctionMetadata> = FxHashMap::default();
     let mut m_wide: Option<bool> = None; // accumulator width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
     let mut x_wide: Option<bool> = None; // index width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
@@ -156,6 +165,11 @@ pub fn emit_object(
                 let segment = segments
                     .get(&current_segment)
                     .expect("current segment must exist during emit");
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: segment.section_offset,
+                    span: op.span,
+                });
                 if labels
                     .insert(
                         name.clone(),
@@ -237,6 +251,11 @@ pub fn emit_object(
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
                 let opcode_offset = segment.section_offset;
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: opcode_offset,
+                    span: op.span,
+                });
                 if let Some(function) = &current_function {
                     function_instruction_sites.push(FunctionInstructionSite {
                         segment: current_segment.clone(),
@@ -260,6 +279,11 @@ pub fn emit_object(
                     .get_mut(&current_segment)
                     .expect("current segment must exist during emit");
                 let opcode_offset = segment.section_offset;
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: opcode_offset,
+                    span: op.span,
+                });
                 if let Some(function) = &current_function {
                     function_instruction_sites.push(FunctionInstructionSite {
                         segment: current_segment.clone(),
@@ -277,6 +301,11 @@ pub fn emit_object(
 
                 apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
                 let emit_offset = segment.section_offset;
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: emit_offset,
+                    span: op.span,
+                });
                 if let Some(text) = string_literal_text_for_emit(bytes, source_map, op.span) {
                     data_string_fragments.push(DataStringFragment {
                         section: current_segment.clone(),
@@ -293,6 +322,11 @@ pub fn emit_object(
 
                 apply_nocross_if_needed(segment, bytes.len(), op.span, &mut diagnostics);
                 let emit_offset = segment.section_offset;
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: emit_offset,
+                    span: op.span,
+                });
                 append_bytes(segment, bytes, op.span, &mut diagnostics);
                 for relocation in relocations {
                     if relocation.offset >= bytes.len() as u32 {
@@ -413,6 +447,11 @@ pub fn emit_object(
                 apply_nocross_if_needed(segment, 1 + width, op.span, &mut diagnostics);
 
                 let opcode_offset = segment.section_offset;
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: opcode_offset,
+                    span: op.span,
+                });
                 append_bytes(segment, &[encoding.opcode], op.span, &mut diagnostics);
                 let operand_offset = segment.section_offset;
 
@@ -635,6 +674,7 @@ pub fn emit_object(
             data_string_fragments,
             listing: listing_blocks.join("\n\n"),
         },
+        addressable_sites,
     })
 }
 

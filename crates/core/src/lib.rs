@@ -14,6 +14,7 @@ pub mod parser;
 pub mod sema;
 pub mod span;
 
+pub use emit_object::AddressableSite;
 pub use driver::{
     CompileError, CompileObjectOutput, CompileOutput, CompileRenderOptions, compile_source,
     compile_source_to_object, compile_source_to_object_for_link,

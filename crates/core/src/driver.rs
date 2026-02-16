@@ -6,7 +6,7 @@ use k816_o65::O65Object;
 
 use crate::diag::{Diagnostic, RenderOptions, render_diagnostics_with_options};
 use crate::emit::emit;
-use crate::emit_object::emit_object;
+use crate::emit_object::{AddressableSite, emit_object};
 use crate::eval_expand::expand_file;
 use crate::fold_mode::{eliminate_dead_mode_ops, fold_mode_ops};
 use crate::lower::lower;
@@ -26,6 +26,7 @@ pub struct CompileOutput {
 #[derive(Debug, Clone)]
 pub struct CompileObjectOutput {
     pub object: O65Object,
+    pub addressable_sites: Vec<AddressableSite>,
     pub warnings: Vec<Diagnostic>,
     pub rendered_warnings: String,
 }
@@ -203,6 +204,7 @@ pub fn compile_source_to_object_with_fs_and_options(
 
     Ok(CompileObjectOutput {
         object: emit_output.object,
+        addressable_sites: emit_output.addressable_sites,
         warnings,
         rendered_warnings,
     })

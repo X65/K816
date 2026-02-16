@@ -112,6 +112,7 @@ pub struct LinkOutput {
     pub kind: OutputKind,
     pub listing: String,
     pub symbols: HashMap<String, u32>,
+    pub section_placements: HashMap<(usize, String), Vec<PlacedChunk>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,11 +153,11 @@ struct PlannedChunk {
 }
 
 #[derive(Debug, Clone)]
-struct PlacedChunk {
-    section_offset: u32,
-    len: u32,
-    base_addr: u32,
-    memory_name: String,
+pub struct PlacedChunk {
+    pub section_offset: u32,
+    pub len: u32,
+    pub base_addr: u32,
+    pub memory_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -605,6 +606,7 @@ pub fn link_objects_with_options(
         kind: output_kind,
         listing: listing_blocks.join("\n\n"),
         symbols: symbols.into_iter().map(|(name, rs)| (name, rs.addr)).collect(),
+        section_placements: placed_by_section,
     })
 }
 
@@ -1120,7 +1122,7 @@ impl Cache<String> for SingleSourceCache {
     }
 }
 
-fn resolve_symbol_addr(placements: &[PlacedChunk], offset: u32) -> Option<u32> {
+pub fn resolve_symbol_addr(placements: &[PlacedChunk], offset: u32) -> Option<u32> {
     for chunk in placements {
         if offset == chunk.section_offset {
             return Some(chunk.base_addr);

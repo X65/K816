@@ -236,6 +236,21 @@ struct DocumentState {
     line_index: LineIndex,
     analysis: DocumentAnalysis,
     object: Option<k816_o65::O65Object>,
+    addressable_sites: Vec<k816_core::AddressableSite>,
+    resolved_sites: Vec<(k816_core::span::Span, u32)>,
+}
+
+impl DocumentState {
+    fn address_at_offset(&self, offset: usize) -> Option<u32> {
+        let idx = self.resolved_sites.partition_point(|(span, _)| span.start <= offset);
+        if idx > 0 {
+            let (span, addr) = &self.resolved_sites[idx - 1];
+            if offset < span.end {
+                return Some(*addr);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -245,7 +260,6 @@ struct ServerState {
     documents: HashMap<Uri, DocumentState>,
     symbols: HashMap<String, Vec<SymbolLocation>>,
     linker_config: k816_link::LinkerConfig,
-    resolved_addresses: HashMap<String, u32>,
 }
 
 impl ServerState {
@@ -256,7 +270,6 @@ impl ServerState {
             documents: HashMap::new(),
             symbols: HashMap::new(),
             linker_config: k816_link::default_stub_config(),
-            resolved_addresses: HashMap::new(),
         }
     }
 
@@ -330,7 +343,7 @@ impl ServerState {
             .ensure_file_id(uri.clone(), Some(path.clone()));
         let source_name = path.display().to_string();
         eprintln!("k816-lsp: analyzing '{source_name}'");
-        let (analysis, object) = analyze_document(&source_name, &text);
+        let (analysis, object, addressable_sites) = analyze_document(&source_name, &text);
         self.documents.insert(
             uri.clone(),
             DocumentState {
@@ -343,6 +356,8 @@ impl ServerState {
                 text,
                 analysis,
                 object,
+                addressable_sites,
+                resolved_sites: Vec::new(),
             },
         );
         Ok(())
@@ -368,7 +383,14 @@ impl ServerState {
             .as_ref()
             .map(|doc| doc.analysis.clone())
             .unwrap_or_default();
-        let object = prev.and_then(|doc| doc.object);
+        let object = prev.as_ref().and_then(|doc| doc.object.clone());
+        let addressable_sites = prev
+            .as_ref()
+            .map(|doc| doc.addressable_sites.clone())
+            .unwrap_or_default();
+        let resolved_sites = prev
+            .map(|doc| doc.resolved_sites)
+            .unwrap_or_default();
 
         self.documents.insert(
             uri.clone(),
@@ -382,6 +404,8 @@ impl ServerState {
                 text,
                 analysis,
                 object,
+                addressable_sites,
+                resolved_sites,
             },
         );
     }
@@ -396,13 +420,14 @@ impl ServerState {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| doc.uri.to_string());
         eprintln!("k816-lsp: analyzing '{source_name}'");
-        let (mut new_analysis, object) = analyze_document(&source_name, &doc.text);
+        let (mut new_analysis, object, addressable_sites) = analyze_document(&source_name, &doc.text);
         if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
             new_analysis.symbols = doc.analysis.symbols.clone();
             new_analysis.scopes = doc.analysis.scopes.clone();
         }
         doc.analysis = new_analysis;
         doc.object = object;
+        doc.addressable_sites = addressable_sites;
         self.rebuild_symbol_index();
     }
 
@@ -413,7 +438,7 @@ impl ServerState {
             let file_id = self
                 .source_index
                 .ensure_file_id(uri.clone(), Some(path.clone()));
-            let (analysis, object) = analyze_document(&path.display().to_string(), &text);
+            let (analysis, object, addressable_sites) = analyze_document(&path.display().to_string(), &text);
             self.documents.insert(
                 uri.clone(),
                 DocumentState {
@@ -426,6 +451,8 @@ impl ServerState {
                     text,
                     analysis,
                     object,
+                    addressable_sites,
+                    resolved_sites: Vec::new(),
                 },
             );
             self.rebuild_symbol_index();
@@ -455,29 +482,51 @@ impl ServerState {
     }
 
     fn try_link_workspace(&mut self) {
-        let objects: Vec<&k816_o65::O65Object> = self
+        // Collect (uri, cloned object) pairs — must clone to release the borrow.
+        let doc_entries: Vec<(Uri, k816_o65::O65Object)> = self
             .documents
-            .values()
-            .filter_map(|doc| doc.object.as_ref())
+            .iter()
+            .filter_map(|(uri, doc)| doc.object.as_ref().map(|obj| (uri.clone(), obj.clone())))
             .collect();
 
-        if objects.is_empty() {
-            self.resolved_addresses.clear();
+        if doc_entries.is_empty() {
+            for doc in self.documents.values_mut() {
+                doc.resolved_sites.clear();
+            }
             return;
         }
 
-        let object_refs: Vec<k816_o65::O65Object> = objects.into_iter().cloned().collect();
+        let objects: Vec<k816_o65::O65Object> =
+            doc_entries.iter().map(|(_, obj)| obj.clone()).collect();
 
         match k816_link::link_objects_with_options(
-            &object_refs,
+            &objects,
             &self.linker_config,
             k816_link::LinkRenderOptions::plain(),
         ) {
             Ok(output) => {
-                self.resolved_addresses = output.symbols;
+                for (obj_idx, (uri, _)) in doc_entries.iter().enumerate() {
+                    if let Some(doc) = self.documents.get_mut(uri) {
+                        let mut sites = Vec::new();
+                        for site in &doc.addressable_sites {
+                            let key = (obj_idx, site.segment.clone());
+                            if let Some(placements) = output.section_placements.get(&key) {
+                                if let Some(addr) =
+                                    k816_link::resolve_symbol_addr(placements, site.offset)
+                                {
+                                    sites.push((site.span, addr));
+                                }
+                            }
+                        }
+                        sites.sort_by_key(|(span, _)| span.start);
+                        doc.resolved_sites = sites;
+                    }
+                }
             }
             Err(_) => {
-                self.resolved_addresses.clear();
+                for doc in self.documents.values_mut() {
+                    doc.resolved_sites.clear();
+                }
             }
         }
     }
@@ -557,10 +606,24 @@ impl ServerState {
             });
         }
 
-        builtin_hover_text(&token.text).map(|text| Hover {
+        if let Some(mut text) = builtin_hover_text(&token.text) {
+            if let Some(addr) = doc.address_at_offset(offset) {
+                text.push_str(&format!("\n- address: `{}`", format_address(addr)));
+            }
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: text,
+                }),
+                range: Some(token_range),
+            });
+        }
+
+        // No symbol or builtin match — show address if available
+        doc.address_at_offset(offset).map(|addr| Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: text,
+                value: format!("address: `{}`", format_address(addr)),
             }),
             range: Some(token_range),
         })
@@ -1068,15 +1131,15 @@ fn uri_from_file_path(path: &Path) -> Result<Uri> {
 fn analyze_document(
     source_name: &str,
     source_text: &str,
-) -> (DocumentAnalysis, Option<k816_o65::O65Object>) {
-    let (mut diagnostics, compile_failed, object) =
+) -> (DocumentAnalysis, Option<k816_o65::O65Object>, Vec<k816_core::AddressableSite>) {
+    let (mut diagnostics, compile_failed, object, addressable_sites) =
         match k816_core::compile_source_to_object_with_options(
             source_name,
             source_text,
             k816_core::CompileRenderOptions::plain(),
         ) {
-            Ok(output) => (output.warnings, false, Some(output.object)),
-            Err(error) => (error.diagnostics, true, None),
+            Ok(output) => (output.warnings, false, Some(output.object), output.addressable_sites),
+            Err(error) => (error.diagnostics, true, None, Vec::new()),
         };
 
     let mut source_map = k816_core::span::SourceMap::default();
@@ -1126,6 +1189,7 @@ fn analyze_document(
             ast,
         },
         object,
+        addressable_sites,
     )
 }
 
@@ -1638,7 +1702,7 @@ fn hover_contents_for_symbol(
             if let Some(width) = meta.mode_contract.i_width {
                 lines.push(format!("- I width: {}", reg_width_name(width)));
             }
-            if let Some(&addr) = state.resolved_addresses.get(canonical) {
+            if let Some(addr) = doc.address_at_offset(symbol.selection.start) {
                 lines.push(format!("- address: `{}`", format_address(addr)));
             }
             return lines.join("\n");
@@ -1657,8 +1721,10 @@ fn hover_contents_for_symbol(
     }
 
     let mut text = format!("**{}** `{}`", symbol.category.detail(), symbol.name);
-    if let Some(&addr) = state.resolved_addresses.get(canonical) {
-        text.push_str(&format!("\n- address: `{}`", format_address(addr)));
+    if let Some(doc) = state.documents.get(&symbol.uri) {
+        if let Some(addr) = doc.address_at_offset(symbol.selection.start) {
+            text.push_str(&format!("\n- address: `{}`", format_address(addr)));
+        }
     }
     text
 }

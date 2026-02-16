@@ -131,7 +131,6 @@ pub enum Stmt {
         body: Vec<Spanned<Stmt>>,
     },
     SwapAB,
-    TransferChain(Vec<Instruction>),
     Empty,
 }
 
@@ -180,6 +179,73 @@ pub enum Operand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HlaOperandExpr {
+    pub expr: Expr,
+    pub index: Option<IndexRegister>,
+    pub addr_mode: OperandAddrMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaCpuRegister {
+    A,
+    B,
+    C,
+    D,
+    S,
+    X,
+    Y,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaAluOp {
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaIncDecOp {
+    Inc,
+    Dec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HlaIncDecTarget {
+    Register(IndexRegister),
+    Address(HlaOperandExpr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaShiftOp {
+    Asl,
+    Lsr,
+    Rol,
+    Ror,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HlaShiftTarget {
+    Accumulator,
+    Address(HlaOperandExpr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaFlag {
+    Carry,
+    Decimal,
+    Interrupt,
+    Overflow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaStackTarget {
+    A,
+    P,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HlaRegister {
     A,
@@ -218,6 +284,61 @@ pub enum HlaRhs {
 
 #[derive(Debug, Clone)]
 pub enum HlaStmt {
+    RegisterAssign {
+        register: HlaCpuRegister,
+        rhs: HlaOperandExpr,
+    },
+    RegisterStore {
+        dest: HlaOperandExpr,
+        src: HlaCpuRegister,
+    },
+    RegisterTransfer {
+        dest: HlaCpuRegister,
+        src: HlaCpuRegister,
+    },
+    AssignmentChain {
+        idents: Vec<String>,
+        tail_expr: Option<HlaOperandExpr>,
+    },
+    AccumulatorAlu {
+        op: HlaAluOp,
+        rhs: HlaOperandExpr,
+    },
+    AccumulatorBitTest {
+        rhs: HlaOperandExpr,
+    },
+    IndexCompare {
+        register: IndexRegister,
+        rhs: HlaOperandExpr,
+    },
+    IncDec {
+        op: HlaIncDecOp,
+        target: HlaIncDecTarget,
+    },
+    ShiftRotate {
+        op: HlaShiftOp,
+        target: HlaShiftTarget,
+    },
+    FlagSet {
+        flag: HlaFlag,
+        set: bool,
+    },
+    StackOp {
+        target: HlaStackTarget,
+        push: bool,
+    },
+    Goto {
+        target: Expr,
+        indirect: bool,
+        far: bool,
+    },
+    BranchGoto {
+        mnemonic: String,
+        target: Expr,
+    },
+    Return {
+        interrupt: bool,
+    },
     XAssignImmediate {
         rhs: Expr,
     },

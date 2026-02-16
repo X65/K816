@@ -26,6 +26,39 @@ Repository Layout:
 - `examples/` contains example K65 programs.
 - `tests/golden/` contains golden test fixtures for regression testing.
 
+## Methodology
+
+The compiler accepts two source styles that can be mixed in a single file:
+
+- the native 65816 mnemonic syntax (`lda`, `inx`, `pha`, ...)
+- the high-level K65-style syntax (`a = ...`, `x++`, `a!!`, ...)
+
+Equivalent native/HLA constructs produce equivalent machine output, but they stay distinct in AST:
+
+- native mnemonics are represented as `Stmt::Instruction`
+- HLA sugar is represented as `Stmt::Hla(...)` variants (register assignments/transfers, stack shorthand, flow shorthand, one-letter operators, nop shorthand, chains, etc.)
+
+Convergence happens in lowering (AST -> HIR), not in parsing.
+
+Current frontend/backend flow (see `crates/core/src/driver.rs`):
+
+1. Parse with warnings (`parse_with_warnings`) into AST.
+2. Expand evaluator-backed expression fragments (`eval_expand::expand_file`).
+3. Normalize HLA constructs into canonical HLA AST forms (`normalize_hla::normalize_file`).
+4. Run semantic analysis (`sema::analyze`) to build validated symbol/function/const/var metadata.
+5. Lower AST + semantic model into operation-level HIR (`lower::lower`), translating HLA nodes and native instructions through the same instruction/mode validation path.
+6. Optimize mode ops with `eliminate_dead_mode_ops` and `fold_mode_ops`.
+7. Emit either:
+   - flat segment bytes + listing (`emit`), or
+   - relocatable o65 object + relocation metadata (`emit_object`).
+
+- AST is syntax-oriented: spans, comments, numeric literal formats, and source-level constructs for diagnostics/formatting are preserved.
+- Semantic analysis resolves symbols, const values, variable layouts, and function mode contracts before lowering.
+- HIR (`hir::Program`) is operation-oriented: segments, labels, instructions, emitted bytes, mode ops, and relocatable byte fixups.
+- Width/mode-sensitive diagnostics (typed loads/stores, `:far` direct access rejection, etc.) are enforced during lowering for both native and HLA forms.
+- Emission handles instruction selection/encoding and fixup materialization; linker resolution is handled in the `link` crate from RON config.
+- Structured top-level blocks (`func`, `data`, named data blocks) remain the units used by lowering and downstream placement/link flows.
+
 ## Build and Test
 
 - Build: `cargo build`

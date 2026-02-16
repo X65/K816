@@ -543,11 +543,6 @@ fn format_stmt_text(stmt: &Stmt) -> String {
             out
         }
         Stmt::SwapAB => "b><a".to_string(),
-        Stmt::TransferChain(instrs) => instrs
-            .iter()
-            .map(format_instruction)
-            .collect::<Vec<_>>()
-            .join(" ; "),
         Stmt::Hla(stmt) => format_hla_stmt(stmt),
         Stmt::Empty => String::new(),
     }
@@ -783,6 +778,123 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
 
 fn format_hla_stmt(stmt: &HlaStmt) -> String {
     match stmt {
+        HlaStmt::RegisterAssign { register, rhs } => {
+            format!(
+                "{} = {}",
+                format_hla_cpu_register(*register),
+                format_hla_operand_expr(rhs)
+            )
+        }
+        HlaStmt::RegisterStore { dest, src } => {
+            format!(
+                "{} = {}",
+                format_hla_operand_expr(dest),
+                format_hla_cpu_register(*src)
+            )
+        }
+        HlaStmt::RegisterTransfer { dest, src } => format!(
+            "{} = {}",
+            format_hla_cpu_register(*dest),
+            format_hla_cpu_register(*src)
+        ),
+        HlaStmt::AssignmentChain { idents, tail_expr } => {
+            let mut parts = idents.clone();
+            if let Some(expr) = tail_expr {
+                parts.push(format_hla_operand_expr(expr));
+            }
+            parts.join(" = ")
+        }
+        HlaStmt::AccumulatorAlu { op, rhs } => {
+            let op = match op {
+                k816_core::ast::HlaAluOp::Add => "+",
+                k816_core::ast::HlaAluOp::Sub => "-",
+                k816_core::ast::HlaAluOp::And => "&",
+                k816_core::ast::HlaAluOp::Or => "|",
+                k816_core::ast::HlaAluOp::Xor => "^",
+            };
+            format!("a{op}{}", format_hla_operand_expr(rhs))
+        }
+        HlaStmt::AccumulatorBitTest { rhs } => format!("a&?{}", format_hla_operand_expr(rhs)),
+        HlaStmt::IndexCompare { register, rhs } => {
+            let register = match register {
+                k816_core::ast::IndexRegister::X => "x",
+                k816_core::ast::IndexRegister::Y => "y",
+            };
+            format!("{register}?{}", format_hla_operand_expr(rhs))
+        }
+        HlaStmt::IncDec { op, target } => {
+            let suffix = match op {
+                k816_core::ast::HlaIncDecOp::Inc => "++",
+                k816_core::ast::HlaIncDecOp::Dec => "--",
+            };
+            let target = match target {
+                k816_core::ast::HlaIncDecTarget::Register(k816_core::ast::IndexRegister::X) => {
+                    "x".to_string()
+                }
+                k816_core::ast::HlaIncDecTarget::Register(k816_core::ast::IndexRegister::Y) => {
+                    "y".to_string()
+                }
+                k816_core::ast::HlaIncDecTarget::Address(address) => format_hla_operand_expr(address),
+            };
+            format!("{target}{suffix}")
+        }
+        HlaStmt::ShiftRotate { op, target } => {
+            let suffix = match op {
+                k816_core::ast::HlaShiftOp::Asl => "<<",
+                k816_core::ast::HlaShiftOp::Lsr => ">>",
+                k816_core::ast::HlaShiftOp::Rol => "<<<",
+                k816_core::ast::HlaShiftOp::Ror => ">>>",
+            };
+            let target = match target {
+                k816_core::ast::HlaShiftTarget::Accumulator => "a".to_string(),
+                k816_core::ast::HlaShiftTarget::Address(address) => format_hla_operand_expr(address),
+            };
+            format!("{target}{suffix}")
+        }
+        HlaStmt::FlagSet { flag, set } => {
+            let flag = match flag {
+                k816_core::ast::HlaFlag::Carry => "c",
+                k816_core::ast::HlaFlag::Decimal => "d",
+                k816_core::ast::HlaFlag::Interrupt => "i",
+                k816_core::ast::HlaFlag::Overflow => "v",
+            };
+            let sign = if *set { "+" } else { "-" };
+            format!("{flag}{sign}")
+        }
+        HlaStmt::StackOp { target, push } => {
+            let target = match target {
+                k816_core::ast::HlaStackTarget::A => "a",
+                k816_core::ast::HlaStackTarget::P => "p",
+            };
+            let suffix = if *push { "!!" } else { "??" };
+            format!("{target}{suffix}")
+        }
+        HlaStmt::Goto {
+            target,
+            indirect,
+            far,
+        } => {
+            let target = if *indirect {
+                format!("({})", format_expr(target))
+            } else {
+                format_expr(target)
+            };
+            if *far {
+                format!("far goto {target}")
+            } else {
+                format!("goto {target}")
+            }
+        }
+        HlaStmt::BranchGoto { mnemonic, target } => {
+            format!("{} goto {}", mnemonic_to_condition(mnemonic), format_expr(target))
+        }
+        HlaStmt::Return { interrupt } => {
+            if *interrupt {
+                "return_i".to_string()
+            } else {
+                "return".to_string()
+            }
+        }
         HlaStmt::XAssignImmediate { rhs } => format!("x = {}", format_expr(rhs)),
         HlaStmt::XIncrement => "x++".to_string(),
         HlaStmt::StoreFromA { dests, rhs } => {
@@ -819,7 +931,13 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
             }
         }
         HlaStmt::NeverBlock { .. } => "never { ... }".to_string(),
-        HlaStmt::RepeatNop(n) => format!("* {n}"),
+        HlaStmt::RepeatNop(n) => {
+            if *n == 1 {
+                "*".to_string()
+            } else {
+                format!("* {n}")
+            }
+        }
         HlaStmt::PrefixConditional {
             skip_mnemonic,
             else_body,
@@ -832,6 +950,22 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
             }
         }
     }
+}
+
+fn format_hla_cpu_register(register: k816_core::ast::HlaCpuRegister) -> &'static str {
+    match register {
+        k816_core::ast::HlaCpuRegister::A => "a",
+        k816_core::ast::HlaCpuRegister::B => "b",
+        k816_core::ast::HlaCpuRegister::C => "c",
+        k816_core::ast::HlaCpuRegister::D => "d",
+        k816_core::ast::HlaCpuRegister::S => "s",
+        k816_core::ast::HlaCpuRegister::X => "x",
+        k816_core::ast::HlaCpuRegister::Y => "y",
+    }
+}
+
+fn format_hla_operand_expr(operand: &k816_core::ast::HlaOperandExpr) -> String {
+    format_address_operand(&operand.expr, operand.index, operand.addr_mode)
 }
 
 fn format_hla_rhs(rhs: &HlaRhs) -> String {

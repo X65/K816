@@ -3,9 +3,10 @@ use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister,
-    HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry, NumFmt, Operand,
-    OperandAddrMode, RegWidth, Stmt,
+    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaCompareOp, HlaCondition,
+    HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs,
+    HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, Instruction, Item, NamedDataBlock,
+    NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -359,6 +360,13 @@ fn collect_label_declared_modes_into(
                 if mnemonic == "plp" || mnemonic == "rti" {
                     *mode = ModeState::default();
                 }
+            }
+            Stmt::Hla(HlaStmt::StackOp {
+                target: HlaStackTarget::P,
+                push: false,
+            })
+            | Stmt::Hla(HlaStmt::Return { interrupt: true }) => {
+                *mode = ModeState::default();
             }
             Stmt::Hla(HlaStmt::NeverBlock { body }) => {
                 let mut inner_mode = *mode;
@@ -989,11 +997,6 @@ fn lower_stmt(
                 }),
                 span,
             ));
-        }
-        Stmt::TransferChain(instructions) => {
-            for instr in instructions {
-                lower_instruction_and_push(instr, scope, sema, span, diagnostics, ops);
-            }
         }
         Stmt::Var(var) => {
             emit_var_absolute_symbols(var, span, sema, diagnostics, ops);
@@ -1697,6 +1700,202 @@ fn immediate_width_error(span: Span, value: i64, width: RegWidth, mnemonic: &str
     }
 }
 
+fn lower_hla_operand_to_operand(parsed: &HlaOperandExpr) -> Operand {
+    if parsed.addr_mode != OperandAddrMode::Direct || parsed.index.is_some() {
+        return Operand::Value {
+            expr: parsed.expr.clone(),
+            force_far: false,
+            index: parsed.index,
+            addr_mode: parsed.addr_mode,
+        };
+    }
+    match &parsed.expr {
+        Expr::Index { .. } => Operand::Value {
+            expr: parsed.expr.clone(),
+            force_far: false,
+            index: None,
+            addr_mode: OperandAddrMode::Direct,
+        },
+        Expr::Unary { .. } => Operand::Immediate {
+            expr: parsed.expr.clone(),
+            explicit_hash: false,
+        },
+        _ => Operand::Auto {
+            expr: parsed.expr.clone(),
+        },
+    }
+}
+
+fn parse_cpu_register_name(value: &str) -> Option<HlaCpuRegister> {
+    match value.to_ascii_lowercase().as_str() {
+        "a" => Some(HlaCpuRegister::A),
+        "b" => Some(HlaCpuRegister::B),
+        "c" => Some(HlaCpuRegister::C),
+        "d" => Some(HlaCpuRegister::D),
+        "s" => Some(HlaCpuRegister::S),
+        "x" => Some(HlaCpuRegister::X),
+        "y" => Some(HlaCpuRegister::Y),
+        _ => None,
+    }
+}
+
+fn format_hla_cpu_register(register: HlaCpuRegister) -> &'static str {
+    match register {
+        HlaCpuRegister::A => "a",
+        HlaCpuRegister::B => "b",
+        HlaCpuRegister::C => "c",
+        HlaCpuRegister::D => "d",
+        HlaCpuRegister::S => "s",
+        HlaCpuRegister::X => "x",
+        HlaCpuRegister::Y => "y",
+    }
+}
+
+fn load_mnemonic_for_register(register: HlaCpuRegister) -> Option<&'static str> {
+    match register {
+        HlaCpuRegister::A => Some("lda"),
+        HlaCpuRegister::X => Some("ldx"),
+        HlaCpuRegister::Y => Some("ldy"),
+        _ => None,
+    }
+}
+
+fn store_mnemonic_for_register(register: HlaCpuRegister) -> Option<&'static str> {
+    match register {
+        HlaCpuRegister::A => Some("sta"),
+        HlaCpuRegister::X => Some("stx"),
+        HlaCpuRegister::Y => Some("sty"),
+        _ => None,
+    }
+}
+
+fn resolve_transfer(dest: HlaCpuRegister, src: HlaCpuRegister) -> Option<&'static str> {
+    match (dest, src) {
+        (HlaCpuRegister::X, HlaCpuRegister::A) => Some("tax"),
+        (HlaCpuRegister::Y, HlaCpuRegister::A) => Some("tay"),
+        (HlaCpuRegister::A, HlaCpuRegister::X) => Some("txa"),
+        (HlaCpuRegister::A, HlaCpuRegister::Y) => Some("tya"),
+        (HlaCpuRegister::X, HlaCpuRegister::S) => Some("tsx"),
+        (HlaCpuRegister::S, HlaCpuRegister::X) => Some("txs"),
+        (HlaCpuRegister::Y, HlaCpuRegister::X) => Some("txy"),
+        (HlaCpuRegister::X, HlaCpuRegister::Y) => Some("tyx"),
+        (HlaCpuRegister::D, HlaCpuRegister::C) => Some("tcd"),
+        (HlaCpuRegister::S, HlaCpuRegister::C) => Some("tcs"),
+        (HlaCpuRegister::C, HlaCpuRegister::D) => Some("tdc"),
+        (HlaCpuRegister::C, HlaCpuRegister::S) => Some("tsc"),
+        _ => None,
+    }
+}
+
+fn invalid_transfer_hint(dest: HlaCpuRegister, src: HlaCpuRegister) -> Option<&'static str> {
+    match (dest, src) {
+        (HlaCpuRegister::D, HlaCpuRegister::A) => Some("use d=c"),
+        (HlaCpuRegister::S, HlaCpuRegister::A) => Some("use s=c"),
+        (HlaCpuRegister::A, HlaCpuRegister::D) => Some("use c=d"),
+        (HlaCpuRegister::A, HlaCpuRegister::S) => Some("use c=s"),
+        (HlaCpuRegister::D, HlaCpuRegister::S) => Some("use d=c=s"),
+        (HlaCpuRegister::S, HlaCpuRegister::D) => Some("use s=c=d"),
+        (HlaCpuRegister::D, HlaCpuRegister::X) => Some("use a=x then d=c"),
+        (HlaCpuRegister::D, HlaCpuRegister::Y) => Some("use a=y then d=c"),
+        (HlaCpuRegister::S, HlaCpuRegister::Y) => Some("use s=x=y"),
+        (HlaCpuRegister::Y, HlaCpuRegister::S) => Some("use y=x=s"),
+        (HlaCpuRegister::Y, HlaCpuRegister::D) => Some("use c=d then y=a"),
+        (HlaCpuRegister::X, HlaCpuRegister::D) => Some("use c=d then x=a"),
+        (HlaCpuRegister::B, _) | (_, HlaCpuRegister::B) => Some("use b><a to swap A and B"),
+        (HlaCpuRegister::C, _) | (_, HlaCpuRegister::C) => {
+            Some("C is the 16-bit accumulator; only d=c, s=c, c=d, c=s are valid")
+        }
+        _ => None,
+    }
+}
+
+fn lower_assignment_chain(
+    idents: &[String],
+    tail_expr: Option<&HlaOperandExpr>,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    ctx: &mut LowerContext,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let n = idents.len();
+    let has_tail = tail_expr.is_some();
+    let total = n + if has_tail { 1 } else { 0 };
+    let mut instructions = Vec::new();
+
+    for i in (0..(total - 1)).rev() {
+        let dest = &idents[i];
+        let mut resolved = false;
+
+        for j in (i + 1)..total {
+            let candidate = if j == n && has_tail {
+                resolve_chain_pair_expr(dest, tail_expr.expect("tail expression exists"))
+            } else {
+                resolve_chain_pair_ident(dest, &idents[j])
+            };
+
+            if let Some(instruction) = candidate {
+                instructions.push(instruction);
+                resolved = true;
+                break;
+            }
+        }
+
+        if !resolved {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("cannot resolve assignment for '{dest}' in chain"),
+            ));
+            return;
+        }
+    }
+
+    for instruction in instructions {
+        lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+    }
+}
+
+fn resolve_chain_pair_ident(dest: &str, src: &str) -> Option<Instruction> {
+    let dest_register = parse_cpu_register_name(dest);
+    let src_register = parse_cpu_register_name(src);
+
+    match (dest_register, src_register) {
+        (Some(dest_register), Some(src_register)) => {
+            resolve_transfer(dest_register, src_register).map(|mnemonic| Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: None,
+            })
+        }
+        (Some(dest_register), None) => {
+            load_mnemonic_for_register(dest_register).map(|mnemonic| Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(Operand::Auto {
+                    expr: Expr::Ident(src.to_string()),
+                }),
+            })
+        }
+        (None, Some(src_register)) => {
+            store_mnemonic_for_register(src_register).map(|mnemonic| Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(Operand::Auto {
+                    expr: Expr::Ident(dest.to_string()),
+                }),
+            })
+        }
+        (None, None) => None,
+    }
+}
+
+fn resolve_chain_pair_expr(dest: &str, src: &HlaOperandExpr) -> Option<Instruction> {
+    let dest_register = parse_cpu_register_name(dest)?;
+    let mnemonic = load_mnemonic_for_register(dest_register)?;
+    Some(Instruction {
+        mnemonic: mnemonic.to_string(),
+        operand: Some(lower_hla_operand_to_operand(src)),
+    })
+}
+
 fn lower_hla_stmt(
     stmt: &HlaStmt,
     span: Span,
@@ -1707,6 +1906,247 @@ fn lower_hla_stmt(
     ops: &mut Vec<Spanned<Op>>,
 ) {
     match stmt {
+        HlaStmt::RegisterAssign { register, rhs } => {
+            let Some(mnemonic) = load_mnemonic_for_register(*register) else {
+                match register {
+                    HlaCpuRegister::C => diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            "C is the 16-bit accumulator; use a=expr for loads",
+                        ),
+                    ),
+                    _ => diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("cannot load register '{}'", format_hla_cpu_register(*register)),
+                    )),
+                }
+                return;
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(lower_hla_operand_to_operand(rhs)),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::RegisterStore { dest, src } => {
+            let Some(mnemonic) = store_mnemonic_for_register(*src) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!(
+                        "cannot store register '{}' with assignment syntax",
+                        format_hla_cpu_register(*src)
+                    ),
+                ));
+                return;
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(Operand::Value {
+                    expr: dest.expr.clone(),
+                    force_far: false,
+                    index: dest.index,
+                    addr_mode: dest.addr_mode,
+                }),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::RegisterTransfer { dest, src } => {
+            let Some(mnemonic) = resolve_transfer(*dest, *src) else {
+                let msg = format!(
+                    "transfer '{}' to '{}' is not directly supported",
+                    format_hla_cpu_register(*src).to_ascii_uppercase(),
+                    format_hla_cpu_register(*dest).to_ascii_uppercase(),
+                );
+                let diagnostic = match invalid_transfer_hint(*dest, *src) {
+                    Some(hint) => Diagnostic::error(span, msg).with_help(hint),
+                    None => Diagnostic::error(span, msg),
+                };
+                diagnostics.push(diagnostic);
+                return;
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: None,
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::AssignmentChain { idents, tail_expr } => {
+            lower_assignment_chain(
+                idents,
+                tail_expr.as_ref(),
+                scope,
+                sema,
+                span,
+                ctx,
+                diagnostics,
+                ops,
+            );
+        }
+        HlaStmt::AccumulatorAlu { op, rhs } => {
+            let mnemonic = match op {
+                HlaAluOp::Add => "adc",
+                HlaAluOp::Sub => "sbc",
+                HlaAluOp::And => "and",
+                HlaAluOp::Or => "ora",
+                HlaAluOp::Xor => "eor",
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(lower_hla_operand_to_operand(rhs)),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::AccumulatorBitTest { rhs } => {
+            let instruction = Instruction {
+                mnemonic: "bit".to_string(),
+                operand: Some(lower_hla_operand_to_operand(rhs)),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::IndexCompare { register, rhs } => {
+            let mnemonic = match register {
+                crate::ast::IndexRegister::X => "cpx",
+                crate::ast::IndexRegister::Y => "cpy",
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: Some(lower_hla_operand_to_operand(rhs)),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::IncDec { op, target } => {
+            let mnemonic = match op {
+                HlaIncDecOp::Inc => "inc",
+                HlaIncDecOp::Dec => "dec",
+            };
+            match target {
+                HlaIncDecTarget::Register(register) => {
+                    let mnemonic = match (op, register) {
+                        (HlaIncDecOp::Inc, crate::ast::IndexRegister::X) => "inx",
+                        (HlaIncDecOp::Inc, crate::ast::IndexRegister::Y) => "iny",
+                        (HlaIncDecOp::Dec, crate::ast::IndexRegister::X) => "dex",
+                        (HlaIncDecOp::Dec, crate::ast::IndexRegister::Y) => "dey",
+                    };
+                    let instruction = Instruction {
+                        mnemonic: mnemonic.to_string(),
+                        operand: None,
+                    };
+                    lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+                }
+                HlaIncDecTarget::Address(address) => {
+                    let instruction = Instruction {
+                        mnemonic: mnemonic.to_string(),
+                        operand: Some(Operand::Value {
+                            expr: address.expr.clone(),
+                            force_far: false,
+                            index: address.index,
+                            addr_mode: address.addr_mode,
+                        }),
+                    };
+                    lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+                }
+            }
+        }
+        HlaStmt::ShiftRotate { op, target } => {
+            let mnemonic = match op {
+                HlaShiftOp::Asl => "asl",
+                HlaShiftOp::Lsr => "lsr",
+                HlaShiftOp::Rol => "rol",
+                HlaShiftOp::Ror => "ror",
+            };
+            let instruction = match target {
+                HlaShiftTarget::Accumulator => Instruction {
+                    mnemonic: mnemonic.to_string(),
+                    operand: None,
+                },
+                HlaShiftTarget::Address(address) => Instruction {
+                    mnemonic: mnemonic.to_string(),
+                    operand: Some(Operand::Value {
+                        expr: address.expr.clone(),
+                        force_far: false,
+                        index: address.index,
+                        addr_mode: address.addr_mode,
+                        }),
+                },
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::FlagSet { flag, set } => {
+            let mnemonic = match (flag, set) {
+                (HlaFlag::Carry, true) => Some("sec"),
+                (HlaFlag::Carry, false) => Some("clc"),
+                (HlaFlag::Decimal, true) => Some("sed"),
+                (HlaFlag::Decimal, false) => Some("cld"),
+                (HlaFlag::Interrupt, true) => Some("sei"),
+                (HlaFlag::Interrupt, false) => Some("cli"),
+                (HlaFlag::Overflow, false) => Some("clv"),
+                (HlaFlag::Overflow, true) => None,
+            };
+            let Some(mnemonic) = mnemonic else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    "overflow flag cannot be explicitly set with shorthand",
+                ));
+                return;
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: None,
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::StackOp { target, push } => {
+            let mnemonic = match (target, push) {
+                (HlaStackTarget::A, true) => "pha",
+                (HlaStackTarget::A, false) => "pla",
+                (HlaStackTarget::P, true) => "php",
+                (HlaStackTarget::P, false) => "plp",
+            };
+            let instruction = Instruction {
+                mnemonic: mnemonic.to_string(),
+                operand: None,
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::Goto {
+            target,
+            indirect,
+            far,
+        } => {
+            let instruction = Instruction {
+                mnemonic: if *far { "jml" } else { "jmp" }.to_string(),
+                operand: Some(Operand::Value {
+                    expr: target.clone(),
+                    force_far: *far,
+                    index: None,
+                    addr_mode: if *indirect {
+                        OperandAddrMode::Indirect
+                    } else {
+                        OperandAddrMode::Direct
+                    },
+                }),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::BranchGoto { mnemonic, target } => {
+            let instruction = Instruction {
+                mnemonic: mnemonic.clone(),
+                operand: Some(Operand::Value {
+                    expr: target.clone(),
+                    force_far: false,
+                    index: None,
+                    addr_mode: OperandAddrMode::Direct,
+                }),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
+        HlaStmt::Return { interrupt } => {
+            let instruction = Instruction {
+                mnemonic: if *interrupt { "rti" } else { "rts" }.to_string(),
+                operand: None,
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
         HlaStmt::XAssignImmediate { rhs } => {
             let instruction = Instruction {
                 mnemonic: "ldx".to_string(),

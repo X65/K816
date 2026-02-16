@@ -110,7 +110,6 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
             body: normalize_stmt_sequence(body),
         },
         Stmt::SwapAB => Stmt::SwapAB,
-        Stmt::TransferChain(instrs) => Stmt::TransferChain(instrs.clone()),
         Stmt::Empty => Stmt::Empty,
         Stmt::Hla(stmt) => Stmt::Hla(normalize_hla_stmt(stmt)),
     }
@@ -151,6 +150,63 @@ fn normalize_stmt_sequence(stmts: &[Spanned<Stmt>]) -> Vec<Spanned<Stmt>> {
 
 fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
     match stmt {
+        HlaStmt::RegisterAssign { register, rhs } => HlaStmt::RegisterAssign {
+            register: *register,
+            rhs: rhs.clone(),
+        },
+        HlaStmt::RegisterStore { dest, src } => HlaStmt::RegisterStore {
+            dest: dest.clone(),
+            src: *src,
+        },
+        HlaStmt::RegisterTransfer { dest, src } => HlaStmt::RegisterTransfer {
+            dest: *dest,
+            src: *src,
+        },
+        HlaStmt::AssignmentChain { idents, tail_expr } => HlaStmt::AssignmentChain {
+            idents: idents.clone(),
+            tail_expr: tail_expr.clone(),
+        },
+        HlaStmt::AccumulatorAlu { op, rhs } => HlaStmt::AccumulatorAlu {
+            op: *op,
+            rhs: rhs.clone(),
+        },
+        HlaStmt::AccumulatorBitTest { rhs } => HlaStmt::AccumulatorBitTest { rhs: rhs.clone() },
+        HlaStmt::IndexCompare { register, rhs } => HlaStmt::IndexCompare {
+            register: *register,
+            rhs: rhs.clone(),
+        },
+        HlaStmt::IncDec { op, target } => HlaStmt::IncDec {
+            op: *op,
+            target: target.clone(),
+        },
+        HlaStmt::ShiftRotate { op, target } => HlaStmt::ShiftRotate {
+            op: *op,
+            target: target.clone(),
+        },
+        HlaStmt::FlagSet { flag, set } => HlaStmt::FlagSet {
+            flag: *flag,
+            set: *set,
+        },
+        HlaStmt::StackOp { target, push } => HlaStmt::StackOp {
+            target: *target,
+            push: *push,
+        },
+        HlaStmt::Goto {
+            target,
+            indirect,
+            far,
+        } => HlaStmt::Goto {
+            target: target.clone(),
+            indirect: *indirect,
+            far: *far,
+        },
+        HlaStmt::BranchGoto { mnemonic, target } => HlaStmt::BranchGoto {
+            mnemonic: mnemonic.clone(),
+            target: target.clone(),
+        },
+        HlaStmt::Return { interrupt } => HlaStmt::Return {
+            interrupt: *interrupt,
+        },
         HlaStmt::XAssignImmediate { rhs } => HlaStmt::XAssignImmediate { rhs: rhs.clone() },
         HlaStmt::XIncrement => HlaStmt::XIncrement,
         HlaStmt::StoreFromA { dests, rhs } => HlaStmt::StoreFromA {

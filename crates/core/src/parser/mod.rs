@@ -1,9 +1,10 @@
 use crate::ast::{
     CallStmt, CodeBlock, Comment, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
-    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition,
-    HlaRegister, HlaRhs, HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract,
-    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt, Operand, OperandAddrMode,
-    RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaCompareOp, HlaCondition,
+    HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs,
+    HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, IndexRegister, Instruction, Item,
+    LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt,
+    Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{NumLit, TokenKind, lex, lex_lenient};
@@ -19,13 +20,6 @@ use chumsky::{
 
 type ParseError<'src> = Rich<'src, TokenKind>;
 type ParseExtra<'src> = extra::Err<ParseError<'src>>;
-
-#[derive(Debug, Clone)]
-struct ParsedOperandExpr {
-    expr: Expr,
-    index: Option<IndexRegister>,
-    addr_mode: OperandAddrMode,
-}
 
 #[derive(Debug, Clone)]
 pub struct ParseOutput {
@@ -1860,7 +1854,6 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     // Dead parser — `x = expr` is handled by assign_stmt_parser.
-    // The formatter reconstructs HLA sugar from Operand::Auto instructions.
     chumsky::select! { TokenKind::Ident(value) if false => value }
         .map(|_: String| Stmt::Empty)
 }
@@ -1952,10 +1945,13 @@ where
         .collect::<Vec<_>>()
         .then(ident_parser())
         .then_ignore(stmt_boundary)
-        .try_map(|(prefix, last), span| {
+        .map(|(prefix, last)| {
             let mut operands = prefix;
             operands.push(last);
-            resolve_chain(&operands, None, span)
+            Stmt::Hla(HlaStmt::AssignmentChain {
+                idents: operands,
+                tail_expr: None,
+            })
         });
 
     // Ident chain ending with expression: ident = ident = ... = expr (3+ operands)
@@ -1965,120 +1961,14 @@ where
         .at_least(2)
         .collect::<Vec<_>>()
         .then(operand_expr_parser())
-        .try_map(|(prefix, rhs), span| resolve_chain(&prefix, Some(rhs), span));
+        .map(|(idents, rhs)| {
+            Stmt::Hla(HlaStmt::AssignmentChain {
+                idents,
+                tail_expr: Some(rhs),
+            })
+        });
 
     all_ident.or(with_expr)
-}
-
-/// Resolve a chain of assignments using pair-based decomposition.
-///
-/// `a=b=c=d` is decomposed into adjacent pairs processed right-to-left:
-/// `(c,d)`, `(b,c)`, `(a,b)`. Each pair is resolved as a load, store, or transfer.
-/// If a direct pair isn't supported (e.g. memory-to-memory), the algorithm tries
-/// the next source to the right: `(a,c)`, then `(a,d)`.
-fn resolve_chain<'src>(
-    idents: &[String],
-    tail_expr: Option<ParsedOperandExpr>,
-    span: SimpleSpan,
-) -> Result<Stmt, Rich<'src, TokenKind>> {
-    let n = idents.len();
-    let has_tail = tail_expr.is_some();
-    let total = n + if has_tail { 1 } else { 0 };
-
-    let mut instrs = Vec::new();
-
-    // Process pairs right-to-left: from the rightmost pair to the leftmost.
-    // The last operand is source-only (never a destination).
-    for i in (0..(total - 1)).rev() {
-        // For position i, try pairing with position i+1, then i+2, etc.
-        let dest = &idents[i];
-        let mut resolved = false;
-
-        for j in (i + 1)..total {
-            let result = if j == n && has_tail {
-                try_resolve_pair_expr(dest, tail_expr.as_ref().unwrap())
-            } else {
-                try_resolve_pair_ident(dest, &idents[j])
-            };
-
-            if let Some(instr) = result {
-                instrs.push(instr);
-                resolved = true;
-                break;
-            }
-        }
-
-        if !resolved {
-            return Err(Rich::custom(
-                span,
-                format!("cannot resolve assignment for '{dest}' in chain"),
-            ));
-        }
-    }
-
-    Ok(Stmt::TransferChain(instrs))
-}
-
-/// Try to resolve a single `dest=src` pair where both are identifiers.
-fn try_resolve_pair_ident(dest: &str, src: &str) -> Option<Instruction> {
-    let dest_lc = dest.to_ascii_lowercase();
-    let src_lc = src.to_ascii_lowercase();
-    let dest_is_reg = is_register_name(dest);
-    let src_is_reg = is_register_name(src);
-
-    if dest_is_reg && src_is_reg {
-        resolve_transfer(&dest_lc, &src_lc).map(|m| Instruction {
-            mnemonic: m.to_string(),
-            operand: None,
-        })
-    } else if dest_is_reg {
-        load_mnemonic_for_reg(&dest_lc).map(|m| Instruction {
-            mnemonic: m.to_string(),
-            operand: Some(Operand::Auto {
-                expr: Expr::Ident(src.to_string()),
-            }),
-        })
-    } else if src_is_reg {
-        store_mnemonic_for_reg(&src_lc).map(|m| Instruction {
-            mnemonic: m.to_string(),
-            operand: Some(Operand::Auto {
-                expr: Expr::Ident(dest.to_string()),
-            }),
-        })
-    } else {
-        None
-    }
-}
-
-/// Try to resolve a `dest=expr` pair where dest is an identifier and src is an expression.
-fn try_resolve_pair_expr(dest: &str, src: &ParsedOperandExpr) -> Option<Instruction> {
-    let dest_lc = dest.to_ascii_lowercase();
-    if is_register_name(dest) {
-        load_mnemonic_for_reg(&dest_lc).map(|m| Instruction {
-            mnemonic: m.to_string(),
-            operand: Some(parsed_operand_to_operand(src.clone())),
-        })
-    } else {
-        None
-    }
-}
-
-fn load_mnemonic_for_reg(reg: &str) -> Option<&'static str> {
-    match reg {
-        "a" => Some("lda"),
-        "x" => Some("ldx"),
-        "y" => Some("ldy"),
-        _ => None,
-    }
-}
-
-fn store_mnemonic_for_reg(reg: &str) -> Option<&'static str> {
-    match reg {
-        "a" => Some("sta"),
-        "x" => Some("stx"),
-        "y" => Some("sty"),
-        _ => None,
-    }
 }
 
 fn assign_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -2106,8 +1996,11 @@ where
     .validate(|(lhs, rhs), extra, emitter| {
         let lhs_lc = lhs.to_ascii_lowercase();
         let rhs_lc = rhs.to_ascii_lowercase();
-        if let Some(mnemonic) = resolve_transfer(&lhs_lc, &rhs_lc) {
-            return instruction_stmt(mnemonic, None);
+        if resolve_transfer(&lhs_lc, &rhs_lc).is_some() {
+            return Stmt::Hla(HlaStmt::RegisterTransfer {
+                dest: parse_cpu_register(&lhs_lc).expect("validated register"),
+                src: parse_cpu_register(&rhs_lc).expect("validated register"),
+            });
         }
         let rhs_upper = rhs_lc.to_ascii_uppercase();
         let lhs_upper = lhs_lc.to_ascii_uppercase();
@@ -2130,10 +2023,10 @@ where
     .then(operand_expr_parser())
     .validate(|(lhs, parsed), extra, emitter| {
         let lhs = lhs.to_ascii_lowercase();
-        let mnemonic = match lhs.as_str() {
-            "a" => "lda",
-            "x" => "ldx",
-            "y" => "ldy",
+        let register = match lhs.as_str() {
+            "a" => HlaCpuRegister::A,
+            "x" => HlaCpuRegister::X,
+            "y" => HlaCpuRegister::Y,
             "c" => {
                 emitter.emit(Rich::custom(
                     extra.span(),
@@ -2150,8 +2043,10 @@ where
                 return Stmt::Empty;
             }
         };
-        let operand = parsed_operand_to_operand(parsed);
-        instruction_stmt(mnemonic, Some(operand))
+        Stmt::Hla(HlaStmt::RegisterAssign {
+            register,
+            rhs: parsed,
+        })
     });
 
     register_transfer.or(register_load)
@@ -2169,28 +2064,20 @@ where
                 || value.eq_ignore_ascii_case("y") => value
         })
         .map(|(dest, rhs)| {
-            let mnemonic = if rhs.eq_ignore_ascii_case("a") {
-                "sta"
+            let src = if rhs.eq_ignore_ascii_case("a") {
+                HlaCpuRegister::A
             } else if rhs.eq_ignore_ascii_case("x") {
-                "stx"
+                HlaCpuRegister::X
             } else {
-                "sty"
+                HlaCpuRegister::Y
             };
 
-            instruction_stmt(
-                mnemonic,
-                Some(Operand::Value {
-                    expr: dest.expr,
-                    force_far: false,
-                    index: dest.index,
-                    addr_mode: dest.addr_mode,
-                }),
-            )
+            Stmt::Hla(HlaStmt::RegisterStore { dest, src })
         })
 }
 
 fn operand_expr_parser<'src, I>()
--> impl chumsky::Parser<'src, I, ParsedOperandExpr, ParseExtra<'src>> + Clone
+-> impl chumsky::Parser<'src, I, HlaOperandExpr, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -2201,7 +2088,7 @@ where
 
     let plain = expr_parser()
         .then(index.clone())
-        .map(|(expr, index)| ParsedOperandExpr {
+        .map(|(expr, index)| HlaOperandExpr {
             expr,
             index,
             addr_mode: OperandAddrMode::Direct,
@@ -2236,7 +2123,7 @@ where
                 }
             };
 
-            Ok(ParsedOperandExpr {
+            Ok(HlaOperandExpr {
                 expr,
                 index,
                 addr_mode,
@@ -2256,41 +2143,34 @@ where
     .then_ignore(just(TokenKind::Amp))
     .then_ignore(just(TokenKind::Question))
     .ignore_then(operand_expr_parser())
-    .map(|parsed| {
-        let operand = parsed_operand_to_operand(parsed);
-        instruction_stmt("bit", Some(operand))
-    });
+    .map(|rhs| Stmt::Hla(HlaStmt::AccumulatorBitTest { rhs }));
 
     let a_alu = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
     }
     .ignore_then(
         just(TokenKind::Plus)
-            .to("adc")
-            .or(just(TokenKind::Minus).to("sbc"))
-            .or(just(TokenKind::Amp).to("and"))
-            .or(just(TokenKind::Pipe).to("ora"))
-            .or(just(TokenKind::Caret).to("eor")),
+            .to(HlaAluOp::Add)
+            .or(just(TokenKind::Minus).to(HlaAluOp::Sub))
+            .or(just(TokenKind::Amp).to(HlaAluOp::And))
+            .or(just(TokenKind::Pipe).to(HlaAluOp::Or))
+            .or(just(TokenKind::Caret).to(HlaAluOp::Xor)),
     )
     .then(operand_expr_parser())
-    .map(|(mnemonic, parsed)| {
-        let operand = parsed_operand_to_operand(parsed);
-        instruction_stmt(mnemonic, Some(operand))
-    });
+    .map(|(op, rhs)| Stmt::Hla(HlaStmt::AccumulatorAlu { op, rhs }));
 
     let xy_cmp = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("y") => value
     }
     .then_ignore(just(TokenKind::Question))
     .then(operand_expr_parser())
-    .map(|(lhs, parsed)| {
-        let mnemonic = if lhs.eq_ignore_ascii_case("x") {
-            "cpx"
+    .map(|(lhs, rhs)| {
+        let register = if lhs.eq_ignore_ascii_case("x") {
+            IndexRegister::X
         } else {
-            "cpy"
+            IndexRegister::Y
         };
-        let operand = parsed_operand_to_operand(parsed);
-        instruction_stmt(mnemonic, Some(operand))
+        Stmt::Hla(HlaStmt::IndexCompare { register, rhs })
     });
 
     a_bit.or(a_alu).or(xy_cmp)
@@ -2306,15 +2186,14 @@ where
         .then_ignore(just(TokenKind::PlusPlus))
         .try_map(|(base, idx), span| {
             let index = parse_index_register(Some(idx), span)?;
-            Ok(instruction_stmt(
-                "inc",
-                Some(Operand::Value {
+            Ok(Stmt::Hla(HlaStmt::IncDec {
+                op: HlaIncDecOp::Inc,
+                target: HlaIncDecTarget::Address(HlaOperandExpr {
                     expr: Expr::Ident(base),
-                    force_far: false,
                     index,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            ))
+            }))
         });
 
     let indexed_dec = ident_parser()
@@ -2324,35 +2203,39 @@ where
         .then_ignore(just(TokenKind::Minus))
         .try_map(|(base, idx), span| {
             let index = parse_index_register(Some(idx), span)?;
-            Ok(instruction_stmt(
-                "dec",
-                Some(Operand::Value {
+            Ok(Stmt::Hla(HlaStmt::IncDec {
+                op: HlaIncDecOp::Dec,
+                target: HlaIncDecTarget::Address(HlaOperandExpr {
                     expr: Expr::Ident(base),
-                    force_far: false,
                     index,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            ))
+            }))
         });
 
     let inc = ident_parser()
         .then_ignore(just(TokenKind::PlusPlus))
         .map(|ident| {
             if ident.eq_ignore_ascii_case("x") {
-                return instruction_stmt("inx", None);
+                return Stmt::Hla(HlaStmt::IncDec {
+                    op: HlaIncDecOp::Inc,
+                    target: HlaIncDecTarget::Register(IndexRegister::X),
+                });
             }
             if ident.eq_ignore_ascii_case("y") {
-                return instruction_stmt("iny", None);
+                return Stmt::Hla(HlaStmt::IncDec {
+                    op: HlaIncDecOp::Inc,
+                    target: HlaIncDecTarget::Register(IndexRegister::Y),
+                });
             }
-            instruction_stmt(
-                "inc",
-                Some(Operand::Value {
+            Stmt::Hla(HlaStmt::IncDec {
+                op: HlaIncDecOp::Inc,
+                target: HlaIncDecTarget::Address(HlaOperandExpr {
                     expr: Expr::Ident(ident),
-                    force_far: false,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            )
+            })
         });
 
     let dec = ident_parser()
@@ -2360,20 +2243,25 @@ where
         .then_ignore(just(TokenKind::Minus))
         .map(|ident| {
             if ident.eq_ignore_ascii_case("x") {
-                return instruction_stmt("dex", None);
+                return Stmt::Hla(HlaStmt::IncDec {
+                    op: HlaIncDecOp::Dec,
+                    target: HlaIncDecTarget::Register(IndexRegister::X),
+                });
             }
             if ident.eq_ignore_ascii_case("y") {
-                return instruction_stmt("dey", None);
+                return Stmt::Hla(HlaStmt::IncDec {
+                    op: HlaIncDecOp::Dec,
+                    target: HlaIncDecTarget::Register(IndexRegister::Y),
+                });
             }
-            instruction_stmt(
-                "dec",
-                Some(Operand::Value {
+            Stmt::Hla(HlaStmt::IncDec {
+                op: HlaIncDecOp::Dec,
+                target: HlaIncDecTarget::Address(HlaOperandExpr {
                     expr: Expr::Ident(ident),
-                    force_far: false,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            )
+            })
         });
 
     indexed_inc.or(indexed_dec).or(inc).or(dec)
@@ -2386,48 +2274,49 @@ where
     let shift_op = just(TokenKind::Lt)
         .then_ignore(just(TokenKind::Lt))
         .then_ignore(just(TokenKind::Lt))
-        .to("rol")
+        .to(HlaShiftOp::Rol)
         .or(just(TokenKind::Gt)
             .then_ignore(just(TokenKind::Gt))
             .then_ignore(just(TokenKind::Gt))
-            .to("ror"))
+            .to(HlaShiftOp::Ror))
         .or(just(TokenKind::Lt)
             .then_ignore(just(TokenKind::Lt))
-            .to("asl"))
+            .to(HlaShiftOp::Asl))
         .or(just(TokenKind::Gt)
             .then_ignore(just(TokenKind::Gt))
-            .to("lsr"));
+            .to(HlaShiftOp::Lsr));
 
     let indexed = ident_parser()
         .then_ignore(just(TokenKind::Comma))
         .then(ident_parser())
         .then(shift_op.clone())
-        .try_map(|((base, idx), mnemonic), span| {
+        .try_map(|((base, idx), op), span| {
             let index = parse_index_register(Some(idx), span)?;
-            Ok(instruction_stmt(
-                mnemonic,
-                Some(Operand::Value {
+            Ok(Stmt::Hla(HlaStmt::ShiftRotate {
+                op,
+                target: HlaShiftTarget::Address(HlaOperandExpr {
                     expr: Expr::Ident(base),
-                    force_far: false,
                     index,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            ))
+            }))
         });
 
-    let plain = ident_parser().then(shift_op).map(|(target, mnemonic)| {
+    let plain = ident_parser().then(shift_op).map(|(target, op)| {
         if target.eq_ignore_ascii_case("a") {
-            instruction_stmt(mnemonic, None)
+            Stmt::Hla(HlaStmt::ShiftRotate {
+                op,
+                target: HlaShiftTarget::Accumulator,
+            })
         } else {
-            instruction_stmt(
-                mnemonic,
-                Some(Operand::Value {
+            Stmt::Hla(HlaStmt::ShiftRotate {
+                op,
+                target: HlaShiftTarget::Address(HlaOperandExpr {
                     expr: Expr::Ident(target),
-                    force_far: false,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            )
+            })
         }
     });
 
@@ -2449,13 +2338,34 @@ where
             let sign = if set { '+' } else { '-' };
             let shorthand = format!("{flag}{sign}");
             match (lower.as_str(), set) {
-                ("c", true) => Ok(instruction_stmt("sec", None)),
-                ("c", false) => Ok(instruction_stmt("clc", None)),
-                ("d", true) => Ok(instruction_stmt("sed", None)),
-                ("d", false) => Ok(instruction_stmt("cld", None)),
-                ("i", true) => Ok(instruction_stmt("sei", None)),
-                ("i", false) => Ok(instruction_stmt("cli", None)),
-                ("v" | "o", false) => Ok(instruction_stmt("clv", None)),
+                ("c", true) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Carry,
+                    set: true,
+                })),
+                ("c", false) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Carry,
+                    set: false,
+                })),
+                ("d", true) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Decimal,
+                    set: true,
+                })),
+                ("d", false) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Decimal,
+                    set: false,
+                })),
+                ("i", true) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Interrupt,
+                    set: true,
+                })),
+                ("i", false) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Interrupt,
+                    set: false,
+                })),
+                ("v" | "o", false) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                    flag: HlaFlag::Overflow,
+                    set: false,
+                })),
                 _ => Err(Rich::custom(
                     span,
                     format!("unsupported flag shorthand '{shorthand}'"),
@@ -2477,19 +2387,16 @@ where
                     .then_ignore(just(TokenKind::Question))
                     .to(false)),
         )
-        .map(|(target, push)| {
-            if target.eq_ignore_ascii_case("a") {
-                return if push {
-                    instruction_stmt("pha", None)
-                } else {
-                    instruction_stmt("pla", None)
-                };
-            }
-            if push {
-                instruction_stmt("php", None)
-            } else {
-                instruction_stmt("plp", None)
-            }
+        .validate(|(target_text, push), extra, emitter| {
+            let Some(target) = parse_stack_target(&target_text) else {
+                let suffix = if push { "!!" } else { "??" };
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    format!("unsupported stack shorthand '{target_text}{suffix}'"),
+                ));
+                return Stmt::Empty;
+            };
+            Stmt::Hla(HlaStmt::StackOp { target, push })
         })
 }
 
@@ -2507,27 +2414,19 @@ where
         .ignore_then(expr_parser())
         .then_ignore(just(TokenKind::RParen))
         .map(|target| {
-            instruction_stmt(
-                "jmp",
-                Some(Operand::Value {
-                    expr: target,
-                    force_far: false,
-                    index: None,
-                    addr_mode: OperandAddrMode::Indirect,
-                }),
-            )
+            Stmt::Hla(HlaStmt::Goto {
+                target,
+                indirect: true,
+                far: false,
+            })
         });
 
     let goto_direct = goto_kw.ignore_then(expr_parser()).map(|target| {
-        instruction_stmt(
-            "jmp",
-            Some(Operand::Value {
-                expr: target,
-                force_far: false,
-                index: None,
-                addr_mode: OperandAddrMode::Direct,
-            }),
-        )
+        Stmt::Hla(HlaStmt::Goto {
+            target,
+            indirect: false,
+            far: false,
+        })
     });
 
     let goto_stmt = goto_indirect.or(goto_direct);
@@ -2565,15 +2464,10 @@ where
                 ));
             }
         };
-        Ok(instruction_stmt(
-            mnemonic,
-            Some(Operand::Value {
-                expr: target,
-                force_far: false,
-                index: None,
-                addr_mode: OperandAddrMode::Direct,
-            }),
-        ))
+        Ok(Stmt::Hla(HlaStmt::BranchGoto {
+            mnemonic: mnemonic.to_string(),
+            target,
+        }))
     });
 
     // v+ and v- have no trailing ?; also accepts o+/o- as alias
@@ -2608,15 +2502,10 @@ where
         .then_ignore(goto_kw.clone())
         .then(expr_parser())
         .map(|(mnemonic, target)| {
-            instruction_stmt(
-                mnemonic,
-                Some(Operand::Value {
-                    expr: target,
-                    force_far: false,
-                    index: None,
-                    addr_mode: OperandAddrMode::Direct,
-                }),
-            )
+            Stmt::Hla(HlaStmt::BranchGoto {
+                mnemonic: mnemonic.to_string(),
+                target,
+            })
         });
 
     let branch_goto_stmt = question_flag_goto.or(symbolic_branch_goto_stmt);
@@ -2624,27 +2513,19 @@ where
     let return_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("return") || value.eq_ignore_ascii_case("return_i") => value
     }
-    .map(|keyword| {
-        if keyword.eq_ignore_ascii_case("return_i") {
-            instruction_stmt("rti", None)
-        } else {
-            instruction_stmt("rts", None)
-        }
-    });
+    .map(|keyword| Stmt::Hla(HlaStmt::Return {
+        interrupt: keyword.eq_ignore_ascii_case("return_i"),
+    }));
 
     let far_goto_stmt = just(TokenKind::Far)
         .ignore_then(goto_kw.clone())
         .ignore_then(expr_parser())
         .map(|target| {
-            instruction_stmt(
-                "jml",
-                Some(Operand::Value {
-                    expr: target,
-                    force_far: true,
-                    index: None,
-                    addr_mode: OperandAddrMode::Direct,
-                }),
-            )
+            Stmt::Hla(HlaStmt::Goto {
+                target,
+                indirect: false,
+                far: true,
+            })
         });
 
     let far_call_stmt = just(TokenKind::Far)
@@ -2748,15 +2629,8 @@ where
 {
     just(TokenKind::Star)
         .ignore_then(number_parser().map(|n| n.value).or_not())
-        .map(|count| {
-            let n = count.unwrap_or(1) as usize;
-            if n == 1 {
-                instruction_stmt("nop", None)
-            } else {
-                Stmt::Hla(HlaStmt::RepeatNop(n))
-            }
-        })
-        .or(just(TokenKind::Percent).to(instruction_stmt("nop", None)))
+        .map(|count| Stmt::Hla(HlaStmt::RepeatNop(count.unwrap_or(1) as usize)))
+        .or(just(TokenKind::Percent).to(Stmt::Hla(HlaStmt::RepeatNop(1))))
 }
 
 fn discard_stmt_parser<'src, I>() -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
@@ -2816,7 +2690,7 @@ fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
     })
 }
 
-fn parsed_operand_to_operand(parsed: ParsedOperandExpr) -> Operand {
+fn parsed_operand_to_operand(parsed: HlaOperandExpr) -> Operand {
     if parsed.addr_mode != OperandAddrMode::Direct || parsed.index.is_some() {
         return Operand::Value {
             expr: parsed.expr,
@@ -2840,6 +2714,41 @@ fn parsed_operand_to_operand(parsed: ParsedOperandExpr) -> Operand {
     }
 }
 
+fn parse_cpu_register(value: &str) -> Option<HlaCpuRegister> {
+    match value {
+        "a" => Some(HlaCpuRegister::A),
+        "b" => Some(HlaCpuRegister::B),
+        "c" => Some(HlaCpuRegister::C),
+        "d" => Some(HlaCpuRegister::D),
+        "s" => Some(HlaCpuRegister::S),
+        "x" => Some(HlaCpuRegister::X),
+        "y" => Some(HlaCpuRegister::Y),
+        _ => None,
+    }
+}
+
+fn parse_stack_target(value: &str) -> Option<HlaStackTarget> {
+    if value.eq_ignore_ascii_case("a") {
+        return Some(HlaStackTarget::A);
+    }
+    if value.eq_ignore_ascii_case("p")
+        || value.eq_ignore_ascii_case("flag")
+        || value.eq_ignore_ascii_case("n")
+        || value.eq_ignore_ascii_case("v")
+        || value.eq_ignore_ascii_case("o")
+        || value.eq_ignore_ascii_case("m")
+        || value.eq_ignore_ascii_case("x")
+        || value.eq_ignore_ascii_case("b")
+        || value.eq_ignore_ascii_case("d")
+        || value.eq_ignore_ascii_case("i")
+        || value.eq_ignore_ascii_case("z")
+        || value.eq_ignore_ascii_case("c")
+    {
+        return Some(HlaStackTarget::P);
+    }
+    None
+}
+
 fn parse_index_register<'src>(
     index: Option<String>,
     span: SimpleSpan,
@@ -2856,13 +2765,7 @@ fn parse_index_register<'src>(
 }
 
 fn is_register_name(value: &str) -> bool {
-    value.eq_ignore_ascii_case("a")
-        || value.eq_ignore_ascii_case("b")
-        || value.eq_ignore_ascii_case("c")
-        || value.eq_ignore_ascii_case("d")
-        || value.eq_ignore_ascii_case("x")
-        || value.eq_ignore_ascii_case("y")
-        || value.eq_ignore_ascii_case("s")
+    parse_cpu_register(&value.to_ascii_lowercase()).is_some()
 }
 
 fn resolve_transfer(dest: &str, src: &str) -> Option<&'static str> {
@@ -3827,22 +3730,16 @@ mod tests {
         };
         assert_eq!(block.body.len(), 2);
 
-        let Stmt::Instruction(first) = &block.body[0].node else {
-            panic!("expected first instruction");
+        let Stmt::Hla(HlaStmt::RegisterAssign { rhs, .. }) = &block.body[0].node else {
+            panic!("expected first HLA register assignment");
         };
-        let Some(Operand::Auto { expr }) = &first.operand else {
-            panic!("expected first auto operand");
-        };
-        assert!(is_ident_named(expr, "foo.idx"));
+        assert!(is_ident_named(&rhs.expr, "foo.idx"));
 
-        let Stmt::Instruction(second) = &block.body[1].node else {
-            panic!("expected second instruction");
-        };
-        let Some(Operand::Value { expr, .. }) = &second.operand else {
-            panic!("expected second value operand");
+        let Stmt::Hla(HlaStmt::RegisterAssign { rhs, .. }) = &block.body[1].node else {
+            panic!("expected second HLA register assignment");
         };
         assert!(matches!(
-            expr,
+            &rhs.expr,
             Expr::Index { base, index }
                 if is_ident_named(base.as_ref(), "foo.string")
                 && matches!(index.as_ref(), Expr::Number(2, _))
@@ -3986,13 +3883,12 @@ mod tests {
         };
 
         assert_eq!(block.body.len(), 7);
-        // x = 0 is parsed as ldx with Operand::Auto (formatter reconstructs HLA sugar)
         assert!(matches!(
             block.body[0].node,
-            Stmt::Instruction(Instruction {
-                ref mnemonic,
-                operand: Some(Operand::Auto { .. }),
-            }) if mnemonic == "ldx"
+            Stmt::Hla(HlaStmt::RegisterAssign {
+                register: HlaCpuRegister::X,
+                ..
+            })
         ));
         assert!(matches!(block.body[1].node, Stmt::Hla(HlaStmt::DoOpen)));
         assert!(matches!(
@@ -4023,7 +3919,10 @@ mod tests {
         };
 
         assert!(matches!(block.body[0].node, Stmt::Hla(HlaStmt::DoOpen)));
-        assert!(matches!(block.body[1].node, Stmt::Instruction(_)));
+        assert!(matches!(
+            block.body[1].node,
+            Stmt::Hla(HlaStmt::RegisterAssign { .. })
+        ));
         assert!(matches!(
             block.body[2].node,
             Stmt::Hla(HlaStmt::DoCloseNFlagClear)
@@ -4039,11 +3938,64 @@ mod tests {
         };
 
         assert!(matches!(block.body[0].node, Stmt::Hla(HlaStmt::DoOpen)));
-        assert!(matches!(block.body[1].node, Stmt::Instruction(_)));
+        assert!(matches!(
+            block.body[1].node,
+            Stmt::Hla(HlaStmt::RegisterAssign { .. })
+        ));
         assert!(matches!(
             block.body[2].node,
             Stmt::Hla(HlaStmt::DoCloseNFlagSet)
         ));
+    }
+
+    #[test]
+    fn parses_stack_shorthand_as_hla_nodes() {
+        let source = "func main {\n  a!!\n  p??\n  flag!!\n  z??\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 4);
+        assert!(matches!(
+            block.body[0].node,
+            Stmt::Hla(HlaStmt::StackOp {
+                target: HlaStackTarget::A,
+                push: true
+            })
+        ));
+        assert!(matches!(
+            block.body[1].node,
+            Stmt::Hla(HlaStmt::StackOp {
+                target: HlaStackTarget::P,
+                push: false
+            })
+        ));
+        assert!(matches!(
+            block.body[2].node,
+            Stmt::Hla(HlaStmt::StackOp {
+                target: HlaStackTarget::P,
+                push: true
+            })
+        ));
+        assert!(matches!(
+            block.body[3].node,
+            Stmt::Hla(HlaStmt::StackOp {
+                target: HlaStackTarget::P,
+                push: false
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_unknown_stack_shorthand_target() {
+        let source = "func main {\n  foo!!\n}\n";
+        let errors = parse(SourceId(0), source).expect_err("must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("unsupported stack shorthand")),
+            "expected unsupported stack shorthand error, got: {errors:?}"
+        );
     }
 
     #[test]
@@ -4165,23 +4117,13 @@ mod tests {
         assert_eq!(block.body.len(), 4);
 
         let expect_mode = |stmt: &Stmt, mode: OperandAddrMode, index: Option<IndexRegister>| {
-            let Stmt::Instruction(instruction) = stmt else {
-                panic!("expected instruction");
+            let Stmt::Hla(HlaStmt::RegisterAssign { register, rhs }) = stmt else {
+                panic!("expected HLA register assignment");
             };
-            assert_eq!(instruction.mnemonic, "lda");
-            let Some(Operand::Value {
-                expr,
-                force_far,
-                index: found_index,
-                addr_mode,
-            }) = instruction.operand.as_ref()
-            else {
-                panic!("expected value operand");
-            };
-            assert!(is_ident_named(expr, "ptr"));
-            assert!(!force_far);
-            assert_eq!(*found_index, index);
-            assert_eq!(*addr_mode, mode);
+            assert_eq!(*register, HlaCpuRegister::A);
+            assert!(is_ident_named(&rhs.expr, "ptr"));
+            assert_eq!(rhs.index, index);
+            assert_eq!(rhs.addr_mode, mode);
         };
 
         expect_mode(

@@ -114,7 +114,6 @@ fn expand_stmt(
                 .collect(),
         },
         Stmt::SwapAB => Stmt::SwapAB,
-        Stmt::TransferChain(instrs) => Stmt::TransferChain(instrs.clone()),
         Stmt::Hla(stmt) => Stmt::Hla(expand_hla_stmt(stmt, span, source_id, diagnostics)),
         Stmt::Empty => Stmt::Empty,
     }
@@ -214,6 +213,84 @@ fn expand_hla_stmt(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> HlaStmt {
     match stmt {
+        HlaStmt::RegisterAssign { register, rhs } => HlaStmt::RegisterAssign {
+            register: *register,
+            rhs: expand_hla_operand_expr(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::RegisterStore { dest, src } => HlaStmt::RegisterStore {
+            dest: expand_hla_operand_expr(dest, span, source_id, diagnostics),
+            src: *src,
+        },
+        HlaStmt::RegisterTransfer { dest, src } => HlaStmt::RegisterTransfer {
+            dest: *dest,
+            src: *src,
+        },
+        HlaStmt::AssignmentChain { idents, tail_expr } => HlaStmt::AssignmentChain {
+            idents: idents.clone(),
+            tail_expr: tail_expr
+                .as_ref()
+                .map(|expr| expand_hla_operand_expr(expr, span, source_id, diagnostics)),
+        },
+        HlaStmt::AccumulatorAlu { op, rhs } => HlaStmt::AccumulatorAlu {
+            op: *op,
+            rhs: expand_hla_operand_expr(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::AccumulatorBitTest { rhs } => HlaStmt::AccumulatorBitTest {
+            rhs: expand_hla_operand_expr(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::IndexCompare { register, rhs } => HlaStmt::IndexCompare {
+            register: *register,
+            rhs: expand_hla_operand_expr(rhs, span, source_id, diagnostics),
+        },
+        HlaStmt::IncDec { op, target } => HlaStmt::IncDec {
+            op: *op,
+            target: match target {
+                crate::ast::HlaIncDecTarget::Register(register) => {
+                    crate::ast::HlaIncDecTarget::Register(*register)
+                }
+                crate::ast::HlaIncDecTarget::Address(address) => {
+                    crate::ast::HlaIncDecTarget::Address(expand_hla_operand_expr(
+                        address,
+                        span,
+                        source_id,
+                        diagnostics,
+                    ))
+                }
+            },
+        },
+        HlaStmt::ShiftRotate { op, target } => HlaStmt::ShiftRotate {
+            op: *op,
+            target: match target {
+                crate::ast::HlaShiftTarget::Accumulator => crate::ast::HlaShiftTarget::Accumulator,
+                crate::ast::HlaShiftTarget::Address(address) => crate::ast::HlaShiftTarget::Address(
+                    expand_hla_operand_expr(address, span, source_id, diagnostics),
+                ),
+            },
+        },
+        HlaStmt::FlagSet { flag, set } => HlaStmt::FlagSet {
+            flag: *flag,
+            set: *set,
+        },
+        HlaStmt::StackOp { target, push } => HlaStmt::StackOp {
+            target: *target,
+            push: *push,
+        },
+        HlaStmt::Goto {
+            target,
+            indirect,
+            far,
+        } => HlaStmt::Goto {
+            target: expand_expr(target, span, source_id, diagnostics),
+            indirect: *indirect,
+            far: *far,
+        },
+        HlaStmt::BranchGoto { mnemonic, target } => HlaStmt::BranchGoto {
+            mnemonic: mnemonic.clone(),
+            target: expand_expr(target, span, source_id, diagnostics),
+        },
+        HlaStmt::Return { interrupt } => HlaStmt::Return {
+            interrupt: *interrupt,
+        },
         HlaStmt::XAssignImmediate { rhs } => HlaStmt::XAssignImmediate {
             rhs: expand_expr(rhs, span, source_id, diagnostics),
         },
@@ -293,6 +370,19 @@ fn expand_hla_stmt(
                 else_body: expanded_else,
             }
         }
+    }
+}
+
+fn expand_hla_operand_expr(
+    expr: &crate::ast::HlaOperandExpr,
+    span: Span,
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> crate::ast::HlaOperandExpr {
+    crate::ast::HlaOperandExpr {
+        expr: expand_expr(&expr.expr, span, source_id, diagnostics),
+        index: expr.index,
+        addr_mode: expr.addr_mode,
     }
 }
 

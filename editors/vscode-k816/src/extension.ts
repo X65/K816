@@ -11,6 +11,8 @@ import {
 let client: LanguageClient | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 let spawnNotFoundShown = false;
+let lspStatusItem: vscode.StatusBarItem | undefined;
+let fileInfoItem: vscode.StatusBarItem | undefined;
 
 export async function activate(
   context: vscode.ExtensionContext,
@@ -18,29 +20,47 @@ export async function activate(
   const channel = ensureOutputChannel();
   context.subscriptions.push(channel);
 
+  lspStatusItem = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Left,
+    100,
+  );
+  lspStatusItem.command = "k816.restartServer";
+  setLspStatus("stopped");
+  context.subscriptions.push(lspStatusItem);
+
+  fileInfoItem = vscode.window.createStatusBarItem(
+    vscode.StatusBarAlignment.Right,
+    100,
+  );
+  context.subscriptions.push(fileInfoItem);
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) =>
+      updateFileInfo(editor),
+    ),
+    vscode.window.onDidChangeTextEditorSelection((e) =>
+      updateFileInfo(e.textEditor),
+    ),
+  );
+  updateFileInfo(vscode.window.activeTextEditor);
+
+  const taskProvider = new K816TaskProvider();
   context.subscriptions.push(
     vscode.commands.registerCommand("k816.restartServer", async () => {
       outputChannel?.appendLine("Restarting language server...");
       await stopClient();
       await startClient();
     }),
-    vscode.commands.registerCommand("k816.build", () => {
-      const config = vscode.workspace.getConfiguration("k816");
-      const command = config.get<string>("server.path", "k816");
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      const task = new vscode.Task(
-        { type: "k816" },
-        folder ?? vscode.TaskScope.Workspace,
-        "build",
-        "k816",
-        new vscode.ShellExecution(command, ["build"], {
-          cwd: folder?.uri.fsPath,
-        }),
+    vscode.commands.registerCommand("k816.build", async () => {
+      const tasks = await vscode.tasks.fetchTasks({ type: "k816" });
+      const buildTask = tasks.find(
+        (t) => t.group === vscode.TaskGroup.Build,
       );
-      task.group = vscode.TaskGroup.Build;
-      task.presentationOptions.reveal = vscode.TaskRevealKind.Always;
-      vscode.tasks.executeTask(task);
+      if (buildTask) {
+        vscode.tasks.executeTask(buildTask);
+      }
     }),
+    vscode.tasks.registerTaskProvider("k816", taskProvider),
   );
 
   context.subscriptions.push(
@@ -96,13 +116,17 @@ async function startClient(): Promise<void> {
     clientOptions,
   );
 
+  setLspStatus("starting");
+
   try {
     await nextClient.start();
     void nextClient.setTrace(trace);
     client = nextClient;
     channel.appendLine(`Started: ${command} ${args.join(" ")}`.trim());
+    setLspStatus("running");
   } catch (error) {
     channel.appendLine(`Failed to start server: ${formatError(error)}`);
+    setLspStatus("error", formatError(error));
     if (isSpawnNotFound(error) && !spawnNotFoundShown) {
       spawnNotFoundShown = true;
       void vscode.window.showErrorMessage(
@@ -121,6 +145,7 @@ async function stopClient(): Promise<void> {
   client = undefined;
   await running.stop();
   outputChannel?.appendLine("Stopped language server.");
+  setLspStatus("stopped");
 }
 
 function ensureOutputChannel(): vscode.OutputChannel {
@@ -175,6 +200,76 @@ function traceLevel(value: string): Trace {
   }
 }
 
+type LspStatus = "starting" | "running" | "stopped" | "error";
+
+function setLspStatus(status: LspStatus, detail?: string): void {
+  if (!lspStatusItem) return;
+  const config = vscode.workspace.getConfiguration("k816");
+  const command = config.get<string>("server.path", "k816");
+  switch (status) {
+    case "starting":
+      lspStatusItem.text = "$(loading~spin) k816";
+      lspStatusItem.tooltip = `k816 Language Server: starting\n${command}`;
+      lspStatusItem.backgroundColor = undefined;
+      break;
+    case "running":
+      lspStatusItem.text = "$(check) k816";
+      lspStatusItem.tooltip = `k816 Language Server: running\n${command}`;
+      lspStatusItem.backgroundColor = undefined;
+      break;
+    case "error":
+      lspStatusItem.text = "$(error) k816";
+      lspStatusItem.tooltip = `k816 Language Server: error\n${detail ?? command}`;
+      lspStatusItem.backgroundColor = new vscode.ThemeColor(
+        "statusBarItem.errorBackground",
+      );
+      break;
+    case "stopped":
+      lspStatusItem.text = "$(circle-slash) k816";
+      lspStatusItem.tooltip = "k816 Language Server: stopped\nClick to restart";
+      lspStatusItem.backgroundColor = undefined;
+      break;
+  }
+  lspStatusItem.show();
+}
+
+let fileInfoPending = false;
+
+function updateFileInfo(editor: vscode.TextEditor | undefined): void {
+  if (!fileInfoItem) return;
+  if (!editor || editor.document.languageId !== "k65") {
+    fileInfoItem.hide();
+    return;
+  }
+
+  fileInfoItem.text = "$(file-code) K65";
+  fileInfoItem.tooltip = editor.document.fileName;
+  fileInfoItem.show();
+
+  if (!client || fileInfoPending) return;
+
+  const line = editor.selection.active.line;
+  const uri = editor.document.uri.toString();
+
+  fileInfoPending = true;
+  client
+    .sendRequest<{ addresses: (number | null)[] }>("k816/resolveAddresses", {
+      uri,
+      lines: [line],
+    })
+    .then((result) => {
+      const addr = result.addresses[0];
+      if (addr !== null && addr !== undefined && fileInfoItem) {
+        const hex = addr.toString(16).toUpperCase().padStart(4, "0");
+        fileInfoItem.text = `$(file-code) K65  $${hex}`;
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      fileInfoPending = false;
+    });
+}
+
 function isSpawnNotFound(error: unknown): boolean {
   if (typeof error === "object" && error !== null && "code" in error) {
     return (error as { code?: string }).code === "ENOENT";
@@ -187,6 +282,69 @@ function formatError(error: unknown): string {
     return error.message;
   }
   return String(error);
+}
+
+interface K816TaskDefinition extends vscode.TaskDefinition {
+  task: string;
+}
+
+class K816TaskProvider implements vscode.TaskProvider {
+  static readonly type = "k816";
+
+  provideTasks(): vscode.Task[] {
+    const config = vscode.workspace.getConfiguration("k816");
+    const command = config.get<string>("server.path", "k816");
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const scope = folder ?? vscode.TaskScope.Workspace;
+    const cwd = folder?.uri.fsPath;
+
+    const build = this.createTask(scope, command, "build", cwd);
+    build.group = vscode.TaskGroup.Build;
+    build.presentationOptions.reveal = vscode.TaskRevealKind.Always;
+
+    const clean = this.createTask(scope, command, "clean", cwd);
+    clean.group = vscode.TaskGroup.Clean;
+
+    const run = this.createTask(scope, command, "run", cwd);
+
+    return [build, clean, run];
+  }
+
+  resolveTask(task: vscode.Task): vscode.Task | undefined {
+    const definition = task.definition as K816TaskDefinition;
+    if (definition.type !== K816TaskProvider.type || !definition.task) {
+      return undefined;
+    }
+    const config = vscode.workspace.getConfiguration("k816");
+    const command = config.get<string>("server.path", "k816");
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const cwd = folder?.uri.fsPath;
+    return this.createTask(
+      task.scope ?? vscode.TaskScope.Workspace,
+      command,
+      definition.task,
+      cwd,
+    );
+  }
+
+  private createTask(
+    scope: vscode.WorkspaceFolder | vscode.TaskScope,
+    command: string,
+    taskName: string,
+    cwd: string | undefined,
+  ): vscode.Task {
+    const definition: K816TaskDefinition = {
+      type: K816TaskProvider.type,
+      task: taskName,
+    };
+    return new vscode.Task(
+      definition,
+      scope,
+      taskName,
+      "k816",
+      new vscode.ShellExecution(command, [taskName], { cwd }),
+    );
+  }
 }
 
 class K816DebugAdapterProxy implements vscode.DebugAdapter {

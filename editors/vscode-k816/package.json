@@ -108,7 +108,17 @@
     ],
     "taskDefinitions": [
       {
-        "type": "k816"
+        "type": "k816",
+        "required": [
+          "task"
+        ],
+        "properties": {
+          "task": {
+            "type": "string",
+            "description": "The k816 command to run (build, clean, run, compile, link, fmt).",
+            "default": "build"
+          }
+        }
       }
     ],
     "keybindings": [

@@ -20,6 +20,7 @@ use crate::span::{SourceMap, Span};
 pub struct AddressableSite {
     pub segment: String,
     pub offset: u32,
+    pub size: u32,
     pub span: Span,
 }
 
@@ -168,6 +169,7 @@ pub fn emit_object(
                 addressable_sites.push(AddressableSite {
                     segment: current_segment.clone(),
                     offset: segment.section_offset,
+                    size: 0,
                     span: op.span,
                 });
                 if labels
@@ -254,6 +256,7 @@ pub fn emit_object(
                 addressable_sites.push(AddressableSite {
                     segment: current_segment.clone(),
                     offset: opcode_offset,
+                    size: 2,
                     span: op.span,
                 });
                 if let Some(function) = &current_function {
@@ -282,6 +285,7 @@ pub fn emit_object(
                 addressable_sites.push(AddressableSite {
                     segment: current_segment.clone(),
                     offset: opcode_offset,
+                    size: 2,
                     span: op.span,
                 });
                 if let Some(function) = &current_function {
@@ -304,6 +308,7 @@ pub fn emit_object(
                 addressable_sites.push(AddressableSite {
                     segment: current_segment.clone(),
                     offset: emit_offset,
+                    size: bytes.len() as u32,
                     span: op.span,
                 });
                 if let Some(text) = string_literal_text_for_emit(bytes, source_map, op.span) {
@@ -325,6 +330,7 @@ pub fn emit_object(
                 addressable_sites.push(AddressableSite {
                     segment: current_segment.clone(),
                     offset: emit_offset,
+                    size: bytes.len() as u32,
                     span: op.span,
                 });
                 append_bytes(segment, bytes, op.span, &mut diagnostics);
@@ -450,6 +456,7 @@ pub fn emit_object(
                 addressable_sites.push(AddressableSite {
                     segment: current_segment.clone(),
                     offset: opcode_offset,
+                    size: 1 + width as u32,
                     span: op.span,
                 });
                 append_bytes(segment, &[encoding.opcode], op.span, &mut diagnostics);

@@ -237,16 +237,16 @@ struct DocumentState {
     analysis: DocumentAnalysis,
     object: Option<k816_o65::O65Object>,
     addressable_sites: Vec<k816_core::AddressableSite>,
-    resolved_sites: Vec<(k816_core::span::Span, u32)>,
+    resolved_sites: Vec<(k816_core::span::Span, u32, u32)>,
 }
 
 impl DocumentState {
-    fn address_at_offset(&self, offset: usize) -> Option<u32> {
-        let idx = self.resolved_sites.partition_point(|(span, _)| span.start <= offset);
+    fn address_at_offset(&self, offset: usize) -> Option<(u32, u32)> {
+        let idx = self.resolved_sites.partition_point(|(span, _, _)| span.start <= offset);
         if idx > 0 {
-            let (span, addr) = &self.resolved_sites[idx - 1];
+            let (span, addr, size) = &self.resolved_sites[idx - 1];
             if offset < span.end {
-                return Some(*addr);
+                return Some((*addr, *size));
             }
         }
         None
@@ -514,11 +514,11 @@ impl ServerState {
                                 if let Some(addr) =
                                     k816_link::resolve_symbol_addr(placements, site.offset)
                                 {
-                                    sites.push((site.span, addr));
+                                    sites.push((site.span, addr, site.size));
                                 }
                             }
                         }
-                        sites.sort_by_key(|(span, _)| span.start);
+                        sites.sort_by_key(|(span, _, _)| span.start);
                         doc.resolved_sites = sites;
                     }
                 }
@@ -581,51 +581,64 @@ impl ServerState {
     fn hover(&self, uri: &Uri, position: Position) -> Option<Hover> {
         let doc = self.documents.get(uri)?;
         let offset = doc.line_index.to_offset(&doc.text, position)?;
-        let token = token_at_offset(&doc.text, offset)?;
-        let token_range = byte_range_to_lsp(
-            &ByteRange {
-                start: token.start,
-                end: token.end,
-            },
-            &doc.line_index,
-            &doc.text,
-        );
 
-        let scope = doc.analysis.scope_at_offset(offset);
-        let canonical = canonical_symbol(&token.text, scope);
-        if let Some(definitions) = self.symbols.get(&canonical)
-            && let Some(definition) = definitions.first()
-        {
-            let contents = hover_contents_for_symbol(&canonical, definition, self);
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: contents,
-                }),
-                range: Some(token_range),
-            });
-        }
+        if let Some(token) = token_at_offset(&doc.text, offset) {
+            let token_range = byte_range_to_lsp(
+                &ByteRange {
+                    start: token.start,
+                    end: token.end,
+                },
+                &doc.line_index,
+                &doc.text,
+            );
 
-        if let Some(mut text) = builtin_hover_text(&token.text) {
-            if let Some(addr) = doc.address_at_offset(offset) {
-                text.push_str(&format!("\n- address: `{}`", format_address(addr)));
+            let scope = doc.analysis.scope_at_offset(offset);
+            let canonical = canonical_symbol(&token.text, scope);
+            if let Some(definitions) = self.symbols.get(&canonical)
+                && let Some(definition) = definitions.first()
+            {
+                let contents = hover_contents_for_symbol(&canonical, definition, self);
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: contents,
+                    }),
+                    range: Some(token_range),
+                });
             }
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: text,
-                }),
-                range: Some(token_range),
-            });
+
+            if let Some(mut text) = builtin_hover_text(&token.text) {
+                if let Some((addr, size)) = doc.address_at_offset(offset) {
+                    text.push_str(&format!("\n- address: `{}`", format_address_range(addr, size)));
+                }
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: text,
+                    }),
+                    range: Some(token_range),
+                });
+            }
+
+            // No symbol or builtin match — show address if available
+            if let Some((addr, size)) = doc.address_at_offset(offset) {
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!("address: `{}`", format_address_range(addr, size)),
+                    }),
+                    range: Some(token_range),
+                });
+            }
         }
 
-        // No symbol or builtin match — show address if available
-        doc.address_at_offset(offset).map(|addr| Hover {
+        // No token found — still show address if available
+        doc.address_at_offset(offset).map(|(addr, size)| Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("address: `{}`", format_address(addr)),
+                value: format!("address: `{}`", format_address_range(addr, size)),
             }),
-            range: Some(token_range),
+            range: None,
         })
     }
 
@@ -761,9 +774,9 @@ impl ServerState {
             } else {
                 doc.text.len()
             };
-            let idx = doc.resolved_sites.partition_point(|(span, _)| span.start < line_start);
+            let idx = doc.resolved_sites.partition_point(|(span, _, _)| span.start < line_start);
             if idx < doc.resolved_sites.len() {
-                let (span, addr) = &doc.resolved_sites[idx];
+                let (span, addr, _) = &doc.resolved_sites[idx];
                 if span.start < line_end {
                     return Some(*addr);
                 }
@@ -1749,8 +1762,8 @@ fn hover_contents_for_symbol(
             if let Some(width) = meta.mode_contract.i_width {
                 lines.push(format!("- I width: {}", reg_width_name(width)));
             }
-            if let Some(addr) = doc.address_at_offset(symbol.selection.start) {
-                lines.push(format!("- address: `{}`", format_address(addr)));
+            if let Some((addr, size)) = doc.address_at_offset(symbol.selection.start) {
+                lines.push(format!("- address: `{}`", format_address_range(addr, size)));
             }
             return lines.join("\n");
         }
@@ -1769,8 +1782,8 @@ fn hover_contents_for_symbol(
 
     let mut text = format!("**{}** `{}`", symbol.category.detail(), symbol.name);
     if let Some(doc) = state.documents.get(&symbol.uri) {
-        if let Some(addr) = doc.address_at_offset(symbol.selection.start) {
-            text.push_str(&format!("\n- address: `{}`", format_address(addr)));
+        if let Some((addr, size)) = doc.address_at_offset(symbol.selection.start) {
+            text.push_str(&format!("\n- address: `{}`", format_address_range(addr, size)));
         }
     }
     text
@@ -1781,6 +1794,15 @@ fn format_address(addr: u32) -> String {
         format!("${:06X}", addr)
     } else {
         format!("${:04X}", addr)
+    }
+}
+
+fn format_address_range(addr: u32, size: u32) -> String {
+    if size <= 1 {
+        format_address(addr)
+    } else {
+        let end = addr + size - 1;
+        format!("{}..{}", format_address(addr), format_address(end))
     }
 }
 

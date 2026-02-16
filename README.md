@@ -120,4 +120,4 @@ It works by invoking the `k816 lsp` tool, which provides a language server imple
 
 ## License
 
-K816 is licensed under the ISC License. See [LICENSE](LICENSE) for details.
+K816 is licensed under the 0BSD License. See [LICENSE](LICENSE) for details.

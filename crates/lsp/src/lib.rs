@@ -235,6 +235,7 @@ struct DocumentState {
     text: String,
     line_index: LineIndex,
     analysis: DocumentAnalysis,
+    object: Option<k816_o65::O65Object>,
 }
 
 #[derive(Debug)]
@@ -243,6 +244,8 @@ struct ServerState {
     source_index: SourceIndex,
     documents: HashMap<Uri, DocumentState>,
     symbols: HashMap<String, Vec<SymbolLocation>>,
+    linker_config: k816_link::LinkerConfig,
+    resolved_addresses: HashMap<String, u32>,
 }
 
 impl ServerState {
@@ -252,10 +255,13 @@ impl ServerState {
             source_index: SourceIndex::default(),
             documents: HashMap::new(),
             symbols: HashMap::new(),
+            linker_config: k816_link::default_stub_config(),
+            resolved_addresses: HashMap::new(),
         }
     }
 
     fn initialize_workspace(&mut self) -> Result<()> {
+        self.load_linker_config();
         let sources = discover_workspace_sources(&self.workspace_root)?;
         eprintln!(
             "k816-lsp: workspace '{}', discovered {} source file(s)",
@@ -276,6 +282,45 @@ impl ServerState {
         Ok(())
     }
 
+    fn load_linker_config(&mut self) {
+        let manifest_path = self.workspace_root.join(PROJECT_MANIFEST);
+        if manifest_path.is_file() {
+            if let Ok(text) = fs::read_to_string(&manifest_path) {
+                if let Ok(manifest) = toml::from_str::<ProjectManifest>(&text) {
+                    if let Some(script) = manifest.link.script {
+                        let config_path = if script.is_absolute() {
+                            script
+                        } else {
+                            self.workspace_root.join(script)
+                        };
+                        if let Ok(config) = k816_link::load_config(&config_path) {
+                            eprintln!(
+                                "k816-lsp: loaded linker config from '{}'",
+                                config_path.display()
+                            );
+                            self.linker_config = config;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let default_script = self.workspace_root.join("link.ron");
+        if default_script.is_file() {
+            if let Ok(config) = k816_link::load_config(&default_script) {
+                eprintln!(
+                    "k816-lsp: loaded linker config from '{}'",
+                    default_script.display()
+                );
+                self.linker_config = config;
+                return;
+            }
+        }
+
+        eprintln!("k816-lsp: using default stub linker config");
+    }
+
     fn load_from_disk(&mut self, path: PathBuf) -> Result<()> {
         let text = fs::read_to_string(&path)
             .with_context(|| format!("failed to read source '{}'", path.display()))?;
@@ -285,7 +330,7 @@ impl ServerState {
             .ensure_file_id(uri.clone(), Some(path.clone()));
         let source_name = path.display().to_string();
         eprintln!("k816-lsp: analyzing '{source_name}'");
-        let analysis = analyze_document(&source_name, &text);
+        let (analysis, object) = analyze_document(&source_name, &text);
         self.documents.insert(
             uri.clone(),
             DocumentState {
@@ -297,6 +342,7 @@ impl ServerState {
                 line_index: LineIndex::new(&text),
                 text,
                 analysis,
+                object,
             },
         );
         Ok(())
@@ -317,11 +363,12 @@ impl ServerState {
     ) {
         let path = uri_to_file_path(&uri);
         let file_id = self.source_index.ensure_file_id(uri.clone(), path.clone());
-        let analysis = self
-            .documents
-            .remove(&uri)
-            .map(|doc| doc.analysis)
+        let prev = self.documents.remove(&uri);
+        let analysis = prev
+            .as_ref()
+            .map(|doc| doc.analysis.clone())
             .unwrap_or_default();
+        let object = prev.and_then(|doc| doc.object);
 
         self.documents.insert(
             uri.clone(),
@@ -334,6 +381,7 @@ impl ServerState {
                 line_index: LineIndex::new(&text),
                 text,
                 analysis,
+                object,
             },
         );
     }
@@ -348,12 +396,13 @@ impl ServerState {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| doc.uri.to_string());
         eprintln!("k816-lsp: analyzing '{source_name}'");
-        let mut new_analysis = analyze_document(&source_name, &doc.text);
+        let (mut new_analysis, object) = analyze_document(&source_name, &doc.text);
         if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
             new_analysis.symbols = doc.analysis.symbols.clone();
             new_analysis.scopes = doc.analysis.scopes.clone();
         }
         doc.analysis = new_analysis;
+        doc.object = object;
         self.rebuild_symbol_index();
     }
 
@@ -364,7 +413,7 @@ impl ServerState {
             let file_id = self
                 .source_index
                 .ensure_file_id(uri.clone(), Some(path.clone()));
-            let analysis = analyze_document(&path.display().to_string(), &text);
+            let (analysis, object) = analyze_document(&path.display().to_string(), &text);
             self.documents.insert(
                 uri.clone(),
                 DocumentState {
@@ -376,6 +425,7 @@ impl ServerState {
                     line_index: LineIndex::new(&text),
                     text,
                     analysis,
+                    object,
                 },
             );
             self.rebuild_symbol_index();
@@ -399,6 +449,35 @@ impl ServerState {
                         category: symbol.category,
                         selection: symbol.selection.clone(),
                     });
+            }
+        }
+        self.try_link_workspace();
+    }
+
+    fn try_link_workspace(&mut self) {
+        let objects: Vec<&k816_o65::O65Object> = self
+            .documents
+            .values()
+            .filter_map(|doc| doc.object.as_ref())
+            .collect();
+
+        if objects.is_empty() {
+            self.resolved_addresses.clear();
+            return;
+        }
+
+        let object_refs: Vec<k816_o65::O65Object> = objects.into_iter().cloned().collect();
+
+        match k816_link::link_objects_with_options(
+            &object_refs,
+            &self.linker_config,
+            k816_link::LinkRenderOptions::plain(),
+        ) {
+            Ok(output) => {
+                self.resolved_addresses = output.symbols;
+            }
+            Err(_) => {
+                self.resolved_addresses.clear();
             }
         }
     }
@@ -914,6 +993,14 @@ fn workspace_root_from_initialize_params(params: &InitializeParams) -> Option<Pa
 #[derive(Debug, Deserialize)]
 struct ProjectManifest {
     package: ProjectPackage,
+    #[serde(default)]
+    link: ProjectLink,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ProjectLink {
+    script: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -978,15 +1065,19 @@ fn uri_from_file_path(path: &Path) -> Result<Uri> {
     Uri::from_str(url.as_str()).map_err(|error| anyhow::anyhow!("invalid URI '{}': {error}", url))
 }
 
-fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
-    let (mut diagnostics, compile_failed) = match k816_core::compile_source_to_object_with_options(
-        source_name,
-        source_text,
-        k816_core::CompileRenderOptions::plain(),
-    ) {
-        Ok(output) => (output.warnings, false),
-        Err(error) => (error.diagnostics, true),
-    };
+fn analyze_document(
+    source_name: &str,
+    source_text: &str,
+) -> (DocumentAnalysis, Option<k816_o65::O65Object>) {
+    let (mut diagnostics, compile_failed, object) =
+        match k816_core::compile_source_to_object_with_options(
+            source_name,
+            source_text,
+            k816_core::CompileRenderOptions::plain(),
+        ) {
+            Ok(output) => (output.warnings, false, Some(output.object)),
+            Err(error) => (error.diagnostics, true, None),
+        };
 
     let mut source_map = k816_core::span::SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
@@ -1026,13 +1117,16 @@ fn analyze_document(source_name: &str, source_text: &str) -> DocumentAnalysis {
 
     dedup_diagnostics(&mut diagnostics);
 
-    DocumentAnalysis {
-        diagnostics,
-        symbols,
-        scopes,
-        semantic,
-        ast,
-    }
+    (
+        DocumentAnalysis {
+            diagnostics,
+            symbols,
+            scopes,
+            semantic,
+            ast,
+        },
+        object,
+    )
 }
 
 #[derive(Debug, Default)]
@@ -1544,6 +1638,9 @@ fn hover_contents_for_symbol(
             if let Some(width) = meta.mode_contract.i_width {
                 lines.push(format!("- I width: {}", reg_width_name(width)));
             }
+            if let Some(&addr) = state.resolved_addresses.get(canonical) {
+                lines.push(format!("- address: `{}`", format_address(addr)));
+            }
             return lines.join("\n");
         }
         if let Some(meta) = doc.analysis.semantic.consts.get(canonical) {
@@ -1551,13 +1648,27 @@ fn hover_contents_for_symbol(
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
             return format!(
-                "**variable** `{}`\n- address: `0x{:X}`\n- size: `{}`",
-                symbol.name, meta.address, meta.size
+                "**variable** `{}`\n- address: `{}`\n- size: `{}`",
+                symbol.name,
+                format_address(meta.address),
+                meta.size
             );
         }
     }
 
-    format!("**{}** `{}`", symbol.category.detail(), symbol.name)
+    let mut text = format!("**{}** `{}`", symbol.category.detail(), symbol.name);
+    if let Some(&addr) = state.resolved_addresses.get(canonical) {
+        text.push_str(&format!("\n- address: `{}`", format_address(addr)));
+    }
+    text
+}
+
+fn format_address(addr: u32) -> String {
+    if addr > 0xFFFF {
+        format!("${:06X}", addr)
+    } else {
+        format!("${:04X}", addr)
+    }
 }
 
 fn yes_no(value: bool) -> &'static str {

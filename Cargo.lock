@@ -685,6 +685,8 @@ dependencies = [
  "k816-core",
  "k816-fmt",
  "k816-isa65816",
+ "k816-link",
+ "k816-o65",
  "lsp-server",
  "lsp-types",
  "serde",

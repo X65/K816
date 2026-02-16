@@ -18,3 +18,5 @@ url.workspace = true
 k816-core = { path = "../core" }
 k816-fmt = { path = "../fmt" }
 k816-isa65816 = { path = "../isa65816" }
+k816-link = { path = "../link" }
+k816-o65 = { path = "../o65" }

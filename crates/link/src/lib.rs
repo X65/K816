@@ -111,6 +111,7 @@ pub struct LinkOutput {
     pub bytes: Vec<u8>,
     pub kind: OutputKind,
     pub listing: String,
+    pub symbols: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -603,6 +604,7 @@ pub fn link_objects_with_options(
         bytes,
         kind: output_kind,
         listing: listing_blocks.join("\n\n"),
+        symbols: symbols.into_iter().map(|(name, rs)| (name, rs.addr)).collect(),
     })
 }
 

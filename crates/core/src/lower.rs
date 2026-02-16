@@ -3056,7 +3056,7 @@ fn eval_to_number(
             let _ = resolve_symbol(name, scope, ident_span, diagnostics)?;
             diagnostics.push(Diagnostic::error(
                 ident_span,
-                format!("unknown identifier '{name}' in numeric expression"),
+                format!("unknown identifier '{name}'"),
             ));
             None
         }
@@ -3434,7 +3434,7 @@ mod tests {
         assert!(errors.iter().any(|error| {
             error
                 .message
-                .contains("unknown identifier 'MISSING' in numeric expression")
+                .contains("unknown identifier 'MISSING'")
         }));
         assert!(errors.iter().any(|error| {
             error.primary.start == missing_start && error.primary.end == missing_end

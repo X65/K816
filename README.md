@@ -14,11 +14,11 @@ K816 aims to combine a familiar, readable, C-like source format with the control
 - Support structured code blocks (functions, inlining, and explicit far functions).
 - Provide deterministic, reproducible output suitable for golden testing.
 - Provide a formatter to keep sources consistently styled.
-- Keep the toolchain small, fast, and well-suited to modern Rust development workflows.
+- Keep the toolchain small, fast, and well-suited to modern development workflows.
 
 ## Quick Taste
 
-Want to get a feel for K65-style code? This is the vibe:
+Want to get a feel for [K65-style code](docs/syntax-reference.md)? This is the vibe:
 
 ```k65
 var SCREEN = $0400
@@ -54,7 +54,7 @@ func main {
 }
 ```
 
-See [docs/register-width-aware-syntax.md](docs/register-width-aware-syntax.md) for full details.
+See [register-width-aware-syntax.md](docs/register-width-aware-syntax.md) for full details.
 
 ## Development
 

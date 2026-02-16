@@ -1,4 +1,6 @@
-use crate::ast::{Expr, File, HlaCondition, HlaStmt, Item, NamedDataBlock, NamedDataEntry, Stmt};
+use crate::ast::{
+    Expr, File, HlaCondition, HlaStmt, Item, NamedDataBlock, NamedDataEntry, NumFmt, Stmt,
+};
 use crate::diag::Diagnostic;
 use crate::span::Spanned;
 
@@ -11,6 +13,7 @@ pub fn normalize_file(file: &File) -> Result<File, Vec<Diagnostic>> {
     Ok(File {
         mode_default: file.mode_default,
         items,
+        comments: file.comments.clone(),
     })
 }
 
@@ -201,7 +204,7 @@ fn normalize_condition(condition: &HlaCondition) -> HlaCondition {
     HlaCondition {
         lhs: condition.lhs,
         op: condition.op,
-        rhs: Some(condition.rhs.clone().unwrap_or(Expr::Number(0))),
+        rhs: Some(condition.rhs.clone().unwrap_or(Expr::Number(0, NumFmt::Dec))),
         seed_span: condition.seed_span,
     }
 }

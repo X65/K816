@@ -22,7 +22,7 @@ const PROJECT_OBJECT_DIR: &str = "obj";
     about = "High-level assembler for the WDC 65816",
     long_about = None,
     override_usage = "k816 [COMMAND] [INPUT]",
-    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.ld.ron\n  k816 init hello\n  k816 build\n  k816 run -- --fast\n  k816 clean\n  k816 lsp\n  k816 --help"
+    after_help = "Examples:\n  k816 path/to/input.k65\n  k816 -T path/to/link.ld.ron path/to/input.k65\n  k816 compile path/to/input.k65\n  k816 link path/to/input.o65 -T link.ld.ron\n  k816 init hello\n  k816 build\n  k816 run -- --fast\n  k816 clean\n  k816 fmt src/*.k65\n  k816 fmt --check src/*.k65\n  k816 lsp\n  k816 --help"
 )]
 struct Cli {
     /// Optional explicit subcommand.
@@ -182,6 +182,8 @@ enum Commands {
     Clean,
     /// Run the Language Server Protocol server over stdio.
     Lsp,
+    /// Format source files.
+    Fmt(FmtArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -214,6 +216,17 @@ struct RunArgs {
     /// Additional args forwarded to the configured runner.
     #[arg(value_name = "ARGS", trailing_var_arg = true)]
     forwarded_args: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+struct FmtArgs {
+    /// Input source files (.k65).
+    #[arg(value_name = "INPUT", required = true)]
+    input: Vec<PathBuf>,
+
+    /// Check formatting without writing changes; exit 1 if any file would change.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -297,6 +310,11 @@ fn run() -> anyhow::Result<()> {
             link_options.validate_absent_for_subcommand("lsp")?;
             output_option.validate_absent_for_subcommand("lsp")?;
             k816_lsp::run_stdio_server()
+        }
+        Some(Commands::Fmt(args)) => {
+            link_options.validate_absent_for_subcommand("fmt")?;
+            output_option.validate_absent_for_subcommand("fmt")?;
+            fmt_command(args)
         }
         None => {
             let Some(input_path) = input else {
@@ -487,6 +505,36 @@ fn compile_command(
     let object = compile_source_file_for_link(&args.input)?;
     let out_path = output.unwrap_or_else(|| default_object_path_for_input(&args.input));
     k816_o65::write_object(&out_path, &object)?;
+    Ok(())
+}
+
+fn fmt_command(args: FmtArgs) -> anyhow::Result<()> {
+    let mut unformatted_count = 0u32;
+    for path in &args.input {
+        let source = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read '{}'", path.display()))?;
+        let source_id = k816_core::span::SourceId(0);
+        let ast = k816_core::parser::parse(source_id, &source)
+            .map_err(|_| anyhow::anyhow!("failed to parse '{}'", path.display()))?;
+        let formatted = k816_fmt::format_file(&ast, &source);
+        if formatted == source {
+            continue;
+        }
+        if args.check {
+            println!("{}", path.display());
+            unformatted_count += 1;
+        } else {
+            std::fs::write(path, &formatted)
+                .with_context(|| format!("failed to write '{}'", path.display()))?;
+        }
+    }
+    if args.check && unformatted_count > 0 {
+        anyhow::bail!(
+            "{} file{} would be reformatted",
+            unformatted_count,
+            if unformatted_count == 1 { "" } else { "s" }
+        );
+    }
     Ok(())
 }
 

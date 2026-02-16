@@ -1,13 +1,23 @@
 use logos::Logos;
 
+use crate::ast::NumFmt;
 use crate::diag::Diagnostic;
 use crate::span::{SourceId, Span};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumLit {
+    pub value: i64,
+    pub fmt: NumFmt,
+}
+
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip(r"[ \t\r\f]+"))]
-#[logos(skip(r"//[^\r\n]*", allow_greedy = true))]
-#[logos(skip(r"/\*([^*]|\*+[^*/])*\*+/"))]
 pub enum TokenKind {
+    #[regex(r"//[^\r\n]*", |lex| lex.slice().to_string(), priority = 5, allow_greedy = true)]
+    LineComment(String),
+    #[regex(r"/\*([^*]|\*+[^*/])*\*+/", |lex| lex.slice().to_string(), priority = 5)]
+    BlockComment(String),
+
     #[token("segment")]
     Segment,
     #[token("const")]
@@ -119,7 +129,7 @@ pub enum TokenKind {
 
     #[regex(r"%[01]+|0b[01]+|0x[0-9a-fA-F]+|\$[0-9a-fA-F]+|[0-9]+", parse_number)]
     #[regex(r"'([^'\\]|\\.)'", parse_char)]
-    Number(i64),
+    Number(NumLit),
 
     #[regex(
         r"(?:[A-Za-z_]|[.][A-Za-z_])[A-Za-z0-9_]*(?:[.][A-Za-z_][A-Za-z0-9_]*)*",
@@ -173,21 +183,25 @@ pub fn lex_lenient(source_id: SourceId, input: &str) -> (Vec<Token>, Vec<Diagnos
     (tokens, diagnostics)
 }
 
-fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {
+fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<NumLit> {
     let slice = lex.slice();
     if let Some(bin) = slice.strip_prefix('%') {
-        return i64::from_str_radix(bin, 2).ok();
+        let w = bin.len() as u8;
+        return i64::from_str_radix(bin, 2).ok().map(|v| NumLit { value: v, fmt: NumFmt::Percent(w) });
     }
     if let Some(bin) = slice.strip_prefix("0b") {
-        return i64::from_str_radix(bin, 2).ok();
+        let w = bin.len() as u8;
+        return i64::from_str_radix(bin, 2).ok().map(|v| NumLit { value: v, fmt: NumFmt::Bin(w) });
     }
     if let Some(hex) = slice.strip_prefix("0x") {
-        return i64::from_str_radix(hex, 16).ok();
+        let w = hex.len() as u8;
+        return i64::from_str_radix(hex, 16).ok().map(|v| NumLit { value: v, fmt: NumFmt::Hex(w) });
     }
     if let Some(hex) = slice.strip_prefix('$') {
-        return i64::from_str_radix(hex, 16).ok();
+        let w = hex.len() as u8;
+        return i64::from_str_radix(hex, 16).ok().map(|v| NumLit { value: v, fmt: NumFmt::Dollar(w) });
     }
-    slice.parse::<i64>().ok()
+    slice.parse::<i64>().ok().map(|v| NumLit { value: v, fmt: NumFmt::Dec })
 }
 
 fn parse_ident(lex: &mut logos::Lexer<TokenKind>) -> String {
@@ -219,7 +233,7 @@ fn parse_string(lex: &mut logos::Lexer<TokenKind>) -> String {
     out
 }
 
-fn parse_char(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {
+fn parse_char(lex: &mut logos::Lexer<TokenKind>) -> Option<NumLit> {
     let slice = lex.slice();
     let content = &slice[1..slice.len() - 1];
     let mut chars = content.chars();
@@ -235,7 +249,7 @@ fn parse_char(lex: &mut logos::Lexer<TokenKind>) -> Option<i64> {
         },
         ch => ch,
     };
-    Some(ch as i64)
+    Some(NumLit { value: ch as i64, fmt: NumFmt::Dec })
 }
 
 fn format_token_for_message(token: &str) -> String {
@@ -293,21 +307,21 @@ mod tests {
     fn lexes_percent_prefixed_binary_literal() {
         let tokens = lex(SourceId(0), "%01001010").expect("lex");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].kind, TokenKind::Number(0x4A)));
+        assert!(matches!(tokens[0].kind, TokenKind::Number(NumLit { value: 0x4A, fmt: NumFmt::Percent(8) })));
     }
 
     #[test]
     fn lexes_char_literal() {
         let tokens = lex(SourceId(0), "'A'").expect("lex");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].kind, TokenKind::Number(65)));
+        assert!(matches!(tokens[0].kind, TokenKind::Number(NumLit { value: 65, fmt: NumFmt::Dec })));
     }
 
     #[test]
     fn lexes_char_literal_escape() {
         let tokens = lex(SourceId(0), "'\\n'").expect("lex");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].kind, TokenKind::Number(10)));
+        assert!(matches!(tokens[0].kind, TokenKind::Number(NumLit { value: 10, fmt: NumFmt::Dec })));
     }
 
     #[test]
@@ -317,7 +331,7 @@ mod tests {
         assert!(
             tokens
                 .iter()
-                .any(|t| matches!(t.kind, TokenKind::Number(115)))
+                .any(|t| matches!(t.kind, TokenKind::Number(NumLit { value: 115, .. })))
         );
     }
 }

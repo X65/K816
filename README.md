@@ -24,7 +24,7 @@ Want to get a feel for [K65-style code](docs/syntax-reference.md)? This is the v
 var SCREEN = $0400
 
 func main {
-  x = #0
+  x = 0
   {
     a = hello, x
     z-? { SCREEN, x = a x++ }

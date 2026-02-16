@@ -1,6 +1,6 @@
 use crate::ast::{
     CodeBlock, ConstDecl, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item,
-    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, Operand, Stmt,
+    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt, Operand, Stmt,
     SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
@@ -20,6 +20,7 @@ pub fn expand_file(file: &File, source_id: SourceId) -> Result<File, Vec<Diagnos
         Ok(File {
             mode_default: file.mode_default,
             items,
+            comments: file.comments.clone(),
         })
     } else {
         Err(diagnostics)
@@ -442,15 +443,15 @@ fn expand_expr(
         Expr::EvalText(input) => {
             let expanded = match k816_eval::expand(input) {
                 Ok(expanded) => expanded,
-                Err(_err) => return Expr::Number(0),
+                Err(_err) => return Expr::Number(0, NumFmt::Dec),
             };
 
             match parse_expression_fragment(source_id, &expanded) {
                 Ok(expr) => expr.node,
-                Err(_err) => Expr::Number(0),
+                Err(_err) => Expr::Number(0, NumFmt::Dec),
             }
         }
-        Expr::Number(_) | Expr::Ident(_) | Expr::IdentSpanned { .. } => expr.clone(),
+        Expr::Number(_, _) | Expr::Ident(_) | Expr::IdentSpanned { .. } => expr.clone(),
         Expr::Index { base, index } => Expr::Index {
             base: Box::new(expand_expr(base, span, source_id, diagnostics)),
             index: Box::new(expand_expr(index, span, source_id, diagnostics)),

@@ -1,12 +1,12 @@
 use crate::ast::{
-    CallStmt, CodeBlock, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth, EvaluatorBlock,
-    Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister, HlaRhs,
-    HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract, NamedDataBlock,
-    NamedDataEntry, NamedDataForEvalRange, Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt,
-    SymbolicSubscriptFieldDecl, VarDecl,
+    CallStmt, CodeBlock, Comment, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
+    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition,
+    HlaRegister, HlaRhs, HlaStmt, IndexRegister, Instruction, Item, LabelDecl, ModeContract,
+    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt, Operand, OperandAddrMode,
+    RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
-use crate::lexer::{TokenKind, lex, lex_lenient};
+use crate::lexer::{NumLit, TokenKind, lex, lex_lenient};
 use crate::span::{SourceId, Span, Spanned};
 use chumsky::{
     IterParser, Parser as _,
@@ -137,6 +137,27 @@ fn coalesce_non_var_brackets(
     result
 }
 
+/// Strip comment tokens from the token list, returning them separately
+/// so they can be attached to the AST without affecting the parser.
+fn strip_comments(
+    tokens: Vec<crate::lexer::Token>,
+) -> (Vec<crate::lexer::Token>, Vec<Comment>) {
+    let mut filtered = Vec::with_capacity(tokens.len());
+    let mut comments = Vec::new();
+    for token in tokens {
+        match &token.kind {
+            TokenKind::LineComment(text) | TokenKind::BlockComment(text) => {
+                comments.push(Comment {
+                    text: text.clone(),
+                    span: token.span,
+                });
+            }
+            _ => filtered.push(token),
+        }
+    }
+    (filtered, comments)
+}
+
 pub fn parse_with_warnings(
     source_id: SourceId,
     source_text: &str,
@@ -145,6 +166,7 @@ pub fn parse_with_warnings(
     let source_text = preprocessed.as_str();
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
+    let (tokens, comments) = strip_comments(tokens);
 
     // Lexer errors inside coalesced Eval tokens are fine — the evaluator engine
     // re-parses that text with its own lexer that supports a wider syntax.
@@ -185,7 +207,8 @@ pub fn parse_with_warnings(
         .collect::<Vec<_>>();
 
     match output {
-        Some(file) => {
+        Some(mut file) => {
+            file.comments = comments;
             // Parse produced output — partition diagnostics by severity.
             // Warnings (from [warn]-tagged .validate() emitters) are non-fatal.
             // Errors (from real parse failures or error-tagged .validate()) are fatal.
@@ -218,6 +241,7 @@ pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, V
     let source_text = preprocessed.as_str();
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
+    let (tokens, comments) = strip_comments(tokens);
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -236,6 +260,11 @@ pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, V
             .into_iter()
             .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax")),
     );
+
+    let output = output.map(|mut file| {
+        file.comments = comments;
+        file
+    });
 
     if let Some(ref file) = output {
         let mut warnings = collect_parser_warnings(file);
@@ -490,6 +519,7 @@ where
         .map(|(mode_default, items)| File {
             mode_default,
             items,
+            comments: Vec::new(),
         })
 }
 
@@ -552,7 +582,7 @@ where
                 data_width: None,
                 array_len: None,
                 symbolic_subscript_fields: None,
-                initializer: Some(Expr::Number(0)),
+                initializer: Some(Expr::Number(0, NumFmt::Dec)),
                 initializer_span: None,
             })
         } else {
@@ -878,10 +908,10 @@ where
                 })),
     );
 
-    let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
+    let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
 
     let far_value = number_parser()
-        .map(|value| vec![Expr::Number(value)])
+        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
         .or(address_byte_expr.clone())
         .or(undef_byte.clone())
         .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
@@ -891,7 +921,7 @@ where
         .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let word_value = number_parser()
-        .map(|value| vec![Expr::Number(value)])
+        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
         .or(address_byte_expr.clone())
         .or(undef_byte.clone())
         .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
@@ -903,7 +933,7 @@ where
     .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let bytes_entry = number_parser()
-        .map(|value| vec![Expr::Number(value)])
+        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
         .or(address_byte_expr)
         .or(undef_byte)
         .repeated()
@@ -1132,10 +1162,10 @@ where
                 })),
     );
 
-    let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0)]);
+    let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
 
     let far_value = number_parser()
-        .map(|value| vec![Expr::Number(value)])
+        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
         .or(address_byte_expr.clone())
         .or(undef_byte.clone())
         .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
@@ -1145,7 +1175,7 @@ where
         .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let word_value = number_parser()
-        .map(|value| vec![Expr::Number(value)])
+        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
         .or(address_byte_expr.clone())
         .or(undef_byte.clone())
         .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
@@ -1157,7 +1187,7 @@ where
     .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let bytes_entry = number_parser()
-        .map(|value| vec![Expr::Number(value)])
+        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
         .or(address_byte_expr)
         .or(undef_byte)
         .repeated()
@@ -1246,6 +1276,7 @@ where
         .map(|(kind, args)| DataCommand::Convert { kind, args });
 
     let bytes = number_parser()
+        .map(|n| n.value)
         .or(just(TokenKind::Question).to(0i64))
         .repeated()
         .at_least(1)
@@ -1260,7 +1291,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     chumsky::select! {
-        TokenKind::Number(value) => DataArg::Int(value),
+        TokenKind::Number(NumLit { value, .. }) => DataArg::Int(value),
         TokenKind::String(value) => DataArg::Str(value),
     }
     .boxed()
@@ -1460,10 +1491,10 @@ where
 
     // Comparison-based: >= < == != <0 >=0 <<= >>=
     let cmp_based = just(TokenKind::GtEq)
-        .ignore_then(just(TokenKind::Number(0)).or_not())
+        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
         .map(|zero| if zero.is_some() { "bmi" } else { "bcc" }) // >=0: exec N=0, skip N=1; >=: exec C=1, skip C=0
         .or(just(TokenKind::Lt)
-            .ignore_then(just(TokenKind::Number(0)).or_not())
+            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
             .map(|zero| if zero.is_some() { "bpl" } else { "bcs" })) // <0: exec N=1, skip N=0; <: exec C=0, skip C=1
         .or(just(TokenKind::EqEq).to("bne")) // ==: exec Z=1, skip Z=0
         .or(just(TokenKind::BangEq).to("beq")) // !=: exec Z=0, skip Z=1
@@ -1828,19 +1859,10 @@ fn hla_x_assign_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
-        .then_ignore(just(TokenKind::Eq))
-        .then_ignore(just(TokenKind::Hash))
-        .then(expr_parser())
-        .try_map(|(lhs, rhs), span| {
-            if !lhs.eq_ignore_ascii_case("x") {
-                return Err(Rich::custom(
-                    span,
-                    format!("expected 'x' assignment, found '{lhs}'"),
-                ));
-            }
-            Ok(Stmt::Hla(HlaStmt::XAssignImmediate { rhs }))
-        })
+    // Dead parser — `x = expr` is handled by assign_stmt_parser.
+    // The formatter reconstructs HLA sugar from Operand::Auto instructions.
+    chumsky::select! { TokenKind::Ident(value) if false => value }
+        .map(|_: String| Stmt::Empty)
 }
 
 fn hla_x_increment_stmt_parser<'src, I>()
@@ -2565,10 +2587,10 @@ where
 
     // <0 goto → bmi, >=0 goto → bpl
     let signed_goto = just(TokenKind::Lt)
-        .ignore_then(just(TokenKind::Number(0)))
+        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
         .to("bmi")
         .or(just(TokenKind::GtEq)
-            .ignore_then(just(TokenKind::Number(0)))
+            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
             .to("bpl"));
 
     // <<= goto → bvs, >>= goto → bvc
@@ -2640,10 +2662,10 @@ where
         chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("repeat") => () };
 
     let branch_condition = just(TokenKind::Lt)
-        .ignore_then(just(TokenKind::Number(0)).or_not())
+        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
         .map(|zero| if zero.is_some() { "bmi" } else { "bcc" })
         .or(just(TokenKind::GtEq)
-            .ignore_then(just(TokenKind::Number(0)).or_not())
+            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
             .map(|zero| if zero.is_some() { "bpl" } else { "bcs" }))
         .or(just(TokenKind::EqEq).to("beq"))
         .or(just(TokenKind::BangEq).to("bne"))
@@ -2725,7 +2747,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     just(TokenKind::Star)
-        .ignore_then(number_parser().or_not())
+        .ignore_then(number_parser().map(|n| n.value).or_not())
         .map(|count| {
             let n = count.unwrap_or(1) as usize;
             if n == 1 {
@@ -2962,10 +2984,10 @@ where
 
     // <0 → BMI, >=0 → BPL
     let signed_cmp = just(TokenKind::Lt)
-        .ignore_then(just(TokenKind::Number(0)))
+        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
         .to(do_close_branch("bmi"))
         .or(just(TokenKind::GtEq)
-            .ignore_then(just(TokenKind::Number(0)))
+            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
             .to(do_close_branch("bpl")));
 
     // <<= → BVS, >>= → BVC
@@ -3029,9 +3051,9 @@ where
 {
     recursive(|expr| {
         let number_atom = chumsky::select! {
-            TokenKind::Number(value) => value
+            TokenKind::Number(NumLit { value, fmt }) => (value, fmt)
         }
-        .map(Expr::Number);
+        .map(|(v, f)| Expr::Number(v, f));
 
         let ident_atom = spanned(
             chumsky::select! { TokenKind::Ident(value) => value },
@@ -3227,11 +3249,12 @@ where
     chumsky::select! { TokenKind::Ident(value) => value }.boxed()
 }
 
-fn number_parser<'src, I>() -> impl chumsky::Parser<'src, I, i64, ParseExtra<'src>> + Clone
+fn number_parser<'src, I>(
+) -> impl chumsky::Parser<'src, I, NumLit, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! { TokenKind::Number(value) => value }.boxed()
+    chumsky::select! { TokenKind::Number(n) => n }.boxed()
 }
 
 fn spanned<'src, I, T, P>(
@@ -3533,29 +3556,23 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::ModeI8 => "'@i8'".to_string(),
         TokenKind::ModeI16 => "'@i16'".to_string(),
         TokenKind::SwapOp => "'><'".to_string(),
+        TokenKind::LineComment(_) => "line comment".to_string(),
+        TokenKind::BlockComment(_) => "block comment".to_string(),
     }
 }
 
 fn parse_eval_expr_token(value: &str) -> Expr {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Expr::Number(0);
+        return Expr::Number(0, NumFmt::Dec);
     }
 
     if is_ident_text(trimmed) {
         return Expr::Ident(trimmed.to_string());
     }
 
-    if let Ok(number) = parse_numeric_text(trimmed) {
-        return Expr::Number(number);
-    }
-
-    if let Ok(expanded) = k816_eval::expand(trimmed) {
-        if let Ok(number) = expanded.trim().parse::<i64>() {
-            return Expr::Number(number);
-        }
-    }
-
+    // Keep everything else (numbers, expressions) as EvalText so the
+    // formatter preserves the original bracket syntax `[...]`.
     Expr::EvalText(trimmed.to_string())
 }
 
@@ -3566,7 +3583,7 @@ fn parse_eval_expr_token_with_token_bounds(
 ) -> Expr {
     let trimmed = value.trim();
     if trimmed.is_empty() {
-        return Expr::Number(0);
+        return Expr::Number(0, NumFmt::Dec);
     }
 
     if is_ident_text(trimmed) {
@@ -3594,22 +3611,9 @@ fn is_ident_text(text: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
-fn parse_numeric_text(text: &str) -> Result<i64, ()> {
-    if let Some(bin) = text.strip_prefix("0b") {
-        return i64::from_str_radix(bin, 2).map_err(|_| ());
-    }
-    if let Some(hex) = text.strip_prefix("0x") {
-        return i64::from_str_radix(hex, 16).map_err(|_| ());
-    }
-    if let Some(hex) = text.strip_prefix('$') {
-        return i64::from_str_radix(hex, 16).map_err(|_| ());
-    }
-    text.parse::<i64>().map_err(|_| ())
-}
-
 fn eval_static_expr(expr: &Expr) -> Option<i64> {
     match expr {
-        Expr::Number(value) => Some(*value),
+        Expr::Number(value, _) => Some(*value),
         Expr::Ident(_) => None,
         Expr::IdentSpanned { .. } => None,
         Expr::EvalText(value) => {
@@ -3676,13 +3680,13 @@ mod tests {
     #[test]
     fn parses_expression_fragment() {
         let expr = parse_expression_fragment(SourceId(0), "0x10").expect("parse");
-        assert!(matches!(expr.node, Expr::Number(16)));
+        assert!(matches!(expr.node, Expr::Number(16, _)));
     }
 
     #[test]
     fn parses_expression_fragment_with_newline_padding() {
         let expr = parse_expression_fragment(SourceId(0), "\n0x10\n").expect("parse");
-        assert!(matches!(expr.node, Expr::Number(16)));
+        assert!(matches!(expr.node, Expr::Number(16, _)));
     }
 
     #[test]
@@ -3695,7 +3699,7 @@ mod tests {
             panic!("expected var item");
         };
 
-        assert!(matches!(var.array_len, Some(Expr::Number(16))));
+        assert!(matches!(var.array_len, Some(Expr::Number(16, _))));
         assert!(var.symbolic_subscript_fields.is_none());
         assert!(var.initializer.is_none());
     }
@@ -3710,7 +3714,7 @@ mod tests {
             panic!("expected const item");
         };
         assert_eq!(const_decl.name, "LIMIT");
-        assert!(matches!(const_decl.initializer, Expr::Number(16)));
+        assert!(matches!(const_decl.initializer, Expr::Number(16, _)));
         assert!(const_decl.initializer_span.is_some());
     }
 
@@ -3780,7 +3784,7 @@ mod tests {
             panic!("expected var item");
         };
         assert!(var.array_len.is_none());
-        assert!(matches!(var.initializer, Some(Expr::Number(0x1234))));
+        assert!(matches!(var.initializer, Some(Expr::Number(0x1234, _))));
         let fields = var
             .symbolic_subscript_fields
             .as_ref()
@@ -3791,7 +3795,7 @@ mod tests {
         assert_eq!(fields[2].name, "string");
         assert!(matches!(fields[0].data_width, Some(DataWidth::Word)));
         assert!(matches!(fields[1].data_width, Some(DataWidth::Byte)));
-        assert!(matches!(fields[2].count, Some(Expr::Number(20))));
+        assert!(matches!(fields[2].count, Some(Expr::Number(20, _))));
     }
 
     #[test]
@@ -3841,7 +3845,7 @@ mod tests {
             expr,
             Expr::Index { base, index }
                 if is_ident_named(base.as_ref(), "foo.string")
-                && matches!(index.as_ref(), Expr::Number(2))
+                && matches!(index.as_ref(), Expr::Number(2, _))
         ));
     }
 
@@ -3975,16 +3979,20 @@ mod tests {
 
     #[test]
     fn parses_hla_statements_without_text_desugaring() {
-        let source = "func main {\n  x = #0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = [$FF]\n}\n";
+        let source = "func main {\n  x = 0\n  {\n    { a&?UART_READY } n-?\n    UART_DATA = a = text,x\n    x++\n  } a?0 !=\n  API_OP = a = [$FF]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let Item::CodeBlock(block) = &file.items[0].node else {
             panic!("expected code block");
         };
 
         assert_eq!(block.body.len(), 7);
+        // x = 0 is parsed as ldx with Operand::Auto (formatter reconstructs HLA sugar)
         assert!(matches!(
             block.body[0].node,
-            Stmt::Hla(HlaStmt::XAssignImmediate { .. })
+            Stmt::Instruction(Instruction {
+                ref mnemonic,
+                operand: Some(Operand::Auto { .. }),
+            }) if mnemonic == "ldx"
         ));
         assert!(matches!(block.body[1].node, Stmt::Hla(HlaStmt::DoOpen)));
         assert!(matches!(
@@ -4081,16 +4089,16 @@ mod tests {
             panic!("expected forward for-eval entry");
         };
         assert_eq!(forward.iterator, "i");
-        assert!(matches!(forward.start, Expr::Number(0)));
-        assert!(matches!(forward.end, Expr::Number(4)));
+        assert!(matches!(forward.start, Expr::Number(0, _)));
+        assert!(matches!(forward.end, Expr::Number(4, _)));
         assert_eq!(forward.eval.trim(), "i * FACTOR");
 
         let NamedDataEntry::ForEvalRange(reverse) = &block.entries[1].node else {
             panic!("expected reverse for-eval entry");
         };
         assert_eq!(reverse.iterator, "j");
-        assert!(matches!(reverse.start, Expr::Number(4)));
-        assert!(matches!(reverse.end, Expr::Number(0)));
+        assert!(matches!(reverse.start, Expr::Number(4, _)));
+        assert!(matches!(reverse.end, Expr::Number(0, _)));
         assert_eq!(reverse.eval.trim(), "j");
     }
 

@@ -1039,3 +1039,67 @@ fn clean_removes_project_target_directory() {
     clean.current_dir(&project).arg("clean").assert().success();
     assert!(!project.join("target").exists());
 }
+
+#[test]
+fn fmt_formats_file_in_place() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-fmt-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "func   main  {\nnop\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg("fmt").arg(&input).assert().success();
+
+    let formatted = std::fs::read_to_string(&input).expect("failed to read formatted file");
+    assert_eq!(formatted, "func main {\n  nop\n}\n");
+}
+
+#[test]
+fn fmt_check_exits_zero_when_formatted() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-fmt-check-ok-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg("fmt")
+        .arg("--check")
+        .arg(&input)
+        .assert()
+        .success();
+}
+
+#[test]
+fn fmt_check_exits_nonzero_when_unformatted() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-fmt-check-fail-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "func   main  {\nnop\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    cmd.arg("fmt")
+        .arg("--check")
+        .arg(&input)
+        .assert()
+        .failure()
+        .stderr(contains("would be reformatted"));
+
+    // File should be unchanged
+    let contents = std::fs::read_to_string(&input).expect("failed to read file");
+    assert_eq!(contents, "func   main  {\nnop\n}\n");
+}

@@ -828,7 +828,7 @@ fn eval_const_expr(
     consts: &IndexMap<String, ConstMeta>,
 ) -> Result<Number, ConstExprError> {
     match expr {
-        Expr::Number(value) => Ok(Number::Int(*value)),
+        Expr::Number(value, _) => Ok(Number::Int(*value)),
         Expr::Ident(name) => consts
             .get(name)
             .map(|constant| constant.value)

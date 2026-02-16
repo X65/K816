@@ -1,5 +1,17 @@
 use crate::span::{Span, Spanned};
 
+/// Original number literal format, preserved for round-trip formatting.
+/// Non-decimal variants carry the original digit count for width preservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NumFmt {
+    #[default]
+    Dec,          // plain decimal: 42
+    Percent(u8),  // %01001010 (digit count = 8)
+    Bin(u8),      // 0b01001010 (digit count = 8)
+    Dollar(u8),   // $FFE0 (digit count = 4)
+    Hex(u8),      // 0xFFE0 (digit count = 4)
+}
+
 /// Data width for typed variables and typed views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataWidth {
@@ -22,10 +34,17 @@ pub struct ModeContract {
     pub i_width: Option<RegWidth>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Comment {
+    pub text: String,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct File {
     pub mode_default: ModeContract,
     pub items: Vec<Spanned<Item>>,
+    pub comments: Vec<Comment>,
 }
 
 #[derive(Debug, Clone)]
@@ -253,7 +272,7 @@ pub struct CallStmt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
-    Number(i64),
+    Number(i64, NumFmt),
     Ident(String),
     IdentSpanned {
         name: String,

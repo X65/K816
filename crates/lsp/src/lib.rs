@@ -741,7 +741,7 @@ impl ServerState {
             return Vec::new();
         };
 
-        let formatted = k816_fmt::format_file(&ast);
+        let formatted = k816_fmt::format_file(&ast, &doc.text);
         if formatted == doc.text {
             return Vec::new();
         }

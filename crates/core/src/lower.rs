@@ -4,8 +4,8 @@ use rustc_hash::FxHashMap;
 
 use crate::ast::{
     DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCompareOp, HlaCondition, HlaRegister,
-    HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry, Operand, OperandAddrMode,
-    RegWidth, Stmt,
+    HlaRhs, HlaStmt, Instruction, Item, NamedDataBlock, NamedDataEntry, NumFmt, Operand,
+    OperandAddrMode, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -2055,7 +2055,7 @@ fn lower_hla_condition_branch(
         return;
     }
 
-    let rhs = condition.rhs.as_ref().unwrap_or(&Expr::Number(0));
+    let rhs = condition.rhs.as_ref().unwrap_or(&Expr::Number(0, NumFmt::Dec));
     let Some(rhs_number) = eval_to_number(rhs, scope, sema, span, diagnostics) else {
         return;
     };
@@ -2064,7 +2064,7 @@ fn lower_hla_condition_branch(
     let compare_instruction = Instruction {
         mnemonic: "cmp".to_string(),
         operand: Some(Operand::Immediate {
-            expr: Expr::Number(rhs_number),
+            expr: Expr::Number(rhs_number, NumFmt::Dec),
             explicit_hash: false,
         }),
     };
@@ -2459,7 +2459,7 @@ fn eval_to_number_strict(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
     match expr {
-        Expr::Number(value) => Some(*value),
+        Expr::Number(value, _) => Some(*value),
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
             if let Some(var) = sema.vars.get(name) {
@@ -2707,7 +2707,7 @@ fn resolve_symbolic_byte_relocation(
 /// for deterministic classification instead of naming-convention heuristics.
 fn is_immediate_expression(expr: &Expr, sema: &SemanticModel) -> bool {
     match expr {
-        Expr::Number(_) => true,
+        Expr::Number(_, _) => true,
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => sema.consts.contains_key(name),
         Expr::Binary { lhs, rhs, .. } => {
             is_immediate_expression(lhs, sema) && is_immediate_expression(rhs, sema)
@@ -2970,7 +2970,7 @@ fn lower_address_operand(
     mode: AddressOperandMode,
 ) -> Option<OperandOp> {
     match expr {
-        Expr::Number(value) => {
+        Expr::Number(value, _) => {
             let address = u32::try_from(*value).map_err(|_| {
                 Diagnostic::error(span, format!("address cannot be negative: {value}"))
             });
@@ -3031,7 +3031,7 @@ fn eval_to_number(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
     match expr {
-        Expr::Number(value) => Some(*value),
+        Expr::Number(value, _) => Some(*value),
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
             if let Some(var) = sema.vars.get(name) {

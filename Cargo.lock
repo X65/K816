@@ -594,6 +594,7 @@ dependencies = [
  "clap",
  "indexmap",
  "k816-core",
+ "k816-fmt",
  "k816-link",
  "k816-lsp",
  "k816-o65",

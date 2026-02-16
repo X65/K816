@@ -100,6 +100,21 @@
       {
         "command": "k816.restartServer",
         "title": "K816: Restart Language Server"
+      },
+      {
+        "command": "k816.build",
+        "title": "K816: Build"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "k816"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "k816.build",
+        "key": "f7"
       }
     ],
     "configuration": {

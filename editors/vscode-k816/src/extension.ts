@@ -24,6 +24,23 @@ export async function activate(
       await stopClient();
       await startClient();
     }),
+    vscode.commands.registerCommand("k816.build", () => {
+      const config = vscode.workspace.getConfiguration("k816");
+      const command = config.get<string>("server.path", "k816");
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      const task = new vscode.Task(
+        { type: "k816" },
+        folder ?? vscode.TaskScope.Workspace,
+        "build",
+        "k816",
+        new vscode.ShellExecution(command, ["build"], {
+          cwd: folder?.uri.fsPath,
+        }),
+      );
+      task.group = vscode.TaskGroup.Build;
+      task.presentationOptions.reveal = vscode.TaskRevealKind.Always;
+      vscode.tasks.executeTask(task);
+    }),
   );
 
   context.subscriptions.push(

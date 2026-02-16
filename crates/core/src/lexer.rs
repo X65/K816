@@ -105,7 +105,13 @@ pub enum TokenKind {
     #[regex(r"\n+")]
     Newline,
 
-    #[token("[", parse_eval)]
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
+
+    /// Bracket-delimited text produced by the post-lex coalescing pass
+    /// (not matched directly by logos).
     Eval(String),
 
     #[regex(r#""([^"\\]|\\.)*""#, parse_string)]
@@ -188,26 +194,6 @@ fn parse_ident(lex: &mut logos::Lexer<TokenKind>) -> String {
     lex.slice().to_string()
 }
 
-fn parse_eval(lex: &mut logos::Lexer<TokenKind>) -> Option<String> {
-    let mut depth = 1usize;
-    for (offset, ch) in lex.remainder().char_indices() {
-        match ch {
-            '[' => depth += 1,
-            ']' => {
-                depth -= 1;
-                if depth == 0 {
-                    let content = &lex.remainder()[..offset];
-                    lex.bump(offset + 1);
-                    return Some(content.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
 fn parse_string(lex: &mut logos::Lexer<TokenKind>) -> String {
     let slice = lex.slice();
     let content = &slice[1..slice.len() - 1];
@@ -262,24 +248,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lexes_eval_fragment() {
+    fn lexes_bracket_tokens() {
         let tokens = lex(SourceId(0), "lda #[1 + 2]").expect("lex");
         assert!(
             tokens
                 .iter()
-                .any(|token| matches!(token.kind, TokenKind::Eval(_)))
+                .any(|token| matches!(token.kind, TokenKind::LBracket))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token.kind, TokenKind::RBracket))
         );
     }
 
     #[test]
-    fn lexes_nested_eval_fragment() {
+    fn lexes_nested_brackets() {
         let tokens = lex(SourceId(0), "var mmio[.data[4]:byte] = 0x4000").expect("lex");
-        assert!(tokens.iter().any(|token| {
-            matches!(
-                token.kind,
-                TokenKind::Eval(ref value) if value == ".data[4]:byte"
-            )
-        }));
+        let bracket_count = tokens
+            .iter()
+            .filter(|token| matches!(token.kind, TokenKind::LBracket))
+            .count();
+        assert_eq!(bracket_count, 2, "expected 2 LBracket tokens (outer + inner)");
     }
 
     #[test]

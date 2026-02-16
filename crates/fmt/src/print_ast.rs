@@ -255,6 +255,7 @@ fn format_expr(expr: &Expr) -> String {
             let op = match op {
                 k816_core::ast::ExprBinaryOp::Add => "+",
                 k816_core::ast::ExprBinaryOp::Sub => "-",
+                k816_core::ast::ExprBinaryOp::Mul => "*",
             };
             format!("{} {op} {}", format_expr(lhs), format_expr(rhs))
         }

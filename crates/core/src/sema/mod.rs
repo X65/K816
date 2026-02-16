@@ -857,6 +857,10 @@ fn eval_const_expr(
                     EvaluatorError::Overflow => ConstExprError::Overflow,
                     _ => ConstExprError::NonInteger,
                 }),
+                ExprBinaryOp::Mul => lhs.checked_mul(rhs).map_err(|error| match error {
+                    EvaluatorError::Overflow => ConstExprError::Overflow,
+                    _ => ConstExprError::NonInteger,
+                }),
             }
         }
         Expr::Unary { op, expr } => {

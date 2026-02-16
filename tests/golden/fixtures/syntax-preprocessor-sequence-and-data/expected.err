@@ -1,4 +1,4 @@
-Error: invalid syntax: expected something else, '+', '-', ':', ',', or '=', found number literal
+Error: invalid syntax: expected something else, '*', '+', '-', ':', ',', or '=', found number literal
     ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:7 ]
     │
  10 │     3 4
@@ -46,7 +46,7 @@ Warning: invalid syntax: preprocessor directive not processed
    │    ╰──── here
 ───╯
 
-Error: invalid syntax: expected something else, '+', '-', ':', ',', or '=', found number literal
+Error: invalid syntax: expected something else, '*', '+', '-', ':', ',', or '=', found number literal
     ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:7 ]
     │
  10 │     3 4

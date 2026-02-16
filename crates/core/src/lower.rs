@@ -2495,6 +2495,7 @@ fn eval_to_number_strict(
             match op {
                 ExprBinaryOp::Add => lhs.checked_add(rhs),
                 ExprBinaryOp::Sub => lhs.checked_sub(rhs),
+                ExprBinaryOp::Mul => lhs.checked_mul(rhs),
             }
             .or_else(|| {
                 diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
@@ -3074,6 +3075,7 @@ fn eval_to_number(
             match op {
                 ExprBinaryOp::Add => lhs.checked_add(rhs),
                 ExprBinaryOp::Sub => lhs.checked_sub(rhs),
+                ExprBinaryOp::Mul => lhs.checked_mul(rhs),
             }
             .or_else(|| {
                 diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));

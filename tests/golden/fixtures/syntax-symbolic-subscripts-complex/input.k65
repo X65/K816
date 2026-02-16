@@ -1,0 +1,38 @@
+const CGIA_PLANES = 4
+const CGIA_PLANE_REGS_NO = 8
+
+var CGIA[
+    .mode :byte
+
+    .bckgnd_bank :byte
+    .sprite_bank :byte
+    ._ctl_reserved[16 - 3] :byte
+    // -------------------------------------------------------------------
+    .raster :word
+    ._rst_reserved1[8 - 2] :byte
+
+    .int_raster :word // Line to generate raster interrupt.
+    .int_enable :byte  // Interrupt flags. [VBI DLI RSI x x x x x]
+    .int_status :byte  // Interrupt flags. [VBI DLI RSI x x x x x]
+    ._rst_reserved2[8 - 4] :byte
+    // -------------------------------------------------------------------
+    ._reserved[16] :byte
+    // -------------------------------------------------------------------
+    .planes :byte // [TTTTEEEE] EEEE - enable bits, TTTT - type (0 bckgnd, 1 sprite)
+    .order :byte  // plane order permutation - SJT ordering
+    ._pln_reserved1[4 - 2] :byte
+
+    .back_color :byte
+    ._pln_reserved[4 - 1] :byte
+
+    .offset[CGIA_PLANES] :word // DisplayList or SpriteDescriptor table start
+    // -------------------------------------------------------------------
+    .plane_regs[CGIA_PLANES * CGIA_PLANE_REGS_NO] :byte
+] = $FF00
+
+func main @a8 {
+  lda CGIA.mode
+  sta CGIA.plane_regs[0]
+  @a16
+  lda CGIA.offset[0]
+}

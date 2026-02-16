@@ -1,9 +1,8 @@
-Error: unexpected token '['
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-missing-close/input.k65:1:8 ]
+Error: invalid syntax: expected '[', ':', ',', newline, something else, or ']', found eval fragment
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-missing-close/input.k65:2:5 ]
    │
- 1 │ var foo[
-   │        ┬  
-   │        ╰── here
-   │ 
-   │ Help: remove or fix this token
+ 2 │ ╭─▶   .a[2:byte
+ 3 │ ├─▶ ] = 0x1234
+   │ │                
+   │ ╰──────────────── here
 ───╯

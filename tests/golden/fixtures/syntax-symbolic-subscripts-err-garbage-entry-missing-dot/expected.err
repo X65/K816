@@ -1,7 +1,4 @@
-Error: invalid syntax: invalid symbolic subscript field declaration 'junk': expected '.field'; inside brackets: [
-  .a:byte,
-  junk
-]
+Error: invalid syntax: expected ',', newline, something else, or ']', found identifier 'junk'
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-entry-missing-dot/input.k65:3:3 ]
    │
  3 │   junk

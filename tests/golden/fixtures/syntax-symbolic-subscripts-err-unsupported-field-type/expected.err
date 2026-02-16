@@ -1,6 +1,4 @@
-Error: invalid syntax: invalid symbolic subscript field declaration '.a:dword': unsupported field type 'dword'; inside brackets: [
-  .a:dword
-]
+Error: invalid syntax: expected something else, found identifier 'dword'
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-unsupported-field-type/input.k65:2:6 ]
    │
  2 │   .a:dword

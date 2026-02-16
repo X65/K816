@@ -280,6 +280,7 @@ pub enum Expr {
 pub enum ExprBinaryOp {
     Add,
     Sub,
+    Mul,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

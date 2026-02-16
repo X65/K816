@@ -1,0 +1,10 @@
+[default]
+000000: AD 00 FF 8D 40 FF C2 20 AD 38 FF 60
+
+
+[disasm obj#0 default::main]
+000000: AD 00 FF    lda $FF00
+000003: 8D 40 FF    sta $FF40
+000006: C2 20       rep #$20
+000008: AD 38 FF    lda $FF38
+00000B: 60          rts

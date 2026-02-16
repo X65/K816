@@ -134,7 +134,7 @@ impl LinkPhaseOptions {
     fn validate_for_project_build_or_run(&self, subcommand: &str) -> anyhow::Result<()> {
         if self.listing.is_some() {
             anyhow::bail!(
-                "--listing is not supported with `k816 {subcommand}`; use `k816 link` for listing output"
+                "--listing is not supported with `k816 {subcommand}`; set listing in [link] section of k816.toml instead"
             );
         }
         Ok(())
@@ -604,6 +604,21 @@ fn default_manifest_version() -> String {
 #[serde(default, deny_unknown_fields)]
 struct ProjectLink {
     script: Option<PathBuf>,
+    #[serde(default)]
+    listing: ListingOption,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum ListingOption {
+    Path(String),
+    Bool(bool),
+}
+
+impl Default for ListingOption {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -704,7 +719,7 @@ fn write_text_file(path: &Path, contents: &str) -> anyhow::Result<()> {
 
 fn render_manifest_template(package_name: &str) -> String {
     format!(
-        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\n\n[link]\nscript = \"link.ron\"\n"
+        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\n\n[link]\nscript = \"link.ron\"\n#listing = true\n"
     )
 }
 
@@ -905,7 +920,12 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
             color: stderr_supports_color(),
         },
     )?;
-    write_link_output(&artifact_path, None, &linked)?;
+    let listing_path = match &manifest.link.listing {
+        ListingOption::Bool(false) => None,
+        ListingOption::Bool(true) => Some(artifact_path.with_extension("lst")),
+        ListingOption::Path(path) => Some(project_root.join(path)),
+    };
+    write_link_output(&artifact_path, listing_path.as_deref(), &linked)?;
 
     Ok(ProjectBuildResult {
         project_root,

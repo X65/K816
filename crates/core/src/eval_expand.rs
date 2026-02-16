@@ -330,6 +330,7 @@ fn expand_hla_condition(
             .rhs
             .as_ref()
             .map(|rhs| expand_expr(rhs, span, source_id, diagnostics)),
+        seed_span: condition.seed_span,
     }
 }
 

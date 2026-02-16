@@ -128,6 +128,7 @@ fn normalize_stmt_sequence(stmts: &[Spanned<Stmt>]) -> Vec<Spanned<Stmt>> {
                                 lhs: *lhs,
                                 op: *op,
                                 rhs: Some(rhs.clone()),
+                                seed_span: Some(current.span),
                             }),
                         }),
                         next.span,
@@ -201,5 +202,6 @@ fn normalize_condition(condition: &HlaCondition) -> HlaCondition {
         lhs: condition.lhs,
         op: condition.op,
         rhs: Some(condition.rhs.clone().unwrap_or(Expr::Number(0))),
+        seed_span: condition.seed_span,
     }
 }

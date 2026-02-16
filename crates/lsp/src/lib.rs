@@ -26,7 +26,7 @@ use lsp_types::{
     ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Uri,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use walkdir::WalkDir;
 
@@ -745,6 +745,33 @@ impl ServerState {
             new_text: formatted,
         }]
     }
+
+    fn resolve_addresses_for_lines(&self, uri: &Uri, lines: &[u32]) -> ResolveAddressesResult {
+        let Some(doc) = self.documents.get(uri) else {
+            return ResolveAddressesResult { addresses: lines.iter().map(|_| None).collect() };
+        };
+        let addresses = lines.iter().map(|&line| {
+            let line = line as usize;
+            if line >= doc.line_index.line_starts.len() {
+                return None;
+            }
+            let line_start = doc.line_index.line_starts[line];
+            let line_end = if line + 1 < doc.line_index.line_starts.len() {
+                doc.line_index.line_starts[line + 1]
+            } else {
+                doc.text.len()
+            };
+            let idx = doc.resolved_sites.partition_point(|(span, _)| span.start < line_start);
+            if idx < doc.resolved_sites.len() {
+                let (span, addr) = &doc.resolved_sites[idx];
+                if span.start < line_end {
+                    return Some(*addr);
+                }
+            }
+            None
+        }).collect();
+        ResolveAddressesResult { addresses }
+    }
 }
 
 pub fn run_stdio_server() -> Result<()> {
@@ -805,6 +832,7 @@ impl Server {
             Completion::METHOD => self.on_completion(request),
             DocumentSymbolRequest::METHOD => self.on_document_symbol(request),
             Formatting::METHOD => self.on_formatting(request),
+            "k816/resolveAddresses" => self.on_resolve_addresses(request),
             _ => self.send_error(
                 request.id,
                 -32601,
@@ -962,6 +990,14 @@ impl Server {
         self.send_result(request.id, &edits)
     }
 
+    fn on_resolve_addresses(&mut self, request: Request) -> Result<()> {
+        let params: ResolveAddressesParams = serde_json::from_value(request.params)?;
+        let uri = Uri::from_str(&params.uri)?;
+        self.ensure_document_fresh(&uri)?;
+        let result = self.state.resolve_addresses_for_lines(&uri, &params.lines);
+        self.send_result(request.id, &result)
+    }
+
     fn send_result<T: serde::Serialize>(&self, id: RequestId, value: &T) -> Result<()> {
         let result = serde_json::to_value(value)?;
         self.connection
@@ -1069,6 +1105,17 @@ struct ProjectLink {
 #[derive(Debug, Deserialize)]
 struct ProjectPackage {
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveAddressesParams {
+    uri: String,
+    lines: Vec<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResolveAddressesResult {
+    addresses: Vec<Option<u32>>,
 }
 
 fn discover_workspace_sources(root: &Path) -> Result<Vec<PathBuf>> {

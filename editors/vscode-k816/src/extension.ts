@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import * as vscode from "vscode";
 import {
   LanguageClient,
@@ -171,17 +172,241 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-class K816DebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
+class K816DebugAdapterProxy implements vscode.DebugAdapter {
+  private _onDidSendMessage =
+    new vscode.EventEmitter<vscode.DebugProtocolMessage>();
+  readonly onDidSendMessage = this._onDidSendMessage.event;
+
+  private process: ChildProcess | null = null;
+  private rawBuffer = Buffer.alloc(0);
+  private contentLength = -1;
+
+  private nextSourceRef = 1;
+  private sourceRefByPath = new Map<string, number>();
+
+  private pendingBp = new Map<
+    number,
+    {
+      originalSource: Record<string, unknown>;
+      entries: Array<{
+        originalLine: number;
+        resolved: boolean;
+        address?: number;
+      }>;
+    }
+  >();
+
+  constructor(
+    private command: string,
+    private args: string[],
+    private env: Record<string, string>,
+  ) {}
+
+  handleMessage(message: any): void {
+    if (!this.process) this.startProcess();
+
+    if (
+      message.type === "request" &&
+      message.command === "setBreakpoints"
+    ) {
+      this.handleSetBreakpoints(message).catch(() => {
+        this.sendToEmu(message);
+      });
+      return;
+    }
+
+    this.sendToEmu(message);
+  }
+
+  dispose(): void {
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+    }
+    this._onDidSendMessage.dispose();
+  }
+
+  private startProcess(): void {
+    this.process = spawn(this.command, this.args, {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: this.env,
+    });
+
+    this.process.stdout?.on("data", (data: Buffer) => this.onData(data));
+
+    this.process.stderr?.on("data", (data: Buffer) => {
+      outputChannel?.appendLine(`[emu stderr] ${data.toString()}`);
+    });
+
+    this.process.on("error", (err) => {
+      outputChannel?.appendLine(`[emu error] ${err.message}`);
+      this._onDidSendMessage.fire({
+        type: "event",
+        event: "terminated",
+        seq: 0,
+      } as any);
+    });
+
+    this.process.on("exit", (code, signal) => {
+      outputChannel?.appendLine(
+        `[emu exit] code=${code} signal=${signal}`,
+      );
+      this._onDidSendMessage.fire({
+        type: "event",
+        event: "terminated",
+        seq: 0,
+      } as any);
+    });
+  }
+
+  private sendToEmu(msg: any): void {
+    const json = JSON.stringify(msg);
+    const header = `Content-Length: ${Buffer.byteLength(json)}\r\n\r\n`;
+    this.process?.stdin?.write(header + json);
+  }
+
+  private onData(data: Buffer): void {
+    this.rawBuffer = Buffer.concat([this.rawBuffer, data]);
+    while (true) {
+      if (this.contentLength < 0) {
+        const idx = this.rawBuffer.indexOf("\r\n\r\n");
+        if (idx < 0) break;
+        const header = this.rawBuffer.subarray(0, idx).toString();
+        const match = header.match(/Content-Length:\s*(\d+)/i);
+        if (!match) break;
+        this.contentLength = parseInt(match[1], 10);
+        this.rawBuffer = this.rawBuffer.subarray(idx + 4);
+      }
+      if (this.rawBuffer.length < this.contentLength) break;
+      const body = this.rawBuffer
+        .subarray(0, this.contentLength)
+        .toString();
+      this.rawBuffer = this.rawBuffer.subarray(this.contentLength);
+      this.contentLength = -1;
+      this.onEmuMessage(JSON.parse(body));
+    }
+  }
+
+  private onEmuMessage(msg: any): void {
+    if (
+      msg.type === "response" &&
+      msg.command === "setBreakpoints"
+    ) {
+      const pending = this.pendingBp.get(msg.request_seq);
+      if (pending) {
+        this.pendingBp.delete(msg.request_seq);
+
+        const translated: any[] = [];
+        let emuIdx = 0;
+        for (const entry of pending.entries) {
+          if (entry.resolved) {
+            const emuBp = msg.body?.breakpoints?.[emuIdx++] ?? {};
+            translated.push({
+              ...emuBp,
+              source: pending.originalSource,
+              line: entry.originalLine,
+            });
+          } else {
+            translated.push({
+              verified: false,
+              line: entry.originalLine,
+              source: pending.originalSource,
+              message:
+                "Cannot resolve memory address for this line",
+            });
+          }
+        }
+        msg.body = { breakpoints: translated };
+      }
+    }
+
+    this._onDidSendMessage.fire(msg);
+  }
+
+  private async handleSetBreakpoints(request: any): Promise<void> {
+    const source = request.arguments?.source ?? {};
+    const lines: number[] = request.arguments?.lines ?? [];
+    const filePath: string | undefined = source.path;
+
+    if (!filePath || !client) {
+      this.sendToEmu(request);
+      return;
+    }
+
+    const uri = vscode.Uri.file(filePath).toString();
+    const lspLines = lines.map((l: number) => l - 1);
+
+    const result = await client.sendRequest<{
+      addresses: (number | null)[];
+    }>("k816/resolveAddresses", { uri, lines: lspLines });
+
+    const sourceRef = this.getSourceRef(filePath);
+    const entries: Array<{
+      originalLine: number;
+      resolved: boolean;
+      address?: number;
+    }> = [];
+    const resolvedLines: number[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const addr = result.addresses[i];
+      if (addr !== null && addr !== undefined) {
+        entries.push({
+          originalLine: lines[i],
+          resolved: true,
+          address: addr,
+        });
+        resolvedLines.push(addr);
+      } else {
+        entries.push({ originalLine: lines[i], resolved: false });
+      }
+    }
+
+    this.pendingBp.set(request.seq, {
+      originalSource: source,
+      entries,
+    });
+
+    this.sendToEmu({
+      ...request,
+      arguments: {
+        ...request.arguments,
+        source: { sourceReference: sourceRef },
+        lines: resolvedLines,
+        breakpoints: resolvedLines.map((addr) => ({ line: addr })),
+      },
+    });
+  }
+
+  private getSourceRef(path: string): number {
+    let ref = this.sourceRefByPath.get(path);
+    if (ref === undefined) {
+      ref = this.nextSourceRef++;
+      this.sourceRefByPath.set(path, ref);
+    }
+    return ref;
+  }
+}
+
+class K816DebugAdapterFactory
+  implements vscode.DebugAdapterDescriptorFactory
+{
   createDebugAdapterDescriptor(
     session: vscode.DebugSession,
   ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
     const config = vscode.workspace.getConfiguration("k816");
     const command = config.get<string>("debugger.path", "emu");
-    const configuredArgs = config.get<string[]>("debugger.args", ["--dap"]);
+    const configuredArgs = config.get<string[]>("debugger.args", [
+      "--dap",
+    ]);
     const program = session.configuration.program;
-    const execArgs = program ? [...configuredArgs, program] : configuredArgs;
+    const execArgs = program
+      ? [...configuredArgs, program]
+      : configuredArgs;
     const env = resolveDebuggerEnv(config);
-    return new vscode.DebugAdapterExecutable(command, execArgs, { env });
+
+    const proxy = new K816DebugAdapterProxy(command, execArgs, env);
+    return new vscode.DebugAdapterInlineImplementation(proxy);
   }
 }
 

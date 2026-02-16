@@ -2060,6 +2060,7 @@ fn lower_hla_condition_branch(
         return;
     };
 
+    let cmp_span = condition.seed_span.unwrap_or(span);
     let compare_instruction = Instruction {
         mnemonic: "cmp".to_string(),
         operand: Some(Operand::Immediate {
@@ -2067,7 +2068,7 @@ fn lower_hla_condition_branch(
             explicit_hash: false,
         }),
     };
-    if !lower_instruction_and_push(&compare_instruction, scope, sema, span, diagnostics, ops) {
+    if !lower_instruction_and_push(&compare_instruction, scope, sema, cmp_span, diagnostics, ops) {
         return;
     }
 

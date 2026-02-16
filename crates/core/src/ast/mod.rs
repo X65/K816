@@ -181,6 +181,10 @@ pub struct HlaCondition {
     pub lhs: HlaRegister,
     pub op: HlaCompareOp,
     pub rhs: Option<Expr>,
+    /// Span of the `ConditionSeed` statement (e.g. `a?0`) when the condition
+    /// was combined from a seed + close-op pair during normalization. Used by
+    /// the lowerer to attach the CMP instruction to the correct source line.
+    pub seed_span: Option<crate::span::Span>,
 }
 
 #[derive(Debug, Clone)]

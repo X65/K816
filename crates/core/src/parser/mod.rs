@@ -3020,7 +3020,7 @@ where
     lhs.then_ignore(just(TokenKind::Question))
         .then(expr_parser().or_not())
         .then(hla_compare_op_parser())
-        .map(|((lhs, rhs), op)| HlaCondition { lhs, op, rhs })
+        .map(|((lhs, rhs), op)| HlaCondition { lhs, op, rhs, seed_span: None })
 }
 
 fn expr_parser<'src, I>() -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src>> + Clone

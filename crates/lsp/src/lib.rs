@@ -297,38 +297,36 @@ impl ServerState {
 
     fn load_linker_config(&mut self) {
         let manifest_path = self.workspace_root.join(PROJECT_MANIFEST);
-        if manifest_path.is_file() {
-            if let Ok(text) = fs::read_to_string(&manifest_path) {
-                if let Ok(manifest) = toml::from_str::<ProjectManifest>(&text) {
-                    if let Some(script) = manifest.link.script {
-                        let config_path = if script.is_absolute() {
-                            script
-                        } else {
-                            self.workspace_root.join(script)
-                        };
-                        if let Ok(config) = k816_link::load_config(&config_path) {
-                            eprintln!(
-                                "k816-lsp: loaded linker config from '{}'",
-                                config_path.display()
-                            );
-                            self.linker_config = config;
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-
-        let default_script = self.workspace_root.join("link.ron");
-        if default_script.is_file() {
-            if let Ok(config) = k816_link::load_config(&default_script) {
+        if manifest_path.is_file()
+            && let Ok(text) = fs::read_to_string(&manifest_path)
+            && let Ok(manifest) = toml::from_str::<ProjectManifest>(&text)
+            && let Some(script) = manifest.link.script
+        {
+            let config_path = if script.is_absolute() {
+                script
+            } else {
+                self.workspace_root.join(script)
+            };
+            if let Ok(config) = k816_link::load_config(&config_path) {
                 eprintln!(
                     "k816-lsp: loaded linker config from '{}'",
-                    default_script.display()
+                    config_path.display()
                 );
                 self.linker_config = config;
                 return;
             }
+        }
+
+        let default_script = self.workspace_root.join("link.ron");
+        if default_script.is_file()
+            && let Ok(config) = k816_link::load_config(&default_script)
+        {
+            eprintln!(
+                "k816-lsp: loaded linker config from '{}'",
+                default_script.display()
+            );
+            self.linker_config = config;
+            return;
         }
 
         eprintln!("k816-lsp: using default stub linker config");
@@ -510,12 +508,11 @@ impl ServerState {
                         let mut sites = Vec::new();
                         for site in &doc.addressable_sites {
                             let key = (obj_idx, site.segment.clone());
-                            if let Some(placements) = output.section_placements.get(&key) {
-                                if let Some(addr) =
+                            if let Some(placements) = output.section_placements.get(&key)
+                                && let Some(addr) =
                                     k816_link::resolve_symbol_addr(placements, site.offset)
-                                {
-                                    sites.push((site.span, addr, site.size));
-                                }
+                            {
+                                sites.push((site.span, addr, site.size));
                             }
                         }
                         sites.sort_by_key(|(span, _, _)| span.start);
@@ -581,6 +578,16 @@ impl ServerState {
     fn hover(&self, uri: &Uri, position: Position) -> Option<Hover> {
         let doc = self.documents.get(uri)?;
         let offset = doc.line_index.to_offset(&doc.text, position)?;
+
+        if let Some((range, value)) = numeric_literal_at_offset(&doc.text, offset) {
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: hover_contents_for_numeric_literal(value),
+                }),
+                range: Some(byte_range_to_lsp(&range, &doc.line_index, &doc.text)),
+            });
+        }
 
         if let Some(token) = token_at_offset(&doc.text, offset) {
             let token_range = byte_range_to_lsp(
@@ -1768,7 +1775,7 @@ fn hover_contents_for_symbol(
             return lines.join("\n");
         }
         if let Some(meta) = doc.analysis.semantic.consts.get(canonical) {
-            return format!("**constant** `{}`\n- value: `{}`", symbol.name, meta.value);
+            return hover_contents_for_constant(symbol.name.as_str(), *meta);
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
             return format!(
@@ -1781,12 +1788,66 @@ fn hover_contents_for_symbol(
     }
 
     let mut text = format!("**{}** `{}`", symbol.category.detail(), symbol.name);
-    if let Some(doc) = state.documents.get(&symbol.uri) {
-        if let Some((addr, size)) = doc.address_at_offset(symbol.selection.start) {
-            text.push_str(&format!("\n- address: `{}`", format_address_range(addr, size)));
-        }
+    if let Some(doc) = state.documents.get(&symbol.uri)
+        && let Some((addr, size)) = doc.address_at_offset(symbol.selection.start)
+    {
+        text.push_str(&format!("\n- address: `{}`", format_address_range(addr, size)));
     }
     text
+}
+
+fn hover_contents_for_constant(name: &str, value: k816_core::sema::ConstMeta) -> String {
+    if let Some(value) = value.value.to_i64_exact() {
+        return format!(
+            "**constant** `{name}`\n{}",
+            format_numeric_value_lines(value, false).join("\n")
+        );
+    }
+    format!("**constant** `{name}`\n- value: `{}`", value.value)
+}
+
+fn hover_contents_for_numeric_literal(value: i64) -> String {
+    format_numeric_value_lines(value, true).join("\n")
+}
+
+fn format_numeric_value_lines(value: i64, include_binary_for_u8: bool) -> Vec<String> {
+    let mut lines = vec![
+        format!("- decimal: `{value}`"),
+        format!("- hex: `{}`", format_signed_hex(value)),
+    ];
+    if include_binary_for_u8 && (0..=255).contains(&value) {
+        lines.push(format!("- binary: `%{:08b}`", value as u8));
+    }
+    lines
+}
+
+fn format_signed_hex(value: i64) -> String {
+    if value < 0 {
+        let magnitude = (-i128::from(value)) as u128;
+        return format!("-${magnitude:X}");
+    }
+    format!("${:X}", value as u64)
+}
+
+fn numeric_literal_at_offset(text: &str, offset: usize) -> Option<(ByteRange, i64)> {
+    let source_id = k816_core::span::SourceId(0);
+    let (tokens, _) = k816_core::lexer::lex_lenient(source_id, text);
+    let offset = offset.min(text.len());
+    tokens.into_iter().find_map(|token| {
+        if offset < token.span.start || offset >= token.span.end {
+            return None;
+        }
+        match token.kind {
+            k816_core::lexer::TokenKind::Number(num) => Some((
+                ByteRange {
+                    start: token.span.start,
+                    end: token.span.end,
+                },
+                num.value,
+            )),
+            _ => None,
+        }
+    })
 }
 
 fn format_address(addr: u32) -> String {
@@ -2334,6 +2395,93 @@ func main @a16 @i16 {
 
         assert!(!in_symbol_completion_context(text, statement_start_offset));
         assert!(in_symbol_completion_context(text, operand_offset));
+    }
+
+    #[test]
+    fn const_hover_shows_decimal_and_hex_for_integer_value() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "const FOO = $2A\nfunc main {\n  lda #FOO\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text.clone(), 1, true)
+            .expect("doc");
+
+        let doc = state.documents.get(&uri).expect("doc");
+        let offset = text.find("FOO").expect("FOO");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let hover = state.hover(&uri, position).expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("**constant** `FOO`"));
+        assert!(markup.value.contains("- decimal: `42`"));
+        assert!(markup.value.contains("- hex: `$2A`"));
+    }
+
+    #[test]
+    fn numeric_literal_hover_shows_decimal_hex_and_binary_for_u8_range() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  lda #42\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text.clone(), 1, true)
+            .expect("doc");
+
+        let doc = state.documents.get(&uri).expect("doc");
+        let offset = text.find("42").expect("42");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let hover = state.hover(&uri, position).expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("- decimal: `42`"));
+        assert!(markup.value.contains("- hex: `$2A`"));
+        assert!(markup.value.contains("- binary: `%00101010`"));
+    }
+
+    #[test]
+    fn numeric_literal_hover_omits_binary_for_values_over_255() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  lda #$1234\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text.clone(), 1, true)
+            .expect("doc");
+
+        let doc = state.documents.get(&uri).expect("doc");
+        let offset = text.find("$1234").expect("$1234");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let hover = state.hover(&uri, position).expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("- decimal: `4660`"));
+        assert!(markup.value.contains("- hex: `$1234`"));
+        assert!(!markup.value.contains("binary"));
+    }
+
+    #[test]
+    fn const_hover_formats_negative_integer_as_signed_magnitude_hex() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "const NEG = 0 - 42\nfunc main {\n  lda #NEG\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text.clone(), 1, true)
+            .expect("doc");
+
+        let doc = state.documents.get(&uri).expect("doc");
+        let offset = text.find("NEG").expect("NEG");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let hover = state.hover(&uri, position).expect("hover");
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover");
+        };
+        assert!(markup.value.contains("- decimal: `-42`"));
+        assert!(markup.value.contains("- hex: `-$2A`"));
     }
 
     #[test]

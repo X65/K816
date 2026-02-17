@@ -19,7 +19,10 @@ let fileInfoItem: vscode.StatusBarItem | undefined;
 const LOOKUP_INSTRUCTION_TOOL = "k816_lookup_instruction";
 const QUERY_MEMORY_MAP_TOOL = "k816_query_memory_map";
 const QUERY_MEMORY_MAP_METHOD = "k816/queryMemoryMap";
+const RESOLVE_ADDRESSES_METHOD = "k816/resolveAddresses";
+const RESOLVE_INLINE_SYMBOLS_METHOD = "k816/resolveInlineSymbols";
 const INSTRUCTION_DATA_FILE = "resources/instructions-description.json";
+const INLINE_VALUE_CACHE_TTL_MS = 150;
 
 type MemoryMapDetail = "summary" | "runs";
 
@@ -54,6 +57,25 @@ interface QueryMemoryMapResult {
   reason?: string;
   memories: QueryMemoryMapMemoryRow[];
   runs: QueryMemoryMapRunRow[];
+}
+
+interface ResolveAddressesResult {
+  addresses: Array<number | null>;
+}
+
+interface InlineSymbolRow {
+  name: string;
+  category: string;
+  start_line: number;
+  start_character: number;
+  end_line: number;
+  end_character: number;
+  address: number;
+  read_size_hint?: number;
+}
+
+interface ResolveInlineSymbolsResult {
+  symbols: InlineSymbolRow[];
 }
 
 export async function activate(
@@ -118,6 +140,10 @@ export async function activate(
     vscode.debug.registerDebugAdapterTrackerFactory(
       "k816",
       new K816DebugAdapterTrackerFactory(),
+    ),
+    vscode.languages.registerInlineValuesProvider(
+      { language: "k65" },
+      new K816InlineValuesProvider(),
     ),
   );
 
@@ -468,7 +494,7 @@ function updateFileInfo(editor: vscode.TextEditor | undefined): void {
 
   fileInfoPending = true;
   client
-    .sendRequest<{ addresses: (number | null)[] }>("k816/resolveAddresses", {
+    .sendRequest<ResolveAddressesResult>(RESOLVE_ADDRESSES_METHOD, {
       uri,
       lines: [line],
     })
@@ -559,6 +585,186 @@ class K816TaskProvider implements vscode.TaskProvider {
       "k816",
       new vscode.ShellExecution(command, [taskName], { cwd }),
     );
+  }
+}
+
+interface ReadMemoryResponse {
+  address?: string;
+  data?: string;
+  unreadableBytes?: number;
+}
+
+class K816InlineValuesProvider implements vscode.InlineValuesProvider {
+  private symbolCache = new Map<
+    string,
+    { timestamp: number; rows: InlineSymbolRow[] }
+  >();
+  private memoryCache = new Map<
+    string,
+    { timestamp: number; bytes: Uint8Array }
+  >();
+
+  async provideInlineValues(
+    document: vscode.TextDocument,
+    viewPort: vscode.Range,
+    context: vscode.InlineValueContext,
+    token: vscode.CancellationToken,
+  ): Promise<vscode.InlineValue[]> {
+    if (
+      !vscode.workspace
+        .getConfiguration("k816")
+        .get<boolean>("debugger.inlineValues", true)
+    ) {
+      return [];
+    }
+
+    const session = vscode.debug.activeDebugSession;
+    if (!session || session.type !== "k816") {
+      return [];
+    }
+
+    await startClient();
+    if (!client) {
+      return [];
+    }
+
+    const startLine = Math.max(0, viewPort.start.line);
+    const endLine = Math.max(startLine, viewPort.end.line);
+    const rows = await this.resolveInlineSymbols(
+      document,
+      startLine,
+      endLine,
+      token,
+    );
+    if (token.isCancellationRequested) {
+      return [];
+    }
+
+    const values: vscode.InlineValue[] = [];
+    const stopLine = context.stoppedLocation.start.line;
+    const evalRange = new vscode.Range(stopLine, 0, stopLine, 0);
+    for (const expression of [
+      "reg.A",
+      "reg.B",
+      "reg.C",
+      "reg.X",
+      "reg.Y",
+      "reg.S",
+      "reg.PC",
+      "reg.P",
+      "reg.D",
+      "reg.DBR",
+      "reg.PBR",
+    ]) {
+      values.push(
+        new vscode.InlineValueEvaluatableExpression(evalRange, expression),
+      );
+    }
+
+    for (const row of rows) {
+      if (token.isCancellationRequested) {
+        return values;
+      }
+      const range = new vscode.Range(
+        row.start_line,
+        row.start_character,
+        row.end_line,
+        row.end_character,
+      );
+      const addressText = formatHex(row.address, 6);
+      let text = `${row.name}: ${addressText}`;
+      if (row.read_size_hint === 1 || row.read_size_hint === 2) {
+        const bytes = await this.readMemoryValue(
+          session,
+          context.frameId,
+          row.address,
+          row.read_size_hint,
+          token,
+        );
+        if (bytes && bytes.length >= row.read_size_hint) {
+          const formatted =
+            row.read_size_hint === 1
+              ? `$${bytes[0].toString(16).toUpperCase().padStart(2, "0")}`
+              : `$${((bytes[1] << 8) | bytes[0]).toString(16).toUpperCase().padStart(4, "0")}`;
+          text = `${row.name}: ${formatted} @ ${addressText}`;
+        }
+      }
+      values.push(new vscode.InlineValueText(range, text));
+    }
+
+    return values;
+  }
+
+  private async resolveInlineSymbols(
+    document: vscode.TextDocument,
+    startLine: number,
+    endLine: number,
+    token: vscode.CancellationToken,
+  ): Promise<InlineSymbolRow[]> {
+    if (!client) {
+      return [];
+    }
+    const cacheKey = `${document.uri.toString()}:${document.version}:${startLine}:${endLine}`;
+    const now = Date.now();
+    const cached = this.symbolCache.get(cacheKey);
+    if (cached && now - cached.timestamp <= INLINE_VALUE_CACHE_TTL_MS) {
+      return cached.rows;
+    }
+
+    try {
+      const result = await client.sendRequest<ResolveInlineSymbolsResult>(
+        RESOLVE_INLINE_SYMBOLS_METHOD,
+        {
+          uri: document.uri.toString(),
+          start_line: startLine,
+          end_line: endLine,
+        },
+      );
+      if (token.isCancellationRequested) {
+        return [];
+      }
+      const rows = Array.isArray(result.symbols) ? result.symbols : [];
+      this.symbolCache.set(cacheKey, { timestamp: now, rows });
+      return rows;
+    } catch (error) {
+      if (!isUnsupportedRequestError(error)) {
+        outputChannel?.appendLine(
+          `[inline values] resolveInlineSymbols failed: ${formatError(error)}`,
+        );
+      }
+      return [];
+    }
+  }
+
+  private async readMemoryValue(
+    session: vscode.DebugSession,
+    frameId: number,
+    address: number,
+    count: number,
+    token: vscode.CancellationToken,
+  ): Promise<Uint8Array | undefined> {
+    const cacheKey = `${session.id}:${frameId}:${address}:${count}`;
+    const now = Date.now();
+    const cached = this.memoryCache.get(cacheKey);
+    if (cached && now - cached.timestamp <= INLINE_VALUE_CACHE_TTL_MS) {
+      return cached.bytes;
+    }
+
+    try {
+      const response = (await session.customRequest("readMemory", {
+        memoryReference: `0x${address.toString(16).toUpperCase()}`,
+        count,
+      })) as ReadMemoryResponse;
+      if (token.isCancellationRequested || typeof response?.data !== "string") {
+        return undefined;
+      }
+      const decoded = Buffer.from(response.data, "base64");
+      const bytes = Uint8Array.from(decoded.subarray(0, count));
+      this.memoryCache.set(cacheKey, { timestamp: now, bytes });
+      return bytes;
+    } catch {
+      return undefined;
+    }
   }
 }
 
@@ -715,7 +921,7 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
 
   private async handleSetBreakpoints(request: any): Promise<void> {
     const source = request.arguments?.source ?? {};
-    const lines: number[] = request.arguments?.lines ?? [];
+    const lines = this.extractBreakpointLines(request.arguments);
     const filePath: string | undefined = source.path;
 
     if (!filePath || !client) {
@@ -726,9 +932,10 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
     const uri = vscode.Uri.file(filePath).toString();
     const lspLines = lines.map((l: number) => l - 1);
 
-    const result = await client.sendRequest<{
-      addresses: (number | null)[];
-    }>("k816/resolveAddresses", { uri, lines: lspLines });
+    const result = await client.sendRequest<ResolveAddressesResult>(
+      RESOLVE_ADDRESSES_METHOD,
+      { uri, lines: lspLines },
+    );
 
     const sourceRef = this.getSourceRef(filePath);
     const entries: Array<{
@@ -775,6 +982,25 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
       this.sourceRefByPath.set(path, ref);
     }
     return ref;
+  }
+
+  private extractBreakpointLines(args: any): number[] {
+    if (Array.isArray(args?.breakpoints)) {
+      return args.breakpoints
+        .map((bp: any) => bp?.line)
+        .filter((line: unknown): line is number =>
+          typeof line === "number" && Number.isFinite(line),
+        );
+    }
+
+    if (Array.isArray(args?.lines)) {
+      return args.lines.filter(
+        (line: unknown): line is number =>
+          typeof line === "number" && Number.isFinite(line),
+      );
+    }
+
+    return [];
   }
 }
 

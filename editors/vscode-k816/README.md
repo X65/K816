@@ -26,6 +26,9 @@ for the [K816](https://github.com/X65/K816) toolchain.
 
 - Launch and debug programs via the emulator's DAP interface
 - Source-level breakpoints with automatic address resolution
+- Disassembly view support (instruction pointer + disassemble request)
+- Memory inspector support (read and write memory when adapter supports it)
+- Inline debug values for registers and resolved symbol addresses/values
 - Configurable emulator path and arguments
 
 ### Language Model Tools
@@ -72,6 +75,7 @@ Example prompts in Copilot chat or agent mode:
 | `k816.debugger.path` | `emu` | Path to the emulator executable |
 | `k816.debugger.args` | `["--dap"]` | Arguments for the debug adapter |
 | `k816.debugger.env` | `{}` | Extra environment variables |
+| `k816.debugger.inlineValues` | `true` | Enable inline debug values while stopped |
 | `k816.trace.debugger` | `off` | DAP trace level: `off`, `messages`, `verbose` |
 
 ## Commands

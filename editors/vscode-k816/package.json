@@ -233,6 +233,11 @@
           "default": {},
           "description": "Extra environment variables merged into the debug adapter process environment."
         },
+        "k816.debugger.inlineValues": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline debug values (register expressions, symbol addresses, and small memory reads) while stopped."
+        },
         "k816.trace.server": {
           "type": "string",
           "enum": [

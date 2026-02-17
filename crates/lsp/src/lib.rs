@@ -34,7 +34,7 @@ static INSTRUCTION_DESCRIPTIONS: LazyLock<HashMap<String, String>> = LazyLock::n
     serde_json::from_str(include_str!(
         "../../../editors/vscode-k816/resources/instructions-description.json"
     ))
-        .expect("embedded instruction descriptions must be valid JSON")
+    .expect("embedded instruction descriptions must be valid JSON")
 });
 
 const PROJECT_MANIFEST: &str = "k816.toml";
@@ -911,6 +911,130 @@ impl ServerState {
             .collect();
         ResolveAddressesResult { addresses }
     }
+
+    fn resolve_inline_symbols(
+        &self,
+        uri: &Uri,
+        params: &ResolveInlineSymbolsParams,
+    ) -> ResolveInlineSymbolsResult {
+        let Some(doc) = self.documents.get(uri) else {
+            return ResolveInlineSymbolsResult {
+                symbols: Vec::new(),
+            };
+        };
+        if doc.line_index.line_starts.is_empty() {
+            return ResolveInlineSymbolsResult {
+                symbols: Vec::new(),
+            };
+        }
+
+        let line_count = doc.line_index.line_starts.len();
+        let mut start_line = params.start_line.min(params.end_line) as usize;
+        let mut end_line = params.start_line.max(params.end_line) as usize;
+        if start_line >= line_count {
+            return ResolveInlineSymbolsResult {
+                symbols: Vec::new(),
+            };
+        }
+        end_line = end_line.min(line_count.saturating_sub(1));
+        start_line = start_line.min(end_line);
+
+        let start_offset = doc.line_index.line_starts[start_line];
+        let end_offset = if end_line + 1 < line_count {
+            doc.line_index.line_starts[end_line + 1]
+        } else {
+            doc.text.len()
+        };
+
+        let mut seen = BTreeSet::new();
+        let mut symbols = Vec::new();
+
+        for token in token_matches_in_range(&doc.text, start_offset, end_offset) {
+            let scope = doc.analysis.scope_at_offset(token.start);
+            let canonical = canonical_symbol(&token.text, scope);
+            let Some(definition) = self.symbols.get(&canonical).and_then(|defs| defs.first())
+            else {
+                continue;
+            };
+            let Some((address, read_size_hint)) =
+                self.inline_symbol_address(definition, &canonical)
+            else {
+                continue;
+            };
+
+            if !seen.insert((token.start, token.end, canonical.clone())) {
+                continue;
+            }
+
+            let start = doc.line_index.to_position(&doc.text, token.start);
+            let end = doc.line_index.to_position(&doc.text, token.end);
+
+            symbols.push(ResolveInlineSymbol {
+                name: token.text,
+                category: symbol_category_label(definition.category).to_string(),
+                start_line: start.line,
+                start_character: start.character,
+                end_line: end.line,
+                end_character: end.character,
+                address,
+                read_size_hint,
+            });
+        }
+
+        symbols.sort_by_key(|row| (row.start_line, row.start_character, row.name.clone()));
+        ResolveInlineSymbolsResult { symbols }
+    }
+
+    fn inline_symbol_address(
+        &self,
+        symbol: &SymbolLocation,
+        canonical: &str,
+    ) -> Option<(u32, Option<u32>)> {
+        let doc = self.documents.get(&symbol.uri)?;
+
+        if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
+            let read_size_hint = match meta.size {
+                1 | 2 => Some(meta.size),
+                _ => None,
+            };
+            return Some((meta.address, read_size_hint));
+        }
+
+        if let Some((addr, _)) = doc.address_at_offset(symbol.selection.start) {
+            return Some((addr, None));
+        }
+
+        if let Some((_, addr, _)) = doc.resolved_sites.iter().find(|(span, _, _)| {
+            span.start >= symbol.selection.start && span.start < symbol.selection.end
+        }) {
+            return Some((*addr, None));
+        }
+
+        match symbol.category {
+            SymbolCategory::Label => {
+                let idx = doc
+                    .resolved_sites
+                    .partition_point(|(span, _, _)| span.start < symbol.selection.start);
+                doc.resolved_sites
+                    .get(idx)
+                    .map(|(_, addr, _)| (*addr, None))
+            }
+            SymbolCategory::Function => {
+                let scope = doc
+                    .analysis
+                    .scopes
+                    .iter()
+                    .find(|scope| scope.name == symbol.name)?;
+                doc.resolved_sites
+                    .iter()
+                    .find(|(span, _, _)| {
+                        span.start >= scope.range.start && span.start < scope.range.end
+                    })
+                    .map(|(_, addr, _)| (*addr, None))
+            }
+            _ => None,
+        }
+    }
 }
 
 pub fn run_stdio_server() -> Result<()> {
@@ -972,6 +1096,7 @@ impl Server {
             DocumentSymbolRequest::METHOD => self.on_document_symbol(request),
             Formatting::METHOD => self.on_formatting(request),
             "k816/resolveAddresses" => self.on_resolve_addresses(request),
+            "k816/resolveInlineSymbols" => self.on_resolve_inline_symbols(request),
             "k816/queryMemoryMap" => self.on_query_memory_map(request),
             _ => self.send_error(
                 request.id,
@@ -1147,6 +1272,14 @@ impl Server {
         self.send_result(request.id, &result)
     }
 
+    fn on_resolve_inline_symbols(&mut self, request: Request) -> Result<()> {
+        let params: ResolveInlineSymbolsParams = parse_request_params(&request)?;
+        let uri = Uri::from_str(&params.uri)?;
+        self.ensure_document_fresh(&uri)?;
+        let result = self.state.resolve_inline_symbols(&uri, &params);
+        self.send_result(request.id, &result)
+    }
+
     fn on_query_memory_map(&mut self, request: Request) -> Result<()> {
         let params: QueryMemoryMapParams = parse_request_params(&request)?;
         self.flush_all_pending_changes()?;
@@ -1274,6 +1407,31 @@ struct ResolveAddressesResult {
     addresses: Vec<Option<u32>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ResolveInlineSymbolsParams {
+    uri: String,
+    start_line: u32,
+    end_line: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct ResolveInlineSymbolsResult {
+    symbols: Vec<ResolveInlineSymbol>,
+}
+
+#[derive(Debug, Serialize)]
+struct ResolveInlineSymbol {
+    name: String,
+    category: String,
+    start_line: u32,
+    start_character: u32,
+    end_line: u32,
+    end_character: u32,
+    address: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    read_size_hint: Option<u32>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum QueryMemoryMapDetail {
@@ -1329,6 +1487,17 @@ fn memory_kind_label(kind: k816_link::MemoryKind) -> &'static str {
     match kind {
         k816_link::MemoryKind::ReadOnly => "read_only",
         k816_link::MemoryKind::ReadWrite => "read_write",
+    }
+}
+
+fn symbol_category_label(category: SymbolCategory) -> &'static str {
+    match category {
+        SymbolCategory::Function => "function",
+        SymbolCategory::Constant => "constant",
+        SymbolCategory::Variable => "variable",
+        SymbolCategory::Label => "label",
+        SymbolCategory::DataBlock => "data_block",
+        SymbolCategory::Segment => "segment",
     }
 }
 
@@ -1939,6 +2108,46 @@ fn token_prefix_at_offset(text: &str, offset: usize) -> String {
         start -= 1;
     }
     text[start..offset.min(text.len())].to_string()
+}
+
+fn token_matches_in_range(text: &str, start: usize, end: usize) -> Vec<TokenMatch> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut index = start.min(bytes.len());
+    let end = end.min(bytes.len());
+
+    while index < end {
+        if !is_ident_byte(bytes[index]) {
+            index += 1;
+            continue;
+        }
+
+        let token_start = index;
+        while index < end && is_ident_byte(bytes[index]) {
+            index += 1;
+        }
+        let token_end = index;
+        if token_end <= token_start {
+            continue;
+        }
+
+        let token_text = &text[token_start..token_end];
+        let first = token_text.as_bytes()[0];
+        if first.is_ascii_digit() || first == b'@' {
+            continue;
+        }
+
+        out.push(TokenMatch {
+            text: token_text.to_string(),
+            start: token_start,
+            end: token_end,
+        });
+    }
+
+    out
 }
 
 fn is_ident_byte(byte: u8) -> bool {
@@ -2793,6 +3002,91 @@ func main @a16 @i16 {
             };
             assert_eq!(run.end, expected_end);
         }
+    }
+
+    #[test]
+    fn resolve_inline_symbols_resolves_variables_with_read_size_hint() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "var foo = $1234\nfunc main {\n  lda foo\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("document inserted");
+
+        let result = state.resolve_inline_symbols(
+            &uri,
+            &ResolveInlineSymbolsParams {
+                uri: uri.to_string(),
+                start_line: 2,
+                end_line: 2,
+            },
+        );
+
+        let foo = result
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "foo")
+            .expect("foo symbol");
+        assert_eq!(foo.category, "variable");
+        assert_eq!(foo.address, 0x1234);
+        assert_eq!(foo.read_size_hint, Some(1));
+    }
+
+    #[test]
+    fn resolve_inline_symbols_resolves_labels_and_functions() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\nstart:\n  nop\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("document inserted");
+
+        let result = state.resolve_inline_symbols(
+            &uri,
+            &ResolveInlineSymbolsParams {
+                uri: uri.to_string(),
+                start_line: 0,
+                end_line: 1,
+            },
+        );
+
+        let start = result
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "start")
+            .expect("start label");
+        assert_eq!(start.category, "label");
+
+        let main = result
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "main")
+            .expect("main function");
+        assert_eq!(main.category, "function");
+    }
+
+    #[test]
+    fn resolve_inline_symbols_skips_unresolved_identifiers() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  lda missing\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("document inserted");
+
+        let result = state.resolve_inline_symbols(
+            &uri,
+            &ResolveInlineSymbolsParams {
+                uri: uri.to_string(),
+                start_line: 1,
+                end_line: 1,
+            },
+        );
+
+        assert!(
+            !result.symbols.iter().any(|symbol| symbol.name == "missing"),
+            "unresolved token must not produce inline symbol"
+        );
     }
 
     #[test]

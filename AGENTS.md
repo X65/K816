@@ -126,3 +126,14 @@ Linker uses RON format for configuration (`.ld.ron` files). `vendor/` contains r
   - Requires VS Code `^1.109.0` and Copilot chat/agent availability.
   - Instruction lookup uses bundled static JSON (no external fetch).
   - Memory map output depends on current in-memory LSP link state; returns `unavailable` with reason when link data is absent/failed.
+
+- DAP debug enhancements were added for features 18/19/20/23 (disassembly, memory read/write, register view, inline debug values).
+- Implementation path:
+  - Extension DAP proxy + inline values provider: `editors/vscode-k816/src/extension.ts`
+  - Extension settings/docs updates: `editors/vscode-k816/package.json`, `editors/vscode-k816/README.md`
+  - LSP custom request for inline symbol resolution: `k816/resolveInlineSymbols` in `crates/lsp/src/lib.rs`
+  - Emulator DAP/backend wiring (external repo): `/home/smoku/devel/X65/devel/emu/src/dap.cc`, `/home/smoku/devel/X65/devel/emu/src/common/webapi.h`, `/home/smoku/devel/X65/devel/emu/src/x65.c`
+- Constraints:
+  - Scope intentionally excludes feature 21 (conditional breakpoints) and 22 (data breakpoints/watchpoints).
+  - Inline symbol memory reads are limited to `read_size_hint` 1 or 2; larger symbols currently render address-only inline text.
+  - Inline values depend on a stopped `k816` debug session and current LSP symbol/address state.

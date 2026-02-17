@@ -1,9 +1,9 @@
 Warning: postfix `} >` expands to three branch instructions and may be inefficient
-   ╭─[ tests/golden/fixtures/syntax-postfix-gt-efficiency-warning/input.k65:4:3 ]
+   ╭─[ tests/golden/fixtures/syntax-postfix-gt-efficiency-warning/input.k65:4:5 ]
    │
- 4 │   } >
-   │   ─┬─  
-   │    ╰─── here
+ 4 │     } >
+   │     ─┬─  
+   │      ╰─── here
    │ 
    │ Help: expansion is `BEQ skip` + `BCC skip` + `BRA target`
 ───╯

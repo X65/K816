@@ -1,7 +1,7 @@
 Error: symbolic subscript field '.string' count expression 'count' must be a constant numeric expression
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-nonconstant/input.k65:2:11 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-nonconstant/input.k65:2:13 ]
    │
- 2 │   .string[count]:byte
-   │           ──┬──  
-   │             ╰──── here
+ 2 │     .string[count]:byte
+   │             ──┬──  
+   │               ╰──── here
 ───╯

@@ -1,7 +1,7 @@
 Error: invalid syntax: expected ':', ',', newline, something else, or ']', found identifier 'word'
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-type-missing-colon/input.k65:2:8 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-type-missing-colon/input.k65:2:10 ]
    │
- 2 │   .a[2]word
-   │        ──┬─  
-   │          ╰─── here
+ 2 │     .a[2]word
+   │          ──┬─  
+   │            ╰─── here
 ───╯

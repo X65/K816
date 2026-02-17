@@ -1,39 +1,39 @@
 Error: Cannot directly load/store :far value 'ptr' — use explicit :byte or :word view
-   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:6:3 ]
+   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:6:5 ]
    │
- 6 │   a = ptr           // lda :far named var
-   │   ───┬───  
-   │      ╰───── here
+ 6 │     a = ptr           // lda :far named var
+   │     ───┬───  
+   │        ╰───── here
    │ 
    │ Help: e.g. ptr:word for low 16 bits, (ptr+2):byte for bank byte
 ───╯
 
 Error: Cannot directly load/store :far value 'ptr' — use explicit :byte or :word view
-   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:7:3 ]
+   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:7:5 ]
    │
- 7 │   ptr = a           // sta :far named var
-   │   ───┬───  
-   │      ╰───── here
+ 7 │     ptr = a           // sta :far named var
+   │     ───┬───  
+   │        ╰───── here
    │ 
    │ Help: e.g. ptr:word for low 16 bits, (ptr+2):byte for bank byte
 ───╯
 
 Error: Cannot directly load/store :far value 'ptr' — use explicit :byte or :word view
-   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:8:3 ]
+   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:8:5 ]
    │
- 8 │   x = ptr           // ldx :far named var
-   │   ───┬───  
-   │      ╰───── here
+ 8 │     x = ptr           // ldx :far named var
+   │     ───┬───  
+   │        ╰───── here
    │ 
    │ Help: e.g. ptr:word for low 16 bits, (ptr+2):byte for bank byte
 ───╯
 
 Error: Cannot directly load/store :far value 'b' — use explicit :byte or :word view
-   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:9:3 ]
+   ╭─[ tests/golden/fixtures/syntax-mode-typed-width-errors-far/input.k65:9:5 ]
    │
- 9 │   a = b:far         // lda :far typed view on byte var
-   │   ────┬────  
-   │       ╰────── here
+ 9 │     a = b:far         // lda :far typed view on byte var
+   │     ────┬────  
+   │         ╰────── here
    │ 
    │ Help: e.g. b:word for low 16 bits, (b+2):byte for bank byte
 ───╯

@@ -1,7 +1,7 @@
 Error: invalid syntax: expected ',', newline, something else, or ']', found identifier 'junk'
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-entry-missing-dot/input.k65:3:3 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-entry-missing-dot/input.k65:3:5 ]
    │
- 3 │   junk
-   │   ──┬─  
-   │     ╰─── here
+ 3 │     junk
+   │     ──┬─  
+   │       ╰─── here
 ───╯

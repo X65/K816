@@ -1,9 +1,9 @@
 Error: `lda` uses a width-dependent immediate but accumulator width is unknown
-   ╭─[ tests/golden/fixtures/syntax-mode-uncolored-imm-m/input.k65:7:3 ]
+   ╭─[ tests/golden/fixtures/syntax-mode-uncolored-imm-m/input.k65:7:5 ]
    │
- 7 │   lda #$01
-   │   ────┬───  
-   │       ╰───── here
+ 7 │     lda #$01
+   │     ────┬───  
+   │         ╰───── here
    │ 
    │ Help: add @a8 or @a16 to the enclosing function
 ───╯

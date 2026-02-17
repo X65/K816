@@ -1,9 +1,9 @@
 Error: unexpected token '.'
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-entry-missing-name/input.k65:3:3 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-entry-missing-name/input.k65:3:5 ]
    │
- 3 │   .:word
-   │   ┬  
-   │   ╰── here
+ 3 │     .:word
+   │     ┬  
+   │     ╰── here
    │ 
    │ Help: remove or fix this token
 ───╯

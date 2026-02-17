@@ -1,7 +1,7 @@
 Error: symbolic subscript field 'foo.idx' is not an array
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-non-array-field-index/input.k65:6:3 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-non-array-field-index/input.k65:6:5 ]
    │
- 6 │   lda foo.idx[1]
-   │   ───────┬──────  
-   │          ╰──────── here
+ 6 │     lda foo.idx[1]
+   │     ───────┬──────  
+   │            ╰──────── here
 ───╯

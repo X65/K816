@@ -1,9 +1,9 @@
 Error: invalid syntax: unsupported flag shorthand 's-?'
-   ╭─[ tests/golden/fixtures/syntax-invalid-signed-flag-goto/input.k65:2:5 ]
+   ╭─[ tests/golden/fixtures/syntax-invalid-signed-flag-goto/input.k65:2:7 ]
    │
- 2 │   s-? goto .skip
-   │     ┬  
-   │     ╰── here
+ 2 │     s-? goto .skip
+   │       ┬  
+   │       ╰── here
    │ 
    │ Help: expected one of c+, c-, d+, d-, i+, i-, or v-
 ───╯

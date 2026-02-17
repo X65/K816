@@ -1,7 +1,7 @@
 Error: unknown identifier 'MISSING'
-   ╭─[ tests/golden/fixtures/syntax-const-err-unknown-identifier/input.k65:2:8 ]
+   ╭─[ tests/golden/fixtures/syntax-const-err-unknown-identifier/input.k65:2:10 ]
    │
- 2 │   lda #MISSING
-   │        ───┬───  
-   │           ╰───── here
+ 2 │     lda #MISSING
+   │          ───┬───  
+   │             ╰───── here
 ───╯

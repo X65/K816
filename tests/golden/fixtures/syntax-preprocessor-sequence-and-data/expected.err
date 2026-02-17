@@ -1,55 +1,55 @@
 Error: invalid syntax: expected something else, '*', '+', '-', ':', ',', or '=', found number literal
-    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:7 ]
+    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:11 ]
     │
- 10 │     3 4
-    │       ┬  
-    │       ╰── here
+ 10 │         3 4
+    │           ┬  
+    │           ╰── here
 ────╯
 
 Warning: invalid syntax: preprocessor directive not processed
-   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:2:1 ]
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:2:5 ]
    │
- 2 │ #if 1
-   │ ──┬──  
-   │   ╰──── here
+ 2 │     #if 1
+   │     ──┬──  
+   │       ╰──── here
 ───╯
 
 Warning: invalid syntax: preprocessor directive not processed
-   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:4:1 ]
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:4:5 ]
    │
- 4 │ #else
-   │ ──┬──  
-   │   ╰──── here
+ 4 │     #else
+   │     ──┬──  
+   │       ╰──── here
 ───╯
 
 Warning: invalid syntax: preprocessor directive not processed
-   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:6:1 ]
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:6:5 ]
    │
- 6 │ #endif
-   │ ───┬──  
-   │    ╰──── here
+ 6 │     #endif
+   │     ───┬──  
+   │        ╰──── here
 ───╯
 
 Error: invalid syntax: expected newline, ';', 'align', 'address', 'nocross', something else, '?', or '}', found '#'
-    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:13:1 ]
+    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:13:9 ]
     │
- 13 │ #else
-    │ ┬  
-    │ ╰── here
+ 13 │         #else
+    │         ┬  
+    │         ╰── here
 ────╯
 
 Warning: invalid syntax: preprocessor directive not processed
-   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:9:1 ]
+   ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:9:9 ]
    │
- 9 │ #if !0
-   │ ───┬──  
-   │    ╰──── here
+ 9 │         #if !0
+   │         ───┬──  
+   │            ╰──── here
 ───╯
 
 Error: invalid syntax: expected something else, '*', '+', '-', ':', ',', or '=', found number literal
-    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:7 ]
+    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:11 ]
     │
- 10 │     3 4
-    │       ┬  
-    │       ╰── here
+ 10 │         3 4
+    │           ┬  
+    │           ╰── here
 ────╯

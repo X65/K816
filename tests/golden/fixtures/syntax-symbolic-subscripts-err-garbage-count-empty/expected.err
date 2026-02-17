@@ -1,7 +1,7 @@
 Error: invalid syntax: expected something else, '(', or '&', found ']'
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-empty/input.k65:2:6 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-empty/input.k65:2:8 ]
    │
- 2 │   .a[]:byte
-   │      ┬  
-   │      ╰── here
+ 2 │     .a[]:byte
+   │        ┬  
+   │        ╰── here
 ───╯

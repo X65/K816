@@ -1,7 +1,7 @@
 Error: invalid syntax: cannot load register 'B' with expression
-   ╭─[ tests/golden/fixtures/syntax-err-register-load-unsupported/input.k65:2:3 ]
+   ╭─[ tests/golden/fixtures/syntax-err-register-load-unsupported/input.k65:2:5 ]
    │
- 2 │   b=0x1234
-   │   ────┬───  
-   │       ╰───── here
+ 2 │     b=0x1234
+   │     ────┬───  
+   │         ╰───── here
 ───╯

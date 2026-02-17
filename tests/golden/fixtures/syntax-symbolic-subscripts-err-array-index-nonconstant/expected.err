@@ -1,7 +1,7 @@
 Error: symbolic subscript array index must be a constant numeric expression
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-array-index-nonconstant/input.k65:6:3 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-array-index-nonconstant/input.k65:6:5 ]
    │
- 6 │   lda foo.string[idx]
-   │   ─────────┬─────────  
-   │            ╰─────────── here
+ 6 │     lda foo.string[idx]
+   │     ─────────┬─────────  
+   │              ╰─────────── here
 ───╯

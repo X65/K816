@@ -1,9 +1,9 @@
 Error: `ldx` uses a width-dependent immediate but index width is unknown
-   ╭─[ tests/golden/fixtures/syntax-mode-uncolored-imm-x/input.k65:7:3 ]
+   ╭─[ tests/golden/fixtures/syntax-mode-uncolored-imm-x/input.k65:7:5 ]
    │
- 7 │   ldx #$01
-   │   ────┬───  
-   │       ╰───── here
+ 7 │     ldx #$01
+   │     ────┬───  
+   │         ╰───── here
    │ 
    │ Help: add @i8 or @i16 to the enclosing function
 ───╯

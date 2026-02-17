@@ -1,9 +1,9 @@
 Warning: postfix `} <=` expands to two branch instructions and may be inefficient
-   ╭─[ tests/golden/fixtures/syntax-postfix-le-efficiency-warning/input.k65:4:3 ]
+   ╭─[ tests/golden/fixtures/syntax-postfix-le-efficiency-warning/input.k65:4:5 ]
    │
- 4 │   } <=
-   │   ──┬─  
-   │     ╰─── here
+ 4 │     } <=
+   │     ──┬─  
+   │       ╰─── here
    │ 
    │ Help: expansion is `BCC target` + `BEQ target`
 ───╯

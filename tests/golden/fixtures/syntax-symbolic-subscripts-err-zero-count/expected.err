@@ -1,7 +1,7 @@
 Error: symbolic subscript field '.string' count must be >= 1, found 0
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-zero-count/input.k65:2:11 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-zero-count/input.k65:2:13 ]
    │
- 2 │   .string[0]:byte
-   │           ┬  
-   │           ╰── here
+ 2 │     .string[0]:byte
+   │             ┬  
+   │             ╰── here
 ───╯

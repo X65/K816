@@ -897,7 +897,7 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
         }
         HlaStmt::XAssignImmediate { rhs } => format!("x = {}", format_expr(rhs)),
         HlaStmt::XIncrement => "x++".to_string(),
-        HlaStmt::StoreFromA { dests, rhs } => {
+        HlaStmt::StoreFromA { dests, rhs, .. } => {
             let dest_chain = dests.join(" = ");
             format!("{dest_chain} = a = {}", format_hla_rhs(rhs))
         }
@@ -906,7 +906,7 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
             let lhs = match lhs {
                 k816_core::ast::HlaRegister::A => "a",
             };
-            format!("{lhs}?{}", format_expr(rhs))
+            format!("{lhs}?{}", format_hla_operand_expr(rhs))
         }
         HlaStmt::DoOpen => "{".to_string(),
         HlaStmt::DoCloseNFlagClear => "} n-?".to_string(),

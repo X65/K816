@@ -396,7 +396,7 @@ fn collect_hla_postfix_efficiency_warnings(block: &CodeBlock, warnings: &mut Vec
             continue;
         };
 
-        // `a?rhs` + `} OP` is normalized into compare-based close semantics.
+        // Direct `a?rhs` + `} OP` is normalized into compare-based close semantics.
         // Warn only for pure postfix closes that branch on existing flags.
         let has_condition_seed = index > 0
             && matches!(
@@ -1913,17 +1913,25 @@ where
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
-        .then(ident_parser())
+        .then(spanned(ident_parser(), SourceId(0)))
         .then_ignore(just(TokenKind::Eq))
         .then(hla_store_rhs_parser())
         .try_map(|((dests, middle), rhs), span| {
-            if !middle.eq_ignore_ascii_case("a") {
+            if !middle.node.eq_ignore_ascii_case("a") {
                 return Err(Rich::custom(
                     span,
-                    format!("expected 'a' in store-from-a assignment, found '{middle}'"),
+                    format!(
+                        "expected 'a' in store-from-a assignment, found '{}'",
+                        middle.node
+                    ),
                 ));
             }
-            Ok(Stmt::Hla(HlaStmt::StoreFromA { dests, rhs }))
+            Ok(Stmt::Hla(HlaStmt::StoreFromA {
+                dests,
+                rhs,
+                load_start: Some(middle.span.start),
+                store_end: Some(middle.span.end),
+            }))
         })
 }
 
@@ -2683,37 +2691,6 @@ where
     preprocessor.or(data_keyword).or(generic)
 }
 
-fn instruction_stmt(mnemonic: &str, operand: Option<Operand>) -> Stmt {
-    Stmt::Instruction(Instruction {
-        mnemonic: mnemonic.to_string(),
-        operand,
-    })
-}
-
-fn parsed_operand_to_operand(parsed: HlaOperandExpr) -> Operand {
-    if parsed.addr_mode != OperandAddrMode::Direct || parsed.index.is_some() {
-        return Operand::Value {
-            expr: parsed.expr,
-            force_far: false,
-            index: parsed.index,
-            addr_mode: parsed.addr_mode,
-        };
-    }
-    match &parsed.expr {
-        Expr::Index { .. } => Operand::Value {
-            expr: parsed.expr,
-            force_far: false,
-            index: None,
-            addr_mode: OperandAddrMode::Direct,
-        },
-        Expr::Unary { .. } => Operand::Immediate {
-            expr: parsed.expr,
-            explicit_hash: false,
-        },
-        _ => Operand::Auto { expr: parsed.expr },
-    }
-}
-
 fn parse_cpu_register(value: &str) -> Option<HlaCpuRegister> {
     match value {
         "a" => Some(HlaCpuRegister::A),
@@ -2915,14 +2892,10 @@ where
         .then_ignore(just(TokenKind::Question))
         .then(operand_expr_parser())
         .map(|(_ident, parsed)| {
-            if parsed.index.is_some() || parsed.addr_mode != OperandAddrMode::Direct {
-                instruction_stmt("cmp", Some(parsed_operand_to_operand(parsed)))
-            } else {
-                Stmt::Hla(HlaStmt::ConditionSeed {
-                    lhs: HlaRegister::A,
-                    rhs: parsed.expr,
-                })
-            }
+            Stmt::Hla(HlaStmt::ConditionSeed {
+                lhs: HlaRegister::A,
+                rhs: parsed,
+            })
         })
 }
 
@@ -4010,6 +3983,28 @@ mod tests {
     #[test]
     fn does_not_warn_for_postfix_ops_with_condition_seed() {
         let source = "func main {\n  {\n    a?0\n  } <=\n}\n";
+        let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
+        assert!(parsed.warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_indexed_condition_seed_as_hla_node() {
+        let source = "func main {\n  a?zp,x\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[0].node else {
+            panic!("expected code block");
+        };
+        let Stmt::Hla(HlaStmt::ConditionSeed { lhs, rhs }) = &block.body[0].node else {
+            panic!("expected HLA condition seed");
+        };
+        assert_eq!(*lhs, HlaRegister::A);
+        assert_eq!(rhs.index, Some(IndexRegister::X));
+        assert_eq!(rhs.addr_mode, OperandAddrMode::Direct);
+    }
+
+    #[test]
+    fn does_not_warn_for_postfix_ops_with_indexed_condition_seed() {
+        let source = "func main {\n  {\n    a?zp,x\n  } <=\n}\n";
         let parsed = parse_with_warnings(SourceId(0), source).expect("parse");
         assert!(parsed.warnings.is_empty());
     }

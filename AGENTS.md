@@ -40,7 +40,9 @@ Equivalent native/HLA constructs produce equivalent machine output, but they sta
 
 Convergence happens in lowering (AST -> HIR), not in parsing.
 
-Current frontend/backend flow (see `crates/core/src/driver.rs` and `crates/link/src/lib.rs`):
+Current frontend/backend flow:
+
+Core compile pipeline in `k816_core` (see `crates/core/src/driver.rs`):
 
 1. Parse with warnings (`parse_with_warnings`) into AST.
 2. Expand evaluator-backed expression fragments (`eval_expand::expand_file`).
@@ -49,6 +51,9 @@ Current frontend/backend flow (see `crates/core/src/driver.rs` and `crates/link/
 5. Lower AST + semantic model into operation-level HIR (`lower::lower`), translating HLA nodes and native instructions through the same instruction/mode validation path.
 6. Optimize mode ops with `eliminate_dead_mode_ops` and `fold_mode_ops`.
 7. Emit relocatable object/chunk metadata via `emit_object`.
+
+Link/render orchestration (CLI, golden harness, and project build flows using `k816_link`):
+
 8. Link object(s) into canonical placed layout (symbols/placements/listing), format-agnostic.
 9. Render final container format (`raw`/`xex`) only at output write time.
 

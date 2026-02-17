@@ -123,13 +123,16 @@ fn normalize_stmt_sequence(stmts: &[Spanned<Stmt>]) -> Vec<Spanned<Stmt>> {
         let current = &stmts[index];
         if let Stmt::Hla(HlaStmt::ConditionSeed { lhs, rhs }) = &current.node {
             if let Some(next) = stmts.get(index + 1) {
-                if let Stmt::Hla(HlaStmt::DoCloseWithOp { op }) = &next.node {
+                if rhs.index.is_none()
+                    && rhs.addr_mode == crate::ast::OperandAddrMode::Direct
+                    && let Stmt::Hla(HlaStmt::DoCloseWithOp { op }) = &next.node
+                {
                     out.push(Spanned::new(
                         Stmt::Hla(HlaStmt::DoClose {
                             condition: normalize_condition(&HlaCondition {
                                 lhs: *lhs,
                                 op: *op,
-                                rhs: Some(rhs.clone()),
+                                rhs: Some(rhs.expr.clone()),
                                 seed_span: Some(current.span),
                             }),
                         }),
@@ -209,9 +212,16 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         },
         HlaStmt::XAssignImmediate { rhs } => HlaStmt::XAssignImmediate { rhs: rhs.clone() },
         HlaStmt::XIncrement => HlaStmt::XIncrement,
-        HlaStmt::StoreFromA { dests, rhs } => HlaStmt::StoreFromA {
+        HlaStmt::StoreFromA {
+            dests,
+            rhs,
+            load_start,
+            store_end,
+        } => HlaStmt::StoreFromA {
             dests: dests.clone(),
             rhs: rhs.clone(),
+            load_start: *load_start,
+            store_end: *store_end,
         },
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => HlaStmt::WaitLoopWhileNFlagClear {
             symbol: symbol.clone(),

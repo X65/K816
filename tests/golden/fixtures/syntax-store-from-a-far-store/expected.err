@@ -1,0 +1,9 @@
+Error: Cannot directly load/store :far value 'ptr' — use explicit :byte or :word view
+   ╭─[ tests/golden/fixtures/syntax-store-from-a-far-store/input.k65:4:3 ]
+   │
+ 4 │   ptr = a = 1
+   │   ───┬───  
+   │      ╰───── here
+   │ 
+   │ Help: e.g. ptr:word for low 16 bits, (ptr+2):byte for bank byte
+───╯

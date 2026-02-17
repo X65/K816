@@ -2155,16 +2155,21 @@ fn lower_hla_stmt(
                     explicit_hash: false,
                 }),
             };
-            lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::XIncrement => {
             let instruction = Instruction {
                 mnemonic: "inx".to_string(),
                 operand: None,
             };
-            lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
-        HlaStmt::StoreFromA { dests, rhs } => {
+        HlaStmt::StoreFromA {
+            dests,
+            rhs,
+            load_start,
+            store_end,
+        } => {
             let lda_instruction = Instruction {
                 mnemonic: "lda".to_string(),
                 operand: Some(match rhs {
@@ -2176,25 +2181,34 @@ fn lower_hla_stmt(
                         expr,
                         index,
                         addr_mode,
-                    } => {
-                        if *addr_mode == OperandAddrMode::Direct && index.is_none() {
-                            Operand::Auto { expr: expr.clone() }
-                        } else {
-                            Operand::Value {
-                                expr: expr.clone(),
-                                force_far: false,
-                                index: *index,
-                                addr_mode: *addr_mode,
-                            }
-                        }
-                    }
+                    } => lower_hla_operand_to_operand(&HlaOperandExpr {
+                        expr: expr.clone(),
+                        index: *index,
+                        addr_mode: *addr_mode,
+                    }),
                 }),
             };
-            if !lower_instruction_and_push(&lda_instruction, scope, sema, span, diagnostics, ops) {
+            let lda_span = load_start
+                .map(|start| Span::new(span.source_id, start, span.end))
+                .unwrap_or(span);
+            let ops_len_before_lda = ops.len();
+            lower_instruction_stmt(
+                &lda_instruction,
+                scope,
+                sema,
+                lda_span,
+                ctx,
+                diagnostics,
+                ops,
+            );
+            if ops.len() == ops_len_before_lda {
                 return;
             }
 
             // Store to each destination in reverse order (innermost first)
+            let sta_span = store_end
+                .map(|end| Span::new(span.source_id, span.start, end))
+                .unwrap_or(span);
             for dest in dests.iter().rev() {
                 let sta_instruction = Instruction {
                     mnemonic: "sta".to_string(),
@@ -2205,7 +2219,15 @@ fn lower_hla_stmt(
                         addr_mode: OperandAddrMode::Direct,
                     }),
                 };
-                lower_instruction_and_push(&sta_instruction, scope, sema, span, diagnostics, ops);
+                lower_instruction_stmt(
+                    &sta_instruction,
+                    scope,
+                    sema,
+                    sta_span,
+                    ctx,
+                    diagnostics,
+                    ops,
+                );
             }
         }
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => {
@@ -2223,7 +2245,9 @@ fn lower_hla_stmt(
                     addr_mode: OperandAddrMode::Direct,
                 }),
             };
-            if !lower_instruction_and_push(&bit_instruction, scope, sema, span, diagnostics, ops) {
+            let ops_len_before_bit = ops.len();
+            lower_instruction_stmt(&bit_instruction, scope, sema, span, ctx, diagnostics, ops);
+            if ops.len() == ops_len_before_bit {
                 return;
             }
 
@@ -2233,10 +2257,9 @@ fn lower_hla_stmt(
             if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
                 let instruction = Instruction {
                     mnemonic: "cmp".to_string(),
-                    operand: Some(Operand::Auto { expr: rhs.clone() }),
+                    operand: Some(lower_hla_operand_to_operand(rhs)),
                 };
-                let _ =
-                    lower_instruction_and_push(&instruction, scope, sema, span, diagnostics, ops);
+                lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
             }
         }
         HlaStmt::DoOpen => {
@@ -2427,7 +2450,7 @@ fn lower_hla_stmt(
                 operand: None,
             };
             for _ in 0..*count {
-                lower_instruction_and_push(&nop, scope, sema, span, diagnostics, ops);
+                lower_instruction_stmt(&nop, scope, sema, span, ctx, diagnostics, ops);
             }
         }
         HlaStmt::NeverBlock { .. } | HlaStmt::PrefixConditional { .. } => {
@@ -2508,7 +2531,9 @@ fn lower_hla_condition_branch(
             explicit_hash: false,
         }),
     };
-    if !lower_instruction_and_push(&compare_instruction, scope, sema, cmp_span, diagnostics, ops) {
+    let ops_len_before_cmp = ops.len();
+    lower_instruction_stmt(&compare_instruction, scope, sema, cmp_span, ctx, diagnostics, ops);
+    if ops.len() == ops_len_before_cmp {
         return;
     }
 

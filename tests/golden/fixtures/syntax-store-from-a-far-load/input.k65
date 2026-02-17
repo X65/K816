@@ -1,0 +1,6 @@
+var ptr:far = $2000
+var dst:byte = $2003
+
+func main @a16 @i16 {
+  dst = a = ptr
+}

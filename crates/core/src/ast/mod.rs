@@ -346,13 +346,15 @@ pub enum HlaStmt {
     StoreFromA {
         dests: Vec<String>,
         rhs: HlaRhs,
+        load_start: Option<usize>,
+        store_end: Option<usize>,
     },
     WaitLoopWhileNFlagClear {
         symbol: String,
     },
     ConditionSeed {
         lhs: HlaRegister,
-        rhs: Expr,
+        rhs: HlaOperandExpr,
     },
     DoOpen,
     DoCloseNFlagClear,

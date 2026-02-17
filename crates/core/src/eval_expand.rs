@@ -295,16 +295,23 @@ fn expand_hla_stmt(
             rhs: expand_expr(rhs, span, source_id, diagnostics),
         },
         HlaStmt::XIncrement => HlaStmt::XIncrement,
-        HlaStmt::StoreFromA { dests, rhs } => HlaStmt::StoreFromA {
+        HlaStmt::StoreFromA {
+            dests,
+            rhs,
+            load_start,
+            store_end,
+        } => HlaStmt::StoreFromA {
             dests: dests.clone(),
             rhs: expand_hla_rhs(rhs, span, source_id, diagnostics),
+            load_start: *load_start,
+            store_end: *store_end,
         },
         HlaStmt::WaitLoopWhileNFlagClear { symbol } => HlaStmt::WaitLoopWhileNFlagClear {
             symbol: symbol.clone(),
         },
         HlaStmt::ConditionSeed { lhs, rhs } => HlaStmt::ConditionSeed {
             lhs: *lhs,
-            rhs: expand_expr(rhs, span, source_id, diagnostics),
+            rhs: expand_hla_operand_expr(rhs, span, source_id, diagnostics),
         },
         HlaStmt::DoOpen => HlaStmt::DoOpen,
         HlaStmt::DoCloseNFlagClear => HlaStmt::DoCloseNFlagClear,

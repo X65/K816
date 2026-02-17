@@ -1,0 +1,5 @@
+var w:word = $2000
+
+func main @a8 @i8 {
+  w = a = 1
+}

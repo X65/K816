@@ -2,7 +2,7 @@
   "name": "vscode-k816",
   "displayName": "k816 Language Support",
   "description": "VS Code extension wiring the k816 Language Server Protocol implementation.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "X65-Project",
   "license": "0BSD",
   "repository": {

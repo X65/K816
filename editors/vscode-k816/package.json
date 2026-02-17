@@ -102,6 +102,10 @@
         "title": "K816: Restart Language Server"
       },
       {
+        "command": "k816.showCodeLensInfo",
+        "title": "K816: Code Lens Info"
+      },
+      {
         "command": "k816.build",
         "title": "K816: Build"
       }

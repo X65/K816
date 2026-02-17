@@ -127,6 +127,19 @@ Linker uses RON format for configuration (`.ld.ron` files). `vendor/` contains r
   - Instruction lookup uses bundled static JSON (no external fetch).
   - Memory map output depends on current in-memory LSP link state; returns `unavailable` with reason when link data is absent/failed.
 
+- LSP feature batch for extension features 7-17 was implemented (references/rename, completion/docs, semantic tokens, diagnostics freshness updates, inlay hints, hover metadata, code lens, folding ranges, signature help).
+- Implementation path:
+  - Core LSP capability wiring, handlers, and feature logic: `crates/lsp/src/lib.rs`
+  - Bundled instruction hover metadata (flags/cycles): `crates/lsp/resources/instruction-metadata.json`
+  - LSP integration coverage for new requests/capabilities: `tests/lsp_cli.rs`
+  - VS Code code-lens command wiring: `editors/vscode-k816/src/extension.ts`, `editors/vscode-k816/package.json`
+- Constraints:
+  - Rename is safe symbol-only (resolved canonical symbols only); no fuzzy text rename.
+  - References include declaration sites when requested by LSP context.
+  - Folding ranges are brace-structure based; `#if ... #endif` preprocessor folding is not implemented yet.
+  - Signature help currently covers evaluator built-ins only (e.g. `sin`, `cos`, `clamp`), not macro signatures.
+  - Opcode hover cycle/flag details come from bundled metadata and are best-effort for covered instructions.
+
 - DAP debug enhancements were added for features 18/19/20/23 (disassembly, memory read/write, register view, inline debug values).
 - Implementation path:
   - Extension DAP proxy + inline values provider: `editors/vscode-k816/src/extension.ts`

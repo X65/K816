@@ -116,6 +116,7 @@ export async function activate(
       await stopClient();
       await startClient();
     }),
+    vscode.commands.registerCommand("k816.showCodeLensInfo", async () => {}),
     vscode.commands.registerCommand("k816.build", async () => {
       const tasks = await vscode.tasks.fetchTasks({ type: "k816" });
       const buildTask = tasks.find(

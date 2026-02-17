@@ -13,18 +13,26 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
-    Request as LspRequest,
+    CodeLensRequest, Completion, DocumentSymbolRequest, FoldingRangeRequest, Formatting,
+    GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
+    Request as LspRequest, SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+    CodeLens, CodeLensOptions, CodeLensParams, Command, CompletionItem, CompletionItemKind,
+    CompletionItemLabelDetails, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    InitializeParams, Location, MarkupContent, MarkupKind, OneOf, Position, Range,
-    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Uri,
+    FoldingRange, FoldingRangeKind, FoldingRangeParams, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, InsertTextFormat,
+    Location, MarkupContent, MarkupKind, OneOf, Position, PrepareRenameResponse, Range,
+    ReferenceContext, ReferenceParams, RenameOptions, RenameParams, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, ServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions,
+    WorkspaceEdit,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -35,6 +43,19 @@ static INSTRUCTION_DESCRIPTIONS: LazyLock<HashMap<String, String>> = LazyLock::n
         "../../../editors/vscode-k816/resources/instructions-description.json"
     ))
     .expect("embedded instruction descriptions must be valid JSON")
+});
+
+#[derive(Debug, Clone, Deserialize)]
+struct InstructionMetadata {
+    #[serde(default)]
+    flags: Vec<String>,
+    #[serde(default)]
+    cycles: String,
+}
+
+static INSTRUCTION_METADATA: LazyLock<HashMap<String, InstructionMetadata>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../resources/instruction-metadata.json"))
+        .expect("embedded instruction metadata must be valid JSON")
 });
 
 const PROJECT_MANIFEST: &str = "k816.toml";
@@ -141,6 +162,13 @@ struct SymbolLocation {
     name: String,
     category: SymbolCategory,
     selection: ByteRange,
+}
+
+#[derive(Debug, Clone)]
+struct SymbolOccurrence {
+    uri: Uri,
+    range: ByteRange,
+    is_declaration: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -263,6 +291,7 @@ struct ServerState {
     source_index: SourceIndex,
     documents: HashMap<Uri, DocumentState>,
     symbols: HashMap<String, Vec<SymbolLocation>>,
+    symbol_occurrences: HashMap<String, Vec<SymbolOccurrence>>,
     linker_config: k816_link::LinkerConfig,
     last_link_layout: Option<k816_link::LinkedLayout>,
     last_link_error: Option<String>,
@@ -275,6 +304,7 @@ impl ServerState {
             source_index: SourceIndex::default(),
             documents: HashMap::new(),
             symbols: HashMap::new(),
+            symbol_occurrences: HashMap::new(),
             linker_config: k816_link::default_stub_config(),
             last_link_layout: None,
             last_link_error: None,
@@ -484,7 +514,58 @@ impl ServerState {
                     });
             }
         }
+        self.rebuild_occurrence_index();
         self.try_link_workspace();
+    }
+
+    fn rebuild_occurrence_index(&mut self) {
+        self.symbol_occurrences.clear();
+
+        for doc in self.documents.values() {
+            for symbol in &doc.analysis.symbols {
+                self.symbol_occurrences
+                    .entry(symbol.canonical.clone())
+                    .or_default()
+                    .push(SymbolOccurrence {
+                        uri: doc.uri.clone(),
+                        range: symbol.selection.clone(),
+                        is_declaration: true,
+                    });
+            }
+
+            let (tokens, _) =
+                k816_core::lexer::lex_lenient(k816_core::span::SourceId(0), &doc.text);
+            for token in tokens {
+                let k816_core::lexer::TokenKind::Ident(name) = token.kind else {
+                    continue;
+                };
+                let scope = doc.analysis.scope_at_offset(token.span.start);
+                let canonical = canonical_symbol(&name, scope);
+                if !self.symbols.contains_key(&canonical) {
+                    continue;
+                }
+                let token_range = ByteRange {
+                    start: token.span.start,
+                    end: token.span.end,
+                };
+                let already_decl = doc.analysis.symbols.iter().any(|symbol| {
+                    symbol.canonical == canonical
+                        && symbol.selection.start == token_range.start
+                        && symbol.selection.end == token_range.end
+                });
+                if already_decl {
+                    continue;
+                }
+                self.symbol_occurrences
+                    .entry(canonical.clone())
+                    .or_default()
+                    .push(SymbolOccurrence {
+                        uri: doc.uri.clone(),
+                        range: token_range,
+                        is_declaration: false,
+                    });
+            }
+        }
     }
 
     fn try_link_workspace(&mut self) {
@@ -659,7 +740,11 @@ impl ServerState {
             return false;
         }
         if let Some(name) = extract_unknown_identifier_name(&diag.message) {
-            return self.symbols.contains_key(&name);
+            if self.symbols.contains_key(&name) {
+                return true;
+            }
+            let suffix = format!("::{name}");
+            return self.symbols.keys().any(|symbol| symbol.ends_with(&suffix));
         }
         false
     }
@@ -687,6 +772,110 @@ impl ServerState {
         } else {
             Some(GotoDefinitionResponse::Array(locations))
         }
+    }
+
+    fn references(
+        &self,
+        uri: &Uri,
+        position: Position,
+        context: &ReferenceContext,
+    ) -> Option<Vec<Location>> {
+        let (canonical, _, _) = self.symbol_at_position(uri, position)?;
+        let occurrences = self.symbol_occurrences.get(&canonical)?;
+
+        let mut locations = Vec::new();
+        for occurrence in occurrences {
+            if occurrence.is_declaration && !context.include_declaration {
+                continue;
+            }
+            let Some(doc) = self.documents.get(&occurrence.uri) else {
+                continue;
+            };
+            let range = byte_range_to_lsp(&occurrence.range, &doc.line_index, &doc.text);
+            locations.push(Location::new(occurrence.uri.clone(), range));
+        }
+        Some(locations)
+    }
+
+    fn prepare_rename(&self, uri: &Uri, position: Position) -> Option<PrepareRenameResponse> {
+        let (canonical, token, category) = self.symbol_at_position(uri, position)?;
+        if matches!(
+            category,
+            SymbolCategory::Segment | SymbolCategory::DataBlock
+        ) && canonical.is_empty()
+        {
+            return None;
+        }
+        let doc = self.documents.get(uri)?;
+        let range = byte_range_to_lsp(
+            &ByteRange {
+                start: token.start,
+                end: token.end,
+            },
+            &doc.line_index,
+            &doc.text,
+        );
+        Some(PrepareRenameResponse::Range(range))
+    }
+
+    fn rename(&self, uri: &Uri, position: Position, new_name: &str) -> Option<WorkspaceEdit> {
+        let (canonical, token, _category) = self.symbol_at_position(uri, position)?;
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return None;
+        }
+        if !is_valid_symbol_name(new_name) {
+            return None;
+        }
+        if token.text.starts_with('.') && !new_name.starts_with('.') {
+            return None;
+        }
+        if !token.text.starts_with('.') && new_name.starts_with('.') {
+            return None;
+        }
+
+        let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+        for occurrence in self.symbol_occurrences.get(&canonical)? {
+            let Some(doc) = self.documents.get(&occurrence.uri) else {
+                continue;
+            };
+            let edit = TextEdit {
+                range: byte_range_to_lsp(&occurrence.range, &doc.line_index, &doc.text),
+                new_text: new_name.to_string(),
+            };
+            changes
+                .entry(occurrence.uri.clone())
+                .or_default()
+                .push(edit);
+        }
+
+        if changes.is_empty() {
+            return None;
+        }
+
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            document_changes: None,
+            change_annotations: None,
+        })
+    }
+
+    fn symbol_at_position(
+        &self,
+        uri: &Uri,
+        position: Position,
+    ) -> Option<(String, TokenMatch, SymbolCategory)> {
+        let doc = self.documents.get(uri)?;
+        let offset = doc.line_index.to_offset(&doc.text, position)?;
+        let token = token_at_offset(&doc.text, offset)?;
+        let scope = doc.analysis.scope_at_offset(offset);
+        let canonical = canonical_symbol(&token.text, scope);
+        let category = self
+            .symbols
+            .get(&canonical)
+            .and_then(|defs| defs.first())
+            .map(|def| def.category)?;
+        Some((canonical, token, category))
     }
 
     fn hover(&self, uri: &Uri, position: Position) -> Option<Hover> {
@@ -791,6 +980,14 @@ impl ServerState {
                 None,
             )
         }));
+        candidates.extend(register_keywords().iter().map(|(name, doc)| {
+            (
+                (*name).to_string(),
+                CompletionItemKind::VARIABLE,
+                "register",
+                Some((*doc).to_string()),
+            )
+        }));
 
         if allow_symbol_completions {
             let mut visible_symbols: BTreeSet<(String, SymbolCategory)> = BTreeSet::new();
@@ -835,6 +1032,11 @@ impl ServerState {
                 label,
                 kind: Some(kind),
                 detail: Some(detail.to_string()),
+                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                label_details: Some(CompletionItemLabelDetails {
+                    detail: None,
+                    description: Some(detail.to_string()),
+                }),
                 documentation: documentation.map(|text| {
                     lsp_types::Documentation::MarkupContent(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -876,6 +1078,372 @@ impl ServerState {
             },
             new_text: formatted,
         }]
+    }
+
+    fn semantic_tokens(&self, uri: &Uri) -> Option<SemanticTokens> {
+        let doc = self.documents.get(uri)?;
+        let (tokens, _) = k816_core::lexer::lex_lenient(k816_core::span::SourceId(0), &doc.text);
+        let mut semantic_rows = Vec::new();
+
+        for token in tokens {
+            let span = ByteRange::from_span(token.span);
+            if span.start >= span.end {
+                continue;
+            }
+            let start = doc.line_index.to_position(&doc.text, span.start);
+            let end = doc.line_index.to_position(&doc.text, span.end);
+            if start.line != end.line {
+                continue;
+            }
+            let len = end.character.saturating_sub(start.character);
+            if len == 0 {
+                continue;
+            }
+
+            let mut modifiers = 0u32;
+            let token_type = match &token.kind {
+                k816_core::lexer::TokenKind::LineComment(_)
+                | k816_core::lexer::TokenKind::BlockComment(_) => {
+                    semantic_token_type_index("comment")
+                }
+                k816_core::lexer::TokenKind::Number(_) => semantic_token_type_index("number"),
+                k816_core::lexer::TokenKind::ModeA8
+                | k816_core::lexer::TokenKind::ModeA16
+                | k816_core::lexer::TokenKind::ModeI8
+                | k816_core::lexer::TokenKind::ModeI16 => {
+                    modifiers |= semantic_token_modifier_bit("mode");
+                    semantic_token_type_index("keyword")
+                }
+                k816_core::lexer::TokenKind::Hash
+                | k816_core::lexer::TokenKind::Eq
+                | k816_core::lexer::TokenKind::EqEq
+                | k816_core::lexer::TokenKind::BangEq
+                | k816_core::lexer::TokenKind::Lt
+                | k816_core::lexer::TokenKind::LtEq
+                | k816_core::lexer::TokenKind::Gt
+                | k816_core::lexer::TokenKind::GtEq
+                | k816_core::lexer::TokenKind::Plus
+                | k816_core::lexer::TokenKind::Minus
+                | k816_core::lexer::TokenKind::Star
+                | k816_core::lexer::TokenKind::Percent
+                | k816_core::lexer::TokenKind::Amp
+                | k816_core::lexer::TokenKind::Pipe
+                | k816_core::lexer::TokenKind::Caret
+                | k816_core::lexer::TokenKind::Question
+                | k816_core::lexer::TokenKind::Bang => semantic_token_type_index("operator"),
+                k816_core::lexer::TokenKind::Ident(name) => {
+                    let lower = name.to_ascii_lowercase();
+                    if directive_keywords().iter().any(|d| *d == lower) {
+                        semantic_token_type_index("keyword")
+                    } else if is_register_name(&lower) {
+                        semantic_token_type_index("parameter")
+                    } else if opcode_keywords().iter().any(|op| op == &lower) {
+                        semantic_token_type_index("keyword")
+                    } else {
+                        let scope = doc.analysis.scope_at_offset(span.start);
+                        let canonical = canonical_symbol(name, scope);
+                        if let Some(defs) = self.symbols.get(&canonical) {
+                            modifiers |= semantic_token_modifier_bit("resolved");
+                            if name.starts_with('.') {
+                                modifiers |= semantic_token_modifier_bit("local");
+                            } else {
+                                modifiers |= semantic_token_modifier_bit("global");
+                            }
+                            let is_decl = doc.analysis.symbols.iter().any(|symbol| {
+                                symbol.canonical == canonical
+                                    && symbol.selection.start == span.start
+                                    && symbol.selection.end == span.end
+                            });
+                            if is_decl {
+                                modifiers |= semantic_token_modifier_bit("declaration");
+                            }
+                            semantic_token_type_for_category(
+                                defs.first()
+                                    .map(|d| d.category)
+                                    .unwrap_or(SymbolCategory::Label),
+                            )
+                        } else {
+                            modifiers |= semantic_token_modifier_bit("unresolved");
+                            semantic_token_type_index("variable")
+                        }
+                    }
+                }
+                _ => continue,
+            };
+
+            semantic_rows.push((start, len, token_type, modifiers));
+        }
+
+        semantic_rows.sort_by_key(|(start, _, _, _)| (start.line, start.character));
+        let mut data = Vec::with_capacity(semantic_rows.len());
+        let mut prev_line = 0u32;
+        let mut prev_start = 0u32;
+        for (start, len, token_type, modifiers) in semantic_rows {
+            let delta_line = start.line.saturating_sub(prev_line);
+            let delta_start = if delta_line == 0 {
+                start.character.saturating_sub(prev_start)
+            } else {
+                start.character
+            };
+            data.push(lsp_types::SemanticToken {
+                delta_line,
+                delta_start,
+                length: len,
+                token_type,
+                token_modifiers_bitset: modifiers,
+            });
+            prev_line = start.line;
+            prev_start = start.character;
+        }
+
+        Some(SemanticTokens {
+            result_id: None,
+            data,
+        })
+    }
+
+    fn inlay_hints(&self, uri: &Uri, range: Range) -> Option<Vec<InlayHint>> {
+        let doc = self.documents.get(uri)?;
+        let start_offset = doc.line_index.to_offset(&doc.text, range.start)?;
+        let end_offset = doc.line_index.to_offset(&doc.text, range.end)?;
+        let mut hints = Vec::new();
+
+        for symbol in &doc.analysis.symbols {
+            if !matches!(
+                symbol.category,
+                SymbolCategory::Function | SymbolCategory::Label
+            ) {
+                continue;
+            }
+            if symbol.selection.end < start_offset || symbol.selection.start > end_offset {
+                continue;
+            }
+            if let Some((addr, _size)) = doc.address_at_offset(symbol.selection.start) {
+                let pos = doc.line_index.to_position(&doc.text, symbol.selection.end);
+                hints.push(InlayHint {
+                    position: pos,
+                    label: InlayHintLabel::String(format!(" = {}", format_address(addr))),
+                    kind: Some(InlayHintKind::TYPE),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(true),
+                    padding_right: Some(false),
+                    data: None,
+                });
+            }
+        }
+
+        for (span, _addr, size) in &doc.resolved_sites {
+            if *size == 0 {
+                continue;
+            }
+            if span.end < start_offset || span.start > end_offset {
+                continue;
+            }
+            let pos = doc.line_index.to_position(&doc.text, span.end);
+            hints.push(InlayHint {
+                position: pos,
+                label: InlayHintLabel::String(format!(" {}b", size)),
+                kind: Some(InlayHintKind::PARAMETER),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(true),
+                padding_right: Some(false),
+                data: None,
+            });
+        }
+
+        for symbol in &doc.analysis.symbols {
+            if symbol.category != SymbolCategory::Function {
+                continue;
+            }
+            if symbol.selection.end < start_offset || symbol.selection.start > end_offset {
+                continue;
+            }
+            let Some(meta) = doc.analysis.semantic.functions.get(&symbol.canonical) else {
+                continue;
+            };
+            let mut parts = Vec::new();
+            if let Some(width) = meta.mode_contract.a_width {
+                parts.push(format!(
+                    "a{}",
+                    if width == k816_core::ast::RegWidth::W16 {
+                        "16"
+                    } else {
+                        "8"
+                    }
+                ));
+            }
+            if let Some(width) = meta.mode_contract.i_width {
+                parts.push(format!(
+                    "i{}",
+                    if width == k816_core::ast::RegWidth::W16 {
+                        "16"
+                    } else {
+                        "8"
+                    }
+                ));
+            }
+            if parts.is_empty() {
+                continue;
+            }
+            let pos = doc.line_index.to_position(&doc.text, symbol.selection.end);
+            hints.push(InlayHint {
+                position: pos,
+                label: InlayHintLabel::String(format!(" [{}]", parts.join(","))),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: None,
+                padding_left: Some(true),
+                padding_right: Some(false),
+                data: None,
+            });
+        }
+
+        Some(hints)
+    }
+
+    fn code_lenses(&self, uri: &Uri) -> Option<Vec<CodeLens>> {
+        let doc = self.documents.get(uri)?;
+        let mut lenses = Vec::new();
+
+        for symbol in &doc.analysis.symbols {
+            if matches!(
+                symbol.category,
+                SymbolCategory::Function | SymbolCategory::Label
+            ) {
+                let usage_count = self
+                    .symbol_occurrences
+                    .get(&symbol.canonical)
+                    .map(|occ| occ.iter().filter(|o| !o.is_declaration).count())
+                    .unwrap_or(0);
+                let pos = doc
+                    .line_index
+                    .to_position(&doc.text, symbol.selection.start);
+                let range = Range {
+                    start: pos,
+                    end: pos,
+                };
+                lenses.push(CodeLens {
+                    range,
+                    command: Some(Command {
+                        title: if usage_count == 1 {
+                            "1 reference".to_string()
+                        } else {
+                            format!("{usage_count} references")
+                        },
+                        command: "k816.showCodeLensInfo".to_string(),
+                        arguments: Some(vec![serde_json::Value::String(symbol.canonical.clone())]),
+                    }),
+                    data: None,
+                });
+            }
+
+            if matches!(
+                symbol.category,
+                SymbolCategory::Function | SymbolCategory::Segment
+            ) {
+                let addr = if symbol.category == SymbolCategory::Function {
+                    doc.address_at_offset(symbol.selection.start)
+                        .map(|(addr, _)| addr)
+                } else {
+                    doc.resolved_sites
+                        .iter()
+                        .find(|(span, _, _)| span.start >= symbol.selection.start)
+                        .map(|(_, addr, _)| *addr)
+                };
+                if let Some(addr) = addr {
+                    let pos = doc
+                        .line_index
+                        .to_position(&doc.text, symbol.selection.start);
+                    let range = Range {
+                        start: pos,
+                        end: pos,
+                    };
+                    lenses.push(CodeLens {
+                        range,
+                        command: Some(Command {
+                            title: format!("address {}", format_address(addr)),
+                            command: "k816.showCodeLensInfo".to_string(),
+                            arguments: Some(vec![serde_json::Value::String(
+                                symbol.canonical.clone(),
+                            )]),
+                        }),
+                        data: None,
+                    });
+                }
+            }
+        }
+
+        Some(lenses)
+    }
+
+    fn folding_ranges(&self, uri: &Uri) -> Option<Vec<FoldingRange>> {
+        let doc = self.documents.get(uri)?;
+        let (tokens, _) = k816_core::lexer::lex_lenient(k816_core::span::SourceId(0), &doc.text);
+        let mut stack = Vec::new();
+        let mut ranges = Vec::new();
+
+        for token in tokens {
+            match token.kind {
+                k816_core::lexer::TokenKind::LBrace => stack.push(token.span.start),
+                k816_core::lexer::TokenKind::RBrace => {
+                    let Some(start_offset) = stack.pop() else {
+                        continue;
+                    };
+                    let start = doc.line_index.to_position(&doc.text, start_offset);
+                    let end = doc.line_index.to_position(&doc.text, token.span.end);
+                    if end.line <= start.line {
+                        continue;
+                    }
+                    ranges.push(FoldingRange {
+                        start_line: start.line,
+                        start_character: None,
+                        end_line: end.line.saturating_sub(1),
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Region),
+                        collapsed_text: None,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        ranges.sort_by_key(|range| (range.start_line, range.end_line));
+        ranges.dedup_by_key(|range| (range.start_line, range.end_line));
+        Some(ranges)
+    }
+
+    fn signature_help(&self, uri: &Uri, position: Position) -> Option<SignatureHelp> {
+        let doc = self.documents.get(uri)?;
+        let offset = doc.line_index.to_offset(&doc.text, position)?;
+        let (function_name, active_param) = evaluator_call_at_offset(&doc.text, offset)?;
+        let signature = evaluator_signature(function_name.as_str())?;
+
+        Some(SignatureHelp {
+            signatures: vec![SignatureInformation {
+                label: signature.label.to_string(),
+                documentation: Some(lsp_types::Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: signature.documentation.to_string(),
+                })),
+                parameters: Some(
+                    signature
+                        .parameters
+                        .iter()
+                        .map(|param| lsp_types::ParameterInformation {
+                            label: lsp_types::ParameterLabel::Simple((*param).to_string()),
+                            documentation: None,
+                        })
+                        .collect(),
+                ),
+                active_parameter: None,
+            }],
+            active_signature: Some(0),
+            active_parameter: Some(
+                active_param.min(signature.parameters.len().saturating_sub(1) as u32),
+            ),
+        })
     }
 
     fn resolve_addresses_for_lines(&self, uri: &Uri, lines: &[u32]) -> ResolveAddressesResult {
@@ -1091,9 +1659,17 @@ impl Server {
     fn handle_request(&mut self, request: Request) -> Result<()> {
         match request.method.as_str() {
             GotoDefinition::METHOD => self.on_definition(request),
+            References::METHOD => self.on_references(request),
             HoverRequest::METHOD => self.on_hover(request),
             Completion::METHOD => self.on_completion(request),
             DocumentSymbolRequest::METHOD => self.on_document_symbol(request),
+            SemanticTokensFullRequest::METHOD => self.on_semantic_tokens_full(request),
+            InlayHintRequest::METHOD => self.on_inlay_hints(request),
+            Rename::METHOD => self.on_rename(request),
+            PrepareRenameRequest::METHOD => self.on_prepare_rename(request),
+            CodeLensRequest::METHOD => self.on_code_lens(request),
+            FoldingRangeRequest::METHOD => self.on_folding_ranges(request),
+            SignatureHelpRequest::METHOD => self.on_signature_help(request),
             Formatting::METHOD => self.on_formatting(request),
             "k816/resolveAddresses" => self.on_resolve_addresses(request),
             "k816/resolveInlineSymbols" => self.on_resolve_inline_symbols(request),
@@ -1232,6 +1808,15 @@ impl Server {
         self.send_result(request.id, &result)
     }
 
+    fn on_references(&mut self, request: Request) -> Result<()> {
+        let params: ReferenceParams = parse_request_params(&request)?;
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        self.flush_all_pending_changes()?;
+        let result = self.state.references(&uri, position, &params.context);
+        self.send_result(request.id, &result)
+    }
+
     fn on_hover(&mut self, request: Request) -> Result<()> {
         let params: HoverParams = parse_request_params(&request)?;
         let uri = params.text_document_position_params.text_document.uri;
@@ -1254,6 +1839,65 @@ impl Server {
         let params: DocumentSymbolParams = parse_request_params(&request)?;
         self.ensure_document_fresh(&params.text_document.uri)?;
         let result = self.state.document_symbols(&params.text_document.uri);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_semantic_tokens_full(&mut self, request: Request) -> Result<()> {
+        let params: SemanticTokensParams = parse_request_params(&request)?;
+        let uri = params.text_document.uri;
+        self.flush_all_pending_changes()?;
+        let result = self.state.semantic_tokens(&uri);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_inlay_hints(&mut self, request: Request) -> Result<()> {
+        let params: InlayHintParams = parse_request_params(&request)?;
+        let uri = params.text_document.uri;
+        self.flush_all_pending_changes()?;
+        let result = self.state.inlay_hints(&uri, params.range);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_rename(&mut self, request: Request) -> Result<()> {
+        let params: RenameParams = parse_request_params(&request)?;
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        self.flush_all_pending_changes()?;
+        let result = self.state.rename(&uri, position, &params.new_name);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_prepare_rename(&mut self, request: Request) -> Result<()> {
+        let params: lsp_types::TextDocumentPositionParams = parse_request_params(&request)?;
+        let uri = params.text_document.uri;
+        let position = params.position;
+        self.flush_all_pending_changes()?;
+        let result = self.state.prepare_rename(&uri, position);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_code_lens(&mut self, request: Request) -> Result<()> {
+        let params: CodeLensParams = parse_request_params(&request)?;
+        let uri = params.text_document.uri;
+        self.flush_all_pending_changes()?;
+        let result = self.state.code_lenses(&uri);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_folding_ranges(&mut self, request: Request) -> Result<()> {
+        let params: FoldingRangeParams = parse_request_params(&request)?;
+        let uri = params.text_document.uri;
+        self.ensure_document_fresh(&uri)?;
+        let result = self.state.folding_ranges(&uri);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_signature_help(&mut self, request: Request) -> Result<()> {
+        let params: SignatureHelpParams = parse_request_params(&request)?;
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        self.ensure_document_fresh(&uri)?;
+        let result = self.state.signature_help(&uri, position);
         self.send_result(request.id, &result)
     }
 
@@ -1344,13 +1988,41 @@ fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         definition_provider: Some(OneOf::Left(true)),
-        hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
+        })),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
             trigger_characters: Some(vec![".".to_string(), "@".to_string()]),
             all_commit_characters: None,
-            work_done_progress_options: lsp_types::WorkDoneProgressOptions::default(),
+            work_done_progress_options: WorkDoneProgressOptions::default(),
             completion_item: None,
+        }),
+        semantic_tokens_provider: Some(
+            lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                SemanticTokensOptions {
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                    legend: SemanticTokensLegend {
+                        token_types: semantic_token_legend_types(),
+                        token_modifiers: semantic_token_legend_modifiers(),
+                    },
+                    range: Some(false),
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                },
+            ),
+        ),
+        inlay_hint_provider: Some(OneOf::Left(true)),
+        code_lens_provider: Some(CodeLensOptions {
+            resolve_provider: Some(false),
+        }),
+        folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
+        signature_help_provider: Some(SignatureHelpOptions {
+            trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+            retrigger_characters: None,
+            work_done_progress_options: WorkDoneProgressOptions::default(),
         }),
         document_symbol_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
@@ -1985,6 +2657,86 @@ fn completion_kind_for_symbol(category: SymbolCategory) -> CompletionItemKind {
     }
 }
 
+fn semantic_token_type_for_category(category: SymbolCategory) -> u32 {
+    match category {
+        SymbolCategory::Function => semantic_token_type_index("function"),
+        SymbolCategory::Constant => semantic_token_type_index("constant"),
+        SymbolCategory::Variable => semantic_token_type_index("variable"),
+        SymbolCategory::Label => semantic_token_type_index("label"),
+        SymbolCategory::DataBlock => semantic_token_type_index("data"),
+        SymbolCategory::Segment => semantic_token_type_index("segment"),
+    }
+}
+
+fn semantic_token_type_index(name: &str) -> u32 {
+    semantic_token_legend_type_names()
+        .iter()
+        .position(|entry| *entry == name)
+        .unwrap_or(0) as u32
+}
+
+fn semantic_token_modifier_bit(name: &str) -> u32 {
+    let idx = semantic_token_legend_modifier_names()
+        .iter()
+        .position(|entry| *entry == name)
+        .unwrap_or(0) as u32;
+    1 << idx
+}
+
+fn semantic_token_legend_types() -> Vec<SemanticTokenType> {
+    semantic_token_legend_type_names()
+        .iter()
+        .map(|name| SemanticTokenType::new(*name))
+        .collect()
+}
+
+fn semantic_token_legend_modifiers() -> Vec<SemanticTokenModifier> {
+    semantic_token_legend_modifier_names()
+        .iter()
+        .map(|name| SemanticTokenModifier::new(*name))
+        .collect()
+}
+
+fn semantic_token_legend_type_names() -> &'static [&'static str] {
+    &[
+        "keyword",
+        "function",
+        "constant",
+        "variable",
+        "label",
+        "segment",
+        "data",
+        "number",
+        "operator",
+        "parameter",
+        "comment",
+    ]
+}
+
+fn semantic_token_legend_modifier_names() -> &'static [&'static str] {
+    &[
+        "declaration",
+        "local",
+        "global",
+        "resolved",
+        "unresolved",
+        "mode",
+    ]
+}
+
+fn is_valid_symbol_name(name: &str) -> bool {
+    let mut bytes = name.as_bytes().iter().copied();
+    let first = match bytes.next() {
+        Some(first) => first,
+        None => return false,
+    };
+    let first_valid = first.is_ascii_alphabetic() || first == b'_' || first == b'.';
+    if !first_valid {
+        return false;
+    }
+    bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.')
+}
+
 fn byte_range_to_lsp(range: &ByteRange, line_index: &LineIndex, text: &str) -> Range {
     Range {
         start: line_index.to_position(text, range.start),
@@ -2312,7 +3064,32 @@ fn builtin_hover_text(token: &str) -> Option<String> {
             .get(&token.to_ascii_uppercase())
             .map(|d| d.as_str())
             .unwrap_or("WDC 65816 instruction mnemonic.");
-        return Some(format!("**opcode** `{token}`\n\n{description}"));
+        let metadata = INSTRUCTION_METADATA.get(&token.to_ascii_uppercase());
+        let cycles = metadata
+            .map(|m| m.cycles.trim())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("not documented");
+        let flags = metadata
+            .map(|m| {
+                if m.flags.is_empty() {
+                    "none".to_string()
+                } else {
+                    m.flags.join(", ")
+                }
+            })
+            .unwrap_or_else(|| "not documented".to_string());
+        let addressing_modes = mnemonic_addressing_modes(&token)
+            .into_iter()
+            .map(format_addressing_mode_name)
+            .collect::<Vec<_>>();
+        let addressing_summary = if addressing_modes.is_empty() {
+            "not documented".to_string()
+        } else {
+            addressing_modes.join(", ")
+        };
+        return Some(format!(
+            "**opcode** `{token}`\n\n{description}\n\n- flags: `{flags}`\n- cycles: `{cycles}`\n- addressing: {addressing_summary}"
+        ));
     }
 
     let text = match token.as_str() {
@@ -2359,12 +3136,214 @@ fn opcode_keywords() -> Vec<String> {
     mnemonics.into_iter().collect()
 }
 
+fn register_keywords() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("a", "Accumulator register A."),
+        ("b", "Accumulator high-byte register B (native mode)."),
+        ("c", "Combined 16-bit accumulator view C (A:B)."),
+        ("x", "Index register X."),
+        ("y", "Index register Y."),
+        ("d", "Direct page register D."),
+        ("s", "Stack pointer register S."),
+    ]
+}
+
+fn is_register_name(name: &str) -> bool {
+    register_keywords().iter().any(|(entry, _)| *entry == name)
+}
+
 fn directive_keywords() -> &'static [&'static str] {
     &[
         "segment", "const", "var", "func", "far", "naked", "inline", "data", "align", "address",
         "nocross", "call", "goto", "return", "return_i", "else", "break", "repeat", "always",
         "never", "charset", "image", "binary", "code", "@a8", "@a16", "@i8", "@i16",
     ]
+}
+
+fn mnemonic_addressing_modes(mnemonic: &str) -> Vec<k816_isa65816::AddressingMode> {
+    let mut out = Vec::new();
+    for opcode in 0_u16..=255 {
+        let descriptor = k816_isa65816::opcode_descriptor(opcode as u8);
+        if descriptor.mnemonic.eq_ignore_ascii_case(mnemonic) && !out.contains(&descriptor.mode) {
+            out.push(descriptor.mode);
+        }
+    }
+    out
+}
+
+fn format_addressing_mode_name(mode: k816_isa65816::AddressingMode) -> &'static str {
+    match mode {
+        k816_isa65816::AddressingMode::Implied => "implied",
+        k816_isa65816::AddressingMode::Accumulator => "accumulator",
+        k816_isa65816::AddressingMode::Immediate8 => "imm8",
+        k816_isa65816::AddressingMode::Immediate16 => "imm16",
+        k816_isa65816::AddressingMode::ImmediateM => "immM",
+        k816_isa65816::AddressingMode::ImmediateX => "immX",
+        k816_isa65816::AddressingMode::DirectPage => "dp",
+        k816_isa65816::AddressingMode::DirectPageX => "dp,x",
+        k816_isa65816::AddressingMode::DirectPageY => "dp,y",
+        k816_isa65816::AddressingMode::DirectPageIndirect => "(dp)",
+        k816_isa65816::AddressingMode::DirectPageIndirectLong => "[dp]",
+        k816_isa65816::AddressingMode::DirectPageIndexedIndirectX => "(dp,x)",
+        k816_isa65816::AddressingMode::DirectPageIndirectIndexedY => "(dp),y",
+        k816_isa65816::AddressingMode::DirectPageIndirectLongIndexedY => "[dp],y",
+        k816_isa65816::AddressingMode::StackRelative => "sr,s",
+        k816_isa65816::AddressingMode::StackRelativeIndirectIndexedY => "(sr,s),y",
+        k816_isa65816::AddressingMode::Absolute => "abs",
+        k816_isa65816::AddressingMode::AbsoluteX => "abs,x",
+        k816_isa65816::AddressingMode::AbsoluteY => "abs,y",
+        k816_isa65816::AddressingMode::AbsoluteLong => "long",
+        k816_isa65816::AddressingMode::AbsoluteLongX => "long,x",
+        k816_isa65816::AddressingMode::AbsoluteIndirect => "(abs)",
+        k816_isa65816::AddressingMode::AbsoluteIndexedIndirectX => "(abs,x)",
+        k816_isa65816::AddressingMode::AbsoluteIndirectLong => "[abs]",
+        k816_isa65816::AddressingMode::Relative8 => "rel8",
+        k816_isa65816::AddressingMode::Relative16 => "rel16",
+        k816_isa65816::AddressingMode::BlockMove => "block-move",
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EvaluatorSignature {
+    label: &'static str,
+    parameters: &'static [&'static str],
+    documentation: &'static str,
+}
+
+fn evaluator_signature(name: &str) -> Option<EvaluatorSignature> {
+    match name.to_ascii_lowercase().as_str() {
+        "min" => Some(EvaluatorSignature {
+            label: "min(lhs, rhs)",
+            parameters: &["lhs", "rhs"],
+            documentation: "Returns the smaller value.",
+        }),
+        "max" => Some(EvaluatorSignature {
+            label: "max(lhs, rhs)",
+            parameters: &["lhs", "rhs"],
+            documentation: "Returns the larger value.",
+        }),
+        "abs" => Some(EvaluatorSignature {
+            label: "abs(x)",
+            parameters: &["x"],
+            documentation: "Absolute value.",
+        }),
+        "sin" => Some(EvaluatorSignature {
+            label: "sin(x)",
+            parameters: &["x"],
+            documentation: "Sine (radians).",
+        }),
+        "cos" => Some(EvaluatorSignature {
+            label: "cos(x)",
+            parameters: &["x"],
+            documentation: "Cosine (radians).",
+        }),
+        "asin" => Some(EvaluatorSignature {
+            label: "asin(x)",
+            parameters: &["x"],
+            documentation: "Arc-sine.",
+        }),
+        "acos" => Some(EvaluatorSignature {
+            label: "acos(x)",
+            parameters: &["x"],
+            documentation: "Arc-cosine.",
+        }),
+        "sqrt" => Some(EvaluatorSignature {
+            label: "sqrt(x)",
+            parameters: &["x"],
+            documentation: "Square root.",
+        }),
+        "pow" => Some(EvaluatorSignature {
+            label: "pow(base, exp)",
+            parameters: &["base", "exp"],
+            documentation: "Power function.",
+        }),
+        "floor" => Some(EvaluatorSignature {
+            label: "floor(x)",
+            parameters: &["x"],
+            documentation: "Round down.",
+        }),
+        "ceil" => Some(EvaluatorSignature {
+            label: "ceil(x)",
+            parameters: &["x"],
+            documentation: "Round up.",
+        }),
+        "round" => Some(EvaluatorSignature {
+            label: "round(x)",
+            parameters: &["x"],
+            documentation: "Round to nearest integer.",
+        }),
+        "frac" => Some(EvaluatorSignature {
+            label: "frac(x)",
+            parameters: &["x"],
+            documentation: "Fractional component.",
+        }),
+        "clamp" => Some(EvaluatorSignature {
+            label: "clamp(x, min, max)",
+            parameters: &["x", "min", "max"],
+            documentation: "Clamps x into [min, max].",
+        }),
+        _ => None,
+    }
+}
+
+fn evaluator_call_at_offset(text: &str, offset: usize) -> Option<(String, u32)> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut index = offset.min(bytes.len());
+    let mut paren_depth = 0usize;
+
+    while index > 0 {
+        index -= 1;
+        match bytes[index] {
+            b')' => paren_depth += 1,
+            b'(' => {
+                if paren_depth > 0 {
+                    paren_depth -= 1;
+                    continue;
+                }
+
+                let mut name_end = index;
+                while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
+                    name_end -= 1;
+                }
+                let mut name_start = name_end;
+                while name_start > 0 && is_ident_byte(bytes[name_start - 1]) {
+                    name_start -= 1;
+                }
+                if name_start == name_end {
+                    continue;
+                }
+
+                let name = text[name_start..name_end].to_string();
+                let prefix = &text[..name_start];
+                let open_eval = prefix.rfind('[');
+                let close_eval = prefix.rfind(']');
+                let Some(open_idx) = open_eval else {
+                    continue;
+                };
+                if close_eval.is_some_and(|close_idx| close_idx > open_idx) {
+                    continue;
+                }
+
+                let mut active_param = 0u32;
+                let mut nested = 0usize;
+                for ch in text[index + 1..offset.min(text.len())].chars() {
+                    match ch {
+                        '(' => nested += 1,
+                        ')' => nested = nested.saturating_sub(1),
+                        ',' if nested == 0 => active_param = active_param.saturating_add(1),
+                        _ => {}
+                    }
+                }
+                return Some((name, active_param));
+            }
+            _ => {}
+        }
+    }
+
+    None
 }
 
 fn document_symbols_from_ast(
@@ -3087,6 +4066,144 @@ func main @a16 @i16 {
             !result.symbols.iter().any(|symbol| symbol.name == "missing"),
             "unresolved token must not produce inline symbol"
         );
+    }
+
+    #[test]
+    fn references_include_declaration_and_usage() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\nstart:\n  bra start\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text.clone(), 1, true)
+            .expect("document inserted");
+
+        let doc = state.documents.get(&uri).expect("doc");
+        let offset = text
+            .match_indices("start")
+            .nth(1)
+            .map(|(idx, _)| idx)
+            .expect("start usage");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let refs = state
+            .references(
+                &uri,
+                position,
+                &ReferenceContext {
+                    include_declaration: true,
+                },
+            )
+            .expect("references");
+
+        assert!(
+            refs.len() >= 2,
+            "expected declaration + usage references, got: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn rename_updates_symbol_occurrences_across_files() {
+        let uri_main = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text_main = "func main {\n  call app_init\n}\n".to_string();
+        let uri_func = Uri::from_str("file:///project/src/func.k65").expect("uri");
+        let text_func = "func app_init {\n  nop\n}\n".to_string();
+
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri_func.clone(), text_func, 1, false)
+            .expect("func doc");
+        state
+            .upsert_document(uri_main.clone(), text_main.clone(), 1, true)
+            .expect("main doc");
+
+        let doc = state.documents.get(&uri_main).expect("main doc");
+        let offset = text_main.find("app_init").expect("app_init usage");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let edit = state
+            .rename(&uri_main, position, "boot")
+            .expect("workspace edit");
+        let changes = edit.changes.expect("changes");
+
+        let main_edits = changes.get(&uri_main).expect("main file edits");
+        let func_edits = changes.get(&uri_func).expect("func file edits");
+        assert!(
+            main_edits.iter().any(|edit| edit.new_text == "boot"),
+            "main file rename edit missing"
+        );
+        assert!(
+            func_edits.iter().any(|edit| edit.new_text == "boot"),
+            "func file rename edit missing"
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_mark_unresolved_identifiers() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  lda missing\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("doc");
+
+        let tokens = state.semantic_tokens(&uri).expect("semantic tokens");
+        assert!(
+            !tokens.data.is_empty(),
+            "semantic tokens should not be empty"
+        );
+    }
+
+    #[test]
+    fn signature_help_resolves_evaluator_function() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  lda #[clamp(10, 0, 255)]\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text.clone(), 1, true)
+            .expect("doc");
+
+        let doc = state.documents.get(&uri).expect("doc");
+        let offset = text.find("0, 255").expect("call arg");
+        let position = doc.line_index.to_position(&doc.text, offset);
+        let help = state
+            .signature_help(&uri, position)
+            .expect("signature help");
+        assert_eq!(help.active_signature, Some(0));
+        assert_eq!(help.active_parameter, Some(1));
+        assert!(
+            help.signatures[0].label.contains("clamp"),
+            "expected clamp signature"
+        );
+    }
+
+    #[test]
+    fn code_lens_includes_reference_count_for_label() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\nstart:\n  bra start\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("doc");
+
+        let lenses = state.code_lenses(&uri).expect("code lenses");
+        assert!(
+            lenses.iter().any(|lens| lens
+                .command
+                .as_ref()
+                .is_some_and(|cmd| cmd.title.contains("reference"))),
+            "expected at least one reference count lens"
+        );
+    }
+
+    #[test]
+    fn folding_ranges_include_brace_blocks() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  nop\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri.clone(), text, 1, true)
+            .expect("doc");
+
+        let ranges = state.folding_ranges(&uri).expect("folding ranges");
+        assert!(!ranges.is_empty(), "expected folding ranges");
     }
 
     #[test]

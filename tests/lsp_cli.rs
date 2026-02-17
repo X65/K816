@@ -548,3 +548,119 @@ fn lsp_did_change_publishes_debounced_diagnostics() {
 
     lsp.shutdown();
 }
+
+#[test]
+fn lsp_advertises_and_serves_references_and_rename() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-lsp-it-refs-rename-{unique}"));
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
+    std::fs::write(
+        root.join("k816.toml"),
+        "[package]\nname = \"lsp-it-refs-rename\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("failed to write manifest");
+
+    let source = "func main {\nstart:\n  bra start\n}\n";
+    let source_path = src_dir.join("main.k65");
+    std::fs::write(&source_path, source).expect("failed to write source");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 30,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let initialize_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(30))
+    });
+    let capabilities = &initialize_response["result"]["capabilities"];
+    assert_eq!(capabilities["referencesProvider"], json!(true));
+    assert!(capabilities["renameProvider"].is_object());
+    assert!(capabilities["semanticTokensProvider"].is_object());
+    assert_eq!(capabilities["inlayHintProvider"], json!(true));
+    assert!(capabilities["codeLensProvider"].is_object());
+    assert_eq!(capabilities["foldingRangeProvider"], json!(true));
+    assert!(capabilities["signatureHelpProvider"].is_object());
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+    });
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 31,
+        "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 2, "character": 8 },
+            "context": { "includeDeclaration": true }
+        }
+    }));
+    let references_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(31))
+    });
+    let references = references_response["result"]
+        .as_array()
+        .expect("references array");
+    assert!(
+        references.len() >= 2,
+        "expected declaration + usage references, got: {references:?}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 32,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 2, "character": 8 },
+            "newName": "loop_start"
+        }
+    }));
+    let rename_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(32))
+    });
+    let changes = rename_response["result"]["changes"]
+        .as_object()
+        .expect("workspace edit changes");
+    assert!(
+        changes.contains_key(&file_uri),
+        "expected rename edits for main file, got: {changes:?}"
+    );
+
+    lsp.shutdown();
+}

@@ -8,10 +8,10 @@
 @i16
 
 func main {
-  nop
-  call helper
+    nop
+    call helper
 }
 
 func helper {
-  nop
+    nop
 }

@@ -2,74 +2,74 @@ var zp = 0x20
 var abs = 0x1234
 
 func main {
-  // load/store/transfer
-  a=1
-  a=zp
-  a=abs,x
-  a=(zp,x)
-  a=(zp),y
+    // load/store/transfer
+    a=1
+    a=zp
+    a=abs,x
+    a=(zp,x)
+    a=(zp),y
 
-  x=2
-  x=zp
-  x=abs,y
+    x=2
+    x=zp
+    x=abs,y
 
-  y=3
-  y=zp
-  y=abs,x
+    y=3
+    y=zp
+    y=abs,x
 
-  zp=a
-  zp,x=a
-  zp,y=a
-  (zp,x)=a
-  (zp),y=a
+    zp=a
+    zp,x=a
+    zp,y=a
+    (zp,x)=a
+    (zp),y=a
 
-  zp=x
-  zp=y
+    zp=x
+    zp=y
 
-  x=a
-  y=a
-  a=x
-  a=y
-  x=s
-  s=x
+    x=a
+    y=a
+    a=x
+    a=y
+    x=s
+    s=x
 
-  // ALU / compare
-  a+1
-  a-zp
-  a&0x0F
-  a|zp
-  a^zp
-  a?zp
-  a&?zp
-  x?1
-  y?2
+    // ALU / compare
+    a+1
+    a-zp
+    a&0x0F
+    a|zp
+    a^zp
+    a?zp
+    a&?zp
+    x?1
+    y?2
 
-  // shifts / rotates / inc / dec
-  a<<
-  a>>
-  a<<<
-  a>>>
-  zp<<
-  zp>>
-  zp<<<
-  zp>>>
-  zp++
-  zp--
-  x++
-  x--
-  y++
-  y--
+    // shifts / rotates / inc / dec
+    a<<
+    a>>
+    a<<<
+    a>>>
+    zp<<
+    zp>>
+    zp<<<
+    zp>>>
+    zp++
+    zp--
+    x++
+    x--
+    y++
+    y--
 
-  // flags / stack / flow
-  c+ c-
-  d+ d-
-  i+ i-
-  v-
-  a!! a??
-  z!! z??
-  c!! c??
+    // flags / stack / flow
+    c+ c-
+    d+ d-
+    i+ i-
+    v-
+    a!! a??
+    z!! z??
+    c!! c??
 
-  < goto .next
-  .next:
-  return
+    < goto .next
+    .next:
+    return
 }

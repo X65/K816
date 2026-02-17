@@ -1,16 +1,16 @@
 data gfx {
-  image sprites 0 0 8> 16v
-  image "sprites_alt" 8 0 8> 8v inv
-  tiles 8 0 4
-  colormode 1
-  imgwave 1 2 "3" 4
+    image sprites 0 0 8> 16v
+    image "sprites_alt" 8 0 8> 8v inv
+    tiles 8 0 4
+    colormode 1
+    imgwave 1 2 "3" 4
 }
 
 data blob {
-  binary "table.bin"
+    binary "table.bin"
 }
 
 func main {
-  a=gfx
-  a=blob
+    a=gfx
+    a=blob
 }

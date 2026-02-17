@@ -6,9 +6,9 @@
 @a16
 
 func main {
-  lda #1
+    lda #1
 }
 
 func helper {
-  lda #2
+    lda #2
 }

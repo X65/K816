@@ -1,17 +1,17 @@
 data generated {
-  code {
-    a=1
-    x=2
-  }
-  nocross code {
-    y=3
-  }
-  repeat 3 {
-    4
-  }
-  ?
+    code {
+        a=1
+        x=2
+    }
+    nocross code {
+        y=3
+    }
+    repeat 3 {
+        4
+    }
+    ?
 }
 
 func main {
-  a=generated
+    a=generated
 }

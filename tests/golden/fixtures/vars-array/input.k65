@@ -4,8 +4,8 @@ var tiles[3] = 0x100
 var after
 
 func main {
-  lda header
-  lda tail
-  lda tiles
-  lda after
+    lda header
+    lda tail
+    lda tiles
+    lda after
 }

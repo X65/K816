@@ -2,5 +2,5 @@
 var w:word = 0x2000
 
 func main @a8 @i8 {
-  w = a
+    w = a
 }

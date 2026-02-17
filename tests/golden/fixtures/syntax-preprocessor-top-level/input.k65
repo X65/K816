@@ -7,5 +7,5 @@ var also_never = 0x12
 #endif
 
 func main {
-  a=enabled
+    a=enabled
 }

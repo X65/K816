@@ -1,15 +1,15 @@
 func main {
-  A=0
-  X=A
-  Y=x
-  S=c
+    A=0
+    X=A
+    Y=x
+    S=c
 
-  D=C
+    D=C
 
-  C+
-  C-
-  D+
-  D-
-  I+
-  V-
+    C+
+    C-
+    D+
+    D-
+    I+
+    V-
 }

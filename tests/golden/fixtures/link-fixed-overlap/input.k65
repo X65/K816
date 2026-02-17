@@ -1,9 +1,9 @@
 func fixed_a {
-  address 0x0100
-  nop
+    address 0x0100
+    nop
 }
 
 func fixed_b {
-  address 0x0100
-  nop
+    address 0x0100
+    nop
 }

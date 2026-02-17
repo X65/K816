@@ -5,8 +5,8 @@ var ptr = 0x20
 var abs = 0x1234
 
 func main {
-  lda abs,y
-  ldx abs,y
-  a=ptr,y
-  x=abs,y
+    lda abs,y
+    ldx abs,y
+    a=ptr,y
+    x=abs,y
 }

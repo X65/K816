@@ -1,17 +1,17 @@
 func main {
-  {
-    x++
-  } !=
+    {
+        x++
+    } !=
 
-  {
-    y++
-  } ==
+    {
+        y++
+    } ==
 
-  {
-    a=0
-  } always
+    {
+        a=0
+    } always
 
-  {
-    a=1
-  } never
+    {
+        a=1
+    } never
 }

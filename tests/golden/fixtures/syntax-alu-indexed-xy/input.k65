@@ -5,33 +5,33 @@ var zp = 0x20
 var abs = 0x1234
 
 func main {
-  // ADC with indexed/indirect
-  a+zp,x
-  a+abs,y
-  a+(zp,x)
-  a+(zp),y
+    // ADC with indexed/indirect
+    a+zp,x
+    a+abs,y
+    a+(zp,x)
+    a+(zp),y
 
-  // SBC with indexed/indirect
-  a-zp,x
-  a-abs,y
-  a-(zp,x)
-  a-(zp),y
+    // SBC with indexed/indirect
+    a-zp,x
+    a-abs,y
+    a-(zp,x)
+    a-(zp),y
 
-  // AND with indexed/indirect
-  a&zp,x
-  a&abs,y
-  a&(zp,x)
-  a&(zp),y
+    // AND with indexed/indirect
+    a&zp,x
+    a&abs,y
+    a&(zp,x)
+    a&(zp),y
 
-  // ORA with indexed/indirect
-  a|zp,x
-  a|abs,y
-  a|(zp,x)
-  a|(zp),y
+    // ORA with indexed/indirect
+    a|zp,x
+    a|abs,y
+    a|(zp,x)
+    a|(zp),y
 
-  // EOR with indexed/indirect
-  a^zp,x
-  a^abs,y
-  a^(zp,x)
-  a^(zp),y
+    // EOR with indexed/indirect
+    a^zp,x
+    a^abs,y
+    a^(zp,x)
+    a^(zp),y
 }

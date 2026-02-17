@@ -2,14 +2,14 @@ var ptr = 0x20
 var abs = 0x1234
 
 func main {
-  a=1
-  a=ptr
-  a=abs
-  a=ptr,x
-  a=ptr,y
-  a=(ptr)
-  a=(ptr,x)
-  a=(ptr),y
-  a=&<abs
-  a=&>abs
+    a=1
+    a=ptr
+    a=abs
+    a=ptr,x
+    a=ptr,y
+    a=(ptr)
+    a=(ptr,x)
+    a=(ptr),y
+    a=&<abs
+    a=&>abs
 }

@@ -2,16 +2,16 @@
 // Verifies mode ops interleave correctly with instruction encoding
 
 func main {
-  @a16
-  nop
-  lda #$12
-  @a8
-  nop
-  @i16
-  b><a
-  @i8
-  nop
-  @a8
-  b><a
-  nop
+    @a16
+    nop
+    lda #$12
+    @a8
+    nop
+    @i16
+    b><a
+    @i8
+    nop
+    @a8
+    b><a
+    nop
 }

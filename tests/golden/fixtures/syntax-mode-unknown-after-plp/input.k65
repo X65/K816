@@ -1,5 +1,5 @@
 // PLP restores P from runtime stack; width becomes unknown until re-established.
 func main @a16 @i16 {
-  p??
-  lda #1
+    p??
+    lda #1
 }

@@ -1,17 +1,17 @@
 var vec = 0x2000
 
 func near_target {
-  nop
+    nop
 }
 
 func far_target {
-  nop
+    nop
 }
 
 func main {
-  goto near_target
-  < goto near_target
-  goto (vec)
-  call near_target
-  far far_target
+    goto near_target
+    < goto near_target
+    goto (vec)
+    call near_target
+    far far_target
 }

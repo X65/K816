@@ -4,10 +4,10 @@
 var zp = 0x40
 
 func main {
-  zp,x<<
-  zp,x>>
-  zp,x<<<
-  zp,x>>>
-  zp,x++
-  zp,x--
+    zp,x<<
+    zp,x>>
+    zp,x<<<
+    zp,x>>>
+    zp,x++
+    zp,x--
 }

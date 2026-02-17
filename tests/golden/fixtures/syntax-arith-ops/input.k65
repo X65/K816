@@ -1,13 +1,13 @@
 var mem = 0x40
 
 func main {
-  a+1
-  a-mem
-  a&0x0F
-  a|mem
-  a^mem
-  a?mem
-  a&?mem
-  x?1
-  y?2
+    a+1
+    a-mem
+    a&0x0F
+    a|mem
+    a^mem
+    a?mem
+    a&?mem
+    x?1
+    y?2
 }

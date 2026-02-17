@@ -5,16 +5,16 @@
 // @i16/@i8: only affect index width, lda stays at current accumulator width
 
 func main {
-  @a16
-  lda #1
-  ldy #1
-  @a8
-  lda #1
-  ldy #1
-  @i16
-  lda #1
-  ldy #1
-  @i8
-  lda #1
-  ldy #1
+    @a16
+    lda #1
+    ldy #1
+    @a8
+    lda #1
+    ldy #1
+    @i16
+    lda #1
+    ldy #1
+    @i8
+    lda #1
+    ldy #1
 }

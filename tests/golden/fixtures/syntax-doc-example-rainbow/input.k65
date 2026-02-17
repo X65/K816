@@ -5,8 +5,8 @@ var VCOUNT = 0xD40B
 var WSYNC = 0xD40A
 
 func main {
-  {
-    COLPF2=a=VCOUNT
-    WSYNC=a
-  } always
+    {
+        COLPF2=a=VCOUNT
+        WSYNC=a
+    } always
 }

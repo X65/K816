@@ -1,5 +1,5 @@
 var ptr:far = $2000
 
 func main @a16 @i16 {
-  ptr = a = 1
+    ptr = a = 1
 }

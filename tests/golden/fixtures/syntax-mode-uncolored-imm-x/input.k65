@@ -4,9 +4,9 @@
 // require @i8 or @i16 on the enclosing function.
 
 func uncolored {
-  ldx #$01
+    ldx #$01
 }
 
 func main {
-  nop
+    nop
 }

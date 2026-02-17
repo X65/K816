@@ -1,15 +1,15 @@
 func aligned {
-  align 256 + 8
-  return
+    align 256 + 8
+    return
 }
 
 naked fixed {
-  address 0x4000
-  return_i
+    address 0x4000
+    return_i
 }
 
 func main {
-  align 128
-  aligned
-  fixed
+    align 128
+    aligned
+    fixed
 }

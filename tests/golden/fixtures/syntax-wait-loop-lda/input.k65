@@ -1,7 +1,7 @@
 var ready = $1234
 
 func main {
-  {
-    a=ready
-  } n-?
+    {
+        a=ready
+    } n-?
 }

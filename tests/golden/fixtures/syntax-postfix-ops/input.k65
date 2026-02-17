@@ -1,20 +1,20 @@
 var mem = 0x40
 
 func main {
-  a<<
-  a>>
-  a<<<
-  a>>>
+    a<<
+    a>>
+    a<<<
+    a>>>
 
-  mem<<
-  mem>>
-  mem<<<
-  mem>>>
+    mem<<
+    mem>>
+    mem<<<
+    mem>>>
 
-  mem++
-  mem--
-  x++
-  x--
-  y++
-  y--
+    mem++
+    mem--
+    x++
+    x--
+    y++
+    y--
 }

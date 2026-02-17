@@ -6,9 +6,9 @@ var with_addr[3] = 0x300
 var verbose ?
 
 func main {
-  a=base
-  a=next
-  a=arr
-  a=arr2
-  a=with_addr
+    a=base
+    a=next
+    a=arr
+    a=arr2
+    a=with_addr
 }

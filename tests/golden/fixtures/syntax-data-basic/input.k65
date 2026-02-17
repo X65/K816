@@ -1,13 +1,13 @@
 var ptr = 0x40
 
 data bytes {
-  1 2 3
-  "ABC"
-  &&ptr
-  here:
-  0
+    1 2 3
+    "ABC"
+    &&ptr
+    here:
+    0
 }
 
 func main {
-  a=bytes
+    a=bytes
 }

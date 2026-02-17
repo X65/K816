@@ -1,15 +1,15 @@
 // goto/branch edges should bridge to the target label mode automatically.
 func main @a8 @i8 {
-  c+? goto .loop
-  @a16
-.loop:
-  lda #1
+    c+? goto .loop
+    @a16
+    .loop:
+    lda #1
 }
 
 func helper @a16 @i16 {
-  n-? goto .skip
-  @i8
-  ldx #2
-.skip:
-  ldy #3
+    n-? goto .skip
+    @i8
+    ldx #2
+    .skip:
+    ldy #3
 }

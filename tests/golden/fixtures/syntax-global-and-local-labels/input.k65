@@ -1,12 +1,12 @@
 func labels @i8 {
-  start:
-  .loop:
-  x++
-  x?10
-  != goto .loop
-  goto start
+    start:
+    .loop:
+    x++
+    x?10
+    != goto .loop
+    goto start
 }
 
 func main {
-  labels
+    labels
 }

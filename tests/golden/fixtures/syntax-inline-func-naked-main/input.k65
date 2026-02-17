@@ -1,18 +1,18 @@
 inline inl {
-  x++
+    x++
 }
 
 func normal {
-  inl
-  return
+    inl
+    return
 }
 
 naked no_auto_rts {
-  inl
-  goto normal
+    inl
+    goto normal
 }
 
 func main {
-  normal
-  no_auto_rts
+    normal
+    no_auto_rts
 }

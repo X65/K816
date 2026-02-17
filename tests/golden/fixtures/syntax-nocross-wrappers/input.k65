@@ -1,18 +1,18 @@
 var mem = 0x80
 
 func main {
-  nocross {
-    a=mem
-    x++
-  } !=
-
-  nocross data {
-    1 2 3
-  }
-
-  nocross data {
     nocross {
-      4 5
+        a=mem
+        x++
+    } !=
+
+    nocross data {
+        1 2 3
     }
-  }
+
+    nocross data {
+        nocross {
+            4 5
+        }
+    }
 }

@@ -2,7 +2,7 @@
 var zp = 0x80; // line comment
 
 func main {
-  ;
-  a=0;
-  x=a; y=a;;
+    ;
+    a=0;
+    x=a; y=a;;
 }

@@ -31,8 +31,8 @@ var CGIA[
 ] = $FF00
 
 func main @a8 {
-  lda CGIA.mode
-  sta CGIA.plane_regs[0]
-  @a16
-  lda CGIA.offset[0]
+    lda CGIA.mode
+    sta CGIA.plane_regs[0]
+    @a16
+    lda CGIA.offset[0]
 }

@@ -515,10 +515,7 @@ fn fmt_command(args: FmtArgs) -> anyhow::Result<()> {
     for path in &args.input {
         let source = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read '{}'", path.display()))?;
-        let source_id = k816_core::span::SourceId(0);
-        let ast = k816_core::parser::parse(source_id, &source)
-            .map_err(|_| anyhow::anyhow!("failed to parse '{}'", path.display()))?;
-        let formatted = k816_fmt::format_file(&ast, &source);
+        let formatted = k816_fmt::format_source(&source);
         if formatted == source {
             continue;
         }

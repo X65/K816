@@ -1,26 +1,26 @@
 data aligned {
-  align 16
-  1 2 3 4
+    align 16
+    1 2 3 4
 }
 
 data aligned_offs {
-  align 256 + 8
-  5 6 7 8
+    align 256 + 8
+    5 6 7 8
 }
 
 data fixed_addr {
-  address 0x5000
-  9 10
+    address 0x5000
+    9 10
 }
 
 data no_cross {
-  nocross
-  11 12 13
+    nocross
+    11 12 13
 }
 
 func main {
-  a=aligned
-  a=aligned_offs
-  a=fixed_addr
-  a=no_cross
+    a=aligned
+    a=aligned_offs
+    a=fixed_addr
+    a=no_cross
 }

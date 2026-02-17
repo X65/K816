@@ -3,26 +3,26 @@
 // Uses width-dependent instructions so mode ops are preserved.
 
 func main {
-  // Adjacent 16-bit modes fold into single REP #$30
-  @a16
-  @i16
-  lda #1
-  ldx #1
+    // Adjacent 16-bit modes fold into single REP #$30
+    @a16
+    @i16
+    lda #1
+    ldx #1
 
-  // Adjacent 8-bit modes fold into single SEP #$30
-  @a8
-  @i8
-  lda #1
-  ldx #1
+    // Adjacent 8-bit modes fold into single SEP #$30
+    @a8
+    @i8
+    lda #1
+    ldx #1
 
-  // Mixed: @a16 + @i8 => REP #$20 + SEP #$10
-  @a16
-  @i8
-  lda #1
-  ldx #1
+    // Mixed: @a16 + @i8 => REP #$20 + SEP #$10
+    @a16
+    @i8
+    lda #1
+    ldx #1
 
-  // Opposite cancels: @a16 then @a8 => just SEP #$20 (both kept for lda)
-  @a16
-  @a8
-  lda #1
+    // Opposite cancels: @a16 then @a8 => just SEP #$20 (both kept for lda)
+    @a16
+    @a8
+    lda #1
 }

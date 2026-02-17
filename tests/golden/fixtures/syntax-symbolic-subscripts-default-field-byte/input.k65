@@ -1,8 +1,8 @@
 var foo[
-  .a
-  .w:word
+    .a
+    .w:word
 ] = 0x1234
 
 func main @a8 {
-  lda foo.a
+    lda foo.a
 }

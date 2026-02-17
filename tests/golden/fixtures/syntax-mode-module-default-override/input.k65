@@ -7,11 +7,11 @@
 @i16
 
 func main {
-  lda #1
-  ldx #1
+    lda #1
+    ldx #1
 }
 
 func narrow @a8 @i8 {
-  lda #1
-  ldx #1
+    lda #1
+    ldx #1
 }

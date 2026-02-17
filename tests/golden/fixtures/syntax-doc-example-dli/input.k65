@@ -8,30 +8,30 @@ var NMIEN  = 0xD40E
 var screen = 0x8000
 
 data displist {
-  nocross
-  0x70 0x70 0x70
-  0x42 &<screen &>screen
-  2 2 2
-  0xF0
-  2 2 2 2
-  0x41 &<displist &>displist
+    nocross
+    0x70 0x70 0x70
+    0x42 &<screen &>screen
+    2 2 2
+    0xF0
+    2 2 2 2
+    0x41 &<displist &>displist
 }
 
 naked dli @a8 {
-  a!!
-  COLPF2=a=0xDE
-  WSYNC=a
-  a??
-  return_i
+    a!!
+    COLPF2=a=0xDE
+    WSYNC=a
+    a??
+    return_i
 }
 
 func main {
-  SDLST=a=&<displist
-  a=&>displist
-  SDLST+1=a
-  VDSLST=a=&<dli
-  a=&>dli
-  VDSLST+1=a
-  NMIEN=a=0xC0
-  {} always
+    SDLST=a=&<displist
+    a=&>displist
+    SDLST+1=a
+    VDSLST=a=&<dli
+    a=&>dli
+    VDSLST+1=a
+    NMIEN=a=0xC0
+    {} always
 }

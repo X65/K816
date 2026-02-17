@@ -4,15 +4,15 @@
 var zp = 0x20
 
 func main {
-  @a16
-  sta zp
-  stz zp
-  trb zp
-  tsb zp
+    @a16
+    sta zp
+    stz zp
+    trb zp
+    tsb zp
 
-  @a8
-  sta zp
-  stz zp
-  trb zp
-  tsb zp
+    @a8
+    sta zp
+    stz zp
+    trb zp
+    tsb zp
 }

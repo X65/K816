@@ -6,31 +6,31 @@
 // - func with no contract ("uncolored"): no REP/SEP at call site
 
 func wide_a @a16 {
-  lda #1
+    lda #1
 }
 
 func narrow_all @a8 @i8 {
-  lda #1
-  ldx #1
+    lda #1
+    ldx #1
 }
 
 func wide_all @a16 @i16 {
-  lda #1
-  ldx #1
+    lda #1
+    ldx #1
 }
 
 func plain {
-  nop
+    nop
 }
 
 func main {
-  // Colored calls: emit mode bridge before JSR
-  call wide_a
-  call narrow_all
-  call wide_all
-  // Uncolored call: no REP/SEP emitted
-  call plain
-  @a16 call plain
-  @a8  call plain
-  nop
+    // Colored calls: emit mode bridge before JSR
+    call wide_a
+    call narrow_all
+    call wide_all
+    // Uncolored call: no REP/SEP emitted
+    call plain
+    @a16 call plain
+    @a8  call plain
+    nop
 }

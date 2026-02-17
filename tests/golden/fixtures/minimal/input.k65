@@ -1,16 +1,16 @@
 segment rom
 
 far func far_target {
-  nop
+    nop
 }
 
 func near_target {
-  nop
+    nop
 }
 
 func main {
-  call far_target
-  call near_target
-  lda #[1 + 2]
-  lda far far_target
+    call far_target
+    call near_target
+    lda #[1 + 2]
+    lda far far_target
 }

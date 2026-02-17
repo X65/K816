@@ -1,4 +1,4 @@
 var foo[
-  .a:byte,
-  .:word
+    .a:byte,
+    .:word
 ] = 0x1234

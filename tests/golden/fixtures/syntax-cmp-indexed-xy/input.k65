@@ -4,8 +4,8 @@ var zp = 0x20
 var abs = 0x1234
 
 func main {
-  a?zp,x
-  a?abs,y
-  a?(zp,x)
-  a?(zp),y
+    a?zp,x
+    a?abs,y
+    a?(zp,x)
+    a?(zp),y
 }

@@ -1,16 +1,16 @@
 var ptrtable[
-  .lo:byte
-  .hi:byte
-  .bank:byte
-  .addr:word
-  .full:far
+    .lo:byte
+    .hi:byte
+    .bank:byte
+    .addr:word
+    .full:far
 ] = 0x2200
 
 func main @a16 {
-  lda ptrtable.addr
-  sta ptrtable.addr
-  lda ptrtable.lo:word
-  sta ptrtable.lo:word
-  lda ptrtable.full:word
-  sta ptrtable.full:word
+    lda ptrtable.addr
+    sta ptrtable.addr
+    lda ptrtable.lo:word
+    sta ptrtable.lo:word
+    lda ptrtable.full:word
+    sta ptrtable.full:word
 }

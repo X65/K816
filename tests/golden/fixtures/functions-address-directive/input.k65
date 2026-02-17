@@ -1,14 +1,14 @@
 func func_a {
-  address $0010
-  nop
+    address $0010
+    nop
 }
 
 func func_b {
-  address 0x4000
-  nop
+    address 0x4000
+    nop
 }
 
 func main {
-  call func_a
-  call func_b
+    call func_a
+    call func_b
 }

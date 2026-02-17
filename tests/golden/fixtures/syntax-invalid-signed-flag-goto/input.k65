@@ -1,5 +1,5 @@
 func main {
-  s-? goto .skip
-.skip:
-  return
+    s-? goto .skip
+    .skip:
+    return
 }

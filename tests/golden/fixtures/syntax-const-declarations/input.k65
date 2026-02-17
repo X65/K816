@@ -5,8 +5,8 @@ var ptr = OFFSET
 var arr[A + B]
 
 func main {
-  lda #A
-  lda #B
-  lda ptr
-  lda arr
+    lda #A
+    lda #B
+    lda ptr
+    lda arr
 }

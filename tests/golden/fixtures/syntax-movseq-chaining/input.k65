@@ -3,7 +3,7 @@ var dst1 = 0x11
 var src = 0x12
 
 func main {
-  dst0=dst1=a=src
-  x=a=dst0
-  y=x=a
+    dst0=dst1=a=src
+    x=a=dst0
+    y=x=a
 }

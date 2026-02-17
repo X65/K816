@@ -2,12 +2,12 @@
 var w:word = 0x2000
 
 func main @a8 @i8 {
-  a = w:byte
+    a = w:byte
 
-  @a16
-  a = w:word
-  w = a
+    @a16
+    a = w:word
+    w = a
 
-  @a8
-  w:byte = a
+    @a8
+    w:byte = a
 }

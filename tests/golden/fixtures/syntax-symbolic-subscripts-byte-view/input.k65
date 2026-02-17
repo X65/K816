@@ -1,11 +1,11 @@
 var regs[
-  .ctrl:word
-  .status:byte
+    .ctrl:word
+    .status:byte
 ] = 0x2100
 
 func main @a8 {
-  lda regs.ctrl:byte
-  sta regs.ctrl:byte
-  lda regs.status
-  sta regs.status
+    lda regs.ctrl:byte
+    sta regs.ctrl:byte
+    lda regs.status
+    sta regs.status
 }

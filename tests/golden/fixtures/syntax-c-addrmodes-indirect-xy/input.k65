@@ -5,9 +5,9 @@
 var ptr = 0x20
 
 func main {
-  a=(ptr)
-  a=(ptr,x)
-  a=(ptr),y
-  (ptr,x)=a
-  (ptr),y=a
+    a=(ptr)
+    a=(ptr,x)
+    a=(ptr),y
+    (ptr,x)=a
+    (ptr),y=a
 }

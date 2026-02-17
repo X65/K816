@@ -2,11 +2,11 @@ var zp0
 var abs = 0x1234
 
 func target {
-  nop
+    nop
 }
 
 func main {
-  lda zp0
-  lda abs
-  lda target
+    lda zp0
+    lda abs
+    lda target
 }

@@ -1,12 +1,12 @@
 segment pinned
 
 naked func fixed {
-  address 0x0001
-  nop
+    address 0x0001
+    nop
 }
 
 segment free
 
 func rel {
-  nop
+    nop
 }

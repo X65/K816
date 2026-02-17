@@ -1,4 +1,4 @@
 func too_far {
-  address 0x10000
-  nop
+    address 0x10000
+    nop
 }

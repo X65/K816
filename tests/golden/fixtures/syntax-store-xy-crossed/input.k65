@@ -6,8 +6,8 @@
 var zp = 0x20
 
 func main {
-  zp,y=x
-  zp,x=y
-  x=zp,y
-  y=zp,x
+    zp,y=x
+    zp,x=y
+    x=zp,y
+    y=zp,x
 }

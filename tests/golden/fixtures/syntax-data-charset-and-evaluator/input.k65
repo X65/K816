@@ -1,10 +1,10 @@
 data text_data {
-  charset " ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-  evaluator [ SCALE = 2 ]
-  "HELLO" 0
-  [SCALE]
+    charset " ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    evaluator [ SCALE = 2 ]
+    "HELLO" 0
+    [SCALE]
 }
 
 func main {
-  a=text_data
+    a=text_data
 }

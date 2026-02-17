@@ -3,8 +3,8 @@ var ptr:far = 0x2000
 var b:byte = 0x2010
 
 func main @a16 @i16 {
-  a = ptr           // lda :far named var
-  ptr = a           // sta :far named var
-  x = ptr           // ldx :far named var
-  a = b:far         // lda :far typed view on byte var
+    a = ptr           // lda :far named var
+    ptr = a           // sta :far named var
+    x = ptr           // ldx :far named var
+    a = b:far         // lda :far typed view on byte var
 }

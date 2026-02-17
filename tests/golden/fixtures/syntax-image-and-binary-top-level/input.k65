@@ -3,7 +3,7 @@ image "RawSprite" = "raw.bmp"
 binary Blob = "payload.bin"
 
 func main {
-  a=SpriteSheet
-  a=RawSprite
-  a=Blob
+    a=SpriteSheet
+    a=RawSprite
+    a=Blob
 }

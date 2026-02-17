@@ -3,28 +3,28 @@
 // folded to colorless, so call-site bridging is also eliminated.
 
 func main {
-  @a16
-  nop
-  @a8
-  nop
-  @i16
-  nop
-  @i8
-  nop
-  @a8 @i8
-  call uncolored
-  call colored_a
-  call colored_i
+    @a16
+    nop
+    @a8
+    nop
+    @i16
+    nop
+    @i8
+    nop
+    @a8 @i8
+    call uncolored
+    call colored_a
+    call colored_i
 }
 
 func uncolored {
-  nop
+    nop
 }
 
 func colored_a @a16 {
-  nop
+    nop
 }
 
 func colored_i @i16 {
-  nop
+    nop
 }

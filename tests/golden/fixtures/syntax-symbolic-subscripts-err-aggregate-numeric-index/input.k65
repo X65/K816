@@ -1,7 +1,7 @@
 var foo[
-  .idx:byte
+    .idx:byte
 ] = 0x1234
 
 func main {
-  lda foo[1]
+    lda foo[1]
 }

@@ -1,11 +1,11 @@
 var ptr = 0x2345
 
 data bytes {
-  0x7F &<ptr &>ptr
-  &<ptr+1 &>ptr+1
-  &&ptr
+    0x7F &<ptr &>ptr
+    &<ptr+1 &>ptr+1
+    &&ptr
 }
 
 func main {
-  a=bytes
+    a=bytes
 }

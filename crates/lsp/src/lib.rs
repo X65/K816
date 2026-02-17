@@ -743,12 +743,7 @@ impl ServerState {
             return Vec::new();
         };
 
-        let source_id = k816_core::span::SourceId(0);
-        let Ok(ast) = k816_core::parser::parse(source_id, &doc.text) else {
-            return Vec::new();
-        };
-
-        let formatted = k816_fmt::format_file(&ast, &doc.text);
+        let formatted = k816_fmt::format_source(&doc.text);
         if formatted == doc.text {
             return Vec::new();
         }

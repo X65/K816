@@ -3,11 +3,11 @@
 var zp = 0x20
 
 func main {
-  @i16
-  stx zp
-  sty zp
+    @i16
+    stx zp
+    sty zp
 
-  @i8
-  stx zp
-  sty zp
+    @i8
+    stx zp
+    sty zp
 }

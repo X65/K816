@@ -269,6 +269,46 @@ pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, V
     (output, diagnostics)
 }
 
+/// Like `parse_lenient` but runs directly on raw source text without
+/// preprocessor normalization. Intended for tools that need source-accurate
+/// spans (e.g. formatter whitespace passes).
+pub fn parse_lenient_raw(source_id: SourceId, source_text: &str) -> (Option<File>, Vec<Diagnostic>) {
+    let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
+    let tokens = coalesce_non_var_brackets(tokens, source_text);
+    let (tokens, comments) = strip_comments(tokens);
+    let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
+    let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
+        let span = (token.span.start..token.span.end).into();
+        (token.kind, span)
+    }))
+    .map((end_offset..end_offset).into(), |(kind, span): (_, _)| {
+        (kind, span)
+    });
+
+    let (output, errors) = file_parser(source_id)
+        .parse(token_stream)
+        .into_output_errors();
+    let mut diagnostics: Vec<Diagnostic> = lex_diagnostics;
+    diagnostics.extend(
+        errors
+            .into_iter()
+            .map(|error| rich_error_to_diagnostic(source_id, source_text, error, "invalid syntax")),
+    );
+
+    let output = output.map(|mut file| {
+        file.comments = comments;
+        file
+    });
+
+    if let Some(ref file) = output {
+        let mut warnings = collect_parser_warnings(file);
+        warnings.extend(diagnostics.drain(..));
+        return (output, warnings);
+    }
+
+    (output, diagnostics)
+}
+
 fn preprocess_source(source_text: &str) -> String {
     let mut out = Vec::new();
     let mut data_block_depth = 0usize;

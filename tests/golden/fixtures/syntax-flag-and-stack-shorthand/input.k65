@@ -1,22 +1,22 @@
 naked main {
-  c+ c-
-  d+ d-
-  i+ i-
-  v-
+    c+ c-
+    d+ d-
+    i+ i-
+    v-
 
-  a!!
-  a??
+    a!!
+    a??
 
-  n!! n??
-  v!! v??
-  m!! m??
-  x!! x??
-  b!! b??
-  d!! d??
-  i!! i??
-  z!! z??
-  c!! c??
+    n!! n??
+    v!! v??
+    m!! m??
+    x!! x??
+    b!! b??
+    d!! d??
+    i!! i??
+    z!! z??
+    c!! c??
 
-  return
-  return_i
+    return
+    return_i
 }

@@ -2,15 +2,15 @@
 // Both mode ops must be preserved.
 
 func main {
-  @a16 @i16
-  tax
-  tay
-  txa
-  tya
+    @a16 @i16
+    tax
+    tay
+    txa
+    tya
 
-  @a8 @i8
-  tax
-  tay
-  txa
-  tya
+    @a8 @i8
+    tax
+    tay
+    txa
+    tya
 }

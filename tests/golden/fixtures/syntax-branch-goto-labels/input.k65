@@ -7,14 +7,14 @@
 var mem = 0x40
 
 func main {
-  a?mem
-  < goto .done
-  a?mem
-  >= goto .done
-  a?mem
-  == goto .done
-  a?mem
-  != goto .done
-.done:
-  return
+    a?mem
+    < goto .done
+    a?mem
+    >= goto .done
+    a?mem
+    == goto .done
+    a?mem
+    != goto .done
+    .done:
+    return
 }

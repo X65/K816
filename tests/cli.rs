@@ -1072,11 +1072,7 @@ fn fmt_check_exits_zero_when_formatted() {
     std::fs::write(&input, "func main {\n    nop\n}\n").expect("failed to write input");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
-    cmd.arg("fmt")
-        .arg("--check")
-        .arg(&input)
-        .assert()
-        .success();
+    cmd.arg("fmt").arg("--check").arg(&input).assert().success();
 }
 
 #[test]

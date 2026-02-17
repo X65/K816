@@ -278,7 +278,12 @@ fn normalize_condition(condition: &HlaCondition) -> HlaCondition {
     HlaCondition {
         lhs: condition.lhs,
         op: condition.op,
-        rhs: Some(condition.rhs.clone().unwrap_or(Expr::Number(0, NumFmt::Dec))),
+        rhs: Some(
+            condition
+                .rhs
+                .clone()
+                .unwrap_or(Expr::Number(0, NumFmt::Dec)),
+        ),
         seed_span: condition.seed_span,
     }
 }

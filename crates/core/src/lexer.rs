@@ -187,19 +187,31 @@ fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<NumLit> {
     let slice = lex.slice();
     if let Some(bin) = slice.strip_prefix('%') {
         let w = bin.len() as u8;
-        return i64::from_str_radix(bin, 2).ok().map(|v| NumLit { value: v, fmt: NumFmt::Percent(w) });
+        return i64::from_str_radix(bin, 2).ok().map(|v| NumLit {
+            value: v,
+            fmt: NumFmt::Percent(w),
+        });
     }
     if let Some(bin) = slice.strip_prefix("0b") {
         let w = bin.len() as u8;
-        return i64::from_str_radix(bin, 2).ok().map(|v| NumLit { value: v, fmt: NumFmt::Bin(w) });
+        return i64::from_str_radix(bin, 2).ok().map(|v| NumLit {
+            value: v,
+            fmt: NumFmt::Bin(w),
+        });
     }
     if let Some(hex) = slice.strip_prefix("0x") {
         let w = hex.len() as u8;
-        return i64::from_str_radix(hex, 16).ok().map(|v| NumLit { value: v, fmt: NumFmt::Hex(w) });
+        return i64::from_str_radix(hex, 16).ok().map(|v| NumLit {
+            value: v,
+            fmt: NumFmt::Hex(w),
+        });
     }
     if let Some(hex) = slice.strip_prefix('$') {
         let w = hex.len() as u8;
-        return i64::from_str_radix(hex, 16).ok().map(|v| NumLit { value: v, fmt: NumFmt::Dollar(w) });
+        return i64::from_str_radix(hex, 16).ok().map(|v| NumLit {
+            value: v,
+            fmt: NumFmt::Dollar(w),
+        });
     }
     if slice.len() > 1 && slice.bytes().all(|b| b == b'0') {
         return Some(NumLit {
@@ -207,10 +219,10 @@ fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<NumLit> {
             fmt: NumFmt::Zero(slice.len() as u8),
         });
     }
-    slice
-        .parse::<i64>()
-        .ok()
-        .map(|v| NumLit { value: v, fmt: NumFmt::Dec })
+    slice.parse::<i64>().ok().map(|v| NumLit {
+        value: v,
+        fmt: NumFmt::Dec,
+    })
 }
 
 fn parse_ident(lex: &mut logos::Lexer<TokenKind>) -> String {
@@ -295,7 +307,10 @@ mod tests {
             .iter()
             .filter(|token| matches!(token.kind, TokenKind::LBracket))
             .count();
-        assert_eq!(bracket_count, 2, "expected 2 LBracket tokens (outer + inner)");
+        assert_eq!(
+            bracket_count, 2,
+            "expected 2 LBracket tokens (outer + inner)"
+        );
     }
 
     #[test]
@@ -319,7 +334,13 @@ mod tests {
     fn lexes_percent_prefixed_binary_literal() {
         let tokens = lex(SourceId(0), "%01001010").expect("lex");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].kind, TokenKind::Number(NumLit { value: 0x4A, fmt: NumFmt::Percent(8) })));
+        assert!(matches!(
+            tokens[0].kind,
+            TokenKind::Number(NumLit {
+                value: 0x4A,
+                fmt: NumFmt::Percent(8)
+            })
+        ));
     }
 
     #[test]

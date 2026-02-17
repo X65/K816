@@ -26,12 +26,14 @@ use lsp_types::{
     ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Uri,
 };
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 static INSTRUCTION_DESCRIPTIONS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../../docs/instructions-description.json"))
+    serde_json::from_str(include_str!(
+        "../../../editors/vscode-k816/resources/instructions-description.json"
+    ))
         .expect("embedded instruction descriptions must be valid JSON")
 });
 
@@ -242,7 +244,9 @@ struct DocumentState {
 
 impl DocumentState {
     fn address_at_offset(&self, offset: usize) -> Option<(u32, u32)> {
-        let idx = self.resolved_sites.partition_point(|(span, _, _)| span.start <= offset);
+        let idx = self
+            .resolved_sites
+            .partition_point(|(span, _, _)| span.start <= offset);
         if idx > 0 {
             let (span, addr, size) = &self.resolved_sites[idx - 1];
             if offset < span.end {
@@ -260,6 +264,8 @@ struct ServerState {
     documents: HashMap<Uri, DocumentState>,
     symbols: HashMap<String, Vec<SymbolLocation>>,
     linker_config: k816_link::LinkerConfig,
+    last_link_layout: Option<k816_link::LinkedLayout>,
+    last_link_error: Option<String>,
 }
 
 impl ServerState {
@@ -270,6 +276,8 @@ impl ServerState {
             documents: HashMap::new(),
             symbols: HashMap::new(),
             linker_config: k816_link::default_stub_config(),
+            last_link_layout: None,
+            last_link_error: None,
         }
     }
 
@@ -386,9 +394,7 @@ impl ServerState {
             .as_ref()
             .map(|doc| doc.addressable_sites.clone())
             .unwrap_or_default();
-        let resolved_sites = prev
-            .map(|doc| doc.resolved_sites)
-            .unwrap_or_default();
+        let resolved_sites = prev.map(|doc| doc.resolved_sites).unwrap_or_default();
 
         self.documents.insert(
             uri.clone(),
@@ -418,7 +424,8 @@ impl ServerState {
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| doc.uri.to_string());
         eprintln!("k816-lsp: analyzing '{source_name}'");
-        let (mut new_analysis, object, addressable_sites) = analyze_document(&source_name, &doc.text);
+        let (mut new_analysis, object, addressable_sites) =
+            analyze_document(&source_name, &doc.text);
         if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
             new_analysis.symbols = doc.analysis.symbols.clone();
             new_analysis.scopes = doc.analysis.scopes.clone();
@@ -436,7 +443,8 @@ impl ServerState {
             let file_id = self
                 .source_index
                 .ensure_file_id(uri.clone(), Some(path.clone()));
-            let (analysis, object, addressable_sites) = analyze_document(&path.display().to_string(), &text);
+            let (analysis, object, addressable_sites) =
+                analyze_document(&path.display().to_string(), &text);
             self.documents.insert(
                 uri.clone(),
                 DocumentState {
@@ -491,6 +499,8 @@ impl ServerState {
             for doc in self.documents.values_mut() {
                 doc.resolved_sites.clear();
             }
+            self.last_link_layout = None;
+            self.last_link_error = Some("no compiled objects are available to link".to_string());
             return;
         }
 
@@ -503,6 +513,8 @@ impl ServerState {
             k816_link::LinkRenderOptions::plain(),
         ) {
             Ok(output) => {
+                self.last_link_layout = Some(output.clone());
+                self.last_link_error = None;
                 for (obj_idx, (uri, _)) in doc_entries.iter().enumerate() {
                     if let Some(doc) = self.documents.get_mut(uri) {
                         let mut sites = Vec::new();
@@ -520,11 +532,113 @@ impl ServerState {
                     }
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                self.last_link_layout = None;
+                self.last_link_error = Some(error.to_string());
                 for doc in self.documents.values_mut() {
                     doc.resolved_sites.clear();
                 }
             }
+        }
+    }
+
+    fn query_memory_map(&self, params: &QueryMemoryMapParams) -> QueryMemoryMapResult {
+        let Some(layout) = self.last_link_layout.as_ref() else {
+            return QueryMemoryMapResult {
+                status: QueryMemoryMapStatus::Unavailable,
+                reason: self
+                    .last_link_error
+                    .clone()
+                    .or_else(|| Some("memory map is unavailable".to_string())),
+                memories: Vec::new(),
+                runs: Vec::new(),
+            };
+        };
+
+        let filter = params
+            .memory_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+
+        let filtered_specs: Vec<&k816_link::MemoryArea> = self
+            .linker_config
+            .memory
+            .iter()
+            .filter(|memory| match filter {
+                Some(name) => memory.name.eq_ignore_ascii_case(name),
+                None => true,
+            })
+            .collect();
+
+        if filtered_specs.is_empty() {
+            return QueryMemoryMapResult {
+                status: QueryMemoryMapStatus::Unavailable,
+                reason: filter
+                    .map(|name| format!("memory area '{name}' was not found in linker config")),
+                memories: Vec::new(),
+                runs: Vec::new(),
+            };
+        }
+
+        let mut memories = Vec::with_capacity(filtered_specs.len());
+        for spec in filtered_specs {
+            let used = layout
+                .runs
+                .iter()
+                .filter(|run| run.memory_name == spec.name)
+                .fold(0u64, |acc, run| acc.saturating_add(run.bytes.len() as u64));
+            let size = u64::from(spec.size);
+            let free = size.saturating_sub(used);
+            let utilization_percent = if size == 0 {
+                0.0
+            } else {
+                ((used as f64) * 100.0) / (size as f64)
+            };
+
+            memories.push(QueryMemoryMapMemory {
+                name: spec.name.clone(),
+                start: spec.start,
+                size: spec.size,
+                kind: memory_kind_label(spec.kind).to_string(),
+                used: used.min(u64::from(u32::MAX)) as u32,
+                free: free.min(u64::from(u32::MAX)) as u32,
+                utilization_percent,
+            });
+        }
+
+        let runs = if params.detail == QueryMemoryMapDetail::Runs {
+            let mut rows = Vec::new();
+            for run in &layout.runs {
+                if let Some(name) = filter
+                    && !run.memory_name.eq_ignore_ascii_case(name)
+                {
+                    continue;
+                }
+                let size = run.bytes.len().min(u32::MAX as usize) as u32;
+                let end = if size == 0 {
+                    run.start_addr
+                } else {
+                    run.start_addr.saturating_add(size.saturating_sub(1))
+                };
+                rows.push(QueryMemoryMapRun {
+                    memory_name: run.memory_name.clone(),
+                    start: run.start_addr,
+                    end,
+                    size,
+                });
+            }
+            rows.sort_by_key(|run| (run.memory_name.clone(), run.start));
+            rows
+        } else {
+            Vec::new()
+        };
+
+        QueryMemoryMapResult {
+            status: QueryMemoryMapStatus::Ok,
+            reason: None,
+            memories,
+            runs,
         }
     }
 
@@ -616,7 +730,10 @@ impl ServerState {
 
             if let Some(mut text) = builtin_hover_text(&token.text) {
                 if let Some((addr, size)) = doc.address_at_offset(offset) {
-                    text.push_str(&format!("\n- address: `{}`", format_address_range(addr, size)));
+                    text.push_str(&format!(
+                        "\n- address: `{}`",
+                        format_address_range(addr, size)
+                    ));
                 }
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -763,28 +880,35 @@ impl ServerState {
 
     fn resolve_addresses_for_lines(&self, uri: &Uri, lines: &[u32]) -> ResolveAddressesResult {
         let Some(doc) = self.documents.get(uri) else {
-            return ResolveAddressesResult { addresses: lines.iter().map(|_| None).collect() };
-        };
-        let addresses = lines.iter().map(|&line| {
-            let line = line as usize;
-            if line >= doc.line_index.line_starts.len() {
-                return None;
-            }
-            let line_start = doc.line_index.line_starts[line];
-            let line_end = if line + 1 < doc.line_index.line_starts.len() {
-                doc.line_index.line_starts[line + 1]
-            } else {
-                doc.text.len()
+            return ResolveAddressesResult {
+                addresses: lines.iter().map(|_| None).collect(),
             };
-            let idx = doc.resolved_sites.partition_point(|(span, _, _)| span.start < line_start);
-            if idx < doc.resolved_sites.len() {
-                let (span, addr, _) = &doc.resolved_sites[idx];
-                if span.start < line_end {
-                    return Some(*addr);
+        };
+        let addresses = lines
+            .iter()
+            .map(|&line| {
+                let line = line as usize;
+                if line >= doc.line_index.line_starts.len() {
+                    return None;
                 }
-            }
-            None
-        }).collect();
+                let line_start = doc.line_index.line_starts[line];
+                let line_end = if line + 1 < doc.line_index.line_starts.len() {
+                    doc.line_index.line_starts[line + 1]
+                } else {
+                    doc.text.len()
+                };
+                let idx = doc
+                    .resolved_sites
+                    .partition_point(|(span, _, _)| span.start < line_start);
+                if idx < doc.resolved_sites.len() {
+                    let (span, addr, _) = &doc.resolved_sites[idx];
+                    if span.start < line_end {
+                        return Some(*addr);
+                    }
+                }
+                None
+            })
+            .collect();
         ResolveAddressesResult { addresses }
     }
 }
@@ -848,6 +972,7 @@ impl Server {
             DocumentSymbolRequest::METHOD => self.on_document_symbol(request),
             Formatting::METHOD => self.on_formatting(request),
             "k816/resolveAddresses" => self.on_resolve_addresses(request),
+            "k816/queryMemoryMap" => self.on_query_memory_map(request),
             _ => self.send_error(
                 request.id,
                 -32601,
@@ -947,6 +1072,15 @@ impl Server {
         Ok(())
     }
 
+    fn flush_all_pending_changes(&mut self) -> Result<()> {
+        let uris = self.pending_changes.keys().cloned().collect::<Vec<_>>();
+        for uri in uris {
+            self.pending_changes.remove(&uri);
+            self.analyze_and_publish(uri)?;
+        }
+        Ok(())
+    }
+
     fn ensure_document_fresh(&mut self, uri: &Uri) -> Result<()> {
         if self.pending_changes.remove(uri).is_some() {
             self.analyze_and_publish(uri.clone())?;
@@ -1010,6 +1144,13 @@ impl Server {
         let uri = Uri::from_str(&params.uri)?;
         self.ensure_document_fresh(&uri)?;
         let result = self.state.resolve_addresses_for_lines(&uri, &params.lines);
+        self.send_result(request.id, &result)
+    }
+
+    fn on_query_memory_map(&mut self, request: Request) -> Result<()> {
+        let params: QueryMemoryMapParams = parse_request_params(&request)?;
+        self.flush_all_pending_changes()?;
+        let result = self.state.query_memory_map(&params);
         self.send_result(request.id, &result)
     }
 
@@ -1133,6 +1274,64 @@ struct ResolveAddressesResult {
     addresses: Vec<Option<u32>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum QueryMemoryMapDetail {
+    #[default]
+    Summary,
+    Runs,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct QueryMemoryMapParams {
+    #[serde(default)]
+    memory_name: Option<String>,
+    #[serde(default)]
+    detail: QueryMemoryMapDetail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum QueryMemoryMapStatus {
+    Ok,
+    Unavailable,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryMemoryMapResult {
+    status: QueryMemoryMapStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    memories: Vec<QueryMemoryMapMemory>,
+    runs: Vec<QueryMemoryMapRun>,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryMemoryMapMemory {
+    name: String,
+    start: u32,
+    size: u32,
+    kind: String,
+    used: u32,
+    free: u32,
+    utilization_percent: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct QueryMemoryMapRun {
+    memory_name: String,
+    start: u32,
+    end: u32,
+    size: u32,
+}
+
+fn memory_kind_label(kind: k816_link::MemoryKind) -> &'static str {
+    match kind {
+        k816_link::MemoryKind::ReadOnly => "read_only",
+        k816_link::MemoryKind::ReadWrite => "read_write",
+    }
+}
+
 fn discover_workspace_sources(root: &Path) -> Result<Vec<PathBuf>> {
     let manifest_path = root.join(PROJECT_MANIFEST);
     if manifest_path.is_file() {
@@ -1193,14 +1392,23 @@ fn uri_from_file_path(path: &Path) -> Result<Uri> {
 fn analyze_document(
     source_name: &str,
     source_text: &str,
-) -> (DocumentAnalysis, Option<k816_o65::O65Object>, Vec<k816_core::AddressableSite>) {
+) -> (
+    DocumentAnalysis,
+    Option<k816_o65::O65Object>,
+    Vec<k816_core::AddressableSite>,
+) {
     let (mut diagnostics, compile_failed, object, addressable_sites) =
         match k816_core::compile_source_to_object_with_options(
             source_name,
             source_text,
             k816_core::CompileRenderOptions::plain(),
         ) {
-            Ok(output) => (output.warnings, false, Some(output.object), output.addressable_sites),
+            Ok(output) => (
+                output.warnings,
+                false,
+                Some(output.object),
+                output.addressable_sites,
+            ),
             Err(error) => (error.diagnostics, true, None, Vec::new()),
         };
 
@@ -1798,7 +2006,10 @@ fn hover_contents_for_symbol(
     if let Some(doc) = state.documents.get(&symbol.uri)
         && let Some((addr, size)) = doc.address_at_offset(symbol.selection.start)
     {
-        text.push_str(&format!("\n- address: `{}`", format_address_range(addr, size)));
+        text.push_str(&format!(
+            "\n- address: `{}`",
+            format_address_range(addr, size)
+        ));
     }
     text
 }
@@ -2505,6 +2716,83 @@ func main @a16 @i16 {
         };
         assert!(markup.value.contains("- decimal: `-42`"));
         assert!(markup.value.contains("- hex: `-$2A`"));
+    }
+
+    #[test]
+    fn query_memory_map_reports_unavailable_when_no_link_layout() {
+        let state = ServerState::new(PathBuf::from("/project"));
+        let result = state.query_memory_map(&QueryMemoryMapParams::default());
+
+        assert_eq!(result.status, QueryMemoryMapStatus::Unavailable);
+        assert!(result.memories.is_empty());
+        assert!(result.runs.is_empty());
+    }
+
+    #[test]
+    fn query_memory_map_reports_area_usage() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  nop\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri, text, 1, true)
+            .expect("document inserted");
+
+        let result = state.query_memory_map(&QueryMemoryMapParams::default());
+        assert_eq!(result.status, QueryMemoryMapStatus::Ok);
+        let main = result
+            .memories
+            .iter()
+            .find(|memory| memory.name == "MAIN")
+            .expect("MAIN memory row");
+        assert!(main.used > 0, "used bytes should be greater than zero");
+        assert_eq!(main.free + main.used, main.size);
+        let expected = (f64::from(main.used) * 100.0) / f64::from(main.size);
+        assert!((main.utilization_percent - expected).abs() < 0.0001);
+    }
+
+    #[test]
+    fn query_memory_map_filters_by_memory_name() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  nop\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri, text, 1, true)
+            .expect("document inserted");
+
+        let result = state.query_memory_map(&QueryMemoryMapParams {
+            memory_name: Some("MAIN".to_string()),
+            detail: QueryMemoryMapDetail::Summary,
+        });
+
+        assert_eq!(result.status, QueryMemoryMapStatus::Ok);
+        assert_eq!(result.memories.len(), 1);
+        assert_eq!(result.memories[0].name, "MAIN");
+    }
+
+    #[test]
+    fn query_memory_map_includes_run_rows_with_detail_runs() {
+        let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+        let text = "func main {\n  nop\n}\n".to_string();
+        let mut state = ServerState::new(PathBuf::from("/project"));
+        state
+            .upsert_document(uri, text, 1, true)
+            .expect("document inserted");
+
+        let result = state.query_memory_map(&QueryMemoryMapParams {
+            memory_name: None,
+            detail: QueryMemoryMapDetail::Runs,
+        });
+
+        assert_eq!(result.status, QueryMemoryMapStatus::Ok);
+        assert!(!result.runs.is_empty(), "expected run rows");
+        for run in &result.runs {
+            let expected_end = if run.size == 0 {
+                run.start
+            } else {
+                run.start + run.size - 1
+            };
+            assert_eq!(run.end, expected_end);
+        }
     }
 
     #[test]

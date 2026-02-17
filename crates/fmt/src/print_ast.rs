@@ -52,10 +52,7 @@ pub fn format_source(source: &str) -> String {
     // Rule 4 is only enforced when raw AST spans are available.
     if let (Some(ast_after), detected_regions) = {
         let (ast_after, _diag) = parser::parse_lenient_raw(SourceId(0), &text);
-        let detected_regions = ast_after
-            .as_ref()
-            .map(regions_from_ast)
-            .unwrap_or_default();
+        let detected_regions = ast_after.as_ref().map(regions_from_ast).unwrap_or_default();
         (ast_after, detected_regions)
     } {
         text = apply_rule4_spacing(&text, &ast_after, &normalize_regions(detected_regions));
@@ -78,7 +75,9 @@ fn regions_from_ast(file: &File) -> Vec<Region> {
     let mut out = Vec::new();
     for item in &file.items {
         let kind = match &item.node {
-            Item::CodeBlock(_) | Item::DataBlock(_) | Item::NamedDataBlock(_) => Some(RegionKind::RootBlock),
+            Item::CodeBlock(_) | Item::DataBlock(_) | Item::NamedDataBlock(_) => {
+                Some(RegionKind::RootBlock)
+            }
             Item::Var(_) => Some(RegionKind::Var),
             Item::EvaluatorBlock(_) => Some(RegionKind::Eval),
             _ => None,
@@ -178,8 +177,7 @@ fn enforce_multiline_delimiter_newlines(input: &str) -> String {
             }
 
             let open_insert = pair.open_idx + 1;
-            if open_insert <= text.len()
-                && text.as_bytes().get(open_insert).copied() != Some(b'\n')
+            if open_insert <= text.len() && text.as_bytes().get(open_insert).copied() != Some(b'\n')
             {
                 inserts.push(open_insert);
             }
@@ -326,7 +324,8 @@ fn parse_delimiter_pairs(text: &str) -> Vec<DelimPair> {
                             b']' => b'[',
                             _ => unreachable!(),
                         };
-                        if let Some(pos) = stack.iter().rposition(|(open, _, _)| *open == expected) {
+                        if let Some(pos) = stack.iter().rposition(|(open, _, _)| *open == expected)
+                        {
                             let (_, open_idx, open_line) = stack.remove(pos);
                             pairs.push(DelimPair {
                                 open_idx,
@@ -587,10 +586,7 @@ fn normalize_statement_gap(gap: &str, style: EqStyle) -> String {
     if gap.contains('\n') {
         return gap.to_string();
     }
-    if !gap
-        .bytes()
-        .all(|b| matches!(b, b' ' | b'\t' | b';'))
-    {
+    if !gap.bytes().all(|b| matches!(b, b' ' | b'\t' | b';')) {
         return gap.to_string();
     }
 
@@ -674,9 +670,7 @@ fn collect_stmt_spans_from_node(stmt: &Stmt, span: Span, out: &mut Vec<Span>) {
                 }
             }
             HlaStmt::PrefixConditional {
-                body,
-                else_body,
-                ..
+                body, else_body, ..
             } => {
                 for child in body {
                     collect_stmt_spans_from_stmt(child, out);

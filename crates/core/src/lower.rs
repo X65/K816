@@ -1863,12 +1863,11 @@ fn resolve_chain_pair_ident(dest: &str, src: &str) -> Option<Instruction> {
     let src_register = parse_cpu_register_name(src);
 
     match (dest_register, src_register) {
-        (Some(dest_register), Some(src_register)) => {
-            resolve_transfer(dest_register, src_register).map(|mnemonic| Instruction {
+        (Some(dest_register), Some(src_register)) => resolve_transfer(dest_register, src_register)
+            .map(|mnemonic| Instruction {
                 mnemonic: mnemonic.to_string(),
                 operand: None,
-            })
-        }
+            }),
         (Some(dest_register), None) => {
             load_mnemonic_for_register(dest_register).map(|mnemonic| Instruction {
                 mnemonic: mnemonic.to_string(),
@@ -1911,15 +1910,16 @@ fn lower_hla_stmt(
         HlaStmt::RegisterAssign { register, rhs } => {
             let Some(mnemonic) = load_mnemonic_for_register(*register) else {
                 match register {
-                    HlaCpuRegister::C => diagnostics.push(
-                        Diagnostic::error(
-                            span,
-                            "C is the 16-bit accumulator; use a=expr for loads",
-                        ),
-                    ),
+                    HlaCpuRegister::C => diagnostics.push(Diagnostic::error(
+                        span,
+                        "C is the 16-bit accumulator; use a=expr for loads",
+                    )),
                     _ => diagnostics.push(Diagnostic::error(
                         span,
-                        format!("cannot load register '{}'", format_hla_cpu_register(*register)),
+                        format!(
+                            "cannot load register '{}'",
+                            format_hla_cpu_register(*register)
+                        ),
                     )),
                 }
                 return;
@@ -2068,7 +2068,7 @@ fn lower_hla_stmt(
                         force_far: false,
                         index: address.index,
                         addr_mode: address.addr_mode,
-                        }),
+                    }),
                 },
             };
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
@@ -2522,7 +2522,10 @@ fn lower_hla_condition_branch(
         return;
     }
 
-    let rhs = condition.rhs.as_ref().unwrap_or(&Expr::Number(0, NumFmt::Dec));
+    let rhs = condition
+        .rhs
+        .as_ref()
+        .unwrap_or(&Expr::Number(0, NumFmt::Dec));
     let Some(rhs_number) = eval_to_number(rhs, scope, sema, span, diagnostics) else {
         return;
     };
@@ -2536,7 +2539,15 @@ fn lower_hla_condition_branch(
         }),
     };
     let ops_len_before_cmp = ops.len();
-    lower_instruction_stmt(&compare_instruction, scope, sema, cmp_span, ctx, diagnostics, ops);
+    lower_instruction_stmt(
+        &compare_instruction,
+        scope,
+        sema,
+        cmp_span,
+        ctx,
+        diagnostics,
+        ops,
+    );
     if ops.len() == ops_len_before_cmp {
         return;
     }
@@ -3991,11 +4002,11 @@ mod tests {
         let missing_start = source.find("MISSING").expect("MISSING start");
         let missing_end = missing_start + "MISSING".len();
 
-        assert!(errors.iter().any(|error| {
-            error
-                .message
-                .contains("unknown identifier 'MISSING'")
-        }));
+        assert!(
+            errors
+                .iter()
+                .any(|error| { error.message.contains("unknown identifier 'MISSING'") })
+        );
         assert!(errors.iter().any(|error| {
             error.primary.start == missing_start && error.primary.end == missing_end
         }));

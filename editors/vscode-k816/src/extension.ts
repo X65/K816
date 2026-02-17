@@ -1,4 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import * as vscode from "vscode";
 import {
   LanguageClient,
@@ -13,6 +15,46 @@ let outputChannel: vscode.OutputChannel | undefined;
 let spawnNotFoundShown = false;
 let lspStatusItem: vscode.StatusBarItem | undefined;
 let fileInfoItem: vscode.StatusBarItem | undefined;
+
+const LOOKUP_INSTRUCTION_TOOL = "k816_lookup_instruction";
+const QUERY_MEMORY_MAP_TOOL = "k816_query_memory_map";
+const QUERY_MEMORY_MAP_METHOD = "k816/queryMemoryMap";
+const INSTRUCTION_DATA_FILE = "resources/instructions-description.json";
+
+type MemoryMapDetail = "summary" | "runs";
+
+interface LookupInstructionInput {
+  mnemonic: string;
+}
+
+interface QueryMemoryMapInput {
+  memory_name?: string;
+  detail?: MemoryMapDetail;
+}
+
+interface QueryMemoryMapMemoryRow {
+  name: string;
+  start: number;
+  size: number;
+  kind: string;
+  used: number;
+  free: number;
+  utilization_percent: number;
+}
+
+interface QueryMemoryMapRunRow {
+  memory_name: string;
+  start: number;
+  end: number;
+  size: number;
+}
+
+interface QueryMemoryMapResult {
+  status: "ok" | "unavailable";
+  reason?: string;
+  memories: QueryMemoryMapMemoryRow[];
+  runs: QueryMemoryMapRunRow[];
+}
 
 export async function activate(
   context: vscode.ExtensionContext,
@@ -43,6 +85,7 @@ export async function activate(
     ),
   );
   updateFileInfo(vscode.window.activeTextEditor);
+  registerLanguageModelTools(context);
 
   const taskProvider = new K816TaskProvider();
   context.subscriptions.push(
@@ -83,6 +126,178 @@ export async function activate(
 
 export function deactivate(): Thenable<void> | undefined {
   return stopClient();
+}
+
+function registerLanguageModelTools(
+  context: vscode.ExtensionContext,
+): void {
+  const descriptions = loadInstructionDescriptions(context);
+
+  context.subscriptions.push(
+    vscode.lm.registerTool<LookupInstructionInput>(LOOKUP_INSTRUCTION_TOOL, {
+      prepareInvocation(options) {
+        const mnemonic = normalizeMnemonic(options.input.mnemonic);
+        return {
+          invocationMessage: mnemonic
+            ? `Looking up ${mnemonic} in the 65816 instruction reference`
+            : "Looking up 65816 instruction information",
+        };
+      },
+      invoke(options) {
+        const mnemonic = normalizeMnemonic(options.input.mnemonic);
+        if (!mnemonic) {
+          return toolTextResult(
+            "Missing `mnemonic`. Provide a 65816 opcode name like `LDA`, `ADC`, or `BRA`.",
+          );
+        }
+
+        const description = descriptions[mnemonic];
+        if (!description) {
+          return toolTextResult(
+            `No entry found for \`${mnemonic}\` in the bundled 65816 instruction reference.`,
+          );
+        }
+
+        return toolTextResult(`### ${mnemonic}\n${description}`);
+      },
+    }),
+    vscode.lm.registerTool<QueryMemoryMapInput>(QUERY_MEMORY_MAP_TOOL, {
+      prepareInvocation(options) {
+        const detail = normalizeMemoryMapDetail(options.input.detail);
+        const memoryName = normalizeMemoryName(options.input.memory_name);
+        const detailText = detail === "runs" ? "with run details" : "summary";
+        return {
+          invocationMessage: memoryName
+            ? `Querying memory map for ${memoryName} (${detailText})`
+            : `Querying workspace memory map (${detailText})`,
+        };
+      },
+      async invoke(options) {
+        await startClient();
+        if (!client) {
+          return toolTextResult(
+            "k816 language server is not running. Set `k816.server.path` to a valid k816 binary and retry.",
+          );
+        }
+
+        const input: QueryMemoryMapInput = {
+          memory_name: normalizeMemoryName(options.input.memory_name),
+          detail: normalizeMemoryMapDetail(options.input.detail),
+        };
+
+        try {
+          const result = await client.sendRequest<QueryMemoryMapResult>(
+            QUERY_MEMORY_MAP_METHOD,
+            input,
+          );
+          return toolTextResult(formatMemoryMapResult(result));
+        } catch (error) {
+          if (isUnsupportedRequestError(error)) {
+            return toolTextResult(
+              "The connected k816 language server does not support `k816/queryMemoryMap` yet. Update the k816 toolchain and restart the language server.",
+            );
+          }
+          return toolTextResult(
+            `Failed to query memory map from k816 language server: ${formatError(error)}`,
+          );
+        }
+      },
+    }),
+  );
+}
+
+function loadInstructionDescriptions(
+  context: vscode.ExtensionContext,
+): Record<string, string> {
+  const filePath = path.join(context.extensionPath, INSTRUCTION_DATA_FILE);
+  try {
+    const raw = readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const descriptions: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string") {
+        descriptions[key.toUpperCase()] = value;
+      }
+    }
+    return descriptions;
+  } catch (error) {
+    ensureOutputChannel().appendLine(
+      `Failed to load instruction data from '${filePath}': ${formatError(error)}`,
+    );
+    return {};
+  }
+}
+
+function normalizeMnemonic(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeMemoryName(value: string | undefined): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeMemoryMapDetail(value: string | undefined): MemoryMapDetail {
+  return value === "runs" ? "runs" : "summary";
+}
+
+function formatMemoryMapResult(result: QueryMemoryMapResult): string {
+  if (result.status !== "ok") {
+    return result.reason ?? "Memory map is currently unavailable.";
+  }
+
+  if (result.memories.length === 0) {
+    return "No memory areas matched the query.";
+  }
+
+  const lines: string[] = [
+    "### Memory Areas",
+    "",
+    "| Name | Kind | Start | Size | Used | Free | Utilization |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+  ];
+
+  for (const memory of result.memories) {
+    lines.push(
+      `| ${memory.name} | ${memory.kind} | ${formatHex(memory.start, 6)} | ${formatByteCount(memory.size)} | ${formatByteCount(memory.used)} | ${formatByteCount(memory.free)} | ${memory.utilization_percent.toFixed(2)}% |`,
+    );
+  }
+
+  if (result.runs.length > 0) {
+    lines.push("", "### Linked Runs", "", "| Memory | Range | Size |", "| --- | --- | ---: |");
+    for (const run of result.runs) {
+      lines.push(
+        `| ${run.memory_name} | ${formatHex(run.start, 6)}-${formatHex(run.end, 6)} | ${formatByteCount(run.size)} |`,
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatByteCount(value: number): string {
+  return `${value} (${formatHex(value)})`;
+}
+
+function formatHex(value: number, width = 0): string {
+  const hex = Math.max(0, value).toString(16).toUpperCase();
+  return `$${hex.padStart(width, "0")}`;
+}
+
+function toolTextResult(text: string): vscode.LanguageModelToolResult {
+  return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
+}
+
+function isUnsupportedRequestError(error: unknown): boolean {
+  const message = formatError(error).toLowerCase();
+  return message.includes("unsupported request") || message.includes("-32601");
 }
 
 async function startClient(): Promise<void> {

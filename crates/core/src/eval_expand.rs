@@ -268,9 +268,14 @@ fn expand_hla_stmt(
             op: *op,
             target: match target {
                 crate::ast::HlaShiftTarget::Accumulator => crate::ast::HlaShiftTarget::Accumulator,
-                crate::ast::HlaShiftTarget::Address(address) => crate::ast::HlaShiftTarget::Address(
-                    expand_hla_operand_expr(address, span, source_id, diagnostics),
-                ),
+                crate::ast::HlaShiftTarget::Address(address) => {
+                    crate::ast::HlaShiftTarget::Address(expand_hla_operand_expr(
+                        address,
+                        span,
+                        source_id,
+                        diagnostics,
+                    ))
+                }
             },
         },
         HlaStmt::FlagSet { flag, set } => HlaStmt::FlagSet {

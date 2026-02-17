@@ -11,14 +11,16 @@
     "directory": "editors/vscode-k816"
   },
   "engines": {
-    "vscode": "^1.96.0"
+    "vscode": "^1.109.0"
   },
   "categories": [
     "Programming Languages",
     "Debuggers"
   ],
   "activationEvents": [
-    "onDebugResolve:k816"
+    "onDebugResolve:k816",
+    "onLanguageModelTool:k816_lookup_instruction",
+    "onLanguageModelTool:k816_query_memory_map"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -102,6 +104,63 @@
       {
         "command": "k816.build",
         "title": "K816: Build"
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "k816_lookup_instruction",
+        "displayName": "Lookup 65816 Instruction",
+        "userDescription": "Look up a 65816 mnemonic description from the bundled k816 instruction reference.",
+        "modelDescription": "Use this tool to look up concise semantics for a single 65816 mnemonic like LDA, ADC, BRA, JSL, REP, or SEP.",
+        "canBeReferencedInPrompt": true,
+        "tags": [
+          "k816",
+          "65816",
+          "instruction",
+          "mnemonic"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "mnemonic": {
+              "type": "string",
+              "description": "The 65816 mnemonic to look up, such as ADC, LDA, BRA, JSR, SEP."
+            }
+          },
+          "required": [
+            "mnemonic"
+          ]
+        }
+      },
+      {
+        "name": "k816_query_memory_map",
+        "displayName": "Query Current Memory Map",
+        "userDescription": "Query current linker memory-map usage from the active k816 workspace.",
+        "modelDescription": "Use this tool to inspect current memory area utilization and linked runs derived from the workspace's current linker state.",
+        "canBeReferencedInPrompt": true,
+        "tags": [
+          "k816",
+          "linker",
+          "memory",
+          "map"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "memory_name": {
+              "type": "string",
+              "description": "Optional memory area filter, for example MAIN or ROM."
+            },
+            "detail": {
+              "type": "string",
+              "enum": [
+                "summary",
+                "runs"
+              ],
+              "description": "summary for per-memory totals, runs for detailed placement runs."
+            }
+          }
+        }
       }
     ],
     "taskDefinitions": [
@@ -208,7 +267,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.19.11",
-    "@types/vscode": "^1.96.0",
+    "@types/vscode": "^1.109.0",
     "@vscode/vsce": "^3.7.1",
     "typescript": "^5.7.3"
   }

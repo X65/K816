@@ -1,10 +1,11 @@
 use crate::ast::{
     CallStmt, CodeBlock, Comment, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
     EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaBranchForm, HlaCompareOp,
-    HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs,
-    HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, IndexRegister, Instruction, Item,
-    LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt,
-    Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
+    HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr,
+    HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, IndexRegister,
+    Instruction, Item, LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry,
+    NamedDataForEvalRange, NumFmt, Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt,
+    SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::lexer::{NumLit, TokenKind, lex, lex_lenient};
@@ -133,9 +134,7 @@ fn coalesce_non_var_brackets(
 
 /// Strip comment tokens from the token list, returning them separately
 /// so they can be attached to the AST without affecting the parser.
-fn strip_comments(
-    tokens: Vec<crate::lexer::Token>,
-) -> (Vec<crate::lexer::Token>, Vec<Comment>) {
+fn strip_comments(tokens: Vec<crate::lexer::Token>) -> (Vec<crate::lexer::Token>, Vec<Comment>) {
     let mut filtered = Vec::with_capacity(tokens.len());
     let mut comments = Vec::new();
     for token in tokens {
@@ -272,7 +271,10 @@ pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, V
 /// Like `parse_lenient` but runs directly on raw source text without
 /// preprocessor normalization. Intended for tools that need source-accurate
 /// spans (e.g. formatter whitespace passes).
-pub fn parse_lenient_raw(source_id: SourceId, source_text: &str) -> (Option<File>, Vec<Diagnostic>) {
+pub fn parse_lenient_raw(
+    source_id: SourceId,
+    source_text: &str,
+) -> (Option<File>, Vec<Diagnostic>) {
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
@@ -1342,13 +1344,12 @@ where
 {
     just(TokenKind::Const)
         .ignore_then(
-            const_decl_binding_parser(source_id)
-                .then(
-                    just(TokenKind::Comma)
-                        .ignore_then(const_decl_binding_parser(source_id))
-                        .repeated()
-                        .collect::<Vec<_>>(),
-                ),
+            const_decl_binding_parser(source_id).then(
+                just(TokenKind::Comma)
+                    .ignore_then(const_decl_binding_parser(source_id))
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            ),
         )
         .map(|(head, tail)| {
             if tail.is_empty() {
@@ -1540,10 +1541,22 @@ where
     // Comparison-based: >= < == != <0 >=0 <<= >>=
     let cmp_based = just(TokenKind::GtEq)
         .ignore_then(zero_number_token().or_not())
-        .map(|zero| if zero.is_some() { ("bmi", HlaBranchForm::Symbolic) } else { ("bcc", HlaBranchForm::Symbolic) }) // >=0: exec N=0, skip N=1; >=: exec C=1, skip C=0
+        .map(|zero| {
+            if zero.is_some() {
+                ("bmi", HlaBranchForm::Symbolic)
+            } else {
+                ("bcc", HlaBranchForm::Symbolic)
+            }
+        }) // >=0: exec N=0, skip N=1; >=: exec C=1, skip C=0
         .or(just(TokenKind::Lt)
             .ignore_then(zero_number_token().or_not())
-            .map(|zero| if zero.is_some() { ("bpl", HlaBranchForm::Symbolic) } else { ("bcs", HlaBranchForm::Symbolic) })) // <0: exec N=1, skip N=0; <: exec C=0, skip C=1
+            .map(|zero| {
+                if zero.is_some() {
+                    ("bpl", HlaBranchForm::Symbolic)
+                } else {
+                    ("bcs", HlaBranchForm::Symbolic)
+                }
+            })) // <0: exec N=1, skip N=0; <: exec C=0, skip C=1
         .or(just(TokenKind::EqEq).to(("bne", HlaBranchForm::Symbolic))) // ==: exec Z=1, skip Z=0
         .or(just(TokenKind::BangEq).to(("beq", HlaBranchForm::Symbolic))) // !=: exec Z=0, skip Z=1
         .or(just(TokenKind::LtLtEq).to(("bvc", HlaBranchForm::Symbolic))) // <<=: exec V=1, skip V=0
@@ -1917,8 +1930,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     // Dead parser — `x = expr` is handled by assign_stmt_parser.
-    chumsky::select! { TokenKind::Ident(value) if false => value }
-        .map(|_: String| Stmt::Empty)
+    chumsky::select! { TokenKind::Ident(value) if false => value }.map(|_: String| Stmt::Empty)
 }
 
 fn hla_x_increment_stmt_parser<'src, I>()
@@ -2983,7 +2995,12 @@ where
     lhs.then_ignore(just(TokenKind::Question))
         .then(expr_parser().or_not())
         .then(hla_compare_op_parser())
-        .map(|((lhs, rhs), op)| HlaCondition { lhs, op, rhs, seed_span: None })
+        .map(|((lhs, rhs), op)| HlaCondition {
+            lhs,
+            op,
+            rhs,
+            seed_span: None,
+        })
 }
 
 fn expr_parser<'src, I>() -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src>> + Clone
@@ -3190,8 +3207,7 @@ where
     chumsky::select! { TokenKind::Ident(value) => value }.boxed()
 }
 
-fn number_parser<'src, I>(
-) -> impl chumsky::Parser<'src, I, NumLit, ParseExtra<'src>> + Clone
+fn number_parser<'src, I>() -> impl chumsky::Parser<'src, I, NumLit, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -4242,11 +4258,7 @@ mod tests {
         assert_eq!(block.body.len(), 2);
 
         let expect_bracketed_assign = |stmt: &Stmt, register: HlaCpuRegister, name: &str| {
-            let Stmt::Hla(HlaStmt::RegisterAssign {
-                register: dst,
-                rhs,
-            }) = stmt
-            else {
+            let Stmt::Hla(HlaStmt::RegisterAssign { register: dst, rhs }) = stmt else {
                 panic!("expected HLA register assignment");
             };
             assert_eq!(*dst, register);

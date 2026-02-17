@@ -5,13 +5,13 @@ use crate::span::{Span, Spanned};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NumFmt {
     #[default]
-    Dec,          // plain decimal: 42
-    Char,         // character literal: 'A', '\n'
-    Zero(u8),     // zero-only decimal with explicit width: 00, 0000
-    Percent(u8),  // %01001010 (digit count = 8)
-    Bin(u8),      // 0b01001010 (digit count = 8)
-    Dollar(u8),   // $FFE0 (digit count = 4)
-    Hex(u8),      // 0xFFE0 (digit count = 4)
+    Dec, // plain decimal: 42
+    Char,        // character literal: 'A', '\n'
+    Zero(u8),    // zero-only decimal with explicit width: 00, 0000
+    Percent(u8), // %01001010 (digit count = 8)
+    Bin(u8),     // 0b01001010 (digit count = 8)
+    Dollar(u8),  // $FFE0 (digit count = 4)
+    Hex(u8),     // 0xFFE0 (digit count = 4)
 }
 
 /// Data width for typed variables and typed views.

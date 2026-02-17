@@ -28,10 +28,24 @@ for the [K816](https://github.com/X65/K816) toolchain.
 - Source-level breakpoints with automatic address resolution
 - Configurable emulator path and arguments
 
+### Language Model Tools
+
+- `#k816_lookup_instruction`: look up bundled 65816 mnemonic descriptions
+- `#k816_query_memory_map`: query current linker memory-map usage from the
+  workspace language server state
+
+Example prompts in Copilot chat or agent mode:
+
+- `Use #k816_lookup_instruction for ADC`
+- `Use #k816_query_memory_map with detail=runs`
+- `Use #k816_query_memory_map for memory_name=MAIN`
+
 ## Prerequisites
 
+- VS Code `1.109.0` or newer
 - The `k816` binary installed and on your PATH (or set `k816.server.path`)
 - For debugging: the emulator binary (or set `k816.debugger.path`)
+- For language model tools: GitHub Copilot chat/agent features enabled
 
 ## Getting Started
 

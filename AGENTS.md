@@ -104,3 +104,25 @@ Linker uses RON format for configuration (`.ld.ron` files). `vendor/` contains r
 - Keep primary error messages concise and focused on what is wrong.
 - Put remediation guidance in Ariadne help text using `Diagnostic::with_help(...)`.
 - Avoid embedding "how to fix" details directly in the main error message when help text can carry that context.
+
+## Recent Implementation Notes
+
+- VS Code LM tools were added for Copilot agent mode:
+  - `k816_lookup_instruction`
+  - `k816_query_memory_map`
+- Extension implementation path:
+  - Manifest/tool contributions and activation events: `editors/vscode-k816/package.json`
+  - Tool runtime registration and formatting: `editors/vscode-k816/src/extension.ts`
+  - Bundled instruction reference data: `editors/vscode-k816/resources/instructions-description.json`
+  - Extension docs: `editors/vscode-k816/README.md`
+- LSP implementation path:
+  - New custom request `k816/queryMemoryMap`: `crates/lsp/src/lib.rs`
+  - LSP request/response types:
+    - `QueryMemoryMapParams { memory_name?: string, detail?: "summary" | "runs" }`
+    - `QueryMemoryMapResult { status, reason?, memories, runs }`
+  - Link state retention (`last_link_layout`, `last_link_error`) and pending-change flush before query are in `crates/lsp/src/lib.rs`.
+- Constraints:
+  - Tools are read-only (no build/run side effects).
+  - Requires VS Code `^1.109.0` and Copilot chat/agent availability.
+  - Instruction lookup uses bundled static JSON (no external fetch).
+  - Memory map output depends on current in-memory LSP link state; returns `unavailable` with reason when link data is absent/failed.

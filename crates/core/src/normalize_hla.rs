@@ -21,6 +21,7 @@ fn normalize_item(item: &Item) -> Item {
     match item {
         Item::Segment(segment) => Item::Segment(segment.clone()),
         Item::Const(const_decl) => Item::Const(const_decl.clone()),
+        Item::ConstGroup(consts) => Item::ConstGroup(consts.clone()),
         Item::EvaluatorBlock(block) => Item::EvaluatorBlock(block.clone()),
         Item::Var(var) => Item::Var(var.clone()),
         Item::DataBlock(block) => Item::DataBlock(block.clone()),
@@ -203,9 +204,14 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
             indirect: *indirect,
             far: *far,
         },
-        HlaStmt::BranchGoto { mnemonic, target } => HlaStmt::BranchGoto {
+        HlaStmt::BranchGoto {
+            mnemonic,
+            target,
+            form,
+        } => HlaStmt::BranchGoto {
             mnemonic: mnemonic.clone(),
             target: target.clone(),
+            form: *form,
         },
         HlaStmt::Return { interrupt } => HlaStmt::Return {
             interrupt: *interrupt,
@@ -254,10 +260,12 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
         HlaStmt::PrefixConditional {
             skip_mnemonic,
+            form,
             body,
             else_body,
         } => HlaStmt::PrefixConditional {
             skip_mnemonic: skip_mnemonic.clone(),
+            form: *form,
             body: normalize_stmt_sequence(body),
             else_body: else_body
                 .as_ref()

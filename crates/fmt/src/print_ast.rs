@@ -1,5 +1,6 @@
 use k816_core::ast::{
-    self, DataArg, DataCommand, Expr, File, HlaCompareOp, HlaCondition, HlaRhs, HlaStmt,
+    self, DataArg, DataCommand, Expr, File, HlaBranchForm, HlaCompareOp, HlaCondition, HlaRhs,
+    HlaStmt,
     Instruction, Item, NamedDataEntry, NumFmt, Operand, OperandAddrMode, Stmt,
 };
 use k816_core::span::{Span, Spanned};
@@ -7,14 +8,72 @@ use pretty::{Arena, DocAllocator, DocBuilder};
 use std::fmt::Write;
 
 type Doc<'a> = DocBuilder<'a, Arena<'a>>;
+const INDENT_WIDTH: isize = 4;
+const INDENT_STR: &str = "    ";
 
 pub fn format_ast(file: &File, source: &str) -> String {
     let arena = Arena::new();
     let doc = build_file_doc(&arena, file, source);
     let mut output = String::new();
     let _ = doc.render_fmt(usize::MAX, &mut output);
+    trim_trailing_whitespace_per_line(&mut output);
     align_trailing_comments(&mut output);
     output
+}
+
+fn reg_width_token(prefix: char, width: k816_core::ast::RegWidth) -> &'static str {
+    match (prefix, width) {
+        ('a', k816_core::ast::RegWidth::W8) => "@a8",
+        ('a', k816_core::ast::RegWidth::W16) => "@a16",
+        ('i', k816_core::ast::RegWidth::W8) => "@i8",
+        ('i', k816_core::ast::RegWidth::W16) => "@i16",
+        _ => "",
+    }
+}
+
+fn format_mode_contract_inline(
+    a_width: Option<k816_core::ast::RegWidth>,
+    i_width: Option<k816_core::ast::RegWidth>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(w) = a_width {
+        parts.push(reg_width_token('a', w));
+    }
+    if let Some(w) = i_width {
+        parts.push(reg_width_token('i', w));
+    }
+    parts.join(" ")
+}
+
+fn mode_contract_lines(
+    a_width: Option<k816_core::ast::RegWidth>,
+    i_width: Option<k816_core::ast::RegWidth>,
+) -> Vec<&'static str> {
+    let mut lines = Vec::new();
+    if let Some(w) = a_width {
+        lines.push(reg_width_token('a', w));
+    }
+    if let Some(w) = i_width {
+        lines.push(reg_width_token('i', w));
+    }
+    lines
+}
+
+fn code_block_uses_func_keyword(source: &str, span_start: usize, name_span: Option<Span>) -> bool {
+    let Some(name_span) = name_span else {
+        return true;
+    };
+    if span_start >= source.len() {
+        return true;
+    }
+    let start = span_start.min(source.len());
+    let end = name_span.start.min(source.len());
+    if start >= end {
+        return true;
+    }
+    source[start..end]
+        .split(|ch: char| ch.is_whitespace())
+        .any(|token| token == "func")
 }
 
 /// Check whether byte offsets `a` and `b` are on the same line in `source`.
@@ -29,8 +88,145 @@ fn has_blank_line(source: &str, from: usize, to: usize) -> bool {
     if from >= to {
         return false;
     }
-    let region = &source[from..to];
-    region.contains("\n\n") || region.contains("\n\r\n")
+    let bytes = source[from..to].as_bytes();
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'\n' {
+            let mut j = i + 1;
+            while j < bytes.len()
+                && matches!(bytes[j], b' ' | b'\t' | b'\r' | 0x0C)
+            {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'\n' {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn find_brace_body_start(source: &str, block_start: usize, block_end: usize) -> usize {
+    let start = block_start.min(source.len());
+    let end = block_end.min(source.len());
+    if start >= end {
+        return start;
+    }
+    let region = &source[start..end];
+    region
+        .find('{')
+        .map(|idx| start + idx + 1)
+        .unwrap_or(start)
+}
+
+/// Count semicolons that appear at the beginning of a gap (after spaces/tabs).
+/// Stops at the first non-space/tab/semicolon character.
+fn count_leading_gap_semicolons(source: &str, from: usize, to: usize) -> usize {
+    let from = from.min(source.len());
+    let to = to.min(source.len());
+    if from >= to {
+        return 0;
+    }
+    let mut count = 0usize;
+    for &b in source.as_bytes()[from..to].iter() {
+        match b {
+            b' ' | b'\t' => {}
+            b';' => count += 1,
+            _ => break,
+        }
+    }
+    count
+}
+
+fn collect_standalone_semicolon_lines<'a>(
+    arena: &'a Arena<'a>,
+    source: &str,
+    from: usize,
+    to: usize,
+) -> Vec<LayoutEntry<'a>> {
+    let from = from.min(source.len());
+    let to = to.min(source.len());
+    if from >= to {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let mut line_start = from;
+    while line_start < to {
+        let rel_end = source[line_start..to].find('\n');
+        let line_end = rel_end.map_or(to, |idx| line_start + idx);
+        let at_line_start = line_start == 0 || source.as_bytes()[line_start - 1] == b'\n';
+        if at_line_start {
+            let line = &source[line_start..line_end];
+            let trimmed = line.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\r'));
+            if !trimmed.is_empty() && trimmed.bytes().all(|b| b == b';') {
+                let leading_ws = line
+                    .bytes()
+                    .take_while(|b| matches!(b, b' ' | b'\t' | b'\r'))
+                    .count();
+                let start = line_start + leading_ws;
+                let end = start + trimmed.len();
+                out.push(LayoutEntry {
+                    doc: arena.text(trimmed.to_string()),
+                    start,
+                    end,
+                });
+            }
+        }
+
+        if line_end >= to {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+
+    out
+}
+
+struct LayoutEntry<'a> {
+    doc: Doc<'a>,
+    start: usize,
+    end: usize,
+}
+
+fn join_layout_entries<'a>(
+    arena: &'a Arena<'a>,
+    source: &str,
+    entries: Vec<LayoutEntry<'a>>,
+) -> Doc<'a> {
+    let mut iter = entries.into_iter();
+    let Some(first) = iter.next() else {
+        return arena.nil();
+    };
+
+    let mut out = first.doc;
+    let mut prev_end = first.end;
+
+    for entry in iter {
+        if has_blank_line(source, prev_end, entry.start) {
+            out = out
+                .append(arena.hardline())
+                .append(arena.hardline())
+                .append(entry.doc);
+        } else if is_same_line(source, prev_end, entry.start) {
+            out = out.append(arena.text(" ")).append(entry.doc);
+        } else {
+            out = out.append(arena.hardline()).append(entry.doc);
+        }
+        prev_end = entry.end;
+    }
+
+    out
+}
+
+fn trim_trailing_whitespace_per_line(output: &mut String) {
+    let mut result = String::with_capacity(output.len());
+    for line in output.lines() {
+        result.push_str(line.trim_end_matches([' ', '\t']));
+        result.push('\n');
+    }
+    *output = result;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +380,12 @@ fn build_file_doc<'a>(arena: &'a Arena<'a>, file: &File, source: &str) -> Doc<'a
     let mut prev_was_block = false;
     let mut prev_end: Option<usize> = None;
 
-    for item in &file.items {
+    for line in mode_contract_lines(file.mode_default.a_width, file.mode_default.i_width) {
+        parts.push(arena.text(line));
+        parts.push(arena.hardline());
+    }
+
+    for (item_idx, item) in file.items.iter().enumerate() {
         let is_block = is_block_item(&item.node);
 
         // Standalone comments before this item
@@ -215,7 +416,24 @@ fn build_file_doc<'a>(arena: &'a Arena<'a>, file: &File, source: &str) -> Doc<'a
         }
 
         // Format the item
-        let item_doc = build_item_doc(arena, &mut cursor, source, &item.node, item.span.start, item.span.end);
+        let next_item_start = file
+            .items
+            .get(item_idx + 1)
+            .map(|next| next.span.start)
+            .unwrap_or(source.len());
+        let trailing_semicolons =
+            count_leading_gap_semicolons(source, item.span.end, next_item_start);
+        let mut item_doc = build_item_doc(
+            arena,
+            &mut cursor,
+            source,
+            &item.node,
+            item.span.start,
+            item.span.end,
+        );
+        if trailing_semicolons > 0 {
+            item_doc = item_doc.append(arena.text(";".repeat(trailing_semicolons)));
+        }
 
         // Trailing comment
         if !is_block {
@@ -265,47 +483,92 @@ fn build_item_doc<'a>(
     match item {
         Item::Segment(s) => arena.text(format!("segment {}", s.name)),
         Item::Const(c) => arena.text(format_const(c)),
+        Item::ConstGroup(consts) => arena.text(format_const_group(consts)),
         Item::EvaluatorBlock(b) => arena.text(format!("[{}]", b.text)),
-        Item::Var(v) => arena.text(format_var(v)),
+        Item::Var(v) => {
+            if let Some(decl) = extract_image_binary_decl_from_source(source, span_start, span_end) {
+                arena.text(decl)
+            } else {
+                arena.text(format_var(v))
+            }
+        }
         Item::DataBlock(block) => {
             let header = arena.text("data {");
             let header = append_brace_trailing_comment(header, arena, cursor, source, span_start);
-            let body = build_spanned_body(arena, cursor, source, &block.commands, span_start, span_end, |cmd| {
-                format_data_command(cmd)
-            });
+            let body = build_spanned_body(
+                arena,
+                cursor,
+                source,
+                &block.commands,
+                span_start,
+                span_end,
+                |cmd, item_start, item_end| {
+                    format_data_command_in_span(cmd, source, item_start, item_end)
+                },
+            );
             header
-                .append(arena.hardline().append(body).nest(2))
+                .append(arena.hardline().append(body).nest(INDENT_WIDTH))
                 .append(arena.hardline())
                 .append(arena.text("}"))
         }
         Item::NamedDataBlock(block) => {
             let header = arena.text(format!("data {} {{", block.name));
             let header = append_brace_trailing_comment(header, arena, cursor, source, span_start);
-            let body = build_spanned_body(arena, cursor, source, &block.entries, span_start, span_end, |entry| {
-                format_named_data_entry(entry)
-            });
+            let body = build_spanned_body(
+                arena,
+                cursor,
+                source,
+                &block.entries,
+                span_start,
+                span_end,
+                |entry, item_start, item_end| {
+                    format_named_data_entry_in_span(entry, source, item_start, item_end)
+                },
+            );
             header
-                .append(arena.hardline().append(body).nest(2))
+                .append(arena.hardline().append(body).nest(INDENT_WIDTH))
                 .append(arena.hardline())
                 .append(arena.text("}"))
         }
         Item::CodeBlock(block) => {
-            let mut header_str = String::new();
-            if block.is_far { header_str.push_str("far "); }
-            if block.is_naked { header_str.push_str("naked "); }
-            if block.is_inline { header_str.push_str("inline "); }
-            header_str.push_str("func ");
-            header_str.push_str(&block.name);
+            let mut header_parts = Vec::new();
+            if block.is_far {
+                header_parts.push("far".to_string());
+            }
+            if block.is_naked {
+                header_parts.push("naked".to_string());
+            }
+            if block.is_inline {
+                header_parts.push("inline".to_string());
+            }
+            let has_modifier = block.is_far || block.is_naked || block.is_inline;
+            let emit_func = if has_modifier {
+                code_block_uses_func_keyword(source, span_start, block.name_span)
+            } else {
+                true
+            };
+            if emit_func {
+                header_parts.push("func".to_string());
+            }
+            header_parts.push(block.name.clone());
+            let mode_contract =
+                format_mode_contract_inline(block.mode_contract.a_width, block.mode_contract.i_width);
+            if !mode_contract.is_empty() {
+                header_parts.push(mode_contract);
+            }
+            let mut header_str = header_parts.join(" ");
             header_str.push_str(" {");
             let header = arena.text(header_str);
             let header = append_brace_trailing_comment(header, arena, cursor, source, span_start);
             let body = build_stmts_doc(arena, cursor, source, &block.body, span_start, span_end);
             header
-                .append(arena.hardline().append(body).nest(2))
+                .append(arena.hardline().append(body).nest(INDENT_WIDTH))
                 .append(arena.hardline())
                 .append(arena.text("}"))
         }
-        Item::Statement(stmt) => arena.text(format_stmt_text(stmt)),
+        Item::Statement(stmt) => {
+            arena.text(format_stmt_text_in_span(stmt, source, span_start, span_end))
+        }
     }
 }
 
@@ -337,36 +600,93 @@ fn build_stmts_doc<'a>(
     cursor: &mut CommentCursor,
     source: &str,
     stmts: &[Spanned<Stmt>],
-    _block_start: usize,
+    block_start: usize,
     block_end: usize,
 ) -> Doc<'a> {
     let nested = nest_hla(stmts);
+    let body_start = find_brace_body_start(source, block_start, block_end);
     let body_end = find_brace_body_end(source, block_end);
-    let mut lines: Vec<Doc<'a>> = Vec::new();
+    let mut entries: Vec<LayoutEntry<'a>> = Vec::new();
     let mut prev_end: Option<usize> = None;
 
-    for fmt_stmt in &nested {
+    for (idx, fmt_stmt) in nested.iter().enumerate() {
+        let gap_start = prev_end.unwrap_or(body_start);
+        entries.extend(collect_standalone_semicolon_lines(
+            arena,
+            source,
+            gap_start,
+            fmt_stmt.span().start,
+        ));
+
         // Gap comments before this statement
         let gap = cursor.drain_before(arena, source, fmt_stmt.span().start, prev_end);
-        lines.extend(gap.into_iter().map(|(doc, _)| doc));
+        for (doc, span) in gap {
+            entries.push(LayoutEntry {
+                doc,
+                start: span.start,
+                end: span.end,
+            });
+        }
 
-        let stmt_doc = build_fmt_stmt_doc(arena, cursor, source, fmt_stmt);
+        let next_stmt_start = nested
+            .get(idx + 1)
+            .map(|next| next.span().start)
+            .unwrap_or(body_end);
+        let trailing_semicolons =
+            count_leading_gap_semicolons(source, fmt_stmt.span_end(), next_stmt_start);
+        let mut stmt_doc = build_fmt_stmt_doc(arena, cursor, source, fmt_stmt);
+        if trailing_semicolons > 0 {
+            stmt_doc = stmt_doc.append(arena.text(";".repeat(trailing_semicolons)));
+        }
+        let layout_start = fmt_stmt.span().start;
+        let layout_end = fmt_stmt.span_end();
 
         // Trailing comment
         if let Some(tc) = cursor.take_trailing(source, fmt_stmt.span_end()) {
-            lines.push(stmt_doc.append(arena.text(" ")).append(arena.text(tc.to_string())));
+            entries.push(LayoutEntry {
+                doc: stmt_doc.append(arena.text(" ")).append(arena.text(tc.to_string())),
+                start: layout_start,
+                end: layout_end,
+            });
         } else {
-            lines.push(stmt_doc);
+            entries.push(LayoutEntry {
+                doc: stmt_doc,
+                start: layout_start,
+                end: layout_end,
+            });
         }
 
         prev_end = Some(fmt_stmt.span_end());
     }
 
+    let trailing_gap_start = prev_end.unwrap_or(body_start);
+    entries.extend(collect_standalone_semicolon_lines(
+        arena,
+        source,
+        trailing_gap_start,
+        body_end,
+    ));
+
     // Trailing comments before closing brace
     let gap = cursor.drain_before(arena, source, body_end, prev_end);
-    lines.extend(gap.into_iter().map(|(doc, _)| doc));
+    for (doc, span) in gap {
+        entries.push(LayoutEntry {
+            doc,
+            start: span.start,
+            end: span.end,
+        });
+    }
 
-    arena.intersperse(lines, arena.hardline())
+    // Preserve one blank line before `}` when source had any blank-line gap there.
+    if prev_end.is_some_and(|pe| has_blank_line(source, pe, body_end)) {
+        entries.push(LayoutEntry {
+            doc: arena.nil(),
+            start: body_end,
+            end: body_end,
+        });
+    }
+
+    join_layout_entries(arena, source, entries)
 }
 
 fn build_fmt_stmt_doc<'a>(
@@ -376,29 +696,124 @@ fn build_fmt_stmt_doc<'a>(
     fmt_stmt: &FmtStmt,
 ) -> Doc<'a> {
     match fmt_stmt {
-        FmtStmt::Plain(stmt) => arena.text(format_stmt_text(&stmt.node)),
+        FmtStmt::Plain(stmt) => match &stmt.node {
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic,
+                form,
+                body,
+                else_body,
+            }) => {
+                let condition = prefix_condition_text(skip_mnemonic, *form);
+                let snippet = &source[stmt.span.start.min(source.len())..stmt.span.end.min(source.len())];
+                let single_line = !snippet.contains('\n') && !snippet.contains('\r');
+
+                if single_line {
+                    let body_text = body
+                        .iter()
+                        .map(|s| format_stmt_text_in_span(&s.node, source, s.span.start, s.span.end))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let mut text = format!("{condition}{{ {body_text} }}");
+                    if let Some(else_body) = else_body {
+                        let else_text = else_body
+                            .iter()
+                            .map(|s| format_stmt_text_in_span(&s.node, source, s.span.start, s.span.end))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        text.push_str(&format!(" else {{ {else_text} }}"));
+                    }
+                    arena.text(text)
+                } else {
+                    let body_entries = body
+                        .iter()
+                        .map(|s| LayoutEntry {
+                            doc: arena.text(format_stmt_text_in_span(
+                                &s.node,
+                                source,
+                                s.span.start,
+                                s.span.end,
+                            )),
+                            start: s.span.start,
+                            end: s.span.end,
+                        })
+                        .collect::<Vec<_>>();
+                    let mut doc = arena
+                        .text(format!("{condition} {{"))
+                        .append(arena.hardline().append(join_layout_entries(arena, source, body_entries)).nest(INDENT_WIDTH))
+                        .append(arena.hardline())
+                        .append(arena.text("}"));
+                    if let Some(else_body) = else_body {
+                        let else_entries = else_body
+                            .iter()
+                            .map(|s| LayoutEntry {
+                                doc: arena.text(format_stmt_text_in_span(
+                                    &s.node,
+                                    source,
+                                    s.span.start,
+                                    s.span.end,
+                                )),
+                                start: s.span.start,
+                                end: s.span.end,
+                            })
+                            .collect::<Vec<_>>();
+                        doc = doc
+                            .append(arena.text(" else {"))
+                            .append(arena.hardline().append(join_layout_entries(arena, source, else_entries)).nest(INDENT_WIDTH))
+                            .append(arena.hardline())
+                            .append(arena.text("}"));
+                    }
+                    doc
+                }
+            }
+            _ => arena.text(format_stmt_text_in_span(
+                &stmt.node,
+                source,
+                stmt.span.start,
+                stmt.span.end,
+            )),
+        },
         FmtStmt::HlaBlock { open, body, close } => {
             let open_doc = arena.text("{");
             // Trailing comment on the `{` line
-            let open_doc = if let Some(tc) = cursor.take_trailing(source, open.span.end) {
-                open_doc.append(arena.text(" ")).append(arena.text(tc.to_string()))
-            } else {
-                open_doc
-            };
+            let (open_doc, open_has_trailing_comment) =
+                if let Some(tc) = cursor.take_trailing(source, open.span.end) {
+                    (
+                        open_doc.append(arena.text(" ")).append(arena.text(tc.to_string())),
+                        true,
+                    )
+                } else {
+                    (open_doc, false)
+                };
 
-            // Build body lines
-            let mut lines: Vec<Doc<'a>> = Vec::new();
+            // Build body entries
+            let mut entries: Vec<LayoutEntry<'a>> = Vec::new();
             let mut prev_end: Option<usize> = Some(open.span.end);
 
             for child in body {
                 let gap = cursor.drain_before(arena, source, child.span().start, prev_end);
-                lines.extend(gap.into_iter().map(|(doc, _)| doc));
+                for (doc, span) in gap {
+                    entries.push(LayoutEntry {
+                        doc,
+                        start: span.start,
+                        end: span.end,
+                    });
+                }
 
                 let child_doc = build_fmt_stmt_doc(arena, cursor, source, child);
+                let layout_start = child.span().start;
+                let layout_end = child.span_end();
                 if let Some(tc) = cursor.take_trailing(source, child.span_end()) {
-                    lines.push(child_doc.append(arena.text(" ")).append(arena.text(tc.to_string())));
+                    entries.push(LayoutEntry {
+                        doc: child_doc.append(arena.text(" ")).append(arena.text(tc.to_string())),
+                        start: layout_start,
+                        end: layout_end,
+                    });
                 } else {
-                    lines.push(child_doc);
+                    entries.push(LayoutEntry {
+                        doc: child_doc,
+                        start: layout_start,
+                        end: layout_end,
+                    });
                 }
 
                 prev_end = Some(child.span_end());
@@ -406,13 +821,37 @@ fn build_fmt_stmt_doc<'a>(
 
             // Gap comments before close
             let gap = cursor.drain_before(arena, source, close.span.start, prev_end);
-            lines.extend(gap.into_iter().map(|(doc, _)| doc));
+            for (doc, span) in gap {
+                entries.push(LayoutEntry {
+                    doc,
+                    start: span.start,
+                    end: span.end,
+                });
+            }
+            if prev_end.is_some_and(|pe| has_blank_line(source, pe, close.span.start)) {
+                entries.push(LayoutEntry {
+                    doc: arena.nil(),
+                    start: close.span.start,
+                    end: close.span.start,
+                });
+            }
 
-            let body_doc = arena.intersperse(lines, arena.hardline());
-            let close_doc = arena.text(format_stmt_text(&close.node));
+            let close_doc = arena.text(format_stmt_text_in_span(
+                &close.node,
+                source,
+                close.span.start,
+                close.span.end,
+            ));
+
+            if entries.is_empty() && !open_has_trailing_comment {
+                // Compact truly empty blocks to `{}` forms like `{} always`.
+                return open_doc.append(close_doc);
+            }
+
+            let body_doc = join_layout_entries(arena, source, entries);
 
             open_doc
-                .append(arena.hardline().append(body_doc).nest(2))
+                .append(arena.hardline().append(body_doc).nest(INDENT_WIDTH))
                 .append(arena.hardline())
                 .append(close_doc)
         }
@@ -433,22 +872,36 @@ fn build_spanned_body<'a, T, F>(
     format_fn: F,
 ) -> Doc<'a>
 where
-    F: Fn(&T) -> String,
+    F: Fn(&T, usize, usize) -> String,
 {
     let body_end = find_brace_body_end(source, block_end);
-    let mut lines: Vec<Doc<'a>> = Vec::new();
+    let mut entries: Vec<LayoutEntry<'a>> = Vec::new();
     let mut prev_end: Option<usize> = None;
 
     for item in items {
         let gap = cursor.drain_before(arena, source, item.span.start, prev_end);
-        lines.extend(gap.into_iter().map(|(doc, _)| doc));
+        for (doc, span) in gap {
+            entries.push(LayoutEntry {
+                doc,
+                start: span.start,
+                end: span.end,
+            });
+        }
 
-        let entry_doc = arena.text(format_fn(&item.node));
+        let entry_doc = arena.text(format_fn(&item.node, item.span.start, item.span.end));
 
         if let Some(tc) = cursor.take_trailing(source, item.span.end) {
-            lines.push(entry_doc.append(arena.text(" ")).append(arena.text(tc.to_string())));
+            entries.push(LayoutEntry {
+                doc: entry_doc.append(arena.text(" ")).append(arena.text(tc.to_string())),
+                start: item.span.start,
+                end: item.span.end,
+            });
         } else {
-            lines.push(entry_doc);
+            entries.push(LayoutEntry {
+                doc: entry_doc,
+                start: item.span.start,
+                end: item.span.end,
+            });
         }
 
         prev_end = Some(item.span.end);
@@ -456,14 +909,114 @@ where
 
     // Trailing comments before closing brace
     let gap = cursor.drain_before(arena, source, body_end, prev_end);
-    lines.extend(gap.into_iter().map(|(doc, _)| doc));
+    for (doc, span) in gap {
+        entries.push(LayoutEntry {
+            doc,
+            start: span.start,
+            end: span.end,
+        });
+    }
+    if prev_end.is_some_and(|pe| has_blank_line(source, pe, body_end)) {
+        entries.push(LayoutEntry {
+            doc: arena.nil(),
+            start: body_end,
+            end: body_end,
+        });
+    }
 
-    arena.intersperse(lines, arena.hardline())
+    join_layout_entries(arena, source, entries)
 }
 
 // ---------------------------------------------------------------------------
 // Source position helpers
 // ---------------------------------------------------------------------------
+
+fn extract_directive_operand_from_source(
+    source: &str,
+    span_start: usize,
+    span_end: usize,
+    keyword: &str,
+) -> Option<String> {
+    if span_start >= span_end || span_start >= source.len() {
+        return None;
+    }
+    let end = span_end.min(source.len());
+    let snippet = source[span_start..end].trim();
+    if let Some(rest) = snippet.strip_prefix(keyword) {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    if !snippet.is_empty() && snippet != keyword && !snippet.contains('\n') && !snippet.contains('\r') {
+        // Some parser spans for directive statements cover only the operand expression.
+        return Some(snippet.to_string());
+    }
+
+    // If span is broader than one token (or one line), scan covered lines
+    // and preserve the first `keyword <operand>` spelling found.
+    let line_start = source[..span_start.min(source.len())]
+        .rfind('\n')
+        .map_or(0, |idx| idx + 1);
+    let mut line_end = span_end.min(source.len());
+    if let Some(idx) = source[line_end..].find('\n') {
+        line_end += idx;
+    } else {
+        line_end = source.len();
+    }
+    let region = source[line_start..line_end].trim();
+    for line in region.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(keyword) {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_image_binary_decl_from_source(
+    source: &str,
+    span_start: usize,
+    span_end: usize,
+) -> Option<String> {
+    if span_start >= span_end || span_start >= source.len() {
+        return None;
+    }
+    let end = span_end.min(source.len());
+    let snippet = source[span_start..end].trim();
+    if snippet.is_empty() {
+        return None;
+    }
+    let head = snippet.split_whitespace().next()?;
+    if head.eq_ignore_ascii_case("image") || head.eq_ignore_ascii_case("binary") {
+        Some(snippet.to_string())
+    } else {
+        None
+    }
+}
+
+fn normalize_preserved_numeric_operand_text(operand: &str) -> String {
+    let text = operand.trim();
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X"))
+        && !hex.is_empty()
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(value) = i64::from_str_radix(hex, 16)
+    {
+        return format_number(value, NumFmt::Hex(hex.len() as u8));
+    }
+    if let Some(hex) = text.strip_prefix('$')
+        && !hex.is_empty()
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        && let Ok(value) = i64::from_str_radix(hex, 16)
+    {
+        return format_number(value, NumFmt::Dollar(hex.len() as u8));
+    }
+    text.to_string()
+}
 
 /// Find the byte offset of the closing `}`.
 fn find_brace_body_end(source: &str, block_end: usize) -> usize {
@@ -475,6 +1028,76 @@ fn find_brace_body_end(source: &str, block_end: usize) -> usize {
 // Pure text formatting (no Doc, no comments — reused from before)
 // ---------------------------------------------------------------------------
 
+fn format_stmt_text_in_span(stmt: &Stmt, source: &str, span_start: usize, span_end: usize) -> String {
+    match stmt {
+        // Preserve original address operand spelling (hex prefix, width, expression form)
+        // instead of collapsing to evaluated decimal.
+        Stmt::Address(value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "address")
+            {
+                format!("address {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                format!("address {value}")
+            }
+        }
+        Stmt::Align { boundary, offset } => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "align")
+            {
+                format!("align {}", normalize_preserved_numeric_operand_text(&operand))
+            } else if *offset == 0 {
+                format!("align {boundary}")
+            } else {
+                format!("align {boundary} + {offset}")
+            }
+        }
+        Stmt::Nocross(_value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "nocross")
+            {
+                format!("nocross {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                "nocross".to_string()
+            }
+        }
+        Stmt::Call(call) => {
+            // `call` is optional in call syntax; preserve omitted form (`far target`)
+            // when it was not present in the original source spelling.
+            if stmt_starts_with_keyword(source, span_start, span_end, "call") {
+                if call.is_far {
+                    format!("call far {}", call.target)
+                } else {
+                    format!("call {}", call.target)
+                }
+            } else if call.is_far {
+                format!("far {}", call.target)
+            } else {
+                call.target.clone()
+            }
+        }
+        _ => format_stmt_text(stmt),
+    }
+}
+
+fn stmt_starts_with_keyword(source: &str, span_start: usize, span_end: usize, keyword: &str) -> bool {
+    if span_start >= span_end || span_start >= source.len() {
+        return false;
+    }
+    let end = span_end.min(source.len());
+    let snippet = &source[span_start..end];
+    let bytes = snippet.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b';') {
+        i += 1;
+    }
+    let start = i;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    start < i && snippet[start..i].eq_ignore_ascii_case(keyword)
+}
+
 fn format_stmt_text(stmt: &Stmt) -> String {
     match stmt {
         Stmt::Segment(s) => format!("segment {}", s.name),
@@ -483,7 +1106,7 @@ fn format_stmt_text(stmt: &Stmt) -> String {
         Stmt::DataBlock(block) => {
             let mut out = "data {\n".to_string();
             for cmd in &block.commands {
-                let _ = writeln!(out, "  {}", format_data_command(&cmd.node));
+                let _ = writeln!(out, "{INDENT_STR}{}", format_data_command(&cmd.node));
             }
             out.push('}');
             out
@@ -498,22 +1121,15 @@ fn format_stmt_text(stmt: &Stmt) -> String {
         }
         Stmt::Nocross(value) => format!("nocross {value}"),
         Stmt::Instruction(instr) => format_instruction(instr),
-        Stmt::Call(call) => format!("call {}", call.target),
+        Stmt::Call(call) => {
+            if call.is_far {
+                format!("call far {}", call.target)
+            } else {
+                format!("call {}", call.target)
+            }
+        }
         Stmt::ModeSet { a_width, i_width } => {
-            let mut parts = Vec::new();
-            if let Some(w) = a_width {
-                parts.push(match w {
-                    k816_core::ast::RegWidth::W8 => "@a8",
-                    k816_core::ast::RegWidth::W16 => "@a16",
-                });
-            }
-            if let Some(w) = i_width {
-                parts.push(match w {
-                    k816_core::ast::RegWidth::W8 => "@i8",
-                    k816_core::ast::RegWidth::W16 => "@i16",
-                });
-            }
-            parts.join(" ")
+            format_mode_contract_inline(*a_width, *i_width)
         }
         Stmt::ModeScopedBlock {
             a_width,
@@ -521,23 +1137,15 @@ fn format_stmt_text(stmt: &Stmt) -> String {
             body,
         } => {
             let mut parts = Vec::new();
-            if let Some(w) = a_width {
-                parts.push(match w {
-                    k816_core::ast::RegWidth::W8 => "@a8",
-                    k816_core::ast::RegWidth::W16 => "@a16",
-                });
+            let mode = format_mode_contract_inline(*a_width, *i_width);
+            if !mode.is_empty() {
+                parts.push(mode);
             }
-            if let Some(w) = i_width {
-                parts.push(match w {
-                    k816_core::ast::RegWidth::W8 => "@i8",
-                    k816_core::ast::RegWidth::W16 => "@i16",
-                });
-            }
-            parts.push("{");
+            parts.push("{".to_string());
             let mut out = parts.join(" ");
             out.push('\n');
             for stmt in body {
-                let _ = writeln!(out, "  {}", format_stmt_text(&stmt.node));
+                let _ = writeln!(out, "{INDENT_STR}{}", format_stmt_text(&stmt.node));
             }
             out.push('}');
             out
@@ -630,8 +1238,21 @@ fn format_var(var: &k816_core::ast::VarDecl) -> String {
 }
 
 fn format_const(const_decl: &k816_core::ast::ConstDecl) -> String {
+    format!("const {}", format_const_binding(const_decl))
+}
+
+fn format_const_group(consts: &[k816_core::ast::ConstDecl]) -> String {
+    let body = consts
+        .iter()
+        .map(format_const_binding)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("const {body}")
+}
+
+fn format_const_binding(const_decl: &k816_core::ast::ConstDecl) -> String {
     format!(
-        "const {} = {}",
+        "{} = {}",
         const_decl.name,
         format_expr(&const_decl.initializer)
     )
@@ -659,10 +1280,310 @@ fn format_data_command(command: &DataCommand) -> String {
     }
 }
 
+fn format_data_command_in_span(
+    command: &DataCommand,
+    source: &str,
+    span_start: usize,
+    span_end: usize,
+) -> String {
+    match command {
+        DataCommand::Address(value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "address")
+            {
+                format!("address {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                format!("address {value}")
+            }
+        }
+        DataCommand::Align(value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "align")
+            {
+                format!("align {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                format!("align {value}")
+            }
+        }
+        DataCommand::Nocross(_value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "nocross")
+            {
+                format!("nocross {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                "nocross".to_string()
+            }
+        }
+        _ => format_data_command(command),
+    }
+}
+
 fn format_data_arg(arg: &DataArg) -> String {
     match arg {
         DataArg::Int(value) => value.to_string(),
         DataArg::Str(value) => format!("\"{}\"", value.replace('"', "\\\"")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_ast;
+    use k816_core::parser;
+    use k816_core::span::SourceId;
+
+    #[test]
+    fn keeps_function_mode_contract_in_header() {
+        let source = "func main @a8 @i8 {\n  nop\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("func main @a8 @i8 {"));
+    }
+
+    #[test]
+    fn keeps_module_mode_defaults_at_file_top() {
+        let source = "@a16\n@i16\n\nfunc main {\n  nop\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.starts_with("@a16\n@i16\n"));
+    }
+
+    #[test]
+    fn keeps_far_call_spelling() {
+        let source = "func main {\n  call far target\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("call far target"));
+    }
+
+    #[test]
+    fn keeps_far_call_without_call_keyword_when_omitted() {
+        let source = "func main {\n  far target\n  call far explicit\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    far target\n"));
+        assert!(formatted.contains("\n    call far explicit\n"));
+    }
+
+    #[test]
+    fn preserves_top_level_image_and_binary_declarations() {
+        let source = "image SpriteSheet = \"sprites.bmp\"\nimage \"RawSprite\" = \"raw.bmp\"\nbinary Blob = \"payload.bin\"\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("image SpriteSheet = \"sprites.bmp\""));
+        assert!(formatted.contains("image \"RawSprite\" = \"raw.bmp\""));
+        assert!(formatted.contains("binary Blob = \"payload.bin\""));
+    }
+
+    #[test]
+    fn uses_four_space_default_indent() {
+        let source = "func main {\n  nop\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    nop\n"));
+    }
+
+    #[test]
+    fn keeps_address_operand_spelling() {
+        let source = "func main {\n  address 0x2000\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("address 0x2000"));
+    }
+
+    #[test]
+    fn reformats_five_digit_hex_address_to_six_digits() {
+        let source = "func main {\n  address 0x10000\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("address 0x010000"));
+    }
+
+    #[test]
+    fn extracts_operand_when_span_points_to_expression_only() {
+        let source = "address 0x2000";
+        let start = "address ".len();
+        let end = source.len();
+        let operand = super::extract_directive_operand_from_source(source, start, end, "address");
+        assert_eq!(operand.as_deref(), Some("0x2000"));
+    }
+
+    #[test]
+    fn compacts_empty_hla_blocks() {
+        let source = "func main {\n  {} always\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    {} always\n"));
+    }
+
+    #[test]
+    fn preserves_single_blank_lines_and_compacts_runs() {
+        let source = "func main {\n  nop\n\n  lda #1\n\n\n  tax\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        let normalized = format!(
+            "{}\n",
+            formatted
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert!(normalized.contains("\n    nop\n\n    lda #1\n\n    tax\n"));
+    }
+
+    #[test]
+    fn preserves_blank_line_when_source_line_has_only_spaces() {
+        let source = "func main {\n  nop\n    \n  lda #1\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        let normalized = format!(
+            "{}\n",
+            formatted
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert!(normalized.contains("\n    nop\n\n    lda #1\n"));
+    }
+
+    #[test]
+    fn keeps_naked_without_func_keyword() {
+        let source = "naked handler {\n  nop\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("naked handler {"));
+    }
+
+    #[test]
+    fn keeps_explicit_naked_func_keyword() {
+        let source = "naked func handler {\n  nop\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("naked func handler {"));
+    }
+
+    #[test]
+    fn keeps_zero_run_literals_with_pow2_width() {
+        let source = "func main {\n  lda #00\n  lda #000\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("lda #00"));
+        assert!(formatted.contains("lda #0000"));
+    }
+
+    #[test]
+    fn preserves_char_literals() {
+        let source = "func main {\n  a='A'\n  a='0'\n  a='\\n'\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("a = 'A'"));
+        assert!(formatted.contains("a = '0'"));
+        assert!(formatted.contains("a = '\\n'"));
+    }
+
+    #[test]
+    fn never_emits_trailing_whitespace() {
+        let source = "func main {\n  nop\n\n  lda #1\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(
+            formatted
+                .lines()
+                .all(|line| !line.ends_with(' ') && !line.ends_with('\t'))
+        );
+    }
+
+    #[test]
+    fn preserves_same_line_statements() {
+        let source = "func main {\n  @a8 @i8\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    @a8 @i8\n"));
+    }
+
+    #[test]
+    fn preserves_explicit_semicolons() {
+        let source = "var zp = 0x80; // line comment\n\nfunc main {\n  ;\n  a=0;\n  x=a; y=a;;\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("var zp = 0x80;"));
+        assert!(formatted.contains("// line comment"));
+        assert!(formatted.contains("\n    ;\n"));
+        assert!(formatted.contains("\n    a = 0;\n"));
+        assert!(formatted.contains("\n    x = a; y = a;;\n"));
+    }
+
+    #[test]
+    fn preserves_comma_separated_const_declarations() {
+        let source = "const A = 1, B = 2\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("const A = 1, B = 2"));
+    }
+
+    #[test]
+    fn preserves_packed_address_operators() {
+        let source = "data bytes {\n  &&ptr\n  &&&ptr\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    &&ptr\n"));
+        assert!(formatted.contains("\n    &&&ptr\n"));
+    }
+
+    #[test]
+    fn preserves_bracketed_eval_ident_in_data_entries() {
+        let source = "data text_data {\n  evaluator [ SCALE = 2 ]\n  [SCALE]\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("evaluator [ SCALE = 2 ]"));
+        assert!(formatted.contains("\n    [SCALE]\n"));
+    }
+
+    #[test]
+    fn preserves_bracketed_eval_ident_in_register_assignments() {
+        let source = "[ A = 20, B = 30 ]\nfunc main {\n  a=[A]\n  x=[B]\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    a = [A]\n"));
+        assert!(formatted.contains("\n    x = [B]\n"));
+    }
+
+    #[test]
+    fn preserves_data_placement_directive_operands() {
+        let source = "data aligned_offs {\n  align 256 + 8\n  5 6 7 8\n}\n\ndata fixed_addr {\n  address 0x5000\n  9 10\n}\n\ndata no_cross {\n  nocross\n  11 12 13\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    align 256 + 8\n"));
+        assert!(formatted.contains("\n    address 0x5000\n"));
+        assert!(formatted.contains("\n    nocross\n"));
+        assert!(!formatted.contains("align 264"));
+        assert!(!formatted.contains("address 20480"));
+        assert!(!formatted.contains("nocross 256"));
+    }
+
+    #[test]
+    fn does_not_fold_flag_branch_goto_to_symbolic_form() {
+        let source = "func main {\n  c-? goto target\n  < goto target\n  v+ goto target\n  <<= goto target\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("\n    c-? goto target\n"));
+        assert!(formatted.contains("\n    < goto target\n"));
+        assert!(formatted.contains("\n    v+ goto target\n"));
+        assert!(formatted.contains("\n    <<= goto target\n"));
+    }
+
+    #[test]
+    fn does_not_fold_prefix_flag_forms_or_body() {
+        let source = "func main {\n  c-?{ a=1 }\n  <{ a=2 }\n  v+?{ a=3 }\n  >>={ a=4 }\n}\n";
+        let ast = parser::parse(SourceId(0), source).expect("source should parse");
+        let formatted = format_ast(&ast, source);
+        assert!(formatted.contains("c-?{ a = 1 }"));
+        assert!(formatted.contains("<{ a = 2 }"));
+        assert!(formatted.contains("v+?{ a = 3 }"));
+        assert!(formatted.contains(">>={ a = 4 }"));
+        assert!(!formatted.contains("prefix("));
+        assert!(!formatted.contains("..."));
     }
 }
 
@@ -684,15 +1605,28 @@ fn ceil_pow2(n: usize) -> usize {
     n.next_power_of_two()
 }
 
+fn normalized_hex_width(orig_w: usize) -> usize {
+    if (5..=6).contains(&orig_w) {
+        6
+    } else {
+        ceil_pow2(orig_w)
+    }
+}
+
 fn format_number(value: i64, fmt: NumFmt) -> String {
     match fmt {
         NumFmt::Dec => value.to_string(),
+        NumFmt::Char => format_char_literal(value),
+        NumFmt::Zero(orig_w) => {
+            let w = ceil_pow2(orig_w as usize).max(1);
+            "0".repeat(w)
+        }
         NumFmt::Dollar(orig_w) => {
-            let w = ceil_pow2(orig_w as usize).max(min_hex_width(value));
+            let w = normalized_hex_width(orig_w as usize).max(min_hex_width(value));
             format!("${:0>w$X}", value, w = w)
         }
         NumFmt::Hex(orig_w) => {
-            let w = ceil_pow2(orig_w as usize).max(min_hex_width(value));
+            let w = normalized_hex_width(orig_w as usize).max(min_hex_width(value));
             format!("0x{:0>w$X}", value, w = w)
         }
         NumFmt::Percent(orig_w) => {
@@ -704,6 +1638,28 @@ fn format_number(value: i64, fmt: NumFmt) -> String {
             format!("0b{:0>w$b}", value, w = w)
         }
     }
+}
+
+fn format_char_literal(value: i64) -> String {
+    let Ok(codepoint) = u32::try_from(value) else {
+        return value.to_string();
+    };
+    let Some(ch) = char::from_u32(codepoint) else {
+        return value.to_string();
+    };
+
+    let escaped = match ch {
+        '\n' => "\\n".to_string(),
+        '\r' => "\\r".to_string(),
+        '\t' => "\\t".to_string(),
+        '\\' => "\\\\".to_string(),
+        '\'' => "\\'".to_string(),
+        '\0' => "\\0".to_string(),
+        c if c.is_control() => return value.to_string(),
+        c => c.to_string(),
+    };
+
+    format!("'{escaped}'")
 }
 
 fn format_expr(expr: &Expr) -> String {
@@ -722,11 +1678,15 @@ fn format_expr(expr: &Expr) -> String {
             format!("{} {op} {}", format_expr(lhs), format_expr(rhs))
         }
         Expr::Unary { op, expr } => {
-            let op = match op {
-                k816_core::ast::ExprUnaryOp::LowByte => "&<",
-                k816_core::ast::ExprUnaryOp::HighByte => "&>",
-            };
-            format!("{op}{}", format_expr(expr))
+            match op {
+                k816_core::ast::ExprUnaryOp::LowByte => format!("&<{}", format_expr(expr)),
+                k816_core::ast::ExprUnaryOp::HighByte => format!("&>{}", format_expr(expr)),
+                k816_core::ast::ExprUnaryOp::WordLittleEndian => format!("&&{}", format_expr(expr)),
+                k816_core::ast::ExprUnaryOp::FarLittleEndian => {
+                    format!("&&&{}", format_expr(expr))
+                }
+                k816_core::ast::ExprUnaryOp::EvalBracketed => format!("[{}]", format_expr(expr)),
+            }
         }
         Expr::TypedView { expr, width } => {
             let suffix = match width {
@@ -773,6 +1733,44 @@ fn format_named_data_entry(entry: &NamedDataEntry) -> String {
         NamedDataEntry::Code(_) => "code { ... }".to_string(),
         NamedDataEntry::Evaluator(text) => format!("evaluator [{text}]"),
         NamedDataEntry::Charset(value) => format!("charset \"{}\"", value.replace('\"', "\\\"")),
+    }
+}
+
+fn format_named_data_entry_in_span(
+    entry: &NamedDataEntry,
+    source: &str,
+    span_start: usize,
+    span_end: usize,
+) -> String {
+    match entry {
+        NamedDataEntry::Address(value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "address")
+            {
+                format!("address {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                format!("address {value}")
+            }
+        }
+        NamedDataEntry::Align(value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "align")
+            {
+                format!("align {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                format!("align {value}")
+            }
+        }
+        NamedDataEntry::Nocross(_value) => {
+            if let Some(operand) =
+                extract_directive_operand_from_source(source, span_start, span_end, "nocross")
+            {
+                format!("nocross {}", normalize_preserved_numeric_operand_text(&operand))
+            } else {
+                "nocross".to_string()
+            }
+        }
+        _ => format_named_data_entry(entry),
     }
 }
 
@@ -885,8 +1883,21 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
                 format!("goto {target}")
             }
         }
-        HlaStmt::BranchGoto { mnemonic, target } => {
-            format!("{} goto {}", mnemonic_to_condition(mnemonic), format_expr(target))
+        HlaStmt::BranchGoto {
+            mnemonic,
+            target,
+            form,
+        } => {
+            let condition = match form {
+                HlaBranchForm::FlagQuestion => mnemonic_to_flag_question(mnemonic)
+                    .unwrap_or(mnemonic.as_str())
+                    .to_string(),
+                HlaBranchForm::FlagPlain => mnemonic_to_flag_plain(mnemonic)
+                    .unwrap_or(mnemonic.as_str())
+                    .to_string(),
+                HlaBranchForm::Symbolic => mnemonic_to_condition(mnemonic).to_string(),
+            };
+            format!("{condition} goto {}", format_expr(target))
         }
         HlaStmt::Return { interrupt } => {
             if *interrupt {
@@ -940,13 +1951,15 @@ fn format_hla_stmt(stmt: &HlaStmt) -> String {
         }
         HlaStmt::PrefixConditional {
             skip_mnemonic,
+            form,
             else_body,
             ..
         } => {
+            let condition = prefix_condition_text(skip_mnemonic, *form);
             if else_body.is_some() {
-                format!("prefix({skip_mnemonic}) {{ ... }} else {{ ... }}")
+                format!("{condition}{{ ... }} else {{ ... }}")
             } else {
-                format!("prefix({skip_mnemonic}) {{ ... }}")
+                format!("{condition}{{ ... }}")
             }
         }
     }
@@ -1013,6 +2026,55 @@ fn mnemonic_to_condition(mnemonic: &str) -> &str {
         "bvs" => "<<=",
         "bvc" => ">>=",
         _ => mnemonic,
+    }
+}
+
+fn mnemonic_to_flag_question(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "bcc" => Some("c-?"),
+        "bcs" => Some("c+?"),
+        "beq" => Some("z+?"),
+        "bne" => Some("z-?"),
+        "bmi" => Some("n+?"),
+        "bpl" => Some("n-?"),
+        "bvs" => Some("v+?"),
+        "bvc" => Some("v-?"),
+        _ => None,
+    }
+}
+
+fn mnemonic_to_flag_plain(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "bvs" => Some("v+"),
+        "bvc" => Some("v-"),
+        _ => None,
+    }
+}
+
+fn invert_branch_mnemonic(mnemonic: &str) -> &str {
+    match mnemonic {
+        "bcc" => "bcs",
+        "bcs" => "bcc",
+        "beq" => "bne",
+        "bne" => "beq",
+        "bmi" => "bpl",
+        "bpl" => "bmi",
+        "bvs" => "bvc",
+        "bvc" => "bvs",
+        _ => mnemonic,
+    }
+}
+
+fn prefix_condition_text(skip_mnemonic: &str, form: HlaBranchForm) -> String {
+    let execute_mnemonic = invert_branch_mnemonic(skip_mnemonic);
+    match form {
+        HlaBranchForm::FlagQuestion => mnemonic_to_flag_question(execute_mnemonic)
+            .unwrap_or(execute_mnemonic)
+            .to_string(),
+        HlaBranchForm::FlagPlain => mnemonic_to_flag_plain(execute_mnemonic)
+            .unwrap_or(execute_mnemonic)
+            .to_string(),
+        HlaBranchForm::Symbolic => mnemonic_to_condition(execute_mnemonic).to_string(),
     }
 }
 

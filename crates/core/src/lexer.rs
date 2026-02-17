@@ -201,7 +201,16 @@ fn parse_number(lex: &mut logos::Lexer<TokenKind>) -> Option<NumLit> {
         let w = hex.len() as u8;
         return i64::from_str_radix(hex, 16).ok().map(|v| NumLit { value: v, fmt: NumFmt::Dollar(w) });
     }
-    slice.parse::<i64>().ok().map(|v| NumLit { value: v, fmt: NumFmt::Dec })
+    if slice.len() > 1 && slice.bytes().all(|b| b == b'0') {
+        return Some(NumLit {
+            value: 0,
+            fmt: NumFmt::Zero(slice.len() as u8),
+        });
+    }
+    slice
+        .parse::<i64>()
+        .ok()
+        .map(|v| NumLit { value: v, fmt: NumFmt::Dec })
 }
 
 fn parse_ident(lex: &mut logos::Lexer<TokenKind>) -> String {
@@ -249,7 +258,10 @@ fn parse_char(lex: &mut logos::Lexer<TokenKind>) -> Option<NumLit> {
         },
         ch => ch,
     };
-    Some(NumLit { value: ch as i64, fmt: NumFmt::Dec })
+    Some(NumLit {
+        value: ch as i64,
+        fmt: NumFmt::Char,
+    })
 }
 
 fn format_token_for_message(token: &str) -> String {
@@ -314,14 +326,26 @@ mod tests {
     fn lexes_char_literal() {
         let tokens = lex(SourceId(0), "'A'").expect("lex");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].kind, TokenKind::Number(NumLit { value: 65, fmt: NumFmt::Dec })));
+        assert!(matches!(
+            tokens[0].kind,
+            TokenKind::Number(NumLit {
+                value: 65,
+                fmt: NumFmt::Char
+            })
+        ));
     }
 
     #[test]
     fn lexes_char_literal_escape() {
         let tokens = lex(SourceId(0), "'\\n'").expect("lex");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0].kind, TokenKind::Number(NumLit { value: 10, fmt: NumFmt::Dec })));
+        assert!(matches!(
+            tokens[0].kind,
+            TokenKind::Number(NumLit {
+                value: 10,
+                fmt: NumFmt::Char
+            })
+        ));
     }
 
     #[test]
@@ -333,5 +357,24 @@ mod tests {
                 .iter()
                 .any(|t| matches!(t.kind, TokenKind::Number(NumLit { value: 115, .. })))
         );
+    }
+
+    #[test]
+    fn lexes_zero_runs_as_zero_format() {
+        let tokens = lex(SourceId(0), "00 000").expect("lex");
+        assert!(matches!(
+            tokens[0].kind,
+            TokenKind::Number(NumLit {
+                value: 0,
+                fmt: NumFmt::Zero(2)
+            })
+        ));
+        assert!(matches!(
+            tokens[1].kind,
+            TokenKind::Number(NumLit {
+                value: 0,
+                fmt: NumFmt::Zero(3)
+            })
+        ));
     }
 }

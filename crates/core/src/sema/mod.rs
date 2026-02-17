@@ -66,6 +66,17 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 &mut evaluator_context,
                 &mut diagnostics,
             ),
+            Item::ConstGroup(consts) => {
+                for const_decl in consts {
+                    collect_const(
+                        const_decl,
+                        item.span,
+                        &mut model,
+                        &mut evaluator_context,
+                        &mut diagnostics,
+                    );
+                }
+            }
             Item::EvaluatorBlock(block) => collect_evaluator_block(
                 block,
                 item.span,
@@ -868,6 +879,10 @@ fn eval_const_expr(
             match op {
                 ExprUnaryOp::LowByte => Ok(Number::Int(value & 0xFF)),
                 ExprUnaryOp::HighByte => Ok(Number::Int((value >> 8) & 0xFF)),
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => {
+                    Ok(Number::Int(value))
+                }
+                ExprUnaryOp::EvalBracketed => Ok(Number::Int(value)),
             }
         }
         Expr::TypedView { expr, .. } => eval_const_expr(expr, consts),

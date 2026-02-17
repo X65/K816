@@ -37,6 +37,12 @@ fn expand_item(
         Item::Const(const_decl) => {
             Item::Const(expand_const(const_decl, span, source_id, diagnostics))
         }
+        Item::ConstGroup(consts) => Item::ConstGroup(
+            consts
+                .iter()
+                .map(|const_decl| expand_const(const_decl, span, source_id, diagnostics))
+                .collect(),
+        ),
         Item::EvaluatorBlock(block) => Item::EvaluatorBlock(block.clone()),
         Item::Var(var) => Item::Var(expand_var(var, span, source_id, diagnostics)),
         Item::CodeBlock(block) => Item::CodeBlock(expand_code_block(block, source_id, diagnostics)),
@@ -284,9 +290,14 @@ fn expand_hla_stmt(
             indirect: *indirect,
             far: *far,
         },
-        HlaStmt::BranchGoto { mnemonic, target } => HlaStmt::BranchGoto {
+        HlaStmt::BranchGoto {
+            mnemonic,
+            target,
+            form,
+        } => HlaStmt::BranchGoto {
             mnemonic: mnemonic.clone(),
             target: expand_expr(target, span, source_id, diagnostics),
+            form: *form,
         },
         HlaStmt::Return { interrupt } => HlaStmt::Return {
             interrupt: *interrupt,
@@ -348,6 +359,7 @@ fn expand_hla_stmt(
         HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
         HlaStmt::PrefixConditional {
             skip_mnemonic,
+            form,
             body,
             else_body,
         } => {
@@ -373,6 +385,7 @@ fn expand_hla_stmt(
             });
             HlaStmt::PrefixConditional {
                 skip_mnemonic: skip_mnemonic.clone(),
+                form: *form,
                 body: expanded_body,
                 else_body: expanded_else,
             }

@@ -6,6 +6,8 @@ use crate::span::{Span, Spanned};
 pub enum NumFmt {
     #[default]
     Dec,          // plain decimal: 42
+    Char,         // character literal: 'A', '\n'
+    Zero(u8),     // zero-only decimal with explicit width: 00, 0000
     Percent(u8),  // %01001010 (digit count = 8)
     Bin(u8),      // 0b01001010 (digit count = 8)
     Dollar(u8),   // $FFE0 (digit count = 4)
@@ -51,6 +53,7 @@ pub struct File {
 pub enum Item {
     Segment(SegmentDecl),
     Const(ConstDecl),
+    ConstGroup(Vec<ConstDecl>),
     EvaluatorBlock(EvaluatorBlock),
     Var(VarDecl),
     DataBlock(DataBlock),
@@ -261,6 +264,13 @@ pub enum HlaCompareOp {
     Ge,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlaBranchForm {
+    FlagQuestion,
+    FlagPlain,
+    Symbolic,
+}
+
 #[derive(Debug, Clone)]
 pub struct HlaCondition {
     pub lhs: HlaRegister,
@@ -335,6 +345,7 @@ pub enum HlaStmt {
     BranchGoto {
         mnemonic: String,
         target: Expr,
+        form: HlaBranchForm,
     },
     Return {
         interrupt: bool,
@@ -382,6 +393,7 @@ pub enum HlaStmt {
     RepeatNop(usize),
     PrefixConditional {
         skip_mnemonic: String,
+        form: HlaBranchForm,
         body: Vec<Spanned<Stmt>>,
         else_body: Option<Vec<Spanned<Stmt>>>,
     },
@@ -433,6 +445,9 @@ pub enum ExprBinaryOp {
 pub enum ExprUnaryOp {
     LowByte,
     HighByte,
+    WordLittleEndian,
+    FarLittleEndian,
+    EvalBracketed,
 }
 
 #[derive(Debug, Clone)]

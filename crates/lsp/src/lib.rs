@@ -1316,6 +1316,18 @@ fn collect_symbols(file: &k816_core::ast::File) -> SymbolCollection {
                     scope: None,
                 });
             }
+            k816_core::ast::Item::ConstGroup(consts) => {
+                let range = ByteRange::from_span(item.span);
+                for const_decl in consts {
+                    out.symbols.push(SymbolDef {
+                        canonical: const_decl.name.clone(),
+                        name: const_decl.name.clone(),
+                        category: SymbolCategory::Constant,
+                        selection: range.clone(),
+                        scope: None,
+                    });
+                }
+            }
             k816_core::ast::Item::NamedDataBlock(block) => {
                 out.symbols.push(SymbolDef {
                     canonical: block.name.clone(),
@@ -1945,13 +1957,13 @@ fn document_symbols_from_ast(
     line_index: &LineIndex,
     text: &str,
 ) -> Vec<DocumentSymbol> {
-    file.items
-        .iter()
-        .filter_map(|item| match &item.node {
+    let mut symbols = Vec::new();
+    for item in &file.items {
+        match &item.node {
             k816_core::ast::Item::CodeBlock(block) => {
                 let children = stmt_document_symbols(&block.body, line_index, text);
                 let selection = block.name_span.unwrap_or(item.span);
-                Some(make_document_symbol(
+                symbols.push(make_document_symbol(
                     block.name.clone(),
                     SymbolCategory::Function,
                     item.span,
@@ -1963,9 +1975,9 @@ fn document_symbols_from_ast(
                     },
                     line_index,
                     text,
-                ))
+                ));
             }
-            k816_core::ast::Item::Var(var) => Some(make_document_symbol(
+            k816_core::ast::Item::Var(var) => symbols.push(make_document_symbol(
                 var.name.clone(),
                 SymbolCategory::Variable,
                 item.span,
@@ -1974,7 +1986,7 @@ fn document_symbols_from_ast(
                 line_index,
                 text,
             )),
-            k816_core::ast::Item::Const(const_decl) => Some(make_document_symbol(
+            k816_core::ast::Item::Const(const_decl) => symbols.push(make_document_symbol(
                 const_decl.name.clone(),
                 SymbolCategory::Constant,
                 item.span,
@@ -1983,7 +1995,20 @@ fn document_symbols_from_ast(
                 line_index,
                 text,
             )),
-            k816_core::ast::Item::NamedDataBlock(block) => Some(make_document_symbol(
+            k816_core::ast::Item::ConstGroup(consts) => {
+                for const_decl in consts {
+                    symbols.push(make_document_symbol(
+                        const_decl.name.clone(),
+                        SymbolCategory::Constant,
+                        item.span,
+                        item.span,
+                        None,
+                        line_index,
+                        text,
+                    ));
+                }
+            }
+            k816_core::ast::Item::NamedDataBlock(block) => symbols.push(make_document_symbol(
                 block.name.clone(),
                 SymbolCategory::DataBlock,
                 item.span,
@@ -1992,7 +2017,7 @@ fn document_symbols_from_ast(
                 line_index,
                 text,
             )),
-            k816_core::ast::Item::Segment(segment) => Some(make_document_symbol(
+            k816_core::ast::Item::Segment(segment) => symbols.push(make_document_symbol(
                 segment.name.clone(),
                 SymbolCategory::Segment,
                 item.span,
@@ -2002,12 +2027,15 @@ fn document_symbols_from_ast(
                 text,
             )),
             k816_core::ast::Item::Statement(stmt) => {
-                stmt_to_document_symbol(stmt, item.span, line_index, text)
+                if let Some(symbol) = stmt_to_document_symbol(stmt, item.span, line_index, text) {
+                    symbols.push(symbol);
+                }
             }
-            k816_core::ast::Item::EvaluatorBlock(_) => None,
-            k816_core::ast::Item::DataBlock(_) => None,
-        })
-        .collect()
+            k816_core::ast::Item::EvaluatorBlock(_) => {}
+            k816_core::ast::Item::DataBlock(_) => {}
+        }
+    }
+    symbols
 }
 
 fn stmt_document_symbols(

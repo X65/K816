@@ -249,6 +249,7 @@ pub fn lower(
             }
             Item::EvaluatorBlock(_) => {}
             Item::Const(_) => {}
+            Item::ConstGroup(_) => {}
             Item::Var(var) => {
                 emit_var_absolute_symbols(var, item.span, sema, &mut diagnostics, &mut ops);
             }
@@ -827,6 +828,7 @@ fn lower_stmt(
             skip_mnemonic,
             body,
             else_body,
+            ..
         }) => {
             if let Some(else_body) = else_body {
                 // if-else form: condition skips to else, then-body jumps over else
@@ -2128,7 +2130,9 @@ fn lower_hla_stmt(
             };
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
-        HlaStmt::BranchGoto { mnemonic, target } => {
+        HlaStmt::BranchGoto {
+            mnemonic, target, ..
+        } => {
             let instruction = Instruction {
                 mnemonic: mnemonic.clone(),
                 operand: Some(Operand::Value {
@@ -2657,7 +2661,86 @@ fn evaluate_byte_exprs(
     let mut bytes = Vec::with_capacity(values.len());
     let mut relocations = Vec::new();
 
-    for (index, value) in values.iter().enumerate() {
+    for value in values {
+        if let Expr::Unary { op, expr } = value {
+            match op {
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => {
+                    let byte_count = match op {
+                        ExprUnaryOp::WordLittleEndian => 2usize,
+                        ExprUnaryOp::FarLittleEndian => 3usize,
+                        _ => unreachable!(),
+                    };
+                    if let Some(number) = eval_to_number_strict(expr, sema, span, diagnostics) {
+                        let range_ok = match op {
+                            ExprUnaryOp::WordLittleEndian => (0..=0xFFFF).contains(&number),
+                            ExprUnaryOp::FarLittleEndian => (0..=0xFFFFFF).contains(&number),
+                            _ => false,
+                        };
+                        if !range_ok {
+                            let kind = match op {
+                                ExprUnaryOp::WordLittleEndian => "word",
+                                ExprUnaryOp::FarLittleEndian => "far address",
+                                _ => unreachable!(),
+                            };
+                            diagnostics.push(Diagnostic::error(
+                                span,
+                                format!("{kind} literal out of range: {number}"),
+                            ));
+                            return None;
+                        }
+                        let le = (number as u32).to_le_bytes();
+                        bytes.extend_from_slice(&le[..byte_count]);
+                        continue;
+                    }
+
+                    if let Some(symbol) = expr_ident_name(expr.as_ref()) {
+                        if !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
+                            match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+                                Ok(Some(_)) | Err(()) => {}
+                                Ok(None) => {
+                                    let Some(label) =
+                                        resolve_symbol(symbol, scope, span, diagnostics)
+                                    else {
+                                        return None;
+                                    };
+                                    let kind = match op {
+                                        ExprUnaryOp::WordLittleEndian => {
+                                            ByteRelocationKind::FullWord
+                                        }
+                                        ExprUnaryOp::FarLittleEndian => {
+                                            ByteRelocationKind::FullLong
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                    let offset = u32::try_from(bytes.len())
+                                        .expect("byte expression offset should fit in u32");
+                                    for _ in 0..byte_count {
+                                        bytes.push(0);
+                                    }
+                                    relocations.push(ByteRelocation {
+                                        offset,
+                                        kind,
+                                        label,
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            "packed address expression must be a constant or plain symbol reference",
+                        )
+                        .with_help("supported symbolic forms are '&&label' and '&&&label'"),
+                    );
+                    return None;
+                }
+                ExprUnaryOp::LowByte | ExprUnaryOp::HighByte | ExprUnaryOp::EvalBracketed => {}
+            }
+        }
+
         if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
             match u8::try_from(number) {
                 Ok(byte) => bytes.push(byte),
@@ -2682,9 +2765,11 @@ fn evaluate_byte_exprs(
             if let Some((kind, label)) =
                 resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
             {
+                let offset =
+                    u32::try_from(bytes.len()).expect("byte expression offset should fit in u32");
                 bytes.push(0);
                 relocations.push(ByteRelocation {
-                    offset: u32::try_from(index).expect("byte expression index should fit in u32"),
+                    offset,
                     kind,
                     label,
                 });
@@ -2973,6 +3058,8 @@ fn eval_to_number_strict(
             match op {
                 ExprUnaryOp::LowByte => Some(value & 0xFF),
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
+                ExprUnaryOp::EvalBracketed => Some(value),
             }
         }
         Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
@@ -3148,6 +3235,9 @@ fn resolve_symbolic_byte_relocation(
     let kind = match op {
         ExprUnaryOp::LowByte => ByteRelocationKind::LowByte,
         ExprUnaryOp::HighByte => ByteRelocationKind::HighByte,
+        ExprUnaryOp::WordLittleEndian
+        | ExprUnaryOp::FarLittleEndian
+        | ExprUnaryOp::EvalBracketed => return None,
     };
 
     let Some(symbol) = expr_ident_name(expr.as_ref()) else {
@@ -3553,6 +3643,8 @@ fn eval_to_number(
             match op {
                 ExprUnaryOp::LowByte => Some(value & 0xFF),
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
+                ExprUnaryOp::EvalBracketed => Some(value),
             }
         }
         Expr::TypedView { expr, .. } => eval_to_number(expr, scope, sema, span, diagnostics),

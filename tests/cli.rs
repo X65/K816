@@ -1056,7 +1056,7 @@ fn fmt_formats_file_in_place() {
     cmd.arg("fmt").arg(&input).assert().success();
 
     let formatted = std::fs::read_to_string(&input).expect("failed to read formatted file");
-    assert_eq!(formatted, "func main {\n  nop\n}\n");
+    assert_eq!(formatted, "func main {\n    nop\n}\n");
 }
 
 #[test]
@@ -1069,7 +1069,7 @@ fn fmt_check_exits_zero_when_formatted() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main {\n    nop\n}\n").expect("failed to write input");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
     cmd.arg("fmt")

@@ -1,7 +1,7 @@
 use crate::ast::{
     CallStmt, CodeBlock, Comment, ConstDecl, DataArg, DataBlock, DataCommand, DataWidth,
-    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaCompareOp, HlaCondition,
-    HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs,
+    EvaluatorBlock, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaBranchForm, HlaCompareOp,
+    HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs,
     HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, IndexRegister, Instruction, Item,
     LabelDecl, ModeContract, NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt,
     Operand, OperandAddrMode, RegWidth, SegmentDecl, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
@@ -333,23 +333,6 @@ fn preprocess_source(source_text: &str) -> String {
                 continue;
             }
         }
-        if trimmed.starts_with("const ") {
-            let indent = raw_line
-                .chars()
-                .take_while(|ch| ch.is_ascii_whitespace())
-                .collect::<String>();
-            let payload = trimmed.trim_start_matches("const ").trim();
-            if payload.contains(',') {
-                for part in payload.split(',') {
-                    let part = part.trim();
-                    if !part.is_empty() {
-                        out.push(format!("{indent}const {part}"));
-                    }
-                }
-                continue;
-            }
-        }
-
         if trimmed.starts_with("data ") && trimmed.ends_with('{') {
             data_block_depth += 1;
         } else if data_block_depth > 0 && trimmed == "}" {
@@ -527,7 +510,7 @@ where
         .ignore_then(ident_parser())
         .map(|name| Item::Segment(SegmentDecl { name }));
 
-    let const_item = const_decl_parser(source_id).map(Item::Const);
+    let const_item = const_decl_item_parser(source_id);
 
     let var_item = var_decl_parser(source_id).map(Item::Var);
 
@@ -886,20 +869,22 @@ where
                     expr: Box::new(expr),
                 }]
             }))
-            .or(just(TokenKind::Amp)
-                .ignore_then(ident_parser())
-                .map(|name| {
-                    vec![
-                        Expr::Unary {
-                            op: ExprUnaryOp::LowByte,
-                            expr: Box::new(Expr::Ident(name.clone())),
-                        },
-                        Expr::Unary {
-                            op: ExprUnaryOp::HighByte,
-                            expr: Box::new(Expr::Ident(name)),
-                        },
-                    ]
-                })),
+            .or(just(TokenKind::Amp).ignore_then(
+                just(TokenKind::Amp)
+                    .ignore_then(expr_parser())
+                    .map(|expr| {
+                        vec![Expr::Unary {
+                            op: ExprUnaryOp::FarLittleEndian,
+                            expr: Box::new(expr),
+                        }]
+                    })
+                    .or(expr_parser().map(|expr| {
+                        vec![Expr::Unary {
+                            op: ExprUnaryOp::WordLittleEndian,
+                            expr: Box::new(expr),
+                        }]
+                    })),
+            )),
     );
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
@@ -1140,20 +1125,22 @@ where
                     expr: Box::new(expr),
                 }]
             }))
-            .or(just(TokenKind::Amp)
-                .ignore_then(ident_parser())
-                .map(|name| {
-                    vec![
-                        Expr::Unary {
-                            op: ExprUnaryOp::LowByte,
-                            expr: Box::new(Expr::Ident(name.clone())),
-                        },
-                        Expr::Unary {
-                            op: ExprUnaryOp::HighByte,
-                            expr: Box::new(Expr::Ident(name)),
-                        },
-                    ]
-                })),
+            .or(just(TokenKind::Amp).ignore_then(
+                just(TokenKind::Amp)
+                    .ignore_then(expr_parser())
+                    .map(|expr| {
+                        vec![Expr::Unary {
+                            op: ExprUnaryOp::FarLittleEndian,
+                            expr: Box::new(expr),
+                        }]
+                    })
+                    .or(expr_parser().map(|expr| {
+                        vec![Expr::Unary {
+                            op: ExprUnaryOp::WordLittleEndian,
+                            expr: Box::new(expr),
+                        }]
+                    })),
+            )),
     );
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
@@ -1291,20 +1278,47 @@ where
     .boxed()
 }
 
-fn const_decl_parser<'src, I>(
+fn const_decl_binding_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, ConstDecl, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Const)
-        .ignore_then(ident_parser())
+    ident_parser()
         .then_ignore(just(TokenKind::Eq))
         .then(spanned(expr_parser(), source_id))
         .map(|(name, initializer)| ConstDecl {
             name,
             initializer: initializer.node,
             initializer_span: Some(initializer.span),
+        })
+}
+
+fn const_decl_item_parser<'src, I>(
+    source_id: SourceId,
+) -> impl chumsky::Parser<'src, I, Item, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Const)
+        .ignore_then(
+            const_decl_binding_parser(source_id)
+                .then(
+                    just(TokenKind::Comma)
+                        .ignore_then(const_decl_binding_parser(source_id))
+                        .repeated()
+                        .collect::<Vec<_>>(),
+                ),
+        )
+        .map(|(head, tail)| {
+            if tail.is_empty() {
+                Item::Const(head)
+            } else {
+                let mut decls = Vec::with_capacity(tail.len() + 1);
+                decls.push(head);
+                decls.extend(tail);
+                Item::ConstGroup(decls)
+            }
         })
 }
 
@@ -1433,7 +1447,7 @@ where
 }
 
 fn prefix_condition_parser<'src, I>()
--> impl chumsky::Parser<'src, I, &'static str, ParseExtra<'src>> + Clone
+-> impl chumsky::Parser<'src, I, (&'static str, HlaBranchForm), ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1443,10 +1457,10 @@ where
             .ignore_then(
                 just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
-                    .to("bcc") // execute when C=1, skip when C=0
+                    .to(("bcc", HlaBranchForm::FlagQuestion)) // execute when C=1, skip when C=0
                     .or(just(TokenKind::Minus)
                         .then_ignore(just(TokenKind::Question))
-                        .to("bcs")), // execute when C=0, skip when C=1
+                        .to(("bcs", HlaBranchForm::FlagQuestion))), // execute when C=0, skip when C=1
             );
 
     let z_flag =
@@ -1454,10 +1468,10 @@ where
             .ignore_then(
                 just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
-                    .to("bne") // execute when Z=1, skip when Z=0
+                    .to(("bne", HlaBranchForm::FlagQuestion)) // execute when Z=1, skip when Z=0
                     .or(just(TokenKind::Minus)
                         .then_ignore(just(TokenKind::Question))
-                        .to("beq")), // execute when Z=0, skip when Z=1
+                        .to(("beq", HlaBranchForm::FlagQuestion))), // execute when Z=0, skip when Z=1
             );
 
     let n_flag =
@@ -1465,10 +1479,10 @@ where
             .ignore_then(
                 just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
-                    .to("bpl") // execute when N=1, skip when N=0
+                    .to(("bpl", HlaBranchForm::FlagQuestion)) // execute when N=1, skip when N=0
                     .or(just(TokenKind::Minus)
                         .then_ignore(just(TokenKind::Question))
-                        .to("bmi")), // execute when N=0, skip when N=1
+                        .to(("bmi", HlaBranchForm::FlagQuestion))), // execute when N=0, skip when N=1
             );
 
     // v+? v-? (with trailing ?); also accepts o+?/o-? as alias
@@ -1477,25 +1491,32 @@ where
             .ignore_then(
                 just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))
-                    .to("bvc") // execute when V=1, skip when V=0
+                    .to(("bvc", HlaBranchForm::FlagQuestion)) // execute when V=1, skip when V=0
                     .or(just(TokenKind::Minus)
                         .then_ignore(just(TokenKind::Question))
-                        .to("bvs")), // execute when V=0, skip when V=1
+                        .to(("bvs", HlaBranchForm::FlagQuestion))), // execute when V=0, skip when V=1
             );
 
     // Comparison-based: >= < == != <0 >=0 <<= >>=
     let cmp_based = just(TokenKind::GtEq)
-        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
-        .map(|zero| if zero.is_some() { "bmi" } else { "bcc" }) // >=0: exec N=0, skip N=1; >=: exec C=1, skip C=0
+        .ignore_then(zero_number_token().or_not())
+        .map(|zero| if zero.is_some() { ("bmi", HlaBranchForm::Symbolic) } else { ("bcc", HlaBranchForm::Symbolic) }) // >=0: exec N=0, skip N=1; >=: exec C=1, skip C=0
         .or(just(TokenKind::Lt)
-            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
-            .map(|zero| if zero.is_some() { "bpl" } else { "bcs" })) // <0: exec N=1, skip N=0; <: exec C=0, skip C=1
-        .or(just(TokenKind::EqEq).to("bne")) // ==: exec Z=1, skip Z=0
-        .or(just(TokenKind::BangEq).to("beq")) // !=: exec Z=0, skip Z=1
-        .or(just(TokenKind::LtLtEq).to("bvc")) // <<=: exec V=1, skip V=0
-        .or(just(TokenKind::GtGtEq).to("bvs")); // >>=: exec V=0, skip V=1
+            .ignore_then(zero_number_token().or_not())
+            .map(|zero| if zero.is_some() { ("bpl", HlaBranchForm::Symbolic) } else { ("bcs", HlaBranchForm::Symbolic) })) // <0: exec N=1, skip N=0; <: exec C=0, skip C=1
+        .or(just(TokenKind::EqEq).to(("bne", HlaBranchForm::Symbolic))) // ==: exec Z=1, skip Z=0
+        .or(just(TokenKind::BangEq).to(("beq", HlaBranchForm::Symbolic))) // !=: exec Z=0, skip Z=1
+        .or(just(TokenKind::LtLtEq).to(("bvc", HlaBranchForm::Symbolic))) // <<=: exec V=1, skip V=0
+        .or(just(TokenKind::GtGtEq).to(("bvs", HlaBranchForm::Symbolic))); // >>=: exec V=0, skip V=1
 
     c_flag.or(z_flag).or(n_flag).or(v_flag).or(cmp_based)
+}
+
+fn zero_number_token<'src, I>() -> impl chumsky::Parser<'src, I, (), ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    chumsky::select! { TokenKind::Number(NumLit { value: 0, .. }) => () }
 }
 
 fn stmt_parser<'src, I>(
@@ -1736,9 +1757,10 @@ where
             let prefix_conditional = prefix_condition_parser()
                 .then(block_body.clone())
                 .then(else_body_inner)
-                .map(|((skip_mnemonic, body), else_body)| {
+                .map(|(((skip_mnemonic, form), body), else_body)| {
                     Stmt::Hla(HlaStmt::PrefixConditional {
                         skip_mnemonic: skip_mnemonic.to_string(),
+                        form,
                         body,
                         else_body,
                     })
@@ -1787,9 +1809,10 @@ where
     let prefix_conditional_top = prefix_condition_parser()
         .then(block_body_top.clone())
         .then(else_body_top)
-        .map(|((skip_mnemonic, body), else_body)| {
+        .map(|(((skip_mnemonic, form), body), else_body)| {
             Stmt::Hla(HlaStmt::PrefixConditional {
                 skip_mnemonic: skip_mnemonic.to_string(),
+                form,
                 body,
                 else_body,
             })
@@ -2475,6 +2498,7 @@ where
         Ok(Stmt::Hla(HlaStmt::BranchGoto {
             mnemonic: mnemonic.to_string(),
             target,
+            form: HlaBranchForm::FlagQuestion,
         }))
     });
 
@@ -2483,36 +2507,37 @@ where
         chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
             .ignore_then(
                 just(TokenKind::Plus)
-                    .to("bvs")
-                    .or(just(TokenKind::Minus).to("bvc")),
+                    .to(("bvs", HlaBranchForm::FlagPlain))
+                    .or(just(TokenKind::Minus).to(("bvc", HlaBranchForm::FlagPlain))),
             );
 
     // <0 goto → bmi, >=0 goto → bpl
     let signed_goto = just(TokenKind::Lt)
-        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
-        .to("bmi")
+        .ignore_then(zero_number_token())
+        .to(("bmi", HlaBranchForm::Symbolic))
         .or(just(TokenKind::GtEq)
-            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
-            .to("bpl"));
+            .ignore_then(zero_number_token())
+            .to(("bpl", HlaBranchForm::Symbolic)));
 
     // <<= goto → bvs, >>= goto → bvc
     let overflow_goto = just(TokenKind::LtLtEq)
-        .to("bvs")
-        .or(just(TokenKind::GtGtEq).to("bvc"));
+        .to(("bvs", HlaBranchForm::Symbolic))
+        .or(just(TokenKind::GtGtEq).to(("bvc", HlaBranchForm::Symbolic)));
 
     let symbolic_branch_goto_stmt = v_flag_goto
         .or(signed_goto)
         .or(overflow_goto)
-        .or(just(TokenKind::Lt).to("bcc"))
-        .or(just(TokenKind::GtEq).to("bcs"))
-        .or(just(TokenKind::EqEq).to("beq"))
-        .or(just(TokenKind::BangEq).to("bne"))
+        .or(just(TokenKind::Lt).to(("bcc", HlaBranchForm::Symbolic)))
+        .or(just(TokenKind::GtEq).to(("bcs", HlaBranchForm::Symbolic)))
+        .or(just(TokenKind::EqEq).to(("beq", HlaBranchForm::Symbolic)))
+        .or(just(TokenKind::BangEq).to(("bne", HlaBranchForm::Symbolic)))
         .then_ignore(goto_kw.clone())
         .then(expr_parser())
-        .map(|(mnemonic, target)| {
+        .map(|((mnemonic, form), target)| {
             Stmt::Hla(HlaStmt::BranchGoto {
                 mnemonic: mnemonic.to_string(),
                 target,
+                form,
             })
         });
 
@@ -2551,10 +2576,10 @@ where
         chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("repeat") => () };
 
     let branch_condition = just(TokenKind::Lt)
-        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
+        .ignore_then(zero_number_token().or_not())
         .map(|zero| if zero.is_some() { "bmi" } else { "bcc" })
         .or(just(TokenKind::GtEq)
-            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })).or_not())
+            .ignore_then(zero_number_token().or_not())
             .map(|zero| if zero.is_some() { "bpl" } else { "bcs" }))
         .or(just(TokenKind::EqEq).to("beq"))
         .or(just(TokenKind::BangEq).to("bne"))
@@ -2864,10 +2889,10 @@ where
 
     // <0 → BMI, >=0 → BPL
     let signed_cmp = just(TokenKind::Lt)
-        .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
+        .ignore_then(zero_number_token())
         .to(do_close_branch("bmi"))
         .or(just(TokenKind::GtEq)
-            .ignore_then(just(TokenKind::Number(NumLit { value: 0, fmt: NumFmt::Dec })))
+            .ignore_then(zero_number_token())
             .to(do_close_branch("bpl")));
 
     // <<= → BVS, >>= → BVC
@@ -3444,7 +3469,10 @@ fn parse_eval_expr_token(value: &str) -> Expr {
     }
 
     if is_ident_text(trimmed) {
-        return Expr::Ident(trimmed.to_string());
+        return Expr::Unary {
+            op: ExprUnaryOp::EvalBracketed,
+            expr: Box::new(Expr::Ident(trimmed.to_string())),
+        };
     }
 
     // Keep everything else (numbers, expressions) as EvalText so the
@@ -3466,10 +3494,13 @@ fn parse_eval_expr_token_with_token_bounds(
         let leading_ws = value.len() - value.trim_start().len();
         let start = token_start + 1 + leading_ws;
         let end = start + trimmed.len();
-        return Expr::IdentSpanned {
-            name: trimmed.to_string(),
-            start,
-            end,
+        return Expr::Unary {
+            op: ExprUnaryOp::EvalBracketed,
+            expr: Box::new(Expr::IdentSpanned {
+                name: trimmed.to_string(),
+                start,
+                end,
+            }),
         };
     }
 
@@ -3518,6 +3549,8 @@ fn eval_static_expr(expr: &Expr) -> Option<i64> {
             match op {
                 ExprUnaryOp::LowByte => Some(value & 0xFF),
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
+                ExprUnaryOp::EvalBracketed => Some(value),
             }
         }
         Expr::TypedView { expr, .. } => eval_static_expr(expr),
@@ -3598,9 +3631,13 @@ mod tests {
     fn preprocesses_comma_separated_const_declarations() {
         let source = "const A = 1, B = 2\n";
         let file = parse(SourceId(0), source).expect("parse");
-        assert_eq!(file.items.len(), 2);
-        assert!(matches!(file.items[0].node, Item::Const(_)));
-        assert!(matches!(file.items[1].node, Item::Const(_)));
+        assert_eq!(file.items.len(), 1);
+        let Item::ConstGroup(consts) = &file.items[0].node else {
+            panic!("expected const group");
+        };
+        assert_eq!(consts.len(), 2);
+        assert_eq!(consts[0].name, "A");
+        assert_eq!(consts[1].name, "B");
     }
 
     #[test]
@@ -4100,6 +4137,93 @@ mod tests {
     }
 
     #[test]
+    fn parses_packed_address_operators_in_bytes_entries() {
+        let source = "data bytes {\n  &&ptr\n  &&&ptr\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::NamedDataBlock(block) = &file.items[0].node else {
+            panic!("expected named data block");
+        };
+        assert_eq!(block.entries.len(), 2);
+
+        let NamedDataEntry::Bytes(first) = &block.entries[0].node else {
+            panic!("expected bytes entry");
+        };
+        assert_eq!(first.len(), 1);
+        assert!(matches!(
+            &first[0],
+            Expr::Unary {
+                op: ExprUnaryOp::WordLittleEndian,
+                expr
+            } if is_ident_named(expr.as_ref(), "ptr")
+        ));
+
+        let NamedDataEntry::Bytes(second) = &block.entries[1].node else {
+            panic!("expected bytes entry");
+        };
+        assert_eq!(second.len(), 1);
+        assert!(matches!(
+            &second[0],
+            Expr::Unary {
+                op: ExprUnaryOp::FarLittleEndian,
+                expr
+            } if is_ident_named(expr.as_ref(), "ptr")
+        ));
+    }
+
+    #[test]
+    fn keeps_bracketed_eval_ident_in_data_entries() {
+        let source = "data text_data {\n  evaluator [ SCALE = 2 ]\n  [SCALE]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::NamedDataBlock(block) = &file.items[0].node else {
+            panic!("expected named data block");
+        };
+        assert_eq!(block.entries.len(), 2);
+
+        let NamedDataEntry::Bytes(values) = &block.entries[1].node else {
+            panic!("expected bytes entry");
+        };
+        assert_eq!(values.len(), 1);
+        assert!(matches!(
+            &values[0],
+            Expr::Unary {
+                op: ExprUnaryOp::EvalBracketed,
+                expr
+            } if is_ident_named(expr.as_ref(), "SCALE")
+        ));
+    }
+
+    #[test]
+    fn keeps_bracketed_eval_ident_in_register_assignments() {
+        let source = "[ A = 20, B = 30 ]\nfunc main {\n  a=[A]\n  x=[B]\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &file.items[1].node else {
+            panic!("expected code block");
+        };
+        assert_eq!(block.body.len(), 2);
+
+        let expect_bracketed_assign = |stmt: &Stmt, register: HlaCpuRegister, name: &str| {
+            let Stmt::Hla(HlaStmt::RegisterAssign {
+                register: dst,
+                rhs,
+            }) = stmt
+            else {
+                panic!("expected HLA register assignment");
+            };
+            assert_eq!(*dst, register);
+            assert!(matches!(
+                &rhs.expr,
+                Expr::Unary {
+                    op: ExprUnaryOp::EvalBracketed,
+                    expr
+                } if is_ident_named(expr.as_ref(), name)
+            ));
+        };
+
+        expect_bracketed_assign(&block.body[0].node, HlaCpuRegister::A, "A");
+        expect_bracketed_assign(&block.body[1].node, HlaCpuRegister::X, "B");
+    }
+
+    #[test]
     fn parses_operand_modes_with_y_and_indirect_forms() {
         let source =
             "var ptr = 0x20\nfunc main {\n  a=ptr,y\n  a=(ptr)\n  a=(ptr,x)\n  a=(ptr),y\n}\n";
@@ -4237,5 +4361,99 @@ mod tests {
             )),
             "unexpected parser errors: {errors:#?}"
         );
+    }
+
+    #[test]
+    fn keeps_flag_and_symbolic_branch_goto_forms_distinct() {
+        let source = "func main {\n  c-? goto target\n  < goto target\n  v+ goto target\n  <<= goto target\n}\n";
+        let parsed = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &parsed.items[0].node else {
+            panic!("expected code block");
+        };
+
+        let first = &block.body[0].node;
+        let second = &block.body[1].node;
+        let third = &block.body[2].node;
+        let fourth = &block.body[3].node;
+
+        assert!(matches!(
+            first,
+            Stmt::Hla(HlaStmt::BranchGoto {
+                mnemonic,
+                form: HlaBranchForm::FlagQuestion,
+                ..
+            }) if mnemonic == "bcc"
+        ));
+        assert!(matches!(
+            second,
+            Stmt::Hla(HlaStmt::BranchGoto {
+                mnemonic,
+                form: HlaBranchForm::Symbolic,
+                ..
+            }) if mnemonic == "bcc"
+        ));
+        assert!(matches!(
+            third,
+            Stmt::Hla(HlaStmt::BranchGoto {
+                mnemonic,
+                form: HlaBranchForm::FlagPlain,
+                ..
+            }) if mnemonic == "bvs"
+        ));
+        assert!(matches!(
+            fourth,
+            Stmt::Hla(HlaStmt::BranchGoto {
+                mnemonic,
+                form: HlaBranchForm::Symbolic,
+                ..
+            }) if mnemonic == "bvs"
+        ));
+    }
+
+    #[test]
+    fn keeps_prefix_flag_and_symbolic_forms_distinct() {
+        let source = "func main {\n  c-?{ a=1 }\n  <{ a=2 }\n  v+?{ a=3 }\n  >>={ a=4 }\n}\n";
+        let parsed = parse(SourceId(0), source).expect("parse");
+        let Item::CodeBlock(block) = &parsed.items[0].node else {
+            panic!("expected code block");
+        };
+
+        let first = &block.body[0].node;
+        let second = &block.body[1].node;
+        let third = &block.body[2].node;
+        let fourth = &block.body[3].node;
+
+        assert!(matches!(
+            first,
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic,
+                form: HlaBranchForm::FlagQuestion,
+                ..
+            }) if skip_mnemonic == "bcs"
+        ));
+        assert!(matches!(
+            second,
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic,
+                form: HlaBranchForm::Symbolic,
+                ..
+            }) if skip_mnemonic == "bcs"
+        ));
+        assert!(matches!(
+            third,
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic,
+                form: HlaBranchForm::FlagQuestion,
+                ..
+            }) if skip_mnemonic == "bvc"
+        ));
+        assert!(matches!(
+            fourth,
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                skip_mnemonic,
+                form: HlaBranchForm::Symbolic,
+                ..
+            }) if skip_mnemonic == "bvs"
+        ));
     }
 }

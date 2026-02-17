@@ -181,7 +181,8 @@
     "keybindings": [
       {
         "command": "k816.build",
-        "key": "f7"
+        "key": "f7",
+        "when": "editorTextFocus && editorLangId == k65"
       }
     ],
     "configuration": {

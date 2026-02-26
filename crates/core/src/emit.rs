@@ -295,11 +295,13 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                             force_far: *force_far,
                             mode: to_isa_address_mode(*mode),
                         },
-                        AddressValue::Label(_) => OperandShape::Address {
-                            literal: None,
-                            force_far: *force_far,
-                            mode: to_isa_address_mode(*mode),
-                        },
+                        AddressValue::Label(_) | AddressValue::LabelOffset { .. } => {
+                            OperandShape::Address {
+                                literal: None,
+                                force_far: *force_far,
+                                mode: to_isa_address_mode(*mode),
+                            }
+                        }
                     },
                     Some(OperandOp::BlockMove { src, dst }) => {
                         OperandShape::BlockMove(*src, *dst)
@@ -435,7 +437,8 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                                 );
                             }
                         }
-                        AddressValue::Label(label) => {
+                        AddressValue::Label(label)
+                        | AddressValue::LabelOffset { label, .. } => {
                             segment.bytes.resize(segment.bytes.len() + width, 0);
                             fixups.push(Fixup {
                                 segment: current_segment.clone(),

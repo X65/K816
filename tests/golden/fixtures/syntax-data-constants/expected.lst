@@ -1,0 +1,13 @@
+[default]
+000000: 46 47 52 53 57 73 31 AD 00 00 AD 01 00 BD 00 00
+000010: 60
+
+
+[data obj#0 default::task_status_symbol]
+000000: <7 bytes of data>
+
+[disasm obj#0 default::main]
+000007: AD 00 00    lda $0000
+00000A: AD 01 00    lda $0001
+00000D: BD 00 00    lda $0000,X
+000010: 60          rts

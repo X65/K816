@@ -1,0 +1,15 @@
+data task_status_symbol {
+    'F'     // TASK_FREE
+    'G'     // TASK_GENESIS
+    'R'     // TASK_RUNNING
+    'S'     // TASK_STOPPED
+    'W'     // TASK_WAITING
+    's'     // TASK_SIGNAL
+    '1'     // TASK_SINGLE
+}
+
+func main {
+    lda task_status_symbol
+    lda task_status_symbol + 1
+    lda task_status_symbol,x
+}

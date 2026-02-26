@@ -3778,21 +3778,32 @@ fn lower_address_operand(
             lower_address_operand(expr, scope, sema, span, diagnostics, force_far, mode)
         }
         Expr::Index { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
-            let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
-                return None;
-            };
-            let Ok(address) = u32::try_from(value) else {
-                diagnostics.push(Diagnostic::error(
-                    span,
-                    format!("address cannot be negative: {value}"),
-                ));
-                return None;
-            };
-            Some(OperandOp::Address {
-                value: AddressValue::Literal(address),
-                force_far,
-                mode,
-            })
+            // Try compile-time evaluation first (works for vars, consts, symbolic subscripts).
+            let saved_diag_len = diagnostics.len();
+            if let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) {
+                let Ok(address) = u32::try_from(value) else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("address cannot be negative: {value}"),
+                    ));
+                    return None;
+                };
+                return Some(OperandOp::Address {
+                    value: AddressValue::Literal(address),
+                    force_far,
+                    mode,
+                });
+            }
+            // eval_to_number failed — try to decompose as label ± constant for link-time
+            // resolution (e.g. `data_block_name + 1`).
+            if let Some(result) =
+                try_label_offset_operand(expr, scope, sema, span, force_far, mode)
+            {
+                // Remove diagnostics added by the failed eval_to_number attempt.
+                diagnostics.truncate(saved_diag_len);
+                return Some(result);
+            }
+            None
         }
         Expr::EvalText(_) => {
             diagnostics.push(Diagnostic::error(
@@ -4102,6 +4113,50 @@ fn resolve_operand_ident(
 
     Some(OperandOp::Address {
         value: AddressValue::Label(name.to_string()),
+        force_far,
+        mode,
+    })
+}
+
+/// Attempt to decompose a binary expression into `label ± constant` for link-time resolution.
+/// Returns `Some(OperandOp)` with `AddressValue::LabelOffset` if the expression is
+/// `ident + number`, `number + ident`, or `ident - number` where `ident` is not a
+/// compile-time-resolvable name (var, const, symbolic subscript).
+fn try_label_offset_operand(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    force_far: bool,
+    mode: AddressOperandMode,
+) -> Option<OperandOp> {
+    let Expr::Binary { op, lhs, rhs } = expr else {
+        return None;
+    };
+    let (name, addend) = match (op, lhs.as_ref(), rhs.as_ref()) {
+        (ExprBinaryOp::Add, Expr::Ident(name), Expr::Number(n, _))
+        | (ExprBinaryOp::Add, Expr::IdentSpanned { name, .. }, Expr::Number(n, _))
+        | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::Ident(name))
+        | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::IdentSpanned { name, .. }) => {
+            (name.as_str(), *n as i32)
+        }
+        (ExprBinaryOp::Sub, Expr::Ident(name), Expr::Number(n, _))
+        | (ExprBinaryOp::Sub, Expr::IdentSpanned { name, .. }, Expr::Number(n, _)) => {
+            (name.as_str(), -(*n as i32))
+        }
+        _ => return None,
+    };
+    // If the name resolves at compile time (var, const, symbolic subscript), this
+    // function should not handle it — eval_to_number should have succeeded.
+    if sema.vars.contains_key(name)
+        || sema.consts.contains_key(name)
+    {
+        return None;
+    }
+    // Resolve the symbol name (handles local label scoping).
+    let label = resolve_symbol(name, scope, span, &mut Vec::new())?;
+    Some(OperandOp::Address {
+        value: AddressValue::LabelOffset { label, addend },
         force_far,
         mode,
     })

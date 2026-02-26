@@ -112,4 +112,5 @@ pub enum OperandOp {
 pub enum AddressValue {
     Literal(u32),
     Label(String),
+    LabelOffset { label: String, addend: i32 },
 }

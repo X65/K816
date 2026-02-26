@@ -45,6 +45,7 @@ struct Fixup {
     width: u8,
     kind: RelocationKind,
     label: String,
+    addend: i32,
     span: Span,
     call_metadata: Option<CallMetadata>,
 }
@@ -359,6 +360,7 @@ pub fn emit_object(
                         width,
                         kind,
                         label: relocation.label.clone(),
+                        addend: 0,
                         span: relocation_span,
                         call_metadata: None,
                     });
@@ -384,11 +386,13 @@ pub fn emit_object(
                             force_far: *force_far,
                             mode: to_isa_address_mode(*mode),
                         },
-                        AddressValue::Label(_) => OperandShape::Address {
-                            literal: None,
-                            force_far: *force_far,
-                            mode: to_isa_address_mode(*mode),
-                        },
+                        AddressValue::Label(_) | AddressValue::LabelOffset { .. } => {
+                            OperandShape::Address {
+                                literal: None,
+                                force_far: *force_far,
+                                mode: to_isa_address_mode(*mode),
+                            }
+                        }
                     },
                     Some(OperandOp::BlockMove { src, dst }) => {
                         OperandShape::BlockMove(*src, *dst)
@@ -507,6 +511,7 @@ pub fn emit_object(
                             width: reloc_width,
                             kind: reloc_kind,
                             label: label.clone(),
+                            addend: 0,
                             span: relocation_span,
                             call_metadata: None,
                         });
@@ -525,7 +530,12 @@ pub fn emit_object(
                                 emit_literal(segment, *literal, width, op.span, &mut diagnostics)
                             }
                         }
-                        AddressValue::Label(label) => {
+                        AddressValue::Label(label)
+                        | AddressValue::LabelOffset { label, .. } => {
+                            let addend = match value {
+                                AddressValue::LabelOffset { addend, .. } => *addend,
+                                _ => 0,
+                            };
                             emit_zeroes(segment, width, op.span, &mut diagnostics);
                             let relocation_span =
                                 relocation_span_for_label(source_map, op.span, label);
@@ -543,6 +553,7 @@ pub fn emit_object(
                                     RelocationKind::Absolute
                                 },
                                 label: label.clone(),
+                                addend,
                                 span: relocation_span,
                                 call_metadata: if is_call {
                                     Some(CallMetadata {
@@ -640,6 +651,7 @@ pub fn emit_object(
             width: fixup.width,
             kind: fixup.kind,
             symbol: fixup.label.clone(),
+            addend: fixup.addend,
             source: source_location_for_span(source_map, fixup.span),
             call_metadata: fixup.call_metadata,
         });

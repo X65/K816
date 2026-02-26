@@ -527,13 +527,15 @@ pub fn link_objects_with_options(
                 bail!("relocation writes outside memory range");
             }
 
+            let effective_addr =
+                (target.addr as i64 + reloc.addend as i64) as u32;
             match reloc.kind {
                 RelocationKind::Absolute => {
-                    write_value(&mut mem.bytes[rel_idx..end_idx], target.addr, reloc.width)?
+                    write_value(&mut mem.bytes[rel_idx..end_idx], effective_addr, reloc.width)?
                 }
                 RelocationKind::Relative => match reloc.width {
                     1 => {
-                        let delta = target.addr as i64 - (site_addr as i64 + 1);
+                        let delta = effective_addr as i64 - (site_addr as i64 + 1);
                         if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
                             bail!(
                                 "relative relocation to '{}' out of range at {:#X}",
@@ -544,7 +546,7 @@ pub fn link_objects_with_options(
                         mem.bytes[rel_idx] = delta as i8 as u8;
                     }
                     2 => {
-                        let delta = target.addr as i64 - (site_addr as i64 + 2);
+                        let delta = effective_addr as i64 - (site_addr as i64 + 2);
                         if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
                             bail!(
                                 "relative relocation to '{}' out of range at {:#X}",
@@ -560,13 +562,13 @@ pub fn link_objects_with_options(
                     if reloc.width != 1 {
                         bail!("low-byte relocation width must be 1");
                     }
-                    mem.bytes[rel_idx] = (target.addr & 0xFF) as u8;
+                    mem.bytes[rel_idx] = (effective_addr & 0xFF) as u8;
                 }
                 RelocationKind::HighByte => {
                     if reloc.width != 1 {
                         bail!("high-byte relocation width must be 1");
                     }
-                    mem.bytes[rel_idx] = ((target.addr >> 8) & 0xFF) as u8;
+                    mem.bytes[rel_idx] = ((effective_addr >> 8) & 0xFF) as u8;
                 }
             }
         }
@@ -2008,6 +2010,7 @@ mod tests {
                 width: 1,
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
+                addend: 0,
                 source: None,
                 call_metadata: None,
             }],
@@ -2056,6 +2059,7 @@ mod tests {
                 width: 2,
                 kind: RelocationKind::Absolute,
                 symbol: "abs_target".to_string(),
+                addend: 0,
                 source: None,
                 call_metadata: None,
             }],

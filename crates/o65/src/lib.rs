@@ -3,7 +3,7 @@ use indexmap::IndexMap;
 
 const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 7;
+const PAYLOAD_VERSION: u16 = 8;
 
 #[derive(Debug, Clone, Default)]
 pub struct O65Object {
@@ -91,6 +91,7 @@ pub struct Relocation {
     pub width: u8,
     pub kind: RelocationKind,
     pub symbol: String,
+    pub addend: i32,
     pub source: Option<SourceLocation>,
     pub call_metadata: Option<CallMetadata>,
 }
@@ -265,6 +266,7 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
             }
             None => out.push(0),
         }
+        write_i32(&mut out, reloc.addend);
     }
 
     for function in &object.function_disassembly {
@@ -483,12 +485,18 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         } else {
             None
         };
+        let addend = if version >= 8 {
+            rd.read_i32()?
+        } else {
+            0
+        };
         relocations.push(Relocation {
             section,
             offset,
             width,
             kind,
             symbol,
+            addend,
             source,
             call_metadata,
         });
@@ -793,6 +801,10 @@ fn write_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
+fn write_i32(out: &mut Vec<u8>, value: i32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+
 fn write_string(out: &mut Vec<u8>, value: &str) -> Result<()> {
     let bytes = value.as_bytes();
     let len: u32 = bytes
@@ -837,6 +849,11 @@ impl<'a> Reader<'a> {
     fn read_u32(&mut self) -> Result<u32> {
         let bytes = self.read_exact(4)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_i32(&mut self) -> Result<i32> {
+        let bytes = self.read_exact(4)?;
+        Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     fn read_string(&mut self) -> Result<String> {
@@ -912,6 +929,7 @@ mod tests {
                 width: 1,
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
+                addend: 0,
                 source: None,
                 call_metadata: None,
             }],
@@ -1032,6 +1050,7 @@ mod tests {
                 width: 1,
                 kind: RelocationKind::Absolute,
                 symbol: "target".to_string(),
+                addend: 0,
                 source: None,
                 call_metadata: None,
             }],

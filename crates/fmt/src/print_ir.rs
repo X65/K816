@@ -85,6 +85,13 @@ pub fn format_ir(program: &Program) -> String {
                             let base = match value {
                                 AddressValue::Literal(value) => value.to_string(),
                                 AddressValue::Label(name) => name.clone(),
+                                AddressValue::LabelOffset { label, addend } => {
+                                    if *addend >= 0 {
+                                        format!("{label}+{addend}")
+                                    } else {
+                                        format!("{label}{addend}")
+                                    }
+                                }
                             };
                             let rendered = match mode {
                                 AddressOperandMode::Direct {

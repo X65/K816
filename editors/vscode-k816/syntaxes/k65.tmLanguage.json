@@ -69,6 +69,20 @@
     "strings": {
       "patterns": [
         {
+          "name": "constant.character.k65",
+          "match": "'(?:\\\\.|[^'\\\\])'",
+          "captures": {
+            "0": {
+              "patterns": [
+                {
+                  "name": "constant.character.escape.k65",
+                  "match": "\\\\."
+                }
+              ]
+            }
+          }
+        },
+        {
           "name": "string.quoted.double.k65",
           "begin": "\"",
           "end": "\"",

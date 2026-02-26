@@ -267,8 +267,14 @@ pub fn lower(
                 );
             }
             Item::EvaluatorBlock(_) => {}
-            Item::Const(_) => {}
-            Item::ConstGroup(_) => {}
+            Item::Const(c) => {
+                emit_const_absolute_symbol(c, item.span, sema, &mut ops);
+            }
+            Item::ConstGroup(consts) => {
+                for c in consts {
+                    emit_const_absolute_symbol(c, item.span, sema, &mut ops);
+                }
+            }
             Item::Var(var) => {
                 emit_var_absolute_symbols(var, item.span, sema, &mut diagnostics, &mut ops);
             }
@@ -1116,6 +1122,27 @@ fn emit_var_absolute_symbols(
             span,
         ));
     }
+}
+
+fn emit_const_absolute_symbol(
+    const_decl: &crate::ast::ConstDecl,
+    span: Span,
+    sema: &crate::sema::SemanticModel,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let Some(meta) = sema.consts.get(&const_decl.name) else {
+        return;
+    };
+    let Number::Int(value) = meta.value else {
+        return;
+    };
+    ops.push(Spanned::new(
+        Op::DefineAbsoluteSymbol {
+            name: const_decl.name.clone(),
+            address: value as u32,
+        },
+        span,
+    ));
 }
 
 fn lower_mode_set(

@@ -100,6 +100,9 @@ pub fn format_ir(program: &Program) -> String {
                             };
                             out.push_str(&rendered);
                         }
+                        OperandOp::BlockMove { src, dst } => {
+                            out.push_str(&format!("{src},{dst}"));
+                        }
                     }
                 }
                 out.push('\n');

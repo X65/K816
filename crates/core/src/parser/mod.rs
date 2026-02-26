@@ -1375,6 +1375,12 @@ where
 }
 
 #[derive(Debug, Clone)]
+enum CommaTrailer {
+    Index(IndexRegister),
+    BlockMoveDst(Expr),
+}
+
+#[derive(Debug, Clone)]
 enum VarBracketPayload {
     ArrayLen(Expr),
     SymbolicSubscriptFields(Vec<SymbolicSubscriptFieldDecl>),
@@ -1759,15 +1765,36 @@ where
             }))
         .or(just(TokenKind::Far)
             .or_not()
-            .then(expr_parser().then(just(TokenKind::Comma).ignore_then(ident_parser()).or_not()))
-            .try_map(|(force_far, (expr, index)), span| {
-                let index = parse_index_register(index, span)?;
-                Ok(Some(Operand::Value {
+            .then(expr_parser().then(
+                just(TokenKind::Comma)
+                    .ignore_then(
+                        // Try index register (,x / ,y) first
+                        ident_parser()
+                            .try_map(|name, span| {
+                                parse_index_register(Some(name), span)
+                                    .map(|reg| CommaTrailer::Index(reg.unwrap()))
+                            })
+                            // Otherwise parse a second expression for block move (src,dst)
+                            .or(expr_parser().map(CommaTrailer::BlockMoveDst)),
+                    )
+                    .or_not(),
+            ))
+            .map(|(force_far, (expr, trailer))| match trailer {
+                Some(CommaTrailer::Index(index)) => Some(Operand::Value {
                     expr,
                     force_far: force_far.is_some(),
-                    index,
+                    index: Some(index),
                     addr_mode: OperandAddrMode::Direct,
-                }))
+                }),
+                Some(CommaTrailer::BlockMoveDst(dst)) => {
+                    Some(Operand::BlockMove { src: expr, dst })
+                }
+                None => Some(Operand::Value {
+                    expr,
+                    force_far: force_far.is_some(),
+                    index: None,
+                    addr_mode: OperandAddrMode::Direct,
+                }),
             }));
 
     let instruction = mnemonic

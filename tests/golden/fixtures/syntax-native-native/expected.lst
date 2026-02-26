@@ -1,0 +1,8 @@
+[default]
+000000: 54 00 00 44 FE FF 60
+
+
+[disasm obj#0 default::main]
+000000: 54 00 00    mvn $00,$00
+000003: 44 FE FF    mvp $FF,$FE
+000006: 60          rts

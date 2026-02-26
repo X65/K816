@@ -524,6 +524,10 @@ fn expand_instruction(
         Operand::Auto { expr } => Operand::Auto {
             expr: expand_expr(expr, span, source_id, diagnostics),
         },
+        Operand::BlockMove { src, dst } => Operand::BlockMove {
+            src: expand_expr(src, span, source_id, diagnostics),
+            dst: expand_expr(dst, span, source_id, diagnostics),
+        },
     });
 
     Instruction {

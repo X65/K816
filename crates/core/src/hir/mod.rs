@@ -102,6 +102,10 @@ pub enum OperandOp {
         force_far: bool,
         mode: AddressOperandMode,
     },
+    BlockMove {
+        src: u8,
+        dst: u8,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -1304,7 +1304,7 @@ fn instruction_jump_target_label(
             expr
         }
         Operand::Auto { expr } => expr,
-        Operand::Immediate { .. } => return None,
+        Operand::Immediate { .. } | Operand::BlockMove { .. } => return None,
     };
 
     let Some(name) = expr_ident_name(expr) else {
@@ -1417,7 +1417,7 @@ fn validate_instruction_width_rules(
     let is_immediate = match operand {
         Operand::Immediate { .. } => true,
         Operand::Auto { expr } => is_immediate_expression(expr, sema),
-        Operand::Value { .. } => false,
+        Operand::Value { .. } | Operand::BlockMove { .. } => false,
     };
 
     let imm_expr = match operand {
@@ -3574,6 +3574,28 @@ fn lower_instruction(
                 let mode = lower_operand_mode(OperandAddrMode::Direct, None);
                 lower_address_operand(expr, scope, sema, span, diagnostics, false, mode)
             }
+        }
+        Some(Operand::BlockMove { src, dst }) => {
+            let src_val = eval_to_number(src, scope, sema, span, diagnostics)?;
+            let dst_val = eval_to_number(dst, scope, sema, span, diagnostics)?;
+            let Ok(src_byte) = u8::try_from(src_val) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("block move source bank must be 0..255, got {src_val}"),
+                ));
+                return None;
+            };
+            let Ok(dst_byte) = u8::try_from(dst_val) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("block move destination bank must be 0..255, got {dst_val}"),
+                ));
+                return None;
+            };
+            Some(OperandOp::BlockMove {
+                src: src_byte,
+                dst: dst_byte,
+            })
         }
     };
 

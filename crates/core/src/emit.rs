@@ -301,6 +301,9 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                             mode: to_isa_address_mode(*mode),
                         },
                     },
+                    Some(OperandOp::BlockMove { src, dst }) => {
+                        OperandShape::BlockMove(*src, *dst)
+                    }
                 };
 
                 let encoding = match select_encoding(&instruction.mnemonic, operand_shape) {
@@ -446,6 +449,10 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                             });
                         }
                     },
+                    Some(OperandOp::BlockMove { src, dst }) => {
+                        segment.bytes.push(*dst);
+                        segment.bytes.push(*src);
+                    }
                 }
 
                 if mnemonic == "plp" || mnemonic == "rti" {

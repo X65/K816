@@ -390,6 +390,9 @@ pub fn emit_object(
                             mode: to_isa_address_mode(*mode),
                         },
                     },
+                    Some(OperandOp::BlockMove { src, dst }) => {
+                        OperandShape::BlockMove(*src, *dst)
+                    }
                 };
 
                 let encoding = match select_encoding(&instruction.mnemonic, operand_shape) {
@@ -552,6 +555,9 @@ pub fn emit_object(
                             });
                         }
                     },
+                    Some(OperandOp::BlockMove { src, dst }) => {
+                        append_bytes(segment, &[*dst, *src], op.span, &mut diagnostics);
+                    }
                 }
 
                 if mnemonic == "plp" || mnemonic == "rti" {

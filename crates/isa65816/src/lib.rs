@@ -40,6 +40,7 @@ pub enum OperandShape {
         force_far: bool,
         mode: AddressOperandMode,
     },
+    BlockMove(u8, u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,6 +665,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                 })
             }
         }
+        OperandShape::BlockMove(_, _) => {
+            if let Some(opcode) = find_opcode(&lower, AddressingMode::BlockMove) {
+                Ok(Encoding {
+                    opcode,
+                    mode: AddressingMode::BlockMove,
+                })
+            } else {
+                Err(EncodeError::InvalidOperand {
+                    mnemonic: mnemonic.to_string(),
+                })
+            }
+        }
     }
 }
 
@@ -830,7 +843,7 @@ fn format_operand(mode: AddressingMode, operand: &[u8], address: u32) -> String 
             let target = (address.wrapping_add(3)).wrapping_add_signed(delta) & 0x00FF_FFFF;
             format!("${target:06X}")
         }
-        AddressingMode::BlockMove => format!("${:02X},${:02X}", operand[0], operand[1]),
+        AddressingMode::BlockMove => format!("${:02X},${:02X}", operand[1], operand[0]),
     }
 }
 

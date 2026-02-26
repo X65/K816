@@ -1,0 +1,4 @@
+func main {
+    mvn 0,0
+    mvp 255 , $fe
+}

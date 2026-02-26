@@ -181,6 +181,11 @@ pub enum Operand {
     Auto {
         expr: Expr,
     },
+    /// Two-operand block move: `mvn src,dst` / `mvp src,dst`.
+    BlockMove {
+        src: Expr,
+        dst: Expr,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -8,6 +8,7 @@ use crate::emit_object::{AddressableSite, emit_object};
 use crate::eval_expand::expand_file;
 use crate::fold_mode::{eliminate_dead_mode_ops, fold_mode_ops};
 use crate::lower::lower;
+use crate::peephole::peephole_optimize;
 use crate::normalize_hla::normalize_file;
 use crate::parser::parse_with_warnings;
 use crate::sema::analyze;
@@ -122,6 +123,7 @@ pub fn compile_source_to_object_with_fs_and_options(
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
     let hir = eliminate_dead_mode_ops(&hir);
     let hir = fold_mode_ops(&hir);
+    let hir = peephole_optimize(&hir);
 
     let emit_output = emit_object(&hir, &source_map)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;

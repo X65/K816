@@ -41,6 +41,7 @@ struct LowerContext {
     label_fixed_masks: FxHashMap<String, u8>,
     label_depths: FxHashMap<String, usize>,
     reachable: bool,
+    is_far: bool,
 }
 
 struct EvaluatedBytes {
@@ -73,6 +74,7 @@ impl Default for LowerContext {
             label_fixed_masks: FxHashMap::default(),
             label_depths: FxHashMap::default(),
             reachable: true,
+            is_far: false,
         }
     }
 }
@@ -128,6 +130,7 @@ pub fn lower(
             }
             Item::CodeBlock(block) => {
                 let mut block_ctx = LowerContext::default();
+                block_ctx.is_far = block.is_far;
                 let scope = block.name.clone();
                 block_ctx.label_depths =
                     collect_label_depths(&block.body, Some(scope.as_str()), 0, &mut diagnostics);
@@ -2145,8 +2148,15 @@ fn lower_hla_stmt(
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::Return { interrupt } => {
+            let mnemonic = if *interrupt {
+                "rti"
+            } else if ctx.is_far {
+                "rtl"
+            } else {
+                "rts"
+            };
             let instruction = Instruction {
-                mnemonic: if *interrupt { "rti" } else { "rts" }.to_string(),
+                mnemonic: mnemonic.to_string(),
                 operand: None,
             };
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);

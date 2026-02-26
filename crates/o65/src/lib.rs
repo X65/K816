@@ -485,11 +485,7 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
         } else {
             None
         };
-        let addend = if version >= 8 {
-            rd.read_i32()?
-        } else {
-            0
-        };
+        let addend = if version >= 8 { rd.read_i32()? } else { 0 };
         relocations.push(Relocation {
             section,
             offset,

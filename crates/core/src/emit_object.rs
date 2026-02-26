@@ -394,9 +394,7 @@ pub fn emit_object(
                             }
                         }
                     },
-                    Some(OperandOp::BlockMove { src, dst }) => {
-                        OperandShape::BlockMove(*src, *dst)
-                    }
+                    Some(OperandOp::BlockMove { src, dst }) => OperandShape::BlockMove(*src, *dst),
                 };
 
                 let encoding = match select_encoding(&instruction.mnemonic, operand_shape) {
@@ -530,8 +528,7 @@ pub fn emit_object(
                                 emit_literal(segment, *literal, width, op.span, &mut diagnostics)
                             }
                         }
-                        AddressValue::Label(label)
-                        | AddressValue::LabelOffset { label, .. } => {
+                        AddressValue::Label(label) | AddressValue::LabelOffset { label, .. } => {
                             let addend = match value {
                                 AddressValue::LabelOffset { addend, .. } => *addend,
                                 _ => 0,

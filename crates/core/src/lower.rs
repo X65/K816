@@ -769,8 +769,17 @@ fn lower_stmt(
                     if meta.is_inline {
                         if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
                             lower_inline_call(
-                                inline_block, meta, scope, sema, fs, inline_bodies,
-                                current_segment, ctx, span, diagnostics, ops,
+                                inline_block,
+                                meta,
+                                scope,
+                                sema,
+                                fs,
+                                inline_bodies,
+                                current_segment,
+                                ctx,
+                                span,
+                                diagnostics,
+                                ops,
                             );
                         }
                         return;
@@ -803,8 +812,17 @@ fn lower_stmt(
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(call.target.as_str()) {
                         lower_inline_call(
-                            inline_block, meta, scope, sema, fs, inline_bodies,
-                            current_segment, ctx, span, diagnostics, ops,
+                            inline_block,
+                            meta,
+                            scope,
+                            sema,
+                            fs,
+                            inline_bodies,
+                            current_segment,
+                            ctx,
+                            span,
+                            diagnostics,
+                            ops,
                         );
                     }
                 } else {
@@ -3336,9 +3354,7 @@ fn eval_index_expr_strict(
                 if count <= 1 {
                     diagnostics.push(Diagnostic::error(
                         span,
-                        format!(
-                            "symbolic subscript field '{base}::{field}' is not an array",
-                        ),
+                        format!("symbolic subscript field '{base}::{field}' is not an array",),
                     ));
                     return None;
                 }
@@ -3796,8 +3812,7 @@ fn lower_address_operand(
             }
             // eval_to_number failed — try to decompose as label ± constant for link-time
             // resolution (e.g. `data_block_name + 1`).
-            if let Some(result) =
-                try_label_offset_operand(expr, scope, sema, span, force_far, mode)
+            if let Some(result) = try_label_offset_operand(expr, scope, sema, span, force_far, mode)
             {
                 // Remove diagnostics added by the failed eval_to_number attempt.
                 diagnostics.truncate(saved_diag_len);
@@ -3964,9 +3979,7 @@ fn eval_index_expr(
                 if count <= 1 {
                     diagnostics.push(Diagnostic::error(
                         span,
-                        format!(
-                            "symbolic subscript field '{base}::{field}' is not an array",
-                        ),
+                        format!("symbolic subscript field '{base}::{field}' is not an array",),
                     ));
                     return None;
                 }
@@ -4148,9 +4161,7 @@ fn try_label_offset_operand(
     };
     // If the name resolves at compile time (var, const, symbolic subscript), this
     // function should not handle it — eval_to_number should have succeeded.
-    if sema.vars.contains_key(name)
-        || sema.consts.contains_key(name)
-    {
+    if sema.vars.contains_key(name) || sema.consts.contains_key(name) {
         return None;
     }
     // Resolve the symbol name (handles local label scoping).

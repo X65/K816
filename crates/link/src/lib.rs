@@ -527,12 +527,13 @@ pub fn link_objects_with_options(
                 bail!("relocation writes outside memory range");
             }
 
-            let effective_addr =
-                (target.addr as i64 + reloc.addend as i64) as u32;
+            let effective_addr = (target.addr as i64 + reloc.addend as i64) as u32;
             match reloc.kind {
-                RelocationKind::Absolute => {
-                    write_value(&mut mem.bytes[rel_idx..end_idx], effective_addr, reloc.width)?
-                }
+                RelocationKind::Absolute => write_value(
+                    &mut mem.bytes[rel_idx..end_idx],
+                    effective_addr,
+                    reloc.width,
+                )?,
                 RelocationKind::Relative => match reloc.width {
                     1 => {
                         let delta = effective_addr as i64 - (site_addr as i64 + 1);

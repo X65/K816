@@ -58,6 +58,22 @@ The best way of defining constants is using the evaluator. Evaluator-defined con
 ]                       // end of evaluator expression
 ```
 
+`const` declarations are also supported and can use enum-like auto-increment in comma-separated groups:
+
+```k65
+const A = 0, B, C         // A=0, B=1, C=2
+const A, B, C             // A=0, B=1, C=2
+const BASE = 10
+const X = BASE, Y, Z      // X=10, Y=11, Z=12
+const M = 0, N, O = 10, P // P=11
+```
+
+The shorthand form only applies to comma-separated groups. A standalone declaration without an initializer is an error:
+
+```k65
+const LIMIT               // error
+```
+
 ## Labels
 
 A label can be placed at the beginning of a statement. During assembly, the label is assigned the current value of the active location counter and serves as an instruction operand. There are two types of labels: global and local.

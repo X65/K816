@@ -8,9 +8,9 @@ use crate::emit_object::{AddressableSite, emit_object};
 use crate::eval_expand::expand_file;
 use crate::fold_mode::{eliminate_dead_mode_ops, fold_mode_ops};
 use crate::lower::lower;
-use crate::peephole::peephole_optimize;
 use crate::normalize_hla::normalize_file;
 use crate::parser::parse_with_warnings;
+use crate::peephole::peephole_optimize;
 use crate::sema::analyze;
 use crate::span::SourceMap;
 

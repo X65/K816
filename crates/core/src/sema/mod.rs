@@ -725,9 +725,7 @@ fn eval_symbolic_subscript_fields(
         if resolved_fields.contains_key(&qualified_name) {
             diagnostics.push(Diagnostic::error(
                 field.span,
-                format!(
-                    "duplicate symbolic subscript field '.{qualified_name}' in '{var_name}'",
-                ),
+                format!("duplicate symbolic subscript field '.{qualified_name}' in '{var_name}'",),
             ));
             return None;
         }
@@ -1015,6 +1013,47 @@ mod tests {
         );
         assert_eq!(sema.vars.get("ptr").expect("ptr").address, 0x103);
         assert_eq!(sema.vars.get("tail").expect("tail").address, 0x104);
+    }
+
+    #[test]
+    fn const_sequence_implicit_initializers_are_resolved() {
+        let source = "const A = 0, B, C\nvar ptr = C\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(0));
+        assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(1));
+        assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(2));
+        assert_eq!(sema.vars.get("ptr").expect("ptr").address, 2);
+    }
+
+    #[test]
+    fn const_sequence_explicit_initializer_resets_increment_chain() {
+        let source = "const A = 0, B, C = 10, D\nvar ptr = D\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(0));
+        assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(1));
+        assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(10));
+        assert_eq!(sema.consts.get("D").expect("D").value, Number::Int(11));
+        assert_eq!(sema.vars.get("ptr").expect("ptr").address, 11);
+    }
+
+    #[test]
+    fn const_sequence_accepts_resolvable_identifier_seed() {
+        let source = "const BASE = 10\nconst A = BASE, B, C\nvar ptr = C\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+
+        assert_eq!(
+            sema.consts.get("BASE").expect("BASE").value,
+            Number::Int(10)
+        );
+        assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(10));
+        assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(11));
+        assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(12));
+        assert_eq!(sema.vars.get("ptr").expect("ptr").address, 12);
     }
 
     #[test]

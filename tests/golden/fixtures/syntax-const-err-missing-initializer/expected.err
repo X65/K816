@@ -1,7 +1,7 @@
-Error: invalid syntax: expected '=', found newline
+Error: invalid syntax: const initializer can be omitted only in comma-separated groups
    ╭─[ tests/golden/fixtures/syntax-const-err-missing-initializer/input.k65:1:12 ]
    │
  1 │ const LIMIT
    │            │ 
-   │            ╰─ expected here
+   │            ╰─ here
 ───╯

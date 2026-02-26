@@ -9,8 +9,8 @@ pub mod hir;
 pub mod lexer;
 pub mod lower;
 pub mod normalize_hla;
-pub mod peephole;
 pub mod parser;
+pub mod peephole;
 pub mod sema;
 pub mod span;
 

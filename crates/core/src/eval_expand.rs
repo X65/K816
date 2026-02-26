@@ -481,9 +481,10 @@ fn expand_var(
             .array_len
             .as_ref()
             .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
-        symbolic_subscript_fields: var.symbolic_subscript_fields.as_ref().map(|fields| {
-            expand_symbolic_subscript_fields(fields, source_id, diagnostics)
-        }),
+        symbolic_subscript_fields: var
+            .symbolic_subscript_fields
+            .as_ref()
+            .map(|fields| expand_symbolic_subscript_fields(fields, source_id, diagnostics)),
         initializer: var.initializer.as_ref().map(|expr| {
             expand_expr(
                 expr,
@@ -555,9 +556,10 @@ fn expand_symbolic_subscript_fields(
                 )
             }),
             count_span: field.count_span,
-            nested_fields: field.nested_fields.as_ref().map(|nested| {
-                expand_symbolic_subscript_fields(nested, source_id, diagnostics)
-            }),
+            nested_fields: field
+                .nested_fields
+                .as_ref()
+                .map(|nested| expand_symbolic_subscript_fields(nested, source_id, diagnostics)),
             span: field.span,
         })
         .collect()

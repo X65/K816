@@ -1320,20 +1320,94 @@ where
     .boxed()
 }
 
-fn const_decl_binding_parser<'src, I>(
-    source_id: SourceId,
-) -> impl chumsky::Parser<'src, I, ConstDecl, ParseExtra<'src>> + Clone
+#[derive(Debug, Clone)]
+struct ConstDeclBinding {
+    name: String,
+    name_span: SimpleSpan,
+    initializer: Option<(Expr, SimpleSpan)>,
+}
+
+fn const_decl_binding_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, ConstDeclBinding, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     ident_parser()
-        .then_ignore(just(TokenKind::Eq))
-        .then(spanned(expr_parser(), source_id))
-        .map(|(name, initializer)| ConstDecl {
+        .map_with(|name, extra| (name, extra.span()))
+        .then(
+            just(TokenKind::Eq)
+                .ignore_then(expr_parser().map_with(|expr, extra| (expr, extra.span())))
+                .or_not(),
+        )
+        .map(|((name, name_span), initializer)| ConstDeclBinding {
             name,
-            initializer: initializer.node,
-            initializer_span: Some(initializer.span),
+            name_span,
+            initializer,
         })
+}
+
+fn simple_span_to_ast_span(source_id: SourceId, span: SimpleSpan) -> Span {
+    let range = span.into_range();
+    Span::new(source_id, range.start, range.end)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConstDesugarError {
+    MissingInitializerForSingleDecl { span: SimpleSpan },
+}
+
+fn desugar_const_bindings(
+    bindings: Vec<ConstDeclBinding>,
+    source_id: SourceId,
+) -> Result<Item, ConstDesugarError> {
+    let is_group = bindings.len() > 1;
+    let mut decls = Vec::with_capacity(bindings.len());
+    let mut prev_name: Option<String> = None;
+
+    for binding in bindings {
+        let name = binding.name;
+        let (initializer, initializer_span) = if let Some((expr, expr_span)) = binding.initializer {
+            (expr, Some(simple_span_to_ast_span(source_id, expr_span)))
+        } else if prev_name.is_none() {
+            if !is_group {
+                let name_range = binding.name_span.into_range();
+                let missing_span: SimpleSpan = (name_range.end..name_range.end).into();
+                return Err(ConstDesugarError::MissingInitializerForSingleDecl {
+                    span: missing_span,
+                });
+            }
+            (Expr::Number(0, NumFmt::Dec), None)
+        } else {
+            let previous = prev_name
+                .clone()
+                .expect("previous const name must exist for omitted initializer");
+            (
+                Expr::Binary {
+                    op: ExprBinaryOp::Add,
+                    lhs: Box::new(Expr::Ident(previous)),
+                    rhs: Box::new(Expr::Number(1, NumFmt::Dec)),
+                },
+                None,
+            )
+        };
+
+        prev_name = Some(name.clone());
+        decls.push(ConstDecl {
+            name,
+            initializer,
+            initializer_span,
+        });
+    }
+
+    if is_group {
+        Ok(Item::ConstGroup(decls))
+    } else {
+        let decl = decls
+            .into_iter()
+            .next()
+            .expect("const declaration must contain one binding");
+        Ok(Item::Const(decl))
+    }
 }
 
 fn const_decl_item_parser<'src, I>(
@@ -1342,25 +1416,32 @@ fn const_decl_item_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Const)
-        .ignore_then(
-            const_decl_binding_parser(source_id).then(
-                just(TokenKind::Comma)
-                    .ignore_then(const_decl_binding_parser(source_id))
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            ),
+    let const_separator = just(TokenKind::Comma).then_ignore(just(TokenKind::Newline).repeated());
+    let bindings = const_decl_binding_parser()
+        .then(
+            const_separator
+                .clone()
+                .ignore_then(const_decl_binding_parser())
+                .repeated()
+                .collect::<Vec<_>>(),
         )
+        .then_ignore(const_separator.or_not())
         .map(|(head, tail)| {
-            if tail.is_empty() {
-                Item::Const(head)
-            } else {
-                let mut decls = Vec::with_capacity(tail.len() + 1);
-                decls.push(head);
-                decls.extend(tail);
-                Item::ConstGroup(decls)
-            }
+            let mut bindings = Vec::with_capacity(tail.len() + 1);
+            bindings.push(head);
+            bindings.extend(tail);
+            bindings
         })
+        .try_map(move |bindings, _span| {
+            desugar_const_bindings(bindings, source_id).map_err(|error| match error {
+                ConstDesugarError::MissingInitializerForSingleDecl { span } => Rich::custom(
+                    span,
+                    "const initializer can be omitted only in comma-separated groups",
+                ),
+            })
+        });
+
+    just(TokenKind::Const).ignore_then(bindings)
 }
 
 fn data_width_parser<'src, I>() -> impl chumsky::Parser<'src, I, DataWidth, ParseExtra<'src>> + Clone
@@ -1471,12 +1552,8 @@ where
                 .unwrap_or(&name_spanned.node)
                 .to_string();
             let (count, count_span, nested_fields) = match bracket {
-                Some(FieldBracketContent::Count(c)) => {
-                    (Some(c.node), Some(c.span), None)
-                }
-                Some(FieldBracketContent::NestedFields(fields)) => {
-                    (None, None, Some(fields))
-                }
+                Some(FieldBracketContent::Count(c)) => (Some(c.node), Some(c.span), None),
+                Some(FieldBracketContent::NestedFields(fields)) => (None, None, Some(fields)),
                 None => (None, None, None),
             };
             SymbolicSubscriptFieldDecl {
@@ -1765,20 +1842,22 @@ where
             }))
         .or(just(TokenKind::Far)
             .or_not()
-            .then(expr_parser().then(
-                just(TokenKind::Comma)
-                    .ignore_then(
-                        // Try index register (,x / ,y) first
-                        ident_parser()
-                            .try_map(|name, span| {
-                                parse_index_register(Some(name), span)
-                                    .map(|reg| CommaTrailer::Index(reg.unwrap()))
-                            })
-                            // Otherwise parse a second expression for block move (src,dst)
-                            .or(expr_parser().map(CommaTrailer::BlockMoveDst)),
-                    )
-                    .or_not(),
-            ))
+            .then(
+                expr_parser().then(
+                    just(TokenKind::Comma)
+                        .ignore_then(
+                            // Try index register (,x / ,y) first
+                            ident_parser()
+                                .try_map(|name, span| {
+                                    parse_index_register(Some(name), span)
+                                        .map(|reg| CommaTrailer::Index(reg.unwrap()))
+                                })
+                                // Otherwise parse a second expression for block move (src,dst)
+                                .or(expr_parser().map(CommaTrailer::BlockMoveDst)),
+                        )
+                        .or_not(),
+                ),
+            )
             .map(|(force_far, (expr, trailer))| match trailer {
                 Some(CommaTrailer::Index(index)) => Some(Operand::Value {
                     expr,
@@ -3679,6 +3758,15 @@ mod tests {
         }
     }
 
+    fn assert_add_one_from(expr: &Expr, previous: &str) {
+        assert!(matches!(
+            expr,
+            Expr::Binary { op: ExprBinaryOp::Add, lhs, rhs }
+                if is_ident_named(lhs.as_ref(), previous)
+                && matches!(rhs.as_ref(), Expr::Number(1, NumFmt::Dec))
+        ));
+    }
+
     #[test]
     fn parses_far_function_and_call() {
         let source = "far func target {\n nop\n}\nfunc main {\n call target\n}\n";
@@ -3751,6 +3839,75 @@ mod tests {
     }
 
     #[test]
+    fn preprocesses_const_group_with_omitted_initializers() {
+        let source = "const A = 0, B, C\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::ConstGroup(consts) = &file.items[0].node else {
+            panic!("expected const group");
+        };
+        assert_eq!(consts.len(), 3);
+        assert_eq!(consts[0].name, "A");
+        assert!(matches!(consts[0].initializer, Expr::Number(0, _)));
+        assert_eq!(consts[1].name, "B");
+        assert_add_one_from(&consts[1].initializer, "A");
+        assert_eq!(consts[2].name, "C");
+        assert_add_one_from(&consts[2].initializer, "B");
+    }
+
+    #[test]
+    fn preprocesses_const_group_with_implicit_zero_first() {
+        let source = "const A, B, C\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::ConstGroup(consts) = &file.items[0].node else {
+            panic!("expected const group");
+        };
+        assert_eq!(consts.len(), 3);
+        assert!(matches!(consts[0].initializer, Expr::Number(0, _)));
+        assert_add_one_from(&consts[1].initializer, "A");
+        assert_add_one_from(&consts[2].initializer, "B");
+    }
+
+    #[test]
+    fn preprocesses_const_group_with_explicit_resets() {
+        let source = "const A = 0, B, C = 10, D\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::ConstGroup(consts) = &file.items[0].node else {
+            panic!("expected const group");
+        };
+        assert_eq!(consts.len(), 4);
+        assert_add_one_from(&consts[1].initializer, "A");
+        assert!(matches!(consts[2].initializer, Expr::Number(10, _)));
+        assert_add_one_from(&consts[3].initializer, "C");
+    }
+
+    #[test]
+    fn preprocesses_const_group_with_multiline_trailing_comma() {
+        let source = "const A = 0,\n      B,\n      C,\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let Item::ConstGroup(consts) = &file.items[0].node else {
+            panic!("expected const group");
+        };
+        assert_eq!(consts.len(), 3);
+        assert!(matches!(consts[0].initializer, Expr::Number(0, _)));
+        assert_add_one_from(&consts[1].initializer, "A");
+        assert_add_one_from(&consts[2].initializer, "B");
+    }
+
+    #[test]
+    fn preprocesses_const_group_with_resolvable_identifier_seed() {
+        let source = "const BASE = 10\nconst A = BASE, B, C\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        assert_eq!(file.items.len(), 2);
+        let Item::ConstGroup(consts) = &file.items[1].node else {
+            panic!("expected const group");
+        };
+        assert_eq!(consts.len(), 3);
+        assert!(is_ident_named(&consts[0].initializer, "BASE"));
+        assert_add_one_from(&consts[1].initializer, "A");
+        assert_add_one_from(&consts[2].initializer, "B");
+    }
+
+    #[test]
     fn parses_top_level_evaluator_block_item() {
         let source = "[ A = 1 ]\n";
         let file = parse(SourceId(0), source).expect("parse");
@@ -3789,11 +3946,18 @@ mod tests {
     fn rejects_const_without_initializer() {
         let source = "const LIMIT\n";
         let diagnostics = parse(SourceId(0), source).expect_err("expected parse error");
+        let end_of_name = source.find("LIMIT").expect("LIMIT offset") + "LIMIT".len();
+        assert!(
+            diagnostics.iter().any(|diag| diag
+                .message
+                .contains("const initializer can be omitted only in comma-separated groups")),
+            "unexpected diagnostics: {diagnostics:#?}"
+        );
         assert!(
             diagnostics
                 .iter()
-                .any(|diag| diag.message.contains("expected '='")),
-            "unexpected diagnostics: {diagnostics:#?}"
+                .any(|diag| diag.primary.start == end_of_name && diag.primary.end == end_of_name),
+            "expected zero-width error span at end of identifier, got: {diagnostics:#?}"
         );
     }
 

@@ -20,5 +20,6 @@ Primary operator-coverage fixtures:
 - `syntax-doc-instructions-indexed-y`
 - `syntax-c-addrmodes-indirect-xy`
 - `syntax-const-declarations`
+- `syntax-const-sequence`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.

@@ -19,7 +19,8 @@ pub fn peephole_optimize(program: &Program) -> Program {
     for op in &program.ops {
         match &op.node {
             Op::Instruction(InstructionOp {
-                mnemonic, operand: None,
+                mnemonic,
+                operand: None,
             }) if is_return_mnemonic(mnemonic) => {
                 if last_return == Some(mnemonic.as_str()) {
                     // Duplicate return — skip it.

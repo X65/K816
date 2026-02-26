@@ -1,0 +1,34 @@
+const A = 0, B, C
+const X, Y, Z
+const BASE = 10
+const P = BASE, Q, R
+const M = 0, N, O = 10, P2
+
+var ptr_a = C
+var ptr_b = Z
+var ptr_c = R
+var ptr_d = P2
+
+func main {
+    lda #A
+    lda #B
+    lda #C
+
+    lda #X
+    lda #Y
+    lda #Z
+
+    lda #P
+    lda #Q
+    lda #R
+
+    lda #M
+    lda #N
+    lda #O
+    lda #P2
+
+    lda ptr_a
+    lda ptr_b
+    lda ptr_c
+    lda ptr_d
+}

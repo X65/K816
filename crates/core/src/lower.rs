@@ -3,10 +3,10 @@ use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaCompareOp, HlaCondition,
-    HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs,
-    HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, Instruction, Item, NamedDataBlock,
-    NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegWidth, Stmt,
+    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaCompareOp,
+    HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr,
+    HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, Instruction, Item,
+    NamedDataBlock, NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -105,6 +105,16 @@ pub fn lower(
     };
     let mut current_segment = "default".to_string();
 
+    // Collect inline function bodies for substitution at call sites.
+    let inline_bodies: FxHashMap<String, &CodeBlock> = file
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            Item::CodeBlock(block) if block.is_inline => Some((block.name.clone(), block)),
+            _ => None,
+        })
+        .collect();
+
     for item in &file.items {
         match &item.node {
             Item::Segment(segment) => {
@@ -123,12 +133,16 @@ pub fn lower(
                     block,
                     sema,
                     fs,
+                    &inline_bodies,
                     &current_segment,
                     &mut diagnostics,
                     &mut ops,
                 );
             }
             Item::CodeBlock(block) => {
+                if block.is_inline {
+                    continue; // Body will be inlined at call sites.
+                }
                 let mut block_ctx = LowerContext::default();
                 block_ctx.is_far = block.is_far;
                 let scope = block.name.clone();
@@ -198,6 +212,7 @@ pub fn lower(
                         Some(scope.as_str()),
                         sema,
                         fs,
+                        &inline_bodies,
                         &mut block_segment,
                         &mut block_ctx,
                         &mut diagnostics,
@@ -244,6 +259,7 @@ pub fn lower(
                     None,
                     sema,
                     fs,
+                    &inline_bodies,
                     &mut current_segment,
                     &mut top_level_ctx,
                     &mut diagnostics,
@@ -401,6 +417,7 @@ fn lower_named_data_block(
     block: &NamedDataBlock,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    inline_bodies: &FxHashMap<String, &CodeBlock>,
     outer_segment: &str,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
@@ -427,6 +444,7 @@ fn lower_named_data_block(
                 entry.span,
                 sema,
                 fs,
+                inline_bodies,
                 &mut block_segment,
                 &mut charset,
                 diagnostics,
@@ -445,6 +463,7 @@ fn lower_named_data_block(
             entry.span,
             sema,
             fs,
+            inline_bodies,
             &mut block_segment,
             &mut charset,
             diagnostics,
@@ -468,6 +487,7 @@ fn lower_named_data_entry(
     span: Span,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    inline_bodies: &FxHashMap<String, &CodeBlock>,
     current_segment: &mut String,
     charset: &mut Option<String>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -621,6 +641,7 @@ fn lower_named_data_entry(
                         entry.span,
                         sema,
                         fs,
+                        inline_bodies,
                         current_segment,
                         charset,
                         diagnostics,
@@ -648,6 +669,7 @@ fn lower_named_data_entry(
                     None,
                     sema,
                     fs,
+                    inline_bodies,
                     &mut code_segment,
                     &mut code_ctx,
                     diagnostics,
@@ -670,6 +692,7 @@ fn lower_stmt(
     scope: Option<&str>,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    inline_bodies: &FxHashMap<String, &CodeBlock>,
     current_segment: &mut String,
     ctx: &mut LowerContext,
     diagnostics: &mut Vec<Diagnostic>,
@@ -743,6 +766,15 @@ fn lower_stmt(
         Stmt::Instruction(instruction) => {
             if instruction.operand.is_none() {
                 if let Some(meta) = sema.functions.get(&instruction.mnemonic) {
+                    if meta.is_inline {
+                        if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
+                            lower_inline_call(
+                                inline_block, meta, scope, sema, fs, inline_bodies,
+                                current_segment, ctx, span, diagnostics, ops,
+                            );
+                        }
+                        return;
+                    }
                     let Some(target) =
                         resolve_symbol(&instruction.mnemonic, scope, span, diagnostics)
                     else {
@@ -768,15 +800,24 @@ fn lower_stmt(
             };
 
             if let Some(meta) = sema.functions.get(&call.target) {
-                lower_call_with_contract(
-                    &target,
-                    meta.is_far,
-                    meta.mode_contract.a_width,
-                    meta.mode_contract.i_width,
-                    span,
-                    ctx,
-                    ops,
-                );
+                if meta.is_inline {
+                    if let Some(inline_block) = inline_bodies.get(call.target.as_str()) {
+                        lower_inline_call(
+                            inline_block, meta, scope, sema, fs, inline_bodies,
+                            current_segment, ctx, span, diagnostics, ops,
+                        );
+                    }
+                } else {
+                    lower_call_with_contract(
+                        &target,
+                        meta.is_far,
+                        meta.mode_contract.a_width,
+                        meta.mode_contract.i_width,
+                        span,
+                        ctx,
+                        ops,
+                    );
+                }
             } else {
                 // Unknown function: emit JSR or JSL based on `call far`.
                 // The linker will resolve or report the missing symbol.
@@ -818,6 +859,7 @@ fn lower_stmt(
                     scope,
                     sema,
                     fs,
+                    inline_bodies,
                     current_segment,
                     ctx,
                     diagnostics,
@@ -860,6 +902,7 @@ fn lower_stmt(
                         scope,
                         sema,
                         fs,
+                        inline_bodies,
                         current_segment,
                         ctx,
                         diagnostics,
@@ -889,6 +932,7 @@ fn lower_stmt(
                         scope,
                         sema,
                         fs,
+                        inline_bodies,
                         current_segment,
                         ctx,
                         diagnostics,
@@ -934,6 +978,7 @@ fn lower_stmt(
                         scope,
                         sema,
                         fs,
+                        inline_bodies,
                         current_segment,
                         ctx,
                         diagnostics,
@@ -981,6 +1026,7 @@ fn lower_stmt(
                     scope,
                     sema,
                     fs,
+                    inline_bodies,
                     current_segment,
                     ctx,
                     diagnostics,
@@ -1194,6 +1240,52 @@ fn lower_call_with_contract(
         span,
     ));
 
+    lower_mode_restore(ctx.mode, saved_mode, span, ops);
+    ctx.mode = saved_mode;
+}
+
+/// Inline a function body at the call site instead of emitting JSR/JSL.
+fn lower_inline_call(
+    block: &CodeBlock,
+    meta: &crate::sema::FunctionMeta,
+    _caller_scope: Option<&str>,
+    sema: &SemanticModel,
+    fs: &dyn AssetFS,
+    inline_bodies: &FxHashMap<String, &CodeBlock>,
+    current_segment: &mut String,
+    ctx: &mut LowerContext,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    // Apply mode contract transition (same as a normal call).
+    let saved_mode = ctx.mode;
+    ctx.mode = lower_mode_contract_transition(
+        ctx.mode,
+        meta.mode_contract.a_width,
+        meta.mode_contract.i_width,
+        span,
+        ops,
+    );
+
+    // Lower the inline function's body statements in-place.
+    let inline_scope = Some(block.name.as_str());
+    for stmt in &block.body {
+        lower_stmt(
+            &stmt.node,
+            stmt.span,
+            inline_scope,
+            sema,
+            fs,
+            inline_bodies,
+            current_segment,
+            ctx,
+            diagnostics,
+            ops,
+        );
+    }
+
+    // Restore mode (same as a normal call).
     lower_mode_restore(ctx.mode, saved_mode, span, ops);
     ctx.mode = saved_mode;
 }

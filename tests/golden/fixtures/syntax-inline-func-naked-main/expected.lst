@@ -1,21 +1,17 @@
 [default]
-000000: E8 60 20 00 00 60 20 00 00 4C 02 00 20 02 00 20
-000010: 06 00 60
+000000: E8 DA 60 E8 4C 00 00 20 00 00 20 03 00 60
 
-
-[disasm obj#0 default::inl]
-000000: E8          inx
-000001: 60          rts
 
 [disasm obj#0 default::normal]
-000002: 20 00 00    jsr $0000
-000005: 60          rts
+000000: E8          inx
+000001: DA          phx
+000002: 60          rts
 
 [disasm obj#0 default::no_auto_rts]
-000006: 20 00 00    jsr $0000
-000009: 4C 02 00    jmp $0002
+000003: E8          inx
+000004: 4C 00 00    jmp $0000
 
 [disasm obj#0 default::main]
-00000C: 20 02 00    jsr $0002
-00000F: 20 06 00    jsr $0006
-000012: 60          rts
+000007: 20 00 00    jsr $0000
+00000A: 20 03 00    jsr $0003
+00000D: 60          rts

@@ -4,6 +4,7 @@ inline inl {
 
 func normal {
     inl
+    phx
     return
 }
 

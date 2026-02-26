@@ -3040,6 +3040,9 @@ fn eval_to_number_strict(
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     Some(i64::from(address))
                 }
+                Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
+                    Some(i64::from(offset))
+                }
                 Ok(None) | Err(()) => None,
             }
         }
@@ -3221,6 +3224,52 @@ fn eval_index_expr_strict(
                     None
                 });
             }
+            ResolvedSymbolicSubscriptName::FieldOffset {
+                base,
+                field,
+                offset,
+                data_width,
+                count,
+            } => {
+                if count <= 1 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!(
+                            "symbolic subscript field '{base}::{field}' is not an array",
+                        ),
+                    ));
+                    return None;
+                }
+
+                let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
+                else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        "symbolic subscript array index must be a constant numeric expression",
+                    ));
+                    return None;
+                };
+                if index_value < 0 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("index must be non-negative, found {index_value}"),
+                    ));
+                    return None;
+                }
+                let scale = match data_width {
+                    DataWidth::Byte => 1_i64,
+                    DataWidth::Word => 2_i64,
+                    DataWidth::Far => 3_i64,
+                };
+                let byte_offset = index_value.checked_mul(scale).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                })?;
+                return i64::from(offset).checked_add(byte_offset).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                });
+            }
         }
     }
 
@@ -3297,6 +3346,13 @@ enum ResolvedSymbolicSubscriptName {
         data_width: DataWidth,
         count: u32,
     },
+    FieldOffset {
+        base: String,
+        field: String,
+        offset: u32,
+        data_width: DataWidth,
+        count: u32,
+    },
 }
 
 fn resolve_symbolic_subscript_name(
@@ -3305,6 +3361,41 @@ fn resolve_symbolic_subscript_name(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<ResolvedSymbolicSubscriptName>, ()> {
+    // `::` separator means offset mode (e.g. TASKS::state → offset 2)
+    if let Some((base_name, field_path)) = name.split_once("::") {
+        // Normalize remaining :: to . for field map lookup
+        let field_name = field_path.replace("::", ".");
+
+        let Some(base_var) = sema.vars.get(base_name) else {
+            return Ok(None);
+        };
+        let Some(symbolic_subscript) = base_var.symbolic_subscript.as_ref() else {
+            return Ok(None);
+        };
+
+        let Some(field_meta) = symbolic_subscript.fields.get(&field_name) else {
+            let mut diagnostic = Diagnostic::error(
+                span,
+                format!("unknown symbolic subscript field '.{field_name}' on '{base_name}'"),
+            );
+            if let Some(suggestion) =
+                suggest_symbolic_subscript_field(&field_name, symbolic_subscript)
+            {
+                diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
+            }
+            diagnostics.push(diagnostic);
+            return Err(());
+        };
+
+        return Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset {
+            base: base_name.to_string(),
+            field: field_name,
+            offset: field_meta.offset,
+            data_width: field_meta.data_width,
+            count: field_meta.count,
+        }));
+    }
+
     if let Some(var) = sema.vars.get(name) {
         if var.symbolic_subscript.is_some() {
             return Ok(Some(ResolvedSymbolicSubscriptName::Aggregate {
@@ -3617,6 +3708,9 @@ fn eval_to_number(
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     return Some(i64::from(address));
                 }
+                Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
+                    return Some(i64::from(offset));
+                }
                 Err(()) => return None,
                 Ok(None) => {}
             }
@@ -3725,6 +3819,52 @@ fn eval_index_expr(
                     None
                 });
             }
+            Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset {
+                base,
+                field,
+                offset,
+                data_width,
+                count,
+            })) => {
+                if count <= 1 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!(
+                            "symbolic subscript field '{base}::{field}' is not an array",
+                        ),
+                    ));
+                    return None;
+                }
+
+                let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
+                else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        "symbolic subscript array index must be a constant numeric expression",
+                    ));
+                    return None;
+                };
+                if index_value < 0 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("index must be non-negative, found {index_value}"),
+                    ));
+                    return None;
+                }
+                let scale = match data_width {
+                    DataWidth::Byte => 1_i64,
+                    DataWidth::Word => 2_i64,
+                    DataWidth::Far => 3_i64,
+                };
+                let byte_offset = index_value.checked_mul(scale).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                })?;
+                return i64::from(offset).checked_add(byte_offset).or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                });
+            }
             Ok(None) => {}
             Err(()) => return None,
         }
@@ -3813,6 +3953,13 @@ fn resolve_operand_ident(
         | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
             return Some(OperandOp::Address {
                 value: AddressValue::Literal(address),
+                force_far,
+                mode,
+            });
+        }
+        Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
+            return Some(OperandOp::Address {
+                value: AddressValue::Literal(offset),
                 force_far,
                 mode,
             });

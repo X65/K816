@@ -1,0 +1,24 @@
+var TASKS[
+    .sp         :word           // Stack Pointer (SP)
+    .state      :byte           // Task State
+    .signals    :byte           // Active Signals
+    .sigmask    :byte           // Signal Mask
+    .evtmask    :byte           // Kernel events mask
+    .sighndl    :word           // Signal Handler Address
+    .message[                   // Message (5 bytes)
+        .from   :byte           // Task Number of sending task
+        .type   :byte           // Message Type
+        .data   :far            // Message Data (immediate or address)
+    ]
+    ._res[23]   :byte           // Reserved
+    .name[12]   :byte           // Task name
+    .fds[16]    :byte           // Open file descriptors
+] = $4000
+
+func main @a8 @i16 {
+    lda TASKS.sp:byte
+    lda TASKS.state,x
+    lda TASKS.message.from
+    ldy TASKS.message.data:word
+    lda TASKS.message.data:byte
+}

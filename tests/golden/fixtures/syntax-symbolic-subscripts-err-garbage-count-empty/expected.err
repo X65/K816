@@ -1,4 +1,4 @@
-Error: invalid syntax: expected something else, '(', or '&', found ']'
+Error: invalid syntax: expected ',', newline, something else, '&', or '(', found ']'
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-garbage-count-empty/input.k65:2:8 ]
    │
  2 │     .a[]:byte

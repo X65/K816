@@ -482,23 +482,7 @@ fn expand_var(
             .as_ref()
             .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
         symbolic_subscript_fields: var.symbolic_subscript_fields.as_ref().map(|fields| {
-            fields
-                .iter()
-                .map(|field| SymbolicSubscriptFieldDecl {
-                    name: field.name.clone(),
-                    data_width: field.data_width,
-                    count: field.count.as_ref().map(|count| {
-                        expand_expr(
-                            count,
-                            field.count_span.unwrap_or(field.span),
-                            source_id,
-                            diagnostics,
-                        )
-                    }),
-                    count_span: field.count_span,
-                    span: field.span,
-                })
-                .collect()
+            expand_symbolic_subscript_fields(fields, source_id, diagnostics)
         }),
         initializer: var.initializer.as_ref().map(|expr| {
             expand_expr(
@@ -546,6 +530,33 @@ fn expand_instruction(
         mnemonic: instruction.mnemonic.clone(),
         operand,
     }
+}
+
+fn expand_symbolic_subscript_fields(
+    fields: &[SymbolicSubscriptFieldDecl],
+    source_id: SourceId,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<SymbolicSubscriptFieldDecl> {
+    fields
+        .iter()
+        .map(|field| SymbolicSubscriptFieldDecl {
+            name: field.name.clone(),
+            data_width: field.data_width,
+            count: field.count.as_ref().map(|count| {
+                expand_expr(
+                    count,
+                    field.count_span.unwrap_or(field.span),
+                    source_id,
+                    diagnostics,
+                )
+            }),
+            count_span: field.count_span,
+            nested_fields: field.nested_fields.as_ref().map(|nested| {
+                expand_symbolic_subscript_fields(nested, source_id, diagnostics)
+            }),
+            span: field.span,
+        })
+        .collect()
 }
 
 fn expand_expr(

@@ -132,7 +132,7 @@ pub enum TokenKind {
     Number(NumLit),
 
     #[regex(
-        r"(?:[A-Za-z_]|[.][A-Za-z_])[A-Za-z0-9_]*(?:[.][A-Za-z_][A-Za-z0-9_]*)*",
+        r"(?:[A-Za-z_]|[.][A-Za-z_])[A-Za-z0-9_]*(?:(?:[.][A-Za-z_]|::[A-Za-z_])[A-Za-z0-9_]*)*",
         parse_ident
     )]
     Ident(String),

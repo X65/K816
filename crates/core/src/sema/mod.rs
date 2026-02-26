@@ -684,24 +684,91 @@ fn eval_symbolic_subscript_layout(
     consts: &IndexMap<String, ConstMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SymbolicSubscriptMeta> {
-    let mut offset = 0_u32;
     let mut resolved_fields = IndexMap::new();
+    let total_size = eval_symbolic_subscript_fields(
+        &var.name,
+        var.data_width,
+        fields,
+        "",
+        span,
+        consts,
+        &mut resolved_fields,
+        diagnostics,
+    )?;
+    Some(SymbolicSubscriptMeta {
+        fields: resolved_fields,
+        total_size,
+    })
+}
+
+/// Recursively evaluates symbolic subscript fields. Returns the total size of this
+/// level, and inserts all (possibly dotted) field entries into `resolved_fields`.
+fn eval_symbolic_subscript_fields(
+    var_name: &str,
+    default_width: Option<DataWidth>,
+    fields: &[SymbolicSubscriptFieldDecl],
+    prefix: &str,
+    span: Span,
+    consts: &IndexMap<String, ConstMeta>,
+    resolved_fields: &mut IndexMap<String, SymbolicSubscriptFieldMeta>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<u32> {
+    let mut offset = 0_u32;
 
     for field in fields {
-        if resolved_fields.contains_key(&field.name) {
+        let qualified_name = if prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{prefix}.{}", field.name)
+        };
+
+        if resolved_fields.contains_key(&qualified_name) {
             diagnostics.push(Diagnostic::error(
                 field.span,
                 format!(
-                    "duplicate symbolic subscript field '.{}' in '{}'",
-                    field.name, var.name
+                    "duplicate symbolic subscript field '.{qualified_name}' in '{var_name}'",
                 ),
             ));
             return None;
         }
 
+        // Nested fields: recurse and flatten children into the parent map
+        if let Some(nested) = &field.nested_fields {
+            let nested_size = eval_symbolic_subscript_fields(
+                var_name,
+                default_width,
+                nested,
+                &qualified_name,
+                span,
+                consts,
+                resolved_fields,
+                diagnostics,
+            )?;
+
+            let Some(next_offset) = offset.checked_add(nested_size) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!(
+                        "symbolic subscript array '{var_name}' total size overflows address space",
+                    ),
+                ));
+                return None;
+            };
+
+            // Adjust child offsets: they were computed relative to 0, shift by current offset
+            for (key, meta) in resolved_fields.iter_mut() {
+                if key.starts_with(&qualified_name) {
+                    meta.offset += offset;
+                }
+            }
+
+            offset = next_offset;
+            continue;
+        }
+
         let data_width = field
             .data_width
-            .or(var.data_width)
+            .or(default_width)
             .unwrap_or(DataWidth::Byte);
 
         let count = match &field.count {
@@ -791,15 +858,15 @@ fn eval_symbolic_subscript_layout(
             diagnostics.push(Diagnostic::error(
                 field.span,
                 format!(
-                    "symbolic subscript field '.{}' in '{}' overflows layout size",
-                    field.name, var.name
+                    "symbolic subscript field '.{}' in '{var_name}' overflows layout size",
+                    field.name
                 ),
             ));
             return None;
         };
 
         resolved_fields.insert(
-            field.name.clone(),
+            qualified_name,
             SymbolicSubscriptFieldMeta {
                 offset,
                 size,
@@ -812,8 +879,7 @@ fn eval_symbolic_subscript_layout(
             diagnostics.push(Diagnostic::error(
                 span,
                 format!(
-                    "symbolic subscript array '{}' total size overflows address space",
-                    var.name
+                    "symbolic subscript array '{var_name}' total size overflows address space",
                 ),
             ));
             return None;
@@ -821,10 +887,7 @@ fn eval_symbolic_subscript_layout(
         offset = next_offset;
     }
 
-    Some(SymbolicSubscriptMeta {
-        fields: resolved_fields,
-        total_size: offset,
-    })
+    Some(offset)
 }
 
 enum ConstExprError {

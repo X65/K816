@@ -95,6 +95,7 @@ pub struct SymbolicSubscriptFieldDecl {
     pub data_width: Option<DataWidth>,
     pub count: Option<Expr>,
     pub count_span: Option<Span>,
+    pub nested_fields: Option<Vec<SymbolicSubscriptFieldDecl>>,
     pub span: Span,
 }
 

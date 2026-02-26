@@ -1428,7 +1428,62 @@ fn bracket_payload_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let field_entry = symbolic_subscript_field_entry_parser(source_id);
+    let field_entry = recursive::<_, SymbolicSubscriptFieldDecl, _, _, _>(|field_entry_ref| {
+        let seps = just(TokenKind::Comma)
+            .or(just(TokenKind::Newline))
+            .repeated();
+
+        let nested_field_list = field_entry_ref
+            .then_ignore(seps.clone())
+            .repeated()
+            .at_least(1)
+            .collect::<Vec<_>>();
+
+        let array_count = spanned(expr_parser(), source_id);
+
+        // After `.name`, brackets can contain either nested fields or a count expression
+        let bracket_content = just(TokenKind::LBracket)
+            .ignore_then(seps)
+            .ignore_then(
+                nested_field_list
+                    .map(FieldBracketContent::NestedFields)
+                    .or(array_count.map(FieldBracketContent::Count)),
+            )
+            .then_ignore(just(TokenKind::RBracket))
+            .or_not();
+
+        spanned(
+            chumsky::select! { TokenKind::Ident(name) if name.starts_with('.') => name },
+            source_id,
+        )
+        .then(bracket_content)
+        .then(data_width_parser().or_not())
+        .map(|((name_spanned, bracket), data_width)| {
+            let name = name_spanned
+                .node
+                .strip_prefix('.')
+                .unwrap_or(&name_spanned.node)
+                .to_string();
+            let (count, count_span, nested_fields) = match bracket {
+                Some(FieldBracketContent::Count(c)) => {
+                    (Some(c.node), Some(c.span), None)
+                }
+                Some(FieldBracketContent::NestedFields(fields)) => {
+                    (None, None, Some(fields))
+                }
+                None => (None, None, None),
+            };
+            SymbolicSubscriptFieldDecl {
+                name,
+                data_width,
+                count,
+                count_span,
+                nested_fields,
+                span: name_spanned.span,
+            }
+        })
+        .boxed()
+    });
 
     let seps = just(TokenKind::Comma)
         .or(just(TokenKind::Newline))
@@ -1453,38 +1508,10 @@ where
         .boxed()
 }
 
-fn symbolic_subscript_field_entry_parser<'src, I>(
-    source_id: SourceId,
-) -> impl chumsky::Parser<'src, I, SymbolicSubscriptFieldDecl, ParseExtra<'src>> + Clone
-where
-    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
-{
-    spanned(
-        chumsky::select! { TokenKind::Ident(name) if name.starts_with('.') => name },
-        source_id,
-    )
-    .then(
-        just(TokenKind::LBracket)
-            .ignore_then(spanned(expr_parser(), source_id))
-            .then_ignore(just(TokenKind::RBracket))
-            .or_not(),
-    )
-    .then(data_width_parser().or_not())
-    .map(|((name_spanned, count_spanned), data_width)| {
-        let name = name_spanned
-            .node
-            .strip_prefix('.')
-            .unwrap_or(&name_spanned.node)
-            .to_string();
-        SymbolicSubscriptFieldDecl {
-            name,
-            data_width,
-            count: count_spanned.as_ref().map(|c| c.node.clone()),
-            count_span: count_spanned.map(|c| c.span),
-            span: name_spanned.span,
-        }
-    })
-    .boxed()
+#[derive(Debug, Clone)]
+enum FieldBracketContent {
+    Count(Spanned<Expr>),
+    NestedFields(Vec<SymbolicSubscriptFieldDecl>),
 }
 
 fn prefix_condition_parser<'src, I>()

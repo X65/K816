@@ -1,0 +1,7 @@
+Error: mnemonic 'sta' does not accept #immediate operand
+   ╭─[ tests/golden/fixtures/syntax-native-imm-err/input.k65:7:9 ]
+   │
+ 7 │         sta $82
+   │         ───┬───  
+   │            ╰───── here
+───╯

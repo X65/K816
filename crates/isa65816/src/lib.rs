@@ -69,6 +69,8 @@ pub enum EncodeError {
     UnknownMnemonic { mnemonic: String },
     #[error("mnemonic '{mnemonic}' does not accept this operand")]
     InvalidOperand { mnemonic: String },
+    #[error("mnemonic '{mnemonic}' does not accept #immediate operand")]
+    InvalidImmediateOperand { mnemonic: String },
     #[error("mnemonic '{mnemonic}' has no long form")]
     NoLongForm { mnemonic: String },
     #[error("immediate value out of range for the selected operand width")]
@@ -450,7 +452,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
             if has_immediate_mode {
                 Err(EncodeError::ImmediateOutOfRange)
             } else {
-                Err(EncodeError::InvalidOperand {
+                Err(EncodeError::InvalidImmediateOperand {
                     mnemonic: mnemonic.to_string(),
                 })
             }

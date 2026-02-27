@@ -1,0 +1,9 @@
+naked dbg_task {
+    @a16 @i16
+
+    a=1
+    {
+        a++
+        sta $82
+    } always
+}

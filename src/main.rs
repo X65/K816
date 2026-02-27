@@ -927,7 +927,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
     std::fs::create_dir_all(&object_root)
         .with_context(|| format!("failed to create '{}'", object_root.display()))?;
 
-    let mut objects = Vec::with_capacity(sources.len());
+    let mut loaded_sources = Vec::with_capacity(sources.len());
     for source in &sources {
         let object_path = object_path_for_source(&source_root, &object_root, source)?;
         if let Some(parent) = object_path.parent() {
@@ -939,9 +939,37 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
             display_project_path(&project_root, source),
             display_project_path(&project_root, &object_path)
         );
-        let object = compile_source_file_for_link(source)?;
-        k816_o65::write_object(&object_path, &object)?;
-        objects.push(object);
+        let source_text = std::fs::read_to_string(source)
+            .with_context(|| format!("failed to read source '{}'", source.display()))?;
+        loaded_sources.push((object_path, source.display().to_string(), source_text));
+    }
+
+    let compile_inputs = loaded_sources
+        .iter()
+        .map(
+            |(_object_path, source_name, source_text)| k816_core::LinkCompileInput {
+                source_name,
+                source_text,
+            },
+        )
+        .collect::<Vec<_>>();
+    let compile_outputs = k816_core::compile_sources_to_objects_for_link_with_options(
+        &compile_inputs,
+        k816_core::CompileRenderOptions {
+            color: stderr_supports_color(),
+        },
+    )
+    .map_err(|error| anyhow::anyhow!(error.rendered))?;
+
+    let mut objects = Vec::with_capacity(compile_outputs.len());
+    for ((object_path, _source_name, _source_text), output) in
+        loaded_sources.into_iter().zip(compile_outputs)
+    {
+        if !output.rendered_warnings.trim().is_empty() {
+            eprintln!("{}", output.rendered_warnings.trim_end());
+        }
+        k816_o65::write_object(&object_path, &output.object)?;
+        objects.push(output.object);
     }
 
     let resolved_config = resolve_project_link_config_path(&project_root, &manifest, link_options);

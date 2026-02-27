@@ -1,5 +1,5 @@
 [obj#0 default]
-000000: AD 2A 00 AD 39 05 60
+000000: C2 20 A9 2A 00 A9 39 05 60
 
 
 [obj#1 default]
@@ -7,6 +7,7 @@
 
 
 [disasm obj#0 default::main]
-000000: AD 2A 00    lda $002A
-000003: AD 39 05    lda $0539
-000006: 60          rts
+000000: C2 20       rep #$20
+000002: A9 2A 00    lda #$002A
+000005: A9 39 05    lda #$0539
+000008: 60          rts

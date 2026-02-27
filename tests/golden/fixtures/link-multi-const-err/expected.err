@@ -1,0 +1,7 @@
+Error: Immediate 0x539 does not fit in @a8; use @a16 or split into bytes.
+   ╭─[ tests/golden/fixtures/link-multi-const-err/input.10-main.k65:5:5 ]
+   │
+ 5 │     lda BAR
+   │     ───┬───  
+   │        ╰───── here
+───╯

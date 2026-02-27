@@ -1557,11 +1557,18 @@ fn validate_instruction_width_rules(
     let is_immediate = match operand {
         Operand::Immediate { .. } => true,
         Operand::Auto { expr } => is_immediate_expression(expr, sema),
-        Operand::Value { .. } | Operand::BlockMove { .. } => false,
+        Operand::Value {
+            expr,
+            force_far,
+            index,
+            addr_mode,
+        } => value_operand_uses_immediate(*force_far, *index, *addr_mode, expr, sema),
+        Operand::BlockMove { .. } => false,
     };
 
     let imm_expr = match operand {
         Operand::Immediate { expr, .. } | Operand::Auto { expr } if is_immediate => Some(expr),
+        Operand::Value { expr, .. } if is_immediate => Some(expr),
         _ => None,
     };
 
@@ -1586,7 +1593,7 @@ fn validate_instruction_width_rules(
     }
 
     let addr_expr = match operand {
-        Operand::Value { expr, .. } => Some(expr),
+        Operand::Value { expr, .. } if !is_immediate => Some(expr),
         Operand::Auto { expr } if !is_immediate => Some(expr),
         _ => None,
     };
@@ -3462,6 +3469,19 @@ fn resolve_symbolic_byte_relocation(
     Some((kind, resolved))
 }
 
+fn value_operand_uses_immediate(
+    force_far: bool,
+    index: Option<crate::ast::IndexRegister>,
+    addr_mode: OperandAddrMode,
+    expr: &Expr,
+    sema: &SemanticModel,
+) -> bool {
+    if force_far || index.is_some() || addr_mode != OperandAddrMode::Direct {
+        return false;
+    }
+    is_immediate_expression(expr, sema)
+}
+
 /// Determines whether an expression should be treated as an immediate value
 /// (compile-time constant) rather than a memory address. Uses the semantic model
 /// for deterministic classification instead of naming-convention heuristics.
@@ -3686,14 +3706,7 @@ fn lower_instruction(
             explicit_hash,
         }) => {
             let eval_span = immediate_expr_span(expr, span, *explicit_hash);
-            if let Some((kind, label)) =
-                resolve_symbolic_byte_relocation(expr, scope, sema, eval_span, diagnostics)
-            {
-                Some(OperandOp::ImmediateByteRelocation { kind, label })
-            } else {
-                let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
-                Some(OperandOp::Immediate(value))
-            }
+            lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
         }
         Some(Operand::Value {
             expr,
@@ -3701,20 +3714,18 @@ fn lower_instruction(
             index,
             addr_mode,
         }) => {
-            let mode = lower_operand_mode(*addr_mode, *index);
-            lower_address_operand(expr, scope, sema, span, diagnostics, *force_far, mode)
+            if value_operand_uses_immediate(*force_far, *index, *addr_mode, expr, sema) {
+                let eval_span = immediate_expr_span(expr, span, false);
+                lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
+            } else {
+                let mode = lower_operand_mode(*addr_mode, *index);
+                lower_address_operand(expr, scope, sema, span, diagnostics, *force_far, mode)
+            }
         }
         Some(Operand::Auto { expr }) => {
             if is_immediate_expression(expr, sema) {
                 let eval_span = immediate_expr_span(expr, span, false);
-                if let Some((kind, label)) =
-                    resolve_symbolic_byte_relocation(expr, scope, sema, eval_span, diagnostics)
-                {
-                    Some(OperandOp::ImmediateByteRelocation { kind, label })
-                } else {
-                    let value = eval_to_number(expr, scope, sema, eval_span, diagnostics)?;
-                    Some(OperandOp::Immediate(value))
-                }
+                lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
             } else {
                 let mode = lower_operand_mode(OperandAddrMode::Direct, None);
                 lower_address_operand(expr, scope, sema, span, diagnostics, false, mode)
@@ -3748,6 +3759,22 @@ fn lower_instruction(
         mnemonic: instruction.mnemonic.clone(),
         operand,
     })
+}
+
+fn lower_immediate_operand(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<OperandOp> {
+    if let Some((kind, label)) =
+        resolve_symbolic_byte_relocation(expr, scope, sema, span, diagnostics)
+    {
+        return Some(OperandOp::ImmediateByteRelocation { kind, label });
+    }
+    let value = eval_to_number(expr, scope, sema, span, diagnostics)?;
+    Some(OperandOp::Immediate(value))
 }
 
 fn immediate_expr_span(expr: &Expr, instruction_span: Span, explicit_hash: bool) -> Span {
@@ -4284,8 +4311,52 @@ mod tests {
     }
 
     #[test]
+    fn resolves_bare_const_operand_to_immediate_value() {
+        let source = "const LIMIT = 0x34\nfunc main {\n  lda LIMIT\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(0x34)));
+    }
+
+    #[test]
     fn resolves_top_level_evaluator_constant_to_immediate_value() {
         let source = "[ LIMIT = 0x34 ]\nfunc main {\n  lda #LIMIT\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(0x34)));
+    }
+
+    #[test]
+    fn resolves_bare_top_level_evaluator_constant_to_immediate_value() {
+        let source = "[ LIMIT = 0x34 ]\nfunc main {\n  lda LIMIT\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;

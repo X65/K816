@@ -1,6 +1,6 @@
 const FOO = 42
 
-func main @a16 {
+func main {
     lda FOO
     lda BAR
 }

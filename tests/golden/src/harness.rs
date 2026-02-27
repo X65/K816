@@ -514,13 +514,26 @@ fn compile_and_link(
     allow_adjacent_config: bool,
     expected_output_kind: Option<k816_link::OutputKind>,
 ) -> Result<PipelineOutput> {
-    let mut objects = Vec::with_capacity(inputs.len());
-    let mut warnings = String::new();
+    let mut loaded_inputs = Vec::with_capacity(inputs.len());
     for input in inputs {
         let source = std::fs::read_to_string(&input.path)
             .with_context(|| format!("failed to read fixture input '{}'", input.path.display()))?;
-        let compiled = k816_core::compile_source_to_object_for_link(&input.source_name, &source)
-            .map_err(|error| anyhow!("{}", error.rendered))?;
+        loaded_inputs.push((input, source));
+    }
+
+    let compile_inputs = loaded_inputs
+        .iter()
+        .map(|(input, source)| k816_core::LinkCompileInput {
+            source_name: &input.source_name,
+            source_text: source,
+        })
+        .collect::<Vec<_>>();
+    let compiled_outputs = k816_core::compile_sources_to_objects_for_link(&compile_inputs)
+        .map_err(|error| anyhow!("{}", error.rendered))?;
+
+    let mut objects = Vec::with_capacity(inputs.len());
+    let mut warnings = String::new();
+    for compiled in compiled_outputs {
         if !compiled.rendered_warnings.trim().is_empty() {
             if !warnings.is_empty() && !warnings.ends_with('\n') {
                 warnings.push('\n');

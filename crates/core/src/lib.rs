@@ -15,10 +15,12 @@ pub mod sema;
 pub mod span;
 
 pub use driver::{
-    CompileError, CompileObjectOutput, CompileRenderOptions, compile_source_to_object,
-    compile_source_to_object_for_link, compile_source_to_object_for_link_with_fs,
+    CompileError, CompileObjectOutput, CompileRenderOptions, LinkCompileInput,
+    compile_source_to_object, compile_source_to_object_for_link,
+    compile_source_to_object_for_link_with_fs,
     compile_source_to_object_for_link_with_fs_and_options,
     compile_source_to_object_for_link_with_options, compile_source_to_object_with_fs,
     compile_source_to_object_with_fs_and_options, compile_source_to_object_with_options,
+    compile_sources_to_objects_for_link, compile_sources_to_objects_for_link_with_options,
 };
 pub use emit_object::AddressableSite;

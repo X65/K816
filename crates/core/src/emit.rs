@@ -283,7 +283,9 @@ pub fn emit(program: &Program) -> Result<EmitOutput, Vec<Diagnostic>> {
                 let mnemonic = instruction.mnemonic.to_ascii_lowercase();
                 let operand_shape = match &instruction.operand {
                     None => OperandShape::None,
-                    Some(OperandOp::Immediate(value)) => OperandShape::Immediate(*value),
+                    // Width-dependent immediates are sized after mode tracking, so
+                    // encoding selection should not depend on the literal magnitude here.
+                    Some(OperandOp::Immediate(_)) => OperandShape::Immediate(0),
                     Some(OperandOp::ImmediateByteRelocation { .. }) => OperandShape::Immediate(0),
                     Some(OperandOp::Address {
                         value,

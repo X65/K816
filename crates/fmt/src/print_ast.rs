@@ -244,9 +244,8 @@ fn indent_by_multiline_delimiter_depth(input: &str) -> String {
 
     let mut depth: isize = 0;
     let mut out_lines = Vec::with_capacity(line_count);
-    let mut line_idx = 0usize;
 
-    for line in input.split('\n') {
+    for (line_idx, line) in input.split('\n').enumerate() {
         let dedent = closes.get(line_idx).copied().unwrap_or(0) as isize;
         let line_depth = (depth - dedent).max(0) as usize;
 
@@ -262,7 +261,6 @@ fn indent_by_multiline_delimiter_depth(input: &str) -> String {
 
         let open_count = opens.get(line_idx).copied().unwrap_or(0) as isize;
         depth = line_depth as isize + open_count;
-        line_idx += 1;
     }
 
     let mut out = out_lines.join("\n");

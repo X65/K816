@@ -88,8 +88,8 @@ fn compute_effective_needs(program: &Program) -> FxHashMap<String, (bool, bool)>
                     current_function = None;
                 }
                 Op::Instruction(instruction) if current_function.is_some() => {
-                    if let Some(target) = call_target(instruction) {
-                        if let Some(&(target_m, target_x)) = needs.get(target) {
+                    if let Some(target) = call_target(instruction)
+                        && let Some(&(target_m, target_x)) = needs.get(target) {
                             let func_name = current_function.as_ref().unwrap();
                             let &(cur_m, cur_x) =
                                 needs.get(func_name.as_str()).unwrap_or(&(false, false));
@@ -100,7 +100,6 @@ fn compute_effective_needs(program: &Program) -> FxHashMap<String, (bool, bool)>
                                 changed = true;
                             }
                         }
-                    }
                 }
                 _ => {}
             }
@@ -179,8 +178,8 @@ fn process_function(
                     need_x = true;
                 }
                 // Calls to functions that need specific widths.
-                if let Some(target) = call_target(instruction) {
-                    if let Some(&(target_m, target_x)) = effective_needs.get(target) {
+                if let Some(target) = call_target(instruction)
+                    && let Some(&(target_m, target_x)) = effective_needs.get(target) {
                         if target_m {
                             need_m = true;
                         }
@@ -188,7 +187,6 @@ fn process_function(
                             need_x = true;
                         }
                     }
-                }
             }
             Op::FixedRep(mask) | Op::FixedSep(mask) => {
                 if mask & 0x20 != 0 {

@@ -93,6 +93,10 @@ impl DecodedInstruction<'_> {
     pub fn len(&self) -> usize {
         1 + self.operand.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug, Error)]
@@ -582,8 +586,8 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                         });
                     }
 
-                    if literal.is_some_and(|value| value <= 0xFF) {
-                        if let Some(opcode) =
+                    if literal.is_some_and(|value| value <= 0xFF)
+                        && let Some(opcode) =
                             find_opcode(&lower, AddressingMode::DirectPageIndirect)
                         {
                             return Ok(Encoding {
@@ -591,7 +595,6 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                 mode: AddressingMode::DirectPageIndirect,
                             });
                         }
-                    }
 
                     if literal.is_some_and(|value| value > 0xFFFF) {
                         return Err(EncodeError::InvalidOperand {

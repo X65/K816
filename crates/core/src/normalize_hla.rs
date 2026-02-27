@@ -122,9 +122,9 @@ fn normalize_stmt_sequence(stmts: &[Spanned<Stmt>]) -> Vec<Spanned<Stmt>> {
 
     while index < stmts.len() {
         let current = &stmts[index];
-        if let Stmt::Hla(HlaStmt::ConditionSeed { lhs, rhs }) = &current.node {
-            if let Some(next) = stmts.get(index + 1) {
-                if rhs.index.is_none()
+        if let Stmt::Hla(HlaStmt::ConditionSeed { lhs, rhs }) = &current.node
+            && let Some(next) = stmts.get(index + 1)
+                && rhs.index.is_none()
                     && rhs.addr_mode == crate::ast::OperandAddrMode::Direct
                     && let Stmt::Hla(HlaStmt::DoCloseWithOp { op }) = &next.node
                 {
@@ -142,8 +142,6 @@ fn normalize_stmt_sequence(stmts: &[Spanned<Stmt>]) -> Vec<Spanned<Stmt>> {
                     index += 2;
                     continue;
                 }
-            }
-        }
 
         out.push(Spanned::new(normalize_stmt(&current.node), current.span));
         index += 1;

@@ -143,8 +143,10 @@ pub fn lower(
                 if block.is_inline {
                     continue; // Body will be inlined at call sites.
                 }
-                let mut block_ctx = LowerContext::default();
-                block_ctx.is_far = block.is_far;
+                let mut block_ctx = LowerContext {
+                    is_far: block.is_far,
+                    ..LowerContext::default()
+                };
                 let scope = block.name.clone();
                 block_ctx.label_depths =
                     collect_label_depths(&block.body, Some(scope.as_str()), 0, &mut diagnostics);
@@ -662,10 +664,12 @@ fn lower_named_data_entry(
                 i_width: Some(RegWidth::W8),
             };
             ops.push(Spanned::new(Op::SetMode(mode_contract), span));
-            let mut code_ctx = LowerContext::default();
-            code_ctx.mode = ModeState {
-                a_width: Some(RegWidth::W8),
-                i_width: Some(RegWidth::W8),
+            let mut code_ctx = LowerContext {
+                mode: ModeState {
+                    a_width: Some(RegWidth::W8),
+                    i_width: Some(RegWidth::W8),
+                },
+                ..LowerContext::default()
             };
             let mut code_segment = current_segment.clone();
             for stmt in stmts {
@@ -713,20 +717,17 @@ fn lower_stmt(
             if let Some(resolved) = resolve_symbol(&label.name, scope, span, diagnostics) {
                 let declared_mode = ctx.label_declared_modes.get(&resolved).copied();
                 let mut fixed_mask = ctx.label_fixed_masks.get(&resolved).copied().unwrap_or(0);
-                if let Some(declared) = declared_mode {
-                    if ctx.reachable {
-                        if let Some(a) = declared.a_width {
-                            if ctx.mode.a_width != Some(a) {
+                if let Some(declared) = declared_mode
+                    && ctx.reachable {
+                        if let Some(a) = declared.a_width
+                            && ctx.mode.a_width != Some(a) {
                                 fixed_mask |= 0x20;
                             }
-                        }
-                        if let Some(i) = declared.i_width {
-                            if ctx.mode.i_width != Some(i) {
+                        if let Some(i) = declared.i_width
+                            && ctx.mode.i_width != Some(i) {
                                 fixed_mask |= 0x10;
                             }
-                        }
                     }
-                }
 
                 if let Some(incoming_mode) = ctx.label_entry_modes.get(&resolved).copied() {
                     let incoming_mode = apply_declared_label_mode(incoming_mode, declared_mode);
@@ -770,8 +771,8 @@ fn lower_stmt(
             }
         }
         Stmt::Instruction(instruction) => {
-            if instruction.operand.is_none() {
-                if let Some(meta) = sema.functions.get(&instruction.mnemonic) {
+            if instruction.operand.is_none()
+                && let Some(meta) = sema.functions.get(&instruction.mnemonic) {
                     if meta.is_inline {
                         if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
                             lower_inline_call(
@@ -806,7 +807,6 @@ fn lower_stmt(
                     );
                     return;
                 }
-            }
             lower_instruction_stmt(instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         Stmt::Call(call) => {
@@ -1200,24 +1200,8 @@ fn lower_mode_contract_transition(
 ) -> ModeState {
     let mut next = current;
 
-    let a_delta = if let Some(target) = a_width {
-        if current.a_width != Some(target) {
-            Some(target)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let i_delta = if let Some(target) = i_width {
-        if current.i_width != Some(target) {
-            Some(target)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let a_delta = a_width.filter(|&target| current.a_width != Some(target));
+    let i_delta = i_width.filter(|&target| current.i_width != Some(target));
 
     lower_mode_set(a_delta, i_delta, span, ops);
 
@@ -1397,11 +1381,10 @@ fn lower_instruction_stmt(
         return;
     }
 
-    if is_conditional_branch {
-        if let Some(target) = target_label.as_deref() {
+    if is_conditional_branch
+        && let Some(target) = target_label.as_deref() {
             record_jump_target_mode(ctx, target, ctx.mode, span, diagnostics);
         }
-    }
 
     if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops)
         && (mnemonic == "plp" || mnemonic == "rti")
@@ -1447,10 +1430,7 @@ fn instruction_jump_target_label(
         Operand::Immediate { .. } | Operand::BlockMove { .. } => return None,
     };
 
-    let Some(name) = expr_ident_name(expr) else {
-        return None;
-    };
-
+    let name = expr_ident_name(expr)?;
     resolve_symbol(name, scope, span, diagnostics)
 }
 
@@ -1578,9 +1558,9 @@ fn validate_instruction_width_rules(
             "ldx" | "ldy" => mode.i_width,
             _ => None,
         };
-        if let Some(reg_width) = reg_mode {
-            if let Some(value) = eval_to_number_strict(expr, sema, span, diagnostics) {
-                if !value_fits_reg_width(value, reg_width) {
+        if let Some(reg_width) = reg_mode
+            && let Some(value) = eval_to_number_strict(expr, sema, span, diagnostics)
+                && !value_fits_reg_width(value, reg_width) {
                     diagnostics.push(immediate_width_error(
                         span,
                         value,
@@ -1588,8 +1568,6 @@ fn validate_instruction_width_rules(
                         mnemonic.as_str(),
                     ));
                 }
-            }
-        }
     }
 
     let addr_expr = match operand {
@@ -1977,18 +1955,21 @@ fn lower_assignment_chain(
         let dest = &idents[i];
         let mut resolved = false;
 
-        for j in (i + 1)..total {
-            let candidate = if j == n && has_tail {
-                resolve_chain_pair_expr(dest, tail_expr.expect("tail expression exists"))
-            } else {
-                resolve_chain_pair_ident(dest, &idents[j])
-            };
-
-            if let Some(instruction) = candidate {
+        for src in idents.iter().skip(i + 1) {
+            if let Some(instruction) = resolve_chain_pair_ident(dest, src) {
                 instructions.push(instruction);
                 resolved = true;
                 break;
             }
+        }
+
+        if !resolved
+            && has_tail
+            && let Some(instruction) =
+                resolve_chain_pair_expr(dest, tail_expr.expect("tail expression exists"))
+        {
+            instructions.push(instruction);
+            resolved = true;
         }
 
         if !resolved {
@@ -2858,16 +2839,13 @@ fn evaluate_byte_exprs(
                         continue;
                     }
 
-                    if let Some(symbol) = expr_ident_name(expr.as_ref()) {
-                        if !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
+                    if let Some(symbol) = expr_ident_name(expr.as_ref())
+                        && !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
                             match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
                                 Ok(Some(_)) | Err(()) => {}
                                 Ok(None) => {
-                                    let Some(label) =
-                                        resolve_symbol(symbol, scope, span, diagnostics)
-                                    else {
-                                        return None;
-                                    };
+                                    let label =
+                                        resolve_symbol(symbol, scope, span, diagnostics)?;
                                     let kind = match op {
                                         ExprUnaryOp::WordLittleEndian => {
                                             ByteRelocationKind::FullWord
@@ -2879,9 +2857,7 @@ fn evaluate_byte_exprs(
                                     };
                                     let offset = u32::try_from(bytes.len())
                                         .expect("byte expression offset should fit in u32");
-                                    for _ in 0..byte_count {
-                                        bytes.push(0);
-                                    }
+                                    bytes.extend(std::iter::repeat_n(0, byte_count));
                                     relocations.push(ByteRelocation {
                                         offset,
                                         kind,
@@ -2891,7 +2867,6 @@ fn evaluate_byte_exprs(
                                 }
                             }
                         }
-                    }
 
                     diagnostics.push(
                         Diagnostic::error(
@@ -2951,9 +2926,7 @@ fn evaluate_byte_exprs(
             return None;
         }
 
-        let Some(number) = eval_to_number(value, scope, sema, span, diagnostics) else {
-            return None;
-        };
+        let number = eval_to_number(value, scope, sema, span, diagnostics)?;
         match u8::try_from(number) {
             Ok(byte) => bytes.push(byte),
             Err(_) => {
@@ -3028,8 +3001,8 @@ fn evaluate_word_exprs(
         }
 
         // Bare ident that is a label: emit a full 16-bit word relocation.
-        if let Some(symbol) = expr_ident_name(value) {
-            if !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
+        if let Some(symbol) = expr_ident_name(value)
+            && !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
                 match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
                     Ok(Some(_)) | Err(()) => {}
                     Ok(None) => {
@@ -3048,12 +3021,9 @@ fn evaluate_word_exprs(
                     }
                 }
             }
-        }
 
         // Fallback: try general numeric evaluation.
-        let Some(number) = eval_to_number(value, scope, sema, span, diagnostics) else {
-            return None;
-        };
+        let number = eval_to_number(value, scope, sema, span, diagnostics)?;
         match u16::try_from(number) {
             Ok(word) => bytes.extend_from_slice(&word.to_le_bytes()),
             Err(_) => {
@@ -3127,8 +3097,8 @@ fn evaluate_far_exprs(
         }
 
         // Bare ident that is a label: emit a full 24-bit far relocation.
-        if let Some(symbol) = expr_ident_name(value) {
-            if !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
+        if let Some(symbol) = expr_ident_name(value)
+            && !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
                 match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
                     Ok(Some(_)) | Err(()) => {}
                     Ok(None) => {
@@ -3147,12 +3117,9 @@ fn evaluate_far_exprs(
                     }
                 }
             }
-        }
 
         // Fallback: try general numeric evaluation.
-        let Some(number) = eval_to_number(value, scope, sema, span, diagnostics) else {
-            return None;
-        };
+        let number = eval_to_number(value, scope, sema, span, diagnostics)?;
         if !(0..=0xFFFFFF).contains(&number) {
             diagnostics.push(Diagnostic::error(
                 span,
@@ -3452,10 +3419,7 @@ fn resolve_symbolic_byte_relocation(
         | ExprUnaryOp::EvalBracketed => return None,
     };
 
-    let Some(symbol) = expr_ident_name(expr.as_ref()) else {
-        return None;
-    };
-
+    let symbol = expr_ident_name(expr.as_ref())?;
     if sema.vars.contains_key(symbol) || sema.consts.contains_key(symbol) {
         return None;
     }
@@ -4127,15 +4091,13 @@ fn resolve_operand_ident(
         });
     }
     if let Some(constant) = sema.consts.get(name) {
-        let Some(value) = constant_to_exact_i64(
+        let value = constant_to_exact_i64(
             name,
             constant.value,
             span,
             diagnostics,
             "address expression",
-        ) else {
-            return None;
-        };
+        )?;
         let Ok(address) = u32::try_from(value) else {
             diagnostics.push(Diagnostic::error(
                 span,

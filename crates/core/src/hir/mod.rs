@@ -88,6 +88,13 @@ pub enum AddressOperandMode {
     IndirectIndexedY,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressSizeHint {
+    Auto,
+    ForceAbsolute16,
+    ForceAbsoluteLong,
+}
+
 #[derive(Debug, Clone)]
 pub enum OperandOp {
     Immediate(i64),
@@ -99,7 +106,7 @@ pub enum OperandOp {
     },
     Address {
         value: AddressValue,
-        force_far: bool,
+        size_hint: AddressSizeHint,
         mode: AddressOperandMode,
     },
     BlockMove {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::AddressHint;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FunctionMeta {
@@ -27,6 +28,7 @@ pub struct VarMeta {
     pub address: u32,
     pub size: u32,
     pub data_width: Option<DataWidth>,
+    pub addr_hint: Option<AddressHint>,
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 

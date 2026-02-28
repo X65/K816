@@ -1,4 +1,4 @@
-use crate::ast::{Expr, ExprBinaryOp, ExprUnaryOp, NumFmt};
+use crate::ast::{AddressHint, Expr, ExprBinaryOp, ExprUnaryOp, NumFmt};
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::SourceId;
 use chumsky::{
@@ -9,7 +9,16 @@ use chumsky::{
     recursive::recursive,
 };
 
-use super::{ParseExtra, data_width_parser, line_sep_parser, parse_expression_fragment, spanned};
+use super::{
+    ParseExtra, address_hint_parser, data_width_parser, line_sep_parser, parse_expression_fragment,
+    spanned,
+};
+
+#[derive(Debug, Clone, Copy)]
+enum ExprSuffix {
+    TypedView(crate::ast::DataWidth),
+    AddressHint(AddressHint),
+}
 
 pub(super) fn expr_parser<'src, I>() -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src>> + Clone
 where
@@ -116,12 +125,45 @@ where
                     rhs: Box::new(rhs),
                 })
             })
-            .then(data_width_parser().repeated().collect::<Vec<_>>())
-            .map(|(expr, views)| {
-                views.into_iter().fold(expr, |expr, width| Expr::TypedView {
-                    expr: Box::new(expr),
-                    width,
-                })
+            .then(
+                data_width_parser()
+                    .map(ExprSuffix::TypedView)
+                    .or(address_hint_parser().map(ExprSuffix::AddressHint))
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .try_map(|(expr, suffixes), span| {
+                let mut expr = expr;
+                let mut seen_address_hint = false;
+
+                for suffix in suffixes {
+                    match suffix {
+                        ExprSuffix::TypedView(width) => {
+                            if seen_address_hint {
+                                return Err(Rich::custom(
+                                    span,
+                                    "':abs' must appear after any typed view suffix",
+                                ));
+                            }
+                            expr = Expr::TypedView {
+                                expr: Box::new(expr),
+                                width,
+                            };
+                        }
+                        ExprSuffix::AddressHint(hint) => {
+                            if seen_address_hint {
+                                return Err(Rich::custom(span, "duplicate ':abs' suffix"));
+                            }
+                            seen_address_hint = true;
+                            expr = Expr::AddressHint {
+                                expr: Box::new(expr),
+                                hint,
+                            };
+                        }
+                    }
+                }
+
+                Ok(expr)
             })
     })
     .boxed()
@@ -279,6 +321,6 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprUnaryOp::EvalBracketed => Some(value),
             }
         }
-        Expr::TypedView { expr, .. } => eval_static_expr(expr),
+        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => eval_static_expr(expr),
     }
 }

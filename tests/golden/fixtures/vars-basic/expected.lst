@@ -1,5 +1,5 @@
 [default]
-000000: EA 60 AD 00 00 AD 34 12 AD 00 00 60
+000000: EA 60 A5 00 AD 34 12 AD 00 00 60
 
 
 [disasm obj#0 default::target]
@@ -7,7 +7,7 @@
 000001: 60          rts
 
 [disasm obj#0 default::main]
-000002: AD 00 00    lda $0000
-000005: AD 34 12    lda $1234
-000008: AD 00 00    lda $0000
-00000B: 60          rts
+000002: A5 00       lda $00
+000004: AD 34 12    lda $1234
+000007: AD 00 00    lda $0000
+00000A: 60          rts

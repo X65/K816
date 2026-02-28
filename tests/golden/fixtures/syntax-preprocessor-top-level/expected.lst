@@ -1,7 +1,7 @@
 [default]
-000000: AD 10 00 60
+000000: A5 10 60
 
 
 [disasm obj#0 default::main]
-000000: AD 10 00    lda $0010
-000003: 60          rts
+000000: A5 10       lda $10
+000002: 60          rts

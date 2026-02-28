@@ -4,6 +4,9 @@ use crate::ast::ModeContract;
 use crate::hir::{AddressValue, InstructionOp, Op, OperandOp, Program};
 use crate::span::Spanned;
 
+#[cfg(test)]
+use crate::hir::AddressSizeHint;
+
 /// Returns (needs_m, needs_x) for an instruction.
 ///
 /// This models semantic width dependencies, not just immediate operand sizing.
@@ -89,17 +92,18 @@ fn compute_effective_needs(program: &Program) -> FxHashMap<String, (bool, bool)>
                 }
                 Op::Instruction(instruction) if current_function.is_some() => {
                     if let Some(target) = call_target(instruction)
-                        && let Some(&(target_m, target_x)) = needs.get(target) {
-                            let func_name = current_function.as_ref().unwrap();
-                            let &(cur_m, cur_x) =
-                                needs.get(func_name.as_str()).unwrap_or(&(false, false));
-                            let new_m = cur_m || target_m;
-                            let new_x = cur_x || target_x;
-                            if new_m != cur_m || new_x != cur_x {
-                                needs.insert(func_name.clone(), (new_m, new_x));
-                                changed = true;
-                            }
+                        && let Some(&(target_m, target_x)) = needs.get(target)
+                    {
+                        let func_name = current_function.as_ref().unwrap();
+                        let &(cur_m, cur_x) =
+                            needs.get(func_name.as_str()).unwrap_or(&(false, false));
+                        let new_m = cur_m || target_m;
+                        let new_x = cur_x || target_x;
+                        if new_m != cur_m || new_x != cur_x {
+                            needs.insert(func_name.clone(), (new_m, new_x));
+                            changed = true;
                         }
+                    }
                 }
                 _ => {}
             }
@@ -179,14 +183,15 @@ fn process_function(
                 }
                 // Calls to functions that need specific widths.
                 if let Some(target) = call_target(instruction)
-                    && let Some(&(target_m, target_x)) = effective_needs.get(target) {
-                        if target_m {
-                            need_m = true;
-                        }
-                        if target_x {
-                            need_x = true;
-                        }
+                    && let Some(&(target_m, target_x)) = effective_needs.get(target)
+                {
+                    if target_m {
+                        need_m = true;
                     }
+                    if target_x {
+                        need_x = true;
+                    }
+                }
             }
             Op::FixedRep(mask) | Op::FixedSep(mask) => {
                 if mask & 0x20 != 0 {
@@ -365,7 +370,7 @@ mod tests {
                 mnemonic: mnemonic.to_string(),
                 operand: Some(OperandOp::Address {
                     value: AddressValue::Literal(literal),
-                    force_far: false,
+                    size_hint: AddressSizeHint::Auto,
                     mode: AddressOperandMode::Direct { index: None },
                 }),
             }),

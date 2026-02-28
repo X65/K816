@@ -126,6 +126,7 @@ where
             Item::Var(VarDecl {
                 name,
                 data_width: None,
+                addr_hint: None,
                 array_len: None,
                 symbolic_subscript_fields: None,
                 initializer: Some(Expr::Number(0, NumFmt::Dec)),
@@ -228,7 +229,10 @@ where
         .then(mode_annotations.clone())
         .then(body.clone())
         .map(
-            move |(((name, name_span), mode_contract), body): (NamedFunctionHeader, FunctionBody)| {
+            move |(((name, name_span), mode_contract), body): (
+                NamedFunctionHeader,
+                FunctionBody,
+            )| {
                 let range = name_span.into_range();
                 CodeBlock {
                     name,

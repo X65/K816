@@ -477,6 +477,7 @@ fn expand_var(
     VarDecl {
         name: var.name.clone(),
         data_width: var.data_width,
+        addr_hint: var.addr_hint,
         array_len: var
             .array_len
             .as_ref()
@@ -600,6 +601,10 @@ fn expand_expr(
         Expr::TypedView { expr, width } => Expr::TypedView {
             expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
             width: *width,
+        },
+        Expr::AddressHint { expr, hint } => Expr::AddressHint {
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            hint: *hint,
         },
     }
 }

@@ -40,6 +40,7 @@ pub(super) fn collect_var(
             address,
             size: layout.size,
             data_width: var.data_width,
+            addr_hint: var.addr_hint,
             symbolic_subscript: layout.symbolic_subscript,
         },
     );

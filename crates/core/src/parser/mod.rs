@@ -3,7 +3,7 @@ use chumsky::{error::Rich, extra};
 
 #[cfg(test)]
 use crate::ast::{
-    DataArg, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, HlaBranchForm,
+    AddressHint, DataArg, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, HlaBranchForm,
     HlaCpuRegister, HlaRegister, HlaStackTarget, HlaStmt, IndexRegister, Item, NamedDataEntry,
     NumFmt, OperandAddrMode, Stmt,
 };
@@ -46,8 +46,8 @@ use self::common::{
 #[cfg(test)]
 use self::control::invalid_flag_goto_stmt_parser;
 use self::data::{
-    const_decl_item_parser, data_block_parser, data_width_parser, named_data_block_parser,
-    var_decl_parser,
+    address_hint_parser, const_decl_item_parser, data_block_parser, data_width_parser,
+    named_data_block_parser, var_decl_parser,
 };
 use self::diagnostics::rich_error_to_diagnostic;
 use self::expr::{

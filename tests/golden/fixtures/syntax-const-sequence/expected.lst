@@ -1,7 +1,7 @@
 [default]
 000000: A9 00 A9 01 A9 02 A9 00 A9 01 A9 02 A9 0A A9 0B
-000010: A9 0C A9 00 A9 01 A9 0A A9 0B AD 02 00 AD 02 00
-000020: AD 0C 00 AD 0B 00 60
+000010: A9 0C A9 00 A9 01 A9 0A A9 0B A5 02 A5 02 A5 0C
+000020: A5 0B 60
 
 
 [disasm obj#0 default::main]
@@ -18,8 +18,8 @@
 000014: A9 01       lda #$01
 000016: A9 0A       lda #$0A
 000018: A9 0B       lda #$0B
-00001A: AD 02 00    lda $0002
-00001D: AD 02 00    lda $0002
-000020: AD 0C 00    lda $000C
-000023: AD 0B 00    lda $000B
-000026: 60          rts
+00001A: A5 02       lda $02
+00001C: A5 02       lda $02
+00001E: A5 0C       lda $0C
+000020: A5 0B       lda $0B
+000022: 60          rts

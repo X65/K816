@@ -1,0 +1,10 @@
+var dp = $12
+var dpa:abs = $0012
+var other = $1234
+
+func main {
+    lda dp
+    lda dpa
+    lda dp:abs
+    lda other
+}

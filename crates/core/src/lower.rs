@@ -3,16 +3,17 @@ use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp, HlaCompareOp,
-    HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr,
-    HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt, Instruction, Item,
-    NamedDataBlock, NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegWidth, Stmt,
+    AddressHint, CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp,
+    HlaCompareOp, HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget,
+    HlaOperandExpr, HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt,
+    Instruction, Item, NamedDataBlock, NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegWidth,
+    Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
 use crate::hir::{
-    AddressOperandMode, AddressValue, ByteRelocation, ByteRelocationKind, IndexRegister,
-    InstructionOp, Op, OperandOp, Program,
+    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocation, ByteRelocationKind,
+    IndexRegister, InstructionOp, Op, OperandOp, Program,
 };
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
@@ -718,16 +719,19 @@ fn lower_stmt(
                 let declared_mode = ctx.label_declared_modes.get(&resolved).copied();
                 let mut fixed_mask = ctx.label_fixed_masks.get(&resolved).copied().unwrap_or(0);
                 if let Some(declared) = declared_mode
-                    && ctx.reachable {
-                        if let Some(a) = declared.a_width
-                            && ctx.mode.a_width != Some(a) {
-                                fixed_mask |= 0x20;
-                            }
-                        if let Some(i) = declared.i_width
-                            && ctx.mode.i_width != Some(i) {
-                                fixed_mask |= 0x10;
-                            }
+                    && ctx.reachable
+                {
+                    if let Some(a) = declared.a_width
+                        && ctx.mode.a_width != Some(a)
+                    {
+                        fixed_mask |= 0x20;
                     }
+                    if let Some(i) = declared.i_width
+                        && ctx.mode.i_width != Some(i)
+                    {
+                        fixed_mask |= 0x10;
+                    }
+                }
 
                 if let Some(incoming_mode) = ctx.label_entry_modes.get(&resolved).copied() {
                     let incoming_mode = apply_declared_label_mode(incoming_mode, declared_mode);
@@ -772,41 +776,41 @@ fn lower_stmt(
         }
         Stmt::Instruction(instruction) => {
             if instruction.operand.is_none()
-                && let Some(meta) = sema.functions.get(&instruction.mnemonic) {
-                    if meta.is_inline {
-                        if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
-                            lower_inline_call(
-                                inline_block,
-                                meta,
-                                scope,
-                                sema,
-                                fs,
-                                inline_bodies,
-                                current_segment,
-                                ctx,
-                                span,
-                                diagnostics,
-                                ops,
-                            );
-                        }
-                        return;
+                && let Some(meta) = sema.functions.get(&instruction.mnemonic)
+            {
+                if meta.is_inline {
+                    if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
+                        lower_inline_call(
+                            inline_block,
+                            meta,
+                            scope,
+                            sema,
+                            fs,
+                            inline_bodies,
+                            current_segment,
+                            ctx,
+                            span,
+                            diagnostics,
+                            ops,
+                        );
                     }
-                    let Some(target) =
-                        resolve_symbol(&instruction.mnemonic, scope, span, diagnostics)
-                    else {
-                        return;
-                    };
-                    lower_call_with_contract(
-                        &target,
-                        meta.is_far,
-                        meta.mode_contract.a_width,
-                        meta.mode_contract.i_width,
-                        span,
-                        ctx,
-                        ops,
-                    );
                     return;
                 }
+                let Some(target) = resolve_symbol(&instruction.mnemonic, scope, span, diagnostics)
+                else {
+                    return;
+                };
+                lower_call_with_contract(
+                    &target,
+                    meta.is_far,
+                    meta.mode_contract.a_width,
+                    meta.mode_contract.i_width,
+                    span,
+                    ctx,
+                    ops,
+                );
+                return;
+            }
             lower_instruction_stmt(instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         Stmt::Call(call) => {
@@ -1262,7 +1266,11 @@ fn lower_call_with_contract(
             mnemonic: mnemonic.to_string(),
             operand: Some(OperandOp::Address {
                 value: AddressValue::Label(target.to_string()),
-                force_far: is_far,
+                size_hint: if is_far {
+                    AddressSizeHint::ForceAbsoluteLong
+                } else {
+                    AddressSizeHint::Auto
+                },
                 mode: AddressOperandMode::Direct { index: None },
             }),
         }),
@@ -1381,10 +1389,9 @@ fn lower_instruction_stmt(
         return;
     }
 
-    if is_conditional_branch
-        && let Some(target) = target_label.as_deref() {
-            record_jump_target_mode(ctx, target, ctx.mode, span, diagnostics);
-        }
+    if is_conditional_branch && let Some(target) = target_label.as_deref() {
+        record_jump_target_mode(ctx, target, ctx.mode, span, diagnostics);
+    }
 
     if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops)
         && (mnemonic == "plp" || mnemonic == "rti")
@@ -1560,14 +1567,15 @@ fn validate_instruction_width_rules(
         };
         if let Some(reg_width) = reg_mode
             && let Some(value) = eval_to_number_strict(expr, sema, span, diagnostics)
-                && !value_fits_reg_width(value, reg_width) {
-                    diagnostics.push(immediate_width_error(
-                        span,
-                        value,
-                        reg_width,
-                        mnemonic.as_str(),
-                    ));
-                }
+            && !value_fits_reg_width(value, reg_width)
+        {
+            diagnostics.push(immediate_width_error(
+                span,
+                value,
+                reg_width,
+                mnemonic.as_str(),
+            ));
+        }
     }
 
     let addr_expr = match operand {
@@ -1721,6 +1729,7 @@ fn validate_mode_for_typed_access(
 fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
     match expr {
         Expr::TypedView { width, .. } => Some(*width),
+        Expr::AddressHint { expr, .. } => expr_data_width(expr, sema),
         Expr::Ident(name) => sema
             .vars
             .get(name)
@@ -1742,6 +1751,7 @@ fn base_ident(expr: &Expr) -> Option<&str> {
         Expr::IdentSpanned { name, .. } => Some(name.as_str()),
         Expr::Index { base, .. } => base_ident(base),
         Expr::TypedView { expr, .. } => base_ident(expr),
+        Expr::AddressHint { expr, .. } => base_ident(expr),
         _ => None,
     }
 }
@@ -1758,6 +1768,36 @@ fn expr_ident_span(expr: &Expr, fallback: Span) -> Option<Span> {
     match expr {
         Expr::IdentSpanned { start, end, .. } => Some(Span::new(fallback.source_id, *start, *end)),
         _ => None,
+    }
+}
+
+fn expr_address_hint(expr: &Expr) -> Option<AddressHint> {
+    match expr {
+        Expr::AddressHint { expr: inner, hint } => expr_address_hint(inner).or(Some(*hint)),
+        Expr::TypedView { expr, .. } => expr_address_hint(expr),
+        _ => None,
+    }
+}
+
+fn effective_address_hint(expr: &Expr, sema: &SemanticModel) -> Option<AddressHint> {
+    expr_address_hint(expr).or_else(|| {
+        base_ident(expr)
+            .and_then(|name| sema.vars.get(name))
+            .and_then(|var| var.addr_hint)
+    })
+}
+
+fn address_size_hint_for_expr(
+    expr: &Expr,
+    sema: &SemanticModel,
+    force_far: bool,
+) -> AddressSizeHint {
+    if force_far {
+        AddressSizeHint::ForceAbsoluteLong
+    } else if effective_address_hint(expr, sema).is_some() {
+        AddressSizeHint::ForceAbsolute16
+    } else {
+        AddressSizeHint::Auto
     }
 }
 
@@ -2840,33 +2880,30 @@ fn evaluate_byte_exprs(
                     }
 
                     if let Some(symbol) = expr_ident_name(expr.as_ref())
-                        && !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
-                            match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
-                                Ok(Some(_)) | Err(()) => {}
-                                Ok(None) => {
-                                    let label =
-                                        resolve_symbol(symbol, scope, span, diagnostics)?;
-                                    let kind = match op {
-                                        ExprUnaryOp::WordLittleEndian => {
-                                            ByteRelocationKind::FullWord
-                                        }
-                                        ExprUnaryOp::FarLittleEndian => {
-                                            ByteRelocationKind::FullLong
-                                        }
-                                        _ => unreachable!(),
-                                    };
-                                    let offset = u32::try_from(bytes.len())
-                                        .expect("byte expression offset should fit in u32");
-                                    bytes.extend(std::iter::repeat_n(0, byte_count));
-                                    relocations.push(ByteRelocation {
-                                        offset,
-                                        kind,
-                                        label,
-                                    });
-                                    continue;
-                                }
+                        && !sema.vars.contains_key(symbol)
+                        && !sema.consts.contains_key(symbol)
+                    {
+                        match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+                            Ok(Some(_)) | Err(()) => {}
+                            Ok(None) => {
+                                let label = resolve_symbol(symbol, scope, span, diagnostics)?;
+                                let kind = match op {
+                                    ExprUnaryOp::WordLittleEndian => ByteRelocationKind::FullWord,
+                                    ExprUnaryOp::FarLittleEndian => ByteRelocationKind::FullLong,
+                                    _ => unreachable!(),
+                                };
+                                let offset = u32::try_from(bytes.len())
+                                    .expect("byte expression offset should fit in u32");
+                                bytes.extend(std::iter::repeat_n(0, byte_count));
+                                relocations.push(ByteRelocation {
+                                    offset,
+                                    kind,
+                                    label,
+                                });
+                                continue;
                             }
                         }
+                    }
 
                     diagnostics.push(
                         Diagnostic::error(
@@ -3002,25 +3039,27 @@ fn evaluate_word_exprs(
 
         // Bare ident that is a label: emit a full 16-bit word relocation.
         if let Some(symbol) = expr_ident_name(value)
-            && !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
-                match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
-                    Ok(Some(_)) | Err(()) => {}
-                    Ok(None) => {
-                        if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
-                            let offset = u32::try_from(bytes.len())
-                                .expect("word expression offset should fit in u32");
-                            bytes.extend_from_slice(&[0, 0]);
-                            relocations.push(ByteRelocation {
-                                offset,
-                                kind: ByteRelocationKind::FullWord,
-                                label: resolved,
-                            });
-                            continue;
-                        }
-                        return None;
+            && !sema.vars.contains_key(symbol)
+            && !sema.consts.contains_key(symbol)
+        {
+            match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+                Ok(Some(_)) | Err(()) => {}
+                Ok(None) => {
+                    if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
+                        let offset = u32::try_from(bytes.len())
+                            .expect("word expression offset should fit in u32");
+                        bytes.extend_from_slice(&[0, 0]);
+                        relocations.push(ByteRelocation {
+                            offset,
+                            kind: ByteRelocationKind::FullWord,
+                            label: resolved,
+                        });
+                        continue;
                     }
+                    return None;
                 }
             }
+        }
 
         // Fallback: try general numeric evaluation.
         let number = eval_to_number(value, scope, sema, span, diagnostics)?;
@@ -3098,25 +3137,27 @@ fn evaluate_far_exprs(
 
         // Bare ident that is a label: emit a full 24-bit far relocation.
         if let Some(symbol) = expr_ident_name(value)
-            && !sema.vars.contains_key(symbol) && !sema.consts.contains_key(symbol) {
-                match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
-                    Ok(Some(_)) | Err(()) => {}
-                    Ok(None) => {
-                        if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
-                            let offset = u32::try_from(bytes.len())
-                                .expect("far expression offset should fit in u32");
-                            bytes.extend_from_slice(&[0, 0, 0]);
-                            relocations.push(ByteRelocation {
-                                offset,
-                                kind: ByteRelocationKind::FullLong,
-                                label: resolved,
-                            });
-                            continue;
-                        }
-                        return None;
+            && !sema.vars.contains_key(symbol)
+            && !sema.consts.contains_key(symbol)
+        {
+            match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+                Ok(Some(_)) | Err(()) => {}
+                Ok(None) => {
+                    if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
+                        let offset = u32::try_from(bytes.len())
+                            .expect("far expression offset should fit in u32");
+                        bytes.extend_from_slice(&[0, 0, 0]);
+                        relocations.push(ByteRelocation {
+                            offset,
+                            kind: ByteRelocationKind::FullLong,
+                            label: resolved,
+                        });
+                        continue;
                     }
+                    return None;
                 }
             }
+        }
 
         // Fallback: try general numeric evaluation.
         let number = eval_to_number(value, scope, sema, span, diagnostics)?;
@@ -3197,7 +3238,9 @@ fn eval_to_number_strict(
                 ExprUnaryOp::EvalBracketed => Some(value),
             }
         }
-        Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
+        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
+            eval_to_number_strict(expr, sema, span, diagnostics)
+        }
     }
 }
 
@@ -3443,6 +3486,9 @@ fn value_operand_uses_immediate(
     if force_far || index.is_some() || addr_mode != OperandAddrMode::Direct {
         return false;
     }
+    if effective_address_hint(expr, sema).is_some() {
+        return false;
+    }
     is_immediate_expression(expr, sema)
 }
 
@@ -3458,7 +3504,9 @@ fn is_immediate_expression(expr: &Expr, sema: &SemanticModel) -> bool {
         }
         Expr::Unary { .. } => true,
         Expr::Index { .. } | Expr::EvalText(_) => false,
-        Expr::TypedView { expr, .. } => is_immediate_expression(expr, sema),
+        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
+            is_immediate_expression(expr, sema)
+        }
     }
 }
 
@@ -3683,16 +3731,18 @@ fn lower_instruction(
                 lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
             } else {
                 let mode = lower_operand_mode(*addr_mode, *index);
-                lower_address_operand(expr, scope, sema, span, diagnostics, *force_far, mode)
+                let size_hint = address_size_hint_for_expr(expr, sema, *force_far);
+                lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
             }
         }
         Some(Operand::Auto { expr }) => {
-            if is_immediate_expression(expr, sema) {
+            if effective_address_hint(expr, sema).is_none() && is_immediate_expression(expr, sema) {
                 let eval_span = immediate_expr_span(expr, span, false);
                 lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
             } else {
                 let mode = lower_operand_mode(OperandAddrMode::Direct, None);
-                lower_address_operand(expr, scope, sema, span, diagnostics, false, mode)
+                let size_hint = address_size_hint_for_expr(expr, sema, false);
+                lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
             }
         }
         Some(Operand::BlockMove { src, dst }) => {
@@ -3781,7 +3831,7 @@ fn lower_address_operand(
     sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
-    force_far: bool,
+    size_hint: AddressSizeHint,
     mode: AddressOperandMode,
 ) -> Option<OperandOp> {
     match expr {
@@ -3792,7 +3842,7 @@ fn lower_address_operand(
             match address {
                 Ok(address) => Some(OperandOp::Address {
                     value: AddressValue::Literal(address),
-                    force_far,
+                    size_hint,
                     mode,
                 }),
                 Err(diag) => {
@@ -3802,14 +3852,17 @@ fn lower_address_operand(
             }
         }
         Expr::Ident(name) => {
-            resolve_operand_ident(name, scope, sema, span, diagnostics, force_far, mode)
+            resolve_operand_ident(name, scope, sema, span, diagnostics, size_hint, mode)
         }
         Expr::IdentSpanned { name, .. } => {
-            resolve_operand_ident(name, scope, sema, span, diagnostics, force_far, mode)
+            resolve_operand_ident(name, scope, sema, span, diagnostics, size_hint, mode)
+        }
+        Expr::AddressHint { expr, .. } => {
+            lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
         }
         // Typed views should preserve unresolved labels for relocation-aware object flows.
         Expr::TypedView { expr, .. } => {
-            lower_address_operand(expr, scope, sema, span, diagnostics, force_far, mode)
+            lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
         }
         Expr::Index { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
             // Try compile-time evaluation first (works for vars, consts, symbolic subscripts).
@@ -3824,13 +3877,13 @@ fn lower_address_operand(
                 };
                 return Some(OperandOp::Address {
                     value: AddressValue::Literal(address),
-                    force_far,
+                    size_hint,
                     mode,
                 });
             }
             // eval_to_number failed — try to decompose as label ± constant for link-time
             // resolution (e.g. `data_block_name + 1`).
-            if let Some(result) = try_label_offset_operand(expr, scope, sema, span, force_far, mode)
+            if let Some(result) = try_label_offset_operand(expr, scope, sema, span, size_hint, mode)
             {
                 // Remove diagnostics added by the failed eval_to_number attempt.
                 diagnostics.truncate(saved_diag_len);
@@ -3920,7 +3973,9 @@ fn eval_to_number(
                 ExprUnaryOp::EvalBracketed => Some(value),
             }
         }
-        Expr::TypedView { expr, .. } => eval_to_number(expr, scope, sema, span, diagnostics),
+        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
+            eval_to_number(expr, scope, sema, span, diagnostics)
+        }
     }
 }
 
@@ -4071,14 +4126,14 @@ fn resolve_operand_ident(
     sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
-    force_far: bool,
+    size_hint: AddressSizeHint,
     mode: AddressOperandMode,
 ) -> Option<OperandOp> {
     if name.starts_with('.') {
         let resolved = resolve_symbol(name, scope, span, diagnostics)?;
         return Some(OperandOp::Address {
             value: AddressValue::Label(resolved),
-            force_far,
+            size_hint,
             mode,
         });
     }
@@ -4086,7 +4141,7 @@ fn resolve_operand_ident(
     if let Some(var) = sema.vars.get(name) {
         return Some(OperandOp::Address {
             value: AddressValue::Literal(var.address),
-            force_far,
+            size_hint,
             mode,
         });
     }
@@ -4107,7 +4162,7 @@ fn resolve_operand_ident(
         };
         return Some(OperandOp::Address {
             value: AddressValue::Literal(address),
-            force_far,
+            size_hint,
             mode,
         });
     }
@@ -4117,14 +4172,14 @@ fn resolve_operand_ident(
         | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
             return Some(OperandOp::Address {
                 value: AddressValue::Literal(address),
-                force_far,
+                size_hint,
                 mode,
             });
         }
         Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
             return Some(OperandOp::Address {
                 value: AddressValue::Literal(offset),
-                force_far,
+                size_hint,
                 mode,
             });
         }
@@ -4135,14 +4190,14 @@ fn resolve_operand_ident(
     if sema.functions.contains_key(name) {
         return Some(OperandOp::Address {
             value: AddressValue::Label(name.to_string()),
-            force_far,
+            size_hint,
             mode,
         });
     }
 
     Some(OperandOp::Address {
         value: AddressValue::Label(name.to_string()),
-        force_far,
+        size_hint,
         mode,
     })
 }
@@ -4156,7 +4211,7 @@ fn try_label_offset_operand(
     scope: Option<&str>,
     sema: &SemanticModel,
     span: Span,
-    force_far: bool,
+    size_hint: AddressSizeHint,
     mode: AddressOperandMode,
 ) -> Option<OperandOp> {
     let Expr::Binary { op, lhs, rhs } = expr else {
@@ -4184,7 +4239,7 @@ fn try_label_offset_operand(
     let label = resolve_symbol(name, scope, span, &mut Vec::new())?;
     Some(OperandOp::Address {
         value: AddressValue::LabelOffset { label, addend },
-        force_far,
+        size_hint,
         mode,
     })
 }
@@ -4211,7 +4266,9 @@ fn resolve_symbol(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{AddressOperandMode, AddressValue, ByteRelocationKind, OperandOp};
+    use crate::hir::{
+        AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, OperandOp,
+    };
     use crate::parser::parse;
     use crate::sema::analyze;
     use crate::span::SourceId;
@@ -4239,15 +4296,73 @@ mod tests {
         match operand {
             OperandOp::Address {
                 value,
-                force_far,
+                size_hint,
                 mode,
             } => {
-                assert!(!force_far);
+                assert_eq!(*size_hint, AddressSizeHint::Auto);
                 assert_eq!(*mode, AddressOperandMode::Direct { index: None });
                 assert!(matches!(value, AddressValue::Literal(0x1234)));
             }
             _ => panic!("expected address operand"),
         }
+    }
+
+    #[test]
+    fn inherits_var_absolute16_hint_for_address_operands() {
+        let source = "var target:abs = 0x0012\nfunc main {\n  lda target\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::Literal(0x12),
+                size_hint: AddressSizeHint::ForceAbsolute16,
+                mode: AddressOperandMode::Direct { index: None },
+            }
+        ));
+    }
+
+    #[test]
+    fn var_absolute16_hint_prevents_hla_immediate_classification() {
+        let source = "var target:abs = 0x0012\nfunc main {\n  a = target\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::Literal(0x12),
+                size_hint: AddressSizeHint::ForceAbsolute16,
+                mode: AddressOperandMode::Direct { index: None },
+            }
+        ));
     }
 
     #[test]
@@ -4719,7 +4834,7 @@ mod tests {
             bit_operand,
             OperandOp::Address {
                 value: AddressValue::Literal(0x1234),
-                force_far: false,
+                size_hint: AddressSizeHint::Auto,
                 mode: AddressOperandMode::Direct { index: None }
             }
         ));

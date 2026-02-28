@@ -22,6 +22,11 @@ pub enum DataWidth {
     Far,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressHint {
+    ForceAbsolute16,
+}
+
 /// CPU register width (8 or 16 bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegWidth {
@@ -83,6 +88,7 @@ pub struct EvaluatorBlock {
 pub struct VarDecl {
     pub name: String,
     pub data_width: Option<DataWidth>,
+    pub addr_hint: Option<AddressHint>,
     pub array_len: Option<Expr>,
     pub symbolic_subscript_fields: Option<Vec<SymbolicSubscriptFieldDecl>>,
     pub initializer: Option<Expr>,
@@ -437,6 +443,10 @@ pub enum Expr {
     TypedView {
         expr: Box<Expr>,
         width: DataWidth,
+    },
+    AddressHint {
+        expr: Box<Expr>,
+        hint: AddressHint,
     },
 }
 

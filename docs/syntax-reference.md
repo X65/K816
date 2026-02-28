@@ -45,6 +45,34 @@ var ptr:far = 0x3000   // 3-byte variable (24-bit far address)
 
 The `:far` width is for 24-bit cross-bank addresses on the 65c816. Since the CPU has no 24-bit register mode, direct register access of `:far` variables is an error — use explicit `:byte` or `:word` views for partial access.
 
+Variables can also carry an address encoding preference with `:abs`. This is separate from typed width and only affects how direct address operands are encoded:
+
+```k65
+var dp = 0x0012
+var dp_full:abs = 0x0012
+var table:word:abs = 0x2000
+```
+
+- Plain direct operands that resolve to page 0 (`0x0000..0x00FF`) now auto-shrink to direct-page encoding when the instruction supports it.
+- `var name:abs = ...` makes plain references to that symbol default to 16-bit absolute encoding instead of direct-page shrink.
+- `:abs` does not change the variable's data width or element size.
+- Symbolic subscript field declarations currently support only `:byte`, `:word`, and `:far`; declaration-level `:abs` is not supported on `.field` entries yet.
+
+Use-site `:abs` can also be applied to an expression to force 16-bit absolute-family encoding for that operand:
+
+```k65
+lda dp          // may use direct-page encoding
+lda dp:abs      // force 16-bit absolute encoding
+lda dp_full     // force 16-bit absolute by declaration default
+a = dp:abs      // HLA load also stays address-based and does not become an immediate
+```
+
+When combined with typed views, `:abs` must come last:
+
+```k65
+lda regs.status:byte:abs
+```
+
 K65 also supports symbolic subscript arrays with named `.field` entries inside `var name[...] = <addr>`. This feature is inspired by the Pawn language's named-field array style.
 
 ## Constant Declaration

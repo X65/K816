@@ -107,6 +107,25 @@ Linker uses RON format for configuration (`.ld.ron` files). `vendor/` contains r
 
 ## Recent Implementation Notes
 
+- Direct-page auto-shrink with `:abs` overrides was implemented for address operands.
+- Implementation path:
+  - Syntax/reference docs: `docs/syntax-reference.md`
+  - AST additions for declaration/use-site address hints: `crates/core/src/ast/mod.rs`
+  - Parser support for `var name:abs` and `expr:...:abs`: `crates/core/src/parser/data.rs`, `crates/core/src/parser/data/vars.rs`, `crates/core/src/parser/expr.rs`
+  - Semantic propagation of var-level defaults: `crates/core/src/sema/model.rs`, `crates/core/src/sema/vars.rs`
+  - Lowering/immediate classification updates so `:abs` keeps operands address-based: `crates/core/src/lower.rs`
+  - HIR/object/encoder address-size hint flow: `crates/core/src/hir/mod.rs`, `crates/core/src/emit_object.rs`, `crates/isa65816/src/lib.rs`
+  - Pretty-printing/tests: `crates/fmt/src/print_ir.rs`, `tests/golden/fixtures/emit-addr-direct/`
+- Semantics:
+  - Eligible page-0 direct operands now default to direct-page encodings when an opcode exists.
+  - Use-site `expr:abs` forces 16-bit absolute-family encoding and has highest precedence.
+  - Declaration-level `var name:abs = ...` makes plain references inherit that 16-bit absolute preference.
+  - `:abs` is an address-encoding preference only; it does not change variable data width.
+- Constraints:
+  - Declaration-level `:abs` is currently supported only on top-level `var` declarations.
+  - Symbolic-subscript field declarations do not yet support `.field:...:abs`.
+  - `:far` continues to mean 24-bit data width / long-address preference where already supported; `:word` still means data width only.
+
 - VS Code LM tools were added for Copilot agent mode:
   - `k816_lookup_instruction`
   - `k816_query_memory_map`

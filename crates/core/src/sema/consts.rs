@@ -339,7 +339,9 @@ fn eval_const_expr(
                 ExprUnaryOp::EvalBracketed => Ok(Number::Int(value)),
             }
         }
-        Expr::TypedView { expr, .. } => eval_const_expr(expr, consts),
+        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
+            eval_const_expr(expr, consts)
+        }
     }
 }
 

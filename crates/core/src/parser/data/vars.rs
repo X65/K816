@@ -1,15 +1,18 @@
-use crate::ast::{Expr, HlaBranchForm, IndexRegister, SymbolicSubscriptFieldDecl, VarDecl};
+use crate::ast::{
+    AddressHint, DataWidth, Expr, HlaBranchForm, IndexRegister, SymbolicSubscriptFieldDecl, VarDecl,
+};
 use crate::lexer::TokenKind;
 use crate::span::{SourceId, Spanned};
 use chumsky::{
     IterParser, Parser as _,
+    error::Rich,
     input::ValueInput,
     prelude::{SimpleSpan, just},
     recursive::recursive,
 };
 
 use super::super::{ParseExtra, expr_parser, ident_parser, spanned, zero_number_token};
-use super::data_width_parser;
+use super::{address_hint_parser, data_width_parser};
 
 #[derive(Debug, Clone)]
 pub(in super::super) enum CommaTrailer {
@@ -23,6 +26,12 @@ enum VarBracketPayload {
     SymbolicSubscriptFields(Vec<SymbolicSubscriptFieldDecl>),
 }
 
+#[derive(Debug, Clone, Copy)]
+enum VarDeclSuffix {
+    DataWidth(DataWidth),
+    AddressHint(AddressHint),
+}
+
 pub(in super::super) fn var_decl_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, VarDecl, ParseExtra<'src>> + Clone
@@ -31,7 +40,7 @@ where
 {
     just(TokenKind::Var)
         .ignore_then(ident_parser())
-        .then(data_width_parser().or_not())
+        .then(var_decl_suffix_parser())
         .then(bracket_payload_parser(source_id))
         .then(
             just(TokenKind::Eq)
@@ -39,7 +48,7 @@ where
                 .or_not(),
         )
         .map(
-            |(((name, data_width), bracket_payload), initializer_with_span)| {
+            |(((name, (data_width, addr_hint)), bracket_payload), initializer_with_span)| {
                 let (array_len, symbolic_subscript_fields) = match bracket_payload {
                     Some(VarBracketPayload::ArrayLen(array_len)) => (Some(array_len), None),
                     Some(VarBracketPayload::SymbolicSubscriptFields(symbolic_subscript_fields)) => {
@@ -55,6 +64,7 @@ where
                 VarDecl {
                     name,
                     data_width,
+                    addr_hint,
                     array_len,
                     symbolic_subscript_fields,
                     initializer,
@@ -62,6 +72,46 @@ where
                 }
             },
         )
+        .boxed()
+}
+
+fn var_decl_suffix_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, (Option<DataWidth>, Option<AddressHint>), ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    data_width_parser()
+        .map(VarDeclSuffix::DataWidth)
+        .or(address_hint_parser().map(VarDeclSuffix::AddressHint))
+        .repeated()
+        .collect::<Vec<_>>()
+        .try_map(|suffixes, span| {
+            let mut data_width = None;
+            let mut addr_hint = None;
+
+            for suffix in suffixes {
+                match suffix {
+                    VarDeclSuffix::DataWidth(width) => {
+                        if addr_hint.is_some() {
+                            return Err(Rich::custom(
+                                span,
+                                "':abs' must appear after any data width suffix",
+                            ));
+                        }
+                        if data_width.replace(width).is_some() {
+                            return Err(Rich::custom(span, "duplicate data width suffix"));
+                        }
+                    }
+                    VarDeclSuffix::AddressHint(hint) => {
+                        if addr_hint.replace(hint).is_some() {
+                            return Err(Rich::custom(span, "duplicate ':abs' suffix"));
+                        }
+                    }
+                }
+            }
+
+            Ok((data_width, addr_hint))
+        })
         .boxed()
 }
 

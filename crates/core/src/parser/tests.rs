@@ -46,6 +46,24 @@ fn parses_expression_fragment_with_newline_padding() {
     assert!(matches!(expr.node, Expr::Number(16, _)));
 }
 
+#[test]
+fn parses_expression_fragment_with_address_hint_suffix() {
+    let expr = parse_expression_fragment(SourceId(0), "foo:byte:abs").expect("parse");
+    assert!(matches!(
+        expr.node,
+        Expr::AddressHint {
+            expr,
+            hint: AddressHint::ForceAbsolute16,
+        } if matches!(
+            expr.as_ref(),
+            Expr::TypedView {
+                expr,
+                width: DataWidth::Byte,
+            } if is_ident_named(expr.as_ref(), "foo")
+        )
+    ));
+}
+
 mod consts;
 mod data;
 mod diagnostics;

@@ -1,9 +1,9 @@
 [default]
-000000: AD 80 00 E8 D0 FA 01 02 03 60
+000000: A5 80 E8 D0 FB 01 02 03 60
 
 
 [disasm obj#0 default::main]
-000000: AD 80 00    lda $0080
-000003: E8          inx
-000004: D0 FA       bne $000000
-000009: 60          rts
+000000: A5 80       lda $80
+000002: E8          inx
+000003: D0 FB       bne $000000
+000008: 60          rts

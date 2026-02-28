@@ -1,5 +1,6 @@
 use k816_core::hir::{
-    AddressOperandMode, AddressValue, ByteRelocationKind, IndexRegister, Op, OperandOp, Program,
+    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister, Op,
+    OperandOp, Program,
 };
 
 pub fn format_ir(program: &Program) -> String {
@@ -76,12 +77,9 @@ pub fn format_ir(program: &Program) -> String {
                         }
                         OperandOp::Address {
                             value,
-                            force_far,
+                            size_hint,
                             mode,
                         } => {
-                            if *force_far {
-                                out.push_str("far ");
-                            }
                             let base = match value {
                                 AddressValue::Literal(value) => value.to_string(),
                                 AddressValue::Label(name) => name.clone(),
@@ -92,6 +90,14 @@ pub fn format_ir(program: &Program) -> String {
                                         format!("{label}{addend}")
                                     }
                                 }
+                            };
+                            if *size_hint == AddressSizeHint::ForceAbsoluteLong {
+                                out.push_str("far ");
+                            }
+                            let base = if *size_hint == AddressSizeHint::ForceAbsolute16 {
+                                format!("{base}:abs")
+                            } else {
+                                base
                             };
                             let rendered = match mode {
                                 AddressOperandMode::Direct {

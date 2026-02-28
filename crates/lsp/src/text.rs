@@ -32,6 +32,12 @@ pub(super) fn token_at_offset(text: &str, offset: usize) -> Option<TokenMatch> {
         end += 1;
     }
 
+    // Skip tokens preceded by a colon — they are address/width modifiers (:abs, :byte, :word),
+    // not symbol references.
+    if start > 0 && text.as_bytes()[start - 1] == b':' {
+        return None;
+    }
+
     Some(TokenMatch {
         text: text[start..end].to_string(),
         start,

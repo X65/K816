@@ -16,6 +16,31 @@ fn parses_var_array_length() {
 }
 
 #[test]
+fn parses_var_address_hint_without_data_width() {
+    let source = "var dp:abs = $12\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::Var(var) = &file.items[0].node else {
+        panic!("expected var item");
+    };
+
+    assert!(var.data_width.is_none());
+    assert_eq!(var.addr_hint, Some(AddressHint::ForceAbsolute16));
+    assert!(matches!(var.initializer, Some(Expr::Number(0x12, _))));
+}
+
+#[test]
+fn parses_var_data_width_with_address_hint() {
+    let source = "var table:word:abs = $2000\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::Var(var) = &file.items[0].node else {
+        panic!("expected var item");
+    };
+
+    assert_eq!(var.data_width, Some(DataWidth::Word));
+    assert_eq!(var.addr_hint, Some(AddressHint::ForceAbsolute16));
+}
+
+#[test]
 fn parses_symbolic_subscript_field_list_with_commas_and_trailing_separator() {
     let source = "var foo[\n  .field_w:word,\n  .idx:byte,\n  .string[20]:byte,\n] = 0x1234\n";
     let file = parse(SourceId(0), source).expect("parse");

@@ -1,6 +1,6 @@
 use crate::ast::{
-    DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprUnaryOp, NamedDataBlock, NamedDataEntry,
-    NamedDataForEvalRange, NumFmt, SegmentDecl,
+    AddressHint, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprUnaryOp, NamedDataBlock,
+    NamedDataEntry, NamedDataForEvalRange, NumFmt, SegmentDecl,
 };
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::{SourceId, Span, Spanned};
@@ -582,5 +582,15 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => DataWidth::Byte,
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => DataWidth::Word,
         TokenKind::Far => DataWidth::Far,
+    })
+}
+
+pub(super) fn address_hint_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, AddressHint, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Colon).ignore_then(chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("abs") => AddressHint::ForceAbsolute16,
     })
 }

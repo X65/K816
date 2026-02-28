@@ -2,8 +2,9 @@ use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
 use k816_isa65816::{
-    AddressOperandMode as IsaAddressOperandMode, AddressingMode, IndexRegister as IsaIndexRegister,
-    OperandShape, operand_width_for_mode, select_encoding,
+    AddressOperandMode as IsaAddressOperandMode, AddressSizeHint as IsaAddressSizeHint,
+    AddressingMode, IndexRegister as IsaIndexRegister, OperandShape, operand_width_for_mode,
+    select_encoding,
 };
 use k816_o65::{
     CallMetadata, DataStringFragment, FunctionDisassembly, FunctionMetadata, O65Object, Relocation,
@@ -12,7 +13,8 @@ use k816_o65::{
 
 use crate::diag::Diagnostic;
 use crate::hir::{
-    AddressOperandMode, AddressValue, ByteRelocationKind, IndexRegister, Op, OperandOp, Program,
+    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister, Op,
+    OperandOp, Program,
 };
 use crate::span::{SourceMap, Span};
 
@@ -74,6 +76,14 @@ fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
         AddressOperandMode::Indirect => IsaAddressOperandMode::Indirect,
         AddressOperandMode::IndexedIndirectX => IsaAddressOperandMode::IndexedIndirectX,
         AddressOperandMode::IndirectIndexedY => IsaAddressOperandMode::IndirectIndexedY,
+    }
+}
+
+fn to_isa_address_size_hint(size_hint: AddressSizeHint) -> IsaAddressSizeHint {
+    match size_hint {
+        AddressSizeHint::Auto => IsaAddressSizeHint::Auto,
+        AddressSizeHint::ForceAbsolute16 => IsaAddressSizeHint::ForceAbsolute16,
+        AddressSizeHint::ForceAbsoluteLong => IsaAddressSizeHint::ForceAbsoluteLong,
     }
 }
 
@@ -380,18 +390,18 @@ pub fn emit_object(
                     Some(OperandOp::ImmediateByteRelocation { .. }) => OperandShape::Immediate(0),
                     Some(OperandOp::Address {
                         value,
-                        force_far,
+                        size_hint,
                         mode,
                     }) => match value {
                         AddressValue::Literal(literal) => OperandShape::Address {
                             literal: Some(*literal),
-                            force_far: *force_far,
+                            size_hint: to_isa_address_size_hint(*size_hint),
                             mode: to_isa_address_mode(*mode),
                         },
                         AddressValue::Label(_) | AddressValue::LabelOffset { .. } => {
                             OperandShape::Address {
                                 literal: None,
-                                force_far: *force_far,
+                                size_hint: to_isa_address_size_hint(*size_hint),
                                 mode: to_isa_address_mode(*mode),
                             }
                         }
@@ -1065,7 +1075,7 @@ mod tests {
                 mnemonic: "lda".to_string(),
                 operand: Some(OperandOp::Address {
                     value: AddressValue::Label("missing".to_string()),
-                    force_far: false,
+                    size_hint: AddressSizeHint::Auto,
                     mode: AddressOperandMode::Direct { index: None },
                 }),
             }))],

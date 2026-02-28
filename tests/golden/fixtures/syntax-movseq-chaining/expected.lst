@@ -1,13 +1,13 @@
 [default]
-000000: AD 12 00 8D 11 00 8D 10 00 AD 10 00 AA AA 9B 60
+000000: A5 12 85 11 85 10 A5 10 AA AA 9B 60
 
 
 [disasm obj#0 default::main]
-000000: AD 12 00    lda $0012
-000003: 8D 11 00    sta $0011
-000006: 8D 10 00    sta $0010
-000009: AD 10 00    lda $0010
-00000C: AA          tax
-00000D: AA          tax
-00000E: 9B          txy
-00000F: 60          rts
+000000: A5 12       lda $12
+000002: 85 11       sta $11
+000004: 85 10       sta $10
+000006: A5 10       lda $10
+000008: AA          tax
+000009: AA          tax
+00000A: 9B          txy
+00000B: 60          rts

@@ -4,6 +4,7 @@ use super::*;
 fn encoded_object_uses_o65_magic() {
     let bytes = encode_object(&O65Object::default()).expect("encode");
     assert_eq!(&bytes[..5], O65_MAGIC);
+    assert_eq!(bytes[5], O65_VERSION);
 }
 
 #[test]

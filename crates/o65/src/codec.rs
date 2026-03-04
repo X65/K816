@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
+pub(super) const O65_VERSION: u8 = 0;
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
 const PAYLOAD_VERSION: u16 = 8;
 
@@ -14,6 +15,7 @@ pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
 
     let mut out = Vec::with_capacity(26 + payload.len());
     out.extend_from_slice(O65_MAGIC);
+    out.push(O65_VERSION);
     write_u16(&mut out, O65_MODE_RELOCATABLE);
 
     // Standard o65 header fields. We keep memory bases/sizes at zero because
@@ -176,6 +178,7 @@ pub fn decode_object(bytes: &[u8]) -> Result<O65Object> {
         bail!("invalid object magic");
     }
 
+    let _version = rd.read_u8()?;
     let _mode = rd.read_u16()?;
     let _tbase = rd.read_u16()?;
     let text_len = rd.read_u16()?;

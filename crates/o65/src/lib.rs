@@ -10,7 +10,7 @@ mod validate;
 mod tests;
 
 #[cfg(test)]
-use self::codec::O65_MAGIC;
+use self::codec::{O65_MAGIC, O65_VERSION};
 pub use self::codec::{decode_object, encode_object};
 pub use self::io::{read_object, write_object};
 pub use self::model::{

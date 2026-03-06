@@ -1,0 +1,6 @@
+const FOO = 42
+const BAR = FOO * 2
+const BAZ = 100
+
+func main {
+}

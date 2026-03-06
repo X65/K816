@@ -1,9 +1,128 @@
-use ariadne::{Cache, Config, IndexType, Label, Report, ReportKind, Source};
+use ariadne::{Cache, Color, Config, IndexType, Label, Report, ReportKind, Source};
 use k816_o65::{O65Object, SourceLocation, SymbolDefinition};
 use std::fmt;
 
 use super::{AnchorContext, PlannedChunk};
 use crate::types::LinkRenderOptions;
+
+pub(super) fn render_duplicate_symbol_error(
+    name: &str,
+    first: Option<&SourceLocation>,
+    second: Option<&SourceLocation>,
+    options: LinkRenderOptions,
+) -> String {
+    let message = format!("duplicate global symbol '{name}'");
+
+    let (Some(second_src), Some(first_src)) = (second, first) else {
+        return message;
+    };
+
+    let mut sources = MultiSourceCache::new();
+    let first_id = first_src.file.clone();
+    let second_id = second_src.file.clone();
+
+    let first_line_prefix = "\n".repeat(first_src.line.saturating_sub(1) as usize);
+    let first_padded = format!("{first_line_prefix}{}", first_src.line_text);
+    let first_byte_offset = first_line_prefix.len();
+    sources.insert(first_id.clone(), Source::from(first_padded));
+
+    let second_line_prefix = "\n".repeat(second_src.line.saturating_sub(1) as usize);
+    let second_padded = format!("{second_line_prefix}{}", second_src.line_text);
+    let second_byte_offset = second_line_prefix.len();
+    sources.insert(second_id.clone(), Source::from(second_padded));
+
+    let first_start = clamp_span(first_src, first_byte_offset);
+    let second_start = clamp_span(second_src, second_byte_offset);
+
+    let mut output = Vec::new();
+    let report = Report::build(
+        ReportKind::Error,
+        (second_id.clone(), second_start.clone()),
+    )
+    .with_config(
+        Config::default()
+            .with_index_type(IndexType::Byte)
+            .with_color(options.color),
+    )
+    .with_message(&message)
+    .with_label(
+        Label::new((second_id, second_start))
+            .with_color(Color::Red)
+            .with_priority(100)
+            .with_order(0)
+            .with_message("duplicate definition"),
+    )
+    .with_label(
+        Label::new((first_id, first_start))
+            .with_color(Color::Blue)
+            .with_order(1)
+            .with_message("first defined here"),
+    )
+    .finish();
+
+    if report.write(&mut sources, &mut output).is_ok() {
+        return String::from_utf8_lossy(&output).into_owned();
+    }
+
+    message
+}
+
+fn clamp_span(src: &SourceLocation, byte_offset: usize) -> std::ops::Range<usize> {
+    let line_len = src.line_text.len();
+    let mut start = src.column.saturating_sub(1) as usize;
+    if start > line_len {
+        start = line_len;
+    }
+    let mut end = src.column_end.saturating_sub(1) as usize;
+    if end <= start {
+        end = start.saturating_add(1);
+    }
+    if end > line_len {
+        end = line_len;
+    }
+    if end <= start && line_len > start {
+        end = start + 1;
+    }
+    (byte_offset + start)..(byte_offset + end)
+}
+
+#[derive(Debug)]
+struct MultiSourceCache {
+    sources: Vec<(String, Source<String>)>,
+}
+
+impl MultiSourceCache {
+    fn new() -> Self {
+        Self {
+            sources: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, id: String, source: Source<String>) {
+        if !self.sources.iter().any(|(existing_id, _)| existing_id == &id) {
+            self.sources.push((id, source));
+        }
+    }
+}
+
+impl Cache<String> for MultiSourceCache {
+    type Storage = String;
+
+    fn fetch(
+        &mut self,
+        id: &String,
+    ) -> std::result::Result<&Source<Self::Storage>, impl fmt::Debug> {
+        self.sources
+            .iter()
+            .find(|(existing_id, _)| existing_id == id)
+            .map(|(_, source)| source)
+            .ok_or_else(|| format!("missing source for '{id}'"))
+    }
+
+    fn display<'a>(&self, id: &'a String) -> Option<impl fmt::Display + 'a> {
+        Some(id)
+    }
+}
 
 pub(super) fn find_anchor_context(
     objects: &[O65Object],

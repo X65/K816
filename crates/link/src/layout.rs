@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use self::anchors::{
     decorate_with_anchor, decorate_with_anchor_with_label, find_anchor_context,
-    find_section_anchor_context,
+    find_section_anchor_context, render_duplicate_symbol_error,
 };
 use super::config::{
     LinkerConfig, MemoryArea, SymbolValue, select_segment_rule, validate_segment_rules,
@@ -46,6 +46,7 @@ struct PlannedChunk {
 struct ResolvedSymbol {
     addr: u32,
     segment: String,
+    source: Option<SourceLocation>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,7 +166,7 @@ pub fn link_objects_with_options(
 
             let resolved = match def {
                 SymbolDefinition::Section {
-                    section, offset, ..
+                    section, offset, source,
                 } => {
                     let section_key = (obj_idx, section.clone());
                     let placements = placed_by_section.get(&section_key).ok_or_else(|| {
@@ -188,16 +189,31 @@ pub fn link_objects_with_options(
                     ResolvedSymbol {
                         addr,
                         segment: section.clone(),
+                        source: source.clone(),
                     }
                 }
-                SymbolDefinition::Absolute { address, .. } => ResolvedSymbol {
+                SymbolDefinition::Absolute { address, source } => ResolvedSymbol {
                     addr: *address,
                     segment: ABSOLUTE_SYMBOL_SEGMENT.to_string(),
+                    source: source.clone(),
                 },
             };
-            if symbols.insert(symbol.name.clone(), resolved).is_some() {
-                bail!("duplicate global symbol '{}'", symbol.name);
+            if let Some(existing) = symbols.get(&symbol.name) {
+                let new_source = match def {
+                    SymbolDefinition::Section { source, .. }
+                    | SymbolDefinition::Absolute { source, .. } => source.as_ref(),
+                };
+                bail!(
+                    "{}",
+                    render_duplicate_symbol_error(
+                        &symbol.name,
+                        existing.source.as_ref(),
+                        new_source,
+                        options,
+                    )
+                );
             }
+            symbols.insert(symbol.name.clone(), resolved);
         }
     }
 
@@ -206,6 +222,7 @@ pub fn link_objects_with_options(
             SymbolValue::Absolute(addr) => ResolvedSymbol {
                 addr: *addr,
                 segment: ABSOLUTE_SYMBOL_SEGMENT.to_string(),
+                source: None,
             },
             SymbolValue::Import(name) => symbols.get(name).cloned().ok_or_else(|| {
                 anyhow::anyhow!(

@@ -12,8 +12,8 @@ use super::protocol::{
     QueryMemoryMapRun, QueryMemoryMapStatus, memory_kind_label,
 };
 use super::{
-    ByteRange, DocumentState, LineIndex, PROJECT_MANIFEST, ServerState, SymbolLocation,
-    SymbolOccurrence, analyze_document, canonical_symbol, diagnostic_to_lsp,
+    ByteRange, DocumentAnalysis, DocumentState, LineIndex, PROJECT_MANIFEST, ServerState,
+    SymbolLocation, SymbolOccurrence, analyze_document, canonical_symbol, diagnostic_to_lsp,
     extract_unknown_identifier_name,
 };
 
@@ -31,7 +31,7 @@ impl ServerState {
                 eprintln!("k816-lsp: skipping '{}': {error}", path.display());
             }
         }
-        self.rebuild_symbol_index();
+        self.analyze_all_documents();
         eprintln!(
             "k816-lsp: indexed {} unique symbol(s) across {} document(s)",
             self.symbols.len(),
@@ -84,9 +84,6 @@ impl ServerState {
         let file_id = self
             .source_index
             .ensure_file_id(uri.clone(), Some(path.clone()));
-        let source_name = path.display().to_string();
-        eprintln!("k816-lsp: analyzing '{source_name}'");
-        let (analysis, object, addressable_sites) = analyze_document(&source_name, &text);
         self.documents.insert(
             uri.clone(),
             DocumentState {
@@ -97,9 +94,9 @@ impl ServerState {
                 open: false,
                 line_index: LineIndex::new(&text),
                 text,
-                analysis,
-                object,
-                addressable_sites,
+                analysis: DocumentAnalysis::default(),
+                object: None,
+                addressable_sites: Vec::new(),
                 resolved_sites: Vec::new(),
             },
         );
@@ -114,7 +111,7 @@ impl ServerState {
         open: bool,
     ) -> Result<()> {
         self.upsert_document_without_analysis(uri.clone(), text, version, open);
-        self.analyze_document(&uri);
+        self.analyze_all_documents();
         Ok(())
     }
 
@@ -157,25 +154,54 @@ impl ServerState {
         );
     }
 
-    pub(super) fn analyze_document(&mut self, uri: &Uri) {
-        let Some(doc) = self.documents.get_mut(uri) else {
-            return;
-        };
-        let source_name = doc
-            .path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| doc.uri.to_string());
-        eprintln!("k816-lsp: analyzing '{source_name}'");
-        let (mut new_analysis, object, addressable_sites) =
-            analyze_document(&source_name, &doc.text);
-        if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
-            new_analysis.symbols = doc.analysis.symbols.clone();
-            new_analysis.scopes = doc.analysis.scopes.clone();
+    pub(super) fn analyze_all_documents(&mut self) {
+        // Collect all sources for multi-source compilation (same path as CLI compiler).
+        let doc_uris: Vec<Uri> = self.documents.keys().cloned().collect();
+        let source_names: Vec<String> = doc_uris
+            .iter()
+            .map(|uri| {
+                let doc = &self.documents[uri];
+                doc.path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| doc.uri.to_string())
+            })
+            .collect();
+        let sources: Vec<k816_core::LinkCompileInput> = doc_uris
+            .iter()
+            .zip(source_names.iter())
+            .map(|(uri, name)| k816_core::LinkCompileInput {
+                source_name: name.as_str(),
+                source_text: self.documents[uri].text.as_str(),
+            })
+            .collect();
+
+        eprintln!("k816-lsp: compiling {} source(s)", sources.len());
+
+        let compile_results =
+            k816_core::compile_sources_to_objects_for_link_with_options(
+                &sources,
+                k816_core::CompileRenderOptions::plain(),
+            );
+
+        for (i, uri) in doc_uris.iter().enumerate() {
+            let doc = self.documents.get_mut(uri).unwrap();
+
+            let compile_ref = compile_results.as_ref().map(|outputs| &outputs[i]);
+            let (mut new_analysis, object, addressable_sites) = analyze_document(
+                &source_names[i],
+                &doc.text,
+                Some(compile_ref.map_err(|error| error)),
+            );
+            if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
+                new_analysis.symbols = doc.analysis.symbols.clone();
+                new_analysis.scopes = doc.analysis.scopes.clone();
+            }
+            doc.analysis = new_analysis;
+            doc.object = object;
+            doc.addressable_sites = addressable_sites;
         }
-        doc.analysis = new_analysis;
-        doc.object = object;
-        doc.addressable_sites = addressable_sites;
+
         self.rebuild_symbol_index();
     }
 
@@ -186,8 +212,6 @@ impl ServerState {
             let file_id = self
                 .source_index
                 .ensure_file_id(uri.clone(), Some(path.clone()));
-            let (analysis, object, addressable_sites) =
-                analyze_document(&path.display().to_string(), &text);
             self.documents.insert(
                 uri.clone(),
                 DocumentState {
@@ -198,13 +222,13 @@ impl ServerState {
                     open: false,
                     line_index: LineIndex::new(&text),
                     text,
-                    analysis,
-                    object,
-                    addressable_sites,
+                    analysis: DocumentAnalysis::default(),
+                    object: None,
+                    addressable_sites: Vec::new(),
                     resolved_sites: Vec::new(),
                 },
             );
-            self.rebuild_symbol_index();
+            self.analyze_all_documents();
             return;
         }
 

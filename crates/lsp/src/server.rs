@@ -221,7 +221,7 @@ impl Server {
         if !self.state.documents.contains_key(&uri) {
             return Ok(());
         }
-        self.state.analyze_document(&uri);
+        self.state.analyze_all_documents();
         let version = self.state.documents.get(&uri).map(|doc| doc.version);
         let diagnostics = self.state.lsp_diagnostics(&uri);
         self.publish_diagnostics(uri, version, diagnostics)

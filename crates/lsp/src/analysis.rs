@@ -5,24 +5,37 @@ use super::{ByteRange, DocumentAnalysis, ScopeRange, SemanticInfo, SymbolCategor
 pub(super) fn analyze_document(
     source_name: &str,
     source_text: &str,
+    compile_result: Option<Result<&k816_core::CompileObjectOutput, &k816_core::CompileError>>,
 ) -> (
     DocumentAnalysis,
     Option<k816_o65::O65Object>,
     Vec<k816_core::AddressableSite>,
 ) {
     let (mut diagnostics, compile_failed, object, addressable_sites) =
-        match k816_core::compile_source_to_object_with_options(
-            source_name,
-            source_text,
-            k816_core::CompileRenderOptions::plain(),
-        ) {
-            Ok(output) => (
-                output.warnings,
-                false,
-                Some(output.object),
-                output.addressable_sites,
-            ),
-            Err(error) => (error.diagnostics, true, None, Vec::new()),
+        if let Some(result) = compile_result {
+            match result {
+                Ok(output) => (
+                    output.warnings.clone(),
+                    false,
+                    Some(output.object.clone()),
+                    output.addressable_sites.clone(),
+                ),
+                Err(error) => (error.diagnostics.clone(), true, None, Vec::new()),
+            }
+        } else {
+            match k816_core::compile_source_to_object_with_options(
+                source_name,
+                source_text,
+                k816_core::CompileRenderOptions::plain(),
+            ) {
+                Ok(output) => (
+                    output.warnings,
+                    false,
+                    Some(output.object),
+                    output.addressable_sites,
+                ),
+                Err(error) => (error.diagnostics, true, None, Vec::new()),
+            }
         };
 
     let mut source_map = k816_core::span::SourceMap::default();

@@ -159,6 +159,7 @@ pub struct Instruction {
 pub enum IndexRegister {
     X,
     Y,
+    S,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

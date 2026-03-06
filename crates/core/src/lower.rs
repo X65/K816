@@ -2177,6 +2177,10 @@ fn lower_hla_stmt(
             let mnemonic = match register {
                 crate::ast::IndexRegister::X => "cpx",
                 crate::ast::IndexRegister::Y => "cpy",
+                crate::ast::IndexRegister::S => {
+                    diagnostics.push(Diagnostic::error(span, "cannot compare S register"));
+                    return;
+                }
             };
             let instruction = Instruction {
                 mnemonic: mnemonic.to_string(),
@@ -2196,6 +2200,13 @@ fn lower_hla_stmt(
                         (HlaIncDecOp::Inc, crate::ast::IndexRegister::Y) => "iny",
                         (HlaIncDecOp::Dec, crate::ast::IndexRegister::X) => "dex",
                         (HlaIncDecOp::Dec, crate::ast::IndexRegister::Y) => "dey",
+                        (_, crate::ast::IndexRegister::S) => {
+                            diagnostics.push(Diagnostic::error(
+                                span,
+                                "cannot increment/decrement S register",
+                            ));
+                            return;
+                        }
                     };
                     let instruction = Instruction {
                         mnemonic: mnemonic.to_string(),
@@ -4117,6 +4128,7 @@ fn lower_index_register(index: crate::ast::IndexRegister) -> IndexRegister {
     match index {
         crate::ast::IndexRegister::X => IndexRegister::X,
         crate::ast::IndexRegister::Y => IndexRegister::Y,
+        crate::ast::IndexRegister::S => IndexRegister::S,
     }
 }
 

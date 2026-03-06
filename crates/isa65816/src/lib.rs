@@ -62,6 +62,7 @@ pub enum AddressOperandMode {
 pub enum IndexRegister {
     X,
     Y,
+    S,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -553,6 +554,21 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                 return Ok(Encoding {
                                     opcode,
                                     mode: AddressingMode::DirectPageX,
+                                });
+                            }
+                        }
+                        Some(IndexRegister::S) => {
+                            if wants_long || size_hint == AddressSizeHint::ForceAbsolute16 {
+                                return Err(EncodeError::InvalidOperand {
+                                    mnemonic: mnemonic.to_string(),
+                                });
+                            }
+                            if let Some(opcode) =
+                                find_opcode(&lower, AddressingMode::StackRelative)
+                            {
+                                return Ok(Encoding {
+                                    opcode,
+                                    mode: AddressingMode::StackRelative,
                                 });
                             }
                         }

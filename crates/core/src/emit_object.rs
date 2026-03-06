@@ -71,6 +71,7 @@ fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
             index: index.map(|index| match index {
                 IndexRegister::X => IsaIndexRegister::X,
                 IndexRegister::Y => IsaIndexRegister::Y,
+                IndexRegister::S => IsaIndexRegister::S,
             }),
         },
         AddressOperandMode::Indirect => IsaAddressOperandMode::Indirect,

@@ -36,16 +36,16 @@ where
                 (None, None) => (None, OperandAddrMode::Indirect),
                 (Some(IndexRegister::X), None) => (None, OperandAddrMode::IndexedIndirectX),
                 (None, Some(IndexRegister::Y)) => (None, OperandAddrMode::IndirectIndexedY),
-                (Some(IndexRegister::Y), None) => {
+                (Some(IndexRegister::Y), None) | (Some(IndexRegister::S), None) => {
                     return Err(Rich::custom(
                         span,
-                        "unsupported indirect index register 'y', expected '(expr,x)'",
+                        "unsupported indirect index register, expected '(expr,x)'",
                     ));
                 }
-                (None, Some(IndexRegister::X)) => {
+                (None, Some(IndexRegister::X)) | (None, Some(IndexRegister::S)) => {
                     return Err(Rich::custom(
                         span,
-                        "unsupported post-indirect index register 'x', expected '(expr),y'",
+                        "unsupported post-indirect index register, expected '(expr),y'",
                     ));
                 }
                 (Some(_), Some(_)) => {

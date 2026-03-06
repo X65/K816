@@ -106,6 +106,9 @@ pub fn format_ir(program: &Program) -> String {
                                 AddressOperandMode::Direct {
                                     index: Some(IndexRegister::Y),
                                 } => format!("{base},y"),
+                                AddressOperandMode::Direct {
+                                    index: Some(IndexRegister::S),
+                                } => format!("{base},s"),
                                 AddressOperandMode::Direct { index: None } => base,
                                 AddressOperandMode::Indirect => format!("({base})"),
                                 AddressOperandMode::IndexedIndirectX => format!("({base},x)"),

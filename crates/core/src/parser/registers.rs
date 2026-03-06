@@ -45,9 +45,10 @@ pub(super) fn parse_index_register<'src>(
         None => Ok(None),
         Some(value) if value.eq_ignore_ascii_case("x") => Ok(Some(IndexRegister::X)),
         Some(value) if value.eq_ignore_ascii_case("y") => Ok(Some(IndexRegister::Y)),
+        Some(value) if value.eq_ignore_ascii_case("s") => Ok(Some(IndexRegister::S)),
         Some(value) => Err(Rich::custom(
             span,
-            format!("unsupported index register '{value}', expected 'x' or 'y'"),
+            format!("unsupported index register '{value}', expected 'x', 'y', or 's'"),
         )),
     }
 }

@@ -1,10 +1,40 @@
+use std::collections::HashSet;
+
 use super::*;
 
 pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
+    analyze_with_external_consts(file, None)
+}
+
+pub(crate) fn analyze_with_external_consts(
+    file: &File,
+    external_consts: Option<&IndexMap<String, ConstMeta>>,
+) -> Result<SemanticModel, Vec<Diagnostic>> {
+    let (model, diagnostics) = analyze_partial(file, external_consts);
+    if diagnostics.is_empty() {
+        Ok(model)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+pub(crate) fn analyze_partial(
+    file: &File,
+    external_consts: Option<&IndexMap<String, ConstMeta>>,
+) -> (SemanticModel, Vec<Diagnostic>) {
     let mut model = SemanticModel::default();
     let mut diagnostics = Vec::new();
     let mut next_auto_addr = 0_u32;
     let mut evaluator_context = EvalContext::default();
+
+    let mut external_names = HashSet::new();
+    if let Some(ext) = external_consts {
+        for (name, meta) in ext {
+            model.consts.insert(name.clone(), *meta);
+            evaluator_context.set(name.clone(), meta.value);
+            external_names.insert(name.clone());
+        }
+    }
 
     for item in &file.items {
         match &item.node {
@@ -13,6 +43,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 item.span,
                 &mut model,
                 &mut evaluator_context,
+                &external_names,
                 &mut diagnostics,
             ),
             Item::ConstGroup(consts) => {
@@ -22,6 +53,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                         item.span,
                         &mut model,
                         &mut evaluator_context,
+                        &external_names,
                         &mut diagnostics,
                     );
                 }
@@ -31,6 +63,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 item.span,
                 &mut model,
                 &mut evaluator_context,
+                &external_names,
                 &mut diagnostics,
             ),
             Item::Statement(Stmt::Var(var)) => collect_var(
@@ -38,6 +71,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 item.span,
                 &mut next_auto_addr,
                 &mut model,
+                &external_names,
                 &mut diagnostics,
             ),
             Item::Var(var) => collect_var(
@@ -45,6 +79,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                 item.span,
                 &mut next_auto_addr,
                 &mut model,
+                &external_names,
                 &mut diagnostics,
             ),
             Item::CodeBlock(block) => {
@@ -62,6 +97,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                             stmt.span,
                             &mut next_auto_addr,
                             &mut model,
+                            &external_names,
                             &mut diagnostics,
                         );
                     }
@@ -76,6 +112,7 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
                             entry.span,
                             &mut model,
                             &mut evaluator_context,
+                            &external_names,
                             &mut diagnostics,
                         );
                     }
@@ -86,9 +123,5 @@ pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
         }
     }
 
-    if diagnostics.is_empty() {
-        Ok(model)
-    } else {
-        Err(diagnostics)
-    }
+    (model, diagnostics)
 }

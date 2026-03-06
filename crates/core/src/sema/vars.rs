@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 pub(super) fn collect_var(
@@ -5,9 +7,10 @@ pub(super) fn collect_var(
     span: Span,
     next_auto_addr: &mut u32,
     model: &mut SemanticModel,
+    external_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if !is_symbol_available(&var.name, model) {
+    if !is_symbol_available(&var.name, model) && !external_names.contains(&var.name) {
         diagnostics.push(
             Diagnostic::error(span, format!("duplicate symbol '{}'", var.name))
                 .with_help("rename one of the vars/functions to keep symbols unique"),

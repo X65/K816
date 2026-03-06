@@ -1,0 +1,7 @@
+//  user stack frame...
+//
+const nameptr =s_regsf+1              // name pointer
+
+naked main {
+    return_i
+}

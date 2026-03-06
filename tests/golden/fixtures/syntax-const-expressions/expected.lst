@@ -1,0 +1,10 @@
+[obj#0 default]
+000000: 40
+
+
+[obj#1 default]
+(empty)
+
+
+[disasm obj#0 default::main]
+000000: 40          rti

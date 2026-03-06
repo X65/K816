@@ -14,7 +14,7 @@ use crate::lower::lower;
 use crate::normalize_hla::normalize_file;
 use crate::parser::parse_with_warnings;
 use crate::peephole::peephole_optimize;
-use crate::sema::{ConstMeta, analyze};
+use crate::sema::{ConstMeta, analyze_partial, analyze_with_external_consts};
 use crate::span::SourceMap;
 
 #[derive(Debug, Clone)]
@@ -171,13 +171,8 @@ fn compile_source_to_object_with_fs_and_options_and_external_consts(
     let ast = normalize_file(&ast)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
-    let mut sema = analyze(&ast)
+    let sema = analyze_with_external_consts(&ast, external_consts)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
-    if let Some(external_consts) = external_consts {
-        for (name, meta) in external_consts {
-            sema.consts.entry(name.clone()).or_insert(*meta);
-        }
-    }
 
     let hir = lower(&ast, &sema, fs)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
@@ -199,38 +194,50 @@ fn compile_source_to_object_with_fs_and_options_and_external_consts(
 fn collect_external_consts_for_link_sources(
     sources: &[LinkCompileInput<'_>],
 ) -> IndexMap<String, ConstMeta> {
+    use crate::ast::File;
+
     let mut consts: IndexMap<String, ConstMeta> = IndexMap::new();
     let mut ambiguous = HashSet::new();
 
-    for source in sources {
-        let source_id = crate::span::SourceId(0);
-        let Ok(parsed) = parse_with_warnings(source_id, source.source_text) else {
-            continue;
-        };
-        let Ok(ast) = expand_file(&parsed.file, source_id) else {
-            continue;
-        };
-        let Ok(ast) = normalize_file(&ast) else {
-            continue;
-        };
-        let Ok(sema) = analyze(&ast) else {
-            continue;
-        };
+    // Pre-parse all sources once (parsing/expanding/normalizing is independent of consts).
+    let parsed_sources: Vec<Option<File>> = sources
+        .iter()
+        .map(|source| {
+            let source_id = crate::span::SourceId(0);
+            let parsed = parse_with_warnings(source_id, source.source_text).ok()?;
+            let ast = expand_file(&parsed.file, source_id).ok()?;
+            normalize_file(&ast).ok()
+        })
+        .collect();
 
-        for (name, meta) in sema.consts {
-            if ambiguous.contains(&name) {
-                continue;
-            }
-            match consts.get(&name) {
-                Some(existing) if existing.value != meta.value => {
-                    consts.shift_remove(&name);
-                    ambiguous.insert(name);
+    // Iterate to a fixed point: each round may resolve new consts that unblock others.
+    loop {
+        let prev_count = consts.len();
+
+        for ast in &parsed_sources {
+            let Some(ast) = ast else { continue };
+            let (sema, _diagnostics) = analyze_partial(ast, Some(&consts));
+
+            for (name, meta) in sema.consts {
+                if ambiguous.contains(&name) {
+                    continue;
                 }
-                Some(_) => {}
-                None => {
-                    consts.insert(name, meta);
+                match consts.get(&name) {
+                    Some(existing) if existing.value != meta.value => {
+                        consts.shift_remove(&name);
+                        ambiguous.insert(name);
+                    }
+                    Some(_) => {}
+                    None => {
+                        consts.insert(name, meta);
+                    }
                 }
             }
+        }
+
+        // Fixed point: no new consts were added this round.
+        if consts.len() == prev_count {
+            break;
         }
     }
 

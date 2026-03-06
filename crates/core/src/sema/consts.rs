@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 
 pub(super) fn collect_const(
@@ -5,9 +7,12 @@ pub(super) fn collect_const(
     span: Span,
     model: &mut SemanticModel,
     evaluator_context: &mut EvalContext,
+    external_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if !is_symbol_available(&const_decl.name, model) {
+    if !is_symbol_available(&const_decl.name, model)
+        && !external_names.contains(&const_decl.name)
+    {
         diagnostics.push(
             Diagnostic::error(span, format!("duplicate symbol '{}'", const_decl.name))
                 .with_help("rename one of the consts/vars/functions to keep symbols unique"),
@@ -58,6 +63,7 @@ pub(super) fn collect_evaluator_block(
     span: Span,
     model: &mut SemanticModel,
     evaluator_context: &mut EvalContext,
+    external_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut block_context = evaluator_context.clone();
@@ -70,7 +76,7 @@ pub(super) fn collect_evaluator_block(
     };
 
     for (name, _) in &outcome.assigned {
-        if model.consts.contains_key(name) {
+        if model.consts.contains_key(name) && !external_names.contains(name) {
             diagnostics.push(
                 Diagnostic::error(
                     span,

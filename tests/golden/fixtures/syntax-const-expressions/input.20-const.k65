@@ -1,0 +1,12 @@
+const BAR = 1337
+//  register stack frame...
+//
+const reg_y    =1               // 16 bit .Y
+const reg_x    =reg_y+2         // 16 bit .X
+const reg_a    =reg_x+2         // 16 bit .A
+const reg_dp   =reg_a+2         // 16 bit DP
+const reg_db   =reg_dp+2        // 8 bit DB
+const reg_sr   =reg_db+1        // 8 bit SR
+const reg_pc   =reg_sr+1        // 16 bit PC
+const reg_pb   =reg_pc+2        // 8 bit PB
+const s_regsf  =reg_pb+1-reg_y  // register stack frame size in bytes

@@ -528,8 +528,11 @@ fn compile_and_link(
             source_text: source,
         })
         .collect::<Vec<_>>();
-    let compiled_outputs = k816_core::compile_sources_to_objects_for_link(&compile_inputs)
-        .map_err(|error| anyhow!("{}", error.rendered))?;
+    let compiled_outputs = k816_core::compile_sources_all_or_nothing(
+        &compile_inputs,
+        k816_core::CompileRenderOptions::plain(),
+    )
+    .map_err(|error| anyhow!("{}", error.rendered))?;
 
     let mut objects = Vec::with_capacity(inputs.len());
     let mut warnings = String::new();

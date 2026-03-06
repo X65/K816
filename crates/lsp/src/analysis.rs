@@ -23,7 +23,7 @@ pub(super) fn analyze_document(
                 Err(error) => (error.diagnostics.clone(), true, None, Vec::new()),
             }
         } else {
-            match k816_core::compile_source_to_object_with_options(
+            match k816_core::compile_source(
                 source_name,
                 source_text,
                 k816_core::CompileRenderOptions::plain(),

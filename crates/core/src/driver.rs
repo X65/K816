@@ -53,59 +53,38 @@ pub struct LinkCompileInput<'a> {
     pub source_text: &'a str,
 }
 
-pub fn compile_source_to_object(
-    source_name: &str,
-    source_text: &str,
-) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object_with_options(source_name, source_text, CompileRenderOptions::plain())
-}
-
-pub fn compile_source_to_object_with_options(
+/// Compile a single source file.
+pub fn compile_source(
     source_name: &str,
     source_text: &str,
     options: CompileRenderOptions,
 ) -> Result<CompileObjectOutput, CompileError> {
-    let fs = StdAssetFS;
-    compile_source_to_object_with_fs_and_options(source_name, source_text, &fs, options)
+    compile_source_with_fs(source_name, source_text, &StdAssetFS, options)
 }
 
-/// Alias for `compile_source_to_object` (kept for backwards compatibility).
-pub fn compile_source_to_object_for_link(
+/// Compile a single source file with a custom asset filesystem.
+pub fn compile_source_with_fs(
     source_name: &str,
     source_text: &str,
-) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object(source_name, source_text)
-}
-
-/// Alias for `compile_source_to_object_with_options` (kept for backwards compatibility).
-pub fn compile_source_to_object_for_link_with_options(
-    source_name: &str,
-    source_text: &str,
+    fs: &dyn AssetFS,
     options: CompileRenderOptions,
 ) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object_with_options(source_name, source_text, options)
+    compile_source_inner(source_name, source_text, fs, options, None)
 }
 
-/// Compile multiple sources for linking while sharing cross-unit constant values.
-pub fn compile_sources_to_objects_for_link(
-    sources: &[LinkCompileInput<'_>],
-) -> Result<Vec<CompileObjectOutput>, CompileError> {
-    compile_sources_to_objects_for_link_with_options(sources, CompileRenderOptions::plain())
-}
-
-/// Same as `compile_sources_to_objects_for_link` with configurable diagnostic
-/// render options.
-pub fn compile_sources_to_objects_for_link_with_options(
+/// Compile multiple sources for linking, sharing cross-unit constant values.
+/// Returns per-file results so each file gets its own diagnostics.
+pub fn compile_sources(
     sources: &[LinkCompileInput<'_>],
     options: CompileRenderOptions,
-) -> Result<Vec<CompileObjectOutput>, CompileError> {
+) -> Vec<Result<CompileObjectOutput, CompileError>> {
     let external_consts = collect_external_consts_for_link_sources(sources);
     let fs = StdAssetFS;
 
     sources
         .iter()
         .map(|source| {
-            compile_source_to_object_with_fs_and_options_and_external_consts(
+            compile_source_inner(
                 source.source_name,
                 source.source_text,
                 &fs,
@@ -116,35 +95,18 @@ pub fn compile_sources_to_objects_for_link_with_options(
         .collect()
 }
 
-pub fn compile_source_to_object_with_fs(
-    source_name: &str,
-    source_text: &str,
-    fs: &dyn AssetFS,
-) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object_with_fs_and_options(
-        source_name,
-        source_text,
-        fs,
-        CompileRenderOptions::plain(),
-    )
-}
-
-pub fn compile_source_to_object_with_fs_and_options(
-    source_name: &str,
-    source_text: &str,
-    fs: &dyn AssetFS,
+/// Compile multiple sources, failing on the first error.
+/// Use `compile_sources` when you need per-file error isolation (e.g. LSP).
+pub fn compile_sources_all_or_nothing(
+    sources: &[LinkCompileInput<'_>],
     options: CompileRenderOptions,
-) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object_with_fs_and_options_and_external_consts(
-        source_name,
-        source_text,
-        fs,
-        options,
-        None,
-    )
+) -> Result<Vec<CompileObjectOutput>, CompileError> {
+    compile_sources(sources, options).into_iter().collect()
 }
 
-fn compile_source_to_object_with_fs_and_options_and_external_consts(
+// --- Internal implementation ---
+
+fn compile_source_inner(
     source_name: &str,
     source_text: &str,
     fs: &dyn AssetFS,
@@ -244,25 +206,6 @@ fn collect_external_consts_for_link_sources(
     consts
 }
 
-/// Alias for `compile_source_to_object_with_fs` (kept for backwards compatibility).
-pub fn compile_source_to_object_for_link_with_fs(
-    source_name: &str,
-    source_text: &str,
-    fs: &dyn AssetFS,
-) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object_with_fs(source_name, source_text, fs)
-}
-
-/// Alias for `compile_source_to_object_with_fs_and_options` (kept for backwards compatibility).
-pub fn compile_source_to_object_for_link_with_fs_and_options(
-    source_name: &str,
-    source_text: &str,
-    fs: &dyn AssetFS,
-    options: CompileRenderOptions,
-) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_to_object_with_fs_and_options(source_name, source_text, fs, options)
-}
-
 fn fail_with_rendered(
     source_map: &SourceMap,
     diagnostics: Vec<Diagnostic>,
@@ -283,12 +226,15 @@ fn fail_with_rendered(
 
 #[cfg(test)]
 mod tests {
-    use super::{LinkCompileInput, compile_source_to_object, compile_sources_to_objects_for_link};
+    use super::{
+        CompileRenderOptions, LinkCompileInput, compile_source, compile_sources_all_or_nothing,
+    };
 
     #[test]
     fn keeps_diagnostic_spans_aligned_after_eval_block_preprocess() {
         let source = "[\n  A = 1,\n  B = 2,\n  C = (A + B) * 4\n]\n\nfunc main {\n  ldy #[J]\n}\n";
-        let error = compile_source_to_object("test.k65", source).expect_err("must fail");
+        let error = compile_source("test.k65", source, CompileRenderOptions::plain())
+            .expect_err("must fail");
         let diagnostic = error
             .diagnostics
             .iter()
@@ -314,7 +260,9 @@ mod tests {
             },
         ];
 
-        let outputs = compile_sources_to_objects_for_link(&sources).expect("compile");
+        let outputs =
+            compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+                .expect("compile");
         let main_object = &outputs[0].object;
         let section = main_object
             .sections

@@ -178,20 +178,21 @@ impl ServerState {
 
         eprintln!("k816-lsp: compiling {} source(s)", sources.len());
 
-        let compile_results =
-            k816_core::compile_sources_to_objects_for_link_with_options(
-                &sources,
-                k816_core::CompileRenderOptions::plain(),
-            );
+        let compile_results = k816_core::compile_sources(
+            &sources,
+            k816_core::CompileRenderOptions::plain(),
+        );
 
         for (i, uri) in doc_uris.iter().enumerate() {
             let doc = self.documents.get_mut(uri).unwrap();
 
-            let compile_ref = compile_results.as_ref().map(|outputs| &outputs[i]);
+            let compile_ref = compile_results[i]
+                .as_ref()
+                .map_err(|error| error);
             let (mut new_analysis, object, addressable_sites) = analyze_document(
                 &source_names[i],
                 &doc.text,
-                Some(compile_ref.map_err(|error| error)),
+                Some(compile_ref),
             );
             if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
                 new_analysis.symbols = doc.analysis.symbols.clone();

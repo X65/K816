@@ -2,7 +2,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use super::*;
-use lsp_types::{DiagnosticSeverity, Location, Uri};
+use lsp_types::{CompletionResponse, DiagnosticSeverity, Location, Uri};
 use serde_json::json;
 
 fn initialize_params(value: serde_json::Value) -> InitializeParams {
@@ -291,6 +291,164 @@ fn completion_context_prefers_symbols_in_operand_positions() {
 
     assert!(!in_symbol_completion_context(text, statement_start_offset));
     assert!(in_symbol_completion_context(text, operand_offset));
+}
+
+#[test]
+fn completion_offers_subscript_fields_for_qualified_prefix() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp         :word
+    .state      :byte
+    .message[
+        .from   :byte
+        .type   :byte
+        .data   :far
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS.sta
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    // Place cursor right after "TASKS.sta"
+    let cursor = text.find("TASKS.sta").expect("find") + "TASKS.sta".len();
+    let position = doc.line_index.to_position(&text, cursor);
+    let response = state.completion(&uri, position).expect("completion");
+    let CompletionResponse::Array(items) = response else {
+        panic!("expected array response");
+    };
+
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"TASKS.state"),
+        "expected TASKS.state in completions, got: {labels:?}"
+    );
+    // .sp should NOT match prefix "sta"
+    assert!(
+        !labels.contains(&"TASKS.sp"),
+        "TASKS.sp should not match prefix 'sta'"
+    );
+    // Qualified field context should not include unrelated keywords or symbols.
+    assert!(
+        !labels.iter().any(|l| !l.starts_with("TASKS.")),
+        "qualified field completions should only contain TASKS.* entries, got: {labels:?}"
+    );
+    // Detail text should include absolute address and type from semantic model.
+    let state_item = items.iter().find(|i| i.label == "TASKS.state").unwrap();
+    let detail = state_item.detail.as_deref().unwrap_or("");
+    assert!(detail.contains("$4002"), "expected address $4002 in detail, got: {detail}");
+    assert!(detail.contains("byte"), "expected byte type in detail, got: {detail}");
+}
+
+#[test]
+fn completion_offers_nested_subscript_fields() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp         :word
+    .message[
+        .from   :byte
+        .type   :byte
+        .data   :far
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS.message.
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    // Place cursor right after "TASKS.message."
+    let cursor = text.find("TASKS.message.").expect("find") + "TASKS.message.".len();
+    let position = doc.line_index.to_position(&text, cursor);
+    let response = state.completion(&uri, position).expect("completion");
+    let CompletionResponse::Array(items) = response else {
+        panic!("expected array response");
+    };
+
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"TASKS.message.from"),
+        "expected TASKS.message.from, got: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"TASKS.message.type"),
+        "expected TASKS.message.type, got: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"TASKS.message.data"),
+        "expected TASKS.message.data, got: {labels:?}"
+    );
+    // The composite .message itself should not appear (it doesn't start with "message.")
+    assert!(
+        !labels.contains(&"TASKS.message"),
+        "TASKS.message should not appear when prefix is 'message.'"
+    );
+    // No keywords should leak into field completions.
+    assert!(
+        !labels.iter().any(|l| !l.starts_with("TASKS.")),
+        "nested field completions should only contain TASKS.* entries, got: {labels:?}"
+    );
+}
+
+#[test]
+fn completion_offers_bare_field_in_bracket_context() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp         :word
+    .state      :byte
+    .signals    :byte
+    .message[
+        .from   :byte
+        .type   :byte
+        .data   :far
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS[.st
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    // Place cursor right after ".st"
+    let cursor = text.find(".st\n").expect("find") + ".st".len();
+    let position = doc.line_index.to_position(&text, cursor);
+    let response = state.completion(&uri, position).expect("completion");
+    let CompletionResponse::Array(items) = response else {
+        panic!("expected array response");
+    };
+
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&".state"),
+        "expected .state in bare field completions, got: {labels:?}"
+    );
+    // No keywords or full symbols should appear.
+    assert!(
+        labels.iter().all(|l| l.starts_with('.')),
+        "bare field completions should only be .field entries, got: {labels:?}"
+    );
 }
 
 #[test]

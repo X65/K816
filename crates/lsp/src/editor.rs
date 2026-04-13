@@ -297,10 +297,35 @@ impl ServerState {
     pub(super) fn completion(&self, uri: &Uri, position: Position) -> Option<CompletionResponse> {
         let doc = self.documents.get(uri)?;
         let offset = doc.line_index.to_offset(&doc.text, position)?;
-        let prefix = token_prefix_at_offset(&doc.text, offset).to_ascii_lowercase();
+        let raw_prefix = token_prefix_at_offset(&doc.text, offset);
+        let prefix = raw_prefix.to_ascii_lowercase();
         let scope = doc.analysis.scope_at_offset(offset);
-        let allow_symbol_completions = in_symbol_completion_context(&doc.text, offset);
 
+        // Range covering the typed prefix – used by text_edit on field items so
+        // VS Code replaces the full `VAR.fld` token rather than just the word
+        // fragment after the last dot.
+        let prefix_start = offset - raw_prefix.len();
+        let start_pos = doc.line_index.to_position(&doc.text, prefix_start);
+        let prefix_range = Range::new(start_pos, position);
+
+        // ── Standalone .field token (inside brackets) ──
+        if prefix.starts_with('.') {
+            let bare = &prefix[1..];
+            let items = self.complete_bare_fields(bare, prefix_range);
+            return Some(CompletionResponse::Array(items));
+        }
+
+        // ── Qualified field access: VAR.field_prefix ──
+        // When the prefix contains a dot, the user is drilling into a variable's
+        // subscript fields.  Offer only field completions from the semantic model.
+        if let Some(dot_pos) = prefix.find('.') {
+            let var_prefix = &prefix[..dot_pos];
+            let field_prefix = &prefix[dot_pos + 1..];
+            let items = self.complete_subscript_fields(var_prefix, field_prefix, prefix_range);
+            return Some(CompletionResponse::Array(items));
+        }
+
+        // ── General completions: language keywords + symbols ──
         let mut candidates: Vec<(String, CompletionItemKind, &'static str, Option<String>)> =
             opcode_keywords()
                 .into_iter()
@@ -328,33 +353,35 @@ impl ServerState {
             )
         }));
 
-        if allow_symbol_completions {
-            let mut visible_symbols: BTreeSet<(String, SymbolCategory)> = BTreeSet::new();
+        if in_symbol_completion_context(&doc.text, offset) {
+            // Global symbols from the cross-file index.
             for entries in self.symbols.values() {
                 for entry in entries {
                     if entry.name.starts_with('.') {
                         continue;
                     }
-                    visible_symbols.insert((entry.name.clone(), entry.category));
+                    candidates.push((
+                        entry.name.clone(),
+                        completion_kind_for_symbol(entry.category),
+                        entry.category.detail(),
+                        None,
+                    ));
                 }
             }
 
+            // Local symbols visible in the current scope.
             if let Some(scope) = scope {
                 for symbol in &doc.analysis.symbols {
                     if symbol.name.starts_with('.') && symbol.scope.as_deref() == Some(scope) {
-                        visible_symbols.insert((symbol.name.clone(), symbol.category));
+                        candidates.push((
+                            symbol.name.clone(),
+                            completion_kind_for_symbol(symbol.category),
+                            symbol.category.detail(),
+                            None,
+                        ));
                     }
                 }
             }
-
-            candidates.extend(visible_symbols.into_iter().map(|(name, category)| {
-                (
-                    name,
-                    completion_kind_for_symbol(category),
-                    category.detail(),
-                    None,
-                )
-            }));
         }
 
         let mut seen = BTreeSet::new();
@@ -387,6 +414,135 @@ impl ServerState {
             .collect::<Vec<_>>();
 
         Some(CompletionResponse::Array(items))
+    }
+
+    /// Field completions for a qualified `VAR.field_prefix` access.
+    /// Searches all documents' semantic vars for matching subscript fields.
+    fn complete_subscript_fields(
+        &self,
+        var_prefix: &str,
+        field_prefix: &str,
+        replace_range: Range,
+    ) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        let mut seen = BTreeSet::new();
+        for doc_state in self.documents.values() {
+            for (var_name, var_meta) in &doc_state.analysis.semantic.vars {
+                if var_name.to_ascii_lowercase() != var_prefix {
+                    continue;
+                }
+                if let Some(ss) = &var_meta.symbolic_subscript {
+                    for (field_key, field_meta) in &ss.fields {
+                        if !field_key.to_ascii_lowercase().starts_with(field_prefix) {
+                            continue;
+                        }
+                        let label = format!("{var_name}.{field_key}");
+                        if !seen.insert(label.clone()) {
+                            continue;
+                        }
+                        let abs_addr = var_meta.address + field_meta.offset;
+                        let type_summary = Self::field_type_summary(field_meta);
+                        items.push(CompletionItem {
+                            label: label.clone(),
+                            kind: Some(CompletionItemKind::FIELD),
+                            detail: Some(format!(
+                                "${:04X} {}",
+                                abs_addr,
+                                type_summary,
+                            )),
+                            filter_text: Some(label.clone()),
+                            text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
+                                range: replace_range,
+                                new_text: label,
+                            })),
+                            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                            documentation: Some(lsp_types::Documentation::MarkupContent(
+                                MarkupContent {
+                                    kind: MarkupKind::Markdown,
+                                    value: format!(
+                                        "`{var_name}` + `{}` = `${abs_addr:04X}`, size {}, `{type_summary}`",
+                                        format_address(field_meta.offset),
+                                        field_meta.size,
+                                    ),
+                                },
+                            )),
+                            ..CompletionItem::default()
+                        });
+                    }
+                }
+            }
+        }
+        items
+    }
+
+    /// Field completions for a bare `.field` token (e.g. inside bracket syntax).
+    /// Offers all fields from all vars whose name matches the prefix.
+    fn complete_bare_fields(&self, bare_prefix: &str, replace_range: Range) -> Vec<CompletionItem> {
+        let mut items = Vec::new();
+        let mut seen = BTreeSet::new();
+        for doc_state in self.documents.values() {
+            for (var_name, var_meta) in &doc_state.analysis.semantic.vars {
+                if let Some(ss) = &var_meta.symbolic_subscript {
+                    for (field_key, field_meta) in &ss.fields {
+                        // Match the last segment of the field key against the prefix.
+                        let last_seg = field_key
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(field_key);
+                        if !last_seg.to_ascii_lowercase().starts_with(bare_prefix) {
+                            continue;
+                        }
+                        let label = format!(".{last_seg}");
+                        if !seen.insert((var_name.clone(), field_key.clone())) {
+                            continue;
+                        }
+                        let abs_addr = var_meta.address + field_meta.offset;
+                        let type_summary = Self::field_type_summary(field_meta);
+                        items.push(CompletionItem {
+                            label: label.clone(),
+                            kind: Some(CompletionItemKind::FIELD),
+                            detail: Some(format!(
+                                "{var_name} ${abs_addr:04X} {type_summary}",
+                            )),
+                            filter_text: Some(label.clone()),
+                            text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
+                                range: replace_range,
+                                new_text: label,
+                            })),
+                            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                            documentation: Some(lsp_types::Documentation::MarkupContent(
+                                MarkupContent {
+                                    kind: MarkupKind::Markdown,
+                                    value: format!(
+                                        "`{var_name}.{field_key}`: `{var_name}` + `{}` = `${abs_addr:04X}`, size {}, `{type_summary}`",
+                                        format_address(field_meta.offset),
+                                        field_meta.size,
+                                    ),
+                                },
+                            )),
+                            ..CompletionItem::default()
+                        });
+                    }
+                }
+            }
+        }
+        items
+    }
+
+    fn field_type_summary(
+        field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
+    ) -> String {
+        let type_str = match field_meta.data_width {
+            Some(k816_core::ast::DataWidth::Byte) => "byte",
+            Some(k816_core::ast::DataWidth::Word) => "word",
+            Some(k816_core::ast::DataWidth::Far) => "far",
+            None => "composite",
+        };
+        if field_meta.count > 1 {
+            format!("{type_str} ×{}", field_meta.count)
+        } else {
+            type_str.to_string()
+        }
     }
 
     pub(super) fn formatting(&self, uri: &Uri) -> Vec<TextEdit> {

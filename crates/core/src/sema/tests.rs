@@ -357,7 +357,7 @@ fn symbolic_subscript_fields_default_to_byte_when_no_type_is_provided() {
     assert_eq!(a.offset, 0);
     assert_eq!(b.offset, 1);
     assert_eq!(w.offset, 3);
-    assert_eq!(a.data_width, DataWidth::Byte);
-    assert_eq!(b.data_width, DataWidth::Byte);
-    assert_eq!(w.data_width, DataWidth::Word);
+    assert_eq!(a.data_width, Some(DataWidth::Byte));
+    assert_eq!(b.data_width, Some(DataWidth::Byte));
+    assert_eq!(w.data_width, Some(DataWidth::Word));
 }

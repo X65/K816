@@ -6,6 +6,7 @@ pub(super) fn analyze_document(
     source_name: &str,
     source_text: &str,
     compile_result: Option<Result<&k816_core::CompileObjectOutput, &k816_core::CompileError>>,
+    external_consts: Option<&indexmap::IndexMap<String, k816_core::sema::ConstMeta>>,
 ) -> (
     DocumentAnalysis,
     Option<k816_o65::O65Object>,
@@ -55,8 +56,9 @@ pub(super) fn analyze_document(
 
         if let Ok(expanded) = k816_core::eval_expand::expand_file(&parsed_file, source_id)
             && let Ok(normalized) = k816_core::normalize_hla::normalize_file(&expanded)
-            && let Ok(model) = k816_core::sema::analyze(&normalized)
         {
+            let (model, _sema_diagnostics) =
+                k816_core::sema::analyze_partial(&normalized, external_consts);
             for (name, meta) in model.functions {
                 semantic.functions.insert(name, meta);
             }

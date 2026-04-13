@@ -19,8 +19,8 @@ mod tests;
 
 mod vars;
 
-pub use self::analysis::analyze;
-pub(crate) use self::analysis::{analyze_partial, analyze_with_external_consts};
+pub use self::analysis::{analyze, analyze_partial};
+pub(crate) use self::analysis::analyze_with_external_consts;
 use self::consts::{
     ConstExprError, collect_const, collect_evaluator_block, collect_named_data_block_array,
     eval_const_expr_to_int, is_symbol_available,

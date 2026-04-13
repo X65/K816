@@ -179,6 +179,8 @@ impl ServerState {
 
         eprintln!("k816-lsp: compiling {} source(s)", sources.len());
 
+        let external_consts =
+            k816_core::collect_external_consts_for_link_sources(&sources);
         let compile_results = k816_core::compile_sources(
             &sources,
             k816_core::CompileRenderOptions::plain(),
@@ -194,6 +196,7 @@ impl ServerState {
                 &source_names[i],
                 &doc.text,
                 Some(compile_ref),
+                Some(&external_consts),
             );
             if new_analysis.symbols.is_empty() && !doc.analysis.symbols.is_empty() {
                 new_analysis.symbols = doc.analysis.symbols.clone();

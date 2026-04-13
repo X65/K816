@@ -279,6 +279,19 @@ fn eval_symbolic_subscript_fields(
 
         // Nested fields: recurse and flatten children into the parent map
         if let Some(nested) = &field.nested_fields {
+            // Insert the parent composite field first so it appears before
+            // children in IndexMap iteration order (hover/display).
+            // Use a placeholder size; we'll update it after recursion.
+            resolved_fields.insert(
+                qualified_name.clone(),
+                SymbolicSubscriptFieldMeta {
+                    offset,
+                    size: 0,
+                    data_width: None,
+                    count: 1,
+                },
+            );
+
             let nested_size = eval_symbolic_subscript_fields(
                 var_name,
                 default_width,
@@ -290,6 +303,9 @@ fn eval_symbolic_subscript_fields(
                 diagnostics,
             )?;
 
+            // Update the parent entry with the actual computed size.
+            resolved_fields.get_mut(&qualified_name).unwrap().size = nested_size;
+
             let Some(next_offset) = offset.checked_add(nested_size) else {
                 diagnostics.push(Diagnostic::error(
                     span,
@@ -300,9 +316,10 @@ fn eval_symbolic_subscript_fields(
                 return None;
             };
 
-            // Adjust child offsets: they were computed relative to 0, shift by current offset
+            // Adjust child offsets: they were computed relative to 0, shift by current offset.
+            // Skip the parent key itself — it already has the correct offset.
             for (key, meta) in resolved_fields.iter_mut() {
-                if key.starts_with(&qualified_name) {
+                if key != &qualified_name && key.starts_with(&qualified_name) {
                     meta.offset += offset;
                 }
             }
@@ -415,7 +432,7 @@ fn eval_symbolic_subscript_fields(
             SymbolicSubscriptFieldMeta {
                 offset,
                 size,
-                data_width,
+                data_width: Some(data_width),
                 count,
             },
         );

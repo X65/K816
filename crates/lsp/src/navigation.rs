@@ -5,7 +5,10 @@ use lsp_types::{
     Uri, WorkspaceEdit,
 };
 
-use super::text::{TokenMatch, token_at_offset};
+use super::text::{
+    QualifiedSegment, TokenMatch, cumulative_field_key, resolve_field_from_ast,
+    resolve_qualified_segment, token_at_offset,
+};
 use super::{
     ByteRange, ServerState, SymbolCategory, byte_range_to_lsp, canonical_symbol,
     document_symbols::document_symbols_from_ast, is_valid_symbol_name,
@@ -38,13 +41,27 @@ impl ServerState {
             }
         }
 
-        // Qualified subscript field access: var.field or standalone .field
-        if let Some((var_name, field_key)) = split_qualified_field(&token.text) {
-            // If cursor is on the var portion (before the dot), navigate to the var declaration.
-            if let Some(vn) = var_name {
-                let dot_byte = token.start + vn.len();
-                if offset < dot_byte {
-                    let var_canonical = canonical_symbol(vn, scope);
+        // Standalone subscript field (e.g. `.from` inside brackets): resolve
+        // via AST to get the full qualified path (var + field key).
+        if token.text.starts_with('.')
+            && let Some(resolved) = doc
+                .analysis
+                .ast
+                .as_ref()
+                .and_then(|ast| resolve_field_from_ast(ast, offset))
+        {
+            let segment_name = &token.text[1..];
+            let field_key = cumulative_field_key(&resolved.field_key, segment_name)
+                .unwrap_or(&resolved.field_key);
+            return self
+                .definition_for_subscript_field(Some(&resolved.var_name), field_key);
+        }
+
+        // Qualified subscript field access: VAR.field1.field2... (position-aware per segment)
+        if let Some(seg) = resolve_qualified_segment(&token.text, token.start, offset) {
+            match seg {
+                QualifiedSegment::Var { name, .. } => {
+                    let var_canonical = canonical_symbol(name, scope);
                     if let Some(defs) = self.symbols.get(&var_canonical) {
                         let mut locations = Vec::new();
                         for def in defs {
@@ -63,8 +80,14 @@ impl ServerState {
                         }
                     }
                 }
+                QualifiedSegment::Field {
+                    var_name,
+                    field_key,
+                    ..
+                } => {
+                    return self.definition_for_subscript_field(Some(var_name), field_key);
+                }
             }
-            return self.definition_for_subscript_field(var_name, field_key);
         }
 
         None
@@ -228,23 +251,6 @@ impl ServerState {
         }
         None
     }
-}
-
-/// Splits a token into (optional var name, field key) for subscript field resolution.
-/// Returns `Some` for `.field` (standalone) or `var.field` (qualified) patterns.
-fn split_qualified_field(token: &str) -> Option<(Option<&str>, &str)> {
-    if let Some(rest) = token.strip_prefix('.') {
-        if !rest.is_empty() {
-            return Some((None, rest));
-        }
-    } else if let Some(dot_pos) = token.find('.') {
-        let var_part = &token[..dot_pos];
-        let field_key = &token[dot_pos + 1..];
-        if !var_part.is_empty() && !field_key.is_empty() {
-            return Some((Some(var_part), field_key));
-        }
-    }
-    None
 }
 
 /// Recursively find a field declaration span by field key (e.g. "mode" or "nested.child").

@@ -62,14 +62,29 @@ where
                 .ignore_then(expr.clone())
                 .then_ignore(just(TokenKind::RParen)));
 
+        // Collect sequences of [.field] eval suffixes interleaved with trailing .ident tokens.
+        // This handles forms like TASKS[.message].from where `.from` is a separate Ident token
+        // following the bracket suffix.
+        let eval_or_dot_ident_suffix = chumsky::select! { TokenKind::Eval(value) => value }
+            .or(chumsky::select! {
+                TokenKind::Ident(value) if value.starts_with('.') => value
+            });
+
         let atom = base_atom
-            .then(
-                chumsky::select! { TokenKind::Eval(value) => value }
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
+            .then(eval_or_dot_ident_suffix.repeated().collect::<Vec<_>>())
             .try_map(|(base, suffixes), span| {
-                apply_eval_suffixes(base, suffixes).map_err(|message| Rich::custom(span, message))
+                let mut result = apply_eval_suffixes(base, suffixes)
+                    .map_err(|message| Rich::custom(span, message))?;
+                // Promote plain Ident to IdentSpanned with the full atom span
+                // (covers base + all bracket/dot suffixes).
+                if let Expr::Ident(name) = result {
+                    result = Expr::IdentSpanned {
+                        name,
+                        start: span.start,
+                        end: span.end,
+                    };
+                }
+                Ok(result)
             });
 
         let unary = just(TokenKind::Amp)

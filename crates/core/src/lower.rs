@@ -1808,7 +1808,7 @@ fn symbolic_subscript_field_width(name: &str, sema: &SemanticModel) -> Option<Da
     symbolic_subscript
         .fields
         .get(field_name)
-        .map(|field| field.data_width)
+        .and_then(|field| field.data_width)
 }
 
 fn data_width_to_reg_width(width: DataWidth) -> Option<RegWidth> {
@@ -3356,7 +3356,8 @@ fn eval_index_expr_strict(
                 base,
                 field,
                 address,
-                data_width,
+                data_width: _,
+                size,
                 count,
             } => {
                 if count <= 1 {
@@ -3385,11 +3386,7 @@ fn eval_index_expr_strict(
                     ));
                     return None;
                 }
-                let scale = match data_width {
-                    DataWidth::Byte => 1_i64,
-                    DataWidth::Word => 2_i64,
-                    DataWidth::Far => 3_i64,
-                };
+                let scale = i64::from(size / count);
                 let byte_offset = index_value.checked_mul(scale).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
@@ -3403,7 +3400,8 @@ fn eval_index_expr_strict(
                 base,
                 field,
                 offset,
-                data_width,
+                data_width: _,
+                size,
                 count,
             } => {
                 if count <= 1 {
@@ -3429,11 +3427,7 @@ fn eval_index_expr_strict(
                     ));
                     return None;
                 }
-                let scale = match data_width {
-                    DataWidth::Byte => 1_i64,
-                    DataWidth::Word => 2_i64,
-                    DataWidth::Far => 3_i64,
-                };
+                let scale = i64::from(size / count);
                 let byte_offset = index_value.checked_mul(scale).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
@@ -3531,14 +3525,18 @@ enum ResolvedSymbolicSubscriptName {
         base: String,
         field: String,
         address: u32,
-        data_width: DataWidth,
+        #[allow(dead_code)]
+        data_width: Option<DataWidth>,
+        size: u32,
         count: u32,
     },
     FieldOffset {
         base: String,
         field: String,
         offset: u32,
-        data_width: DataWidth,
+        #[allow(dead_code)]
+        data_width: Option<DataWidth>,
+        size: u32,
         count: u32,
     },
 }
@@ -3580,6 +3578,7 @@ fn resolve_symbolic_subscript_name(
             field: field_name,
             offset: field_meta.offset,
             data_width: field_meta.data_width,
+            size: field_meta.size,
             count: field_meta.count,
         }));
     }
@@ -3630,6 +3629,7 @@ fn resolve_symbolic_subscript_name(
         field: field_name.to_string(),
         address,
         data_width: field_meta.data_width,
+        size: field_meta.size,
         count: field_meta.count,
     }))
 }
@@ -4017,7 +4017,8 @@ fn eval_index_expr(
                 base,
                 field,
                 address,
-                data_width,
+                data_width: _,
+                size,
                 count,
             })) => {
                 if count <= 1 {
@@ -4046,11 +4047,7 @@ fn eval_index_expr(
                     ));
                     return None;
                 }
-                let scale = match data_width {
-                    DataWidth::Byte => 1_i64,
-                    DataWidth::Word => 2_i64,
-                    DataWidth::Far => 3_i64,
-                };
+                let scale = i64::from(size / count);
                 let byte_offset = index_value.checked_mul(scale).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
@@ -4064,7 +4061,8 @@ fn eval_index_expr(
                 base,
                 field,
                 offset,
-                data_width,
+                data_width: _,
+                size,
                 count,
             })) => {
                 if count <= 1 {
@@ -4090,11 +4088,7 @@ fn eval_index_expr(
                     ));
                     return None;
                 }
-                let scale = match data_width {
-                    DataWidth::Byte => 1_i64,
-                    DataWidth::Word => 2_i64,
-                    DataWidth::Far => 3_i64,
-                };
+                let scale = i64::from(size / count);
                 let byte_offset = index_value.checked_mul(scale).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None

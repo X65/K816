@@ -18,7 +18,7 @@ pub(crate) fn analyze_with_external_consts(
     }
 }
 
-pub(crate) fn analyze_partial(
+pub fn analyze_partial(
     file: &File,
     external_consts: Option<&IndexMap<String, ConstMeta>>,
 ) -> (SemanticModel, Vec<Diagnostic>) {

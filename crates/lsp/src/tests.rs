@@ -2,7 +2,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use super::*;
-use lsp_types::{DiagnosticSeverity, Uri};
+use lsp_types::{DiagnosticSeverity, Location, Uri};
 use serde_json::json;
 
 fn initialize_params(value: serde_json::Value) -> InitializeParams {
@@ -830,4 +830,504 @@ fn fs_event_remove_drops_unopened_doc() {
         state.apply_fs_events(vec![WorkspaceFsEvent::Removed(extra_path.clone())]);
     assert!(!state.documents.contains_key(&extra_uri));
     assert!(republish.contains(&main_uri));
+}
+
+#[test]
+fn nested_subscript_hover_identical_across_all_access_forms() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp :word
+    .message[
+        .from :byte
+        .type :byte
+        .data :far
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS.message.from
+    lda #TASKS[.message].from
+    lda #TASKS.message[.from]
+    lda #TASKS[.message][.from]
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    // Lines containing the four access forms (0-indexed in the text).
+    let lines = [
+        "lda #TASKS.message.from",
+        "lda #TASKS[.message].from",
+        "lda #TASKS.message[.from]",
+        "lda #TASKS[.message][.from]",
+    ];
+
+    fn hover_text(
+        state: &ServerState,
+        uri: &Uri,
+        doc: &super::DocumentState,
+        text: &str,
+        line_start: usize,
+        target: &str,
+    ) -> Option<String> {
+        let rel = text[line_start..].find(target)?;
+        let offset = line_start + rel + target.len() / 2;
+        let position = doc.line_index.to_position(text, offset);
+        let hover = state.hover(uri, position)?;
+        let HoverContents::Markup(markup) = hover.contents else {
+            return None;
+        };
+        Some(markup.value)
+    }
+
+    let mut tasks_hovers = Vec::new();
+    let mut message_hovers = Vec::new();
+    let mut from_hovers = Vec::new();
+
+    let mut search_from = 0usize;
+    for line_text in &lines {
+        let line_start = text[search_from..]
+            .find(line_text)
+            .map(|i| i + search_from)
+            .unwrap_or_else(|| panic!("could not find '{line_text}' in source"));
+        search_from = line_start + line_text.len();
+
+        let tasks = hover_text(&state, &uri, doc, &text, line_start, "TASKS")
+            .unwrap_or_else(|| panic!("no hover for TASKS in '{line_text}'"));
+        tasks_hovers.push(tasks);
+
+        let msg = hover_text(&state, &uri, doc, &text, line_start, "message")
+            .unwrap_or_else(|| panic!("no hover for .message in '{line_text}'"));
+        message_hovers.push(msg);
+
+        let frm = hover_text(&state, &uri, doc, &text, line_start, "from")
+            .unwrap_or_else(|| panic!("no hover for .from in '{line_text}'"));
+        from_hovers.push(frm);
+    }
+
+    // All TASKS hovers should be identical.
+    for (i, h) in tasks_hovers.iter().enumerate().skip(1) {
+        assert_eq!(
+            &tasks_hovers[0], h,
+            "TASKS hover mismatch between form 0 and form {i}"
+        );
+    }
+    // All .message hovers should be identical.
+    for (i, h) in message_hovers.iter().enumerate().skip(1) {
+        assert_eq!(
+            &message_hovers[0], h,
+            ".message hover mismatch between form 0 and form {i}"
+        );
+    }
+    // All .from hovers should be identical.
+    for (i, h) in from_hovers.iter().enumerate().skip(1) {
+        assert_eq!(
+            &from_hovers[0], h,
+            ".from hover mismatch between form 0 and form {i}"
+        );
+    }
+
+    // Sanity: the three groups are different from each other.
+    assert_ne!(tasks_hovers[0], message_hovers[0]);
+    assert_ne!(message_hovers[0], from_hovers[0]);
+}
+
+#[test]
+fn nested_subscript_goto_def_identical_across_all_access_forms() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp :word
+    .message[
+        .from :byte
+        .type :byte
+        .data :far
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS.message.from
+    lda #TASKS[.message].from
+    lda #TASKS.message[.from]
+    lda #TASKS[.message][.from]
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    let lines = [
+        "lda #TASKS.message.from",
+        "lda #TASKS[.message].from",
+        "lda #TASKS.message[.from]",
+        "lda #TASKS[.message][.from]",
+    ];
+
+    fn def_location(
+        state: &ServerState,
+        uri: &Uri,
+        doc: &super::DocumentState,
+        text: &str,
+        line_start: usize,
+        target: &str,
+    ) -> Option<Location> {
+        let rel = text[line_start..].find(target)?;
+        let offset = line_start + rel + target.len() / 2;
+        let position = doc.line_index.to_position(text, offset);
+        let response = state.definition(uri, position)?;
+        match response {
+            GotoDefinitionResponse::Array(mut locs) if !locs.is_empty() => Some(locs.remove(0)),
+            GotoDefinitionResponse::Scalar(loc) => Some(loc),
+            _ => None,
+        }
+    }
+
+    let mut tasks_defs = Vec::new();
+    let mut message_defs = Vec::new();
+    let mut from_defs = Vec::new();
+
+    let mut search_from = 0usize;
+    for line_text in &lines {
+        let line_start = text[search_from..]
+            .find(line_text)
+            .map(|i| i + search_from)
+            .unwrap_or_else(|| panic!("could not find '{line_text}' in source"));
+        search_from = line_start + line_text.len();
+
+        let tasks = def_location(&state, &uri, doc, &text, line_start, "TASKS")
+            .unwrap_or_else(|| panic!("no definition for TASKS in '{line_text}'"));
+        tasks_defs.push(tasks);
+
+        let msg = def_location(&state, &uri, doc, &text, line_start, "message")
+            .unwrap_or_else(|| panic!("no definition for .message in '{line_text}'"));
+        message_defs.push(msg);
+
+        let frm = def_location(&state, &uri, doc, &text, line_start, "from")
+            .unwrap_or_else(|| panic!("no definition for .from in '{line_text}'"));
+        from_defs.push(frm);
+    }
+
+    // All TASKS definitions should point to the same location.
+    for (i, d) in tasks_defs.iter().enumerate().skip(1) {
+        assert_eq!(
+            tasks_defs[0].range, d.range,
+            "TASKS goto-def mismatch between form 0 and form {i}"
+        );
+    }
+    // All .message definitions should point to the same location.
+    for (i, d) in message_defs.iter().enumerate().skip(1) {
+        assert_eq!(
+            message_defs[0].range, d.range,
+            ".message goto-def mismatch between form 0 and form {i}"
+        );
+    }
+    // All .from definitions should point to the same location.
+    for (i, d) in from_defs.iter().enumerate().skip(1) {
+        assert_eq!(
+            from_defs[0].range, d.range,
+            ".from goto-def mismatch between form 0 and form {i}"
+        );
+    }
+
+    // Sanity: the three groups navigate to different lines.
+    assert_ne!(tasks_defs[0].range, message_defs[0].range);
+    assert_ne!(message_defs[0].range, from_defs[0].range);
+}
+
+#[test]
+fn subscript_hover_covers_all_fields_and_composite() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp         :word
+    .state      :byte
+    .message[
+        .from   :byte
+        .type   :byte
+        .data   :far
+    ]
+    .data[
+        .bytes[16]
+        .from   :far
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS.sp
+    lda #TASKS.state
+    lda #TASKS.message.from
+    lda #TASKS.message.type
+    lda #TASKS.message.data
+    lda #TASKS.message
+    lda #TASKS.data.from
+    lda #TASKS.data.bytes[0]
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    fn hover_at(
+        state: &ServerState,
+        uri: &Uri,
+        doc: &super::DocumentState,
+        text: &str,
+        line: &str,
+        target: &str,
+    ) -> String {
+        let line_start = text.find(line).unwrap_or_else(|| panic!("line not found: {line}"));
+        let rel = text[line_start..].find(target).unwrap_or_else(|| {
+            panic!("target '{target}' not found in '{line}'")
+        });
+        let offset = line_start + rel + target.len() / 2;
+        let position = doc.line_index.to_position(text, offset);
+        let hover = state.hover(uri, position).unwrap_or_else(|| {
+            panic!("no hover for '{target}' in '{line}'")
+        });
+        let HoverContents::Markup(markup) = hover.contents else {
+            panic!("expected markdown hover for '{target}'");
+        };
+        markup.value
+    }
+
+    // --- TASKS (variable) ---
+    let tasks_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.sp", "TASKS",
+    );
+    assert!(
+        tasks_hover.contains("**variable** `TASKS`"),
+        "TASKS: expected variable heading, got:\n{tasks_hover}"
+    );
+    assert!(
+        tasks_hover.contains("$4000"),
+        "TASKS: expected address $4000, got:\n{tasks_hover}"
+    );
+    assert!(
+        tasks_hover.contains("**Fields:**"),
+        "TASKS: expected Fields section, got:\n{tasks_hover}"
+    );
+    // All leaf and composite fields should appear in the variable hover
+    for field in [".sp", ".state", ".message", ".message.from", ".message.type", ".message.data", ".data", ".data.from", ".data.bytes"] {
+        assert!(
+            tasks_hover.contains(&format!("`{field}`")),
+            "TASKS: expected field {field} listed, got:\n{tasks_hover}"
+        );
+    }
+
+    // --- .sp (leaf, :word, offset 0) ---
+    let sp_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.sp", "sp",
+    );
+    assert!(
+        sp_hover.contains("**subscript field** `.sp`"),
+        ".sp: wrong heading, got:\n{sp_hover}"
+    );
+    assert!(sp_hover.contains("var: `TASKS`"), ".sp: missing var name");
+    assert!(sp_hover.contains("offset: `+$0000`"), ".sp: wrong offset, got:\n{sp_hover}");
+    assert!(sp_hover.contains("address: `$4000`"), ".sp: wrong address");
+    assert!(sp_hover.contains("size: `2`"), ".sp: wrong size");
+    assert!(sp_hover.contains("type: `word`"), ".sp: wrong type");
+
+    // --- .state (leaf, :byte, offset 2) ---
+    let state_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.state", "state",
+    );
+    assert!(
+        state_hover.contains("**subscript field** `.state`"),
+        ".state: wrong heading, got:\n{state_hover}"
+    );
+    assert!(state_hover.contains("offset: `+$0002`"), ".state: wrong offset, got:\n{state_hover}");
+    assert!(state_hover.contains("address: `$4002`"), ".state: wrong address");
+    assert!(state_hover.contains("size: `1`"), ".state: wrong size");
+    assert!(state_hover.contains("type: `byte`"), ".state: wrong type");
+
+    // --- .message (composite, offset 3, size 5) ---
+    let message_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.message\n", "message",
+    );
+    assert!(
+        message_hover.contains("**subscript field** `.message`"),
+        ".message: wrong heading, got:\n{message_hover}"
+    );
+    assert!(
+        message_hover.contains("offset: `+$0003`"),
+        ".message: wrong offset, got:\n{message_hover}"
+    );
+    assert!(message_hover.contains("address: `$4003`"), ".message: wrong address");
+    assert!(message_hover.contains("size: `5`"), ".message: wrong size");
+    // Composite fields show sub-field list, not a type
+    assert!(!message_hover.contains("type:"), ".message: composite should not have type");
+    assert!(message_hover.contains("Fields:"), ".message: expected Fields section");
+    assert!(
+        message_hover.contains("`.message.from`"),
+        ".message: expected .from sub-field listed"
+    );
+    assert!(
+        message_hover.contains("`.message.type`"),
+        ".message: expected .type sub-field listed"
+    );
+    assert!(
+        message_hover.contains("`.message.data`"),
+        ".message: expected .data sub-field listed"
+    );
+
+    // --- .from (leaf, :byte, offset 3) ---
+    let from_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.message.from", "from",
+    );
+    assert!(
+        from_hover.contains("**subscript field** `.message.from`"),
+        ".from: wrong heading, got:\n{from_hover}"
+    );
+    assert!(from_hover.contains("offset: `+$0003`"), ".from: wrong offset, got:\n{from_hover}");
+    assert!(from_hover.contains("address: `$4003`"), ".from: wrong address");
+    assert!(from_hover.contains("size: `1`"), ".from: wrong size");
+    assert!(from_hover.contains("type: `byte`"), ".from: wrong type");
+
+    // --- .type (leaf, :byte, offset 4) ---
+    let type_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.message.type", "type",
+    );
+    assert!(
+        type_hover.contains("**subscript field** `.message.type`"),
+        ".type: wrong heading, got:\n{type_hover}"
+    );
+    assert!(type_hover.contains("offset: `+$0004`"), ".type: wrong offset, got:\n{type_hover}");
+    assert!(type_hover.contains("address: `$4004`"), ".type: wrong address");
+    assert!(type_hover.contains("size: `1`"), ".type: wrong size");
+    assert!(type_hover.contains("type: `byte`"), ".type: wrong type");
+
+    // --- .message.data (leaf, :far, offset 5) ---
+    let msg_data_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.message.data", "data",
+    );
+    assert!(
+        msg_data_hover.contains("**subscript field** `.message.data`"),
+        ".message.data: wrong heading, got:\n{msg_data_hover}"
+    );
+    assert!(msg_data_hover.contains("offset: `+$0005`"), ".message.data: wrong offset, got:\n{msg_data_hover}");
+    assert!(msg_data_hover.contains("address: `$4005`"), ".message.data: wrong address");
+    assert!(msg_data_hover.contains("size: `3`"), ".message.data: wrong size");
+    assert!(msg_data_hover.contains("type: `far`"), ".message.data: wrong type");
+
+    // --- .data.from (leaf, :far, offset $18) ---
+    let data_from_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.data.from", "from",
+    );
+    assert!(
+        data_from_hover.contains("**subscript field** `.data.from`"),
+        ".data.from: wrong heading, got:\n{data_from_hover}"
+    );
+    assert!(data_from_hover.contains("offset: `+$0018`"), ".data.from: wrong offset, got:\n{data_from_hover}");
+    assert!(data_from_hover.contains("address: `$4018`"), ".data.from: wrong address");
+    assert!(data_from_hover.contains("size: `3`"), ".data.from: wrong size");
+    assert!(data_from_hover.contains("type: `far`"), ".data.from: wrong type");
+
+    // --- .data.bytes (counted, byte ×16, offset 8) ---
+    let data_bytes_hover = hover_at(
+        &state, &uri, doc, &text,
+        "lda #TASKS.data.bytes[0]", "bytes",
+    );
+    assert!(
+        data_bytes_hover.contains("**subscript field** `.data.bytes`"),
+        ".data.bytes: wrong heading, got:\n{data_bytes_hover}"
+    );
+    assert!(data_bytes_hover.contains("offset: `+$0008`"), ".data.bytes: wrong offset, got:\n{data_bytes_hover}");
+    assert!(data_bytes_hover.contains("address: `$4008`"), ".data.bytes: wrong address");
+    assert!(data_bytes_hover.contains("size: `16`"), ".data.bytes: wrong size");
+
+    // .message.from and .data.from must be different hovers
+    assert_ne!(
+        from_hover, data_from_hover,
+        ".message.from and .data.from should produce different hovers"
+    );
+
+    // Sanity: all hovers are distinct
+    let all = [
+        &tasks_hover,
+        &sp_hover,
+        &state_hover,
+        &message_hover,
+        &from_hover,
+        &type_hover,
+        &msg_data_hover,
+        &data_from_hover,
+        &data_bytes_hover,
+    ];
+    for i in 0..all.len() {
+        for j in (i + 1)..all.len() {
+            assert_ne!(all[i], all[j], "hovers [{i}] and [{j}] should differ");
+        }
+    }
+
+    // --- Declaration-site hovers: tokens in `var TASKS[...]` should produce
+    //     the same content as usage-site hovers. ---
+
+    // TASKS at declaration
+    let decl_tasks = hover_at(&state, &uri, doc, &text, "var TASKS[", "TASKS");
+    assert_eq!(
+        decl_tasks, tasks_hover,
+        "declaration-site TASKS hover should match usage-site"
+    );
+
+    // .sp at declaration
+    let decl_sp = hover_at(&state, &uri, doc, &text, ".sp         :word", "sp");
+    assert_eq!(
+        decl_sp, sp_hover,
+        "declaration-site .sp hover should match usage-site"
+    );
+
+    // .state at declaration
+    let decl_state = hover_at(&state, &uri, doc, &text, ".state      :byte", "state");
+    assert_eq!(
+        decl_state, state_hover,
+        "declaration-site .state hover should match usage-site"
+    );
+
+    // .message at declaration
+    let decl_message = hover_at(&state, &uri, doc, &text, ".message[", "message");
+    assert_eq!(
+        decl_message, message_hover,
+        "declaration-site .message hover should match usage-site"
+    );
+
+    // .from at declaration
+    let decl_from = hover_at(&state, &uri, doc, &text, ".from   :byte", "from");
+    assert_eq!(
+        decl_from, from_hover,
+        "declaration-site .from hover should match usage-site"
+    );
+
+    // .type at declaration
+    let decl_type = hover_at(&state, &uri, doc, &text, ".type   :byte", "type");
+    assert_eq!(
+        decl_type, type_hover,
+        "declaration-site .type hover should match usage-site"
+    );
+
+    // .message.data at declaration
+    let decl_msg_data = hover_at(&state, &uri, doc, &text, ".data   :far", "data");
+    assert_eq!(
+        decl_msg_data, msg_data_hover,
+        "declaration-site .message.data hover should match usage-site"
+    );
 }

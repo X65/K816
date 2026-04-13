@@ -64,6 +64,41 @@ fn parses_expression_fragment_with_address_hint_suffix() {
     ));
 }
 
+#[test]
+fn nested_symbolic_subscript_forms_produce_same_ident() {
+    let source = "\
+var TASKS[
+    .sp :word
+    .message[
+        .from :byte
+    ]
+] = $4000
+func test @a16 {
+    lda #TASKS.message.from
+    lda #TASKS[.message].from
+    lda #TASKS.message[.from]
+    lda #TASKS[.message][.from]
+}
+";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::CodeBlock(block) = &file.items[1].node else {
+        panic!("expected code block");
+    };
+
+    for (i, stmt) in block.body.iter().enumerate() {
+        let Stmt::Instruction(instr) = &stmt.node else {
+            panic!("stmt {i}: expected instruction");
+        };
+        let Some(crate::ast::Operand::Immediate { expr, .. }) = &instr.operand else {
+            panic!("stmt {i}: expected immediate operand, got {:?}", instr.operand);
+        };
+        assert!(
+            is_ident_named(expr, "TASKS.message.from"),
+            "stmt {i}: expected Ident(\"TASKS.message.from\"), got {expr:?}",
+        );
+    }
+}
+
 mod consts;
 mod data;
 mod diagnostics;

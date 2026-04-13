@@ -45,6 +45,208 @@ pub(super) fn token_at_offset(text: &str, offset: usize) -> Option<TokenMatch> {
     })
 }
 
+/// Which segment of a qualified `VAR.field1.field2` token the cursor is on.
+#[derive(Debug)]
+pub(super) enum QualifiedSegment<'a> {
+    /// Cursor is on the variable name (before the first dot).
+    Var {
+        name: &'a str,
+        range_start: usize,
+        range_end: usize,
+    },
+    /// Cursor is on a dot-delimited field segment.
+    Field {
+        var_name: &'a str,
+        /// Cumulative field key from first dot to this segment (e.g. `"message.from"`).
+        field_key: &'a str,
+        range_start: usize,
+        range_end: usize,
+    },
+}
+
+/// Given a qualified token like `VAR.field1.field2` starting at `token_start` in the
+/// document, determine which dot-separated segment the cursor at `offset` is on.
+/// Returns `None` for standalone `.field` tokens (no var prefix) or tokens without dots.
+pub(super) fn resolve_qualified_segment<'a>(
+    token_text: &'a str,
+    token_start: usize,
+    offset: usize,
+) -> Option<QualifiedSegment<'a>> {
+    let first_dot = token_text.find('.')?;
+    let var_name = &token_text[..first_dot];
+    if var_name.is_empty() {
+        return None;
+    }
+
+    let cursor = offset.saturating_sub(token_start);
+
+    if cursor < first_dot {
+        return Some(QualifiedSegment::Var {
+            name: var_name,
+            range_start: token_start,
+            range_end: token_start + first_dot,
+        });
+    }
+
+    // Walk dot-separated segments to find which one the cursor is in.
+    let mut seg_dot = first_dot;
+    for segment in token_text[first_dot + 1..].split('.') {
+        let seg_end = seg_dot + 1 + segment.len();
+        if cursor < seg_end || seg_end == token_text.len() {
+            let field_key = &token_text[first_dot + 1..seg_end];
+            return Some(QualifiedSegment::Field {
+                var_name,
+                field_key,
+                range_start: token_start + seg_dot,
+                range_end: token_start + seg_end,
+            });
+        }
+        seg_dot = seg_end;
+    }
+
+    None
+}
+
+/// Given a full field key like `"message.from"` and a segment name like `"message"`,
+/// return the cumulative key up to and including that segment.
+/// E.g. `("a.b.c", "b")` → `Some("a.b")`, `("a.b.c", "c")` → `Some("a.b.c")`.
+pub(super) fn cumulative_field_key<'a>(full_key: &'a str, segment: &str) -> Option<&'a str> {
+    let mut end = 0;
+    for part in full_key.split('.') {
+        end += part.len();
+        if part == segment {
+            return Some(&full_key[..end]);
+        }
+        end += 1; // skip the dot separator
+    }
+    None
+}
+
+/// Result of resolving a subscript field reference from the AST.
+#[derive(Debug)]
+pub(super) struct ResolvedFieldRef {
+    /// Variable name (e.g. `"TASKS"`).
+    pub(super) var_name: String,
+    /// Full dot-separated field key without leading dot (e.g. `"message.from"`).
+    pub(super) field_key: String,
+}
+
+/// Walk the parsed AST to find an `IdentSpanned` that contains `offset` and whose name
+/// has a dot-separated field path (i.e. `"VAR.field1.field2"`).
+/// Returns the decomposed var name and field key.
+pub(super) fn resolve_field_from_ast(
+    ast: &k816_core::ast::File,
+    offset: usize,
+) -> Option<ResolvedFieldRef> {
+    use k816_core::ast::*;
+    use k816_core::span::Spanned;
+
+    fn check_expr(expr: &Expr, offset: usize) -> Option<ResolvedFieldRef> {
+        match expr {
+            Expr::IdentSpanned {
+                name, start, end, ..
+            } if *start <= offset && offset <= *end => {
+                let dot = name.find('.')?;
+                let var_name = &name[..dot];
+                if var_name.is_empty() {
+                    return None;
+                }
+                Some(ResolvedFieldRef {
+                    var_name: var_name.to_string(),
+                    field_key: name[dot + 1..].to_string(),
+                })
+            }
+            Expr::Index { base, index } => {
+                check_expr(base, offset).or_else(|| check_expr(index, offset))
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                check_expr(lhs, offset).or_else(|| check_expr(rhs, offset))
+            }
+            Expr::Unary { expr, .. }
+            | Expr::TypedView { expr, .. }
+            | Expr::AddressHint { expr, .. } => check_expr(expr, offset),
+            _ => None,
+        }
+    }
+
+    fn check_operand(op: &Operand, offset: usize) -> Option<ResolvedFieldRef> {
+        match op {
+            Operand::Immediate { expr, .. }
+            | Operand::Value { expr, .. }
+            | Operand::Auto { expr } => check_expr(expr, offset),
+            Operand::BlockMove { src, dst } => {
+                check_expr(src, offset).or_else(|| check_expr(dst, offset))
+            }
+        }
+    }
+
+    fn check_hla_operand(op: &HlaOperandExpr, offset: usize) -> Option<ResolvedFieldRef> {
+        check_expr(&op.expr, offset)
+    }
+
+    fn check_stmt(stmt: &Stmt, offset: usize) -> Option<ResolvedFieldRef> {
+        match stmt {
+            Stmt::Instruction(instr) => instr.operand.as_ref().and_then(|o| check_operand(o, offset)),
+            Stmt::Hla(hla) => check_hla_stmt(hla, offset),
+            Stmt::ModeScopedBlock { body, .. } => check_stmts(body, offset),
+            _ => None,
+        }
+    }
+
+    fn check_hla_stmt(hla: &HlaStmt, offset: usize) -> Option<ResolvedFieldRef> {
+        match hla {
+            HlaStmt::RegisterAssign { rhs, .. }
+            | HlaStmt::RegisterStore { dest: rhs, .. }
+            | HlaStmt::AccumulatorAlu { rhs, .. }
+            | HlaStmt::AccumulatorBitTest { rhs }
+            | HlaStmt::IndexCompare { rhs, .. }
+            | HlaStmt::ConditionSeed { rhs, .. } => check_hla_operand(rhs, offset),
+            HlaStmt::AssignmentChain { tail_expr, .. } => {
+                tail_expr.as_ref().and_then(|e| check_hla_operand(e, offset))
+            }
+            HlaStmt::StoreFromA { rhs, .. } => match rhs {
+                HlaRhs::Immediate(e) | HlaRhs::Value { expr: e, .. } => {
+                    check_expr(e, offset)
+                }
+            },
+            HlaStmt::Goto { target, .. } | HlaStmt::BranchGoto { target, .. } => {
+                check_expr(target, offset)
+            }
+            HlaStmt::XAssignImmediate { rhs } => check_expr(rhs, offset),
+            HlaStmt::NeverBlock { body, .. }
+            | HlaStmt::PrefixConditional { body, .. } => {
+                check_stmts(body, offset)
+            }
+            _ => None,
+        }
+    }
+
+    fn check_stmts(stmts: &[Spanned<Stmt>], offset: usize) -> Option<ResolvedFieldRef> {
+        for stmt in stmts {
+            if let Some(r) = check_stmt(&stmt.node, offset) {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    for item in &ast.items {
+        let result = match &item.node {
+            Item::CodeBlock(block) => check_stmts(&block.body, offset),
+            Item::Statement(stmt) => check_stmt(stmt, offset),
+            Item::Const(c) => check_expr(&c.initializer, offset),
+            Item::ConstGroup(cs) => cs.iter().find_map(|c| check_expr(&c.initializer, offset)),
+            Item::Var(v) => v.initializer.as_ref().and_then(|e| check_expr(e, offset)),
+            _ => None,
+        };
+        if result.is_some() {
+            return result;
+        }
+    }
+
+    None
+}
+
 pub(super) fn token_prefix_at_offset(text: &str, offset: usize) -> String {
     let bytes = text.as_bytes();
     let mut start = offset.min(bytes.len());

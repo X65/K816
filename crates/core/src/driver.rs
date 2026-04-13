@@ -153,7 +153,7 @@ fn compile_source_inner(
     })
 }
 
-fn collect_external_consts_for_link_sources(
+pub fn collect_external_consts_for_link_sources(
     sources: &[LinkCompileInput<'_>],
 ) -> IndexMap<String, ConstMeta> {
     use crate::ast::File;

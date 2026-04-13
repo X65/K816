@@ -723,6 +723,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "indexmap",
  "k816-core",
  "k816-fmt",
  "k816-isa65816",

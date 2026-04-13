@@ -13,8 +13,9 @@ use super::hover::{
     hover_contents_for_symbol, is_register_name, opcode_keywords, register_keywords,
 };
 use super::text::{
-    evaluator_call_at_offset, in_symbol_completion_context, numeric_literal_at_offset,
-    token_at_offset, token_prefix_at_offset,
+    QualifiedSegment, cumulative_field_key, evaluator_call_at_offset,
+    in_symbol_completion_context, numeric_literal_at_offset, resolve_field_from_ast,
+    resolve_qualified_segment, token_at_offset, token_prefix_at_offset,
 };
 use super::{
     ByteRange, INSTRUCTION_DESCRIPTIONS, ServerState, SymbolCategory, byte_range_to_lsp,
@@ -62,43 +63,59 @@ impl ServerState {
                 });
             }
 
-            // Symbolic subscript field hover: .field_name or .parent.child
-            if token.text.starts_with('.') {
-                let field_key = &token.text[1..]; // strip leading dot
-                if !field_key.is_empty() {
-                    for doc_state in self.documents.values() {
-                        for (var_name, var_meta) in &doc_state.analysis.semantic.vars {
-                            if let Some(ss) = &var_meta.symbolic_subscript {
-                                if let Some(field_meta) = ss.fields.get(field_key) {
-                                    let contents = hover_contents_for_subscript_field(
-                                        &token.text,
-                                        var_name,
-                                        var_meta,
-                                        field_meta,
-                                    );
-                                    return Some(Hover {
-                                        contents: HoverContents::Markup(MarkupContent {
-                                            kind: MarkupKind::Markdown,
-                                            value: contents,
-                                        }),
-                                        range: Some(token_range),
-                                    });
-                                }
-                            }
-                        }
-                    }
+            // Standalone subscript field (e.g. `.from` inside brackets): resolve
+            // via AST to get the full qualified path (var + field key).
+            if token.text.starts_with('.')
+                && let Some(resolved) = doc
+                    .analysis
+                    .ast
+                    .as_ref()
+                    .and_then(|ast| resolve_field_from_ast(ast, offset))
+            {
+                // The token gives us which segment the cursor is on (e.g. ".message").
+                // Find the cumulative key up to that segment within the full path.
+                let segment_name = &token.text[1..]; // strip leading dot
+                let field_key = cumulative_field_key(&resolved.field_key, segment_name)
+                    .unwrap_or(&resolved.field_key);
+                if let Some(hover) = self.hover_subscript_field(
+                    &resolved.var_name,
+                    field_key,
+                    offset,
+                    &doc.line_index,
+                    &doc.text,
+                    token.start,
+                    token.end,
+                ) {
+                    return Some(hover);
                 }
             }
 
-            // Qualified subscript field access: var.field (e.g. CGIA.mode, CGIA.offset)
-            if let Some(dot_pos) = token.text.find('.') {
-                let var_part = &token.text[..dot_pos];
-                let field_key = &token.text[dot_pos + 1..];
-                if !var_part.is_empty() && !field_key.is_empty() {
-                    let dot_byte = token.start + dot_pos;
-                    // Cursor on var portion → show var hover
-                    if offset < dot_byte {
-                        let var_canonical = canonical_symbol(var_part, scope);
+            // Declaration-site field token (e.g. `.sp` in `var TASKS[ .sp :word ]`):
+            // the AST walker won't find these (they are field declarations, not
+            // expressions), so scan all vars for a matching bare field name.
+            if token.text.starts_with('.') {
+                let bare = &token.text[1..];
+                if let Some(hover) = self.hover_field_by_bare_name(
+                    bare,
+                    offset,
+                    &doc.line_index,
+                    &doc.text,
+                    token.start,
+                    token.end,
+                ) {
+                    return Some(hover);
+                }
+            }
+
+            // Qualified subscript field access: VAR.field1.field2... (position-aware per segment)
+            if let Some(seg) = resolve_qualified_segment(&token.text, token.start, offset) {
+                match seg {
+                    QualifiedSegment::Var {
+                        name,
+                        range_start,
+                        range_end,
+                    } => {
+                        let var_canonical = canonical_symbol(name, scope);
                         if let Some(definitions) = self.symbols.get(&var_canonical)
                             && let Some(definition) = definitions.first()
                         {
@@ -106,8 +123,8 @@ impl ServerState {
                                 hover_contents_for_symbol(&var_canonical, definition, self);
                             let var_range = byte_range_to_lsp(
                                 &ByteRange {
-                                    start: token.start,
-                                    end: dot_byte,
+                                    start: range_start,
+                                    end: range_end,
                                 },
                                 &doc.line_index,
                                 &doc.text,
@@ -121,34 +138,22 @@ impl ServerState {
                             });
                         }
                     }
-                    // Cursor on field portion → show field hover
-                    for doc_state in self.documents.values() {
-                        if let Some(var_meta) = doc_state.analysis.semantic.vars.get(var_part) {
-                            if let Some(ss) = &var_meta.symbolic_subscript {
-                                if let Some(field_meta) = ss.fields.get(field_key) {
-                                    let contents = hover_contents_for_subscript_field(
-                                        &format!(".{field_key}"),
-                                        var_part,
-                                        var_meta,
-                                        field_meta,
-                                    );
-                                    let field_range = byte_range_to_lsp(
-                                        &ByteRange {
-                                            start: dot_byte,
-                                            end: token.end,
-                                        },
-                                        &doc.line_index,
-                                        &doc.text,
-                                    );
-                                    return Some(Hover {
-                                        contents: HoverContents::Markup(MarkupContent {
-                                            kind: MarkupKind::Markdown,
-                                            value: contents,
-                                        }),
-                                        range: Some(field_range),
-                                    });
-                                }
-                            }
+                    QualifiedSegment::Field {
+                        var_name,
+                        field_key,
+                        range_start,
+                        range_end,
+                    } => {
+                        if let Some(hover) = self.hover_subscript_field(
+                            var_name,
+                            field_key,
+                            offset,
+                            &doc.line_index,
+                            &doc.text,
+                            range_start,
+                            range_end,
+                        ) {
+                            return Some(hover);
                         }
                     }
                 }
@@ -188,6 +193,105 @@ impl ServerState {
             }),
             range: None,
         })
+    }
+
+    /// Shared hover logic for a subscript field identified by var name and full field key.
+    fn hover_subscript_field(
+        &self,
+        var_name: &str,
+        field_key: &str,
+        _offset: usize,
+        line_index: &super::LineIndex,
+        text: &str,
+        range_start: usize,
+        range_end: usize,
+    ) -> Option<Hover> {
+        for doc_state in self.documents.values() {
+            if let Some(var_meta) = doc_state.analysis.semantic.vars.get(var_name)
+                && let Some(ss) = &var_meta.symbolic_subscript
+                && let Some(field_meta) = ss.fields.get(field_key)
+            {
+                let contents = hover_contents_for_subscript_field(
+                    &format!(".{field_key}"),
+                    var_name,
+                    var_meta,
+                    field_meta,
+                    field_key,
+                    ss,
+                );
+                let field_range = byte_range_to_lsp(
+                    &ByteRange {
+                        start: range_start,
+                        end: range_end,
+                    },
+                    line_index,
+                    text,
+                );
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: contents,
+                    }),
+                    range: Some(field_range),
+                });
+            }
+        }
+        None
+    }
+
+    /// Fallback hover for a bare `.field` token (e.g. in a var declaration) where
+    /// the AST walker can't resolve context. Scans all vars for a field key that
+    /// matches the bare name exactly or ends with `.<bare>`.
+    fn hover_field_by_bare_name(
+        &self,
+        bare: &str,
+        _offset: usize,
+        line_index: &super::LineIndex,
+        text: &str,
+        range_start: usize,
+        range_end: usize,
+    ) -> Option<Hover> {
+        if bare.is_empty() {
+            return None;
+        }
+        let suffix = format!(".{bare}");
+        for doc_state in self.documents.values() {
+            for (var_name, var_meta) in &doc_state.analysis.semantic.vars {
+                if let Some(ss) = &var_meta.symbolic_subscript {
+                    // Match exact key ("sp") or nested key ending with ".from" for bare "from"
+                    if let Some((field_key, field_meta)) = ss
+                        .fields
+                        .iter()
+                        .find(|(k, _)| *k == bare || k.ends_with(&suffix))
+                    {
+                        let contents = hover_contents_for_subscript_field(
+                            &format!(".{field_key}"),
+                            var_name,
+                            var_meta,
+                            field_meta,
+                            field_key,
+                            ss,
+                        );
+                        let field_range = byte_range_to_lsp(
+                            &ByteRange {
+                                start: range_start,
+                                end: range_end,
+                            },
+                            line_index,
+                            text,
+                        );
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: contents,
+                            }),
+                            range: Some(field_range),
+                        });
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub(super) fn completion(&self, uri: &Uri, position: Position) -> Option<CompletionResponse> {

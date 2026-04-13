@@ -13,7 +13,8 @@ pub struct FunctionMeta {
 pub struct SymbolicSubscriptFieldMeta {
     pub offset: u32,
     pub size: u32,
-    pub data_width: DataWidth,
+    /// `None` for composite (nested) fields.
+    pub data_width: Option<DataWidth>,
     pub count: u32,
 }
 

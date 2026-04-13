@@ -119,11 +119,12 @@ fn reg_width_name(width: k816_core::ast::RegWidth) -> &'static str {
     }
 }
 
-fn data_width_name(width: k816_core::ast::DataWidth) -> &'static str {
+fn data_width_label(width: Option<k816_core::ast::DataWidth>, size: u32) -> String {
     match width {
-        k816_core::ast::DataWidth::Byte => "byte",
-        k816_core::ast::DataWidth::Word => "word",
-        k816_core::ast::DataWidth::Far => "far",
+        Some(k816_core::ast::DataWidth::Byte) => "byte".into(),
+        Some(k816_core::ast::DataWidth::Word) => "word".into(),
+        Some(k816_core::ast::DataWidth::Far) => "far".into(),
+        None => format!("{size} bytes"),
     }
 }
 
@@ -140,7 +141,7 @@ fn format_subscript_field_line(
         "- `.{field_name}`: offset `+{}`, size `{}`, `{}`{count_suffix}",
         format_address(field_meta.offset),
         field_meta.size,
-        data_width_name(field_meta.data_width),
+        data_width_label(field_meta.data_width, field_meta.size),
     )
 }
 
@@ -149,6 +150,8 @@ pub(super) fn hover_contents_for_subscript_field(
     var_name: &str,
     var_meta: &k816_core::sema::VarMeta,
     field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
+    field_key: &str,
+    ss: &k816_core::sema::SymbolicSubscriptMeta,
 ) -> String {
     let abs_addr = var_meta.address + field_meta.offset;
     let count_suffix = if field_meta.count > 1 {
@@ -156,12 +159,31 @@ pub(super) fn hover_contents_for_subscript_field(
     } else {
         String::new()
     };
+
+    // Composite field: list sub-fields instead of type
+    if field_meta.data_width.is_none() {
+        let prefix = format!("{field_key}.");
+        let mut sub_fields = String::new();
+        for (key, meta) in &ss.fields {
+            if key.starts_with(&prefix) {
+                sub_fields.push_str("\n");
+                sub_fields.push_str(&format_subscript_field_line(key, meta));
+            }
+        }
+        return format!(
+            "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{}`\n- size: `{}`{count_suffix}\n\nFields:\n{sub_fields}",
+            format_address(field_meta.offset),
+            format_address(abs_addr),
+            field_meta.size,
+        );
+    }
+
     format!(
         "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{}`\n- size: `{}`\n- type: `{}`{count_suffix}",
         format_address(field_meta.offset),
         format_address(abs_addr),
         field_meta.size,
-        data_width_name(field_meta.data_width),
+        data_width_label(field_meta.data_width, field_meta.size),
     )
 }
 

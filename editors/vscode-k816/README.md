@@ -16,6 +16,10 @@ for the [K816](https://github.com/X65/K816) toolchain.
 - Live diagnostics (errors and warnings as you type)
 - LSP server status in the status bar
 
+### Requirements
+
+This extension requires that the `k816` binary is installed and available on your PATH, or that you configure the `k816.server.path` setting to point to the executable. The extension will automatically start the language server when you open a folder containing `.k65` files.
+
 ### Build
 
 - **F7** to build the project (`k816 build`)

@@ -1,6 +1,11 @@
-# Source (compiled output is in out/)
+# Source (bundled output is in dist/)
 src/
+out/
 tsconfig.json
+esbuild.js
+
+# Dependencies (bundled into dist/)
+node_modules/
 
 # Dev config
 .gitignore

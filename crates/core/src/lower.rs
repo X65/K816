@@ -3346,9 +3346,9 @@ fn eval_index_expr_strict(
 
     if let Some(resolved) = symbolic_subscript_base_name {
         match resolved {
-            ResolvedSymbolicSubscriptName::Aggregate { base, .. } => {
+            ResolvedSymbolicSubscriptName::Aggregate { base: agg_base, .. } => {
                 diagnostics.push(invalid_symbolic_subscript_aggregate_index_diagnostic(
-                    &base, index, sema, span,
+                    &agg_base, base, index, sema, span,
                 ));
                 return None;
             }
@@ -3648,12 +3648,19 @@ fn suggest_symbolic_subscript_field<'a>(
 
 fn invalid_symbolic_subscript_aggregate_index_diagnostic(
     base: &str,
+    base_expr: &Expr,
     index: &Expr,
     sema: &SemanticModel,
     span: Span,
 ) -> Diagnostic {
+    let label_span = match base_expr {
+        Expr::IdentSpanned { end, .. } if *end > span.start && *end < span.end => {
+            Span::new(span.source_id, *end, span.end)
+        }
+        _ => span,
+    };
     let mut diagnostic = Diagnostic::error(
-        span,
+        label_span,
         format!("invalid index on symbolic subscript array '{base}': use '.field' or '[.field]'"),
     );
 
@@ -4000,9 +4007,9 @@ fn eval_index_expr(
 ) -> Option<i64> {
     if let Some(name) = base_ident(base) {
         match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
-            Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
+            Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base: agg_base, .. })) => {
                 diagnostics.push(invalid_symbolic_subscript_aggregate_index_diagnostic(
-                    &base, index, sema, span,
+                    &agg_base, base, index, sema, span,
                 ));
                 return None;
             }

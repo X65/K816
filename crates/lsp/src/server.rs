@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use crossbeam_channel::RecvTimeoutError;
+use crossbeam_channel::{Receiver, Select, never};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
@@ -31,6 +31,7 @@ use serde::de::DeserializeOwned;
 use super::project::uri_to_file_path;
 use super::protocol::{QueryMemoryMapParams, ResolveAddressesParams, ResolveInlineSymbolsParams};
 use super::types::{DID_CHANGE_DEBOUNCE, LOOP_POLL_INTERVAL, ServerState};
+use super::watcher::{FileWatcher, WorkspaceFsEvent};
 use super::{semantic_token_legend_modifiers, semantic_token_legend_types};
 
 pub fn run_stdio_server() -> Result<()> {
@@ -41,10 +42,18 @@ pub fn run_stdio_server() -> Result<()> {
         serde_json::from_value(initialize_result).context("invalid initialize params")?;
 
     let workspace_root = determine_workspace_root(&initialize_params)?;
+    let watcher = match FileWatcher::start(&workspace_root) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("k816-lsp: filesystem watcher disabled: {error}");
+            None
+        }
+    };
     let mut server = Server {
         connection,
         state: ServerState::new(workspace_root),
         pending_changes: HashMap::new(),
+        watcher,
     };
     server.state.initialize_workspace()?;
     server.run()?;
@@ -57,29 +66,84 @@ struct Server {
     connection: Connection,
     state: ServerState,
     pending_changes: HashMap<Uri, Instant>,
+    watcher: Option<FileWatcher>,
 }
 
 impl Server {
     fn run(&mut self) -> Result<()> {
+        let never_rx: Receiver<WorkspaceFsEvent> = never();
         loop {
             self.flush_due_did_change_analyses()?;
-            let message = match self.connection.receiver.recv_timeout(LOOP_POLL_INTERVAL) {
-                Ok(message) => message,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => break,
+            self.drain_filesystem_events()?;
+
+            let connection_rx = self.connection.receiver.clone();
+            let watcher_rx = self
+                .watcher
+                .as_ref()
+                .map(|w| w.receiver().clone())
+                .unwrap_or_else(|| never_rx.clone());
+
+            let mut select = Select::new();
+            let conn_idx = select.recv(&connection_rx);
+            let watcher_idx = select.recv(&watcher_rx);
+
+            let op = match select.select_timeout(LOOP_POLL_INTERVAL) {
+                Ok(op) => op,
+                Err(_) => continue,
             };
-            match message {
-                Message::Request(request) => {
-                    if self.connection.handle_shutdown(&request)? {
-                        break;
+
+            if op.index() == conn_idx {
+                let message = match op.recv(&connection_rx) {
+                    Ok(message) => message,
+                    Err(_) => break,
+                };
+                match message {
+                    Message::Request(request) => {
+                        if self.connection.handle_shutdown(&request)? {
+                            break;
+                        }
+                        self.handle_request(request)?;
                     }
-                    self.handle_request(request)?;
+                    Message::Notification(notification) => {
+                        self.handle_notification(notification)?;
+                    }
+                    Message::Response(_) => {}
                 }
-                Message::Notification(notification) => {
-                    self.handle_notification(notification)?;
+            } else if op.index() == watcher_idx {
+                let first = match op.recv(&watcher_rx) {
+                    Ok(event) => event,
+                    Err(_) => continue,
+                };
+                let mut batch = vec![first];
+                while let Ok(event) = watcher_rx.try_recv() {
+                    batch.push(event);
                 }
-                Message::Response(_) => {}
+                self.handle_filesystem_events(batch)?;
             }
+        }
+        Ok(())
+    }
+
+    fn drain_filesystem_events(&mut self) -> Result<()> {
+        let Some(watcher) = self.watcher.as_ref() else {
+            return Ok(());
+        };
+        let mut batch = Vec::new();
+        while let Ok(event) = watcher.receiver().try_recv() {
+            batch.push(event);
+        }
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.handle_filesystem_events(batch)
+    }
+
+    fn handle_filesystem_events(&mut self, events: Vec<WorkspaceFsEvent>) -> Result<()> {
+        let to_publish = self.state.apply_fs_events(events);
+        for uri in to_publish {
+            let version = self.state.documents.get(&uri).map(|doc| doc.version);
+            let diagnostics = self.state.lsp_diagnostics(&uri);
+            self.publish_diagnostics(uri, version, diagnostics)?;
         }
         Ok(())
     }

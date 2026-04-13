@@ -10,6 +10,7 @@ mod protocol;
 mod server;
 mod text;
 mod types;
+mod watcher;
 mod workspace;
 
 use self::analysis::{
@@ -32,6 +33,8 @@ use self::protocol::{
 };
 #[cfg(test)]
 use self::server::determine_workspace_root;
+#[cfg(test)]
+use self::watcher::WorkspaceFsEvent;
 #[cfg(test)]
 use self::text::{in_symbol_completion_context, token_at_offset, token_prefix_at_offset};
 #[cfg(test)]

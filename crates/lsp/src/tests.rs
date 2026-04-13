@@ -723,3 +723,111 @@ fn workspace_root_errors_when_client_omits_root_hints() {
         "unexpected error: {error}"
     );
 }
+
+#[test]
+fn fs_event_reloads_unopened_file_and_dirties_open_doc() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("mkdir src");
+
+    let vars_path = src.join("vars.k65");
+    std::fs::write(&vars_path, "var foo = $1234\n").expect("write vars");
+    let vars_uri = Uri::from_str(&file_uri(&vars_path)).expect("uri");
+
+    let main_path = src.join("main.k65");
+    let main_text = "func main @a8 {\n  lda foo\n}\n".to_string();
+    let main_uri = Uri::from_str(&file_uri(&main_path)).expect("uri");
+
+    let mut state = ServerState::new(root);
+    state
+        .load_from_disk(vars_path.clone())
+        .expect("load vars from disk");
+    state
+        .upsert_document(main_uri.clone(), main_text, 1, true)
+        .expect("main open");
+    state.analyze_all_documents();
+
+    // Baseline: `foo` is indexed from vars.k65.
+    assert!(
+        state.symbols.keys().any(|k| k.ends_with("foo")),
+        "baseline symbol index should contain foo",
+    );
+
+    // External editor rewrites vars.k65, removing the `foo` definition.
+    std::fs::write(&vars_path, "var other = $42\n").expect("rewrite vars");
+    let republish =
+        state.apply_fs_events(vec![WorkspaceFsEvent::Changed(vars_path.clone())]);
+    assert!(
+        republish.contains(&main_uri),
+        "open main.k65 should be in republish set: {republish:?}",
+    );
+    assert!(
+        !republish.contains(&vars_uri),
+        "unopened vars.k65 should not be in republish set",
+    );
+
+    assert!(
+        !state.symbols.keys().any(|k| k.ends_with("foo")),
+        "after external edit, foo should be gone from symbol index: {:?}",
+        state.symbols.keys().collect::<Vec<_>>(),
+    );
+    let vars_doc = state.documents.get(&vars_uri).expect("vars reloaded");
+    assert_eq!(vars_doc.text, "var other = $42\n");
+}
+
+#[test]
+fn fs_event_skips_open_document() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("mkdir src");
+
+    let main_path = src.join("main.k65");
+    let main_uri = Uri::from_str(&file_uri(&main_path)).expect("uri");
+    std::fs::write(&main_path, "var stale = $1\n").expect("write stale");
+
+    let in_memory = "var fresh = $2\n".to_string();
+    let mut state = ServerState::new(root);
+    state
+        .upsert_document(main_uri.clone(), in_memory.clone(), 1, true)
+        .expect("main open");
+
+    let republish =
+        state.apply_fs_events(vec![WorkspaceFsEvent::Changed(main_path.clone())]);
+    assert!(
+        republish.is_empty(),
+        "events for open docs must be ignored: {republish:?}",
+    );
+    let doc = state.documents.get(&main_uri).expect("doc");
+    assert_eq!(doc.text, in_memory, "open document text must not be clobbered");
+}
+
+#[test]
+fn fs_event_remove_drops_unopened_doc() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().to_path_buf();
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("mkdir src");
+
+    let extra_path = src.join("extra.k65");
+    std::fs::write(&extra_path, "var x = $1\n").expect("write extra");
+    let extra_uri = Uri::from_str(&file_uri(&extra_path)).expect("uri");
+
+    let main_path = src.join("main.k65");
+    let main_uri = Uri::from_str(&file_uri(&main_path)).expect("uri");
+
+    let mut state = ServerState::new(root);
+    state.load_from_disk(extra_path.clone()).expect("load extra");
+    state
+        .upsert_document(main_uri.clone(), "func main {\n  nop\n}\n".to_string(), 1, true)
+        .expect("main open");
+    state.analyze_all_documents();
+    assert!(state.documents.contains_key(&extra_uri));
+
+    let _ = std::fs::remove_file(&extra_path);
+    let republish =
+        state.apply_fs_events(vec![WorkspaceFsEvent::Removed(extra_path.clone())]);
+    assert!(!state.documents.contains_key(&extra_uri));
+    assert!(republish.contains(&main_uri));
+}

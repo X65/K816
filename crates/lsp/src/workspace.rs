@@ -7,6 +7,7 @@ use lsp_types::{Diagnostic, Uri};
 use super::project::{
     ProjectManifest, discover_workspace_sources, uri_from_file_path, uri_to_file_path,
 };
+use super::watcher::WorkspaceFsEvent;
 use super::protocol::{
     QueryMemoryMapDetail, QueryMemoryMapMemory, QueryMemoryMapParams, QueryMemoryMapResult,
     QueryMemoryMapRun, QueryMemoryMapStatus, memory_kind_label,
@@ -204,6 +205,62 @@ impl ServerState {
         }
 
         self.rebuild_symbol_index();
+    }
+
+    /// Apply a batch of external filesystem events. Returns the URIs of open
+    /// documents whose diagnostics should be re-published. Events for open
+    /// documents are ignored — the editor owns the in-memory text.
+    pub(super) fn apply_fs_events(&mut self, events: Vec<WorkspaceFsEvent>) -> Vec<Uri> {
+        let mut dirty = false;
+        for event in events {
+            match event {
+                WorkspaceFsEvent::Changed(path) => {
+                    let Ok(uri) = uri_from_file_path(&path) else {
+                        continue;
+                    };
+                    if self
+                        .documents
+                        .get(&uri)
+                        .is_some_and(|doc| doc.open)
+                    {
+                        continue;
+                    }
+                    if let Err(error) = self.load_from_disk(path.clone()) {
+                        eprintln!(
+                            "k816-lsp: failed to reload '{}': {error}",
+                            path.display()
+                        );
+                        continue;
+                    }
+                    dirty = true;
+                }
+                WorkspaceFsEvent::Removed(path) => {
+                    let Ok(uri) = uri_from_file_path(&path) else {
+                        continue;
+                    };
+                    if self
+                        .documents
+                        .get(&uri)
+                        .is_some_and(|doc| doc.open)
+                    {
+                        continue;
+                    }
+                    if self.documents.remove(&uri).is_some() {
+                        dirty = true;
+                    }
+                }
+            }
+        }
+
+        if !dirty {
+            return Vec::new();
+        }
+
+        self.analyze_all_documents();
+        self.documents
+            .iter()
+            .filter_map(|(uri, doc)| if doc.open { Some(uri.clone()) } else { None })
+            .collect()
     }
 
     pub(super) fn close_document(&mut self, uri: &Uri) {

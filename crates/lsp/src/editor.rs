@@ -9,8 +9,8 @@ use lsp_types::{
 
 use super::hover::{
     builtin_hover_text, directive_keywords, evaluator_signature, format_address,
-    format_address_range, hover_contents_for_numeric_literal, hover_contents_for_symbol,
-    is_register_name, opcode_keywords, register_keywords,
+    format_address_range, hover_contents_for_numeric_literal, hover_contents_for_subscript_field,
+    hover_contents_for_symbol, is_register_name, opcode_keywords, register_keywords,
 };
 use super::text::{
     evaluator_call_at_offset, in_symbol_completion_context, numeric_literal_at_offset,
@@ -60,6 +60,98 @@ impl ServerState {
                     }),
                     range: Some(token_range),
                 });
+            }
+
+            // Symbolic subscript field hover: .field_name or .parent.child
+            if token.text.starts_with('.') {
+                let field_key = &token.text[1..]; // strip leading dot
+                if !field_key.is_empty() {
+                    for doc_state in self.documents.values() {
+                        for (var_name, var_meta) in &doc_state.analysis.semantic.vars {
+                            if let Some(ss) = &var_meta.symbolic_subscript {
+                                if let Some(field_meta) = ss.fields.get(field_key) {
+                                    let contents = hover_contents_for_subscript_field(
+                                        &token.text,
+                                        var_name,
+                                        var_meta,
+                                        field_meta,
+                                    );
+                                    return Some(Hover {
+                                        contents: HoverContents::Markup(MarkupContent {
+                                            kind: MarkupKind::Markdown,
+                                            value: contents,
+                                        }),
+                                        range: Some(token_range),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Qualified subscript field access: var.field (e.g. CGIA.mode, CGIA.offset)
+            if let Some(dot_pos) = token.text.find('.') {
+                let var_part = &token.text[..dot_pos];
+                let field_key = &token.text[dot_pos + 1..];
+                if !var_part.is_empty() && !field_key.is_empty() {
+                    let dot_byte = token.start + dot_pos;
+                    // Cursor on var portion → show var hover
+                    if offset < dot_byte {
+                        let var_canonical = canonical_symbol(var_part, scope);
+                        if let Some(definitions) = self.symbols.get(&var_canonical)
+                            && let Some(definition) = definitions.first()
+                        {
+                            let contents =
+                                hover_contents_for_symbol(&var_canonical, definition, self);
+                            let var_range = byte_range_to_lsp(
+                                &ByteRange {
+                                    start: token.start,
+                                    end: dot_byte,
+                                },
+                                &doc.line_index,
+                                &doc.text,
+                            );
+                            return Some(Hover {
+                                contents: HoverContents::Markup(MarkupContent {
+                                    kind: MarkupKind::Markdown,
+                                    value: contents,
+                                }),
+                                range: Some(var_range),
+                            });
+                        }
+                    }
+                    // Cursor on field portion → show field hover
+                    for doc_state in self.documents.values() {
+                        if let Some(var_meta) = doc_state.analysis.semantic.vars.get(var_part) {
+                            if let Some(ss) = &var_meta.symbolic_subscript {
+                                if let Some(field_meta) = ss.fields.get(field_key) {
+                                    let contents = hover_contents_for_subscript_field(
+                                        &format!(".{field_key}"),
+                                        var_part,
+                                        var_meta,
+                                        field_meta,
+                                    );
+                                    let field_range = byte_range_to_lsp(
+                                        &ByteRange {
+                                            start: dot_byte,
+                                            end: token.end,
+                                        },
+                                        &doc.line_index,
+                                        &doc.text,
+                                    );
+                                    return Some(Hover {
+                                        contents: HoverContents::Markup(MarkupContent {
+                                            kind: MarkupKind::Markdown,
+                                            value: contents,
+                                        }),
+                                        range: Some(field_range),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if let Some(mut text) = builtin_hover_text(&token.text) {

@@ -22,23 +22,52 @@ impl ServerState {
         let token = token_at_offset(&doc.text, offset)?;
         let scope = doc.analysis.scope_at_offset(offset);
         let canonical = canonical_symbol(&token.text, scope);
-        let definitions = self.symbols.get(&canonical)?;
 
-        let mut locations = Vec::new();
-        for definition in definitions {
-            let Some(def_doc) = self.documents.get(&definition.uri) else {
-                continue;
-            };
-            let range =
-                byte_range_to_lsp(&definition.selection, &def_doc.line_index, &def_doc.text);
-            locations.push(Location::new(definition.uri.clone(), range));
+        if let Some(definitions) = self.symbols.get(&canonical) {
+            let mut locations = Vec::new();
+            for definition in definitions {
+                let Some(def_doc) = self.documents.get(&definition.uri) else {
+                    continue;
+                };
+                let range =
+                    byte_range_to_lsp(&definition.selection, &def_doc.line_index, &def_doc.text);
+                locations.push(Location::new(definition.uri.clone(), range));
+            }
+            if !locations.is_empty() {
+                return Some(GotoDefinitionResponse::Array(locations));
+            }
         }
 
-        if locations.is_empty() {
-            None
-        } else {
-            Some(GotoDefinitionResponse::Array(locations))
+        // Qualified subscript field access: var.field or standalone .field
+        if let Some((var_name, field_key)) = split_qualified_field(&token.text) {
+            // If cursor is on the var portion (before the dot), navigate to the var declaration.
+            if let Some(vn) = var_name {
+                let dot_byte = token.start + vn.len();
+                if offset < dot_byte {
+                    let var_canonical = canonical_symbol(vn, scope);
+                    if let Some(defs) = self.symbols.get(&var_canonical) {
+                        let mut locations = Vec::new();
+                        for def in defs {
+                            let Some(def_doc) = self.documents.get(&def.uri) else {
+                                continue;
+                            };
+                            let range = byte_range_to_lsp(
+                                &def.selection,
+                                &def_doc.line_index,
+                                &def_doc.text,
+                            );
+                            locations.push(Location::new(def.uri.clone(), range));
+                        }
+                        if !locations.is_empty() {
+                            return Some(GotoDefinitionResponse::Array(locations));
+                        }
+                    }
+                }
+            }
+            return self.definition_for_subscript_field(var_name, field_key);
         }
+
+        None
     }
 
     pub(super) fn references(
@@ -161,4 +190,83 @@ impl ServerState {
         let symbols = document_symbols_from_ast(ast, &doc.line_index, &doc.text);
         Some(lsp_types::DocumentSymbolResponse::Nested(symbols))
     }
+
+    fn definition_for_subscript_field(
+        &self,
+        var_name: Option<&str>,
+        field_key: &str,
+    ) -> Option<GotoDefinitionResponse> {
+        for (doc_uri, doc_state) in &self.documents {
+            let Some(ast) = doc_state.analysis.ast.as_ref() else {
+                continue;
+            };
+            for item in &ast.items {
+                let var = match &item.node {
+                    k816_core::ast::Item::Var(v) => v,
+                    _ => continue,
+                };
+                // If var_name is given (qualified access), match exactly; otherwise search all vars.
+                if let Some(name) = var_name {
+                    if var.name != name {
+                        continue;
+                    }
+                }
+                if let Some(fields) = &var.symbolic_subscript_fields {
+                    if let Some(span) = find_field_span(fields, field_key, "") {
+                        let range = byte_range_to_lsp(
+                            &ByteRange::from_span(span),
+                            &doc_state.line_index,
+                            &doc_state.text,
+                        );
+                        return Some(GotoDefinitionResponse::Array(vec![Location::new(
+                            doc_uri.clone(),
+                            range,
+                        )]));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Splits a token into (optional var name, field key) for subscript field resolution.
+/// Returns `Some` for `.field` (standalone) or `var.field` (qualified) patterns.
+fn split_qualified_field(token: &str) -> Option<(Option<&str>, &str)> {
+    if let Some(rest) = token.strip_prefix('.') {
+        if !rest.is_empty() {
+            return Some((None, rest));
+        }
+    } else if let Some(dot_pos) = token.find('.') {
+        let var_part = &token[..dot_pos];
+        let field_key = &token[dot_pos + 1..];
+        if !var_part.is_empty() && !field_key.is_empty() {
+            return Some((Some(var_part), field_key));
+        }
+    }
+    None
+}
+
+/// Recursively find a field declaration span by field key (e.g. "mode" or "nested.child").
+fn find_field_span(
+    fields: &[k816_core::ast::SymbolicSubscriptFieldDecl],
+    key: &str,
+    prefix: &str,
+) -> Option<k816_core::span::Span> {
+    for field in fields {
+        let qualified = if prefix.is_empty() {
+            field.name.clone()
+        } else {
+            format!("{prefix}.{}", field.name)
+        };
+        if qualified == key {
+            return Some(field.span);
+        }
+        if let Some(nested) = &field.nested_fields {
+            if let Some(span) = find_field_span(nested, key, &qualified) {
+                return Some(span);
+            }
+        }
+    }
+    None
 }

@@ -30,12 +30,19 @@ pub(super) fn hover_contents_for_symbol(
             return hover_contents_for_constant(symbol.name.as_str(), *meta);
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
-            return format!(
-                "**variable** `{}`\n- address: `{}`\n- size: `{}`",
-                symbol.name,
-                format_address(meta.address),
-                meta.size
-            );
+            let mut lines = vec![
+                format!("**variable** `{}`", symbol.name),
+                format!("- address: `{}`", format_address(meta.address)),
+                format!("- size: `{}`", meta.size),
+            ];
+            if let Some(ss) = &meta.symbolic_subscript {
+                lines.push(String::new());
+                lines.push("**Fields:**".to_string());
+                for (field_name, field_meta) in &ss.fields {
+                    lines.push(format_subscript_field_line(field_name, field_meta));
+                }
+            }
+            return lines.join("\n");
         }
     }
 
@@ -110,6 +117,52 @@ fn reg_width_name(width: k816_core::ast::RegWidth) -> &'static str {
         k816_core::ast::RegWidth::W8 => "8-bit",
         k816_core::ast::RegWidth::W16 => "16-bit",
     }
+}
+
+fn data_width_name(width: k816_core::ast::DataWidth) -> &'static str {
+    match width {
+        k816_core::ast::DataWidth::Byte => "byte",
+        k816_core::ast::DataWidth::Word => "word",
+        k816_core::ast::DataWidth::Far => "far",
+    }
+}
+
+fn format_subscript_field_line(
+    field_name: &str,
+    field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
+) -> String {
+    let count_suffix = if field_meta.count > 1 {
+        format!(" ×{}", field_meta.count)
+    } else {
+        String::new()
+    };
+    format!(
+        "- `.{field_name}`: offset `+{}`, size `{}`, `{}`{count_suffix}",
+        format_address(field_meta.offset),
+        field_meta.size,
+        data_width_name(field_meta.data_width),
+    )
+}
+
+pub(super) fn hover_contents_for_subscript_field(
+    token: &str,
+    var_name: &str,
+    var_meta: &k816_core::sema::VarMeta,
+    field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
+) -> String {
+    let abs_addr = var_meta.address + field_meta.offset;
+    let count_suffix = if field_meta.count > 1 {
+        format!(" ×{}", field_meta.count)
+    } else {
+        String::new()
+    };
+    format!(
+        "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{}`\n- size: `{}`\n- type: `{}`{count_suffix}",
+        format_address(field_meta.offset),
+        format_address(abs_addr),
+        field_meta.size,
+        data_width_name(field_meta.data_width),
+    )
 }
 
 pub(super) fn builtin_hover_text(token: &str) -> Option<String> {

@@ -664,3 +664,236 @@ fn lsp_advertises_and_serves_references_and_rename() {
 
     lsp.shutdown();
 }
+
+#[test]
+fn lsp_hover_symbolic_subscript_var_and_field() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-lsp-it-subscript-hover-{unique}"));
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
+    std::fs::write(
+        root.join("k816.toml"),
+        "[package]\nname = \"lsp-it-subscript\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("failed to write manifest");
+
+    // Line 0: var declaration with subscript fields
+    // Line 7: func using the field
+    let source = "\
+var sprite[\n\
+  .xpos :word\n\
+  .ypos :word\n\
+  .color :byte\n\
+] = $0400\n\
+\n\
+func main {\n\
+  a = sprite[.xpos]\n\
+  lda sprite.ypos\n\
+}\n";
+
+    let source_path = src_dir.join("main.k65");
+    std::fs::write(&source_path, source).expect("failed to write source");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let init_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(1))
+    });
+    assert!(init_response.get("result").is_some());
+
+    lsp.send(&json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+
+    // Wait for diagnostics to settle (ensures analysis is done)
+    lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|p| p.get("uri")) == Some(&json!(file_uri))
+    });
+
+    // Hover over the var name "sprite" (line 0, character 4)
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 0, "character": 4 }
+        }
+    }));
+    let hover_var = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(10))
+    });
+    let var_text = hover_var["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown for var");
+    assert!(
+        var_text.contains("variable") && var_text.contains("sprite"),
+        "expected variable hover for sprite, got: {var_text}"
+    );
+    assert!(
+        var_text.contains(".xpos") && var_text.contains(".ypos") && var_text.contains(".color"),
+        "expected field layout in var hover, got: {var_text}"
+    );
+    assert!(
+        var_text.contains("Fields"),
+        "expected 'Fields' heading in var hover, got: {var_text}"
+    );
+
+    // Hover over the field ".xpos" in usage (line 7, character 13 → inside ".xpos")
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 7, "character": 13 }
+        }
+    }));
+    let hover_field = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(11))
+    });
+    let field_text = hover_field["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown for field");
+    assert!(
+        field_text.contains("subscript field") && field_text.contains(".xpos"),
+        "expected subscript field hover for .xpos, got: {field_text}"
+    );
+    assert!(
+        field_text.contains("sprite"),
+        "expected var name 'sprite' in field hover, got: {field_text}"
+    );
+
+    // Hover over "sprite" portion of "sprite.ypos" (line 8, character 8 → inside sprite part)
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 8, "character": 8 }
+        }
+    }));
+    let hover_var_part = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(12))
+    });
+    let var_part_text = hover_var_part["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown for var part of qualified access");
+    assert!(
+        var_part_text.contains("variable") && var_part_text.contains("sprite"),
+        "expected variable hover for sprite part, got: {var_part_text}"
+    );
+
+    // Hover over "ypos" portion of "sprite.ypos" (line 8, character 14 → inside ypos part)
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 120,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 8, "character": 14 }
+        }
+    }));
+    let hover_qualified = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(120))
+    });
+    let qualified_text = hover_qualified["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown for qualified field");
+    assert!(
+        qualified_text.contains("subscript field") && qualified_text.contains(".ypos"),
+        "expected subscript field hover for sprite.ypos, got: {qualified_text}"
+    );
+    assert!(
+        qualified_text.contains("sprite"),
+        "expected var name 'sprite' in qualified field hover, got: {qualified_text}"
+    );
+
+    // Go-to-definition on "sprite.ypos" (line 8, character 14) should jump to .ypos decl (line 2)
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 8, "character": 14 }
+        }
+    }));
+    let def_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(13))
+    });
+    let def_locations = def_response["result"]
+        .as_array()
+        .expect("definition array for qualified field");
+    assert_eq!(
+        def_locations.len(),
+        1,
+        "expected one definition for sprite.ypos, got: {def_locations:?}"
+    );
+    assert_eq!(
+        def_locations[0]["range"]["start"]["line"],
+        json!(2),
+        "expected .ypos definition on line 2"
+    );
+
+    // Go-to-definition on ".xpos" in subscript access (line 7, character 13)
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 7, "character": 13 }
+        }
+    }));
+    let def_field_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(14))
+    });
+    let def_field_locations = def_field_response["result"]
+        .as_array()
+        .expect("definition array for .xpos field");
+    assert_eq!(
+        def_field_locations.len(),
+        1,
+        "expected one definition for .xpos, got: {def_field_locations:?}"
+    );
+    assert_eq!(
+        def_field_locations[0]["range"]["start"]["line"],
+        json!(1),
+        "expected .xpos definition on line 1"
+    );
+
+    lsp.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

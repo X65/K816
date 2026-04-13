@@ -131,6 +131,31 @@
         "path": "./syntaxes/k65.tmLanguage.json"
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "k65",
+        "scopes": {
+          "label": [
+            "entity.name.label.k65"
+          ],
+          "segment": [
+            "entity.name.section.k65"
+          ],
+          "data": [
+            "entity.name.section.k65"
+          ],
+          "constant": [
+            "variable.other.constant.k65"
+          ],
+          "function": [
+            "entity.name.function.k65"
+          ],
+          "variable": [
+            "variable.other.k65"
+          ]
+        }
+      }
+    ],
     "commands": [
       {
         "command": "k816.restartServer",

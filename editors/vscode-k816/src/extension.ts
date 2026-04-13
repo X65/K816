@@ -108,6 +108,7 @@ export async function activate(
   );
   updateFileInfo(vscode.window.activeTextEditor);
   registerLanguageModelTools(context);
+  registerChatParticipant(context);
 
   const taskProvider = new K816TaskProvider();
   context.subscriptions.push(
@@ -231,6 +232,83 @@ function registerLanguageModelTools(
       },
     }),
   );
+}
+
+const CHAT_PARTICIPANT_ID = "k816.assistant";
+
+function registerChatParticipant(context: vscode.ExtensionContext): void {
+  const handler: vscode.ChatRequestHandler = async (
+    request,
+    _chatContext,
+    stream,
+    token,
+  ): Promise<void> => {
+    const userPrompt = request.prompt.trim();
+    if (!userPrompt) {
+      stream.markdown(
+        "Ask about K65 syntax, 65816 instructions, or workspace memory. Examples: `what does REP #$30 do?`, `how full is MAIN memory?`",
+      );
+      return;
+    }
+
+    let model = request.model;
+    if (!model) {
+      const models = await vscode.lm.selectChatModels({ vendor: "copilot" });
+      model = models[0];
+    }
+    if (!model) {
+      stream.markdown(
+        "No language model is available. Install GitHub Copilot Chat or another chat provider, then retry `@k816`.",
+      );
+      return;
+    }
+
+    const tools = vscode.lm.tools.filter((tool) =>
+      tool.tags?.includes("k816"),
+    );
+
+    const messages: vscode.LanguageModelChatMessage[] = [
+      vscode.LanguageModelChatMessage.User(
+        [
+          "You are the k816 assistant for the K65 assembly language and the 65816 CPU.",
+          "Prefer concise, technically precise answers. Use fenced code blocks with `k65` for assembly snippets.",
+          "When the question concerns a specific mnemonic, call the `k816_lookup_instruction` tool to fetch authoritative semantics.",
+          "When the question concerns the user's workspace memory layout, call `k816_query_memory_map`.",
+          "If a tool is unavailable or returns no data, say so explicitly rather than guessing.",
+        ].join("\n"),
+      ),
+      vscode.LanguageModelChatMessage.User(userPrompt),
+    ];
+
+    try {
+      const response = await model.sendRequest(
+        messages,
+        { tools: tools.length > 0 ? tools : undefined },
+        token,
+      );
+      for await (const part of response.stream) {
+        if (token.isCancellationRequested) {
+          return;
+        }
+        if (part instanceof vscode.LanguageModelTextPart) {
+          stream.markdown(part.value);
+        } else if (part instanceof vscode.LanguageModelToolCallPart) {
+          stream.progress(`Calling \`${part.name}\`…`);
+        }
+      }
+    } catch (error) {
+      stream.markdown(`\n\n_k816 assistant error: ${formatError(error)}_`);
+    }
+  };
+
+  const participant = vscode.chat.createChatParticipant(
+    CHAT_PARTICIPANT_ID,
+    handler,
+  );
+  participant.iconPath = vscode.Uri.file(
+    path.join(context.extensionPath, "resources/icons/k65-dark.svg"),
+  );
+  context.subscriptions.push(participant);
 }
 
 function loadInstructionDescriptions(
@@ -585,6 +663,7 @@ class K816TaskProvider implements vscode.TaskProvider {
       taskName,
       "k816",
       new vscode.ShellExecution(command, [taskName], { cwd }),
+      ["$k816"],
     );
   }
 }

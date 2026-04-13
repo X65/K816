@@ -20,7 +20,8 @@
   "activationEvents": [
     "onDebugResolve:k816",
     "onLanguageModelTool:k816_lookup_instruction",
-    "onLanguageModelTool:k816_query_memory_map"
+    "onLanguageModelTool:k816_query_memory_map",
+    "onChatParticipant:k816.assistant"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -86,7 +87,41 @@
           "K65",
           "k65"
         ],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./resources/icons/k65-light.svg",
+          "dark": "./resources/icons/k65-dark.svg"
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "k816",
+        "owner": "k816",
+        "source": "k816",
+        "fileLocation": "absolute",
+        "pattern": [
+          {
+            "regexp": "^(Error|Warning):\\s*(.*)$",
+            "severity": 1,
+            "message": 2
+          },
+          {
+            "regexp": "^\\s*\\S*\\[\\s*(.+):(\\d+):(\\d+)\\s*\\]\\s*$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ]
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "k816.assistant",
+        "name": "k816",
+        "fullName": "k816 Assistant",
+        "description": "Ask about K65 syntax and 65816 instructions.",
+        "isSticky": true
       }
     ],
     "grammars": [

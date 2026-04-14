@@ -1593,16 +1593,14 @@ fn validate_instruction_width_rules(
     let Some(required_width) = data_width_to_reg_width(data_width) else {
         let var_name = base_ident(expr);
         let msg = if let Some(name) = var_name {
-            format!(
-                "Cannot directly load/store :far value '{name}' — use explicit :byte or :word view"
-            )
+            format!("Cannot directly load/store :far value '{name}'.")
         } else {
-            "Cannot directly load/store :far value — use explicit :byte or :word view".to_string()
+            "Cannot directly load/store :far value.".to_string()
         };
         let help = if let Some(name) = var_name {
-            format!("e.g. {name}:word for low 16 bits, ({name}+2):byte for bank byte")
+            format!("use explicit :byte or :word view, e.g. {name}:word for low 16 bits, ({name}+2):byte for bank byte")
         } else {
-            "e.g. name:word for low 16 bits, (name+2):byte for bank byte".to_string()
+            "use explicit :byte or :word view, e.g. name:word for low 16 bits, (name+2):byte for bank byte".to_string()
         };
         diagnostics.push(Diagnostic::error(span, msg).with_help(help));
         return;
@@ -3698,7 +3696,7 @@ fn invalid_symbolic_subscript_aggregate_index_diagnostic(
     };
     let mut diagnostic = Diagnostic::error(
         label_span,
-        format!("invalid index on symbolic subscript array '{base}': use '.field' or '[.field]'"),
+        format!("invalid index on symbolic subscript array '{base}'"),
     );
 
     if let Some(requested) = expr_ident_name(index)
@@ -3708,11 +3706,11 @@ fn invalid_symbolic_subscript_aggregate_index_diagnostic(
             .and_then(|var| var.symbolic_subscript.as_ref())
         && let Some(suggestion) = suggest_symbolic_subscript_field(requested, symbolic_subscript)
     {
-        diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
+        diagnostic = diagnostic.with_help(format!("use '.field' or '[.field]' — did you mean '.{suggestion}'?"));
         return diagnostic;
     }
 
-    diagnostic.with_help("only named field access is allowed on symbolic subscript arrays")
+    diagnostic.with_help("use '.field' or '[.field]' for named field access")
 }
 
 fn levenshtein(lhs: &str, rhs: &str) -> usize {
@@ -4690,7 +4688,7 @@ mod tests {
                 matches!(
                     supplement,
                     crate::diag::Supplemental::Help(help)
-                        if help.contains("only named field access is allowed on symbolic subscript arrays")
+                        if help.contains("use '.field' or '[.field]'")
                 )
             })
         }));

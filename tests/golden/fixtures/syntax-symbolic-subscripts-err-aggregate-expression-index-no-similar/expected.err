@@ -1,9 +1,9 @@
-Error: invalid index on symbolic subscript array 'foo': use '.field' or '[.field]'
+Error: invalid index on symbolic subscript array 'foo'
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-aggregate-expression-index-no-similar/input.k65:7:12 ]
    │
  7 │     lda foo[buffer]
    │            ────┬───  
    │                ╰───── here
    │ 
-   │ Help: only named field access is allowed on symbolic subscript arrays
+   │ Help: use '.field' or '[.field]' for named field access
 ───╯

@@ -1,6 +1,6 @@
 use crate::ast::{
-    AddressHint, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprUnaryOp, NamedDataBlock,
-    NamedDataEntry, NamedDataForEvalRange, NumFmt, SegmentDecl,
+    AddressHint, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprUnaryOp, MetadataQuery,
+    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt, SegmentDecl,
 };
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::{SourceId, Span, Spanned};
@@ -592,5 +592,16 @@ where
 {
     just(TokenKind::Colon).ignore_then(chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("abs") => AddressHint::ForceAbsolute16,
+    })
+}
+
+pub(super) fn metadata_query_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, MetadataQuery, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Colon).ignore_then(chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("sizeof") => MetadataQuery::SizeOf,
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("offsetof") => MetadataQuery::OffsetOf,
     })
 }

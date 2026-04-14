@@ -216,6 +216,10 @@
         {
           "name": "storage.type.k65",
           "match": "(?<=\\S):(?:byte|word|far|abs)\\b"
+        },
+        {
+          "name": "keyword.operator.query.k65",
+          "match": "(?<=\\S):(?:sizeof|offsetof)\\b"
         }
       ]
     },

@@ -348,6 +348,16 @@ fn eval_const_expr(
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
             eval_const_expr(expr, consts)
         }
+        Expr::MetadataQuery { expr, .. } => {
+            // :sizeof / :offsetof require VarMeta which is not available during
+            // const propagation.  Extract the identifier name from the inner
+            // expression so the caller can report a meaningful error.
+            let name = match expr.as_ref() {
+                Expr::Ident(n) | Expr::IdentSpanned { name: n, .. } => n.clone(),
+                _ => String::new(),
+            };
+            Err(ConstExprError::Ident(name))
+        }
     }
 }
 

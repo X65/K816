@@ -1,0 +1,47 @@
+var TASKS[
+    .sp         :word
+    .state      :byte
+    .signals    :byte
+    .sigmask    :byte
+    .evtmask    :byte
+    .sighndl    :word
+    .message[
+        .from   :byte
+        .type   :byte
+        .data   :far
+    ]
+] = $4000
+
+var counter:word = $80
+var buffer[32] = $0100
+
+func main @a8 @i8 {
+    // :sizeof on aggregate var
+    lda #TASKS:sizeof           // 13 bytes total
+
+    // :sizeof on fields
+    lda #TASKS.state:sizeof     // 1 (byte)
+    lda #TASKS.sp:sizeof        // 2 (word)
+    lda #TASKS.message:sizeof   // 5 (composite: 1+1+3)
+    lda #TASKS.message.data:sizeof // 3 (far)
+
+    // :sizeof on plain vars
+    lda #counter:sizeof         // 2 (word)
+    lda #buffer:sizeof          // 32
+
+    // :offsetof on fields
+    lda #TASKS.state:offsetof   // 2 (after .sp:word)
+    lda #TASKS.sp:offsetof      // 0 (first field)
+    lda #TASKS.signals:offsetof // 3
+    lda #TASKS.sighndl:offsetof // 6
+
+    // :offsetof on nested fields
+    lda #TASKS.message.from:offsetof  // 8 (after sighndl:word at offset 6..8)
+    lda #TASKS.message.data:offsetof  // 10
+
+    // :offsetof on composite field
+    lda #TASKS.message:offsetof  // 8
+
+    // :sizeof in arithmetic expression
+    lda #TASKS:sizeof + 1       // 14
+}

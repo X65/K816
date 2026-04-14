@@ -1,0 +1,35 @@
+Error: ':sizeof' requires a variable name, found 'FOO'
+   ╭─[ tests/golden/fixtures/syntax-sizeof-offsetof-errors/input.k65:6:5 ]
+   │
+ 6 │     lda #FOO:sizeof
+   │     ───────┬───────  
+   │            ╰───────── here
+───╯
+
+Error: ':sizeof' requires a variable name, found 'FOO'
+   ╭─[ tests/golden/fixtures/syntax-sizeof-offsetof-errors/input.k65:6:5 ]
+   │
+ 6 │     lda #FOO:sizeof
+   │     ───────┬───────  
+   │            ╰───────── here
+───╯
+
+Error: ':offsetof' requires a field path, not a bare variable 'simple'
+   ╭─[ tests/golden/fixtures/syntax-sizeof-offsetof-errors/input.k65:7:5 ]
+   │
+ 7 │     lda #simple:offsetof
+   │     ──────────┬─────────  
+   │               ╰─────────── here
+   │ 
+   │ Help: use 'VAR.field:offsetof' to get the byte offset of a field
+───╯
+
+Error: ':offsetof' requires a field path, not a bare variable 'simple'
+   ╭─[ tests/golden/fixtures/syntax-sizeof-offsetof-errors/input.k65:7:5 ]
+   │
+ 7 │     lda #simple:offsetof
+   │     ──────────┬─────────  
+   │               ╰─────────── here
+   │ 
+   │ Help: use 'VAR.field:offsetof' to get the byte offset of a field
+───╯

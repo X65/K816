@@ -47,7 +47,7 @@ use self::common::{
 use self::control::invalid_flag_goto_stmt_parser;
 use self::data::{
     address_hint_parser, const_decl_item_parser, data_block_parser, data_width_parser,
-    named_data_block_parser, var_decl_parser,
+    metadata_query_parser, named_data_block_parser, var_decl_parser,
 };
 use self::diagnostics::rich_error_to_diagnostic;
 use self::expr::{

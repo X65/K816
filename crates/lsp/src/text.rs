@@ -45,6 +45,59 @@ pub(super) fn token_at_offset(text: &str, offset: usize) -> Option<TokenMatch> {
     })
 }
 
+/// Detect a colon-prefixed keyword at `offset` (e.g. `:sizeof`, `:offsetof`).
+/// Returns a `TokenMatch` whose text includes the leading colon.
+pub(super) fn colon_keyword_at_offset(text: &str, offset: usize) -> Option<TokenMatch> {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let index = offset.min(bytes.len().saturating_sub(1));
+    // Allow cursor on the colon itself or on the ident part.
+    if !is_ident_byte(bytes[index]) && bytes[index] != b':' {
+        return None;
+    }
+
+    // Walk to find the ident portion boundaries.
+    let mut start = index;
+    while start > 0 && is_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    let mut end = index;
+    if is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+    while end < bytes.len() && is_ident_byte(bytes[end]) {
+        end += 1;
+    }
+
+    // The token must be preceded by a colon.
+    let colon_start = if start > 0 && bytes[start - 1] == b':' {
+        start - 1
+    } else if bytes[start] == b':' && start + 1 < bytes.len() && is_ident_byte(bytes[start + 1]) {
+        // Cursor is on the colon itself — scan the ident after it.
+        let ident_start = start + 1;
+        let mut ident_end = ident_start;
+        while ident_end < bytes.len() && is_ident_byte(bytes[ident_end]) {
+            ident_end += 1;
+        }
+        return Some(TokenMatch {
+            text: text[start..ident_end].to_string(),
+            start,
+            end: ident_end,
+        });
+    } else {
+        return None;
+    };
+
+    Some(TokenMatch {
+        text: text[colon_start..end].to_string(),
+        start: colon_start,
+        end,
+    })
+}
+
 /// Which segment of a qualified `VAR.field1.field2` token the cursor is on.
 #[derive(Debug)]
 pub(super) enum QualifiedSegment<'a> {
@@ -296,7 +349,7 @@ pub(super) fn token_matches_in_range(text: &str, start: usize, end: usize) -> Ve
     out
 }
 
-fn is_ident_byte(byte: u8) -> bool {
+pub(super) fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' || byte == b'@'
 }
 

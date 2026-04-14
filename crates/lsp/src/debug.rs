@@ -88,8 +88,7 @@ impl ServerState {
         for token in token_matches_in_range(&doc.text, start_offset, end_offset) {
             let scope = doc.analysis.scope_at_offset(token.start);
             let canonical = canonical_symbol(&token.text, scope);
-            let Some(definition) = self.symbols.get(&canonical).and_then(|defs| defs.first())
-            else {
+            let Some(definition) = self.preferred_definition(&canonical, uri) else {
                 continue;
             };
             let Some((address, read_size_hint)) =

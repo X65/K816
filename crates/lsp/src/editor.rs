@@ -13,15 +13,25 @@ use super::hover::{
     hover_contents_for_symbol, is_register_name, opcode_keywords, register_keywords,
 };
 use super::text::{
-    QualifiedSegment, cumulative_field_key, evaluator_call_at_offset,
-    in_symbol_completion_context, numeric_literal_at_offset, resolve_field_from_ast,
-    resolve_qualified_segment, token_at_offset, token_prefix_at_offset,
+    QualifiedSegment, colon_keyword_at_offset, cumulative_field_key, evaluator_call_at_offset,
+    in_symbol_completion_context, is_ident_byte, numeric_literal_at_offset,
+    resolve_field_from_ast, resolve_qualified_segment, token_at_offset, token_prefix_at_offset,
 };
 use super::{
     ByteRange, INSTRUCTION_DESCRIPTIONS, ServerState, SymbolCategory, byte_range_to_lsp,
     canonical_symbol, completion_kind_for_symbol, semantic_token_modifier_bit,
     semantic_token_type_for_category, semantic_token_type_index,
 };
+
+/// Split a qualified token like `"TASKS.state"` into `("TASKS", Some("state"))`,
+/// or `"TASKS.message.data"` into `("TASKS", Some("message.data"))`.
+/// Plain `"TASKS"` returns `("TASKS", None)`.
+fn split_var_field(qualified: &str) -> (&str, Option<&str>) {
+    match qualified.find('.') {
+        Some(pos) => (&qualified[..pos], Some(&qualified[pos + 1..])),
+        None => (qualified, None),
+    }
+}
 
 impl ServerState {
     pub(super) fn hover(&self, uri: &Uri, position: Position) -> Option<Hover> {
@@ -50,9 +60,7 @@ impl ServerState {
 
             let scope = doc.analysis.scope_at_offset(offset);
             let canonical = canonical_symbol(&token.text, scope);
-            if let Some(definitions) = self.symbols.get(&canonical)
-                && let Some(definition) = definitions.first()
-            {
+            if let Some(definition) = self.preferred_definition(&canonical, uri) {
                 let contents = hover_contents_for_symbol(&canonical, definition, self);
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -116,8 +124,8 @@ impl ServerState {
                         range_end,
                     } => {
                         let var_canonical = canonical_symbol(name, scope);
-                        if let Some(definitions) = self.symbols.get(&var_canonical)
-                            && let Some(definition) = definitions.first()
+                        if let Some(definition) =
+                            self.preferred_definition(&var_canonical, uri)
                         {
                             let contents =
                                 hover_contents_for_symbol(&var_canonical, definition, self);
@@ -182,6 +190,56 @@ impl ServerState {
                         value: format!("address: `{}`", format_address_range(addr, size)),
                     }),
                     range: Some(token_range),
+                });
+            }
+        }
+
+        // Colon-prefixed suffixes (:sizeof, :offsetof, :byte, :word, :far, :abs)
+        if let Some(kw) = colon_keyword_at_offset(&doc.text, offset) {
+            let hover_text = match kw.text.as_str() {
+                ":sizeof" => {
+                    let resolved = self.resolve_preceding_var_size(&doc.text, kw.start, uri);
+                    let detail = match resolved {
+                        Some(size) => format!("\n\n- size: `{size}`"),
+                        None => String::new(),
+                    };
+                    Some(format!(
+                        "**suffix** `:sizeof`\n\n\
+                         Returns the total byte size of a variable or field.{detail}"
+                    ))
+                }
+                ":offsetof" => {
+                    let resolved = self.resolve_preceding_field_offset(&doc.text, kw.start, uri);
+                    let detail = match resolved {
+                        Some(off) => format!("\n\n- offset: `+{}`", format_address(off)),
+                        None => String::new(),
+                    };
+                    Some(format!(
+                        "**suffix** `:offsetof`\n\n\
+                         Returns the byte offset of a field within its parent variable.{detail}"
+                    ))
+                }
+                ":byte" => Some("**suffix** `:byte`\n\nTyped view — access as 8-bit value.".into()),
+                ":word" => Some("**suffix** `:word`\n\nTyped view — access as 16-bit value.".into()),
+                ":far" => Some("**suffix** `:far`\n\nTyped view or data width — 24-bit (3 bytes).".into()),
+                ":abs" => Some("**suffix** `:abs`\n\nForce 16-bit absolute addressing for this operand.".into()),
+                _ => None,
+            };
+            if let Some(text) = hover_text {
+                let range = byte_range_to_lsp(
+                    &ByteRange {
+                        start: kw.start,
+                        end: kw.end,
+                    },
+                    &doc.line_index,
+                    &doc.text,
+                );
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: text,
+                    }),
+                    range: Some(range),
                 });
             }
         }
@@ -294,6 +352,68 @@ impl ServerState {
         None
     }
 
+    /// Resolve the byte size of the variable or field preceding a colon suffix at `colon_offset`.
+    fn resolve_preceding_var_size(
+        &self,
+        text: &str,
+        colon_offset: usize,
+        preferred_uri: &Uri,
+    ) -> Option<u32> {
+        if colon_offset == 0 {
+            return None;
+        }
+        let token = token_at_offset(text, colon_offset - 1)?;
+        let (var_name, field_key) = split_var_field(&token.text);
+        let var_meta = self.find_var_meta(var_name, preferred_uri)?;
+        if let Some(key) = field_key {
+            let ss = var_meta.symbolic_subscript.as_ref()?;
+            let field = ss.fields.get(key)?;
+            Some(field.size)
+        } else {
+            Some(var_meta.size)
+        }
+    }
+
+    /// Resolve the byte offset of the field preceding a colon suffix at `colon_offset`.
+    fn resolve_preceding_field_offset(
+        &self,
+        text: &str,
+        colon_offset: usize,
+        preferred_uri: &Uri,
+    ) -> Option<u32> {
+        if colon_offset == 0 {
+            return None;
+        }
+        let token = token_at_offset(text, colon_offset - 1)?;
+        let (var_name, field_key) = split_var_field(&token.text);
+        let field_key = field_key?; // offsetof requires a field
+        let var_meta = self.find_var_meta(var_name, preferred_uri)?;
+        let ss = var_meta.symbolic_subscript.as_ref()?;
+        let field = ss.fields.get(field_key)?;
+        Some(field.offset)
+    }
+
+    /// Look up `VarMeta` for a variable name, preferring the document at `preferred_uri`.
+    fn find_var_meta(
+        &self,
+        var_name: &str,
+        preferred_uri: &Uri,
+    ) -> Option<&k816_core::sema::VarMeta> {
+        if let Some(meta) = self
+            .documents
+            .get(preferred_uri)
+            .and_then(|doc| doc.analysis.semantic.vars.get(var_name))
+        {
+            return Some(meta);
+        }
+        for doc in self.documents.values() {
+            if let Some(meta) = doc.analysis.semantic.vars.get(var_name) {
+                return Some(meta);
+            }
+        }
+        None
+    }
+
     pub(super) fn completion(&self, uri: &Uri, position: Position) -> Option<CompletionResponse> {
         let doc = self.documents.get(uri)?;
         let offset = doc.line_index.to_offset(&doc.text, position)?;
@@ -305,12 +425,17 @@ impl ServerState {
         // VS Code replaces the full `VAR.fld` token rather than just the word
         // fragment after the last dot.
         let prefix_start = offset - raw_prefix.len();
+
+        // ── Colon-suffix completions (`:sizeof`, `:offsetof`, `:byte`, etc.) ──
+        // Triggered when the cursor follows `IDENT:` or `IDENT:partial`.
+        if let Some(items) = self.complete_colon_suffixes(&doc.text, offset, position) {
+            return Some(CompletionResponse::Array(items));
+        }
         let start_pos = doc.line_index.to_position(&doc.text, prefix_start);
         let prefix_range = Range::new(start_pos, position);
 
         // ── Standalone .field token (inside brackets) ──
-        if prefix.starts_with('.') {
-            let bare = &prefix[1..];
+        if let Some(bare) = prefix.strip_prefix('.') {
             let items = self.complete_bare_fields(bare, prefix_range);
             return Some(CompletionResponse::Array(items));
         }
@@ -542,6 +667,77 @@ impl ServerState {
             format!("{type_str} ×{}", field_meta.count)
         } else {
             type_str.to_string()
+        }
+    }
+
+    /// Offer colon-suffix completions when the cursor follows `IDENT:` or `IDENT:partial`.
+    fn complete_colon_suffixes(
+        &self,
+        text: &str,
+        offset: usize,
+        position: Position,
+    ) -> Option<Vec<CompletionItem>> {
+        let bytes = text.as_bytes();
+        // Walk backwards from the cursor to find the partial suffix typed so far.
+        let suffix_end = offset;
+        let mut pos = offset;
+        while pos > 0 && is_ident_byte(bytes[pos - 1]) {
+            pos -= 1;
+        }
+        let suffix_start = pos; // start of partial keyword (may equal suffix_end if just `:`)
+
+        // There must be a `:` immediately before the keyword portion.
+        if pos == 0 || bytes[pos - 1] != b':' {
+            return None;
+        }
+        let colon_pos = pos - 1;
+
+        // The `:` must be preceded by an identifier character (not whitespace or line start).
+        if colon_pos == 0 || !is_ident_byte(bytes[colon_pos - 1]) {
+            return None;
+        }
+
+        let typed_prefix = text[suffix_start..suffix_end].to_ascii_lowercase();
+
+        static SUFFIXES: &[(&str, &str, CompletionItemKind)] = &[
+            ("sizeof", "Returns the total byte size of a variable or field", CompletionItemKind::KEYWORD),
+            ("offsetof", "Returns the byte offset of a field within its parent variable", CompletionItemKind::KEYWORD),
+            ("byte", "Typed view — access as 8-bit value", CompletionItemKind::TYPE_PARAMETER),
+            ("word", "Typed view — access as 16-bit value", CompletionItemKind::TYPE_PARAMETER),
+            ("far", "Typed view or data width — 24-bit (3 bytes)", CompletionItemKind::TYPE_PARAMETER),
+            ("abs", "Force 16-bit absolute addressing for this operand", CompletionItemKind::TYPE_PARAMETER),
+        ];
+
+        let replace_start = Position {
+            line: position.line,
+            character: position.character - (suffix_end - colon_pos) as u32,
+        };
+        let replace_range = Range::new(replace_start, position);
+
+        let items: Vec<CompletionItem> = SUFFIXES
+            .iter()
+            .filter(|(name, _, _)| name.starts_with(&typed_prefix))
+            .map(|(name, doc, kind)| CompletionItem {
+                label: format!(":{name}"),
+                kind: Some(*kind),
+                detail: Some("suffix".to_string()),
+                documentation: Some(lsp_types::Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: (*doc).to_string(),
+                })),
+                text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
+                    range: replace_range,
+                    new_text: format!(":{name}"),
+                })),
+                insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+                ..CompletionItem::default()
+            })
+            .collect();
+
+        if items.is_empty() {
+            None
+        } else {
+            Some(items)
         }
     }
 

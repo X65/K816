@@ -10,8 +10,8 @@ use chumsky::{
 };
 
 use super::{
-    ParseExtra, address_hint_parser, data_width_parser, line_sep_parser, parse_expression_fragment,
-    spanned,
+    ParseExtra, address_hint_parser, data_width_parser, line_sep_parser,
+    metadata_query_parser, parse_expression_fragment, spanned,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +86,18 @@ where
                 }
                 Ok(result)
             });
+
+        // Metadata queries (:sizeof, :offsetof) bind tightly at atom level
+        // so that `TASKS:sizeof + 1` parses as `(TASKS:sizeof) + 1`.
+        let atom = atom.then(metadata_query_parser().or_not()).map(
+            |(expr, query)| match query {
+                Some(query) => Expr::MetadataQuery {
+                    expr: Box::new(expr),
+                    query,
+                },
+                None => expr,
+            },
+        );
 
         let unary = just(TokenKind::Amp)
             .ignore_then(
@@ -337,5 +349,7 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
             }
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => eval_static_expr(expr),
+        // Metadata queries require the semantic model; cannot resolve statically.
+        Expr::MetadataQuery { .. } => None,
     }
 }

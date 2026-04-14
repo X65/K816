@@ -27,6 +27,13 @@ pub enum AddressHint {
     ForceAbsolute16,
 }
 
+/// Compile-time metadata query on a variable or symbolic subscript field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataQuery {
+    SizeOf,
+    OffsetOf,
+}
+
 /// CPU register width (8 or 16 bits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegWidth {
@@ -449,6 +456,10 @@ pub enum Expr {
     AddressHint {
         expr: Box<Expr>,
         hint: AddressHint,
+    },
+    MetadataQuery {
+        expr: Box<Expr>,
+        query: MetadataQuery,
     },
 }
 

@@ -1,0 +1,8 @@
+const FOO = 42
+
+var simple = $80
+
+func main @a8 @i8 {
+    lda #FOO:sizeof
+    lda #simple:offsetof
+}

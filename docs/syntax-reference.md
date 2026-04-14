@@ -95,6 +95,63 @@ When combined with typed views, `:abs` must come last:
 lda regs.status:byte:abs
 ```
 
+### Metadata Query Suffixes
+
+The `:sizeof` and `:offsetof` expression suffixes return compile-time metadata about variables and symbolic subscript fields. They produce integer constants that can be used in any expression context (immediates, evaluator arithmetic, etc.).
+
+**`:sizeof`** — returns the total byte size of a variable or field:
+
+```k65
+var TASKS[
+    .sp      :word
+    .state   :byte
+    .signals :byte
+] = $4000
+
+lda #TASKS:sizeof           // 4 (total: 2+1+1)
+lda #TASKS.sp:sizeof        // 2 (word)
+lda #TASKS.state:sizeof     // 1 (byte)
+```
+
+Works on plain variables too:
+
+```k65
+var counter:word = $80
+var buffer[32] = $0100
+
+lda #counter:sizeof         // 2
+lda #buffer:sizeof          // 32
+```
+
+**`:offsetof`** — returns the byte offset of a field within its parent variable:
+
+```k65
+lda #TASKS.sp:offsetof      // 0 (first field)
+lda #TASKS.state:offsetof   // 2 (after .sp:word)
+lda #TASKS.signals:offsetof // 3
+```
+
+Nested fields resolve offsets relative to the top-level variable:
+
+```k65
+var REGS[
+    .status :byte
+    .data[
+        .lo :byte
+        .hi :byte
+    ]
+] = $D000
+
+lda #REGS.data.lo:offsetof  // 1 (after .status)
+lda #REGS.data.hi:offsetof  // 2
+```
+
+Both suffixes bind tightly (at atom level), so they work in arithmetic:
+
+```k65
+lda #TASKS:sizeof + 1       // (TASKS:sizeof) + 1
+```
+
 K65 also supports symbolic subscript arrays with named `.field` entries inside `var name[...] = <addr>`. This feature is inspired by the Pawn language's named-field array style.
 
 ## Constant Declaration

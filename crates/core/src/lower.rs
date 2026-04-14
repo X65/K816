@@ -6,8 +6,8 @@ use crate::ast::{
     AddressHint, CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp,
     HlaCompareOp, HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget,
     HlaOperandExpr, HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt,
-    Instruction, Item, NamedDataBlock, NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegWidth,
-    Stmt,
+    Instruction, Item, MetadataQuery, NamedDataBlock, NamedDataEntry, NumFmt, Operand,
+    OperandAddrMode, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -3213,9 +3213,6 @@ fn eval_to_number_strict(
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     Some(i64::from(address))
                 }
-                Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
-                    Some(i64::from(offset))
-                }
                 Ok(None) | Err(()) => None,
             }
         }
@@ -3251,6 +3248,9 @@ fn eval_to_number_strict(
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
             eval_to_number_strict(expr, sema, span, diagnostics)
+        }
+        Expr::MetadataQuery { expr, query } => {
+            resolve_metadata_query(expr, *query, sema, span, diagnostics)
         }
     }
 }
@@ -3396,47 +3396,6 @@ fn eval_index_expr_strict(
                     None
                 });
             }
-            ResolvedSymbolicSubscriptName::FieldOffset {
-                base,
-                field,
-                offset,
-                data_width: _,
-                size,
-                count,
-            } => {
-                if count <= 1 {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!("symbolic subscript field '{base}::{field}' is not an array",),
-                    ));
-                    return None;
-                }
-
-                let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
-                else {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        "symbolic subscript array index must be a constant numeric expression",
-                    ));
-                    return None;
-                };
-                if index_value < 0 {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!("index must be non-negative, found {index_value}"),
-                    ));
-                    return None;
-                }
-                let scale = i64::from(size / count);
-                let byte_offset = index_value.checked_mul(scale).or_else(|| {
-                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
-                    None
-                })?;
-                return i64::from(offset).checked_add(byte_offset).or_else(|| {
-                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
-                    None
-                });
-            }
         }
     }
 
@@ -3512,6 +3471,7 @@ fn is_immediate_expression(expr: &Expr, sema: &SemanticModel) -> bool {
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
             is_immediate_expression(expr, sema)
         }
+        Expr::MetadataQuery { .. } => true,
     }
 }
 
@@ -3530,15 +3490,124 @@ enum ResolvedSymbolicSubscriptName {
         size: u32,
         count: u32,
     },
-    FieldOffset {
-        base: String,
-        field: String,
-        offset: u32,
-        #[allow(dead_code)]
-        data_width: Option<DataWidth>,
-        size: u32,
-        count: u32,
-    },
+}
+
+/// Resolve a `:sizeof` or `:offsetof` metadata query to a compile-time numeric
+/// value using the semantic model.
+fn resolve_metadata_query(
+    inner_expr: &Expr,
+    query: MetadataQuery,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    let name = match inner_expr {
+        Expr::Ident(n) | Expr::IdentSpanned { name: n, .. } => n.as_str(),
+        _ => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!(
+                    "':{}' requires a variable or field name",
+                    metadata_query_name(query)
+                ),
+            ));
+            return None;
+        }
+    };
+
+    match query {
+        MetadataQuery::SizeOf => resolve_sizeof(name, sema, span, diagnostics),
+        MetadataQuery::OffsetOf => resolve_offsetof(name, sema, span, diagnostics),
+    }
+}
+
+fn resolve_sizeof(
+    name: &str,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    // Plain var without fields
+    if let Some(var) = sema.vars.get(name) {
+        return Some(i64::from(var.size));
+    }
+    // Try as a symbolic subscript field path (e.g. TASKS.state)
+    match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+        Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
+            let var = &sema.vars[&base];
+            Some(i64::from(var.size))
+        }
+        Ok(Some(ResolvedSymbolicSubscriptName::Field { size, .. })) => {
+            Some(i64::from(size))
+        }
+        Ok(None) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("':sizeof' requires a variable name, found '{name}'"),
+            ));
+            None
+        }
+        Err(()) => None,
+    }
+}
+
+fn resolve_offsetof(
+    name: &str,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    // Plain var — offsetof makes no sense
+    if sema.vars.contains_key(name) {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("':offsetof' requires a field path, not a bare variable '{name}'"),
+            )
+            .with_help("use 'VAR.field:offsetof' to get the byte offset of a field"),
+        );
+        return None;
+    }
+    // Try as a symbolic subscript field path (e.g. TASKS.state)
+    match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
+        Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!("':offsetof' requires a field path, not aggregate '{base}'"),
+                )
+                .with_help("use 'VAR.field:offsetof' to get the byte offset of a field"),
+            );
+            None
+        }
+        Ok(Some(ResolvedSymbolicSubscriptName::Field {
+            base, field, ..
+        }))
+        => {
+            // Look up the field's offset from the base var's symbolic subscript
+            let var = &sema.vars[&base];
+            let ss = var.symbolic_subscript.as_ref().unwrap();
+            let field_meta = &ss.fields[&field];
+            Some(i64::from(field_meta.offset))
+        }
+        Ok(None) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!(
+                    "':offsetof' requires a variable field path, found '{name}'"
+                ),
+            ));
+            None
+        }
+        Err(()) => None,
+    }
+}
+
+fn metadata_query_name(query: MetadataQuery) -> &'static str {
+    match query {
+        MetadataQuery::SizeOf => "sizeof",
+        MetadataQuery::OffsetOf => "offsetof",
+    }
 }
 
 fn resolve_symbolic_subscript_name(
@@ -3547,42 +3616,6 @@ fn resolve_symbolic_subscript_name(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<Option<ResolvedSymbolicSubscriptName>, ()> {
-    // `::` separator means offset mode (e.g. TASKS::state → offset 2)
-    if let Some((base_name, field_path)) = name.split_once("::") {
-        // Normalize remaining :: to . for field map lookup
-        let field_name = field_path.replace("::", ".");
-
-        let Some(base_var) = sema.vars.get(base_name) else {
-            return Ok(None);
-        };
-        let Some(symbolic_subscript) = base_var.symbolic_subscript.as_ref() else {
-            return Ok(None);
-        };
-
-        let Some(field_meta) = symbolic_subscript.fields.get(&field_name) else {
-            let mut diagnostic = Diagnostic::error(
-                span,
-                format!("unknown symbolic subscript field '.{field_name}' on '{base_name}'"),
-            );
-            if let Some(suggestion) =
-                suggest_symbolic_subscript_field(&field_name, symbolic_subscript)
-            {
-                diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
-            }
-            diagnostics.push(diagnostic);
-            return Err(());
-        };
-
-        return Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset {
-            base: base_name.to_string(),
-            field: field_name,
-            offset: field_meta.offset,
-            data_width: field_meta.data_width,
-            size: field_meta.size,
-            count: field_meta.count,
-        }));
-    }
-
     if let Some(var) = sema.vars.get(name) {
         if var.symbolic_subscript.is_some() {
             return Ok(Some(ResolvedSymbolicSubscriptName::Aggregate {
@@ -3882,6 +3915,11 @@ fn lower_address_operand(
         Expr::TypedView { expr, .. } => {
             lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
         }
+        // Metadata queries always produce immediates, not addresses.
+        Expr::MetadataQuery { expr, query } => {
+            let value = resolve_metadata_query(expr, *query, sema, span, diagnostics)?;
+            Some(OperandOp::Immediate(value))
+        }
         Expr::Index { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
             // Try compile-time evaluation first (works for vars, consts, symbolic subscripts).
             let saved_diag_len = diagnostics.len();
@@ -3947,9 +3985,6 @@ fn eval_to_number(
                 | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
                     return Some(i64::from(address));
                 }
-                Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
-                    return Some(i64::from(offset));
-                }
                 Err(()) => return None,
                 Ok(None) => {}
             }
@@ -3993,6 +4028,9 @@ fn eval_to_number(
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
             eval_to_number(expr, scope, sema, span, diagnostics)
+        }
+        Expr::MetadataQuery { expr, query } => {
+            resolve_metadata_query(expr, *query, sema, span, diagnostics)
         }
     }
 }
@@ -4053,47 +4091,6 @@ fn eval_index_expr(
                     None
                 })?;
                 return i64::from(address).checked_add(byte_offset).or_else(|| {
-                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
-                    None
-                });
-            }
-            Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset {
-                base,
-                field,
-                offset,
-                data_width: _,
-                size,
-                count,
-            })) => {
-                if count <= 1 {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!("symbolic subscript field '{base}::{field}' is not an array",),
-                    ));
-                    return None;
-                }
-
-                let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
-                else {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        "symbolic subscript array index must be a constant numeric expression",
-                    ));
-                    return None;
-                };
-                if index_value < 0 {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!("index must be non-negative, found {index_value}"),
-                    ));
-                    return None;
-                }
-                let scale = i64::from(size / count);
-                let byte_offset = index_value.checked_mul(scale).or_else(|| {
-                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
-                    None
-                })?;
-                return i64::from(offset).checked_add(byte_offset).or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
                 });
@@ -4185,13 +4182,6 @@ fn resolve_operand_ident(
         | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
             return Some(OperandOp::Address {
                 value: AddressValue::Literal(address),
-                size_hint,
-                mode,
-            });
-        }
-        Ok(Some(ResolvedSymbolicSubscriptName::FieldOffset { offset, .. })) => {
-            return Some(OperandOp::Address {
-                value: AddressValue::Literal(offset),
                 size_hint,
                 mode,
             });

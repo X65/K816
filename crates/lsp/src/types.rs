@@ -280,4 +280,17 @@ impl ServerState {
             last_link_error: None,
         }
     }
+
+    /// Find the best definition for a symbol, preferring one from `preferred_uri`.
+    pub(super) fn preferred_definition(
+        &self,
+        canonical: &str,
+        preferred_uri: &Uri,
+    ) -> Option<&SymbolLocation> {
+        let definitions = self.symbols.get(canonical)?;
+        definitions
+            .iter()
+            .find(|d| &d.uri == preferred_uri)
+            .or_else(|| definitions.first())
+    }
 }

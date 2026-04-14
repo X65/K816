@@ -610,5 +610,9 @@ fn expand_expr(
             expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
             hint: *hint,
         },
+        Expr::MetadataQuery { expr, query } => Expr::MetadataQuery {
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            query: *query,
+        },
     }
 }

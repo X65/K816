@@ -1489,3 +1489,95 @@ func test @a16 {
         "declaration-site .message.data hover should match usage-site"
     );
 }
+
+#[test]
+fn colon_suffix_hover_shows_help_for_sizeof_and_offsetof() {
+    let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
+    let text = "\
+var TASKS[
+    .sp    :word
+    .state :byte
+] = $4000
+func main @a8 {
+    lda #TASKS:sizeof
+    lda #TASKS.state:offsetof
+    lda #TASKS.sp:byte
+    lda #TASKS:abs
+}
+"
+    .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri.clone(), text.clone(), 1, true)
+        .expect("doc");
+    let doc = state.documents.get(&uri).expect("doc");
+
+    fn hover_at(
+        state: &ServerState,
+        uri: &Uri,
+        doc: &super::DocumentState,
+        text: &str,
+        line: &str,
+        target: &str,
+    ) -> Option<String> {
+        let line_start = text.find(line).unwrap_or_else(|| panic!("line not found: {line}"));
+        let rel = text[line_start..].find(target)?;
+        let offset = line_start + rel + target.len() / 2;
+        let position = doc.line_index.to_position(text, offset);
+        let hover = state.hover(uri, position)?;
+        let HoverContents::Markup(markup) = hover.contents else {
+            return None;
+        };
+        Some(markup.value)
+    }
+
+    // :sizeof suffix — should show resolved size of TASKS (3 = word + byte)
+    let sizeof_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS:sizeof", ":sizeof")
+        .expect("no hover for :sizeof");
+    assert!(
+        sizeof_hover.contains("**suffix** `:sizeof`"),
+        ":sizeof hover should contain suffix heading, got:\n{sizeof_hover}"
+    );
+    assert!(
+        sizeof_hover.contains("byte size"),
+        ":sizeof hover should describe byte size, got:\n{sizeof_hover}"
+    );
+    assert!(
+        sizeof_hover.contains("- size: `3`"),
+        ":sizeof hover should show resolved size 3, got:\n{sizeof_hover}"
+    );
+
+    // :offsetof suffix — should show resolved offset of .state (2, after .sp:word)
+    let offsetof_hover =
+        hover_at(&state, &uri, doc, &text, "lda #TASKS.state:offsetof", ":offsetof")
+            .expect("no hover for :offsetof");
+    assert!(
+        offsetof_hover.contains("**suffix** `:offsetof`"),
+        ":offsetof hover should contain suffix heading, got:\n{offsetof_hover}"
+    );
+    assert!(
+        offsetof_hover.contains("byte offset"),
+        ":offsetof hover should describe byte offset, got:\n{offsetof_hover}"
+    );
+    assert!(
+        offsetof_hover.contains("- offset: `+$0002`"),
+        ":offsetof hover should show resolved offset +$0002, got:\n{offsetof_hover}"
+    );
+
+    // :byte suffix
+    let byte_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.sp:byte", ":byte")
+        .expect("no hover for :byte");
+    assert!(
+        byte_hover.contains("**suffix** `:byte`"),
+        ":byte hover should contain suffix heading, got:\n{byte_hover}"
+    );
+
+    // :abs suffix
+    let abs_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS:abs", ":abs")
+        .expect("no hover for :abs");
+    assert!(
+        abs_hover.contains("**suffix** `:abs`"),
+        ":abs hover should contain suffix heading, got:\n{abs_hover}"
+    );
+}

@@ -1,0 +1,20 @@
+const TOO_BIG = $10000
+const BIG = $F000
+const SMALL = $F0
+
+func main {
+
+    lda #SMALL      // OK
+
+    lda #BIG+BIG
+    cmp #2*BIG
+
+    @a16 {
+        lda #BIG    // OK
+
+        lda #BIG+BIG
+        adc #TOO_BIG
+
+        cmp #64*2048
+    }
+}

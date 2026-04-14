@@ -1561,8 +1561,8 @@ fn validate_instruction_width_rules(
 
     if let Some(expr) = imm_expr {
         let reg_mode = match mnemonic.as_str() {
-            "lda" => mode.a_width,
-            "ldx" | "ldy" => mode.i_width,
+            "lda" | "cmp" | "and" | "ora" | "eor" | "adc" | "sbc" | "bit" => mode.a_width,
+            "ldx" | "ldy" | "cpx" | "cpy" => mode.i_width,
             _ => None,
         };
         if let Some(reg_width) = reg_mode
@@ -1851,19 +1851,23 @@ fn immediate_width_error(span: Span, value: i64, width: RegWidth, mnemonic: &str
     } else {
         format!("0x{value:X}")
     };
-    match (mnemonic, width) {
-        ("lda", RegWidth::W8) => Diagnostic::error(
-            span,
-            format!("Immediate {value_text} does not fit in @a8; use @a16 or split into bytes."),
-        ),
-        ("ldx" | "ldy", RegWidth::W8) => Diagnostic::error(
-            span,
-            format!("Immediate {value_text} does not fit in @i8; use @i16 or split into bytes."),
-        ),
-        _ => Diagnostic::error(
-            span,
-            format!("Immediate {value_text} does not fit in selected width."),
-        ),
+    let is_index = matches!(mnemonic, "ldx" | "ldy" | "cpx" | "cpy");
+    let mode_name = match (is_index, width) {
+        (false, RegWidth::W8) => "@a8",
+        (false, RegWidth::W16) => "@a16",
+        (true, RegWidth::W8) => "@i8",
+        (true, RegWidth::W16) => "@i16",
+    };
+    let diag = Diagnostic::error(
+        span,
+        format!("Immediate {value_text} does not fit in {mode_name}."),
+    );
+    match width {
+        RegWidth::W8 => {
+            let wider = if is_index { "@i16" } else { "@a16" };
+            diag.with_help(format!("use {wider} or split into bytes"))
+        }
+        RegWidth::W16 => diag,
     }
 }
 

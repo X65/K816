@@ -1,0 +1,43 @@
+Error: Immediate 0x1E000 does not fit in @a8.
+   ╭─[ tests/golden/fixtures/emit-err-operand-overflow/input.k65:9:5 ]
+   │
+ 9 │     lda #BIG+BIG
+   │     ──────┬─────  
+   │           ╰─────── here
+   │ 
+   │ Help: use @a16 or split into bytes
+───╯
+
+Error: Immediate 0x1E000 does not fit in @a8.
+    ╭─[ tests/golden/fixtures/emit-err-operand-overflow/input.k65:10:5 ]
+    │
+ 10 │     cmp #2*BIG
+    │     ─────┬────  
+    │          ╰────── here
+    │ 
+    │ Help: use @a16 or split into bytes
+────╯
+
+Error: Immediate 0x1E000 does not fit in @a16.
+    ╭─[ tests/golden/fixtures/emit-err-operand-overflow/input.k65:15:9 ]
+    │
+ 15 │         lda #BIG+BIG
+    │         ──────┬─────  
+    │               ╰─────── here
+────╯
+
+Error: Immediate 0x10000 does not fit in @a16.
+    ╭─[ tests/golden/fixtures/emit-err-operand-overflow/input.k65:16:9 ]
+    │
+ 16 │         adc #TOO_BIG
+    │         ──────┬─────  
+    │               ╰─────── here
+────╯
+
+Error: Immediate 0x20000 does not fit in @a16.
+    ╭─[ tests/golden/fixtures/emit-err-operand-overflow/input.k65:18:9 ]
+    │
+ 18 │         cmp #64*2048
+    │         ──────┬─────  
+    │               ╰─────── here
+────╯

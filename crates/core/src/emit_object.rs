@@ -1142,4 +1142,52 @@ mod tests {
             })
         ));
     }
+
+    #[test]
+    fn immediate_overflow_8bit_operand() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "func main { @a8 cmp #$100 }\n");
+        // Sep(0x20) sets accumulator to 8-bit (m_wide = false).
+        // cmp #256 uses ImmediateM → width=1 → 256 overflows u8.
+        let program = Program {
+            ops: vec![
+                op(Op::Sep(0x20)),
+                op(Op::Instruction(InstructionOp {
+                    mnemonic: "cmp".to_string(),
+                    operand: Some(OperandOp::Immediate(0x100)),
+                })),
+            ],
+        };
+
+        let err = emit_object(&program, &source_map).expect_err("should fail on 8-bit overflow");
+        let msg = err.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ");
+        assert!(
+            msg.contains("value does not fit in 8-bit operand"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn immediate_overflow_16bit_operand() {
+        let mut source_map = SourceMap::default();
+        source_map.add_source("test.k65", "func main { @a16 cmp #$10000 }\n");
+        // Rep(0x20) sets accumulator to 16-bit (m_wide = true).
+        // cmp #0x10000 uses ImmediateM → width=2 → 0x10000 overflows u16.
+        let program = Program {
+            ops: vec![
+                op(Op::Rep(0x20)),
+                op(Op::Instruction(InstructionOp {
+                    mnemonic: "cmp".to_string(),
+                    operand: Some(OperandOp::Immediate(0x10000)),
+                })),
+            ],
+        };
+
+        let err = emit_object(&program, &source_map).expect_err("should fail on 16-bit overflow");
+        let msg = err.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ");
+        assert!(
+            msg.contains("value does not fit in 16-bit operand"),
+            "unexpected error: {msg}"
+        );
+    }
 }

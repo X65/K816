@@ -15,6 +15,11 @@ var TASKS[
 var counter:word = $80
 var buffer[32] = $0100
 
+var POS[
+    .x :byte
+    .y :byte
+] * 32 = $5000
+
 func main @a8 @i8 {
     // :sizeof on aggregate var
     lda #TASKS:sizeof           // 13 bytes total
@@ -44,4 +49,8 @@ func main @a8 @i8 {
 
     // :sizeof in arithmetic expression
     lda #TASKS:sizeof + 1       // 14
+
+    // :sizeof with var count combined
+    lda #POS:sizeof             // 2 (base element: .x:byte + .y:byte)
+    lda #POS.y:offsetof         // 1 (y is the second byte in the struct)
 }

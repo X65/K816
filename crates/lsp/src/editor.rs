@@ -370,7 +370,7 @@ impl ServerState {
             let field = ss.fields.get(key)?;
             Some(field.size)
         } else {
-            Some(var_meta.size)
+            Some(var_meta.element_size)
         }
     }
 

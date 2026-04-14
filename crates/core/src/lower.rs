@@ -3529,15 +3529,15 @@ fn resolve_sizeof(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    // Plain var without fields
+    // Plain var without fields — use element_size (base size before `* count`)
     if let Some(var) = sema.vars.get(name) {
-        return Some(i64::from(var.size));
+        return Some(i64::from(var.element_size));
     }
     // Try as a symbolic subscript field path (e.g. TASKS.state)
     match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
         Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
             let var = &sema.vars[&base];
-            Some(i64::from(var.size))
+            Some(i64::from(var.element_size))
         }
         Ok(Some(ResolvedSymbolicSubscriptName::Field { size, .. })) => {
             Some(i64::from(size))

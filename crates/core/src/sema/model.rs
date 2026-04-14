@@ -27,7 +27,10 @@ pub struct SymbolicSubscriptMeta {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarMeta {
     pub address: u32,
+    /// Total allocation size in bytes (element_size × alloc_count).
     pub size: u32,
+    /// Base element size before `* count` multiplication.
+    pub element_size: u32,
     pub data_width: Option<DataWidth>,
     pub addr_hint: Option<AddressHint>,
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,

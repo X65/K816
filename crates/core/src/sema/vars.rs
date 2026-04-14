@@ -42,6 +42,7 @@ pub(super) fn collect_var(
         VarMeta {
             address,
             size: layout.size,
+            element_size: layout.element_size,
             data_width: var.data_width,
             addr_hint: var.addr_hint,
             symbolic_subscript: layout.symbolic_subscript,
@@ -121,6 +122,7 @@ fn eval_var_address(
 
 struct VarLayout {
     size: u32,
+    element_size: u32,
     symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
@@ -230,6 +232,7 @@ fn eval_var_base_layout(
         )?;
         return Some(VarLayout {
             size: symbolic_subscript.total_size,
+            element_size: symbolic_subscript.total_size,
             symbolic_subscript: Some(symbolic_subscript),
         });
     }
@@ -243,6 +246,7 @@ fn eval_var_base_layout(
     let Some(array_len) = &var.array_len else {
         return Some(VarLayout {
             size: element_size,
+            element_size,
             symbolic_subscript: None,
         });
     };
@@ -257,10 +261,14 @@ fn eval_var_base_layout(
                 return None;
             }
             match u32::try_from(value) {
-                Ok(count) => Some(VarLayout {
-                    size: count * element_size,
-                    symbolic_subscript: None,
-                }),
+                Ok(count) => {
+                    let size = count * element_size;
+                    Some(VarLayout {
+                        size,
+                        element_size: size,
+                        symbolic_subscript: None,
+                    })
+                },
                 Err(_) => {
                     diagnostics.push(Diagnostic::error(
                         span,

@@ -1,0 +1,20 @@
+const count = 4
+var COMPOUND[
+    .one    :byte
+    .two    :word
+    .three  :far
+] * count = $4000
+
+var guard1
+
+var simple :byte * 32 = $1000
+
+var guard2
+
+func main {
+    lda COMPOUND    // $4000
+    lda guard1      // $4000 +  4 * 6 = $4018
+
+    lda simple      // $1000
+    lda guard2      // $1000 + 32 * 1 = $1020
+}

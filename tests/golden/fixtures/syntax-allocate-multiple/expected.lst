@@ -1,0 +1,10 @@
+[default]
+000000: AD 00 40 AD 18 40 AD 00 10 AD 20 10 60
+
+
+[disasm obj#0 default::main]
+000000: AD 00 40    lda $4000
+000003: AD 18 40    lda $4018
+000006: AD 00 10    lda $1000
+000009: AD 20 10    lda $1020
+00000C: 60          rts

@@ -486,6 +486,10 @@ fn expand_var(
             .symbolic_subscript_fields
             .as_ref()
             .map(|fields| expand_symbolic_subscript_fields(fields, source_id, diagnostics)),
+        alloc_count: var
+            .alloc_count
+            .as_ref()
+            .map(|expr| expand_expr(expr, span, source_id, diagnostics)),
         initializer: var.initializer.as_ref().map(|expr| {
             expand_expr(
                 expr,

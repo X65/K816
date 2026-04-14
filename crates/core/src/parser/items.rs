@@ -129,6 +129,7 @@ where
                 addr_hint: None,
                 array_len: None,
                 symbolic_subscript_fields: None,
+                alloc_count: None,
                 initializer: Some(Expr::Number(0, NumFmt::Dec)),
                 initializer_span: None,
             })

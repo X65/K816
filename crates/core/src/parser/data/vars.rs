@@ -43,12 +43,17 @@ where
         .then(var_decl_suffix_parser())
         .then(bracket_payload_parser(source_id))
         .then(
+            just(TokenKind::Star)
+                .ignore_then(expr_parser())
+                .or_not(),
+        )
+        .then(
             just(TokenKind::Eq)
                 .ignore_then(spanned(expr_parser(), source_id))
                 .or_not(),
         )
         .map(
-            |(((name, (data_width, addr_hint)), bracket_payload), initializer_with_span)| {
+            |((((name, (data_width, addr_hint)), bracket_payload), alloc_count), initializer_with_span)| {
                 let (array_len, symbolic_subscript_fields) = match bracket_payload {
                     Some(VarBracketPayload::ArrayLen(array_len)) => (Some(array_len), None),
                     Some(VarBracketPayload::SymbolicSubscriptFields(symbolic_subscript_fields)) => {
@@ -67,6 +72,7 @@ where
                     addr_hint,
                     array_len,
                     symbolic_subscript_fields,
+                    alloc_count,
                     initializer,
                     initializer_span,
                 }

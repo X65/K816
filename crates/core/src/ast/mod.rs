@@ -91,6 +91,7 @@ pub struct VarDecl {
     pub addr_hint: Option<AddressHint>,
     pub array_len: Option<Expr>,
     pub symbolic_subscript_fields: Option<Vec<SymbolicSubscriptFieldDecl>>,
+    pub alloc_count: Option<Expr>,
     pub initializer: Option<Expr>,
     pub initializer_span: Option<Span>,
 }

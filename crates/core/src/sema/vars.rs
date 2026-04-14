@@ -130,6 +130,85 @@ fn eval_var_layout(
     consts: &IndexMap<String, ConstMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<VarLayout> {
+    let mut layout = eval_var_base_layout(var, span, consts, diagnostics)?;
+
+    if let Some(alloc_count_expr) = &var.alloc_count {
+        match eval_const_expr_to_int(alloc_count_expr, consts) {
+            Ok(value) => {
+                if value <= 0 {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!("var allocation count must be positive: {value}"),
+                    ));
+                    return None;
+                }
+                match u32::try_from(value) {
+                    Ok(count) => {
+                        let Some(new_size) = layout.size.checked_mul(count) else {
+                            diagnostics.push(Diagnostic::error(
+                                span,
+                                format!(
+                                    "var allocation for '{}' overflows address space (base_size={}, count={count})",
+                                    var.name, layout.size
+                                ),
+                            ));
+                            return None;
+                        };
+                        layout.size = new_size;
+                    }
+                    Err(_) => {
+                        diagnostics.push(Diagnostic::error(
+                            span,
+                            format!("var allocation count is out of range: {value}"),
+                        ));
+                        return None;
+                    }
+                }
+            }
+            Err(ConstExprError::Ident(name)) => {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!(
+                        "var allocation count '{name}' must be a constant numeric expression"
+                    ),
+                ));
+                return None;
+            }
+            Err(ConstExprError::EvalText) => {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    "internal error: eval text should be expanded before semantic analysis",
+                ));
+                return None;
+            }
+            Err(ConstExprError::NonInteger) => {
+                diagnostics.push(
+                    Diagnostic::error(span, "var allocation count must be an exact integer value")
+                        .with_help(
+                            "remove fractional parts or convert to an integer before using it as an allocation count",
+                        ),
+                );
+                return None;
+            }
+            Err(ConstExprError::Overflow) => {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    "var allocation count overflows numeric literal range",
+                ));
+                return None;
+            }
+        }
+    }
+
+    Some(layout)
+}
+
+fn eval_var_base_layout(
+    var: &VarDecl,
+    span: Span,
+    consts: &IndexMap<String, ConstMeta>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<VarLayout> {
     if let Some(symbolic_subscript_fields) = &var.symbolic_subscript_fields {
         if var.array_len.is_some() {
             diagnostics.push(Diagnostic::error(

@@ -225,7 +225,7 @@ pub(super) fn builtin_hover_text(token: &str) -> Option<String> {
     let text = match token.as_str() {
         "segment" => "Select an output segment for following code/data.",
         "const" => "Declare a compile-time numeric constant.",
-        "var" => "Declare a variable symbol (optionally typed and/or initialized).",
+        "var" => "Declare a variable symbol at address (optionally typed).",
         "func" => "Declare a function block.",
         "far" => "Marks a function for far call/return semantics.",
         "naked" => "Disables automatic function epilogue emission.",

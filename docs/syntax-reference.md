@@ -35,6 +35,28 @@ var bar3 ?              // adding '?' at the end makes the compiler print var ad
 
 When no address is specified, the variable is placed at the next address following the previous variable. The `[N]` suffix reserves N bytes starting at the variable address, and advances the auto-address counter accordingly.
 
+### Allocation Count
+
+A `* count` suffix can appear after the variable type/size specification and before the `= address` assignment. It multiplies the computed variable size by `count`, so the next auto-allocated variable is offset by `count × element_size` bytes:
+
+```k65
+var simple :byte * 32 = $1000   // allocates 32 × 1 = 32 bytes starting at $1000
+var next_var                    // auto-placed at $1020
+
+const NUM_SPRITES = 8
+
+var sprites[
+    .x    :word
+    .y    :word
+    .tile :byte
+] * NUM_SPRITES = $0200         // allocates 8 × (2+2+1) = 40 bytes starting at $0200
+var after_sprites               // auto-placed at $0228
+```
+
+`count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries - it only scales the total allocation for address advancement.
+
+### Typed Width
+
 Variables can have a typed width annotation (`:byte`, `:word`, or `:far`) that controls element size and enables register width checking:
 
 ```k65

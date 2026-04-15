@@ -239,7 +239,10 @@ pub(super) fn resolve_field_from_ast(
 
     fn check_stmt(stmt: &Stmt, offset: usize) -> Option<ResolvedFieldRef> {
         match stmt {
-            Stmt::Instruction(instr) => instr.operand.as_ref().and_then(|o| check_operand(o, offset)),
+            Stmt::Instruction(instr) => instr
+                .operand
+                .as_ref()
+                .and_then(|o| check_operand(o, offset)),
             Stmt::Hla(hla) => check_hla_stmt(hla, offset),
             Stmt::ModeScopedBlock { body, .. } => check_stmts(body, offset),
             _ => None,
@@ -254,20 +257,17 @@ pub(super) fn resolve_field_from_ast(
             | HlaStmt::AccumulatorBitTest { rhs }
             | HlaStmt::IndexCompare { rhs, .. }
             | HlaStmt::ConditionSeed { rhs, .. } => check_hla_operand(rhs, offset),
-            HlaStmt::AssignmentChain { tail_expr, .. } => {
-                tail_expr.as_ref().and_then(|e| check_hla_operand(e, offset))
-            }
+            HlaStmt::AssignmentChain { tail_expr, .. } => tail_expr
+                .as_ref()
+                .and_then(|e| check_hla_operand(e, offset)),
             HlaStmt::StoreFromA { rhs, .. } => match rhs {
-                HlaRhs::Immediate(e) | HlaRhs::Value { expr: e, .. } => {
-                    check_expr(e, offset)
-                }
+                HlaRhs::Immediate(e) | HlaRhs::Value { expr: e, .. } => check_expr(e, offset),
             },
             HlaStmt::Goto { target, .. } | HlaStmt::BranchGoto { target, .. } => {
                 check_expr(target, offset)
             }
             HlaStmt::XAssignImmediate { rhs } => check_expr(rhs, offset),
-            HlaStmt::NeverBlock { body, .. }
-            | HlaStmt::PrefixConditional { body, .. } => {
+            HlaStmt::NeverBlock { body, .. } | HlaStmt::PrefixConditional { body, .. } => {
                 check_stmts(body, offset)
             }
             _ => None,

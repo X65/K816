@@ -1,0 +1,20 @@
+[default]
+000000: EA 60 A9 34 12 60 20 00 00 20 02 00 20 00 00 C2
+000010: 20 20 02 00 60
+
+
+[disasm obj#0 default::widen]
+000000: EA          nop
+000001: 60          rts
+
+[disasm obj#0 default::wide_user]
+000002: A9 34 12    lda #$1234
+000005: 60          rts
+
+[disasm obj#0 default::main]
+000006: 20 00 00    jsr $0000
+000009: 20 02 00    jsr $0002
+00000C: 20 00 00    jsr $0000
+00000F: C2 20       rep #$20
+000011: 20 02 00    jsr $0002
+000014: 60          rts

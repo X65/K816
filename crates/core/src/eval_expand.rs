@@ -74,7 +74,11 @@ fn expand_code_block(
         is_far: block.is_far,
         is_naked: block.is_naked,
         is_inline: block.is_inline,
+        has_contract: block.has_contract,
+        params: block.params.clone(),
+        outputs: block.outputs.clone(),
         mode_contract: block.mode_contract,
+        exit_contract: block.exit_contract,
         body,
     }
 }

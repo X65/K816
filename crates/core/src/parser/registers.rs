@@ -1,4 +1,4 @@
-use crate::ast::{HlaCpuRegister, HlaStackTarget, IndexRegister};
+use crate::ast::{HlaCpuRegister, HlaStackTarget, IndexRegister, RegName};
 use crate::lexer::TokenKind;
 use chumsky::{error::Rich, prelude::SimpleSpan};
 
@@ -55,6 +55,15 @@ pub(super) fn parse_index_register<'src>(
 
 pub(super) fn is_register_name(value: &str) -> bool {
     parse_cpu_register(&value.to_ascii_lowercase()).is_some()
+}
+
+pub(super) fn parse_contract_register(value: &str) -> Option<RegName> {
+    match value {
+        "a" => Some(RegName::A),
+        "x" => Some(RegName::X),
+        "y" => Some(RegName::Y),
+        _ => None,
+    }
 }
 
 pub(super) fn resolve_transfer(dest: &str, src: &str) -> Option<&'static str> {

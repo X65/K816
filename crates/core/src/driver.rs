@@ -260,9 +260,8 @@ mod tests {
             },
         ];
 
-        let outputs =
-            compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
-                .expect("compile");
+        let outputs = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+            .expect("compile");
         let main_object = &outputs[0].object;
         let section = main_object
             .sections

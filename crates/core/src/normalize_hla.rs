@@ -34,7 +34,11 @@ fn normalize_item(item: &Item) -> Item {
                 is_far: block.is_far,
                 is_naked: block.is_naked,
                 is_inline: block.is_inline,
+                has_contract: block.has_contract,
+                params: block.params.clone(),
+                outputs: block.outputs.clone(),
                 mode_contract: block.mode_contract,
+                exit_contract: block.exit_contract,
                 body,
             })
         }
@@ -124,24 +128,24 @@ fn normalize_stmt_sequence(stmts: &[Spanned<Stmt>]) -> Vec<Spanned<Stmt>> {
         let current = &stmts[index];
         if let Stmt::Hla(HlaStmt::ConditionSeed { lhs, rhs }) = &current.node
             && let Some(next) = stmts.get(index + 1)
-                && rhs.index.is_none()
-                    && rhs.addr_mode == crate::ast::OperandAddrMode::Direct
-                    && let Stmt::Hla(HlaStmt::DoCloseWithOp { op }) = &next.node
-                {
-                    out.push(Spanned::new(
-                        Stmt::Hla(HlaStmt::DoClose {
-                            condition: normalize_condition(&HlaCondition {
-                                lhs: *lhs,
-                                op: *op,
-                                rhs: Some(rhs.expr.clone()),
-                                seed_span: Some(current.span),
-                            }),
-                        }),
-                        next.span,
-                    ));
-                    index += 2;
-                    continue;
-                }
+            && rhs.index.is_none()
+            && rhs.addr_mode == crate::ast::OperandAddrMode::Direct
+            && let Stmt::Hla(HlaStmt::DoCloseWithOp { op }) = &next.node
+        {
+            out.push(Spanned::new(
+                Stmt::Hla(HlaStmt::DoClose {
+                    condition: normalize_condition(&HlaCondition {
+                        lhs: *lhs,
+                        op: *op,
+                        rhs: Some(rhs.expr.clone()),
+                        seed_span: Some(current.span),
+                    }),
+                }),
+                next.span,
+            ));
+            index += 2;
+            continue;
+        }
 
         out.push(Spanned::new(normalize_stmt(&current.node), current.span));
         index += 1;

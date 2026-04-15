@@ -1,0 +1,21 @@
+// A bare call to a naked function resets the caller's tracked register
+// widths. The `wide_user` call afterwards must re-establish @a16 explicitly,
+// and a later @a8-only instruction forces the bridge back down again.
+
+naked trampoline @a16 (a) {
+    nop
+}
+
+func wide_user @a16 {
+    lda #$1234
+}
+
+func narrow_user @a8 {
+    lda #$42
+}
+
+func main {
+    trampoline a
+    wide_user
+    narrow_user
+}

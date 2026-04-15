@@ -1,16 +1,83 @@
 use crate::ast::{Expr, File};
 use crate::diag::Diagnostic;
-use crate::lexer::{lex, lex_lenient};
+use crate::lexer::{Token, TokenKind, lex, lex_lenient};
 use crate::span::{SourceId, Span, Spanned};
 use chumsky::{
     Parser as _,
     input::{Input as _, Stream},
 };
+use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::{
     coalesce_non_var_brackets, collect_parser_warnings, expression_fragment_parser, file_parser,
     preprocess_source, rich_error_to_diagnostic, strip_comments,
 };
+
+fn collect_declared_function_names(tokens: &[Token]) -> Arc<HashSet<String>> {
+    let mut names = HashSet::new();
+    let mut brace_depth = 0usize;
+    let mut i = 0usize;
+
+    while i < tokens.len() {
+        match tokens[i].kind {
+            TokenKind::LBrace => {
+                brace_depth += 1;
+                i += 1;
+                continue;
+            }
+            TokenKind::RBrace => {
+                brace_depth = brace_depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if brace_depth != 0 {
+            i += 1;
+            continue;
+        }
+
+        let mut j = i;
+        let mut saw_modifier = false;
+        while let Some(token) = tokens.get(j) {
+            match token.kind {
+                TokenKind::Far | TokenKind::Naked | TokenKind::Inline => {
+                    saw_modifier = true;
+                    j += 1;
+                }
+                _ => break,
+            }
+        }
+
+        if let Some(Token {
+            kind: TokenKind::Func,
+            ..
+        }) = tokens.get(j)
+        {
+            j += 1;
+            if let Some(Token {
+                kind: TokenKind::Ident(name),
+                ..
+            }) = tokens.get(j)
+            {
+                names.insert(name.clone());
+            }
+        } else if saw_modifier
+            && let Some(Token {
+                kind: TokenKind::Ident(name),
+                ..
+            }) = tokens.get(j)
+        {
+            names.insert(name.clone());
+        }
+
+        i += 1;
+    }
+
+    Arc::new(names)
+}
 
 #[derive(Debug, Clone)]
 pub struct ParseOutput {
@@ -31,6 +98,7 @@ pub fn parse_with_warnings(
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
+    let known_functions = collect_declared_function_names(&tokens);
 
     let eval_ranges: Vec<(usize, usize)> = tokens
         .iter()
@@ -60,7 +128,7 @@ pub fn parse_with_warnings(
         (kind, span)
     });
 
-    let (output, errors) = file_parser(source_id)
+    let (output, errors) = file_parser(source_id, known_functions.clone())
         .parse(token_stream)
         .into_output_errors();
     let diagnostics = errors
@@ -95,6 +163,7 @@ pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, V
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
+    let known_functions = collect_declared_function_names(&tokens);
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -104,7 +173,7 @@ pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, V
         (kind, span)
     });
 
-    let (output, errors) = file_parser(source_id)
+    let (output, errors) = file_parser(source_id, known_functions.clone())
         .parse(token_stream)
         .into_output_errors();
     let mut diagnostics: Vec<Diagnostic> = lex_diagnostics;
@@ -135,6 +204,7 @@ pub fn parse_lenient_raw(
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
+    let known_functions = collect_declared_function_names(&tokens);
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -144,7 +214,7 @@ pub fn parse_lenient_raw(
         (kind, span)
     });
 
-    let (output, errors) = file_parser(source_id)
+    let (output, errors) = file_parser(source_id, known_functions.clone())
         .parse(token_stream)
         .into_output_errors();
     let mut diagnostics: Vec<Diagnostic> = lex_diagnostics;

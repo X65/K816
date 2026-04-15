@@ -90,7 +90,10 @@ func test @a16 {
             panic!("stmt {i}: expected instruction");
         };
         let Some(crate::ast::Operand::Immediate { expr, .. }) = &instr.operand else {
-            panic!("stmt {i}: expected immediate operand, got {:?}", instr.operand);
+            panic!(
+                "stmt {i}: expected immediate operand, got {:?}",
+                instr.operand
+            );
         };
         assert!(
             is_ident_named(expr, "TASKS.message.from"),

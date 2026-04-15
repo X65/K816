@@ -170,9 +170,7 @@ fn eval_var_layout(
             Err(ConstExprError::Ident(name)) => {
                 diagnostics.push(Diagnostic::error(
                     span,
-                    format!(
-                        "var allocation count '{name}' must be a constant numeric expression"
-                    ),
+                    format!("var allocation count '{name}' must be a constant numeric expression"),
                 ));
                 return None;
             }
@@ -268,7 +266,7 @@ fn eval_var_base_layout(
                         element_size: size,
                         symbolic_subscript: None,
                     })
-                },
+                }
                 Err(_) => {
                     diagnostics.push(Diagnostic::error(
                         span,

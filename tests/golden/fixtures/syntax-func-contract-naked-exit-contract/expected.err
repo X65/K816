@@ -1,0 +1,11 @@
+Error: naked function 'foo' may not declare an exit contract
+   ╭─[ tests/golden/fixtures/syntax-func-contract-naked-exit-contract/input.k65:1:1 ]
+   │
+ 1 │ ╭─▶ naked foo @a8 (a) -> a {
+   ┆ ┆   
+ 3 │ ├─▶ }
+   │ │       
+   │ ╰─────── here
+   │     
+   │     Help: remove the `-> ...` clause; control does not return to the caller implicitly from a naked function
+───╯

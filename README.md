@@ -54,6 +54,24 @@ func main {
 }
 ```
 
+Functions can also declare register contracts that are echoed at bare call
+sites, and `inline` functions may take typed immediate aliases:
+
+```k65
+func add @a16 @i16 (a, x) -> a, y {
+  // body
+}
+
+inline scale @a16 (a, #factor:byte) -> a {
+  ldx #factor
+}
+
+func main {
+  add a, x -> a, y
+  scale a, #16 -> a
+}
+```
+
 See [register-width-aware-syntax.md](docs/register-width-aware-syntax.md) for full details.
 
 ## CLI Usage

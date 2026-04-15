@@ -1,0 +1,9 @@
+const DEST = $1234
+
+inline jump_to (target) {
+    goto target
+}
+
+func main {
+    jump_to DEST
+}

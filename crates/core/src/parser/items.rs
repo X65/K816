@@ -1,6 +1,6 @@
 use crate::ast::{
-    CodeBlock, EvaluatorBlock, Expr, File, Item, ModeContract, NumFmt, RegWidth, SegmentDecl, Stmt,
-    VarDecl,
+    CodeBlock, ContractParam, EvaluatorBlock, Expr, File, ImmediateParam, ImmediateParamType, Item,
+    ModeContract, NumFmt, RegName, RegWidth, SegmentDecl, Stmt, VarDecl,
 };
 use crate::lexer::TokenKind;
 use crate::span::{SourceId, Span, Spanned};
@@ -10,20 +10,24 @@ use chumsky::{
     input::ValueInput,
     prelude::{SimpleSpan, any, end, just, skip_then_retry_until},
 };
+use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::{
     ParseExtra, const_decl_item_parser, data_block_parser, ident_parser, line_sep_parser,
-    line_tail_parser, named_data_block_parser, spanned, stmt_parser, var_decl_parser,
+    line_tail_parser, named_data_block_parser, parse_contract_register, spanned, stmt_parser,
+    var_decl_parser,
 };
 
 pub(super) fn file_parser<'src, I>(
     source_id: SourceId,
+    known_functions: Arc<HashSet<String>>,
 ) -> impl chumsky::Parser<'src, I, File, ParseExtra<'src>>
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let separators = line_sep_parser().repeated();
-    let item = spanned(item_parser(source_id), source_id);
+    let item = spanned(item_parser(source_id, known_functions.clone()), source_id);
     let boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
@@ -71,6 +75,7 @@ where
 
 fn item_parser<'src, I>(
     source_id: SourceId,
+    known_functions: Arc<HashSet<String>>,
 ) -> impl chumsky::Parser<'src, I, Item, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -89,9 +94,10 @@ where
             .or(data_block_parser(source_id).map(Item::DataBlock)),
     );
 
-    let code_block_item = code_block_parser(source_id).map(Item::CodeBlock);
+    let code_block_item =
+        code_block_parser(source_id, known_functions.clone()).map(Item::CodeBlock);
 
-    let stmt_item = stmt_parser(source_id).map(Item::Statement);
+    let stmt_item = stmt_parser(source_id, known_functions).map(Item::Statement);
 
     let preproc_item =
         just(TokenKind::Hash)
@@ -184,6 +190,7 @@ where
 
 fn code_block_parser<'src, I>(
     source_id: SourceId,
+    known_functions: Arc<HashSet<String>>,
 ) -> impl chumsky::Parser<'src, I, CodeBlock, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -196,8 +203,6 @@ where
     }
 
     type FunctionBody = Vec<Spanned<Stmt>>;
-    type NamedFunctionHeader = ((String, SimpleSpan), ModeContract);
-    type ImplicitFunctionHeader = ((Vec<Modifier>, (String, SimpleSpan)), ModeContract);
 
     let modifier = just(TokenKind::Far)
         .to(Modifier::Far)
@@ -206,7 +211,7 @@ where
 
     let modifiers = modifier.clone().repeated().collect::<Vec<_>>();
     let required_modifiers = modifier.repeated().at_least(1).collect::<Vec<_>>();
-    let stmt = spanned(stmt_parser(source_id), source_id);
+    let stmt = spanned(stmt_parser(source_id, known_functions), source_id);
     let stmt_boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())
@@ -224,14 +229,85 @@ where
         .then_ignore(just(TokenKind::RBrace));
 
     let mode_annotations = mode_annotation_parser();
+    let reg_name = ident_parser().try_map(|name, span| {
+        parse_contract_register(&name).ok_or_else(|| {
+            Rich::custom(
+                span,
+                format!("expected contract register 'a', 'x', or 'y', found '{name}'"),
+            )
+        })
+    });
+    let immediate_param_type = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => ImmediateParamType::Byte,
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ImmediateParamType::Word,
+    };
+    let contract_param = just(TokenKind::Hash)
+        .ignore_then(ident_parser())
+        .then_ignore(just(TokenKind::Colon))
+        .then(immediate_param_type)
+        .map(|(name, ty)| ContractParam::Immediate(ImmediateParam { name, ty }))
+        .or(
+            ident_parser().map(|name| match parse_contract_register(&name) {
+                Some(reg) => ContractParam::Register(reg),
+                None => ContractParam::Alias(name),
+            }),
+        );
+    let params = just(TokenKind::LParen)
+        .ignore_then(
+            contract_param
+                .separated_by(just(TokenKind::Comma))
+                .collect::<Vec<_>>(),
+        )
+        .then_ignore(just(TokenKind::RParen));
+    let arrow_clause = just(TokenKind::Arrow)
+        .ignore_then(
+            mode_annotation_parser().then(
+                reg_name
+                    .separated_by(just(TokenKind::Comma))
+                    .at_least(1)
+                    .collect::<Vec<_>>()
+                    .or_not(),
+            ),
+        )
+        .validate(|(exit_contract, outputs), extra, emitter| {
+            if exit_contract == ModeContract::default() && outputs.is_none() {
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    "expected exit mode or output registers after '->'",
+                ));
+            }
+            (
+                (exit_contract != ModeContract::default()).then_some(exit_contract),
+                outputs.unwrap_or_default(),
+            )
+        });
+    let contract_clause = params
+        .then(arrow_clause.clone().or_not())
+        .map(|(params, arrow)| {
+            let (exit_contract, outputs) = arrow.unwrap_or((None, Vec::new()));
+            (true, params, exit_contract, outputs)
+        })
+        .or(arrow_clause.map(|(exit_contract, outputs)| (true, Vec::new(), exit_contract, outputs)))
+        .or_not()
+        .map(|clause| clause.unwrap_or((false, Vec::new(), None, Vec::new())));
 
     let func = just(TokenKind::Func)
         .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
         .then(mode_annotations.clone())
+        .then(contract_clause.clone())
         .then(body.clone())
         .map(
-            move |(((name, name_span), mode_contract), body): (
-                NamedFunctionHeader,
+            move |(
+                (
+                    ((name, name_span), mode_contract),
+                    (has_contract, params, exit_contract, outputs),
+                ),
+                body,
+            ): (
+                (
+                    ((String, SimpleSpan), ModeContract),
+                    (bool, Vec<ContractParam>, Option<ModeContract>, Vec<RegName>),
+                ),
                 FunctionBody,
             )| {
                 let range = name_span.into_range();
@@ -241,7 +317,11 @@ where
                     is_far: false,
                     is_naked: false,
                     is_inline: false,
+                    has_contract,
+                    params,
+                    outputs,
                     mode_contract,
+                    exit_contract,
                     body,
                 }
             },
@@ -261,10 +341,20 @@ where
     let implicit_func = required_modifiers
         .then(ident_parser().map_with(|name, extra| (name, extra.span())))
         .then(mode_annotations)
+        .then(contract_clause)
         .then(body)
         .map(
-            move |(((mods, (name, name_span)), mode_contract), body): (
-                ImplicitFunctionHeader,
+            move |(
+                (
+                    ((mods, (name, name_span)), mode_contract),
+                    (has_contract, params, exit_contract, outputs),
+                ),
+                body,
+            ): (
+                (
+                    ((Vec<Modifier>, (String, SimpleSpan)), ModeContract),
+                    (bool, Vec<ContractParam>, Option<ModeContract>, Vec<RegName>),
+                ),
                 FunctionBody,
             )| {
                 let range = name_span.into_range();
@@ -274,7 +364,11 @@ where
                     is_far: false,
                     is_naked: false,
                     is_inline: false,
+                    has_contract,
+                    params,
+                    outputs,
                     mode_contract,
+                    exit_contract,
                     body,
                 };
                 for modifier in mods {

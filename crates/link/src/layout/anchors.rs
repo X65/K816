@@ -35,30 +35,27 @@ pub(super) fn render_duplicate_symbol_error(
     let second_start = clamp_span(second_src, second_byte_offset);
 
     let mut output = Vec::new();
-    let report = Report::build(
-        ReportKind::Error,
-        (second_id.clone(), second_start.clone()),
-    )
-    .with_config(
-        Config::default()
-            .with_index_type(IndexType::Byte)
-            .with_color(options.color),
-    )
-    .with_message(&message)
-    .with_label(
-        Label::new((second_id, second_start))
-            .with_color(Color::Red)
-            .with_priority(100)
-            .with_order(0)
-            .with_message("duplicate definition"),
-    )
-    .with_label(
-        Label::new((first_id, first_start))
-            .with_color(Color::Blue)
-            .with_order(1)
-            .with_message("first defined here"),
-    )
-    .finish();
+    let report = Report::build(ReportKind::Error, (second_id.clone(), second_start.clone()))
+        .with_config(
+            Config::default()
+                .with_index_type(IndexType::Byte)
+                .with_color(options.color),
+        )
+        .with_message(&message)
+        .with_label(
+            Label::new((second_id, second_start))
+                .with_color(Color::Red)
+                .with_priority(100)
+                .with_order(0)
+                .with_message("duplicate definition"),
+        )
+        .with_label(
+            Label::new((first_id, first_start))
+                .with_color(Color::Blue)
+                .with_order(1)
+                .with_message("first defined here"),
+        )
+        .finish();
 
     if report.write(&mut sources, &mut output).is_ok() {
         return String::from_utf8_lossy(&output).into_owned();
@@ -99,7 +96,11 @@ impl MultiSourceCache {
     }
 
     fn insert(&mut self, id: String, source: Source<String>) {
-        if !self.sources.iter().any(|(existing_id, _)| existing_id == &id) {
+        if !self
+            .sources
+            .iter()
+            .any(|(existing_id, _)| existing_id == &id)
+        {
             self.sources.push((id, source));
         }
     }

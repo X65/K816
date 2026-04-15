@@ -10,8 +10,8 @@ use chumsky::{
 };
 
 use super::{
-    ParseExtra, address_hint_parser, data_width_parser, line_sep_parser,
-    metadata_query_parser, parse_expression_fragment, spanned,
+    ParseExtra, address_hint_parser, data_width_parser, line_sep_parser, metadata_query_parser,
+    parse_expression_fragment, spanned,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -65,8 +65,8 @@ where
         // Collect sequences of [.field] eval suffixes interleaved with trailing .ident tokens.
         // This handles forms like TASKS[.message].from where `.from` is a separate Ident token
         // following the bracket suffix.
-        let eval_or_dot_ident_suffix = chumsky::select! { TokenKind::Eval(value) => value }
-            .or(chumsky::select! {
+        let eval_or_dot_ident_suffix =
+            chumsky::select! { TokenKind::Eval(value) => value }.or(chumsky::select! {
                 TokenKind::Ident(value) if value.starts_with('.') => value
             });
 
@@ -89,15 +89,15 @@ where
 
         // Metadata queries (:sizeof, :offsetof) bind tightly at atom level
         // so that `TASKS:sizeof + 1` parses as `(TASKS:sizeof) + 1`.
-        let atom = atom.then(metadata_query_parser().or_not()).map(
-            |(expr, query)| match query {
+        let atom = atom
+            .then(metadata_query_parser().or_not())
+            .map(|(expr, query)| match query {
                 Some(query) => Expr::MetadataQuery {
                     expr: Box::new(expr),
                     query,
                 },
                 None => expr,
-            },
-        );
+            });
 
         let unary = just(TokenKind::Amp)
             .ignore_then(

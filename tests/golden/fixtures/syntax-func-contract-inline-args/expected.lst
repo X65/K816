@@ -1,0 +1,11 @@
+[default]
+000000: A9 7F C2 20 A9 34 12 E2 20 A5 20 60
+
+
+[disasm obj#0 default::main]
+000000: A9 7F       lda #$7F
+000002: C2 20       rep #$20
+000004: A9 34 12    lda #$1234
+000007: E2 20       sep #$20
+000009: A5 20       lda $20
+00000B: 60          rts

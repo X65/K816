@@ -103,6 +103,8 @@ pub enum TokenKind {
     LtEq,
     #[token(">=")]
     GtEq,
+    #[token("->")]
+    Arrow,
     #[token("<")]
     Lt,
     #[token(">")]

@@ -1,0 +1,9 @@
+Error: register x is live after call to 'touch' but clobbered by it
+   ╭─[ tests/golden/fixtures/syntax-func-contract-live-clobber-conditional/input.k65:7:5 ]
+   │
+ 7 │     touch a
+   │     ───┬───  
+   │        ╰───── here
+   │ 
+   │ Help: save the register, consume the output immediately, or adjust the function contract
+───╯

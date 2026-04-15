@@ -1,0 +1,34 @@
+[default]
+000000: EA 60 A8 60 A8 60 EA 60 C2 30 A9 00 10 A2 00 20
+000010: 20 00 00 20 02 00 C2 10 20 04 00 C2 20 20 04 00
+000020: 20 06 00 60
+
+
+[disasm obj#0 default::consume]
+000000: EA          nop
+000001: 60          rts
+
+[disasm obj#0 default::pair]
+000002: A8          tay
+000003: 60          rts
+
+[disasm obj#0 default::pair2]
+000004: A8          tay
+000005: 60          rts
+
+[disasm obj#0 default::ping]
+000006: EA          nop
+000007: 60          rts
+
+[disasm obj#0 default::main]
+000008: C2 30       rep #$30
+00000A: A9 00 10    lda #$1000
+00000D: A2 00 20    ldx #$2000
+000010: 20 00 00    jsr $0000
+000013: 20 02 00    jsr $0002
+000016: C2 10       rep #$10
+000018: 20 04 00    jsr $0004
+00001B: C2 20       rep #$20
+00001D: 20 04 00    jsr $0004
+000020: 20 06 00    jsr $0006
+000023: 60          rts

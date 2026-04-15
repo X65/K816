@@ -166,7 +166,9 @@ pub fn link_objects_with_options(
 
             let resolved = match def {
                 SymbolDefinition::Section {
-                    section, offset, source,
+                    section,
+                    offset,
+                    source,
                 } => {
                     let section_key = (obj_idx, section.clone());
                     let placements = placed_by_section.get(&section_key).ok_or_else(|| {

@@ -1,0 +1,9 @@
+Error: call to 'produce' has mismatched output contract
+   ╭─[ tests/golden/fixtures/syntax-func-contract-output-mismatch/input.k65:6:5 ]
+   │
+ 6 │     produce
+   │     ───┬───  
+   │        ╰───── here
+   │ 
+   │ Help: repeat the declaration's output registers exactly after '->'
+───╯

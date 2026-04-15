@@ -1,0 +1,7 @@
+func produce @a8 () -> a {
+    lda #1
+}
+
+func main {
+    produce
+}

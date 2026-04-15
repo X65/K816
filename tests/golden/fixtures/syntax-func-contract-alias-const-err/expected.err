@@ -1,0 +1,9 @@
+Error: inline alias argument 'DEST' must be an address-like identifier
+   ╭─[ tests/golden/fixtures/syntax-func-contract-alias-const-err/input.k65:8:5 ]
+   │
+ 8 │     jump_to DEST
+   │     ──────┬─────  
+   │           ╰─────── here
+   │ 
+   │ Help: pass a variable, function, or label identifier here; constants are not accepted
+───╯

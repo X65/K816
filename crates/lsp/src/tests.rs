@@ -344,8 +344,14 @@ func test @a16 {
     // Detail text should include absolute address and type from semantic model.
     let state_item = items.iter().find(|i| i.label == "TASKS.state").unwrap();
     let detail = state_item.detail.as_deref().unwrap_or("");
-    assert!(detail.contains("$4002"), "expected address $4002 in detail, got: {detail}");
-    assert!(detail.contains("byte"), "expected byte type in detail, got: {detail}");
+    assert!(
+        detail.contains("$4002"),
+        "expected address $4002 in detail, got: {detail}"
+    );
+    assert!(
+        detail.contains("byte"),
+        "expected byte type in detail, got: {detail}"
+    );
 }
 
 #[test]
@@ -914,8 +920,7 @@ fn fs_event_reloads_unopened_file_and_dirties_open_doc() {
 
     // External editor rewrites vars.k65, removing the `foo` definition.
     std::fs::write(&vars_path, "var other = $42\n").expect("rewrite vars");
-    let republish =
-        state.apply_fs_events(vec![WorkspaceFsEvent::Changed(vars_path.clone())]);
+    let republish = state.apply_fs_events(vec![WorkspaceFsEvent::Changed(vars_path.clone())]);
     assert!(
         republish.contains(&main_uri),
         "open main.k65 should be in republish set: {republish:?}",
@@ -951,14 +956,16 @@ fn fs_event_skips_open_document() {
         .upsert_document(main_uri.clone(), in_memory.clone(), 1, true)
         .expect("main open");
 
-    let republish =
-        state.apply_fs_events(vec![WorkspaceFsEvent::Changed(main_path.clone())]);
+    let republish = state.apply_fs_events(vec![WorkspaceFsEvent::Changed(main_path.clone())]);
     assert!(
         republish.is_empty(),
         "events for open docs must be ignored: {republish:?}",
     );
     let doc = state.documents.get(&main_uri).expect("doc");
-    assert_eq!(doc.text, in_memory, "open document text must not be clobbered");
+    assert_eq!(
+        doc.text, in_memory,
+        "open document text must not be clobbered"
+    );
 }
 
 #[test]
@@ -976,16 +983,22 @@ fn fs_event_remove_drops_unopened_doc() {
     let main_uri = Uri::from_str(&file_uri(&main_path)).expect("uri");
 
     let mut state = ServerState::new(root);
-    state.load_from_disk(extra_path.clone()).expect("load extra");
     state
-        .upsert_document(main_uri.clone(), "func main {\n  nop\n}\n".to_string(), 1, true)
+        .load_from_disk(extra_path.clone())
+        .expect("load extra");
+    state
+        .upsert_document(
+            main_uri.clone(),
+            "func main {\n  nop\n}\n".to_string(),
+            1,
+            true,
+        )
         .expect("main open");
     state.analyze_all_documents();
     assert!(state.documents.contains_key(&extra_uri));
 
     let _ = std::fs::remove_file(&extra_path);
-    let republish =
-        state.apply_fs_events(vec![WorkspaceFsEvent::Removed(extra_path.clone())]);
+    let republish = state.apply_fs_events(vec![WorkspaceFsEvent::Removed(extra_path.clone())]);
     assert!(!state.documents.contains_key(&extra_uri));
     assert!(republish.contains(&main_uri));
 }
@@ -1244,15 +1257,17 @@ func test @a16 {
         line: &str,
         target: &str,
     ) -> String {
-        let line_start = text.find(line).unwrap_or_else(|| panic!("line not found: {line}"));
-        let rel = text[line_start..].find(target).unwrap_or_else(|| {
-            panic!("target '{target}' not found in '{line}'")
-        });
+        let line_start = text
+            .find(line)
+            .unwrap_or_else(|| panic!("line not found: {line}"));
+        let rel = text[line_start..]
+            .find(target)
+            .unwrap_or_else(|| panic!("target '{target}' not found in '{line}'"));
         let offset = line_start + rel + target.len() / 2;
         let position = doc.line_index.to_position(text, offset);
-        let hover = state.hover(uri, position).unwrap_or_else(|| {
-            panic!("no hover for '{target}' in '{line}'")
-        });
+        let hover = state
+            .hover(uri, position)
+            .unwrap_or_else(|| panic!("no hover for '{target}' in '{line}'"));
         let HoverContents::Markup(markup) = hover.contents else {
             panic!("expected markdown hover for '{target}'");
         };
@@ -1260,10 +1275,7 @@ func test @a16 {
     }
 
     // --- TASKS (variable) ---
-    let tasks_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.sp", "TASKS",
-    );
+    let tasks_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.sp", "TASKS");
     assert!(
         tasks_hover.contains("**variable** `TASKS`"),
         "TASKS: expected variable heading, got:\n{tasks_hover}"
@@ -1277,7 +1289,17 @@ func test @a16 {
         "TASKS: expected Fields section, got:\n{tasks_hover}"
     );
     // All leaf and composite fields should appear in the variable hover
-    for field in [".sp", ".state", ".message", ".message.from", ".message.type", ".message.data", ".data", ".data.from", ".data.bytes"] {
+    for field in [
+        ".sp",
+        ".state",
+        ".message",
+        ".message.from",
+        ".message.type",
+        ".message.data",
+        ".data",
+        ".data.from",
+        ".data.bytes",
+    ] {
         assert!(
             tasks_hover.contains(&format!("`{field}`")),
             "TASKS: expected field {field} listed, got:\n{tasks_hover}"
@@ -1285,39 +1307,39 @@ func test @a16 {
     }
 
     // --- .sp (leaf, :word, offset 0) ---
-    let sp_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.sp", "sp",
-    );
+    let sp_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.sp", "sp");
     assert!(
         sp_hover.contains("**subscript field** `.sp`"),
         ".sp: wrong heading, got:\n{sp_hover}"
     );
     assert!(sp_hover.contains("var: `TASKS`"), ".sp: missing var name");
-    assert!(sp_hover.contains("offset: `+$0000`"), ".sp: wrong offset, got:\n{sp_hover}");
+    assert!(
+        sp_hover.contains("offset: `+$0000`"),
+        ".sp: wrong offset, got:\n{sp_hover}"
+    );
     assert!(sp_hover.contains("address: `$4000`"), ".sp: wrong address");
     assert!(sp_hover.contains("size: `2`"), ".sp: wrong size");
     assert!(sp_hover.contains("type: `word`"), ".sp: wrong type");
 
     // --- .state (leaf, :byte, offset 2) ---
-    let state_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.state", "state",
-    );
+    let state_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.state", "state");
     assert!(
         state_hover.contains("**subscript field** `.state`"),
         ".state: wrong heading, got:\n{state_hover}"
     );
-    assert!(state_hover.contains("offset: `+$0002`"), ".state: wrong offset, got:\n{state_hover}");
-    assert!(state_hover.contains("address: `$4002`"), ".state: wrong address");
+    assert!(
+        state_hover.contains("offset: `+$0002`"),
+        ".state: wrong offset, got:\n{state_hover}"
+    );
+    assert!(
+        state_hover.contains("address: `$4002`"),
+        ".state: wrong address"
+    );
     assert!(state_hover.contains("size: `1`"), ".state: wrong size");
     assert!(state_hover.contains("type: `byte`"), ".state: wrong type");
 
     // --- .message (composite, offset 3, size 5) ---
-    let message_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.message\n", "message",
-    );
+    let message_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.message\n", "message");
     assert!(
         message_hover.contains("**subscript field** `.message`"),
         ".message: wrong heading, got:\n{message_hover}"
@@ -1326,11 +1348,20 @@ func test @a16 {
         message_hover.contains("offset: `+$0003`"),
         ".message: wrong offset, got:\n{message_hover}"
     );
-    assert!(message_hover.contains("address: `$4003`"), ".message: wrong address");
+    assert!(
+        message_hover.contains("address: `$4003`"),
+        ".message: wrong address"
+    );
     assert!(message_hover.contains("size: `5`"), ".message: wrong size");
     // Composite fields show sub-field list, not a type
-    assert!(!message_hover.contains("type:"), ".message: composite should not have type");
-    assert!(message_hover.contains("Fields:"), ".message: expected Fields section");
+    assert!(
+        !message_hover.contains("type:"),
+        ".message: composite should not have type"
+    );
+    assert!(
+        message_hover.contains("Fields:"),
+        ".message: expected Fields section"
+    );
     assert!(
         message_hover.contains("`.message.from`"),
         ".message: expected .from sub-field listed"
@@ -1345,73 +1376,110 @@ func test @a16 {
     );
 
     // --- .from (leaf, :byte, offset 3) ---
-    let from_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.message.from", "from",
-    );
+    let from_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.message.from", "from");
     assert!(
         from_hover.contains("**subscript field** `.message.from`"),
         ".from: wrong heading, got:\n{from_hover}"
     );
-    assert!(from_hover.contains("offset: `+$0003`"), ".from: wrong offset, got:\n{from_hover}");
-    assert!(from_hover.contains("address: `$4003`"), ".from: wrong address");
+    assert!(
+        from_hover.contains("offset: `+$0003`"),
+        ".from: wrong offset, got:\n{from_hover}"
+    );
+    assert!(
+        from_hover.contains("address: `$4003`"),
+        ".from: wrong address"
+    );
     assert!(from_hover.contains("size: `1`"), ".from: wrong size");
     assert!(from_hover.contains("type: `byte`"), ".from: wrong type");
 
     // --- .type (leaf, :byte, offset 4) ---
-    let type_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.message.type", "type",
-    );
+    let type_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.message.type", "type");
     assert!(
         type_hover.contains("**subscript field** `.message.type`"),
         ".type: wrong heading, got:\n{type_hover}"
     );
-    assert!(type_hover.contains("offset: `+$0004`"), ".type: wrong offset, got:\n{type_hover}");
-    assert!(type_hover.contains("address: `$4004`"), ".type: wrong address");
+    assert!(
+        type_hover.contains("offset: `+$0004`"),
+        ".type: wrong offset, got:\n{type_hover}"
+    );
+    assert!(
+        type_hover.contains("address: `$4004`"),
+        ".type: wrong address"
+    );
     assert!(type_hover.contains("size: `1`"), ".type: wrong size");
     assert!(type_hover.contains("type: `byte`"), ".type: wrong type");
 
     // --- .message.data (leaf, :far, offset 5) ---
-    let msg_data_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.message.data", "data",
-    );
+    let msg_data_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.message.data", "data");
     assert!(
         msg_data_hover.contains("**subscript field** `.message.data`"),
         ".message.data: wrong heading, got:\n{msg_data_hover}"
     );
-    assert!(msg_data_hover.contains("offset: `+$0005`"), ".message.data: wrong offset, got:\n{msg_data_hover}");
-    assert!(msg_data_hover.contains("address: `$4005`"), ".message.data: wrong address");
-    assert!(msg_data_hover.contains("size: `3`"), ".message.data: wrong size");
-    assert!(msg_data_hover.contains("type: `far`"), ".message.data: wrong type");
+    assert!(
+        msg_data_hover.contains("offset: `+$0005`"),
+        ".message.data: wrong offset, got:\n{msg_data_hover}"
+    );
+    assert!(
+        msg_data_hover.contains("address: `$4005`"),
+        ".message.data: wrong address"
+    );
+    assert!(
+        msg_data_hover.contains("size: `3`"),
+        ".message.data: wrong size"
+    );
+    assert!(
+        msg_data_hover.contains("type: `far`"),
+        ".message.data: wrong type"
+    );
 
     // --- .data.from (leaf, :far, offset $18) ---
-    let data_from_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.data.from", "from",
-    );
+    let data_from_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS.data.from", "from");
     assert!(
         data_from_hover.contains("**subscript field** `.data.from`"),
         ".data.from: wrong heading, got:\n{data_from_hover}"
     );
-    assert!(data_from_hover.contains("offset: `+$0018`"), ".data.from: wrong offset, got:\n{data_from_hover}");
-    assert!(data_from_hover.contains("address: `$4018`"), ".data.from: wrong address");
-    assert!(data_from_hover.contains("size: `3`"), ".data.from: wrong size");
-    assert!(data_from_hover.contains("type: `far`"), ".data.from: wrong type");
+    assert!(
+        data_from_hover.contains("offset: `+$0018`"),
+        ".data.from: wrong offset, got:\n{data_from_hover}"
+    );
+    assert!(
+        data_from_hover.contains("address: `$4018`"),
+        ".data.from: wrong address"
+    );
+    assert!(
+        data_from_hover.contains("size: `3`"),
+        ".data.from: wrong size"
+    );
+    assert!(
+        data_from_hover.contains("type: `far`"),
+        ".data.from: wrong type"
+    );
 
     // --- .data.bytes (counted, byte ×16, offset 8) ---
     let data_bytes_hover = hover_at(
-        &state, &uri, doc, &text,
-        "lda #TASKS.data.bytes[0]", "bytes",
+        &state,
+        &uri,
+        doc,
+        &text,
+        "lda #TASKS.data.bytes[0]",
+        "bytes",
     );
     assert!(
         data_bytes_hover.contains("**subscript field** `.data.bytes`"),
         ".data.bytes: wrong heading, got:\n{data_bytes_hover}"
     );
-    assert!(data_bytes_hover.contains("offset: `+$0008`"), ".data.bytes: wrong offset, got:\n{data_bytes_hover}");
-    assert!(data_bytes_hover.contains("address: `$4008`"), ".data.bytes: wrong address");
-    assert!(data_bytes_hover.contains("size: `16`"), ".data.bytes: wrong size");
+    assert!(
+        data_bytes_hover.contains("offset: `+$0008`"),
+        ".data.bytes: wrong offset, got:\n{data_bytes_hover}"
+    );
+    assert!(
+        data_bytes_hover.contains("address: `$4008`"),
+        ".data.bytes: wrong address"
+    );
+    assert!(
+        data_bytes_hover.contains("size: `16`"),
+        ".data.bytes: wrong size"
+    );
 
     // .message.from and .data.from must be different hovers
     assert_ne!(
@@ -1521,7 +1589,9 @@ func main @a8 {
         line: &str,
         target: &str,
     ) -> Option<String> {
-        let line_start = text.find(line).unwrap_or_else(|| panic!("line not found: {line}"));
+        let line_start = text
+            .find(line)
+            .unwrap_or_else(|| panic!("line not found: {line}"));
         let rel = text[line_start..].find(target)?;
         let offset = line_start + rel + target.len() / 2;
         let position = doc.line_index.to_position(text, offset);
@@ -1549,9 +1619,15 @@ func main @a8 {
     );
 
     // :offsetof suffix — should show resolved offset of .state (2, after .sp:word)
-    let offsetof_hover =
-        hover_at(&state, &uri, doc, &text, "lda #TASKS.state:offsetof", ":offsetof")
-            .expect("no hover for :offsetof");
+    let offsetof_hover = hover_at(
+        &state,
+        &uri,
+        doc,
+        &text,
+        "lda #TASKS.state:offsetof",
+        ":offsetof",
+    )
+    .expect("no hover for :offsetof");
     assert!(
         offsetof_hover.contains("**suffix** `:offsetof`"),
         ":offsetof hover should contain suffix heading, got:\n{offsetof_hover}"
@@ -1574,8 +1650,8 @@ func main @a8 {
     );
 
     // :abs suffix
-    let abs_hover = hover_at(&state, &uri, doc, &text, "lda #TASKS:abs", ":abs")
-        .expect("no hover for :abs");
+    let abs_hover =
+        hover_at(&state, &uri, doc, &text, "lda #TASKS:abs", ":abs").expect("no hover for :abs");
     assert!(
         abs_hover.contains("**suffix** `:abs`"),
         ":abs hover should contain suffix heading, got:\n{abs_hover}"

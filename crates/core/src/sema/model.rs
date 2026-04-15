@@ -1,12 +1,16 @@
 use super::*;
-use crate::ast::AddressHint;
+use crate::ast::{AddressHint, ContractParam, RegName};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct FunctionMeta {
     pub is_far: bool,
     pub is_naked: bool,
     pub is_inline: bool,
+    pub has_contract: bool,
+    pub params: Vec<ContractParam>,
+    pub outputs: Vec<RegName>,
     pub mode_contract: ModeContract,
+    pub exit_contract: Option<ModeContract>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

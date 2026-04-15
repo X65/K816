@@ -7,11 +7,11 @@ use lsp_types::{Diagnostic, Uri};
 use super::project::{
     ProjectManifest, discover_workspace_sources, uri_from_file_path, uri_to_file_path,
 };
-use super::watcher::WorkspaceFsEvent;
 use super::protocol::{
     QueryMemoryMapDetail, QueryMemoryMapMemory, QueryMemoryMapParams, QueryMemoryMapResult,
     QueryMemoryMapRun, QueryMemoryMapStatus, memory_kind_label,
 };
+use super::watcher::WorkspaceFsEvent;
 use super::{
     ByteRange, DocumentAnalysis, DocumentState, LineIndex, PROJECT_MANIFEST, ServerState,
     SymbolLocation, SymbolOccurrence, analyze_document, canonical_symbol, diagnostic_to_lsp,
@@ -179,19 +179,14 @@ impl ServerState {
 
         eprintln!("k816-lsp: compiling {} source(s)", sources.len());
 
-        let external_consts =
-            k816_core::collect_external_consts_for_link_sources(&sources);
-        let compile_results = k816_core::compile_sources(
-            &sources,
-            k816_core::CompileRenderOptions::plain(),
-        );
+        let external_consts = k816_core::collect_external_consts_for_link_sources(&sources);
+        let compile_results =
+            k816_core::compile_sources(&sources, k816_core::CompileRenderOptions::plain());
 
         for (i, uri) in doc_uris.iter().enumerate() {
             let doc = self.documents.get_mut(uri).unwrap();
 
-            let compile_ref = compile_results[i]
-                .as_ref()
-                .map_err(|error| error);
+            let compile_ref = compile_results[i].as_ref().map_err(|error| error);
             let (mut new_analysis, object, addressable_sites) = analyze_document(
                 &source_names[i],
                 &doc.text,
@@ -221,18 +216,11 @@ impl ServerState {
                     let Ok(uri) = uri_from_file_path(&path) else {
                         continue;
                     };
-                    if self
-                        .documents
-                        .get(&uri)
-                        .is_some_and(|doc| doc.open)
-                    {
+                    if self.documents.get(&uri).is_some_and(|doc| doc.open) {
                         continue;
                     }
                     if let Err(error) = self.load_from_disk(path.clone()) {
-                        eprintln!(
-                            "k816-lsp: failed to reload '{}': {error}",
-                            path.display()
-                        );
+                        eprintln!("k816-lsp: failed to reload '{}': {error}", path.display());
                         continue;
                     }
                     dirty = true;
@@ -241,11 +229,7 @@ impl ServerState {
                     let Ok(uri) = uri_from_file_path(&path) else {
                         continue;
                     };
-                    if self
-                        .documents
-                        .get(&uri)
-                        .is_some_and(|doc| doc.open)
-                    {
+                    if self.documents.get(&uri).is_some_and(|doc| doc.open) {
                         continue;
                     }
                     if self.documents.remove(&uri).is_some() {

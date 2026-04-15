@@ -3,9 +3,10 @@ use chumsky::{error::Rich, extra};
 
 #[cfg(test)]
 use crate::ast::{
-    AddressHint, DataArg, DataCommand, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, HlaBranchForm,
-    HlaCpuRegister, HlaRegister, HlaStackTarget, HlaStmt, IndexRegister, Item, NamedDataEntry,
-    NumFmt, OperandAddrMode, Stmt,
+    AddressHint, CallArg, ContractParam, DataArg, DataCommand, DataWidth, Expr, ExprBinaryOp,
+    ExprUnaryOp, HlaBranchForm, HlaCpuRegister, HlaRegister, HlaStackTarget, HlaStmt,
+    ImmediateParam, ImmediateParamType, IndexRegister, Item, NamedDataEntry, NumFmt,
+    OperandAddrMode, RegName, RegWidth, Stmt,
 };
 #[cfg(test)]
 use crate::lexer::lex;
@@ -57,8 +58,8 @@ use self::items::file_parser;
 use self::operands::operand_expr_parser;
 use self::preprocess::{coalesce_non_var_brackets, preprocess_source, strip_comments};
 use self::registers::{
-    invalid_transfer_hint, is_register_name, parse_cpu_register, parse_index_register,
-    parse_stack_target, resolve_transfer,
+    invalid_transfer_hint, is_register_name, parse_contract_register, parse_cpu_register,
+    parse_index_register, parse_stack_target, resolve_transfer,
 };
 use self::stmt::{stmt_parser, zero_number_token};
 use self::warnings::collect_parser_warnings;

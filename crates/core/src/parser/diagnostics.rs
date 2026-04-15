@@ -272,6 +272,7 @@ fn token_kind_message(token: &TokenKind) -> String {
         TokenKind::GtGtEq => "'>>='".to_string(),
         TokenKind::LtEq => "'<='".to_string(),
         TokenKind::GtEq => "'>='".to_string(),
+        TokenKind::Arrow => "'->'".to_string(),
         TokenKind::Lt => "'<'".to_string(),
         TokenKind::Gt => "'>'".to_string(),
         TokenKind::Hash => "'#'".to_string(),

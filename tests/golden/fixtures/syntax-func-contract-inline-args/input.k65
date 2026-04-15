@@ -1,0 +1,26 @@
+// Inline contract argument variants:
+// - typed byte immediate alias
+// - typed word immediate alias
+// - variable/address alias
+
+var data_byte = $20
+
+inline imm_byte @a8 (#factor:byte) -> a {
+    lda #factor
+}
+
+inline imm_word @a16 (#factor:word) -> a {
+    lda #factor
+}
+
+inline alias_load @a8 (ptr) -> a {
+    lda ptr
+}
+
+func main {
+    imm_byte #$7f -> a
+    @a16 {
+        imm_word #$1234 -> a
+    }
+    alias_load data_byte -> a
+}

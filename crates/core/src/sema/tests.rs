@@ -259,6 +259,80 @@ fn array_length_must_be_positive_literal() {
 }
 
 #[test]
+fn rejects_reserved_function_names() {
+    let source = "func lda {\n  nop\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let errors = analyze(&file).expect_err("must fail");
+
+    assert!(
+        errors
+            .iter()
+            .any(|error| { error.message.contains("function name 'lda' is reserved") })
+    );
+}
+
+#[test]
+fn rejects_inline_only_params_on_non_inline_functions() {
+    let source = "func worker (a, #count:byte, table) {\n  nop\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let errors = analyze(&file).expect_err("must fail");
+
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("inline-only immediate parameter '#count'")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("inline-only variable alias parameter 'table'")
+    }));
+}
+
+#[test]
+fn allows_inline_params_to_shadow_supported_globals() {
+    let source = "const VALUE = 1\nvar table\ninline worker (#VALUE:byte, table) {\n  lda #VALUE\n  lda table\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    analyze(&file).expect("analyze");
+}
+
+#[test]
+fn rejects_inline_params_that_shadow_disallowed_symbols() {
+    let source = "var value\nfunc target {\n  nop\n}\ninline worker (#value:byte, target) {\n.target:\n  nop\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let errors = analyze(&file).expect_err("must fail");
+
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("inline immediate parameter '#value' may not shadow a variable")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("inline contract parameter 'target' may not shadow a function")
+    }));
+}
+
+#[test]
+fn rejects_duplicate_inline_param_names_and_label_shadowing() {
+    let source = "inline worker (a, #a:byte, loop) {\n.loop:\n  nop\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let errors = analyze(&file).expect_err("must fail");
+
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("inline contract parameter '#a' is declared more than once")
+    }));
+    assert!(errors.iter().any(|error| {
+        error
+            .message
+            .contains("inline contract parameter 'loop' may not shadow label '.loop'")
+    }));
+}
+
+#[test]
 fn duplicate_symbols_between_var_and_function_are_rejected() {
     let source = "var dup\nfunc dup {\n  nop\n}\n";
     let file = parse(SourceId(0), source).expect("parse");

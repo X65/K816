@@ -1160,7 +1160,11 @@ mod tests {
         };
 
         let err = emit_object(&program, &source_map).expect_err("should fail on 8-bit overflow");
-        let msg = err.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ");
+        let msg = err
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
         assert!(
             msg.contains("value does not fit in 8-bit operand"),
             "unexpected error: {msg}"
@@ -1184,7 +1188,11 @@ mod tests {
         };
 
         let err = emit_object(&program, &source_map).expect_err("should fail on 16-bit overflow");
-        let msg = err.iter().map(|d| d.message.as_str()).collect::<Vec<_>>().join("; ");
+        let msg = err
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
         assert!(
             msg.contains("value does not fit in 16-bit operand"),
             "unexpected error: {msg}"

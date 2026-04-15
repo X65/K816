@@ -1,0 +1,35 @@
+// Function contract bare-call variants:
+// - inputs only, no arrow
+// - outputs only
+// - exit mode + outputs
+// - explicit zero-input contract
+// - bare call with parenthesized args
+// - unchecked `call foo` escape hatch
+
+func consume @a16 @i16 (a, x) {
+    nop
+}
+
+func pair @a16 (a) -> a, y {
+    tay
+}
+
+func pair2 @a16 @i16 (a, x) -> @a8 @i16 a, y {
+    tay
+}
+
+func ping @a8 () {
+    nop
+}
+
+func main {
+    @a16 @i16 {
+        lda #$1000
+        ldx #$2000
+        consume a, x
+        pair(a) -> a, y
+        pair2 a, x -> a, y
+        call pair2
+    }
+    ping
+}

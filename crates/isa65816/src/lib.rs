@@ -413,6 +413,147 @@ pub fn opcode_descriptor(opcode: u8) -> OpcodeDescriptor {
     OPCODE_TABLE[usize::from(opcode)]
 }
 
+pub fn is_mnemonic(mnemonic: &str) -> bool {
+    let lower = mnemonic.to_ascii_lowercase();
+    OPCODE_TABLE.iter().any(|entry| entry.mnemonic == lower)
+}
+
+/// Bitset over the CPU registers tracked by the damage/clobber analysis.
+///
+/// v1 intentionally covers only the user-visible accumulator and index
+/// registers; status-flag bits are excluded because no feature consumes them
+/// yet (see the "Out of Scope" note in the function-contracts plan).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RegSet(u8);
+
+impl RegSet {
+    pub const NONE: Self = Self(0);
+    pub const A: Self = Self(1 << 0);
+    pub const X: Self = Self(1 << 1);
+    pub const Y: Self = Self(1 << 2);
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::ops::BitOr for RegSet {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for RegSet {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl std::ops::BitAnd for RegSet {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl std::ops::Sub for RegSet {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self(self.0 & !rhs.0)
+    }
+}
+
+/// Register read/write footprint of a single instruction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RegEffects {
+    pub reads: RegSet,
+    pub modifies: RegSet,
+}
+
+/// Mnemonic-level read/modify footprint of a 65816 instruction.
+///
+/// `on_accumulator` must be true when the instruction targets the accumulator
+/// via the `Accumulator` addressing mode (e.g. bare `asl` / `rol` with no
+/// operand); it is ignored for mnemonics that are not read-modify-write. Index
+/// register reads that come from addressing modes are NOT included here — the
+/// caller composes those on top, since they depend on the operand form chosen
+/// in the AST rather than on the mnemonic alone.
+pub fn mnemonic_effects(mnemonic: &str, on_accumulator: bool) -> RegEffects {
+    let lower = mnemonic.to_ascii_lowercase();
+    let m = lower.as_str();
+    let rmw_on_a = matches!(m, "asl" | "dec" | "inc" | "lsr" | "rol" | "ror") && on_accumulator;
+    let a_mod = matches!(
+        m,
+        "adc"
+            | "and"
+            | "eor"
+            | "lda"
+            | "ora"
+            | "pla"
+            | "sbc"
+            | "txa"
+            | "tya"
+            | "tsc"
+            | "tdc"
+            | "xba"
+    ) || rmw_on_a;
+    let a_read = matches!(
+        m,
+        "adc"
+            | "and"
+            | "bit"
+            | "cmp"
+            | "eor"
+            | "ora"
+            | "pha"
+            | "sbc"
+            | "sta"
+            | "tax"
+            | "tay"
+            | "tcd"
+            | "tcs"
+            | "trb"
+            | "tsb"
+            | "xba"
+    ) || rmw_on_a;
+    let x_mod = matches!(m, "dex" | "inx" | "ldx" | "plx" | "tax" | "tsx" | "tyx");
+    let x_read = matches!(
+        m,
+        "cpx" | "dex" | "inx" | "phx" | "stx" | "txa" | "txs" | "txy"
+    );
+    let y_mod = matches!(m, "dey" | "iny" | "ldy" | "ply" | "tay" | "txy");
+    let y_read = matches!(m, "cpy" | "dey" | "iny" | "phy" | "sty" | "tya" | "tyx");
+    let block_move = matches!(m, "mvn" | "mvp");
+
+    let mut reads = RegSet::NONE;
+    let mut modifies = RegSet::NONE;
+    if a_read || block_move {
+        reads = reads | RegSet::A;
+    }
+    if x_read || block_move {
+        reads = reads | RegSet::X;
+    }
+    if y_read || block_move {
+        reads = reads | RegSet::Y;
+    }
+    if a_mod || block_move {
+        modifies = modifies | RegSet::A;
+    }
+    if x_mod || block_move {
+        modifies = modifies | RegSet::X;
+    }
+    if y_mod || block_move {
+        modifies = modifies | RegSet::Y;
+    }
+
+    RegEffects { reads, modifies }
+}
+
 pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding, EncodeError> {
     let lower = mnemonic.to_ascii_lowercase();
     let modes = matching_modes(&lower);
@@ -563,8 +704,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                     mnemonic: mnemonic.to_string(),
                                 });
                             }
-                            if let Some(opcode) =
-                                find_opcode(&lower, AddressingMode::StackRelative)
+                            if let Some(opcode) = find_opcode(&lower, AddressingMode::StackRelative)
                             {
                                 return Ok(Encoding {
                                     opcode,
@@ -1114,5 +1254,66 @@ mod tests {
     fn all_opcode_slots_are_populated() {
         assert_eq!(OPCODE_TABLE.len(), 256);
         assert!(OPCODE_TABLE.iter().all(|entry| !entry.mnemonic.is_empty()));
+    }
+
+    #[test]
+    fn mnemonic_effects_spot_checks() {
+        let lda = mnemonic_effects("lda", false);
+        assert_eq!(lda.modifies, RegSet::A);
+        assert!(!lda.reads.contains(RegSet::A));
+
+        let sta = mnemonic_effects("sta", false);
+        assert_eq!(sta.reads, RegSet::A);
+        assert_eq!(sta.modifies, RegSet::NONE);
+
+        let tax = mnemonic_effects("tax", false);
+        assert_eq!(tax.reads, RegSet::A);
+        assert_eq!(tax.modifies, RegSet::X);
+
+        let tay = mnemonic_effects("tay", false);
+        assert_eq!(tay.reads, RegSet::A);
+        assert_eq!(tay.modifies, RegSet::Y);
+
+        let tya = mnemonic_effects("tya", false);
+        assert_eq!(tya.reads, RegSet::Y);
+        assert_eq!(tya.modifies, RegSet::A);
+
+        let inx = mnemonic_effects("inx", false);
+        assert!(inx.reads.contains(RegSet::X));
+        assert!(inx.modifies.contains(RegSet::X));
+
+        let jsr = mnemonic_effects("jsr", false);
+        assert_eq!(jsr.reads, RegSet::NONE);
+        assert_eq!(jsr.modifies, RegSet::NONE);
+
+        let rep = mnemonic_effects("rep", false);
+        assert_eq!(rep.reads, RegSet::NONE);
+        assert_eq!(rep.modifies, RegSet::NONE);
+
+        let sep = mnemonic_effects("sep", false);
+        assert_eq!(sep.reads, RegSet::NONE);
+        assert_eq!(sep.modifies, RegSet::NONE);
+
+        // RMW on memory touches neither reads nor modifies for A.
+        let asl_mem = mnemonic_effects("asl", false);
+        assert_eq!(asl_mem.reads, RegSet::NONE);
+        assert_eq!(asl_mem.modifies, RegSet::NONE);
+
+        // RMW on the accumulator both reads and modifies A.
+        let asl_a = mnemonic_effects("asl", true);
+        assert_eq!(asl_a.reads, RegSet::A);
+        assert_eq!(asl_a.modifies, RegSet::A);
+
+        let rol_mem = mnemonic_effects("rol", false);
+        assert_eq!(rol_mem.reads, RegSet::NONE);
+        assert_eq!(rol_mem.modifies, RegSet::NONE);
+
+        let rol_a = mnemonic_effects("rol", true);
+        assert_eq!(rol_a.reads, RegSet::A);
+        assert_eq!(rol_a.modifies, RegSet::A);
+
+        let mvn = mnemonic_effects("mvn", false);
+        assert_eq!(mvn.reads, RegSet::A | RegSet::X | RegSet::Y);
+        assert_eq!(mvn.modifies, RegSet::A | RegSet::X | RegSet::Y);
     }
 }

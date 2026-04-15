@@ -1,0 +1,3 @@
+func lda {
+    nop
+}

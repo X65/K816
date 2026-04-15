@@ -34,9 +34,9 @@ use self::protocol::{
 #[cfg(test)]
 use self::server::determine_workspace_root;
 #[cfg(test)]
-use self::watcher::WorkspaceFsEvent;
-#[cfg(test)]
 use self::text::{in_symbol_completion_context, token_at_offset, token_prefix_at_offset};
+#[cfg(test)]
+use self::watcher::WorkspaceFsEvent;
 #[cfg(test)]
 use lsp_types::InitializeParams;
 #[cfg(test)]

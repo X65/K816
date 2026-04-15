@@ -268,6 +268,20 @@ func inc_x {
 }            // RTS is added automatically
 ```
 
+Function headers can also carry an optional call contract after the width annotations:
+
+```k65
+func add @a16 @i16 (a, x) -> @a8 a, y {
+  // body
+}
+```
+
+- `()` enables checked zero-input calls.
+- Register parameters use `a`, `x`, and `y`.
+- `inline` functions may additionally declare immediate aliases (`#name:byte`, `#name:word`) and bare identifier aliases for variables/addresses.
+- `->` can declare output registers, exit-width changes, or both.
+- Omitting the entire contract clause keeps the legacy unchecked behavior.
+
 The special name `main` designates the program entry point. A `func main` block defaults to 8-bit register widths (matching the 65816's power-on state after XCE) and automatically emits `REP` instructions if 16-bit mode is declared.
 
 ```k65
@@ -288,6 +302,8 @@ naked inc_x_twice {
 }            // no RTS here; make sure function never reaches here
 ```
 
+A `naked` function may carry entry-mode annotations and an input parameter list, but may **not** declare an exit contract — no `-> ...` clause is permitted, because control does not return to the caller implicitly. A bare call to a `naked` function resets the caller's tracked register widths; any code after the call is lowered as if at the start of a new function body and must re-establish whatever mode it needs via `@aX`/`@iX` annotations or explicit bridges.
+
 ### `inline`
 
 User defined macro that is inlined in the code when used.
@@ -298,7 +314,7 @@ inline inc_y {
 }
 ```
 
-Functions and inlines are used simply by specifying their names, which places a `JSR` opcode or inlines the code. Function and inline calls do not pass any parameters. Any potential parameter and return value handling must be handled explicitly by the programmer using registers, stack, or predetermined memory locations.
+Functions and inlines are used simply by specifying their names. A contract-less bare call keeps the legacy behavior:
 
 ```k65
 func test {
@@ -306,6 +322,26 @@ func test {
   inc_y      // this will inline 'inc_y' - no overhead compared to simple 'y++'
 }
 ```
+
+Contract-bearing functions make the register flow explicit at the call site:
+
+```k65
+func add @a16 @i16 (a, x) -> a, y {
+  // body
+}
+
+inline scale @a16 (a, #factor:byte) -> a {
+  lda #factor
+}
+
+func test {
+  add a, x -> a, y
+  scale a, #16 -> a
+  call add          // unchecked escape hatch
+}
+```
+
+Damage tracking for contract-bearing bare calls is **block-local**: after every such call the compiler scans the remaining statements in the same basic block and reports registers that are live past the call but clobbered by the callee. It does not perform inter-procedural or whole-program dataflow — split work into smaller functions if you need the check to see across block boundaries. Use `call foo` to opt out of the check entirely.
 
 ### `else`
 

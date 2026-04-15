@@ -14,8 +14,8 @@ use super::hover::{
 };
 use super::text::{
     QualifiedSegment, colon_keyword_at_offset, cumulative_field_key, evaluator_call_at_offset,
-    in_symbol_completion_context, is_ident_byte, numeric_literal_at_offset,
-    resolve_field_from_ast, resolve_qualified_segment, token_at_offset, token_prefix_at_offset,
+    in_symbol_completion_context, is_ident_byte, numeric_literal_at_offset, resolve_field_from_ast,
+    resolve_qualified_segment, token_at_offset, token_prefix_at_offset,
 };
 use super::{
     ByteRange, INSTRUCTION_DESCRIPTIONS, ServerState, SymbolCategory, byte_range_to_lsp,
@@ -124,9 +124,7 @@ impl ServerState {
                         range_end,
                     } => {
                         let var_canonical = canonical_symbol(name, scope);
-                        if let Some(definition) =
-                            self.preferred_definition(&var_canonical, uri)
-                        {
+                        if let Some(definition) = self.preferred_definition(&var_canonical, uri) {
                             let contents =
                                 hover_contents_for_symbol(&var_canonical, definition, self);
                             let var_range = byte_range_to_lsp(
@@ -220,9 +218,16 @@ impl ServerState {
                     ))
                 }
                 ":byte" => Some("**suffix** `:byte`\n\nTyped view — access as 8-bit value.".into()),
-                ":word" => Some("**suffix** `:word`\n\nTyped view — access as 16-bit value.".into()),
-                ":far" => Some("**suffix** `:far`\n\nTyped view or data width — 24-bit (3 bytes).".into()),
-                ":abs" => Some("**suffix** `:abs`\n\nForce 16-bit absolute addressing for this operand.".into()),
+                ":word" => {
+                    Some("**suffix** `:word`\n\nTyped view — access as 16-bit value.".into())
+                }
+                ":far" => {
+                    Some("**suffix** `:far`\n\nTyped view or data width — 24-bit (3 bytes).".into())
+                }
+                ":abs" => Some(
+                    "**suffix** `:abs`\n\nForce 16-bit absolute addressing for this operand."
+                        .into(),
+                ),
                 _ => None,
             };
             if let Some(text) = hover_text {
@@ -610,10 +615,7 @@ impl ServerState {
                 if let Some(ss) = &var_meta.symbolic_subscript {
                     for (field_key, field_meta) in &ss.fields {
                         // Match the last segment of the field key against the prefix.
-                        let last_seg = field_key
-                            .rsplit('.')
-                            .next()
-                            .unwrap_or(field_key);
+                        let last_seg = field_key.rsplit('.').next().unwrap_or(field_key);
                         if !last_seg.to_ascii_lowercase().starts_with(bare_prefix) {
                             continue;
                         }
@@ -654,9 +656,7 @@ impl ServerState {
         items
     }
 
-    fn field_type_summary(
-        field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
-    ) -> String {
+    fn field_type_summary(field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta) -> String {
         let type_str = match field_meta.data_width {
             Some(k816_core::ast::DataWidth::Byte) => "byte",
             Some(k816_core::ast::DataWidth::Word) => "word",
@@ -700,12 +700,36 @@ impl ServerState {
         let typed_prefix = text[suffix_start..suffix_end].to_ascii_lowercase();
 
         static SUFFIXES: &[(&str, &str, CompletionItemKind)] = &[
-            ("sizeof", "Returns the total byte size of a variable or field", CompletionItemKind::KEYWORD),
-            ("offsetof", "Returns the byte offset of a field within its parent variable", CompletionItemKind::KEYWORD),
-            ("byte", "Typed view — access as 8-bit value", CompletionItemKind::TYPE_PARAMETER),
-            ("word", "Typed view — access as 16-bit value", CompletionItemKind::TYPE_PARAMETER),
-            ("far", "Typed view or data width — 24-bit (3 bytes)", CompletionItemKind::TYPE_PARAMETER),
-            ("abs", "Force 16-bit absolute addressing for this operand", CompletionItemKind::TYPE_PARAMETER),
+            (
+                "sizeof",
+                "Returns the total byte size of a variable or field",
+                CompletionItemKind::KEYWORD,
+            ),
+            (
+                "offsetof",
+                "Returns the byte offset of a field within its parent variable",
+                CompletionItemKind::KEYWORD,
+            ),
+            (
+                "byte",
+                "Typed view — access as 8-bit value",
+                CompletionItemKind::TYPE_PARAMETER,
+            ),
+            (
+                "word",
+                "Typed view — access as 16-bit value",
+                CompletionItemKind::TYPE_PARAMETER,
+            ),
+            (
+                "far",
+                "Typed view or data width — 24-bit (3 bytes)",
+                CompletionItemKind::TYPE_PARAMETER,
+            ),
+            (
+                "abs",
+                "Force 16-bit absolute addressing for this operand",
+                CompletionItemKind::TYPE_PARAMETER,
+            ),
         ];
 
         let replace_start = Position {
@@ -734,11 +758,7 @@ impl ServerState {
             })
             .collect();
 
-        if items.is_empty() {
-            None
-        } else {
-            Some(items)
-        }
+        if items.is_empty() { None } else { Some(items) }
     }
 
     pub(super) fn formatting(&self, uri: &Uri) -> Vec<TextEdit> {

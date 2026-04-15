@@ -1,13 +1,14 @@
 use k816_assets::AssetFS;
 use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
+use k816_isa65816::{RegEffects, RegSet, mnemonic_effects};
 use rustc_hash::FxHashMap;
 
 use crate::ast::{
-    AddressHint, CodeBlock, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaAluOp,
-    HlaCompareOp, HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp, HlaIncDecTarget,
-    HlaOperandExpr, HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget, HlaStackTarget, HlaStmt,
-    Instruction, Item, MetadataQuery, NamedDataBlock, NamedDataEntry, NumFmt, Operand,
-    OperandAddrMode, RegWidth, Stmt,
+    AddressHint, CallArg, CallStmt, CodeBlock, ContractParam, DataWidth, Expr, ExprBinaryOp,
+    ExprUnaryOp, File, HlaAluOp, HlaCompareOp, HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp,
+    HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget,
+    HlaStackTarget, HlaStmt, ImmediateParamType, Instruction, Item, MetadataQuery, ModeContract,
+    NamedDataBlock, NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegName, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
 use crate::diag::Diagnostic;
@@ -17,6 +18,26 @@ use crate::hir::{
 };
 use crate::sema::SemanticModel;
 use crate::span::{Span, Spanned};
+
+#[derive(Debug, Clone)]
+struct CallContractSummary {
+    inputs: Vec<ContractParam>,
+    outputs: Vec<RegName>,
+    clobbers: RegSet,
+    is_naked: bool,
+}
+
+#[derive(Debug, Clone)]
+struct InlineBindings {
+    immediates: FxHashMap<String, Expr>,
+    aliases: FxHashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CallModeBehavior {
+    PreserveCaller,
+    AdoptExit(ModeContract),
+}
 
 /// Tracked CPU register width state during lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -94,6 +115,992 @@ fn initial_mode_for_block(is_entry: bool, mode_contract: crate::ast::ModeContrac
     }
 }
 
+fn reg_name_set(reg: RegName) -> RegSet {
+    match reg {
+        RegName::A => RegSet::A,
+        RegName::X => RegSet::X,
+        RegName::Y => RegSet::Y,
+    }
+}
+
+fn reg_names_set(regs: &[RegName]) -> RegSet {
+    regs.iter()
+        .copied()
+        .fold(RegSet::NONE, |acc, reg| acc | reg_name_set(reg))
+}
+
+fn effective_exit_contract(meta: &crate::sema::FunctionMeta) -> Option<ModeContract> {
+    meta.has_contract
+        .then_some(meta.exit_contract.unwrap_or(meta.mode_contract))
+}
+
+fn call_mode_behavior(
+    preserve_mode: bool,
+    exit_contract: Option<ModeContract>,
+) -> CallModeBehavior {
+    if preserve_mode {
+        CallModeBehavior::PreserveCaller
+    } else {
+        CallModeBehavior::AdoptExit(
+            exit_contract
+                .expect("checked function contract calls must have an effective exit mode"),
+        )
+    }
+}
+
+fn operand_index_reads(operand: Option<&Operand>) -> RegSet {
+    match operand {
+        Some(Operand::Value {
+            index: Some(crate::ast::IndexRegister::X),
+            ..
+        }) => RegSet::X,
+        Some(Operand::Value {
+            index: Some(crate::ast::IndexRegister::Y),
+            ..
+        }) => RegSet::Y,
+        Some(Operand::Value {
+            index: Some(crate::ast::IndexRegister::S),
+            ..
+        }) => RegSet::NONE,
+        Some(Operand::Auto { .. })
+        | Some(Operand::Immediate { .. })
+        | Some(Operand::BlockMove { .. })
+        | Some(Operand::Value { index: None, .. })
+        | None => RegSet::NONE,
+    }
+}
+
+fn compose_effects(left: RegEffects, right: RegEffects) -> RegEffects {
+    RegEffects {
+        reads: left.reads | (right.reads - left.modifies),
+        modifies: left.modifies | right.modifies,
+    }
+}
+
+fn merge_summary_effects(left: RegEffects, right: RegEffects) -> RegEffects {
+    RegEffects {
+        reads: left.reads | right.reads,
+        modifies: left.modifies | right.modifies,
+    }
+}
+
+fn hla_operand_reads(operand: &HlaOperandExpr) -> RegSet {
+    match operand.index {
+        Some(crate::ast::IndexRegister::X) => RegSet::X,
+        Some(crate::ast::IndexRegister::Y) => RegSet::Y,
+        Some(crate::ast::IndexRegister::S) | None => RegSet::NONE,
+    }
+}
+
+fn hla_rhs_reads(rhs: &HlaRhs) -> RegSet {
+    match rhs {
+        HlaRhs::Immediate(_) => RegSet::NONE,
+        HlaRhs::Value { index, .. } => match index {
+            Some(crate::ast::IndexRegister::X) => RegSet::X,
+            Some(crate::ast::IndexRegister::Y) => RegSet::Y,
+            Some(crate::ast::IndexRegister::S) | None => RegSet::NONE,
+        },
+    }
+}
+
+fn instruction_effects(instruction: &Instruction) -> RegEffects {
+    let base = mnemonic_effects(&instruction.mnemonic, instruction.operand.is_none());
+    RegEffects {
+        reads: base.reads | operand_index_reads(instruction.operand.as_ref()),
+        modifies: base.modifies,
+    }
+}
+
+fn hla_effects(stmt: &HlaStmt) -> RegEffects {
+    match stmt {
+        HlaStmt::RegisterAssign { register, rhs } => RegEffects {
+            reads: hla_operand_reads(rhs),
+            modifies: match register {
+                HlaCpuRegister::A => RegSet::A,
+                HlaCpuRegister::X => RegSet::X,
+                HlaCpuRegister::Y => RegSet::Y,
+                _ => RegSet::NONE,
+            },
+        },
+        HlaStmt::RegisterStore { dest, src } => RegEffects {
+            reads: hla_operand_reads(dest)
+                | match src {
+                    HlaCpuRegister::A => RegSet::A,
+                    HlaCpuRegister::X => RegSet::X,
+                    HlaCpuRegister::Y => RegSet::Y,
+                    _ => RegSet::NONE,
+                },
+            modifies: RegSet::NONE,
+        },
+        HlaStmt::RegisterTransfer { dest, src } => RegEffects {
+            reads: match src {
+                HlaCpuRegister::A => RegSet::A,
+                HlaCpuRegister::X => RegSet::X,
+                HlaCpuRegister::Y => RegSet::Y,
+                _ => RegSet::NONE,
+            },
+            modifies: match dest {
+                HlaCpuRegister::A => RegSet::A,
+                HlaCpuRegister::X => RegSet::X,
+                HlaCpuRegister::Y => RegSet::Y,
+                _ => RegSet::NONE,
+            },
+        },
+        HlaStmt::AccumulatorAlu { rhs, .. } | HlaStmt::AccumulatorBitTest { rhs } => RegEffects {
+            reads: RegSet::A | hla_operand_reads(rhs),
+            modifies: RegSet::A,
+        },
+        HlaStmt::IndexCompare { register, rhs } => RegEffects {
+            reads: hla_operand_reads(rhs)
+                | match register {
+                    crate::ast::IndexRegister::X => RegSet::X,
+                    crate::ast::IndexRegister::Y => RegSet::Y,
+                    crate::ast::IndexRegister::S => RegSet::NONE,
+                },
+            modifies: RegSet::NONE,
+        },
+        HlaStmt::IncDec { target, .. } => match target {
+            crate::ast::HlaIncDecTarget::Register(crate::ast::IndexRegister::X) => RegEffects {
+                reads: RegSet::X,
+                modifies: RegSet::X,
+            },
+            crate::ast::HlaIncDecTarget::Register(crate::ast::IndexRegister::Y) => RegEffects {
+                reads: RegSet::Y,
+                modifies: RegSet::Y,
+            },
+            _ => RegEffects::default(),
+        },
+        HlaStmt::ShiftRotate { target, .. } => match target {
+            crate::ast::HlaShiftTarget::Accumulator => RegEffects {
+                reads: RegSet::A,
+                modifies: RegSet::A,
+            },
+            crate::ast::HlaShiftTarget::Address(_) => RegEffects::default(),
+        },
+        HlaStmt::StackOp {
+            target: HlaStackTarget::A,
+            push,
+        } => {
+            if *push {
+                RegEffects {
+                    reads: RegSet::A,
+                    modifies: RegSet::NONE,
+                }
+            } else {
+                RegEffects {
+                    reads: RegSet::NONE,
+                    modifies: RegSet::A,
+                }
+            }
+        }
+        HlaStmt::StackOp {
+            target: HlaStackTarget::P,
+            ..
+        } => RegEffects::default(),
+        HlaStmt::XAssignImmediate { .. } => RegEffects {
+            reads: RegSet::NONE,
+            modifies: RegSet::X,
+        },
+        HlaStmt::XIncrement => RegEffects {
+            reads: RegSet::X,
+            modifies: RegSet::X,
+        },
+        HlaStmt::StoreFromA { rhs, .. } => RegEffects {
+            reads: RegSet::A | hla_rhs_reads(rhs),
+            modifies: RegSet::A,
+        },
+        HlaStmt::ConditionSeed { rhs, .. } => RegEffects {
+            reads: RegSet::A | hla_operand_reads(rhs),
+            modifies: RegSet::NONE,
+        },
+        HlaStmt::NeverBlock { .. }
+        | HlaStmt::PrefixConditional { .. }
+        | HlaStmt::AssignmentChain { .. }
+        | HlaStmt::FlagSet { .. }
+        | HlaStmt::Goto { .. }
+        | HlaStmt::BranchGoto { .. }
+        | HlaStmt::Return { .. }
+        | HlaStmt::WaitLoopWhileNFlagClear { .. }
+        | HlaStmt::DoOpen
+        | HlaStmt::DoCloseNFlagClear
+        | HlaStmt::DoCloseNFlagSet
+        | HlaStmt::DoCloseWithOp { .. }
+        | HlaStmt::DoClose { .. }
+        | HlaStmt::DoCloseAlways
+        | HlaStmt::DoCloseNever
+        | HlaStmt::DoCloseBranch { .. }
+        | HlaStmt::LoopBreak { .. }
+        | HlaStmt::LoopRepeat { .. }
+        | HlaStmt::RepeatNop(_) => RegEffects::default(),
+    }
+}
+
+fn build_inline_bindings(
+    call: &CallStmt,
+    meta: &crate::sema::FunctionMeta,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<InlineBindings> {
+    let mut bindings = InlineBindings {
+        immediates: FxHashMap::default(),
+        aliases: FxHashMap::default(),
+    };
+
+    if call.is_bare && !meta.has_contract && (!call.args.is_empty() || !call.outputs.is_empty()) {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!(
+                    "function '{}' does not declare a call contract",
+                    call.target
+                ),
+            )
+            .with_help(
+                "remove the call-site arguments/outputs or add a contract to the declaration",
+            ),
+        );
+        return None;
+    }
+
+    if !call.is_bare || !meta.has_contract {
+        return Some(bindings);
+    }
+
+    if call.args.len() != meta.params.len() {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!(
+                    "call to '{}' expects {} contract argument(s), found {}",
+                    call.target,
+                    meta.params.len(),
+                    call.args.len()
+                ),
+            )
+            .with_help("match the call-site inputs to the declaration's contract parameter list"),
+        );
+        return None;
+    }
+
+    for (param, arg) in meta.params.iter().zip(&call.args) {
+        match (param, arg) {
+            (ContractParam::Register(expected), CallArg::Register(found)) if expected == found => {}
+            (ContractParam::Register(expected), _) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "call to '{}' must pass register '{}' in this position",
+                            call.target,
+                            reg_name_text(*expected)
+                        ),
+                    )
+                    .with_help("repeat the declaration's register inputs exactly at the call site"),
+                );
+                return None;
+            }
+            (ContractParam::Immediate(param), CallArg::Immediate(expr)) => {
+                let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
+                    return None;
+                };
+                let fits = match param.ty {
+                    ImmediateParamType::Byte => (0..=0xFF).contains(&value),
+                    ImmediateParamType::Word => (0..=0xFFFF).contains(&value),
+                };
+                if !fits {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "inline immediate '#{}' does not fit declared type '{}'",
+                                param.name,
+                                immediate_param_type_text(param.ty)
+                            ),
+                        )
+                        .with_help(
+                            "pass a constant expression that fits the declared immediate width",
+                        ),
+                    );
+                    return None;
+                }
+                bindings
+                    .immediates
+                    .insert(param.name.clone(), Expr::Number(value, NumFmt::Dec));
+            }
+            (ContractParam::Immediate(param), _) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "call to '{}' must pass '#{}' as an immediate argument",
+                            call.target, param.name
+                        ),
+                    )
+                    .with_help("use a '#expr' immediate argument at this call site"),
+                );
+                return None;
+            }
+            (ContractParam::Alias(name), CallArg::Alias(target)) => {
+                let Some(resolved_target) =
+                    resolve_inline_alias_target(target, scope, sema, span, diagnostics)
+                else {
+                    return None;
+                };
+                bindings.aliases.insert(name.clone(), resolved_target);
+            }
+            (ContractParam::Alias(name), _) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "call to '{}' must pass '{}' as a bare identifier",
+                            call.target, name
+                        ),
+                    )
+                    .with_help(
+                        "pass a variable or address identifier without '#' in this position",
+                    ),
+                );
+                return None;
+            }
+        }
+    }
+
+    if call.outputs != meta.outputs {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("call to '{}' has mismatched output contract", call.target),
+            )
+            .with_help("repeat the declaration's output registers exactly after '->'"),
+        );
+        return None;
+    }
+
+    Some(bindings)
+}
+
+fn resolve_inline_alias_target(
+    target: &str,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<String> {
+    if sema.consts.contains_key(target) {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("inline alias argument '{target}' must be an address-like identifier"),
+            )
+            .with_help(
+                "pass a variable, function, or label identifier here; constants are not accepted",
+            ),
+        );
+        return None;
+    }
+
+    if matches!(
+        resolve_symbolic_subscript_name(target, sema, span, diagnostics),
+        Ok(Some(_))
+    ) {
+        return Some(target.to_string());
+    }
+
+    resolve_symbol(target, scope, span, diagnostics)
+}
+
+fn substitute_inline_ident(name: &str, bindings: &InlineBindings) -> String {
+    if let Some(alias) = bindings.aliases.get(name) {
+        return alias.clone();
+    }
+    for (from, to) in &bindings.aliases {
+        if let Some(rest) = name.strip_prefix(from)
+            && rest.starts_with('.')
+        {
+            return format!("{to}{rest}");
+        }
+    }
+    name.to_string()
+}
+
+fn substitute_inline_expr(expr: &Expr, bindings: &InlineBindings) -> Expr {
+    match expr {
+        Expr::Number(..) | Expr::EvalText(..) => expr.clone(),
+        Expr::Ident(name) => bindings
+            .immediates
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Expr::Ident(substitute_inline_ident(name, bindings))),
+        Expr::IdentSpanned { name, .. } => bindings
+            .immediates
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Expr::Ident(substitute_inline_ident(name, bindings))),
+        Expr::Index { base, index } => Expr::Index {
+            base: Box::new(substitute_inline_expr(base, bindings)),
+            index: Box::new(substitute_inline_expr(index, bindings)),
+        },
+        Expr::Binary { op, lhs, rhs } => Expr::Binary {
+            op: *op,
+            lhs: Box::new(substitute_inline_expr(lhs, bindings)),
+            rhs: Box::new(substitute_inline_expr(rhs, bindings)),
+        },
+        Expr::Unary { op, expr } => Expr::Unary {
+            op: *op,
+            expr: Box::new(substitute_inline_expr(expr, bindings)),
+        },
+        Expr::TypedView { expr, width } => Expr::TypedView {
+            expr: Box::new(substitute_inline_expr(expr, bindings)),
+            width: *width,
+        },
+        Expr::AddressHint { expr, hint } => Expr::AddressHint {
+            expr: Box::new(substitute_inline_expr(expr, bindings)),
+            hint: *hint,
+        },
+        Expr::MetadataQuery { expr, query } => Expr::MetadataQuery {
+            expr: Box::new(substitute_inline_expr(expr, bindings)),
+            query: *query,
+        },
+    }
+}
+
+fn substitute_inline_operand_expr(
+    expr: &HlaOperandExpr,
+    bindings: &InlineBindings,
+) -> HlaOperandExpr {
+    HlaOperandExpr {
+        expr: substitute_inline_expr(&expr.expr, bindings),
+        index: expr.index,
+        addr_mode: expr.addr_mode,
+    }
+}
+
+fn substitute_inline_rhs(rhs: &HlaRhs, bindings: &InlineBindings) -> HlaRhs {
+    match rhs {
+        HlaRhs::Immediate(expr) => HlaRhs::Immediate(substitute_inline_expr(expr, bindings)),
+        HlaRhs::Value {
+            expr,
+            index,
+            addr_mode,
+        } => HlaRhs::Value {
+            expr: substitute_inline_expr(expr, bindings),
+            index: *index,
+            addr_mode: *addr_mode,
+        },
+    }
+}
+
+fn substitute_inline_call_arg(arg: &CallArg, bindings: &InlineBindings) -> CallArg {
+    match arg {
+        CallArg::Register(reg) => CallArg::Register(*reg),
+        CallArg::Immediate(expr) => CallArg::Immediate(substitute_inline_expr(expr, bindings)),
+        CallArg::Alias(name) => CallArg::Alias(substitute_inline_ident(name, bindings)),
+    }
+}
+
+fn substitute_inline_stmt(stmt: &Stmt, bindings: &InlineBindings) -> Stmt {
+    match stmt {
+        Stmt::Instruction(instruction) => Stmt::Instruction(Instruction {
+            mnemonic: instruction.mnemonic.clone(),
+            operand: instruction.operand.as_ref().map(|operand| match operand {
+                Operand::Immediate {
+                    expr,
+                    explicit_hash,
+                } => Operand::Immediate {
+                    expr: substitute_inline_expr(expr, bindings),
+                    explicit_hash: *explicit_hash,
+                },
+                Operand::Value {
+                    expr,
+                    force_far,
+                    index,
+                    addr_mode,
+                } => Operand::Value {
+                    expr: substitute_inline_expr(expr, bindings),
+                    force_far: *force_far,
+                    index: *index,
+                    addr_mode: *addr_mode,
+                },
+                Operand::Auto { expr } => Operand::Auto {
+                    expr: substitute_inline_expr(expr, bindings),
+                },
+                Operand::BlockMove { src, dst } => Operand::BlockMove {
+                    src: substitute_inline_expr(src, bindings),
+                    dst: substitute_inline_expr(dst, bindings),
+                },
+            }),
+        }),
+        Stmt::Call(call) => Stmt::Call(CallStmt {
+            target: call.target.clone(),
+            is_far: call.is_far,
+            args: call
+                .args
+                .iter()
+                .map(|arg| substitute_inline_call_arg(arg, bindings))
+                .collect(),
+            outputs: call.outputs.clone(),
+            is_bare: call.is_bare,
+        }),
+        Stmt::Hla(hla) => Stmt::Hla(match hla {
+            HlaStmt::RegisterAssign { register, rhs } => HlaStmt::RegisterAssign {
+                register: *register,
+                rhs: substitute_inline_operand_expr(rhs, bindings),
+            },
+            HlaStmt::RegisterStore { dest, src } => HlaStmt::RegisterStore {
+                dest: substitute_inline_operand_expr(dest, bindings),
+                src: *src,
+            },
+            HlaStmt::RegisterTransfer { dest, src } => HlaStmt::RegisterTransfer {
+                dest: *dest,
+                src: *src,
+            },
+            HlaStmt::AssignmentChain { idents, tail_expr } => HlaStmt::AssignmentChain {
+                idents: idents
+                    .iter()
+                    .map(|ident| substitute_inline_ident(ident, bindings))
+                    .collect(),
+                tail_expr: tail_expr
+                    .as_ref()
+                    .map(|expr| substitute_inline_operand_expr(expr, bindings)),
+            },
+            HlaStmt::AccumulatorAlu { op, rhs } => HlaStmt::AccumulatorAlu {
+                op: *op,
+                rhs: substitute_inline_operand_expr(rhs, bindings),
+            },
+            HlaStmt::AccumulatorBitTest { rhs } => HlaStmt::AccumulatorBitTest {
+                rhs: substitute_inline_operand_expr(rhs, bindings),
+            },
+            HlaStmt::IndexCompare { register, rhs } => HlaStmt::IndexCompare {
+                register: *register,
+                rhs: substitute_inline_operand_expr(rhs, bindings),
+            },
+            HlaStmt::IncDec { op, target } => HlaStmt::IncDec {
+                op: *op,
+                target: match target {
+                    crate::ast::HlaIncDecTarget::Register(reg) => {
+                        crate::ast::HlaIncDecTarget::Register(*reg)
+                    }
+                    crate::ast::HlaIncDecTarget::Address(expr) => {
+                        crate::ast::HlaIncDecTarget::Address(substitute_inline_operand_expr(
+                            expr, bindings,
+                        ))
+                    }
+                },
+            },
+            HlaStmt::ShiftRotate { op, target } => HlaStmt::ShiftRotate {
+                op: *op,
+                target: match target {
+                    crate::ast::HlaShiftTarget::Accumulator => {
+                        crate::ast::HlaShiftTarget::Accumulator
+                    }
+                    crate::ast::HlaShiftTarget::Address(expr) => {
+                        crate::ast::HlaShiftTarget::Address(substitute_inline_operand_expr(
+                            expr, bindings,
+                        ))
+                    }
+                },
+            },
+            HlaStmt::Goto {
+                target,
+                indirect,
+                far,
+            } => HlaStmt::Goto {
+                target: substitute_inline_expr(target, bindings),
+                indirect: *indirect,
+                far: *far,
+            },
+            HlaStmt::BranchGoto {
+                mnemonic,
+                target,
+                form,
+            } => HlaStmt::BranchGoto {
+                mnemonic: mnemonic.clone(),
+                target: substitute_inline_expr(target, bindings),
+                form: *form,
+            },
+            HlaStmt::XAssignImmediate { rhs } => HlaStmt::XAssignImmediate {
+                rhs: substitute_inline_expr(rhs, bindings),
+            },
+            HlaStmt::StoreFromA {
+                dests,
+                rhs,
+                load_start,
+                store_end,
+            } => HlaStmt::StoreFromA {
+                dests: dests
+                    .iter()
+                    .map(|dest| substitute_inline_ident(dest, bindings))
+                    .collect(),
+                rhs: substitute_inline_rhs(rhs, bindings),
+                load_start: *load_start,
+                store_end: *store_end,
+            },
+            HlaStmt::WaitLoopWhileNFlagClear { symbol } => HlaStmt::WaitLoopWhileNFlagClear {
+                symbol: substitute_inline_ident(symbol, bindings),
+            },
+            HlaStmt::ConditionSeed { lhs, rhs } => HlaStmt::ConditionSeed {
+                lhs: *lhs,
+                rhs: substitute_inline_operand_expr(rhs, bindings),
+            },
+            HlaStmt::DoClose { condition } => HlaStmt::DoClose {
+                condition: HlaCondition {
+                    lhs: condition.lhs,
+                    op: condition.op,
+                    rhs: condition
+                        .rhs
+                        .as_ref()
+                        .map(|expr| substitute_inline_expr(expr, bindings)),
+                    seed_span: condition.seed_span,
+                },
+            },
+            HlaStmt::NeverBlock { body } => HlaStmt::NeverBlock {
+                body: substitute_inline_body(body, bindings),
+            },
+            HlaStmt::PrefixConditional {
+                skip_mnemonic,
+                form,
+                body,
+                else_body,
+            } => HlaStmt::PrefixConditional {
+                skip_mnemonic: skip_mnemonic.clone(),
+                form: *form,
+                body: substitute_inline_body(body, bindings),
+                else_body: else_body
+                    .as_ref()
+                    .map(|body| substitute_inline_body(body, bindings)),
+            },
+            _ => hla.clone(),
+        }),
+        Stmt::ModeScopedBlock {
+            a_width,
+            i_width,
+            body,
+        } => Stmt::ModeScopedBlock {
+            a_width: *a_width,
+            i_width: *i_width,
+            body: substitute_inline_body(body, bindings),
+        },
+        _ => stmt.clone(),
+    }
+}
+
+fn substitute_inline_body(body: &[Spanned<Stmt>], bindings: &InlineBindings) -> Vec<Spanned<Stmt>> {
+    body.iter()
+        .map(|stmt| Spanned::new(substitute_inline_stmt(&stmt.node, bindings), stmt.span))
+        .collect()
+}
+
+fn reg_name_text(reg: RegName) -> &'static str {
+    match reg {
+        RegName::A => "a",
+        RegName::X => "x",
+        RegName::Y => "y",
+    }
+}
+
+fn immediate_param_type_text(ty: ImmediateParamType) -> &'static str {
+    match ty {
+        ImmediateParamType::Byte => "byte",
+        ImmediateParamType::Word => "word",
+    }
+}
+
+fn build_call_contract_summaries(
+    file: &File,
+    sema: &SemanticModel,
+) -> FxHashMap<String, CallContractSummary> {
+    let blocks: FxHashMap<String, &CodeBlock> = file
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            Item::CodeBlock(block) => Some((block.name.clone(), block)),
+            _ => None,
+        })
+        .collect();
+    let mut cache = FxHashMap::default();
+    let mut visiting = Vec::new();
+
+    for name in blocks.keys() {
+        let _ = compute_function_summary(name, &blocks, sema, &mut cache, &mut visiting);
+    }
+
+    cache
+}
+
+fn compute_function_summary<'a>(
+    name: &str,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    sema: &SemanticModel,
+    cache: &mut FxHashMap<String, CallContractSummary>,
+    visiting: &mut Vec<String>,
+) -> CallContractSummary {
+    if let Some(summary) = cache.get(name) {
+        return summary.clone();
+    }
+    if visiting.iter().any(|entry| entry == name) {
+        return CallContractSummary {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            clobbers: RegSet::NONE,
+            is_naked: false,
+        };
+    }
+
+    let Some(meta) = sema.functions.get(name) else {
+        return CallContractSummary {
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            clobbers: RegSet::NONE,
+            is_naked: false,
+        };
+    };
+    let Some(block) = blocks.get(name) else {
+        return CallContractSummary {
+            inputs: meta.params.clone(),
+            outputs: meta.outputs.clone(),
+            clobbers: RegSet::NONE,
+            is_naked: meta.is_naked,
+        };
+    };
+
+    visiting.push(name.to_string());
+    let body_effects = summarize_stmt_sequence_summary(&block.body, sema, blocks, cache, visiting);
+    visiting.pop();
+
+    let summary = CallContractSummary {
+        inputs: meta.params.clone(),
+        outputs: meta.outputs.clone(),
+        clobbers: if meta.is_naked {
+            RegSet::NONE
+        } else {
+            body_effects.modifies - reg_names_set(&meta.outputs)
+        },
+        is_naked: meta.is_naked,
+    };
+    cache.insert(name.to_string(), summary.clone());
+    summary
+}
+
+fn summarize_stmt_sequence_summary<'a>(
+    stmts: &[Spanned<Stmt>],
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    cache: &mut FxHashMap<String, CallContractSummary>,
+    visiting: &mut Vec<String>,
+) -> RegEffects {
+    let mut effects = RegEffects::default();
+    for stmt in stmts {
+        effects = merge_summary_effects(
+            effects,
+            summary_stmt_effects(&stmt.node, sema, blocks, cache, visiting),
+        );
+    }
+    effects
+}
+
+fn summarize_stmt_sequence_liveness<'a>(
+    stmts: &[Spanned<Stmt>],
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    cache: &mut FxHashMap<String, CallContractSummary>,
+    visiting: &mut Vec<String>,
+) -> RegEffects {
+    let mut effects = RegEffects::default();
+    for stmt in stmts {
+        effects = compose_effects(
+            effects,
+            liveness_stmt_effects(&stmt.node, sema, blocks, cache, visiting),
+        );
+    }
+    effects
+}
+
+fn summary_stmt_effects<'a>(
+    stmt: &Stmt,
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    cache: &mut FxHashMap<String, CallContractSummary>,
+    visiting: &mut Vec<String>,
+) -> RegEffects {
+    match stmt {
+        Stmt::Hla(HlaStmt::PrefixConditional {
+            body, else_body, ..
+        }) => {
+            let body_effects = summarize_stmt_sequence_summary(body, sema, blocks, cache, visiting);
+            let else_effects = else_body
+                .as_ref()
+                .map(|body| summarize_stmt_sequence_summary(body, sema, blocks, cache, visiting))
+                .unwrap_or_default();
+            merge_summary_effects(body_effects, else_effects)
+        }
+        Stmt::ModeScopedBlock { body, .. } => {
+            summarize_stmt_sequence_summary(body, sema, blocks, cache, visiting)
+        }
+        Stmt::Hla(HlaStmt::NeverBlock { .. }) => RegEffects::default(),
+        _ => liveness_stmt_effects(stmt, sema, blocks, cache, visiting),
+    }
+}
+
+fn liveness_stmt_effects<'a>(
+    stmt: &Stmt,
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    cache: &mut FxHashMap<String, CallContractSummary>,
+    visiting: &mut Vec<String>,
+) -> RegEffects {
+    match stmt {
+        Stmt::Instruction(instruction) => instruction_effects(instruction),
+        Stmt::Call(call) => call_stmt_effects(call, sema, blocks, cache, visiting),
+        Stmt::Hla(HlaStmt::NeverBlock { .. }) => RegEffects::default(),
+        Stmt::Hla(HlaStmt::PrefixConditional {
+            body, else_body, ..
+        }) => {
+            let body_effects =
+                summarize_stmt_sequence_liveness(body, sema, blocks, cache, visiting);
+            let else_effects = else_body
+                .as_ref()
+                .map(|body| summarize_stmt_sequence_liveness(body, sema, blocks, cache, visiting))
+                .unwrap_or_default();
+            RegEffects {
+                reads: body_effects.reads | else_effects.reads,
+                modifies: body_effects.modifies & else_effects.modifies,
+            }
+        }
+        Stmt::Hla(hla) => hla_effects(hla),
+        Stmt::ModeScopedBlock { body, .. } => {
+            summarize_stmt_sequence_liveness(body, sema, blocks, cache, visiting)
+        }
+        _ => RegEffects::default(),
+    }
+}
+
+fn call_stmt_effects<'a>(
+    call: &CallStmt,
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    cache: &mut FxHashMap<String, CallContractSummary>,
+    visiting: &mut Vec<String>,
+) -> RegEffects {
+    if !call.is_bare {
+        return RegEffects::default();
+    }
+    let Some(meta) = sema.functions.get(&call.target) else {
+        return RegEffects::default();
+    };
+    if !meta.has_contract {
+        return RegEffects::default();
+    }
+    let summary = compute_function_summary(&call.target, blocks, sema, cache, visiting);
+    RegEffects {
+        reads: summary
+            .inputs
+            .iter()
+            .fold(RegSet::NONE, |acc, param| match param {
+                ContractParam::Register(reg) => acc | reg_name_set(*reg),
+                ContractParam::Immediate(_) | ContractParam::Alias(_) => acc,
+            }),
+        modifies: summary.clobbers | reg_names_set(&summary.outputs),
+    }
+}
+
+fn check_damage_for_sequence<'a>(
+    stmts: &[Spanned<Stmt>],
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    summaries: &mut FxHashMap<String, CallContractSummary>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (idx, stmt) in stmts.iter().enumerate() {
+        if let Stmt::Call(call) = &stmt.node
+            && call.is_bare
+            && let Some(meta) = sema.functions.get(&call.target)
+            && meta.has_contract
+        {
+            let mut visiting = Vec::new();
+            let summary =
+                compute_function_summary(&call.target, blocks, sema, summaries, &mut visiting);
+            if !summary.is_naked {
+                let live_after = forward_live_scan(&stmts[idx + 1..], sema, blocks, summaries);
+                let collisions = live_after & (summary.clobbers - reg_names_set(&summary.outputs));
+                for reg in [RegName::A, RegName::X, RegName::Y] {
+                    if collisions.contains(reg_name_set(reg)) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                stmt.span,
+                                format!(
+                                    "register {} is live after call to '{}' but clobbered by it",
+                                    reg_name_text(reg),
+                                    call.target
+                                ),
+                            )
+                            .with_help("save the register, consume the output immediately, or adjust the function contract"),
+                        );
+                    }
+                }
+            }
+        }
+
+        match &stmt.node {
+            Stmt::ModeScopedBlock { body, .. } => {
+                check_damage_for_sequence(body, sema, blocks, summaries, diagnostics);
+            }
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                body, else_body, ..
+            }) => {
+                check_damage_for_sequence(body, sema, blocks, summaries, diagnostics);
+                if let Some(else_body) = else_body {
+                    check_damage_for_sequence(else_body, sema, blocks, summaries, diagnostics);
+                }
+            }
+            Stmt::Hla(HlaStmt::NeverBlock { body }) => {
+                check_damage_for_sequence(body, sema, blocks, summaries, diagnostics);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn forward_live_scan<'a>(
+    stmts: &[Spanned<Stmt>],
+    sema: &SemanticModel,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    summaries: &mut FxHashMap<String, CallContractSummary>,
+) -> RegSet {
+    let mut live = RegSet::NONE;
+    let mut killed = RegSet::NONE;
+    let mut visiting = Vec::new();
+
+    for stmt in stmts {
+        if is_naked_call_boundary(&stmt.node, sema) {
+            break;
+        }
+        let effects = liveness_stmt_effects(&stmt.node, sema, blocks, summaries, &mut visiting);
+        live |= effects.reads - killed;
+        killed |= effects.modifies;
+        if killed.contains(RegSet::A) && killed.contains(RegSet::X) && killed.contains(RegSet::Y) {
+            break;
+        }
+    }
+
+    live
+}
+
+fn is_naked_call_boundary(stmt: &Stmt, sema: &SemanticModel) -> bool {
+    let name = match stmt {
+        Stmt::Call(call) if call.is_bare => call.target.as_str(),
+        Stmt::Instruction(instruction) if instruction.operand.is_none() => {
+            instruction.mnemonic.as_str()
+        }
+        _ => return false,
+    };
+    sema.functions
+        .get(name)
+        .is_some_and(|meta| meta.is_naked && meta.has_contract)
+}
+
 pub fn lower(
     file: &File,
     sema: &SemanticModel,
@@ -115,6 +1122,15 @@ pub fn lower(
             _ => None,
         })
         .collect();
+    let function_bodies: FxHashMap<String, &CodeBlock> = file
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            Item::CodeBlock(block) => Some((block.name.clone(), block)),
+            _ => None,
+        })
+        .collect();
+    let mut call_summaries = build_call_contract_summaries(file, sema);
 
     for item in &file.items {
         match &item.node {
@@ -148,6 +1164,13 @@ pub fn lower(
                     is_far: block.is_far,
                     ..LowerContext::default()
                 };
+                check_damage_for_sequence(
+                    &block.body,
+                    sema,
+                    &function_bodies,
+                    &mut call_summaries,
+                    &mut diagnostics,
+                );
                 let scope = block.name.clone();
                 block_ctx.label_depths =
                     collect_label_depths(&block.body, Some(scope.as_str()), 0, &mut diagnostics);
@@ -781,9 +1804,11 @@ fn lower_stmt(
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
                         lower_inline_call(
-                            inline_block,
+                            inline_block.name.as_str(),
+                            &inline_block.body,
                             meta,
-                            scope,
+                            effective_exit_contract(meta),
+                            !meta.has_contract,
                             sema,
                             fs,
                             inline_bodies,
@@ -803,8 +1828,10 @@ fn lower_stmt(
                 lower_call_with_contract(
                     &target,
                     meta.is_far,
-                    meta.mode_contract.a_width,
-                    meta.mode_contract.i_width,
+                    Some(meta.mode_contract),
+                    effective_exit_contract(meta),
+                    !meta.has_contract,
+                    meta.is_naked && meta.has_contract,
                     span,
                     ctx,
                     ops,
@@ -819,12 +1846,20 @@ fn lower_stmt(
             };
 
             if let Some(meta) = sema.functions.get(&call.target) {
+                let Some(bindings) =
+                    build_inline_bindings(call, meta, scope, sema, span, diagnostics)
+                else {
+                    return;
+                };
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(call.target.as_str()) {
+                        let inlined_body = substitute_inline_body(&inline_block.body, &bindings);
                         lower_inline_call(
-                            inline_block,
+                            inline_block.name.as_str(),
+                            &inlined_body,
                             meta,
-                            scope,
+                            effective_exit_contract(meta),
+                            !call.is_bare || !meta.has_contract,
                             sema,
                             fs,
                             inline_bodies,
@@ -839,8 +1874,10 @@ fn lower_stmt(
                     lower_call_with_contract(
                         &target,
                         meta.is_far,
-                        meta.mode_contract.a_width,
-                        meta.mode_contract.i_width,
+                        Some(meta.mode_contract),
+                        effective_exit_contract(meta),
+                        !call.is_bare || !meta.has_contract,
+                        meta.is_naked && call.is_bare && meta.has_contract,
                         span,
                         ctx,
                         ops,
@@ -849,7 +1886,17 @@ fn lower_stmt(
             } else {
                 // Unknown function: emit JSR or JSL based on `call far`.
                 // The linker will resolve or report the missing symbol.
-                lower_call_with_contract(&target, call.is_far, None, None, span, ctx, ops);
+                lower_call_with_contract(
+                    &target,
+                    call.is_far,
+                    None,
+                    None,
+                    true,
+                    false,
+                    span,
+                    ctx,
+                    ops,
+                );
             }
         }
         Stmt::DataBlock(block) => match lower_data_block(block, fs) {
@@ -1248,17 +2295,66 @@ fn lower_mode_restore(
     }
 }
 
-fn lower_call_with_contract(
-    target: &str,
-    is_far: bool,
-    a_width: Option<RegWidth>,
-    i_width: Option<RegWidth>,
+fn enter_call_mode(
+    entry_contract: Option<ModeContract>,
+    span: Span,
+    ctx: &mut LowerContext,
+    ops: &mut Vec<Spanned<Op>>,
+) -> ModeState {
+    let saved_mode = ctx.mode;
+    if let Some(entry_contract) = entry_contract {
+        ctx.mode = lower_mode_contract_transition(
+            ctx.mode,
+            entry_contract.a_width,
+            entry_contract.i_width,
+            span,
+            ops,
+        );
+    }
+    saved_mode
+}
+
+fn finish_call_mode(
+    saved_mode: ModeState,
+    behavior: CallModeBehavior,
+    reset_mode_after: bool,
     span: Span,
     ctx: &mut LowerContext,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    let saved_mode = ctx.mode;
-    ctx.mode = lower_mode_contract_transition(ctx.mode, a_width, i_width, span, ops);
+    match behavior {
+        CallModeBehavior::PreserveCaller => {
+            lower_mode_restore(ctx.mode, saved_mode, span, ops);
+            ctx.mode = saved_mode;
+        }
+        CallModeBehavior::AdoptExit(exit_contract) => {
+            if reset_mode_after {
+                ctx.mode = ModeState::default();
+                ops.push(Spanned::new(Op::SetMode(ModeContract::default()), span));
+            } else {
+                ctx.mode = ModeState {
+                    a_width: exit_contract.a_width,
+                    i_width: exit_contract.i_width,
+                };
+                ops.push(Spanned::new(Op::SetMode(exit_contract), span));
+            }
+        }
+    }
+}
+
+fn lower_call_with_contract(
+    target: &str,
+    is_far: bool,
+    entry_contract: Option<ModeContract>,
+    exit_contract: Option<ModeContract>,
+    preserve_mode: bool,
+    reset_mode_after: bool,
+    span: Span,
+    ctx: &mut LowerContext,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let behavior = call_mode_behavior(preserve_mode, exit_contract);
+    let saved_mode = enter_call_mode(entry_contract, span, ctx, ops);
 
     let mnemonic = if is_far { "jsl" } else { "jsr" };
     ops.push(Spanned::new(
@@ -1277,15 +2373,16 @@ fn lower_call_with_contract(
         span,
     ));
 
-    lower_mode_restore(ctx.mode, saved_mode, span, ops);
-    ctx.mode = saved_mode;
+    finish_call_mode(saved_mode, behavior, reset_mode_after, span, ctx, ops);
 }
 
 /// Inline a function body at the call site instead of emitting JSR/JSL.
 fn lower_inline_call(
-    block: &CodeBlock,
+    block_name: &str,
+    body: &[Spanned<Stmt>],
     meta: &crate::sema::FunctionMeta,
-    _caller_scope: Option<&str>,
+    exit_contract: Option<ModeContract>,
+    preserve_mode: bool,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     inline_bodies: &FxHashMap<String, &CodeBlock>,
@@ -1295,19 +2392,12 @@ fn lower_inline_call(
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    // Apply mode contract transition (same as a normal call).
-    let saved_mode = ctx.mode;
-    ctx.mode = lower_mode_contract_transition(
-        ctx.mode,
-        meta.mode_contract.a_width,
-        meta.mode_contract.i_width,
-        span,
-        ops,
-    );
+    let behavior = call_mode_behavior(preserve_mode, exit_contract);
+    let saved_mode = enter_call_mode(Some(meta.mode_contract), span, ctx, ops);
 
     // Lower the inline function's body statements in-place.
-    let inline_scope = Some(block.name.as_str());
-    for stmt in &block.body {
+    let inline_scope = Some(block_name);
+    for stmt in body {
         lower_stmt(
             &stmt.node,
             stmt.span,
@@ -1322,9 +2412,7 @@ fn lower_inline_call(
         );
     }
 
-    // Restore mode (same as a normal call).
-    lower_mode_restore(ctx.mode, saved_mode, span, ops);
-    ctx.mode = saved_mode;
+    finish_call_mode(saved_mode, behavior, false, span, ctx, ops);
 }
 
 fn lower_instruction_stmt(
@@ -1598,7 +2686,9 @@ fn validate_instruction_width_rules(
             "Cannot directly load/store :far value.".to_string()
         };
         let help = if let Some(name) = var_name {
-            format!("use explicit :byte or :word view, e.g. {name}:word for low 16 bits, ({name}+2):byte for bank byte")
+            format!(
+                "use explicit :byte or :word view, e.g. {name}:word for low 16 bits, ({name}+2):byte for bank byte"
+            )
         } else {
             "use explicit :byte or :word view, e.g. name:word for low 16 bits, (name+2):byte for bank byte".to_string()
         };
@@ -3539,9 +4629,7 @@ fn resolve_sizeof(
             let var = &sema.vars[&base];
             Some(i64::from(var.element_size))
         }
-        Ok(Some(ResolvedSymbolicSubscriptName::Field { size, .. })) => {
-            Some(i64::from(size))
-        }
+        Ok(Some(ResolvedSymbolicSubscriptName::Field { size, .. })) => Some(i64::from(size)),
         Ok(None) => {
             diagnostics.push(Diagnostic::error(
                 span,
@@ -3582,10 +4670,7 @@ fn resolve_offsetof(
             );
             None
         }
-        Ok(Some(ResolvedSymbolicSubscriptName::Field {
-            base, field, ..
-        }))
-        => {
+        Ok(Some(ResolvedSymbolicSubscriptName::Field { base, field, .. })) => {
             // Look up the field's offset from the base var's symbolic subscript
             let var = &sema.vars[&base];
             let ss = var.symbolic_subscript.as_ref().unwrap();
@@ -3595,9 +4680,7 @@ fn resolve_offsetof(
         Ok(None) => {
             diagnostics.push(Diagnostic::error(
                 span,
-                format!(
-                    "':offsetof' requires a variable field path, found '{name}'"
-                ),
+                format!("':offsetof' requires a variable field path, found '{name}'"),
             ));
             None
         }
@@ -3706,7 +4789,9 @@ fn invalid_symbolic_subscript_aggregate_index_diagnostic(
             .and_then(|var| var.symbolic_subscript.as_ref())
         && let Some(suggestion) = suggest_symbolic_subscript_field(requested, symbolic_subscript)
     {
-        diagnostic = diagnostic.with_help(format!("use '.field' or '[.field]' — did you mean '.{suggestion}'?"));
+        diagnostic = diagnostic.with_help(format!(
+            "use '.field' or '[.field]' — did you mean '.{suggestion}'?"
+        ));
         return diagnostic;
     }
 
@@ -5059,5 +6144,200 @@ mod tests {
         assert!(fixed_hi_index < function_end_index);
         assert!(function_end_index < restore_index);
         assert!(restore_index < tail_label_index);
+    }
+
+    #[test]
+    fn lowers_inline_immediate_contract_arguments() {
+        let source =
+            "inline scale (#factor:byte) {\n  lda #factor\n}\nfunc main {\n  scale #16\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(16)));
+    }
+
+    #[test]
+    fn checked_inline_call_uses_declared_exit_mode_without_restore() {
+        let source =
+            "inline widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.clone()),
+                Op::Rep(mask) => Some(format!("rep:{mask:#04x}")),
+                Op::Sep(mask) => Some(format!("sep:{mask:#04x}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(mnemonics.windows(2).any(|pair| pair == ["nop", "lda"]));
+        assert!(
+            !mnemonics.iter().any(|mnemonic| mnemonic == "sep:0x20"),
+            "unexpected restore after checked inline contract call: {mnemonics:?}"
+        );
+    }
+
+    #[test]
+    fn unchecked_inline_call_restores_caller_mode() {
+        let source = "inline narrow @a8 {\n  nop\n}\nfunc main @a16 {\n  narrow\n  lda #$1234\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.clone()),
+                Op::Rep(mask) => Some(format!("rep:{mask:#04x}")),
+                Op::Sep(mask) => Some(format!("sep:{mask:#04x}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            mnemonics
+                .windows(3)
+                .any(|window| window == ["sep:0x20", "nop", "rep:0x20"]),
+            "expected unchecked inline call to restore caller mode: {mnemonics:?}"
+        );
+    }
+
+    #[test]
+    fn bare_contract_call_uses_declared_exit_mode_without_restore() {
+        let source =
+            "func widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let mnemonics = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) => Some(instruction.mnemonic.clone()),
+                Op::Rep(mask) => Some(format!("rep:{mask:#04x}")),
+                Op::Sep(mask) => Some(format!("sep:{mask:#04x}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(mnemonics.windows(2).any(|pair| pair == ["jsr", "lda"]));
+        assert!(
+            !mnemonics.iter().any(|mnemonic| mnemonic == "sep:0x20"),
+            "unexpected restore after contract-bearing call: {mnemonics:?}"
+        );
+    }
+
+    #[test]
+    fn inline_alias_arguments_resolve_in_caller_scope() {
+        let source = "inline jump_to (target) {\n  goto target\n}\nfunc main {\n.loop:\n  jump_to .loop\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "jmp" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("jmp operand");
+
+        match operand {
+            OperandOp::Address { value, .. } => {
+                assert!(matches!(
+                    value,
+                    AddressValue::Label(label) if label == "main::.loop"
+                ));
+            }
+            _ => panic!("expected address operand"),
+        }
+    }
+
+    #[test]
+    fn rejects_constant_inline_alias_arguments() {
+        let source = "const DEST = $1234\ninline jump_to (target) {\n  goto target\n}\nfunc main {\n  jump_to DEST\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("inline alias argument 'DEST' must be an address-like identifier")
+        }));
+    }
+
+    #[test]
+    fn rejects_bare_call_output_mismatch() {
+        let source = "func produce @a8 () -> a {\n  lda #1\n}\nfunc main {\n  produce\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("call to 'produce' has mismatched output contract")
+        }));
+    }
+
+    #[test]
+    fn rejects_live_register_collision_from_conditional_contract_clobber() {
+        let source =
+            "func touch @a8 (a) {\n  c-?{ inx }\n}\nfunc main {\n  ldx #1\n  touch a\n  txa\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("register x is live after call to 'touch' but clobbered by it")
+        }));
+    }
+
+    #[test]
+    fn rejects_live_register_collision_from_contract_call() {
+        let source = "func touch @a8 (a) {\n  inx\n}\nfunc main {\n  ldx #1\n  touch a\n  txa\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("register x is live after call to 'touch' but clobbered by it")
+        }));
     }
 }

@@ -157,13 +157,14 @@ fn validate_section(section_name: &str, section: &Section) -> Result<()> {
         })?;
 
         if let Some(prev_end) = prev_end
-            && chunk.offset < prev_end {
-                bail!(
-                    "section '{}' has overlapping chunks around offset {:#X}",
-                    section_name,
-                    chunk.offset
-                );
-            }
+            && chunk.offset < prev_end
+        {
+            bail!(
+                "section '{}' has overlapping chunks around offset {:#X}",
+                section_name,
+                chunk.offset
+            );
+        }
 
         prev_end = Some(chunk_end);
     }

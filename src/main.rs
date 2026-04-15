@@ -358,12 +358,8 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
     let render = k816_core::CompileRenderOptions {
         color: stderr_supports_color(),
     };
-    let output = k816_core::compile_source(
-        &input_path.display().to_string(),
-        &source,
-        render,
-    )
-    .map_err(|error| anyhow::anyhow!(error.rendered))?;
+    let output = k816_core::compile_source(&input_path.display().to_string(), &source, render)
+        .map_err(|error| anyhow::anyhow!(error.rendered))?;
     if !output.rendered_warnings.trim().is_empty() {
         eprintln!("{}", output.rendered_warnings.trim_end());
     }

@@ -1,0 +1,9 @@
+func touch @a8 (a) {
+    c-?{ inx }
+}
+
+func main {
+    ldx #1
+    touch a
+    txa
+}

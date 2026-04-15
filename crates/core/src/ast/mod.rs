@@ -41,6 +41,32 @@ pub enum RegWidth {
     W16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RegName {
+    A,
+    X,
+    Y,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImmediateParamType {
+    Byte,
+    Word,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImmediateParam {
+    pub name: String,
+    pub ty: ImmediateParamType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContractParam {
+    Register(RegName),
+    Immediate(ImmediateParam),
+    Alias(String),
+}
+
 /// Mode contract for function headers: optional A and Index widths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ModeContract {
@@ -120,7 +146,11 @@ pub struct CodeBlock {
     pub is_far: bool,
     pub is_naked: bool,
     pub is_inline: bool,
+    pub has_contract: bool,
+    pub params: Vec<ContractParam>,
+    pub outputs: Vec<RegName>,
     pub mode_contract: ModeContract,
+    pub exit_contract: Option<ModeContract>,
     pub body: Vec<Spanned<Stmt>>,
 }
 
@@ -424,6 +454,16 @@ pub enum HlaStmt {
 pub struct CallStmt {
     pub target: String,
     pub is_far: bool,
+    pub args: Vec<CallArg>,
+    pub outputs: Vec<RegName>,
+    pub is_bare: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallArg {
+    Register(RegName),
+    Immediate(Expr),
+    Alias(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

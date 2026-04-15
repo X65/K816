@@ -49,9 +49,10 @@ pub fn bfs_reorder(objects: Vec<O65Object>) -> Result<Vec<O65Object>> {
                 continue;
             }
             if let Some(&provider_idx) = symbol_to_obj.get(reloc.symbol.as_str())
-                && visited.insert(provider_idx) {
-                    order.push(provider_idx);
-                }
+                && visited.insert(provider_idx)
+            {
+                order.push(provider_idx);
+            }
             // Symbol not in any object: may come from linker config, will be
             // checked during actual linking.
         }

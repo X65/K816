@@ -53,8 +53,7 @@ impl ServerState {
             let segment_name = &token.text[1..];
             let field_key = cumulative_field_key(&resolved.field_key, segment_name)
                 .unwrap_or(&resolved.field_key);
-            return self
-                .definition_for_subscript_field(Some(&resolved.var_name), field_key);
+            return self.definition_for_subscript_field(Some(&resolved.var_name), field_key);
         }
 
         // Qualified subscript field access: VAR.field1.field2... (position-aware per segment)

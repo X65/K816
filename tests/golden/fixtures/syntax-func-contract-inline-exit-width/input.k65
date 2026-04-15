@@ -1,0 +1,18 @@
+// Inline exit-width contract variants:
+// - checked bare call keeps the inline callee's declared exit mode
+// - unchecked `call foo` restores the caller mode even for inline bodies
+
+inline widen @a8 () -> @a16 {
+    nop
+}
+
+func wide_user @a16 {
+    lda #$1234
+}
+
+func main {
+    widen
+    wide_user
+    call widen
+    wide_user
+}

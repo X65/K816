@@ -2,3 +2,4 @@
 /vendor
 examples/*.lst
 examples/*.xex
+.codex

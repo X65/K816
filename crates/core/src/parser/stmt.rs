@@ -1,6 +1,6 @@
 use crate::ast::{
-    CallStmt, HlaStmt, Instruction, LabelDecl, ModeContract, Operand, OperandAddrMode, RegWidth,
-    SegmentDecl, Stmt,
+    CallArg, CallStmt, HlaStmt, Instruction, LabelDecl, ModeContract, Operand, OperandAddrMode,
+    RegName, RegWidth, SegmentDecl, Stmt,
 };
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::{SourceId, Spanned};
@@ -10,6 +10,8 @@ use chumsky::{
     input::ValueInput,
     prelude::{SimpleSpan, end, just},
 };
+use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::ParseExtra;
 use super::common::{ident_parser, line_sep_parser, spanned};
@@ -29,7 +31,7 @@ use super::operations::{
     hla_x_increment_stmt_parser, incdec_stmt_parser, shift_stmt_parser, stack_stmt_parser,
     store_stmt_parser,
 };
-use super::registers::parse_index_register;
+use super::registers::{parse_contract_register, parse_index_register};
 
 pub(super) fn zero_number_token<'src, I>()
 -> impl chumsky::Parser<'src, I, (), ParseExtra<'src>> + Clone
@@ -41,6 +43,7 @@ where
 
 pub(super) fn stmt_parser<'src, I>(
     source_id: SourceId,
+    known_functions: Arc<HashSet<String>>,
 ) -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -109,12 +112,77 @@ where
             Stmt::Call(CallStmt {
                 target,
                 is_far: far.is_some(),
+                args: Vec::new(),
+                outputs: Vec::new(),
+                is_bare: false,
             })
         });
 
     let label_stmt = ident_parser()
         .then_ignore(just(TokenKind::Colon))
         .map(|name| Stmt::Label(LabelDecl { name }));
+
+    let call_reg = ident_parser().try_map(|name, span| {
+        parse_contract_register(&name).ok_or_else(|| {
+            Rich::custom(
+                span,
+                format!("expected call register 'a', 'x', or 'y', found '{name}'"),
+            )
+        })
+    });
+    let call_arg = just(TokenKind::Hash)
+        .ignore_then(expr_parser())
+        .map(CallArg::Immediate)
+        .or(
+            ident_parser().map(|name| match parse_contract_register(&name) {
+                Some(reg) => CallArg::Register(reg),
+                None => CallArg::Alias(name),
+            }),
+        );
+    let output_regs = call_reg
+        .clone()
+        .separated_by(just(TokenKind::Comma))
+        .at_least(1)
+        .collect::<Vec<RegName>>();
+    let bare_call_outputs = just(TokenKind::Arrow).ignore_then(output_regs).or_not();
+    let bare_call_args = just(TokenKind::LParen)
+        .ignore_then(
+            call_arg
+                .clone()
+                .separated_by(just(TokenKind::Comma))
+                .collect::<Vec<_>>(),
+        )
+        .then_ignore(just(TokenKind::RParen))
+        .or(call_arg
+            .clone()
+            .separated_by(just(TokenKind::Comma))
+            .at_least(1)
+            .collect::<Vec<_>>());
+    let function_target = {
+        let known_functions = known_functions.clone();
+        ident_parser().try_map(move |target, span| {
+            if known_functions.contains(&target) {
+                Ok(target)
+            } else {
+                Err(Rich::custom(
+                    span,
+                    format!("'{target}' is not a declared function"),
+                ))
+            }
+        })
+    };
+    let bare_call_stmt = function_target
+        .then(bare_call_args.or_not())
+        .then(bare_call_outputs)
+        .map(|((target, args), outputs)| {
+            Stmt::Call(CallStmt {
+                target,
+                is_far: false,
+                args: args.unwrap_or_default(),
+                outputs: outputs.unwrap_or_default(),
+                is_bare: true,
+            })
+        });
 
     let hla_wait_stmt = hla_wait_loop_stmt_parser();
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
@@ -265,6 +333,7 @@ where
         .or(nop_stmt)
         .or(discard_stmt)
         .or(label_stmt)
+        .or(bare_call_stmt)
         .or(instruction)
         .boxed();
 

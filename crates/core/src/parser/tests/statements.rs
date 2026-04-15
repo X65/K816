@@ -273,6 +273,56 @@ fn parses_operand_modes_with_y_and_indirect_forms() {
 }
 
 #[test]
+fn parses_function_contract_declaration_with_inline_params_and_exit_modes() {
+    let source =
+        "inline scale @a16 @i16 (a, table, #factor:byte) -> @a8 a, y {\n  lda #factor\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::CodeBlock(block) = &file.items[0].node else {
+        panic!("expected code block");
+    };
+
+    assert!(block.is_inline);
+    assert!(block.has_contract);
+    assert_eq!(block.mode_contract.a_width, Some(RegWidth::W16));
+    assert_eq!(block.mode_contract.i_width, Some(RegWidth::W16));
+    assert_eq!(
+        block.exit_contract.expect("exit").a_width,
+        Some(RegWidth::W8)
+    );
+    assert_eq!(block.outputs, vec![RegName::A, RegName::Y]);
+    assert!(matches!(
+        block.params[0],
+        ContractParam::Register(RegName::A)
+    ));
+    assert!(matches!(block.params[1], ContractParam::Alias(ref name) if name == "table"));
+    assert!(matches!(
+        block.params[2],
+        ContractParam::Immediate(ImmediateParam {
+            ref name,
+            ty: ImmediateParamType::Byte,
+        }) if name == "factor"
+    ));
+}
+
+#[test]
+fn parses_bare_call_with_contract_args_and_outputs() {
+    let source = "func add @a16 (a, x) -> a, y {\n  nop\n}\nfunc main {\n  add a, x -> a, y\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::CodeBlock(block) = &file.items[1].node else {
+        panic!("expected code block");
+    };
+
+    let Stmt::Call(call) = &block.body[0].node else {
+        panic!("expected bare call");
+    };
+    assert!(call.is_bare);
+    assert_eq!(call.target, "add");
+    assert_eq!(call.outputs, vec![RegName::A, RegName::Y]);
+    assert!(matches!(call.args[0], CallArg::Register(RegName::A)));
+    assert!(matches!(call.args[1], CallArg::Register(RegName::X)));
+}
+
+#[test]
 fn reports_unsupported_flag_shorthand_for_invalid_flag_goto() {
     let source = "func main {\n  s-? goto .skip\n.skip:\n  return\n}\n";
     let diagnostics = parse(SourceId(0), source).expect_err("expected parse errors");

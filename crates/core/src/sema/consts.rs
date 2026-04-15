@@ -10,9 +10,7 @@ pub(super) fn collect_const(
     external_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if !is_symbol_available(&const_decl.name, model)
-        && !external_names.contains(&const_decl.name)
-    {
+    if !is_symbol_available(&const_decl.name, model) && !external_names.contains(&const_decl.name) {
         diagnostics.push(
             Diagnostic::error(span, format!("duplicate symbol '{}'", const_decl.name))
                 .with_help("rename one of the consts/vars/functions to keep symbols unique"),

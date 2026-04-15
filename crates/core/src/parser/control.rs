@@ -143,6 +143,9 @@ where
             Stmt::Call(CallStmt {
                 target,
                 is_far: true,
+                args: Vec::new(),
+                outputs: Vec::new(),
+                is_bare: false,
             })
         });
 
@@ -162,14 +165,11 @@ where
         .or(just(TokenKind::LtLtEq).to("bvs"))
         .or(just(TokenKind::GtGtEq).to("bvc"));
 
-    let conditional_break = branch_condition
-        .clone()
-        .then_ignore(break_kw)
-        .map(|m| {
-            Stmt::Hla(HlaStmt::LoopBreak {
-                mnemonic: m.to_string(),
-            })
-        });
+    let conditional_break = branch_condition.clone().then_ignore(break_kw).map(|m| {
+        Stmt::Hla(HlaStmt::LoopBreak {
+            mnemonic: m.to_string(),
+        })
+    });
 
     let conditional_repeat = branch_condition.then_ignore(repeat_kw).map(|m| {
         Stmt::Hla(HlaStmt::LoopRepeat {

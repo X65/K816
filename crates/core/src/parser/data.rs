@@ -10,6 +10,8 @@ use chumsky::{
     input::ValueInput,
     prelude::{SimpleSpan, any, end, just, skip_then_retry_until},
 };
+use std::collections::HashSet;
+use std::sync::Arc;
 
 use super::{
     ParseExtra, eval_static_expr, expr_parser, ident_parser, line_sep_parser, line_tail_parser,
@@ -287,7 +289,7 @@ where
     });
 
     let code_body = {
-        let stmt = spanned(stmt_parser(source_id), source_id);
+        let stmt = spanned(stmt_parser(source_id, Arc::new(HashSet::new())), source_id);
         let stmt_boundary = line_sep_parser()
             .ignored()
             .or(just(TokenKind::RBrace).ignored())

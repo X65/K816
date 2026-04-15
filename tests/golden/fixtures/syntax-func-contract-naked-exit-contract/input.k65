@@ -1,0 +1,3 @@
+naked foo @a8 (a) -> a {
+    nop
+}

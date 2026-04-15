@@ -243,9 +243,17 @@ where
     };
     let contract_param = just(TokenKind::Hash)
         .ignore_then(ident_parser())
-        .then_ignore(just(TokenKind::Colon))
-        .then(immediate_param_type)
-        .map(|(name, ty)| ContractParam::Immediate(ImmediateParam { name, ty }))
+        .then(
+            just(TokenKind::Colon)
+                .ignore_then(immediate_param_type)
+                .or_not(),
+        )
+        .map(|(name, ty)| {
+            ContractParam::Immediate(ImmediateParam {
+                name,
+                ty: ty.unwrap_or(ImmediateParamType::Inferred),
+            })
+        })
         .or(
             ident_parser().map(|name| match parse_contract_register(&name) {
                 Some(reg) => ContractParam::Register(reg),

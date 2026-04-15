@@ -1,0 +1,9 @@
+Error: function 'widen' exit contract requires @a16 but inferred exit mode is @a8
+   ╭─[ tests/golden/fixtures/syntax-func-contract-exit-mismatch-err/input.k65:1:6 ]
+   │
+ 1 │ func widen @a8 () -> @a16 a {
+   │      ──┬──  
+   │        ╰──── here
+   │ 
+   │ Help: change the body so all reachable returns end in the declared mode or update the `->` contract
+───╯

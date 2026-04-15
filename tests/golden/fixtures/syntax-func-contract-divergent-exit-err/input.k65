@@ -1,0 +1,11 @@
+func choose @a8 () -> a {
+    c-?{
+        @a16
+        return
+    }
+    return
+}
+
+func main {
+    choose -> a
+}

@@ -1,0 +1,7 @@
+func widen @a8 () -> @a16 a {
+    lda #1
+}
+
+func main {
+    widen -> a
+}

@@ -27,6 +27,20 @@ struct CallContractSummary {
     is_naked: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitWidth {
+    Preserve,
+    Fixed(RegWidth),
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExitModeSummary {
+    a_width: ExitWidth,
+    i_width: ExitWidth,
+    is_naked: bool,
+}
+
 #[derive(Debug, Clone)]
 struct InlineBindings {
     immediates: FxHashMap<String, Expr>,
@@ -36,7 +50,7 @@ struct InlineBindings {
 #[derive(Debug, Clone, Copy)]
 enum CallModeBehavior {
     PreserveCaller,
-    AdoptExit(ModeContract),
+    AdoptExit(ExitModeSummary),
 }
 
 /// Tracked CPU register width state during lowering.
@@ -62,6 +76,7 @@ struct LowerContext {
     label_declared_modes: FxHashMap<String, ModeState>,
     label_fixed_masks: FxHashMap<String, u8>,
     label_depths: FxHashMap<String, usize>,
+    return_modes: Vec<ModeState>,
     reachable: bool,
     is_far: bool,
 }
@@ -95,6 +110,7 @@ impl Default for LowerContext {
             label_declared_modes: FxHashMap::default(),
             label_fixed_masks: FxHashMap::default(),
             label_depths: FxHashMap::default(),
+            return_modes: Vec::new(),
             reachable: true,
             is_far: false,
         }
@@ -129,21 +145,16 @@ fn reg_names_set(regs: &[RegName]) -> RegSet {
         .fold(RegSet::NONE, |acc, reg| acc | reg_name_set(reg))
 }
 
-fn effective_exit_contract(meta: &crate::sema::FunctionMeta) -> Option<ModeContract> {
-    meta.has_contract
-        .then_some(meta.exit_contract.unwrap_or(meta.mode_contract))
-}
-
 fn call_mode_behavior(
     preserve_mode: bool,
-    exit_contract: Option<ModeContract>,
+    exit_summary: Option<ExitModeSummary>,
 ) -> CallModeBehavior {
     if preserve_mode {
         CallModeBehavior::PreserveCaller
     } else {
         CallModeBehavior::AdoptExit(
-            exit_contract
-                .expect("checked function contract calls must have an effective exit mode"),
+            exit_summary
+                .expect("checked function contract calls must have an inferred exit mode"),
         )
     }
 }
@@ -402,10 +413,9 @@ fn build_inline_bindings(
                 return None;
             }
             (ContractParam::Immediate(param), CallArg::Immediate(expr)) => {
-                let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) else {
-                    return None;
-                };
+                let value = eval_to_number(expr, scope, sema, span, diagnostics)?;
                 let fits = match param.ty {
+                    ImmediateParamType::Inferred => true,
                     ImmediateParamType::Byte => (0..=0xFF).contains(&value),
                     ImmediateParamType::Word => (0..=0xFFFF).contains(&value),
                 };
@@ -443,11 +453,8 @@ fn build_inline_bindings(
                 return None;
             }
             (ContractParam::Alias(name), CallArg::Alias(target)) => {
-                let Some(resolved_target) =
-                    resolve_inline_alias_target(target, scope, sema, span, diagnostics)
-                else {
-                    return None;
-                };
+                let resolved_target =
+                    resolve_inline_alias_target(target, scope, sema, span, diagnostics)?;
                 bindings.aliases.insert(name.clone(), resolved_target);
             }
             (ContractParam::Alias(name), _) => {
@@ -803,6 +810,7 @@ fn reg_name_text(reg: RegName) -> &'static str {
 
 fn immediate_param_type_text(ty: ImmediateParamType) -> &'static str {
     match ty {
+        ImmediateParamType::Inferred => "inferred",
         ImmediateParamType::Byte => "byte",
         ImmediateParamType::Word => "word",
     }
@@ -1101,6 +1109,376 @@ fn is_naked_call_boundary(stmt: &Stmt, sema: &SemanticModel) -> bool {
         .is_some_and(|meta| meta.is_naked && meta.has_contract)
 }
 
+fn mode_state_to_contract(mode: ModeState) -> ModeContract {
+    ModeContract {
+        a_width: mode.a_width,
+        i_width: mode.i_width,
+    }
+}
+
+fn apply_exit_width(width: ExitWidth, entry: Option<RegWidth>) -> Option<RegWidth> {
+    match width {
+        ExitWidth::Preserve => entry,
+        ExitWidth::Fixed(width) => Some(width),
+        ExitWidth::Unknown => None,
+    }
+}
+
+fn apply_exit_mode(summary: ExitModeSummary, entry: ModeState) -> ModeState {
+    ModeState {
+        a_width: apply_exit_width(summary.a_width, entry.a_width),
+        i_width: apply_exit_width(summary.i_width, entry.i_width),
+    }
+}
+
+fn format_contract_mode(mode: Option<RegWidth>, register: RegName) -> &'static str {
+    match (register, mode) {
+        (RegName::A, Some(RegWidth::W8)) => "@a8",
+        (RegName::A, Some(RegWidth::W16)) => "@a16",
+        (RegName::A, None) => "@a?",
+        (_, Some(RegWidth::W8)) => "@i8",
+        (_, Some(RegWidth::W16)) => "@i16",
+        (_, None) => "@i?",
+    }
+}
+
+fn format_inferred_exit_width(width: ExitWidth, register: RegName) -> &'static str {
+    match width {
+        ExitWidth::Preserve => match register {
+            RegName::A => "caller-preserved A width",
+            _ => "caller-preserved I width",
+        },
+        ExitWidth::Fixed(width) => format_contract_mode(Some(width), register),
+        ExitWidth::Unknown => format_contract_mode(None, register),
+    }
+}
+
+fn entry_mode_variants(is_entry: bool, mode_contract: ModeContract) -> Vec<ModeState> {
+    if is_entry {
+        return vec![initial_mode_for_block(true, mode_contract)];
+    }
+
+    let a_widths = match mode_contract.a_width {
+        Some(width) => vec![Some(width)],
+        None => vec![Some(RegWidth::W8), Some(RegWidth::W16)],
+    };
+    let i_widths = match mode_contract.i_width {
+        Some(width) => vec![Some(width)],
+        None => vec![Some(RegWidth::W8), Some(RegWidth::W16)],
+    };
+
+    let mut variants = Vec::new();
+    for a_width in a_widths {
+        for i_width in &i_widths {
+            variants.push(ModeState {
+                a_width,
+                i_width: *i_width,
+            });
+        }
+    }
+    variants
+}
+
+fn infer_exit_width(
+    variants: &[(ModeState, ModeState)],
+    reg: RegName,
+) -> ExitWidth {
+    let input_width = |mode: ModeState| match reg {
+        RegName::A => mode.a_width,
+        _ => mode.i_width,
+    };
+    let output_width = |mode: ModeState| match reg {
+        RegName::A => mode.a_width,
+        _ => mode.i_width,
+    };
+
+    let Some((_, first_output)) = variants.first().copied() else {
+        return ExitWidth::Unknown;
+    };
+    let first_output = output_width(first_output);
+
+    if variants
+        .iter()
+        .all(|(_, output)| output_width(*output) == first_output)
+    {
+        return first_output.map_or(ExitWidth::Unknown, ExitWidth::Fixed);
+    }
+
+    if variants
+        .iter()
+        .all(|(input, output)| output_width(*output) == input_width(*input))
+    {
+        return ExitWidth::Preserve;
+    }
+
+    ExitWidth::Unknown
+}
+
+fn collect_checked_call_dependencies(
+    stmts: &[Spanned<Stmt>],
+    sema: &SemanticModel,
+    out: &mut Vec<String>,
+) {
+    for stmt in stmts {
+        match &stmt.node {
+            Stmt::Instruction(instruction)
+                if instruction.operand.is_none()
+                    && sema
+                        .functions
+                        .get(&instruction.mnemonic)
+                        .is_some_and(|meta| meta.has_contract) =>
+            {
+                if !out.iter().any(|name| name == &instruction.mnemonic) {
+                    out.push(instruction.mnemonic.clone());
+                }
+            }
+            Stmt::Call(call)
+                if call.is_bare
+                    && sema
+                        .functions
+                        .get(&call.target)
+                        .is_some_and(|meta| meta.has_contract) =>
+            {
+                if !out.iter().any(|name| name == &call.target) {
+                    out.push(call.target.clone());
+                }
+            }
+            Stmt::ModeScopedBlock { body, .. } => collect_checked_call_dependencies(body, sema, out),
+            Stmt::Hla(HlaStmt::NeverBlock { body }) => {
+                collect_checked_call_dependencies(body, sema, out);
+            }
+            Stmt::Hla(HlaStmt::PrefixConditional {
+                body, else_body, ..
+            }) => {
+                collect_checked_call_dependencies(body, sema, out);
+                if let Some(else_body) = else_body {
+                    collect_checked_call_dependencies(else_body, sema, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn build_exit_mode_summaries(
+    file: &File,
+    sema: &SemanticModel,
+    fs: &dyn AssetFS,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> FxHashMap<String, ExitModeSummary> {
+    let blocks: FxHashMap<String, &CodeBlock> = file
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            Item::CodeBlock(block) => Some((block.name.clone(), block)),
+            _ => None,
+        })
+        .collect();
+    let inline_bodies: FxHashMap<String, &CodeBlock> = file
+        .items
+        .iter()
+        .filter_map(|item| match &item.node {
+            Item::CodeBlock(block) if block.is_inline => Some((block.name.clone(), block)),
+            _ => None,
+        })
+        .collect();
+
+    let mut cache = FxHashMap::default();
+    let mut visiting = Vec::new();
+
+    for name in blocks.keys() {
+        let _ = compute_exit_mode_summary(
+            name,
+            &blocks,
+            &inline_bodies,
+            sema,
+            fs,
+            &mut cache,
+            &mut visiting,
+            diagnostics,
+        );
+    }
+
+    cache
+}
+
+fn compute_exit_mode_summary<'a>(
+    name: &str,
+    blocks: &FxHashMap<String, &'a CodeBlock>,
+    inline_bodies: &FxHashMap<String, &'a CodeBlock>,
+    sema: &SemanticModel,
+    fs: &dyn AssetFS,
+    cache: &mut FxHashMap<String, ExitModeSummary>,
+    visiting: &mut Vec<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ExitModeSummary {
+    if let Some(summary) = cache.get(name).copied() {
+        return summary;
+    }
+
+    let Some(block) = blocks.get(name).copied() else {
+        let summary = ExitModeSummary {
+            a_width: ExitWidth::Unknown,
+            i_width: ExitWidth::Unknown,
+            is_naked: false,
+        };
+        cache.insert(name.to_string(), summary);
+        return summary;
+    };
+
+    if visiting.iter().any(|entry| entry == name) {
+        if let Some(span) = block.name_span {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "cannot infer exit mode for recursive checked contract call cycle involving '{name}'"
+                    ),
+                )
+                .with_help("remove the checked call cycle or use `call foo` on at least one edge"),
+            );
+        }
+        let summary = ExitModeSummary {
+            a_width: ExitWidth::Unknown,
+            i_width: ExitWidth::Unknown,
+            is_naked: block.is_naked,
+        };
+        cache.insert(name.to_string(), summary);
+        return summary;
+    }
+
+    let mut deps = Vec::new();
+    collect_checked_call_dependencies(&block.body, sema, &mut deps);
+
+    visiting.push(name.to_string());
+    for dep in deps {
+        if dep != name {
+            let _ = compute_exit_mode_summary(
+                &dep,
+                blocks,
+                inline_bodies,
+                sema,
+                fs,
+                cache,
+                visiting,
+                diagnostics,
+            );
+        } else if let Some(span) = block.name_span {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "cannot infer exit mode for recursive checked contract call cycle involving '{name}'"
+                    ),
+                )
+                .with_help("remove the checked self-call or use `call foo` to keep caller mode"),
+            );
+        }
+    }
+    visiting.pop();
+
+    let effective_contract = sema
+        .functions
+        .get(name)
+        .map(|meta| meta.mode_contract)
+        .unwrap_or(block.mode_contract);
+    let is_entry = block.name == "main";
+    let mut variant_modes = Vec::new();
+    let mut divergent = false;
+    for initial_mode in entry_mode_variants(is_entry, effective_contract) {
+        let mut ctx = LowerContext {
+            is_far: block.is_far,
+            mode: initial_mode,
+            ..LowerContext::default()
+        };
+        ctx.label_depths = collect_label_depths(&block.body, Some(name), 0, diagnostics);
+        ctx.label_declared_modes =
+            collect_label_declared_modes(&block.body, Some(name), initial_mode, diagnostics);
+
+        let mut dummy_diagnostics = Vec::new();
+        let mut dummy_ops = Vec::new();
+        let mut dummy_segment = "default".to_string();
+        for stmt in &block.body {
+            lower_stmt(
+                &stmt.node,
+                stmt.span,
+                Some(name),
+                sema,
+                fs,
+                inline_bodies,
+                cache,
+                &mut dummy_segment,
+                &mut ctx,
+                &mut dummy_diagnostics,
+                &mut dummy_ops,
+            );
+        }
+
+        if !block.is_naked && ctx.reachable {
+            ctx.return_modes.push(ctx.mode);
+        }
+
+        let mut return_modes = ctx.return_modes.into_iter();
+        let inferred = return_modes.next().unwrap_or_default();
+        if return_modes.any(|mode| mode != inferred) {
+            divergent = true;
+        }
+        variant_modes.push((initial_mode, inferred));
+    }
+
+    if divergent
+        && let Some(span) = block.name_span
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!(
+                    "function '{name}' has inconsistent exit mode across reachable returns"
+                ),
+            )
+            .with_help(
+                "ensure every reachable return exits with the same @a*/@i* widths or use `call foo` at the caller",
+            ),
+        );
+    }
+
+    let summary = ExitModeSummary {
+        a_width: infer_exit_width(&variant_modes, RegName::A),
+        i_width: infer_exit_width(&variant_modes, RegName::X),
+        is_naked: block.is_naked,
+    };
+
+    if let Some(exit_contract) = block.exit_contract
+        && let Some(span) = block.name_span
+    {
+        for (register, expected, actual) in [
+            (RegName::A, exit_contract.a_width, summary.a_width),
+            (RegName::X, exit_contract.i_width, summary.i_width),
+        ] {
+            if let Some(expected) = expected
+                && actual != ExitWidth::Fixed(expected)
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "function '{name}' exit contract requires {} but inferred exit mode is {}",
+                            format_contract_mode(Some(expected), register),
+                            format_inferred_exit_width(actual, register),
+                        ),
+                    )
+                    .with_help(
+                        "change the body so all reachable returns end in the declared mode or update the `->` contract",
+                    ),
+                );
+            }
+        }
+    }
+
+    cache.insert(name.to_string(), summary);
+    summary
+}
+
 pub fn lower(
     file: &File,
     sema: &SemanticModel,
@@ -1130,6 +1508,7 @@ pub fn lower(
             _ => None,
         })
         .collect();
+    let exit_summaries = build_exit_mode_summaries(file, sema, fs, &mut diagnostics);
     let mut call_summaries = build_call_contract_summaries(file, sema);
 
     for item in &file.items {
@@ -1151,6 +1530,7 @@ pub fn lower(
                     sema,
                     fs,
                     &inline_bodies,
+                    &exit_summaries,
                     &current_segment,
                     &mut diagnostics,
                     &mut ops,
@@ -1239,6 +1619,7 @@ pub fn lower(
                         sema,
                         fs,
                         &inline_bodies,
+                        &exit_summaries,
                         &mut block_segment,
                         &mut block_ctx,
                         &mut diagnostics,
@@ -1286,6 +1667,7 @@ pub fn lower(
                     sema,
                     fs,
                     &inline_bodies,
+                    &exit_summaries,
                     &mut current_segment,
                     &mut top_level_ctx,
                     &mut diagnostics,
@@ -1450,6 +1832,7 @@ fn lower_named_data_block(
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     inline_bodies: &FxHashMap<String, &CodeBlock>,
+    exit_summaries: &FxHashMap<String, ExitModeSummary>,
     outer_segment: &str,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
@@ -1477,6 +1860,7 @@ fn lower_named_data_block(
                 sema,
                 fs,
                 inline_bodies,
+                exit_summaries,
                 &mut block_segment,
                 &mut charset,
                 diagnostics,
@@ -1496,6 +1880,7 @@ fn lower_named_data_block(
             sema,
             fs,
             inline_bodies,
+            exit_summaries,
             &mut block_segment,
             &mut charset,
             diagnostics,
@@ -1520,6 +1905,7 @@ fn lower_named_data_entry(
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     inline_bodies: &FxHashMap<String, &CodeBlock>,
+    exit_summaries: &FxHashMap<String, ExitModeSummary>,
     current_segment: &mut String,
     charset: &mut Option<String>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1674,6 +2060,7 @@ fn lower_named_data_entry(
                         sema,
                         fs,
                         inline_bodies,
+                        exit_summaries,
                         current_segment,
                         charset,
                         diagnostics,
@@ -1704,6 +2091,7 @@ fn lower_named_data_entry(
                     sema,
                     fs,
                     inline_bodies,
+                    exit_summaries,
                     &mut code_segment,
                     &mut code_ctx,
                     diagnostics,
@@ -1727,6 +2115,7 @@ fn lower_stmt(
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     inline_bodies: &FxHashMap<String, &CodeBlock>,
+    exit_summaries: &FxHashMap<String, ExitModeSummary>,
     current_segment: &mut String,
     ctx: &mut LowerContext,
     diagnostics: &mut Vec<Diagnostic>,
@@ -1803,15 +2192,17 @@ fn lower_stmt(
             {
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
+                        let exit_summary = exit_summaries.get(&instruction.mnemonic).copied();
                         lower_inline_call(
                             inline_block.name.as_str(),
                             &inline_block.body,
                             meta,
-                            effective_exit_contract(meta),
+                            exit_summary,
                             !meta.has_contract,
                             sema,
                             fs,
                             inline_bodies,
+                            exit_summaries,
                             current_segment,
                             ctx,
                             span,
@@ -1829,9 +2220,11 @@ fn lower_stmt(
                     &target,
                     meta.is_far,
                     Some(meta.mode_contract),
-                    effective_exit_contract(meta),
+                    exit_summaries.get(&instruction.mnemonic).copied(),
                     !meta.has_contract,
-                    meta.is_naked && meta.has_contract,
+                    exit_summaries
+                        .get(&instruction.mnemonic)
+                        .is_some_and(|summary| summary.is_naked && meta.has_contract),
                     span,
                     ctx,
                     ops,
@@ -1854,15 +2247,17 @@ fn lower_stmt(
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(call.target.as_str()) {
                         let inlined_body = substitute_inline_body(&inline_block.body, &bindings);
+                        let exit_summary = exit_summaries.get(call.target.as_str()).copied();
                         lower_inline_call(
                             inline_block.name.as_str(),
                             &inlined_body,
                             meta,
-                            effective_exit_contract(meta),
+                            exit_summary,
                             !call.is_bare || !meta.has_contract,
                             sema,
                             fs,
                             inline_bodies,
+                            exit_summaries,
                             current_segment,
                             ctx,
                             span,
@@ -1875,9 +2270,11 @@ fn lower_stmt(
                         &target,
                         meta.is_far,
                         Some(meta.mode_contract),
-                        effective_exit_contract(meta),
+                        exit_summaries.get(call.target.as_str()).copied(),
                         !call.is_bare || !meta.has_contract,
-                        meta.is_naked && call.is_bare && meta.has_contract,
+                        exit_summaries
+                            .get(call.target.as_str())
+                            .is_some_and(|summary| summary.is_naked && call.is_bare && meta.has_contract),
                         span,
                         ctx,
                         ops,
@@ -1935,6 +2332,7 @@ fn lower_stmt(
                     sema,
                     fs,
                     inline_bodies,
+                    exit_summaries,
                     current_segment,
                     ctx,
                     diagnostics,
@@ -1978,6 +2376,7 @@ fn lower_stmt(
                         sema,
                         fs,
                         inline_bodies,
+                        exit_summaries,
                         current_segment,
                         ctx,
                         diagnostics,
@@ -2008,6 +2407,7 @@ fn lower_stmt(
                         sema,
                         fs,
                         inline_bodies,
+                        exit_summaries,
                         current_segment,
                         ctx,
                         diagnostics,
@@ -2054,6 +2454,7 @@ fn lower_stmt(
                         sema,
                         fs,
                         inline_bodies,
+                        exit_summaries,
                         current_segment,
                         ctx,
                         diagnostics,
@@ -2102,6 +2503,7 @@ fn lower_stmt(
                     sema,
                     fs,
                     inline_bodies,
+                    exit_summaries,
                     current_segment,
                     ctx,
                     diagnostics,
@@ -2316,6 +2718,7 @@ fn enter_call_mode(
 
 fn finish_call_mode(
     saved_mode: ModeState,
+    entered_mode: ModeState,
     behavior: CallModeBehavior,
     reset_mode_after: bool,
     span: Span,
@@ -2327,16 +2730,17 @@ fn finish_call_mode(
             lower_mode_restore(ctx.mode, saved_mode, span, ops);
             ctx.mode = saved_mode;
         }
-        CallModeBehavior::AdoptExit(exit_contract) => {
+        CallModeBehavior::AdoptExit(exit_summary) => {
             if reset_mode_after {
                 ctx.mode = ModeState::default();
                 ops.push(Spanned::new(Op::SetMode(ModeContract::default()), span));
             } else {
-                ctx.mode = ModeState {
-                    a_width: exit_contract.a_width,
-                    i_width: exit_contract.i_width,
-                };
-                ops.push(Spanned::new(Op::SetMode(exit_contract), span));
+                let exit_mode = apply_exit_mode(exit_summary, entered_mode);
+                ctx.mode = exit_mode;
+                ops.push(Spanned::new(
+                    Op::SetMode(mode_state_to_contract(exit_mode)),
+                    span,
+                ));
             }
         }
     }
@@ -2346,15 +2750,16 @@ fn lower_call_with_contract(
     target: &str,
     is_far: bool,
     entry_contract: Option<ModeContract>,
-    exit_contract: Option<ModeContract>,
+    exit_summary: Option<ExitModeSummary>,
     preserve_mode: bool,
     reset_mode_after: bool,
     span: Span,
     ctx: &mut LowerContext,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    let behavior = call_mode_behavior(preserve_mode, exit_contract);
+    let behavior = call_mode_behavior(preserve_mode, exit_summary);
     let saved_mode = enter_call_mode(entry_contract, span, ctx, ops);
+    let entered_mode = ctx.mode;
 
     let mnemonic = if is_far { "jsl" } else { "jsr" };
     ops.push(Spanned::new(
@@ -2373,7 +2778,15 @@ fn lower_call_with_contract(
         span,
     ));
 
-    finish_call_mode(saved_mode, behavior, reset_mode_after, span, ctx, ops);
+    finish_call_mode(
+        saved_mode,
+        entered_mode,
+        behavior,
+        reset_mode_after,
+        span,
+        ctx,
+        ops,
+    );
 }
 
 /// Inline a function body at the call site instead of emitting JSR/JSL.
@@ -2381,19 +2794,21 @@ fn lower_inline_call(
     block_name: &str,
     body: &[Spanned<Stmt>],
     meta: &crate::sema::FunctionMeta,
-    exit_contract: Option<ModeContract>,
+    exit_summary: Option<ExitModeSummary>,
     preserve_mode: bool,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     inline_bodies: &FxHashMap<String, &CodeBlock>,
+    exit_summaries: &FxHashMap<String, ExitModeSummary>,
     current_segment: &mut String,
     ctx: &mut LowerContext,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    let behavior = call_mode_behavior(preserve_mode, exit_contract);
+    let behavior = call_mode_behavior(preserve_mode, exit_summary);
     let saved_mode = enter_call_mode(Some(meta.mode_contract), span, ctx, ops);
+    let entered_mode = ctx.mode;
 
     // Lower the inline function's body statements in-place.
     let inline_scope = Some(block_name);
@@ -2405,6 +2820,7 @@ fn lower_inline_call(
             sema,
             fs,
             inline_bodies,
+            exit_summaries,
             current_segment,
             ctx,
             diagnostics,
@@ -2412,7 +2828,7 @@ fn lower_inline_call(
         );
     }
 
-    finish_call_mode(saved_mode, behavior, false, span, ctx, ops);
+    finish_call_mode(saved_mode, entered_mode, behavior, false, span, ctx, ops);
 }
 
 fn lower_instruction_stmt(
@@ -2468,6 +2884,9 @@ fn lower_instruction_stmt(
         }
 
         if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops) {
+            if is_return {
+                ctx.return_modes.push(mode_after_jump);
+            }
             ctx.mode = mode_after_jump;
             ctx.reachable = false;
             if mnemonic == "plp" || mnemonic == "rti" {
@@ -6170,9 +6589,31 @@ mod tests {
     }
 
     #[test]
-    fn checked_inline_call_uses_declared_exit_mode_without_restore() {
+    fn lowers_untyped_inline_immediate_contract_arguments() {
+        let source = "inline scale (#factor) {\n  lda #factor\n}\nfunc main @a16 {\n  scale #$1234\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(0x1234)));
+    }
+
+    #[test]
+    fn checked_inline_call_uses_inferred_exit_mode_without_restore() {
         let source =
-            "inline widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
+            "inline widen @a8 () -> @a16 {\n  @a16\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -6224,9 +6665,9 @@ mod tests {
     }
 
     #[test]
-    fn bare_contract_call_uses_declared_exit_mode_without_restore() {
+    fn bare_contract_call_uses_inferred_exit_mode_without_restore() {
         let source =
-            "func widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
+            "func widen @a8 () -> @a16 {\n  @a16\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -6248,6 +6689,37 @@ mod tests {
             !mnemonics.iter().any(|mnemonic| mnemonic == "sep:0x20"),
             "unexpected restore after contract-bearing call: {mnemonics:?}"
         );
+    }
+
+    #[test]
+    fn rejects_exit_contract_mismatch_against_inferred_exit_mode() {
+        let source =
+            "inline widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("exit contract requires @a16 but inferred exit mode is @a8")
+        }));
+    }
+
+    #[test]
+    fn rejects_divergent_exit_modes_across_reachable_returns() {
+        let source = "func choose @a8 () -> a {\n  c-? {\n    @a16\n    return\n  }\n  return\n}\nfunc main {\n  choose -> a\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("has inconsistent exit mode across reachable returns")
+        }));
     }
 
     #[test]

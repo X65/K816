@@ -211,10 +211,7 @@ pub(super) fn collect_function(
             params: block.params.clone(),
             outputs: block.outputs.clone(),
             mode_contract: merged_contract,
-            exit_contract: block.exit_contract.map(|exit| ModeContract {
-                a_width: exit.a_width.or(merged_contract.a_width),
-                i_width: exit.i_width.or(merged_contract.i_width),
-            }),
+            exit_contract: block.exit_contract,
         },
     );
 }

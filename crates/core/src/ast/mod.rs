@@ -50,6 +50,7 @@ pub enum RegName {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImmediateParamType {
+    Inferred,
     Byte,
     Word,
 }

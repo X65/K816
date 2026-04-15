@@ -1,0 +1,9 @@
+Error: function 'choose' has inconsistent exit mode across reachable returns
+   ╭─[ tests/golden/fixtures/syntax-func-contract-divergent-exit-err/input.k65:1:6 ]
+   │
+ 1 │ func choose @a8 () -> a {
+   │      ───┬──  
+   │         ╰──── here
+   │ 
+   │ Help: ensure every reachable return exits with the same @a*/@i* widths or use `call foo` at the caller
+───╯

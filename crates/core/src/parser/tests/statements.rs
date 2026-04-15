@@ -275,7 +275,7 @@ fn parses_operand_modes_with_y_and_indirect_forms() {
 #[test]
 fn parses_function_contract_declaration_with_inline_params_and_exit_modes() {
     let source =
-        "inline scale @a16 @i16 (a, table, #factor:byte) -> @a8 a, y {\n  lda #factor\n}\n";
+        "inline scale @a16 @i16 (a, table, #factor, #limit:byte) -> @a8 a, y {\n  lda #factor\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
     let Item::CodeBlock(block) = &file.items[0].node else {
         panic!("expected code block");
@@ -299,8 +299,15 @@ fn parses_function_contract_declaration_with_inline_params_and_exit_modes() {
         block.params[2],
         ContractParam::Immediate(ImmediateParam {
             ref name,
-            ty: ImmediateParamType::Byte,
+            ty: ImmediateParamType::Inferred,
         }) if name == "factor"
+    ));
+    assert!(matches!(
+        block.params[3],
+        ContractParam::Immediate(ImmediateParam {
+            ref name,
+            ty: ImmediateParamType::Byte,
+        }) if name == "limit"
     ));
 }
 

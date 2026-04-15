@@ -1,8 +1,9 @@
 // Exit-width contract variants:
-// - checked bare call keeps the callee's declared exit mode for later bridges
+// - checked bare call adopts the callee's inferred exit mode for later bridges
 // - unchecked `call foo` restores the caller mode
 
 func widen @a8 () -> @a16 {
+    @a16
     nop
 }
 

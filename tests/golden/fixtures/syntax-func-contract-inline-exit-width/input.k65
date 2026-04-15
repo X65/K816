@@ -1,8 +1,9 @@
 // Inline exit-width contract variants:
-// - checked bare call keeps the inline callee's declared exit mode
+// - checked bare call adopts the inline callee's inferred exit mode
 // - unchecked `call foo` restores the caller mode even for inline bodies
 
 inline widen @a8 () -> @a16 {
+    @a16
     nop
 }
 

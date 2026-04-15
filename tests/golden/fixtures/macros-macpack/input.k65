@@ -1,0 +1,23 @@
+inline add (a, #b) -> a {
+    clc
+    adc #b
+}
+
+inline sub (a, #b) -> a {
+    sec
+    sbc #b
+}
+
+inline save (x, some_memory) {
+    stx some_memory
+}
+
+var variable
+
+func main {
+    a = 0
+    add a, #$10 -> a
+    sub a, #10 -> a
+    tax
+    save x, variable
+}

@@ -74,6 +74,56 @@ func main {
 
 See [register-width-aware-syntax.md](docs/register-width-aware-syntax.md) for full details.
 
+## Symbolic Subscripts
+
+Declare named-field layouts on a fixed address and access them with dot or
+bracket syntax (inspired by Pawn):
+
+```k65
+var player[
+  .x   :word
+  .y   :word
+  .hp  :byte
+] = $0200
+
+func tick @a16 {
+  a = player.x
+  player.x = a = a + 1
+  lda #player.hp:offsetof   // compile-time field offset
+}
+```
+
+See [symbolic-subscripts.md](docs/symbolic-subscripts.md).
+
+## Compile-time Evaluator
+
+Square brackets evaluate arbitrary expressions at compile time, including
+lookup-table generation with `for ... eval`:
+
+```k65
+[ TABLE_SIZE = 256 ]
+
+data SineTable {
+  align 256
+  for x=0..TABLE_SIZE eval [ sin(x / TABLE_SIZE * pi * 2) * 127 + 128 ]
+}
+```
+
+## Far Calls
+
+24-bit addressing uses `far func` (emits `JSL`/`RTL`) and `call far` across
+compilation units:
+
+```k65
+far func lib_init @a8 @i8 {
+  nop
+}
+
+func main {
+  call far lib_init
+}
+```
+
 ## CLI Usage
 
 ```bash

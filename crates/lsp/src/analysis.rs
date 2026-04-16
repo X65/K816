@@ -414,18 +414,6 @@ pub(super) fn canonical_symbol(name: &str, scope: Option<&str>) -> String {
     name.to_string()
 }
 
-pub(super) fn extract_unknown_identifier_name(message: &str) -> Option<String> {
-    let prefixes = ["unknown identifier '"];
-    for prefix in prefixes {
-        if let Some(rest) = message.strip_prefix(prefix)
-            && let Some(end) = rest.find('\'')
-        {
-            return Some(rest[..end].to_string());
-        }
-    }
-    None
-}
-
 pub(super) fn completion_kind_for_symbol(category: SymbolCategory) -> CompletionItemKind {
     match category {
         SymbolCategory::Function => CompletionItemKind::FUNCTION,

@@ -15,8 +15,8 @@ mod workspace;
 
 use self::analysis::{
     analyze_document, canonical_symbol, completion_kind_for_symbol,
-    extract_unknown_identifier_name, semantic_token_legend_modifiers, semantic_token_legend_types,
-    semantic_token_modifier_bit, semantic_token_type_for_category, semantic_token_type_index,
+    semantic_token_legend_modifiers, semantic_token_legend_types, semantic_token_modifier_bit,
+    semantic_token_type_for_category, semantic_token_type_index,
 };
 use self::convert::{
     byte_range_to_lsp, dedup_diagnostics, diagnostic_to_lsp, is_valid_symbol_name,

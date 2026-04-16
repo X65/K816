@@ -15,7 +15,6 @@ use super::watcher::WorkspaceFsEvent;
 use super::{
     ByteRange, DocumentAnalysis, DocumentState, LineIndex, PROJECT_MANIFEST, ServerState,
     SymbolLocation, SymbolOccurrence, analyze_document, canonical_symbol, diagnostic_to_lsp,
-    extract_unknown_identifier_name,
 };
 
 impl ServerState {
@@ -511,25 +510,7 @@ impl ServerState {
         doc.analysis
             .diagnostics
             .iter()
-            .filter(|diag| !self.is_cross_module_false_positive(diag))
             .map(|diag| diagnostic_to_lsp(diag, &doc.uri, &doc.line_index, &doc.text))
             .collect()
-    }
-
-    pub(super) fn is_cross_module_false_positive(
-        &self,
-        diag: &k816_core::diag::Diagnostic,
-    ) -> bool {
-        if diag.severity != k816_core::diag::Severity::Error {
-            return false;
-        }
-        if let Some(name) = extract_unknown_identifier_name(&diag.message) {
-            if self.symbols.contains_key(&name) {
-                return true;
-            }
-            let suffix = format!("::{name}");
-            return self.symbols.keys().any(|symbol| symbol.ends_with(&suffix));
-        }
-        false
     }
 }

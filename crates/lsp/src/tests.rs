@@ -146,33 +146,6 @@ fn resolves_cross_file_variable_definition() {
 }
 
 #[test]
-fn suppresses_cross_module_undefined_symbol_diagnostic() {
-    let uri_vars = Uri::from_str("file:///project/src/vars.k65").expect("uri");
-    let text_vars = "var foo = $1234\n".to_string();
-
-    let uri_test = Uri::from_str("file:///project/src/test.k65").expect("uri");
-    let text_test = "func test @a8 {\n  lda foo\n}\n".to_string();
-
-    let mut state = ServerState::new(PathBuf::from("/project"));
-    state
-        .upsert_document(uri_vars.clone(), text_vars, 1, false)
-        .expect("vars doc");
-    state
-        .upsert_document(uri_test.clone(), text_test, 1, true)
-        .expect("test doc");
-
-    let diagnostics = state.lsp_diagnostics(&uri_test);
-    let has_foo_error = diagnostics
-        .iter()
-        .any(|d| d.message.contains("unknown identifier 'foo'"));
-    assert!(
-        !has_foo_error,
-        "cross-module reference to 'foo' should not produce a diagnostic, got: {:?}",
-        diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn symbols_survive_parse_failure() {
     let uri = Uri::from_str("file:///project/src/main.k65").expect("uri");
     let good_text = "func main {\n  nop\n}\n".to_string();

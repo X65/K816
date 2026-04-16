@@ -39,13 +39,10 @@
         ],
         "configurationAttributes": {
           "launch": {
-            "required": [
-              "program"
-            ],
             "properties": {
               "program": {
                 "type": "string",
-                "description": "Path to the .k65 file to debug."
+                "description": "Path to the binary to debug. If omitted, the extension auto-resolves via `k816 metadata`."
               },
               "stopOnEntry": {
                 "type": "boolean",
@@ -59,8 +56,7 @@
           {
             "type": "k816",
             "request": "launch",
-            "name": "Debug K65 Program",
-            "program": "${workspaceFolder}/target/output.xex"
+            "name": "Debug K65 Program"
           }
         ],
         "configurationSnippets": [
@@ -70,8 +66,7 @@
             "body": {
               "type": "k816",
               "request": "launch",
-              "name": "Debug K65 Program",
-              "program": "^\"\\${workspaceFolder}/target/output.xex\""
+              "name": "Debug K65 Program"
             }
           }
         ]
@@ -168,6 +163,10 @@
       {
         "command": "k816.build",
         "title": "K816: Build"
+      },
+      {
+        "command": "k816.run",
+        "title": "K816: Run (without debugging)"
       }
     ],
     "languageModelTools": [
@@ -246,6 +245,11 @@
       {
         "command": "k816.build",
         "key": "f7",
+        "when": "editorTextFocus && editorLangId == k65"
+      },
+      {
+        "command": "k816.run",
+        "key": "ctrl+f5",
         "when": "editorTextFocus && editorLangId == k65"
       }
     ],
@@ -343,9 +347,9 @@
   "devDependencies": {
     "@types/node": "^22.19.11",
     "@types/vscode": "^1.109.0",
-    "@vscode/vsce": "^3.7.1",
+    "@vscode/vsce": "^3.9.0",
     "esbuild": "^0.28.0",
     "npm-run-all2": "^8.0.4",
-    "typescript": "^5.7.3"
+    "typescript": "^5.9.3"
   }
 }

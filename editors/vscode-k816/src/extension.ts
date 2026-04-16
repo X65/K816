@@ -120,11 +120,18 @@ export async function activate(
     vscode.commands.registerCommand("k816.showCodeLensInfo", async () => {}),
     vscode.commands.registerCommand("k816.build", async () => {
       const tasks = await vscode.tasks.fetchTasks({ type: "k816" });
-      const buildTask = tasks.find(
-        (t) => t.group === vscode.TaskGroup.Build,
-      );
+      const buildTask = tasks.find((t) => t.group === vscode.TaskGroup.Build);
       if (buildTask) {
         vscode.tasks.executeTask(buildTask);
+      }
+    }),
+    vscode.commands.registerCommand("k816.run", async () => {
+      const tasks = await vscode.tasks.fetchTasks({ type: "k816" });
+      const runTask = tasks.find(
+        (t) => (t.definition as K816TaskDefinition).task === "run",
+      );
+      if (runTask) {
+        vscode.tasks.executeTask(runTask);
       }
     }),
     vscode.tasks.registerTaskProvider("k816", taskProvider),
@@ -156,9 +163,7 @@ export function deactivate(): Thenable<void> | undefined {
   return stopClient();
 }
 
-function registerLanguageModelTools(
-  context: vscode.ExtensionContext,
-): void {
+function registerLanguageModelTools(context: vscode.ExtensionContext): void {
   const descriptions = loadInstructionDescriptions(context);
 
   context.subscriptions.push(
@@ -166,8 +171,9 @@ function registerLanguageModelTools(
       prepareInvocation(options) {
         const mnemonic = normalizeMnemonic(options.input.mnemonic);
         return {
-          invocationMessage: mnemonic
-            ? `Looking up ${mnemonic} in the 65816 instruction reference`
+          invocationMessage:
+            mnemonic ?
+              `Looking up ${mnemonic} in the 65816 instruction reference`
             : "Looking up 65816 instruction information",
         };
       },
@@ -195,8 +201,9 @@ function registerLanguageModelTools(
         const memoryName = normalizeMemoryName(options.input.memory_name);
         const detailText = detail === "runs" ? "with run details" : "summary";
         return {
-          invocationMessage: memoryName
-            ? `Querying memory map for ${memoryName} (${detailText})`
+          invocationMessage:
+            memoryName ?
+              `Querying memory map for ${memoryName} (${detailText})`
             : `Querying workspace memory map (${detailText})`,
         };
       },
@@ -263,9 +270,7 @@ function registerChatParticipant(context: vscode.ExtensionContext): void {
       return;
     }
 
-    const tools = vscode.lm.tools.filter((tool) =>
-      tool.tags?.includes("k816"),
-    );
+    const tools = vscode.lm.tools.filter((tool) => tool.tags?.includes("k816"));
 
     const messages: vscode.LanguageModelChatMessage[] = [
       vscode.LanguageModelChatMessage.User(
@@ -376,7 +381,13 @@ function formatMemoryMapResult(result: QueryMemoryMapResult): string {
   }
 
   if (result.runs.length > 0) {
-    lines.push("", "### Linked Runs", "", "| Memory | Range | Size |", "| --- | --- | ---: |");
+    lines.push(
+      "",
+      "### Linked Runs",
+      "",
+      "| Memory | Range | Size |",
+      "| --- | --- | ---: |",
+    );
     for (const run of result.runs) {
       lines.push(
         `| ${run.memory_name} | ${formatHex(run.start, 6)}-${formatHex(run.end, 6)} | ${formatByteCount(run.size)} |`,
@@ -397,7 +408,9 @@ function formatHex(value: number, width = 0): string {
 }
 
 function toolTextResult(text: string): vscode.LanguageModelToolResult {
-  return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
+  return new vscode.LanguageModelToolResult([
+    new vscode.LanguageModelTextPart(text),
+  ]);
 }
 
 function isUnsupportedRequestError(error: unknown): boolean {
@@ -604,6 +617,40 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
+interface K816Metadata {
+  project_root: string;
+  package: { name: string };
+  target_dir: string;
+  artifact: { path: string; kind: "xex" | "bin" };
+  run: { runner: string | null; args: string[] };
+}
+
+async function fetchProjectMetadata(
+  folder: vscode.WorkspaceFolder,
+): Promise<K816Metadata | undefined> {
+  const config = vscode.workspace.getConfiguration("k816");
+  const command = config.get<string>("server.path", "k816");
+  return new Promise((resolve) => {
+    const proc = spawn(command, ["metadata"], { cwd: folder.uri.fsPath });
+    let stdout = "";
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    proc.on("error", () => resolve(undefined));
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        resolve(undefined);
+        return;
+      }
+      try {
+        resolve(JSON.parse(stdout) as K816Metadata);
+      } catch {
+        resolve(undefined);
+      }
+    });
+  });
+}
+
 interface K816TaskDefinition extends vscode.TaskDefinition {
   task: string;
 }
@@ -763,9 +810,9 @@ class K816InlineValuesProvider implements vscode.InlineValuesProvider {
         );
         if (bytes && bytes.length >= row.read_size_hint) {
           const formatted =
-            row.read_size_hint === 1
-              ? `$${bytes[0].toString(16).toUpperCase().padStart(2, "0")}`
-              : `$${((bytes[1] << 8) | bytes[0]).toString(16).toUpperCase().padStart(4, "0")}`;
+            row.read_size_hint === 1 ?
+              `$${bytes[0].toString(16).toUpperCase().padStart(2, "0")}`
+            : `$${((bytes[1] << 8) | bytes[0]).toString(16).toUpperCase().padStart(4, "0")}`;
           text = `${row.name}: ${formatted} @ ${addressText}`;
         }
       }
@@ -881,10 +928,7 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
   handleMessage(message: any): void {
     if (!this.process) this.startProcess();
 
-    if (
-      message.type === "request" &&
-      message.command === "setBreakpoints"
-    ) {
+    if (message.type === "request" && message.command === "setBreakpoints") {
       this.handleSetBreakpoints(message).catch(() => {
         this.sendToEmu(message);
       });
@@ -924,9 +968,7 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
     });
 
     this.process.on("exit", (code, signal) => {
-      outputChannel?.appendLine(
-        `[emu exit] code=${code} signal=${signal}`,
-      );
+      outputChannel?.appendLine(`[emu exit] code=${code} signal=${signal}`);
       this._onDidSendMessage.fire({
         type: "event",
         event: "terminated",
@@ -954,9 +996,7 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
         this.rawBuffer = this.rawBuffer.subarray(idx + 4);
       }
       if (this.rawBuffer.length < this.contentLength) break;
-      const body = this.rawBuffer
-        .subarray(0, this.contentLength)
-        .toString();
+      const body = this.rawBuffer.subarray(0, this.contentLength).toString();
       this.rawBuffer = this.rawBuffer.subarray(this.contentLength);
       this.contentLength = -1;
       this.onEmuMessage(JSON.parse(body));
@@ -964,10 +1004,7 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
   }
 
   private onEmuMessage(msg: any): void {
-    if (
-      msg.type === "response" &&
-      msg.command === "setBreakpoints"
-    ) {
+    if (msg.type === "response" && msg.command === "setBreakpoints") {
       const pending = this.pendingBp.get(msg.request_seq);
       if (pending) {
         this.pendingBp.delete(msg.request_seq);
@@ -987,8 +1024,7 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
               verified: false,
               line: entry.originalLine,
               source: pending.originalSource,
-              message:
-                "Cannot resolve memory address for this line",
+              message: "Cannot resolve memory address for this line",
             });
           }
         }
@@ -1068,8 +1104,9 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
     if (Array.isArray(args?.breakpoints)) {
       return args.breakpoints
         .map((bp: any) => bp?.line)
-        .filter((line: unknown): line is number =>
-          typeof line === "number" && Number.isFinite(line),
+        .filter(
+          (line: unknown): line is number =>
+            typeof line === "number" && Number.isFinite(line),
         );
     }
 
@@ -1084,21 +1121,15 @@ class K816DebugAdapterProxy implements vscode.DebugAdapter {
   }
 }
 
-class K816DebugAdapterFactory
-  implements vscode.DebugAdapterDescriptorFactory
-{
+class K816DebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
   createDebugAdapterDescriptor(
     session: vscode.DebugSession,
   ): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
     const config = vscode.workspace.getConfiguration("k816");
     const command = config.get<string>("debugger.path", "emu");
-    const configuredArgs = config.get<string[]>("debugger.args", [
-      "--dap",
-    ]);
+    const configuredArgs = config.get<string[]>("debugger.args", ["--dap"]);
     const program = session.configuration.program;
-    const execArgs = program
-      ? [...configuredArgs, program]
-      : configuredArgs;
+    const execArgs = program ? [...configuredArgs, program] : configuredArgs;
     const env = resolveDebuggerEnv(config);
 
     const proxy = new K816DebugAdapterProxy(command, execArgs, env);
@@ -1149,7 +1180,7 @@ class K816DebugAdapterTrackerFactory
 
 class K816DebugConfigProvider implements vscode.DebugConfigurationProvider {
   async resolveDebugConfiguration(
-    _folder: vscode.WorkspaceFolder | undefined,
+    folder: vscode.WorkspaceFolder | undefined,
     config: vscode.DebugConfiguration,
   ): Promise<vscode.DebugConfiguration | undefined> {
     if (!config.type && !config.request && !config.name) {
@@ -1161,11 +1192,23 @@ class K816DebugConfigProvider implements vscode.DebugConfigurationProvider {
       }
     }
     if (config.type === "k816" && !config.program) {
+      const workspaceFolder = folder ?? vscode.workspace.workspaceFolders?.[0];
+      if (workspaceFolder) {
+        const meta = await fetchProjectMetadata(workspaceFolder);
+        if (meta?.artifact?.path) {
+          config.program = meta.artifact.path;
+        }
+      }
+    }
+    if (config.type === "k816" && !config.program) {
       const uris = await vscode.window.showOpenDialog({
         canSelectFiles: true,
         canSelectMany: false,
         title: "Select program binary to debug",
-        filters: { "XEX binaries": ["xex"], "All files": ["*"] },
+        filters: {
+          "K816 binaries": ["xex", "bin"],
+          "All files": ["*"],
+        },
       });
       if (!uris || uris.length === 0) {
         return undefined;

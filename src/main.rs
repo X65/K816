@@ -184,6 +184,8 @@ enum Commands {
     Lsp,
     /// Format source files.
     Fmt(FmtArgs),
+    /// Dump resolved project metadata as JSON (for editor integration).
+    Metadata,
 }
 
 #[derive(Debug, Parser)]
@@ -262,8 +264,28 @@ fn main() {
             if let Some(code) = err.downcast_ref::<ExitCodeError>() {
                 std::process::exit(code.0);
             }
-            eprintln!("{err}");
+            print_error(&err);
             std::process::exit(1);
+        }
+    }
+}
+
+fn print_error(err: &anyhow::Error) {
+    eprintln!("Error: {err}");
+    let causes: Vec<_> = err.chain().skip(1).collect();
+    if causes.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!("Caused by:");
+    for (i, cause) in causes.iter().enumerate() {
+        let text = cause.to_string();
+        let mut lines = text.lines();
+        if let Some(first) = lines.next() {
+            eprintln!("  {i}: {first}");
+        }
+        for line in lines {
+            eprintln!("     {line}");
         }
     }
 }
@@ -315,6 +337,11 @@ fn run() -> anyhow::Result<()> {
             link_options.validate_absent_for_subcommand("fmt")?;
             output_option.validate_absent_for_subcommand("fmt")?;
             fmt_command(args)
+        }
+        Some(Commands::Metadata) => {
+            link_options.validate_for_project_build_or_run("metadata")?;
+            output_option.validate_absent_for_subcommand("metadata")?;
+            metadata_command(link_options)
         }
         None => {
             let Some(input_path) = input else {
@@ -795,6 +822,38 @@ fn render_link_script_template(package_name: &str) -> String {
 
 fn project_build_command(link_options: LinkPhaseOptions) -> anyhow::Result<()> {
     let _ = project_build_internal(&link_options)?;
+    Ok(())
+}
+
+fn metadata_command(link_options: LinkPhaseOptions) -> anyhow::Result<()> {
+    let project_root = resolve_project_root()?;
+    let manifest = load_project_manifest(&project_root)?;
+    let target_dir = project_root.join(PROJECT_TARGET_DIR);
+
+    let resolved_config = resolve_project_link_config_path(&project_root, &manifest, &link_options);
+    let link_config = if let Some(path) = resolved_config.as_deref() {
+        k816_link::load_config(path)?
+    } else {
+        k816_link::default_stub_config()
+    };
+    let output_kind = resolve_output_kind(link_config.output.kind, None, link_options.output_format);
+    let ext = output_extension(output_kind);
+    let artifact_path = target_dir.join(format!("{}.{}", manifest.package.name, ext));
+
+    let metadata = serde_json::json!({
+        "project_root": project_root,
+        "package": { "name": manifest.package.name },
+        "target_dir": target_dir,
+        "artifact": {
+            "path": artifact_path,
+            "kind": ext,
+        },
+        "run": {
+            "runner": manifest.run.runner,
+            "args": manifest.run.args,
+        },
+    });
+    println!("{}", serde_json::to_string_pretty(&metadata)?);
     Ok(())
 }
 

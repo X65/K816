@@ -20,15 +20,17 @@ for the [K816](https://github.com/X65/K816) toolchain.
 
 This extension requires that the `k816` binary is installed and available on your PATH, or that you configure the `k816.server.path` setting to point to the executable. The extension will automatically start the language server when you open a folder containing `.k65` files.
 
-### Build
+### Build and Run
 
 - **F7** to build the project (`k816 build`)
+- **Ctrl+F5** to build and run the project without debugging (`k816 run`;
+  requires `[run].runner` in `k816.toml`)
 - Task provider with `build`, `clean`, and `run` tasks (Terminal > Run Task)
 - Custom tasks via `tasks.json` for any k816 command (`compile`, `link`, `fmt`, etc.)
 
 ### Debugging
 
-- Launch and debug programs via the emulator's DAP interface
+- **F5** to launch and debug the project via the emulator's DAP interface
 - Source-level breakpoints with automatic address resolution
 - Disassembly view support (instruction pointer + disassemble request)
 - Memory inspector support (read and write memory when adapter supports it)
@@ -87,24 +89,38 @@ Example prompts in Copilot chat or agent mode:
 | Command | Keybinding | Description |
 |---------|------------|-------------|
 | K816: Build | F7 | Build the project |
+| K816: Run (without debugging) | Ctrl+F5 | Build and run via the configured runner |
 | K816: Restart Language Server | | Restart the LSP server |
 
 ## Debug Configuration
 
-Add to `.vscode/launch.json`:
+A minimal `.vscode/launch.json` is enough — the extension auto-resolves the
+binary path by running `k816 metadata` in the workspace root and using the
+reported `artifact.path`:
+
+```json
+{
+    "type": "k816",
+    "request": "launch",
+    "name": "Debug K65 Program"
+}
+```
+
+To override auto-resolution (e.g. to debug a different artifact), set
+`program` explicitly:
 
 ```json
 {
     "type": "k816",
     "request": "launch",
     "name": "Debug K65 Program",
-    "program": "${workspaceFolder}/target/output.xex"
+    "program": "${workspaceFolder}/path/to/custom.xex"
 }
 ```
 
 | Property | Required | Description |
 |----------|----------|-------------|
-| `program` | yes | Path to the binary (`.xex`) to debug |
+| `program` | no | Path to the binary (`.xex` or `.bin`) to debug. If omitted, resolved via `k816 metadata`. |
 | `stopOnEntry` | no | Pause on the first instruction (default: `false`) |
 
 ## Troubleshooting

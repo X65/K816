@@ -1,0 +1,16 @@
+// Raw-mnemonic parenthesised and bracketed operand forms. These were added
+// in the 65816 addressing-mode coverage pass; previously the raw-mnemonic
+// path parsed `(ptr)` as a grouped expression (emitting LDA absolute), which
+// silently hid the indirect-vs-absolute distinction from users dropping to
+// raw mnemonics.
+var ptr = 0x20
+
+func main {
+    lda (ptr)           // B2 20     -- DP indirect
+    lda (ptr,x)         // A1 20     -- DP indexed indirect X
+    lda (ptr),y         // B1 20     -- DP indirect indexed Y
+    sta (ptr)           // 92 20
+    sta (ptr,x)         // 81 20
+    sta (ptr),y         // 91 20
+    return
+}

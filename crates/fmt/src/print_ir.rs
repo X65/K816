@@ -111,8 +111,13 @@ pub fn format_ir(program: &Program) -> String {
                                 } => format!("{base},s"),
                                 AddressOperandMode::Direct { index: None } => base,
                                 AddressOperandMode::Indirect => format!("({base})"),
+                                AddressOperandMode::IndirectLong => format!("[{base}]"),
                                 AddressOperandMode::IndexedIndirectX => format!("({base},x)"),
                                 AddressOperandMode::IndirectIndexedY => format!("({base}),y"),
+                                AddressOperandMode::IndirectLongIndexedY => format!("[{base}],y"),
+                                AddressOperandMode::StackRelativeIndirectIndexedY => {
+                                    format!("({base},s),y")
+                                }
                             };
                             out.push_str(&rendered);
                         }

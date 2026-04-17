@@ -255,6 +255,62 @@ where
         .or(end().ignored())
         .rewind();
 
+    let operand_index_trailer = just(TokenKind::Comma)
+        .ignore_then(ident_parser())
+        .try_map(|name, span| {
+            parse_index_register(Some(name), span).map(|reg| reg.unwrap())
+        });
+
+    let long_indirect_operand = just(TokenKind::LBracket)
+        .ignore_then(expr_parser())
+        .then_ignore(just(TokenKind::RBracket))
+        .then(operand_index_trailer.clone().or_not())
+        .try_map(|(expr, outer_index), span| {
+            let addr_mode = match outer_index {
+                None => OperandAddrMode::IndirectLong,
+                Some(crate::ast::IndexRegister::Y) => OperandAddrMode::IndirectLongIndexedY,
+                Some(_) => {
+                    return Err(Rich::custom(
+                        span,
+                        "unsupported post-indirect-long index register, expected '[expr],y'",
+                    ));
+                }
+            };
+            Ok(Some(Operand::Value {
+                expr,
+                force_far: false,
+                index: None,
+                addr_mode,
+            }))
+        });
+
+    let parenthesized_operand = just(TokenKind::LParen)
+        .ignore_then(expr_parser().then(operand_index_trailer.clone().or_not()))
+        .then_ignore(just(TokenKind::RParen))
+        .then(operand_index_trailer.clone().or_not())
+        .try_map(|((expr, inner_index), outer_index), span| {
+            let addr_mode = match (inner_index, outer_index) {
+                (None, None) => OperandAddrMode::Indirect,
+                (Some(crate::ast::IndexRegister::X), None) => OperandAddrMode::IndexedIndirectX,
+                (None, Some(crate::ast::IndexRegister::Y)) => OperandAddrMode::IndirectIndexedY,
+                (Some(crate::ast::IndexRegister::S), Some(crate::ast::IndexRegister::Y)) => {
+                    OperandAddrMode::StackRelativeIndirectIndexedY
+                }
+                _ => {
+                    return Err(Rich::custom(
+                        span,
+                        "invalid indirect operand: choose '(expr)', '(expr,x)', '(expr),y', or '(expr,s),y'",
+                    ));
+                }
+            };
+            Ok(Some(Operand::Value {
+                expr,
+                force_far: false,
+                index: None,
+                addr_mode,
+            }))
+        });
+
     let operand = operand_boundary
         .to(None)
         .or(just(TokenKind::Hash)
@@ -265,13 +321,15 @@ where
                     explicit_hash: true,
                 })
             }))
+        .or(long_indirect_operand)
+        .or(parenthesized_operand)
         .or(just(TokenKind::Far)
             .or_not()
             .then(
                 expr_parser().then(
                     just(TokenKind::Comma)
                         .ignore_then(
-                            // Try index register (,x / ,y) first
+                            // Try index register (,x / ,y / ,s) first
                             ident_parser()
                                 .try_map(|name, span| {
                                     parse_index_register(Some(name), span)

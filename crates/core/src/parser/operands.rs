@@ -27,6 +27,28 @@ where
             addr_mode: OperandAddrMode::Direct,
         });
 
+    let long_indirect = just(TokenKind::LBracket)
+        .ignore_then(expr_parser())
+        .then_ignore(just(TokenKind::RBracket))
+        .then(index.clone())
+        .try_map(|(expr, outer_index), span| {
+            let addr_mode = match outer_index {
+                None => OperandAddrMode::IndirectLong,
+                Some(IndexRegister::Y) => OperandAddrMode::IndirectLongIndexedY,
+                Some(_) => {
+                    return Err(Rich::custom(
+                        span,
+                        "unsupported post-indirect-long index register, expected '[expr],y'",
+                    ));
+                }
+            };
+            Ok(HlaOperandExpr {
+                expr,
+                index: None,
+                addr_mode,
+            })
+        });
+
     let parenthesized = just(TokenKind::LParen)
         .ignore_then(expr_parser().then(index.clone()))
         .then_ignore(just(TokenKind::RParen))
@@ -36,10 +58,19 @@ where
                 (None, None) => (None, OperandAddrMode::Indirect),
                 (Some(IndexRegister::X), None) => (None, OperandAddrMode::IndexedIndirectX),
                 (None, Some(IndexRegister::Y)) => (None, OperandAddrMode::IndirectIndexedY),
-                (Some(IndexRegister::Y), None) | (Some(IndexRegister::S), None) => {
+                (Some(IndexRegister::S), Some(IndexRegister::Y)) => {
+                    (None, OperandAddrMode::StackRelativeIndirectIndexedY)
+                }
+                (Some(IndexRegister::Y), None) => {
                     return Err(Rich::custom(
                         span,
-                        "unsupported indirect index register, expected '(expr,x)'",
+                        "unsupported indirect index register, expected '(expr,x)' or '(expr,s),y'",
+                    ));
+                }
+                (Some(IndexRegister::S), None) => {
+                    return Err(Rich::custom(
+                        span,
+                        "stack-relative indirect requires trailing ',y': '(expr,s),y'",
                     ));
                 }
                 (None, Some(IndexRegister::X)) | (None, Some(IndexRegister::S)) => {
@@ -48,10 +79,16 @@ where
                         "unsupported post-indirect index register, expected '(expr),y'",
                     ));
                 }
-                (Some(_), Some(_)) => {
+                (Some(IndexRegister::X), Some(_)) | (Some(IndexRegister::S), Some(_)) => {
                     return Err(Rich::custom(
                         span,
-                        "invalid indirect operand: choose either '(expr,x)' or '(expr),y'",
+                        "invalid indirect operand: choose '(expr,x)', '(expr),y', or '(expr,s),y'",
+                    ));
+                }
+                (Some(IndexRegister::Y), Some(_)) => {
+                    return Err(Rich::custom(
+                        span,
+                        "invalid indirect operand: choose '(expr,x)', '(expr),y', or '(expr,s),y'",
                     ));
                 }
             };
@@ -63,5 +100,5 @@ where
             })
         });
 
-    parenthesized.or(plain)
+    long_indirect.or(parenthesized).or(plain)
 }

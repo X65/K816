@@ -1,6 +1,7 @@
 use crate::ast::Comment;
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
+use k816_isa65816::is_mnemonic;
 
 pub(super) fn coalesce_non_var_brackets(tokens: Vec<Token>, source: &str) -> Vec<Token> {
     let is_var_bracket = |idx: usize| -> bool {
@@ -18,6 +19,37 @@ pub(super) fn coalesce_non_var_brackets(tokens: Vec<Token>, source: &str) -> Vec
             }
         }
         false
+    };
+
+    // `[` is an operand bracket (long-indirect addressing) when it directly
+    // follows a CPU mnemonic that begins a statement — i.e. the only token
+    // between `[` and the nearest statement separator is a recognised mnemonic.
+    // Restricting to real mnemonics avoids conflicts with data-block keywords
+    // like `evaluator [...]` where the bracket belongs to the evaluator.
+    let is_operand_bracket = |idx: usize| -> bool {
+        if idx == 0 {
+            return false;
+        }
+        let TokenKind::Ident(name) = &tokens[idx - 1].kind else {
+            return false;
+        };
+        if !is_mnemonic(&name.to_ascii_lowercase()) {
+            return false;
+        }
+        let mut j = idx - 1;
+        while j > 0 {
+            j -= 1;
+            match &tokens[j].kind {
+                TokenKind::Newline
+                | TokenKind::Semi
+                | TokenKind::LBrace
+                | TokenKind::RBrace => return true,
+                _ => return false,
+            }
+        }
+        // Reached start of input without any intervening token — still an
+        // operand bracket (leading mnemonic at file start).
+        true
     };
 
     let find_matching_rbracket = |start: usize| -> Option<usize> {
@@ -44,7 +76,7 @@ pub(super) fn coalesce_non_var_brackets(tokens: Vec<Token>, source: &str) -> Vec
     while i < tokens.len() {
         match &tokens[i].kind {
             TokenKind::LBracket => {
-                if is_var_bracket(i) {
+                if is_var_bracket(i) || is_operand_bracket(i) {
                     if let Some(close) = find_matching_rbracket(i) {
                         for token in &tokens[i..=close] {
                             result.push(token.clone());

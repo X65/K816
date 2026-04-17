@@ -19,15 +19,24 @@ pub(super) fn parse_stack_target(value: &str) -> Option<HlaStackTarget> {
     if value.eq_ignore_ascii_case("a") {
         return Some(HlaStackTarget::A);
     }
+    if value.eq_ignore_ascii_case("x") {
+        return Some(HlaStackTarget::X);
+    }
+    if value.eq_ignore_ascii_case("y") {
+        return Some(HlaStackTarget::Y);
+    }
+    if value.eq_ignore_ascii_case("b") {
+        return Some(HlaStackTarget::B);
+    }
+    if value.eq_ignore_ascii_case("d") {
+        return Some(HlaStackTarget::D);
+    }
     if value.eq_ignore_ascii_case("p")
         || value.eq_ignore_ascii_case("flag")
         || value.eq_ignore_ascii_case("n")
         || value.eq_ignore_ascii_case("v")
         || value.eq_ignore_ascii_case("o")
         || value.eq_ignore_ascii_case("m")
-        || value.eq_ignore_ascii_case("x")
-        || value.eq_ignore_ascii_case("b")
-        || value.eq_ignore_ascii_case("d")
         || value.eq_ignore_ascii_case("i")
         || value.eq_ignore_ascii_case("z")
         || value.eq_ignore_ascii_case("c")

@@ -1,0 +1,18 @@
+var dst1 = 0x10
+var dst2 = 0x11
+var big1 = 0x0200
+var big2 = 0x0201
+
+func main {
+    // Chain: dst1 = dst2 = a = 0. Both STAs are zp STZ-compatible, and A is
+    // dead after (next op is `lda #1`), so `lda #0` is dropped.
+    dst1 = dst2 = a = 0
+    a = 1
+
+    // Absolute + absolute,X rewrite. X-indexed variant exercises the `,X`
+    // STZ form. `return` at the end keeps A live, so `lda #0` is kept.
+    big1 = a = 0
+    big2,x = a
+
+    return
+}

@@ -305,7 +305,39 @@ fn hla_effects(stmt: &HlaStmt) -> RegEffects {
             }
         }
         HlaStmt::StackOp {
-            target: HlaStackTarget::P,
+            target: HlaStackTarget::X,
+            push,
+        } => {
+            if *push {
+                RegEffects {
+                    reads: RegSet::X,
+                    modifies: RegSet::NONE,
+                }
+            } else {
+                RegEffects {
+                    reads: RegSet::NONE,
+                    modifies: RegSet::X,
+                }
+            }
+        }
+        HlaStmt::StackOp {
+            target: HlaStackTarget::Y,
+            push,
+        } => {
+            if *push {
+                RegEffects {
+                    reads: RegSet::Y,
+                    modifies: RegSet::NONE,
+                }
+            } else {
+                RegEffects {
+                    reads: RegSet::NONE,
+                    modifies: RegSet::Y,
+                }
+            }
+        }
+        HlaStmt::StackOp {
+            target: HlaStackTarget::B | HlaStackTarget::D | HlaStackTarget::P,
             ..
         } => RegEffects::default(),
         HlaStmt::XAssignImmediate { .. } => RegEffects {
@@ -3791,6 +3823,14 @@ fn lower_hla_stmt(
             let mnemonic = match (target, push) {
                 (HlaStackTarget::A, true) => "pha",
                 (HlaStackTarget::A, false) => "pla",
+                (HlaStackTarget::X, true) => "phx",
+                (HlaStackTarget::X, false) => "plx",
+                (HlaStackTarget::Y, true) => "phy",
+                (HlaStackTarget::Y, false) => "ply",
+                (HlaStackTarget::B, true) => "phb",
+                (HlaStackTarget::B, false) => "plb",
+                (HlaStackTarget::D, true) => "phd",
+                (HlaStackTarget::D, false) => "pld",
                 (HlaStackTarget::P, true) => "php",
                 (HlaStackTarget::P, false) => "plp",
             };
@@ -5623,8 +5663,13 @@ fn lower_operand_mode(
             index: index.map(lower_index_register),
         },
         OperandAddrMode::Indirect => AddressOperandMode::Indirect,
+        OperandAddrMode::IndirectLong => AddressOperandMode::IndirectLong,
         OperandAddrMode::IndexedIndirectX => AddressOperandMode::IndexedIndirectX,
         OperandAddrMode::IndirectIndexedY => AddressOperandMode::IndirectIndexedY,
+        OperandAddrMode::IndirectLongIndexedY => AddressOperandMode::IndirectLongIndexedY,
+        OperandAddrMode::StackRelativeIndirectIndexedY => {
+            AddressOperandMode::StackRelativeIndirectIndexedY
+        }
     }
 }
 

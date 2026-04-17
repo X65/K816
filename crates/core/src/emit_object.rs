@@ -75,8 +75,13 @@ fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
             }),
         },
         AddressOperandMode::Indirect => IsaAddressOperandMode::Indirect,
+        AddressOperandMode::IndirectLong => IsaAddressOperandMode::IndirectLong,
         AddressOperandMode::IndexedIndirectX => IsaAddressOperandMode::IndexedIndirectX,
         AddressOperandMode::IndirectIndexedY => IsaAddressOperandMode::IndirectIndexedY,
+        AddressOperandMode::IndirectLongIndexedY => IsaAddressOperandMode::IndirectLongIndexedY,
+        AddressOperandMode::StackRelativeIndirectIndexedY => {
+            IsaAddressOperandMode::StackRelativeIndirectIndexedY
+        }
     }
 }
 

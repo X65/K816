@@ -205,8 +205,11 @@ pub enum IndexRegister {
 pub enum OperandAddrMode {
     Direct,
     Indirect,
+    IndirectLong,
     IndexedIndirectX,
     IndirectIndexedY,
+    IndirectLongIndexedY,
+    StackRelativeIndirectIndexedY,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +301,10 @@ pub enum HlaFlag {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HlaStackTarget {
     A,
+    X,
+    Y,
+    B,
+    D,
     P,
 }
 

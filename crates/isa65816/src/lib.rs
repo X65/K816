@@ -54,8 +54,11 @@ pub enum AddressSizeHint {
 pub enum AddressOperandMode {
     Direct { index: Option<IndexRegister> },
     Indirect,
+    IndirectLong,
     IndexedIndirectX,
     IndirectIndexedY,
+    IndirectLongIndexedY,
+    StackRelativeIndirectIndexedY,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -876,6 +879,61 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                         return Ok(Encoding {
                             opcode,
                             mode: AddressingMode::DirectPageIndirectIndexedY,
+                        });
+                    }
+                }
+                AddressOperandMode::IndirectLong => {
+                    if size_hint != AddressSizeHint::Auto
+                        || literal.is_none()
+                        || literal.is_some_and(|value| value > 0xFF)
+                    {
+                        return Err(EncodeError::InvalidOperand {
+                            mnemonic: mnemonic.to_string(),
+                        });
+                    }
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::DirectPageIndirectLong)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::DirectPageIndirectLong,
+                        });
+                    }
+                }
+                AddressOperandMode::IndirectLongIndexedY => {
+                    if size_hint != AddressSizeHint::Auto
+                        || literal.is_none()
+                        || literal.is_some_and(|value| value > 0xFF)
+                    {
+                        return Err(EncodeError::InvalidOperand {
+                            mnemonic: mnemonic.to_string(),
+                        });
+                    }
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::DirectPageIndirectLongIndexedY)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::DirectPageIndirectLongIndexedY,
+                        });
+                    }
+                }
+                AddressOperandMode::StackRelativeIndirectIndexedY => {
+                    if wants_long
+                        || size_hint == AddressSizeHint::ForceAbsolute16
+                        || literal.is_none()
+                        || literal.is_some_and(|value| value > 0xFF)
+                    {
+                        return Err(EncodeError::InvalidOperand {
+                            mnemonic: mnemonic.to_string(),
+                        });
+                    }
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::StackRelativeIndirectIndexedY)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::StackRelativeIndirectIndexedY,
                         });
                     }
                 }

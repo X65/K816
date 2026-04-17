@@ -128,12 +128,12 @@ fn parses_hla_do_close_with_n_plus_suffix() {
 
 #[test]
 fn parses_stack_shorthand_as_hla_nodes() {
-    let source = "func main {\n  a!!\n  p??\n  flag!!\n  z??\n}\n";
+    let source = "func main {\n  a!!\n  p??\n  flag!!\n  z??\n  x!!\n  y??\n  b!!\n  d??\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
     let Item::CodeBlock(block) = &file.items[0].node else {
         panic!("expected code block");
     };
-    assert_eq!(block.body.len(), 4);
+    assert_eq!(block.body.len(), 8);
     assert!(matches!(
         block.body[0].node,
         Stmt::Hla(HlaStmt::StackOp {
@@ -159,6 +159,34 @@ fn parses_stack_shorthand_as_hla_nodes() {
         block.body[3].node,
         Stmt::Hla(HlaStmt::StackOp {
             target: HlaStackTarget::P,
+            push: false
+        })
+    ));
+    assert!(matches!(
+        block.body[4].node,
+        Stmt::Hla(HlaStmt::StackOp {
+            target: HlaStackTarget::X,
+            push: true
+        })
+    ));
+    assert!(matches!(
+        block.body[5].node,
+        Stmt::Hla(HlaStmt::StackOp {
+            target: HlaStackTarget::Y,
+            push: false
+        })
+    ));
+    assert!(matches!(
+        block.body[6].node,
+        Stmt::Hla(HlaStmt::StackOp {
+            target: HlaStackTarget::B,
+            push: true
+        })
+    ));
+    assert!(matches!(
+        block.body[7].node,
+        Stmt::Hla(HlaStmt::StackOp {
+            target: HlaStackTarget::D,
             push: false
         })
     ));
@@ -270,6 +298,55 @@ fn parses_operand_modes_with_y_and_indirect_forms() {
     expect_mode(&block.body[1].node, OperandAddrMode::Indirect, None);
     expect_mode(&block.body[2].node, OperandAddrMode::IndexedIndirectX, None);
     expect_mode(&block.body[3].node, OperandAddrMode::IndirectIndexedY, None);
+}
+
+#[test]
+fn parses_65816_long_indirect_and_stack_relative_modes() {
+    // 65816-specific addressing modes are surfaced via raw mnemonics; the
+    // HLA `a=expr` form continues to interpret `[...]` as an evaluator
+    // fragment for backwards compatibility.
+    let source = "var ptr = 0x20\nfunc main {\n  lda [ptr]\n  lda [ptr],y\n  lda (ptr,s),y\n  lda ptr,s\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::CodeBlock(block) = &file.items[1].node else {
+        panic!("expected code block");
+    };
+    assert_eq!(block.body.len(), 4);
+
+    let expect_mode = |stmt: &Stmt, mode: OperandAddrMode, index: Option<IndexRegister>| {
+        let Stmt::Instruction(instr) = stmt else {
+            panic!("expected raw instruction");
+        };
+        assert_eq!(instr.mnemonic, "lda");
+        let Some(crate::ast::Operand::Value {
+            expr,
+            index: op_index,
+            addr_mode,
+            ..
+        }) = &instr.operand
+        else {
+            panic!("expected value operand, got {:?}", instr.operand);
+        };
+        assert!(is_ident_named(expr, "ptr"));
+        assert_eq!(*op_index, index);
+        assert_eq!(*addr_mode, mode);
+    };
+
+    expect_mode(&block.body[0].node, OperandAddrMode::IndirectLong, None);
+    expect_mode(
+        &block.body[1].node,
+        OperandAddrMode::IndirectLongIndexedY,
+        None,
+    );
+    expect_mode(
+        &block.body[2].node,
+        OperandAddrMode::StackRelativeIndirectIndexedY,
+        None,
+    );
+    expect_mode(
+        &block.body[3].node,
+        OperandAddrMode::Direct,
+        Some(IndexRegister::S),
+    );
 }
 
 #[test]

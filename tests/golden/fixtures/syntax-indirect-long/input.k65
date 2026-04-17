@@ -1,0 +1,16 @@
+// 65816 long-indirect and stack-relative addressing modes.
+var ptr = 0x20
+
+func main {
+    lda [ptr]        // A7 20     -- DP indirect long
+    lda [ptr],y      // B7 20     -- DP indirect long, Y-indexed
+    sta [ptr]        // 87 20
+    sta [ptr],y      // 97 20
+
+    lda 4,s          // A3 04     -- stack-relative
+    sta 4,s          // 83 04
+    lda (4,s),y      // B3 04     -- stack-relative indirect, Y-indexed
+    sta (4,s),y      // 93 04
+
+    return
+}

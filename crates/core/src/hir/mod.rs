@@ -85,8 +85,11 @@ pub enum IndexRegister {
 pub enum AddressOperandMode {
     Direct { index: Option<IndexRegister> },
     Indirect,
+    IndirectLong,
     IndexedIndirectX,
     IndirectIndexedY,
+    IndirectLongIndexedY,
+    StackRelativeIndirectIndexedY,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

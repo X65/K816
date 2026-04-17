@@ -1,0 +1,13 @@
+// HLA coverage for 65816-specific addressing modes that the HLA grammar can
+// express. Long-indirect `[expr]` is NOT exposed via HLA because the
+// preprocessor coalesces `[...]` into an evaluator fragment — use raw
+// mnemonics (see syntax-indirect-long fixture) for those forms.
+var ptr = 0x20
+
+func main {
+    a = 4,s                 // LDA 4,S         -- stack-relative load
+    4,s = a                 // STA 4,S         -- stack-relative store
+    a = (ptr,s),y           // LDA (ptr,S),Y   -- stack-relative indirect Y load
+    (ptr,s),y = a           // STA (ptr,S),Y   -- stack-relative indirect Y store
+    return
+}

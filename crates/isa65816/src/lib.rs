@@ -883,20 +883,22 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                     }
                 }
                 AddressOperandMode::IndirectLong => {
-                    if size_hint != AddressSizeHint::Auto
-                        || literal.is_none()
-                        || literal.is_some_and(|value| value > 0xFF)
-                    {
-                        return Err(EncodeError::InvalidOperand {
-                            mnemonic: mnemonic.to_string(),
-                        });
-                    }
-                    if let Some(opcode) =
-                        find_opcode(&lower, AddressingMode::DirectPageIndirectLong)
+                    if size_hint == AddressSizeHint::Auto
+                        && literal.is_some_and(|value| value <= 0xFF)
+                        && let Some(opcode) =
+                            find_opcode(&lower, AddressingMode::DirectPageIndirectLong)
                     {
                         return Ok(Encoding {
                             opcode,
                             mode: AddressingMode::DirectPageIndirectLong,
+                        });
+                    }
+                    if let Some(opcode) =
+                        find_opcode(&lower, AddressingMode::AbsoluteIndirectLong)
+                    {
+                        return Ok(Encoding {
+                            opcode,
+                            mode: AddressingMode::AbsoluteIndirectLong,
                         });
                     }
                 }

@@ -806,6 +806,27 @@ func main {
 }
 ```
 
+## Zero-Store Shortcut
+
+`mem = 0` compiles directly to a single `STZ` instruction — no accumulator traffic, no peephole needed:
+
+```k65
+var zp_cell   = 0x10
+var abs_cell  = 0x0200
+
+func main {
+  zp_cell    = 0      // STZ zp
+  zp_cell,x  = 0      // STZ zp,X
+  abs_cell   = 0      // STZ abs
+  abs_cell,x = 0      // STZ abs,X
+  zp_cell    = [2-2]  // any expression that folds to zero at compile time
+}
+```
+
+The LHS must be a variable identifier (possibly with `,x` or `,y` indexing); a bare address literal like `$10 = 0` is not a shortcut for `stz $10`. The RHS must fold to literal zero at parse time — non-zero constants are rejected with *"non-zero constant stores must go through a register: use 'mem = a = value'"*. Addressing modes outside `STZ`'s support (`(mem),y`, `[mem]`, stack-relative, etc.) are rejected at lowering time.
+
+For chains that genuinely do want the accumulator loaded too (e.g. storing the same zero to several cells and leaving `A = 0` for a subsequent operation), keep the traditional `mem1 = mem2 = a = 0` form — the compiler's peephole rewrites each supported `STA` to `STZ` and drops the leading `LDA #0` when `A` is dead afterwards.
+
 ## Standard 6502 Instructions
 
 ### [Address Modes](https://www.masswerk.at/6502/6502_instruction_set.html)
@@ -835,6 +856,18 @@ Notably this is not related in any way to the state of the carry bit of the accu
 
 \*\*\* Branch offsets are signed 8-bit values, `-128 ... +127`, negative offsets in two's complement.
 Page transitions may occur and add an extra cycle to the exucution.
+
+### 65816 Addressing Modes in K65
+
+In addition to the classical 6502 modes, the K65 operand grammar exposes these 65816 additions:
+
+- `expr,S` — stack-relative (e.g. `lda 4,s`). Written the same for raw mnemonics and HLA forms.
+- `(expr,S),Y` — stack-relative indirect, Y-indexed (e.g. `lda (4,s),y`). Usable in both raw-mnemonic and HLA contexts.
+- `far expr` — forces 24-bit `AbsoluteLong` encoding of an operand; `far expr,x` is the X-indexed long form.
+- `[expr]` — indirect-long. The emitted opcode depends on the mnemonic: `lda [zp]` picks `DirectPageIndirectLong`; `jmp [abs]` picks `AbsoluteIndirectLong`. The `[...]` operand form is currently recognised only when it directly follows a raw mnemonic (e.g. `lda [ptr]`, `jmp [vec]`); inside an HLA assignment like `a = [ptr]` the brackets are captured by the compile-time evaluator instead — use the raw form or declare a `:far` typed variable to get long-indirect semantics through HLA.
+- `[expr],Y` — indirect-long, Y-indexed. Raw-mnemonic only for the same reason.
+
+Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-index position is treated as an **immediate** operand, not a direct-page address. So `lda 0` and `inc 0` fail with *"does not accept #immediate operand"* for instructions without an immediate form. To target zero-page or absolute memory via a raw mnemonic, reference a symbolic name (declare `var addr = 0` and write `lda addr`), or attach an explicit address hint (`lda 0:abs` forces 16-bit absolute encoding). HLA assignment forms (`a = mem`, `mem = a`) look up the symbol in the semantic model and don't have this ambiguity.
 
 ### Registers
 

@@ -1,0 +1,329 @@
+// Exhaustive encoding fixture: emits every 65816 opcode (0x00 .. 0xFF) in
+// order using the K65 raw-mnemonic syntax. Operand placeholders are all 0,
+// so each instruction assembles to `opcode 00 [00 [00]]`.
+//
+// The sequence is split across four `naked` functions at the opcodes that
+// reset the compiler's register-width tracker: PLP (0x28) and RTI (0x40).
+// Each function opens with `@a8 @i8` to re-establish known widths so that
+// ImmediateM / ImmediateX instructions emit their 2-byte forms.
+//
+// `x0` is a variable at address 0; references use direct-page encoding,
+// with `x0:abs` forcing 16-bit absolute and `far x0` forcing 24-bit long.
+// Bare literal `0` can't stand in for a direct-page address because
+// memory access is only allowed through var aliases.
+//
+// Branch relatives (Rel8/Rel16) target local labels placed immediately
+// after the branch, producing a zero displacement.
+
+var x0 = 0
+
+naked part_00 @a8 @i8 {
+    // 0x00 .. 0x0F
+    brk #0
+    ora (0,x)
+    cop #0
+    ora 0,s
+    tsb x0
+    ora x0
+    asl x0
+    ora [0]
+    php
+    ora #0
+    asl
+    phd
+    tsb x0:abs
+    ora x0:abs
+    asl x0:abs
+    ora far x0
+
+    // 0x10 .. 0x1F
+    bpl .b10
+    .b10:
+    ora (0),y
+    ora (0)
+    ora (0,s),y
+    trb x0
+    ora x0,x
+    asl x0,x
+    ora [0],y
+    clc
+    ora x0:abs,y
+    inc
+    tcs
+    trb x0:abs
+    ora x0:abs,x
+    asl x0:abs,x
+    ora far x0,x
+
+    // 0x20 .. 0x28 (last op is plp, which resets width tracking)
+    jsr x0
+    and (0,x)
+    jsl x0
+    and 0,s
+    bit x0
+    and x0
+    rol x0
+    and [0]
+    plp
+}
+
+naked part_29 @a8 @i8 {
+    // 0x29 .. 0x2F
+    and #0
+    rol
+    pld
+    bit x0:abs
+    and x0:abs
+    rol x0:abs
+    and far x0
+
+    // 0x30 .. 0x3F
+    bmi .b30
+    .b30:
+    and (0),y
+    and (0)
+    and (0,s),y
+    bit x0,x
+    and x0,x
+    rol x0,x
+    and [0],y
+    sec
+    and x0:abs,y
+    dec
+    tsc
+    bit x0:abs,x
+    and x0:abs,x
+    rol x0:abs,x
+    and far x0,x
+}
+
+naked part_40 @a8 @i8 {
+    // 0x40 only — rti resets width tracking
+    rti
+}
+
+naked part_41 @a8 @i8 {
+    // 0x41 .. 0x4F
+    eor (0,x)
+    wdm #0
+    eor 0,s
+    mvp 0,0
+    eor x0
+    lsr x0
+    eor [0]
+    pha
+    eor #0
+    lsr
+    phk
+    jmp x0
+    eor x0:abs
+    lsr x0:abs
+    eor far x0
+
+    // 0x50 .. 0x5F
+    bvc .b50
+    .b50:
+    eor (0),y
+    eor (0)
+    eor (0,s),y
+    mvn 0,0
+    eor x0,x
+    lsr x0,x
+    eor [0],y
+    cli
+    eor x0:abs,y
+    phy
+    tcd
+    jml x0
+    eor x0:abs,x
+    lsr x0:abs,x
+    eor far x0,x
+
+    // 0x60 .. 0x6F
+    rts
+    adc (0,x)
+    per .per62
+    .per62:
+    adc 0,s
+    stz x0
+    adc x0
+    ror x0
+    adc [0]
+    pla
+    adc #0
+    ror
+    rtl
+    jmp (0)
+    adc x0:abs
+    ror x0:abs
+    adc far x0
+
+    // 0x70 .. 0x7F
+    bvs .b70
+    .b70:
+    adc (0),y
+    adc (0)
+    adc (0,s),y
+    stz x0,x
+    adc x0,x
+    ror x0,x
+    adc [0],y
+    sei
+    adc x0:abs,y
+    ply
+    tdc
+    jmp (0,x)
+    adc x0:abs,x
+    ror x0:abs,x
+    adc far x0,x
+
+    // 0x80 .. 0x8F
+    bra .b80
+    .b80:
+    sta (0,x)
+    brl .brl82
+    .brl82:
+    sta 0,s
+    sty x0
+    sta x0
+    stx x0
+    sta [0]
+    dey
+    bit #0
+    txa
+    phb
+    sty x0:abs
+    sta x0:abs
+    stx x0:abs
+    sta far x0
+
+    // 0x90 .. 0x9F
+    bcc .b90
+    .b90:
+    sta (0),y
+    sta (0)
+    sta (0,s),y
+    sty x0,x
+    sta x0,x
+    stx x0,y
+    sta [0],y
+    tya
+    sta x0:abs,y
+    txs
+    txy
+    stz x0:abs
+    sta x0:abs,x
+    stz x0:abs,x
+    sta far x0,x
+
+    // 0xA0 .. 0xAF
+    ldy #0
+    lda (0,x)
+    ldx #0
+    lda 0,s
+    ldy x0
+    lda x0
+    ldx x0
+    lda [0]
+    tay
+    lda #0
+    tax
+    plb
+    ldy x0:abs
+    lda x0:abs
+    ldx x0:abs
+    lda far x0
+
+    // 0xB0 .. 0xBF
+    bcs .bb0
+    .bb0:
+    lda (0),y
+    lda (0)
+    lda (0,s),y
+    ldy x0,x
+    lda x0,x
+    ldx x0,y
+    lda [0],y
+    clv
+    lda x0:abs,y
+    tsx
+    tyx
+    ldy x0:abs,x
+    lda x0:abs,x
+    ldx x0:abs,y
+    lda far x0,x
+
+    // 0xC0 .. 0xCF
+    cpy #0
+    cmp (0,x)
+    rep #0
+    cmp 0,s
+    cpy x0
+    cmp x0
+    dec x0
+    cmp [0]
+    iny
+    cmp #0
+    dex
+    wai
+    cpy x0:abs
+    cmp x0:abs
+    dec x0:abs
+    cmp far x0
+
+    // 0xD0 .. 0xDF
+    bne .bd0
+    .bd0:
+    cmp (0),y
+    cmp (0)
+    cmp (0,s),y
+    pei (0)
+    cmp x0,x
+    dec x0,x
+    cmp [0],y
+    cld
+    cmp x0:abs,y
+    phx
+    stp
+    jmp [0]
+    cmp x0:abs,x
+    dec x0:abs,x
+    cmp far x0,x
+
+    // 0xE0 .. 0xEF
+    cpx #0
+    sbc (0,x)
+    sep #0
+    sbc 0,s
+    cpx x0
+    sbc x0
+    inc x0
+    sbc [0]
+    inx
+    sbc #0
+    nop
+    xba
+    cpx x0:abs
+    sbc x0:abs
+    inc x0:abs
+    sbc far x0
+
+    // 0xF0 .. 0xFF
+    beq .bf0
+    .bf0:
+    sbc (0),y
+    sbc (0)
+    sbc (0,s),y
+    pea #0
+    sbc x0,x
+    inc x0,x
+    sbc [0],y
+    sed
+    sbc x0:abs,y
+    plx
+    xce
+    jsr (0,x)
+    sbc x0:abs,x
+    inc x0:abs,x
+    sbc far x0,x
+}

@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use k816_assets::AssetFS;
 use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use k816_isa65816::{RegEffects, RegSet, mnemonic_effects};
@@ -426,7 +427,10 @@ fn build_inline_bindings(
                     call.args.len()
                 ),
             )
-            .with_help("match the call-site inputs to the declaration's contract parameter list"),
+            .with_help(format!(
+                "call it as `{}`",
+                meta.signature_call_form(&call.target)
+            )),
         );
         return None;
     }
@@ -444,7 +448,10 @@ fn build_inline_bindings(
                             reg_name_text(*expected)
                         ),
                     )
-                    .with_help("repeat the declaration's register inputs exactly at the call site"),
+                    .with_help(format!(
+                        "call it as `{}`",
+                        meta.signature_call_form(&call.target)
+                    )),
                 );
                 return None;
             }
@@ -484,7 +491,10 @@ fn build_inline_bindings(
                             call.target, param.name
                         ),
                     )
-                    .with_help("use a '#expr' immediate argument at this call site"),
+                    .with_help(format!(
+                        "call it as `{}`",
+                        meta.signature_call_form(&call.target)
+                    )),
                 );
                 return None;
             }
@@ -502,9 +512,10 @@ fn build_inline_bindings(
                             call.target, name
                         ),
                     )
-                    .with_help(
-                        "pass a variable or address identifier without '#' in this position",
-                    ),
+                    .with_help(format!(
+                        "call it as `{}`",
+                        meta.signature_call_form(&call.target)
+                    )),
                 );
                 return None;
             }
@@ -517,7 +528,10 @@ fn build_inline_bindings(
                 span,
                 format!("call to '{}' has mismatched output contract", call.target),
             )
-            .with_help("repeat the declaration's output registers exactly after '->'"),
+            .with_help(format!(
+                "call it as `{}`",
+                meta.signature_call_form(&call.target)
+            )),
         );
         return None;
     }
@@ -834,6 +848,61 @@ fn substitute_inline_body(body: &[Spanned<Stmt>], bindings: &InlineBindings) -> 
     body.iter()
         .map(|stmt| Spanned::new(substitute_inline_stmt(&stmt.node, bindings), stmt.span))
         .collect()
+}
+
+/// If the inline body came from a different source than the call site, clone
+/// it and rewrite every span to collapse onto the call site. The caller's
+/// `SourceMap` only knows its own file, so body spans from other files would
+/// either render gibberish (same `SourceId(0)` accidentally aliased) or panic
+/// at `SourceMap::must_get`.
+///
+/// Returns `None` when the body is safe to reuse in-place (same file).
+fn retargeted_body_if_foreign(
+    body: &[Spanned<Stmt>],
+    call_site: Span,
+) -> Option<Vec<Spanned<Stmt>>> {
+    let body_source_id = body.first().map(|stmt| stmt.span.source_id)?;
+    if body_source_id == call_site.source_id {
+        return None;
+    }
+    let mut cloned: Vec<Spanned<Stmt>> = body.to_vec();
+    retarget_spans(&mut cloned, call_site);
+    Some(cloned)
+}
+
+/// Recursively rewrite every span inside these statements to a zero-width span
+/// at `target`. Used for cross-TU inline expansions so body-internal
+/// diagnostics anchor on the call site in the caller's `SourceMap` instead of
+/// pointing at byte offsets in a source file the caller's `SourceMap` does not
+/// know about.
+fn retarget_spans(body: &mut [Spanned<Stmt>], target: Span) {
+    let zero = Span {
+        source_id: target.source_id,
+        start: target.start,
+        end: target.start,
+    };
+    for stmt in body {
+        stmt.span = zero;
+        retarget_stmt_spans(&mut stmt.node, zero);
+    }
+}
+
+fn retarget_stmt_spans(stmt: &mut Stmt, target: Span) {
+    match stmt {
+        Stmt::ModeScopedBlock { body, .. } => {
+            retarget_spans(body, target);
+        }
+        Stmt::Hla(HlaStmt::NeverBlock { body }) => {
+            retarget_spans(body, target);
+        }
+        Stmt::Hla(HlaStmt::PrefixConditional { body, else_body, .. }) => {
+            retarget_spans(body, target);
+            if let Some(else_body) = else_body {
+                retarget_spans(else_body, target);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn reg_name_text(reg: RegName) -> &'static str {
@@ -1519,6 +1588,7 @@ pub fn lower(
     file: &File,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
+    external_inline_bodies: Option<&IndexMap<String, CodeBlock>>,
 ) -> Result<Program, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut ops = Vec::new();
@@ -1527,15 +1597,25 @@ pub fn lower(
     };
     let mut current_segment = "default".to_string();
 
-    // Collect inline function bodies for substitution at call sites.
-    let inline_bodies: FxHashMap<String, &CodeBlock> = file
-        .items
-        .iter()
-        .filter_map(|item| match &item.node {
-            Item::CodeBlock(block) if block.is_inline => Some((block.name.clone(), block)),
-            _ => None,
-        })
-        .collect();
+    // Collect inline function bodies for substitution at call sites. Local
+    // declarations win over cross-unit ones on name collisions. Bodies pulled
+    // from `external_inline_bodies` carry spans from another source file's
+    // `SourceId`; the call-site-dispatch code retargets those spans when it
+    // detects a cross-file body, so body-internal diagnostics anchor against
+    // this file's `SourceMap`.
+    let mut inline_bodies: FxHashMap<String, &CodeBlock> = FxHashMap::default();
+    if let Some(external) = external_inline_bodies {
+        for (name, block) in external {
+            inline_bodies.insert(name.clone(), block);
+        }
+    }
+    for item in &file.items {
+        if let Item::CodeBlock(block) = &item.node
+            && block.is_inline
+        {
+            inline_bodies.insert(block.name.clone(), block);
+        }
+    }
     let function_bodies: FxHashMap<String, &CodeBlock> = file
         .items
         .iter()
@@ -2229,9 +2309,13 @@ fn lower_stmt(
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(&instruction.mnemonic) {
                         let exit_summary = exit_summaries.get(&instruction.mnemonic).copied();
+                        let retargeted = retargeted_body_if_foreign(&inline_block.body, span);
+                        let body_slice: &[Spanned<Stmt>] = retargeted
+                            .as_deref()
+                            .unwrap_or(inline_block.body.as_slice());
                         lower_inline_call(
                             inline_block.name.as_str(),
-                            &inline_block.body,
+                            body_slice,
                             meta,
                             exit_summary,
                             !meta.has_contract,
@@ -2282,7 +2366,11 @@ fn lower_stmt(
                 };
                 if meta.is_inline {
                     if let Some(inline_block) = inline_bodies.get(call.target.as_str()) {
-                        let inlined_body = substitute_inline_body(&inline_block.body, &bindings);
+                        let mut inlined_body =
+                            substitute_inline_body(&inline_block.body, &bindings);
+                        if retargeted_body_if_foreign(&inline_block.body, span).is_some() {
+                            retarget_spans(&mut inlined_body, span);
+                        }
                         let exit_summary = exit_summaries.get(call.target.as_str()).copied();
                         lower_inline_call(
                             inline_block.name.as_str(),
@@ -5868,7 +5956,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -5901,7 +5989,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -5930,7 +6018,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -5959,7 +6047,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -5981,7 +6069,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -6003,7 +6091,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -6025,7 +6113,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -6047,7 +6135,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let lda_operands = program
             .ops
@@ -6097,7 +6185,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         let missing_start = source.find("MISSING").expect("MISSING start");
         let missing_end = missing_start + "MISSING".len();
@@ -6118,7 +6206,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
         let operand = program
             .ops
             .iter()
@@ -6144,7 +6232,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
         let operand = program
             .ops
             .iter()
@@ -6170,7 +6258,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mut symbols = std::collections::BTreeMap::new();
         for op in &program.ops {
@@ -6192,7 +6280,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mut lda_literals = Vec::new();
         let mut sta_literals = Vec::new();
@@ -6225,7 +6313,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6241,7 +6329,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6264,7 +6352,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error.supplements.iter().any(|supplement| {
@@ -6292,7 +6380,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6315,7 +6403,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let segment_index = program
             .ops
@@ -6343,7 +6431,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let align_index = program
             .ops
@@ -6371,7 +6459,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let emitted = program
             .ops
@@ -6393,7 +6481,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6434,7 +6522,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6455,7 +6543,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6476,7 +6564,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6498,7 +6586,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let fixed_hi_index = program
             .ops
@@ -6534,7 +6622,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let fixed_hi_index = program
             .ops
@@ -6573,7 +6661,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let fixed_hi_index = program
             .ops
@@ -6612,7 +6700,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let fixed_hi_index = program
             .ops
@@ -6651,7 +6739,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -6673,7 +6761,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -6696,7 +6784,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6722,7 +6810,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6750,7 +6838,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let mnemonics = program
             .ops
@@ -6777,7 +6865,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6792,7 +6880,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6807,7 +6895,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs).expect("lower");
+        let program = lower(&file, &sema, &fs, None).expect("lower");
 
         let operand = program
             .ops
@@ -6837,7 +6925,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6852,7 +6940,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6868,7 +6956,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error
@@ -6883,7 +6971,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let errors = lower(&file, &sema, &fs).expect_err("must fail");
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(errors.iter().any(|error| {
             error

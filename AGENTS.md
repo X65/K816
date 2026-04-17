@@ -76,6 +76,7 @@ Link/render orchestration (CLI, golden harness, and project build flows using `k
 - Lint: `cargo clippy --all-targets --all-features`
 - Golden tests: `cargo test -p k816-golden-tests` for reproducible output validation against fixtures. Uses Rust edition 2024 with dependencies like `chumsky` for parsing, `clap` for CLI. Reference: [Cargo.toml](Cargo.toml).
 - Golden fixture binaries: Use [tests/golden/link.stub.ld.ron](tests/golden/link.stub.ld.ron) as the linker config (`-T` flag) to generate `expected.bin` files in raw binary format for golden test fixtures.
+- Always create `expected.lst` alongside every `expected.bin` so the listing is regression-checked together with the binary. The bless flow only refreshes `expected.lst` when the file already exists, so `touch expected.lst` in the fixture directory before blessing a new success fixture.
 - CLI/integration coverage lives in `tests/cli.rs` and `tests/lsp_cli.rs`; these cover project init/build/run/clean flows plus LSP startup and editor features.
 - Golden bless through `cargo test` (feature-gated):
   - Regenerate all golden outputs: `cargo test -p k816-golden-tests --features golden-bless`
@@ -110,8 +111,9 @@ Linker uses RON format for configuration (`.ld.ron` files and project `link.ron`
 ## Diagnostics Style
 
 - Keep primary error messages concise and focused on what is wrong.
-- Put remediation guidance in Ariadne help text using `Diagnostic::with_help(...)`.
+- Put remediation guidance in Ariadne help text using `Diagnostic::with_help(...)`. **This is mandatory** — never fold "how to fix" wording into the primary error `message`, even in situations where it seems shorter or more convenient. The help slot exists specifically for this; the LSP layer reads `Supplemental::Help` separately, and Ariadne renders it as its own labelled line.
 - Avoid embedding "how to fix" details directly in the main error message when help text can carry that context.
+- For contract/call diagnostics, the help line should show the exact call syntax for the target function rather than vague directives ("match the declaration", "repeat the inputs"). Use `FunctionMeta::signature_call_form(name)` from `crates/core/src/sema/model.rs` to produce forms like `sub(a, #b) -> a`, `dispatch`, or `produce() -> a`.
 
 ## Recent Implementation Notes
 

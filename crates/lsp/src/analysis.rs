@@ -7,6 +7,7 @@ pub(super) fn analyze_document(
     source_text: &str,
     compile_result: Option<Result<&k816_core::CompileObjectOutput, &k816_core::CompileError>>,
     external_consts: Option<&indexmap::IndexMap<String, k816_core::sema::ConstMeta>>,
+    external_function_names: Option<&std::collections::HashSet<String>>,
 ) -> (
     DocumentAnalysis,
     Option<k816_o65::O65Object>,
@@ -45,7 +46,11 @@ pub(super) fn analyze_document(
     let mut ast = None;
     let mut semantic = SemanticInfo::default();
 
-    let (parsed_file, parse_diagnostics) = k816_core::parser::parse_lenient(source_id, source_text);
+    let (parsed_file, parse_diagnostics) = k816_core::parser::parse_lenient_and_externals(
+        source_id,
+        source_text,
+        external_function_names,
+    );
     if compile_failed {
         diagnostics.extend(parse_diagnostics);
     }

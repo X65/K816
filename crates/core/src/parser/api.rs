@@ -14,6 +14,33 @@ use super::{
     preprocess_source, rich_error_to_diagnostic, strip_comments,
 };
 
+/// Scan a source file for top-level function/inline/naked declarations without
+/// running the full parser. Used to build the cross-unit function name set for
+/// multi-file compilation, so per-file parsing can dispatch call-site syntax
+/// against callees defined in other translation units.
+pub fn scan_declared_function_names(source_id: SourceId, source_text: &str) -> HashSet<String> {
+    let preprocessed = preprocess_source(source_text);
+    let (tokens, _) = lex_lenient(source_id, preprocessed.as_str());
+    let tokens = coalesce_non_var_brackets(tokens, preprocessed.as_str());
+    let (tokens, _) = strip_comments(tokens);
+    let arc = collect_declared_function_names(&tokens);
+    (*arc).clone()
+}
+
+fn merge_known_functions(
+    local: Arc<HashSet<String>>,
+    external: Option<&HashSet<String>>,
+) -> Arc<HashSet<String>> {
+    match external {
+        Some(ext) if !ext.is_empty() => {
+            let mut merged = (*local).clone();
+            merged.extend(ext.iter().cloned());
+            Arc::new(merged)
+        }
+        _ => local,
+    }
+}
+
 fn collect_declared_function_names(tokens: &[Token]) -> Arc<HashSet<String>> {
     let mut names = HashSet::new();
     let mut brace_depth = 0usize;
@@ -93,12 +120,21 @@ pub fn parse_with_warnings(
     source_id: SourceId,
     source_text: &str,
 ) -> Result<ParseOutput, Vec<Diagnostic>> {
+    parse_with_warnings_and_externals(source_id, source_text, None)
+}
+
+pub fn parse_with_warnings_and_externals(
+    source_id: SourceId,
+    source_text: &str,
+    external_function_names: Option<&HashSet<String>>,
+) -> Result<ParseOutput, Vec<Diagnostic>> {
     let preprocessed = preprocess_source(source_text);
     let source_text = preprocessed.as_str();
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
-    let known_functions = collect_declared_function_names(&tokens);
+    let known_functions =
+        merge_known_functions(collect_declared_function_names(&tokens), external_function_names);
 
     let eval_ranges: Vec<(usize, usize)> = tokens
         .iter()
@@ -158,12 +194,21 @@ pub fn parse_with_warnings(
 }
 
 pub fn parse_lenient(source_id: SourceId, source_text: &str) -> (Option<File>, Vec<Diagnostic>) {
+    parse_lenient_and_externals(source_id, source_text, None)
+}
+
+pub fn parse_lenient_and_externals(
+    source_id: SourceId,
+    source_text: &str,
+    external_function_names: Option<&HashSet<String>>,
+) -> (Option<File>, Vec<Diagnostic>) {
     let preprocessed = preprocess_source(source_text);
     let source_text = preprocessed.as_str();
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
-    let known_functions = collect_declared_function_names(&tokens);
+    let known_functions =
+        merge_known_functions(collect_declared_function_names(&tokens), external_function_names);
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();

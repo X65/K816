@@ -37,8 +37,9 @@ mod tests;
 mod warnings;
 
 pub use self::api::{
-    ParseOutput, parse, parse_expression_fragment, parse_lenient, parse_lenient_raw,
-    parse_with_warnings,
+    ParseOutput, parse, parse_expression_fragment, parse_lenient, parse_lenient_and_externals,
+    parse_lenient_raw, parse_with_warnings, parse_with_warnings_and_externals,
+    scan_declared_function_names,
 };
 use self::common::{
     ident_parser, line_sep_parser, line_tail_parser, number_parser, simple_span_to_ast_span,

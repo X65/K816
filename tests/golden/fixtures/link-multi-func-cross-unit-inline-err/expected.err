@@ -1,0 +1,29 @@
+Error: call to 'sub' expects 2 contract argument(s), found 1
+   ╭─[ tests/golden/fixtures/link-multi-func-cross-unit-inline-err/input.10-main.k65:8:5 ]
+   │
+ 8 │     sub #5                   // wrong: missing 'a' input, missing '-> a' output
+   │     ───┬──  
+   │        ╰──── here
+   │ 
+   │ Help: call it as `sub(a, #b) -> a`
+───╯
+
+Error: call to 'double' must pass register 'a' in this position
+   ╭─[ tests/golden/fixtures/link-multi-func-cross-unit-inline-err/input.10-main.k65:9:5 ]
+   │
+ 9 │     double x -> a            // wrong: first input must be register 'a'
+   │     ──────┬──────  
+   │           ╰──────── here
+   │ 
+   │ Help: call it as `double(a) -> a`
+───╯
+
+Error: call to 'double' has mismatched output contract
+    ╭─[ tests/golden/fixtures/link-multi-func-cross-unit-inline-err/input.10-main.k65:10:5 ]
+    │
+ 10 │     double(a)                // wrong: missing '-> a' output
+    │     ────┬────  
+    │         ╰────── here
+    │ 
+    │ Help: call it as `double(a) -> a`
+────╯

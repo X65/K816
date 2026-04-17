@@ -1,0 +1,8 @@
+inline sub (a, #b) -> a {
+    sec
+    sbc #b
+}
+
+inline double (a) -> a {
+    asl
+}

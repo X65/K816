@@ -1,0 +1,22 @@
+[obj#0 default]
+000000: A9 03 20 09 00 20 0B 00 60
+
+
+[obj#1 default]
+000009: 0A 60 18 69 01 60
+
+
+[disasm obj#0 default::main]
+000000: A9 03       lda #$03
+000002: 20 09 00    jsr $0009
+000005: 20 0B 00    jsr $000B
+000008: 60          rts
+
+[disasm obj#1 default::double]
+000009: 0A          asl A
+00000A: 60          rts
+
+[disasm obj#1 default::increment]
+00000B: 18          clc
+00000C: 69 01       adc #$01
+00000E: 60          rts

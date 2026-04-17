@@ -5,5 +5,5 @@ Error: call to 'produce' has mismatched output contract
    │     ───┬───  
    │        ╰───── here
    │ 
-   │ Help: repeat the declaration's output registers exactly after '->'
+   │ Help: call it as `produce() -> a`
 ───╯

@@ -11,7 +11,6 @@ use k816_o65::{
     RelocationKind, Section, SectionChunk, SourceLocation, Symbol, SymbolDefinition,
 };
 
-use crate::ast::{ContractParam, RegName};
 use crate::diag::Diagnostic;
 use crate::hir::{
     AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister, Op,
@@ -95,68 +94,39 @@ fn to_isa_address_size_hint(size_hint: AddressSizeHint) -> IsaAddressSizeHint {
     }
 }
 
-fn format_contract_param(param: &ContractParam) -> String {
-    match param {
-        ContractParam::Register(reg) => reg_name_text(*reg).to_string(),
-        ContractParam::Immediate(p) => format!("#{}", p.name),
-        ContractParam::Alias(name) => name.clone(),
-    }
+fn lookup_function<'a>(
+    sema: &'a SemanticModel,
+    external: Option<&'a IndexMap<String, FunctionMeta>>,
+    mnemonic: &str,
+) -> Option<(&'a str, &'a FunctionMeta)> {
+    find_in_map(&sema.functions, mnemonic).or_else(|| external.and_then(|m| find_in_map(m, mnemonic)))
 }
 
-fn reg_name_text(reg: RegName) -> &'static str {
-    match reg {
-        RegName::A => "a",
-        RegName::X => "x",
-        RegName::Y => "y",
-    }
-}
-
-fn lookup_function<'a>(sema: &'a SemanticModel, mnemonic: &str) -> Option<(&'a str, &'a FunctionMeta)> {
-    if let Some((name, meta)) = sema.functions.get_key_value(mnemonic) {
+fn find_in_map<'a>(
+    map: &'a IndexMap<String, FunctionMeta>,
+    mnemonic: &str,
+) -> Option<(&'a str, &'a FunctionMeta)> {
+    if let Some((name, meta)) = map.get_key_value(mnemonic) {
         return Some((name.as_str(), meta));
     }
-    sema.functions
-        .iter()
+    map.iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(mnemonic))
         .map(|(name, meta)| (name.as_str(), meta))
 }
 
 fn function_call_help(name: &str, meta: &FunctionMeta) -> String {
-    let (article, kind) = if meta.is_naked {
-        ("a ", "naked ")
-    } else if meta.is_inline {
-        ("an ", "inline ")
-    } else {
-        ("a ", "")
-    };
-    if !meta.has_contract {
-        return format!("`{name}` is {article}{kind}function; call it as `{name}`");
-    }
-    let params = meta
-        .params
-        .iter()
-        .map(format_contract_param)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let outputs = meta
-        .outputs
-        .iter()
-        .map(|reg| reg_name_text(*reg).to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let signature = match (params.as_str(), outputs.as_str()) {
-        ("", "") => format!("{name}()"),
-        (p, "") => format!("{name}({p})"),
-        ("", o) => format!("{name}() -> {o}"),
-        (p, o) => format!("{name}({p}) -> {o}"),
-    };
-    format!("`{name}` is {article}{kind}function; call it as `{signature}`")
+    format!(
+        "`{name}` is {kind}function; call it as `{sig}`",
+        kind = meta.kind_prefix_with_article(),
+        sig = meta.signature_call_form(name),
+    )
 }
 
 pub fn emit_object(
     program: &Program,
     source_map: &SourceMap,
     sema: &SemanticModel,
+    external_functions: Option<&IndexMap<String, FunctionMeta>>,
 ) -> Result<EmitObjectOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
@@ -481,7 +451,8 @@ pub fn emit_object(
                     Err(err) => {
                         let mut diag = Diagnostic::error(op.span, err.to_string());
                         if let EncodeError::UnknownMnemonic { mnemonic } = &err
-                            && let Some((name, meta)) = lookup_function(sema, mnemonic)
+                            && let Some((name, meta)) =
+                                lookup_function(sema, external_functions, mnemonic)
                         {
                             diag = diag.with_help(function_call_help(name, meta));
                         }
@@ -1091,7 +1062,7 @@ mod tests {
             ],
         };
 
-        let emitted = emit_object(&program, &source_map, &SemanticModel::default()).expect("emit object");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None).expect("emit object");
         let section = emitted
             .object
             .sections
@@ -1122,7 +1093,7 @@ mod tests {
             ],
         };
 
-        let emitted = emit_object(&program, &source_map, &SemanticModel::default()).expect("emit object");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None).expect("emit object");
         let mut symbols = emitted.object.symbols;
         symbols.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -1155,7 +1126,7 @@ mod tests {
         };
 
         let emitted =
-            emit_object(&program, &source_map, &SemanticModel::default()).expect("unresolved labels deferred to linker");
+            emit_object(&program, &source_map, &SemanticModel::default(), None).expect("unresolved labels deferred to linker");
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
@@ -1185,7 +1156,7 @@ mod tests {
         };
 
         let emitted =
-            emit_object(&program, &source_map, &SemanticModel::default()).expect("unresolved labels deferred to linker");
+            emit_object(&program, &source_map, &SemanticModel::default(), None).expect("unresolved labels deferred to linker");
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
@@ -1204,7 +1175,7 @@ mod tests {
             })],
         };
 
-        let emitted = emit_object(&program, &source_map, &SemanticModel::default()).expect("emit object");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None).expect("emit object");
         assert_eq!(emitted.object.symbols.len(), 1);
         assert!(matches!(
             emitted.object.symbols[0].definition.as_ref(),
@@ -1231,7 +1202,7 @@ mod tests {
             ],
         };
 
-        let err = emit_object(&program, &source_map, &SemanticModel::default()).expect_err("should fail on 8-bit overflow");
+        let err = emit_object(&program, &source_map, &SemanticModel::default(), None).expect_err("should fail on 8-bit overflow");
         let msg = err
             .iter()
             .map(|d| d.message.as_str())
@@ -1259,7 +1230,7 @@ mod tests {
             ],
         };
 
-        let err = emit_object(&program, &source_map, &SemanticModel::default()).expect_err("should fail on 16-bit overflow");
+        let err = emit_object(&program, &source_map, &SemanticModel::default(), None).expect_err("should fail on 16-bit overflow");
         let msg = err
             .iter()
             .map(|d| d.message.as_str())

@@ -1,0 +1,10 @@
+// Cross-TU bare-call syntax: `double` and `increment` are declared in
+// input.20-helpers.k65. The parser here must accept the parenthesised and
+// arrow-output call forms by unioning cross-unit function names into its
+// known-functions set.
+
+func main @a8 {
+    lda #3
+    double(a) -> a
+    increment a -> a
+}

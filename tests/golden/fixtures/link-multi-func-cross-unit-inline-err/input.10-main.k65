@@ -1,0 +1,11 @@
+// Cross-TU inline callees still undergo full contract validation even when
+// the body lives in another translation unit: the driver merges external
+// `FunctionMeta` into the local semantic model before lowering, so
+// `build_inline_bindings` fires exactly as it would for a local inline.
+
+func main @a8 {
+    lda #10
+    sub #5                   // wrong: missing 'a' input, missing '-> a' output
+    double x -> a            // wrong: first input must be register 'a'
+    double(a)                // wrong: missing '-> a' output
+}

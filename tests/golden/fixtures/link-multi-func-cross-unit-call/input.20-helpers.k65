@@ -1,0 +1,8 @@
+func double @a8 (a) -> a {
+    asl
+}
+
+func increment @a8 (a) -> a {
+    clc
+    adc #1
+}

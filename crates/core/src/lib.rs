@@ -16,7 +16,9 @@ pub mod span;
 
 pub use driver::{
     CompileError, CompileObjectOutput, CompileRenderOptions, LinkCompileInput,
-    collect_external_consts_for_link_sources, compile_source, compile_source_with_fs,
+    collect_all_declared_function_names, collect_external_consts_for_link_sources,
+    collect_external_functions_for_link_sources,
+    collect_external_inline_bodies_for_link_sources, compile_source, compile_source_with_fs,
     compile_sources, compile_sources_all_or_nothing,
 };
 pub use emit_object::AddressableSite;

@@ -9,12 +9,17 @@ pub(super) fn hover_contents_for_symbol(
 ) -> String {
     if let Some(doc) = state.documents.get(&symbol.uri) {
         if let Some(meta) = doc.analysis.semantic.functions.get(canonical) {
-            let mut lines = vec![
-                format!("**function** `{}`", symbol.name),
+            let mut lines = vec![format!("**function** `{}`", symbol.name)];
+            if meta.has_contract {
+                lines.push(String::new());
+                lines.push(format!("`{}`", meta.signature_call_form(&symbol.name)));
+            }
+            lines.push(String::new());
+            lines.extend([
                 format!("- far: {}", yes_no(meta.is_far)),
                 format!("- naked: {}", yes_no(meta.is_naked)),
                 format!("- inline: {}", yes_no(meta.is_inline)),
-            ];
+            ]);
             if let Some(width) = meta.mode_contract.a_width {
                 lines.push(format!("- A width: {}", reg_width_name(width)));
             }

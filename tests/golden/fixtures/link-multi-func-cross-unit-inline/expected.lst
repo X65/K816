@@ -1,0 +1,14 @@
+[obj#0 default]
+000000: A9 0A 38 E9 05 0A 60
+
+
+[obj#1 default]
+(empty)
+
+
+[disasm obj#0 default::main]
+000000: A9 0A       lda #$0A
+000002: 38          sec
+000003: E9 05       sbc #$05
+000005: 0A          asl A
+000006: 60          rts

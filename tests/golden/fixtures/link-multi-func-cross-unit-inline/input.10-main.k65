@@ -1,0 +1,10 @@
+// Cross-TU inline function resolution: `sub` and `double` live in
+// input.20-helpers.k65 and are declared `inline`. Their bodies must be
+// substituted at the call sites in this file (no JSR; the linker never sees
+// these symbols).
+
+func main @a8 {
+    lda #10
+    sub(a, #5) -> a
+    double(a) -> a
+}

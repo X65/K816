@@ -44,6 +44,7 @@ var baz:byte[
 - `.name[count] :byte`
 - `.name[count] :word`
 - `.name[count] :far`
+- `.name[ ...nested fields... ]`
 - `.name` (defaults to `:byte` when omitted)
 
 Separators inside the field list:
@@ -99,71 +100,58 @@ The implementation reports hard errors for:
 
 ## Implementation Notes
 
-### Lexer (`crates/core/src/lexer.rs`)
+The current implementation is split across the normal frontend stages instead of
+using a dedicated lexer mode.
 
-- `TokenKind::Eval` now uses `#[token("[", parse_eval)]`.
-- `parse_eval` tracks nested bracket depth, so field lists containing `.name[count]` are lexed correctly as one bracket fragment.
+### AST and parser
 
-### AST (`crates/core/src/ast/mod.rs`)
+- `VarDecl` stores symbolic-subscript layouts in `symbolic_subscript_fields`.
+- `SymbolicSubscriptFieldDecl` supports:
+  - optional width (`:byte`, `:word`, `:far`)
+  - optional element count (`.name[count]`)
+  - optional nested field lists (`.name[ ... ]`)
+- `Expr::Index { base, index }` is used for array-style field indexing such as
+  `foo.field[i]`.
+- Declaration parsing lives in [crates/core/src/parser/data/vars.rs](../crates/core/src/parser/data/vars.rs).
+- Expression suffix handling for `foo[.field]` and `foo.field[i]` lives in
+  [crates/core/src/parser/expr.rs](../crates/core/src/parser/expr.rs).
 
-- `VarDecl` gained `symbolic_subscript_fields: Option<Vec<SymbolicSubscriptFieldDecl>>`.
-- New `SymbolicSubscriptFieldDecl { name, data_width, count }`.
-- Expressions gained `Expr::Index { base, index }`.
+### Eval expansion and semantics
 
-### Parser (`crates/core/src/parser/mod.rs`)
-
-- `var_decl_parser` now parses a bracket payload as either:
-  - classic array length expression, or
-  - symbolic subscript field list.
-- Symbolic subscript field list parsing is implemented by:
-  - `parse_var_bracket_payload`
-  - `parse_symbolic_subscript_field_list`
-  - `parse_symbolic_subscript_field_entry`
-- Expression parsing now applies eval suffixes (`[...]`) as postfix operations via `apply_eval_suffixes`:
-  - `foo[.field]` becomes identifier form `foo.field`
-  - `foo.bar[i]` becomes `Expr::Index { base: foo.bar, index: i }`
-
-### Eval Expansion (`crates/core/src/eval_expand.rs`)
-
-- Symbolic subscript field `count` expressions are expanded.
-- `Expr::Index` participates in recursive expansion.
-
-### Semantic Analysis (`crates/core/src/sema/mod.rs`)
-
-- New metadata:
+- Field counts are expanded during evaluator expansion in
+  [crates/core/src/eval_expand.rs](../crates/core/src/eval_expand.rs).
+- Layout computation and validation live in
+  [crates/core/src/sema/vars.rs](../crates/core/src/sema/vars.rs).
+- Semantic metadata is exposed through:
   - `SymbolicSubscriptFieldMeta`
   - `SymbolicSubscriptMeta`
-  - `VarMeta.symbolic_subscript: Option<SymbolicSubscriptMeta>`
-- `eval_var_layout` handles both traditional vars and symbolic subscript arrays.
-- `eval_symbolic_subscript_layout` computes field offsets, sizes, and total layout size, with validation.
+  - `VarMeta.symbolic_subscript`
 
-### Lowering (`crates/core/src/lower.rs`)
+### Lowering and formatting
 
-- Added symbolic subscript-aware resolution path:
-  - `resolve_symbolic_subscript_name`
-  - `eval_index_expr`
-  - `eval_index_expr_strict`
-- Supports:
+- Lowering resolves symbolic-subscript names and metadata queries in
+  [crates/core/src/lower.rs](../crates/core/src/lower.rs).
+- Supported lowered forms include:
   - direct field addresses (`foo.field`)
   - symbolic field form (`foo[.field]`)
-  - array field indexing (`foo.field[i]`)
-- Emits targeted diagnostics for invalid aggregate indexing and unknown fields (with suggestions).
-
-### Formatter (`crates/fmt/src/print_ast.rs`)
-
-- Supports printing symbolic subscript array declarations and `Expr::Index`.
+  - indexed field elements (`foo.field[i]`, `foo[.field][i]`)
+- The formatter prints symbolic-subscript declarations and indexed expressions in
+  [crates/fmt/src/print_ast.rs](../crates/fmt/src/print_ast.rs).
 
 ## Tests
 
-Unit tests were added/updated in:
+Current coverage is split across parser, semantic, lowering, LSP, and golden
+tests:
 
-- `crates/core/src/lexer.rs`
-- `crates/core/src/parser/mod.rs`
-- `crates/core/src/sema/mod.rs`
-- `crates/core/src/lower.rs`
-
-Validation run:
-
-- `cargo fmt`
-- `cargo test -p k816-core`
-- `cargo test`
+- parser coverage:
+  [crates/core/src/parser/tests/data.rs](../crates/core/src/parser/tests/data.rs)
+- semantic layout coverage:
+  [crates/core/src/sema/tests.rs](../crates/core/src/sema/tests.rs)
+- lowering coverage:
+  [crates/core/src/lower.rs](../crates/core/src/lower.rs)
+- LSP hover coverage:
+  [tests/lsp_cli.rs](../tests/lsp_cli.rs)
+- golden fixtures:
+  [tests/golden/fixtures/syntax-symbolic-subscripts-forms](../tests/golden/fixtures/syntax-symbolic-subscripts-forms),
+  [tests/golden/fixtures/syntax-symbolic-subscripts-nesting](../tests/golden/fixtures/syntax-symbolic-subscripts-nesting),
+  [tests/golden/fixtures/syntax-sizeof-offsetof](../tests/golden/fixtures/syntax-sizeof-offsetof)

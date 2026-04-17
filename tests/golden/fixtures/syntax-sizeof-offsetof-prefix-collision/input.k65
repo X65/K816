@@ -1,0 +1,12 @@
+var BASE[
+    .ab :byte
+    .a[
+        .x :byte
+    ]
+] = $1000
+
+func main @a8 @i8 {
+    lda #BASE.ab:offsetof
+    ldx #BASE.a:offsetof
+    ldy #BASE.a.x:offsetof
+}

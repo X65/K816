@@ -257,6 +257,17 @@ impl fmt::Display for ExitCodeError {
 
 impl std::error::Error for ExitCodeError {}
 
+#[derive(Debug)]
+struct RenderedDiagnosticError(String);
+
+impl fmt::Display for RenderedDiagnosticError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RenderedDiagnosticError {}
+
 fn main() {
     match run() {
         Ok(()) => {}
@@ -271,6 +282,11 @@ fn main() {
 }
 
 fn print_error(err: &anyhow::Error) {
+    if let Some(rendered) = err.downcast_ref::<RenderedDiagnosticError>() {
+        eprintln!("{}", rendered.0.trim_end());
+        return;
+    }
+
     eprintln!("Error: {err}");
     let causes: Vec<_> = err.chain().skip(1).collect();
     if causes.is_empty() {
@@ -386,7 +402,7 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
         color: stderr_supports_color(),
     };
     let output = k816_core::compile_source(&input_path.display().to_string(), &source, render)
-        .map_err(|error| anyhow::anyhow!(error.rendered))?;
+        .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
     if !output.rendered_warnings.trim().is_empty() {
         eprintln!("{}", output.rendered_warnings.trim_end());
     }
@@ -996,7 +1012,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
             color: stderr_supports_color(),
         },
     )
-    .map_err(|error| anyhow::anyhow!(error.rendered))?;
+    .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
 
     let mut objects = Vec::with_capacity(compile_outputs.len());
     for ((object_path, _source_name, _source_text), output) in

@@ -109,6 +109,34 @@ fn shortcut_build_reports_undefined_symbol_diagnostics() {
 }
 
 #[test]
+fn shortcut_build_does_not_double_prefix_rendered_compile_errors() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-shortcut-rendered-error-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.k65");
+    std::fs::write(&input, "[ F = 1.5 ]\nfunc main {\n  lda #F\n}\n")
+        .expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    let assert = cmd.arg(&input).assert().failure();
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf-8");
+
+    assert!(
+        stderr.contains("constant 'F' must be an exact integer in this numeric expression"),
+        "stderr should contain the rendered compiler diagnostic, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Error: Error:"),
+        "stderr should not double-prefix rendered diagnostics, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn compile_subcommand_rejects_link_only_options() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -127,6 +155,29 @@ fn compile_subcommand_rejects_link_only_options() {
         .assert()
         .failure()
         .stderr(contains("link-only option"));
+}
+
+#[test]
+fn ordinary_cli_errors_keep_error_prefix() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-cli-invalid-extension-{unique}"));
+    std::fs::create_dir_all(&root).expect("failed to create temp root");
+
+    let input = root.join("demo.txt");
+    std::fs::write(&input, "func main {\n  nop\n}\n").expect("failed to write input");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
+    let assert = cmd.arg("compile").arg(&input).assert().failure();
+    let stderr =
+        String::from_utf8(assert.get_output().stderr.clone()).expect("stderr should be utf-8");
+
+    assert!(
+        stderr.starts_with("Error: invalid input extension"),
+        "ordinary CLI errors should keep the top-level error prefix, got:\n{stderr}"
+    );
 }
 
 #[test]

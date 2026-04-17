@@ -164,6 +164,7 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
             dest: dest.clone(),
             src: *src,
         },
+        HlaStmt::MemStoreZero { dest } => HlaStmt::MemStoreZero { dest: dest.clone() },
         HlaStmt::RegisterTransfer { dest, src } => HlaStmt::RegisterTransfer {
             dest: *dest,
             src: *src,

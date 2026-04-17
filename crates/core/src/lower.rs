@@ -243,6 +243,10 @@ fn hla_effects(stmt: &HlaStmt) -> RegEffects {
                 },
             modifies: RegSet::NONE,
         },
+        HlaStmt::MemStoreZero { dest } => RegEffects {
+            reads: hla_operand_reads(dest),
+            modifies: RegSet::NONE,
+        },
         HlaStmt::RegisterTransfer { dest, src } => RegEffects {
             reads: match src {
                 HlaCpuRegister::A => RegSet::A,
@@ -3663,6 +3667,26 @@ fn lower_hla_stmt(
             };
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
+        HlaStmt::MemStoreZero { dest } => {
+            if !stz_compatible_dest_mode(dest) {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    "'mem = 0' requires zp, zp,X, abs, or abs,X addressing — \
+                     use 'mem = a = 0' for other modes",
+                ));
+                return;
+            }
+            let instruction = Instruction {
+                mnemonic: "stz".to_string(),
+                operand: Some(Operand::Value {
+                    expr: dest.expr.clone(),
+                    force_far: false,
+                    index: dest.index,
+                    addr_mode: dest.addr_mode,
+                }),
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
+        }
         HlaStmt::RegisterTransfer { dest, src } => {
             let Some(mnemonic) = resolve_transfer(*dest, *src) else {
                 let msg = format!(
@@ -5652,6 +5676,16 @@ fn eval_index_expr(
         diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
         None
     })
+}
+
+/// STZ only supports DirectPage / DirectPageX / Absolute / AbsoluteX. This
+/// mirrors the predicate the peephole pass uses when rewriting `LDA #0; STA`.
+fn stz_compatible_dest_mode(dest: &HlaOperandExpr) -> bool {
+    matches!(dest.addr_mode, OperandAddrMode::Direct)
+        && matches!(
+            dest.index,
+            None | Some(crate::ast::IndexRegister::X)
+        )
 }
 
 fn lower_operand_mode(

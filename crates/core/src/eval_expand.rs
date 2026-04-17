@@ -231,6 +231,9 @@ fn expand_hla_stmt(
             dest: expand_hla_operand_expr(dest, span, source_id, diagnostics),
             src: *src,
         },
+        HlaStmt::MemStoreZero { dest } => HlaStmt::MemStoreZero {
+            dest: expand_hla_operand_expr(dest, span, source_id, diagnostics),
+        },
         HlaStmt::RegisterTransfer { dest, src } => HlaStmt::RegisterTransfer {
             dest: *dest,
             src: *src,

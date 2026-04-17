@@ -12,9 +12,9 @@ use chumsky::{
 };
 
 use super::{
-    ParseExtra, expr_parser, ident_parser, invalid_transfer_hint, is_register_name,
-    line_sep_parser, operand_expr_parser, parse_cpu_register, parse_index_register,
-    parse_stack_target, resolve_transfer, spanned,
+    ParseExtra, eval_static_expr, expr_parser, ident_parser, invalid_transfer_hint,
+    is_register_name, line_sep_parser, operand_expr_parser, parse_cpu_register,
+    parse_index_register, parse_stack_target, resolve_transfer, spanned,
 };
 
 pub(super) fn hla_wait_loop_stmt_parser<'src, I>()
@@ -259,22 +259,46 @@ where
 {
     operand_expr_parser()
         .then_ignore(just(TokenKind::Eq))
-        .then(chumsky::select! {
-            TokenKind::Ident(value) if value.eq_ignore_ascii_case("a")
-                || value.eq_ignore_ascii_case("x")
-                || value.eq_ignore_ascii_case("y") => value
+        .then(expr_parser())
+        .validate(|(dest, rhs), extra, emitter| {
+            if let Some(src) = register_from_bare_ident(&rhs) {
+                return Stmt::Hla(HlaStmt::RegisterStore { dest, src });
+            }
+            match eval_static_expr(&rhs) {
+                Some(0) => Stmt::Hla(HlaStmt::MemStoreZero { dest }),
+                Some(_) => {
+                    emitter.emit(Rich::custom(
+                        extra.span(),
+                        "non-zero constant stores must go through a register: use 'mem = a = value'",
+                    ));
+                    Stmt::Empty
+                }
+                None => {
+                    emitter.emit(Rich::custom(
+                        extra.span(),
+                        "store RHS must be a register (a/x/y) or a constant that folds to zero",
+                    ));
+                    Stmt::Empty
+                }
+            }
         })
-        .map(|(dest, rhs)| {
-            let src = if rhs.eq_ignore_ascii_case("a") {
-                HlaCpuRegister::A
-            } else if rhs.eq_ignore_ascii_case("x") {
-                HlaCpuRegister::X
-            } else {
-                HlaCpuRegister::Y
-            };
+}
 
-            Stmt::Hla(HlaStmt::RegisterStore { dest, src })
-        })
+fn register_from_bare_ident(rhs: &Expr) -> Option<HlaCpuRegister> {
+    let name = match rhs {
+        Expr::Ident(name) => name.as_str(),
+        Expr::IdentSpanned { name, .. } => name.as_str(),
+        _ => return None,
+    };
+    if name.eq_ignore_ascii_case("a") {
+        Some(HlaCpuRegister::A)
+    } else if name.eq_ignore_ascii_case("x") {
+        Some(HlaCpuRegister::X)
+    } else if name.eq_ignore_ascii_case("y") {
+        Some(HlaCpuRegister::Y)
+    } else {
+        None
+    }
 }
 
 pub(super) fn alu_stmt_parser<'src, I>()

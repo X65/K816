@@ -193,6 +193,41 @@ fn parses_stack_shorthand_as_hla_nodes() {
 }
 
 #[test]
+fn parses_mem_zero_store_as_stz() {
+    let source = "var mem=0x10\nfunc main {\n  mem = 0\n  mem,x = [2-2]\n}\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::CodeBlock(block) = &file.items[1].node else {
+        panic!("expected code block");
+    };
+    assert_eq!(block.body.len(), 2);
+    assert!(matches!(
+        &block.body[0].node,
+        Stmt::Hla(HlaStmt::MemStoreZero { dest })
+            if is_ident_named(&dest.expr, "mem")
+            && dest.index.is_none()
+            && dest.addr_mode == OperandAddrMode::Direct
+    ));
+    assert!(matches!(
+        &block.body[1].node,
+        Stmt::Hla(HlaStmt::MemStoreZero { dest })
+            if is_ident_named(&dest.expr, "mem")
+            && dest.index == Some(IndexRegister::X)
+    ));
+}
+
+#[test]
+fn rejects_non_zero_constant_store() {
+    let source = "var mem=0x10\nfunc main {\n  mem = 1\n}\n";
+    let errors = parse(SourceId(0), source).expect_err("must fail");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("non-zero constant stores")),
+        "expected non-zero store rejection, got: {errors:?}"
+    );
+}
+
+#[test]
 fn rejects_unknown_stack_shorthand_target() {
     let source = "func main {\n  foo!!\n}\n";
     let errors = parse(SourceId(0), source).expect_err("must fail");

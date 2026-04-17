@@ -1,0 +1,19 @@
+// Direct `mem = 0` → STZ syntax. Contrast with `mem = a = 0` which chains
+// through A (see peephole-stz-zero fixture). This form leaves A untouched
+// and errors out at lower time on unsupported addressing modes.
+var zp_cell   = 0x10
+var abs_cell  = 0x0200
+
+func main {
+    zp_cell    = 0          // 64 10     STZ zp
+    zp_cell,x  = 0          // 74 10     STZ zp,X
+    abs_cell   = 0          // 9C 00 02  STZ abs
+    abs_cell,x = 0          // 9E 00 02  STZ abs,X
+    zp_cell    = [0x00]     // 64 10     STZ zp via evaluator fold
+    zp_cell    = [2 - 2]    // 64 10     STZ zp via arithmetic fold
+
+    // A is preserved: the final `a = 0xFF` is visible as the accumulator's
+    // final value because no `mem = 0` above clobbered it.
+    a = 0xFF
+    return
+}

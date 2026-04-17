@@ -361,6 +361,11 @@ pub enum HlaStmt {
         dest: HlaOperandExpr,
         src: HlaCpuRegister,
     },
+    /// `mem = 0` — direct zero-store via STZ. Emitted at parse time when the
+    /// RHS folds to zero.
+    MemStoreZero {
+        dest: HlaOperandExpr,
+    },
     RegisterTransfer {
         dest: HlaCpuRegister,
         src: HlaCpuRegister,

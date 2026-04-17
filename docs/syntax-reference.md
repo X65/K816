@@ -282,6 +282,8 @@ func add @a16 @i16 (a, x) -> @a8 a, y {
 - `->` can declare output registers, exit-width checks, or both.
 - Omitting the entire contract clause keeps the legacy unchecked behavior.
 
+The `@a8`/`@a16` annotations control the accumulator width and `@i8`/`@i16` control index register width; the compiler synthesises [`REP`](#rep-reset-p-bits) or [`SEP`](#sep-set-p-bits) instructions as needed to satisfy these contracts.
+
 The special name `main` designates the program entry point. A `func main` block defaults to 8-bit register widths (matching the 65816's power-on state after XCE) and automatically emits `REP` instructions if 16-bit mode is declared.
 
 ```k65
@@ -373,7 +375,7 @@ If-else form:
 
 ### Far Calls
 
-The `far` prefix uses the 65816 CPU's 24-bit addressing. A `far func` generates a `JSL` (Jump to Subroutine Long) call instead of `JSR`, and the function itself ends with `RTL` (Return from subroutine Long) instead of `RTS`.
+The `far` prefix uses the 65816 CPU's 24-bit addressing. A `far func` generates a `JSL` (Jump to Subroutine Long) call instead of `JSR`, and the function itself ends with `RTL` (Return from subroutine Long) instead of `RTS`. A `far goto label` lowers to `JML` (Jump Long).
 
 ```k65
 far func long_range_sub {
@@ -883,7 +885,7 @@ Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-in
 - `PBR` program bank register
 - `P` processor status register **NVMXDIZC** (8 bit)
 
-In K65 HLA syntax, single-letter register names (A, B, X, Y, D, S) are native symbols used in assignment and transfer expressions.
+In K65 HLA syntax, single-letter register names (A, B, X, Y, D, S) are native symbols used in assignment and transfer expressions. The `b><a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
 
 ### SR Flags NVMXDIZC
 
@@ -2259,6 +2261,614 @@ Unsupported direct transfers (e.g. `s=y`, `d=x`) produce a compile error with a 
 ```k65
 s=x=y                  // s=y is not supported; use s=x=y instead (TYX + TXS)
 d=c=s                  // d=s is not supported; use d=c=s instead (TSC + TCD)
+```
+
+---
+
+## 65C02 / 65816 Instruction Extensions
+
+These instructions are unique to the WDC 65C02 and 65816 CPU cores. The K816 ISA recognises every entry listed here. For cycle counts, `n` denotes the number of bytes moved (for block moves) and `m` denotes the accumulator/index width as selected by the `M`/`X` status flags (`@a8`/`@a16`/`@i8`/`@i16`).
+
+### 65C02 Additions
+
+#### `BRA` branch always
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `bra label`. The compiler also emits `BRA` for unconditional `break`/`repeat` in loop constructs.
+
+```none
+BRA  Branch Always
+
+     PC + 2 + offset -> PC            N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     relative      BRA oper      80    2     3
+```
+
+---
+
+#### `PHX` push X
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`x!!`|||||||
+
+Width follows `@i8`/`@i16` — a 16-bit X pushes 2 bytes.
+
+```none
+PHX  Push Index X on Stack
+
+     push X                           N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PHX           DA    1    3-4
+```
+
+---
+
+#### `PHY` push Y
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`y!!`|||||||
+
+Width follows `@i8`/`@i16`.
+
+```none
+PHY  Push Index Y on Stack
+
+     push Y                           N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PHY           5A    1    3-4
+```
+
+---
+
+#### `PLX` pull X
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`x??`|||||||
+
+Width follows `@i8`/`@i16`.
+
+```none
+PLX  Pull Index X from Stack
+
+     pull X                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PLX           FA    1    4-5
+```
+
+---
+
+#### `PLY` pull Y
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`y??`|||||||
+
+Width follows `@i8`/`@i16`.
+
+```none
+PLY  Pull Index Y from Stack
+
+     pull Y                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PLY           7A    1    4-5
+```
+
+---
+
+#### `STZ` store zero
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|||`mem=0`|`mem,x=0`|||||
+
+Raw mnemonic: `stz zp` / `stz zp,x` / `stz abs` / `stz abs,x`. See the [Zero-Store Shortcut](#zero-store-shortcut) section: `mem = 0` lowers directly to `STZ`, and `mem = a = 0` chains get `STZ` via peephole rewrite.
+
+```none
+STZ  Store Zero in Memory
+
+     0 -> M                           N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     zeropage      STZ oper      64    2     3
+     zeropage,X    STZ oper,X    74    2     4
+     absolute      STZ oper      9C    3     4
+     absolute,X    STZ oper,X    9E    3     5
+```
+
+---
+
+#### `TSB` test and set bits
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `tsb zp` / `tsb abs`. Sets the Z flag from `A & M`, then stores `A | M` back to memory.
+
+```none
+TSB  Test and Set Memory Bits with Accumulator
+
+     M | A -> M                       N Z C I D V
+     A & M (set Z only)               - + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     zeropage      TSB oper      04    2     5
+     absolute      TSB oper      0C    3     6
+```
+
+---
+
+#### `TRB` test and reset bits
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `trb zp` / `trb abs`. Sets the Z flag from `A & M`, then stores `~A & M` back to memory (clears the bits of `M` that are set in `A`).
+
+```none
+TRB  Test and Reset Memory Bits with Accumulator
+
+     ~A & M -> M                      N Z C I D V
+     A & M (set Z only)               - + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     zeropage      TRB oper      14    2     5
+     absolute      TRB oper      1C    3     6
+```
+
+---
+
+#### `WAI` wait for interrupt
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `wai`. Halts the CPU until an interrupt is received, minimising interrupt latency.
+
+```none
+WAI  Wait for Interrupt
+
+     halt until IRQ/NMI/ABORT/RES     N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       WAI           CB    1     3
+```
+
+---
+
+#### `STP` stop
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `stp`. Halts the CPU until a hardware reset is received.
+
+```none
+STP  Stop the Processor
+
+     halt until RES                   N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       STP           DB    1     3
+```
+
+---
+
+### 65816 Bank Registers and Mode Switch
+
+`TCD`/`TCS`/`TDC`/`TSC`/`TXY`/`TYX`/`XBA` are documented above under [65816 Transfer Instructions](#65816-transfer-instructions). The entries below cover the 65816's bank-register stack ops and the emulation/native mode switch.
+
+#### `PHB` push data bank register
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`b!!`|||||||
+
+See the `example-reset-vector` fixture for real-world PLB use during startup.
+
+```none
+PHB  Push Data Bank Register on Stack
+
+     push DBR                         N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PHB           8B    1     3
+```
+
+---
+
+#### `PLB` pull data bank register
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`b??`|||||||
+
+```none
+PLB  Pull Data Bank Register from Stack
+
+     pull DBR                         N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PLB           AB    1     4
+```
+
+---
+
+#### `PHD` push direct page register
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`d!!`|||||||
+
+D is always 16-bit, so PHD always pushes 2 bytes.
+
+```none
+PHD  Push Direct Page Register on Stack
+
+     push D                           N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PHD           0B    1     4
+```
+
+---
+
+#### `PLD` pull direct page register
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+|`d??`|||||||
+
+```none
+PLD  Pull Direct Page Register from Stack
+
+     pull D                           N Z C I D V
+                                      + + - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PLD           2B    1     5
+```
+
+---
+
+#### `PHK` push program bank register
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic only — the 65816 has no `PLK` (program bank is only writable via long jump/call/return), so K65 exposes no `k!!` / `k??` HLA shorthand.
+
+```none
+PHK  Push Program Bank Register on Stack
+
+     push PBR                         N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       PHK           4B    1     3
+```
+
+---
+
+#### `XCE` exchange carry and emulation
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `xce`. Swaps the hidden emulation flag `E` with the carry flag `C`. Executing `clc; xce` transitions the 65816 from emulation mode into native (16-bit) mode; `sec; xce` returns to emulation. See the `example-reset-vector` fixture.
+
+```none
+XCE  Exchange Carry and Emulation Flags
+
+     C <-> E                          N Z C I D V
+                                      - - + - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       XCE           FB    1     2
+```
+
+---
+
+### 65816 Control Flow, Mode and Stack
+
+#### `BRL` branch long
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `brl label`. A 16-bit signed PC-relative branch; reaches anywhere within the current 64 KiB bank.
+
+```none
+BRL  Branch Always Long
+
+     PC + 3 + s16-offset -> PC        N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     relative long BRL oper      82    3     4
+```
+
+---
+
+#### `JML` jump long
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `jml addr`. `far goto label` lowers to `JML`.
+
+```none
+JML  Jump Long (24-bit Absolute)
+
+     operand -> PC, PBR               N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     absolute long JML oper      5C    4     4
+```
+
+---
+
+#### `JSL` jump subroutine long
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `jsl addr`. See [Far Calls](#far-calls): `far func_name` and `call far name` lower to `JSL`, with a matching `RTL` at function exit.
+
+```none
+JSL  Jump to Subroutine Long
+
+     push PBR, push PC+3              N Z C I D V
+     operand -> PC, PBR               - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     absolute long JSL oper      22    4     8
+```
+
+---
+
+#### `RTL` return long
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `rtl`. Emitted automatically at the end of a `far func`; can be written explicitly inside a `naked far` block (see the `syntax-data-fars` fixture).
+
+```none
+RTL  Return from Subroutine Long
+
+     pull PC, pull PBR                N Z C I D V
+     PC + 1 -> PC                     - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     implied       RTL           6B    1     6
+```
+
+---
+
+#### `REP` reset P bits
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `rep #mask`. Each set bit in the immediate mask clears the corresponding bit of the status register. `@a16` synthesises `REP #$20` (clear M, accumulator becomes 16-bit); `@i16` synthesises `REP #$10` (clear X, index registers become 16-bit).
+
+```none
+REP  Reset P Bits
+
+     P & ~mask -> P                   N Z C I D V
+                                      * * * * * *
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     immediate     REP #mask     C2    2     3
+```
+
+---
+
+#### `SEP` set P bits
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `sep #mask`. Each set bit in the immediate mask sets the corresponding bit of the status register. `@a8` synthesises `SEP #$20` (set M, accumulator becomes 8-bit); `@i8` synthesises `SEP #$10` (set X, index registers become 8-bit).
+
+```none
+SEP  Set P Bits
+
+     P | mask -> P                    N Z C I D V
+                                      * * * * * *
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     immediate     SEP #mask     E2    2     3
+```
+
+---
+
+#### `PEA` push effective absolute
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `pea #addr`. Pushes a 16-bit immediate onto the stack. Despite the `#` syntax, the operand is typically a 16-bit address constant — useful for building stack frames or pushing return targets.
+
+```none
+PEA  Push Effective Absolute Address
+
+     push immediate word              N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     immediate     PEA #oper     F4    3     5
+```
+
+---
+
+#### `PEI` push effective indirect
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `pei (zp)`. Reads a 16-bit word from the direct page and pushes it onto the stack.
+
+```none
+PEI  Push Effective Indirect Address
+
+     push word at D+zp                N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     (zeropage)    PEI (oper)    D4    2     6
+```
+
+---
+
+#### `PER` push effective PC-relative
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `per label`. Computes `PC + 3 + s16-offset` and pushes the resulting 16-bit address onto the stack — useful for building position-independent code.
+
+```none
+PER  Push Effective PC-Relative Address
+
+     push PC + 3 + s16-offset         N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     relative long PER oper      62    3     6
+```
+
+---
+
+#### `COP` coprocessor trap
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `cop #imm`. Software interrupt via the coprocessor vector; the immediate signature byte is available to the handler.
+
+```none
+COP  Coprocessor Trap
+
+     interrupt via COP vector         N Z C I D V
+     push PC+2, push SR               - - - 1 0 -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     immediate     COP #oper     02    2     7
+```
+
+---
+
+#### `WDM` reserved
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `wdm #imm`. Reserved by WDC for future expansion; acts as a 2-byte no-op on current 65816 cores.
+
+```none
+WDM  Reserved for Future Expansion (no-op)
+
+     no effect                        N Z C I D V
+                                      - - - - - -
+
+     addressing    assembler    opc  bytes  cyles
+     --------------------------------------------
+     immediate     WDM #oper     42    2     2
+```
+
+---
+
+### 65816 Block Moves
+
+Both instructions copy `C + 1` bytes (where `C` is the full 16-bit accumulator) from source bank `src_bank` to destination bank `dst_bank`. X holds the source address, Y the destination. MVN increments both indices; MVP decrements. Use MVN for non-overlapping or upward-growing copies, MVP when the destination overlaps ahead of the source.
+
+#### `MVN` block move negative
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `mvn src_bank, dst_bank`. The compiler parses two comma-separated operands; fixture `syntax-native-native` shows `mvn 0,0`.
+
+```none
+MVN  Block Move Negative (source < dest, copy ascending)
+
+     repeat C+1 times:                N Z C I D V
+       M[src_bank:X] -> M[dst_bank:Y] - - - - - -
+       X++, Y++, C--
+
+     addressing    assembler     opc  bytes  cyles
+     ---------------------------------------------
+     block move    MVN src,dst    54    3   7*(C+1)
+```
+
+---
+
+#### `MVP` block move positive
+
+Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
+:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
+
+Raw mnemonic: `mvp src_bank, dst_bank`.
+
+```none
+MVP  Block Move Positive (source > dest, copy descending)
+
+     repeat C+1 times:                N Z C I D V
+       M[src_bank:X] -> M[dst_bank:Y] - - - - - -
+       X--, Y--, C--
+
+     addressing    assembler     opc  bytes  cyles
+     ---------------------------------------------
+     block move    MVP src,dst    44    3   7*(C+1)
 ```
 
 ---

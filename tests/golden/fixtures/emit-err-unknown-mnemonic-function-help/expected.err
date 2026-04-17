@@ -1,0 +1,47 @@
+Error: unknown mnemonic 'pair'
+    ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:26:5 ]
+    │
+ 26 │     pair #5
+    │     ───┬───  
+    │        ╰───── here
+    │ 
+    │ Help: `Pair` is a function; call it as `Pair(a, x) -> a, y`
+────╯
+
+Error: unknown mnemonic 'dispatch'
+    ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:27:5 ]
+    │
+ 27 │     dispatch #0
+    │     ─────┬─────  
+    │          ╰─────── here
+    │ 
+    │ Help: `Dispatch` is a naked function; call it as `Dispatch`
+────╯
+
+Error: unknown mnemonic 'addone'
+    ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:28:5 ]
+    │
+ 28 │     addone #1
+    │     ────┬────  
+    │         ╰────── here
+    │ 
+    │ Help: `AddOne` is a function; call it as `AddOne(a) -> a`
+────╯
+
+Error: unknown mnemonic 'shift'
+    ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:29:5 ]
+    │
+ 29 │     shift #2
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: `Shift` is an inline function; call it as `Shift(a) -> a`
+────╯
+
+Error: unknown mnemonic 'bogus'
+    ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:30:5 ]
+    │
+ 30 │     bogus #3
+    │     ────┬───  
+    │         ╰───── here
+────╯

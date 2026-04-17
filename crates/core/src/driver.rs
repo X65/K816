@@ -142,7 +142,7 @@ fn compile_source_inner(
     let hir = fold_mode_ops(&hir);
     let hir = peephole_optimize(&hir);
 
-    let emit_output = emit_object(&hir, &source_map)
+    let emit_output = emit_object(&hir, &source_map, &sema)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
     Ok(CompileObjectOutput {

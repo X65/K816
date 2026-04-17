@@ -1,0 +1,31 @@
+// When an unknown mnemonic matches a declared function (case-insensitively),
+// the help line directs the user to the correct function-call syntax.
+//
+// The parser's known-functions pre-pass is case-sensitive, so a user who
+// writes `foo` when the declaration is `func Foo` lands on the emitter's
+// UnknownMnemonic path and sees the suggested call form.
+
+func Pair @a16 @i16 (a, x) -> a, y {
+    tay
+}
+
+naked Dispatch {
+    rts
+}
+
+func AddOne @a8 (a) -> a {
+    clc
+    adc #1
+}
+
+inline Shift @a8 (a) -> a {
+    asl
+}
+
+func main @a16 @i16 {
+    pair #5
+    dispatch #0
+    addone #1
+    shift #2
+    bogus #3
+}

@@ -9,5 +9,6 @@ func main @a8 @i8 {
     w = a
 
     @a8
+    a = w:byte
     w:byte = a
 }

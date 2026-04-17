@@ -7,6 +7,7 @@ func main {
     lda #$12
     @a8
     nop
+    lda #$12
     @i16
     b><a
     @i8

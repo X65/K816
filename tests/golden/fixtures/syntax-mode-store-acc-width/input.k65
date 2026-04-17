@@ -5,14 +5,16 @@ var zp = 0x20
 
 func main {
     @a16
-    sta zp
     stz zp
+    lda #$1234
+    sta zp
     trb zp
     tsb zp
 
     @a8
-    sta zp
     stz zp
+    lda #$12
+    sta zp
     trb zp
     tsb zp
 }

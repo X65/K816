@@ -1,0 +1,18 @@
+var dst0 = $2000
+var dst1 = $2002
+var dst2 = $2004
+
+func main {
+    @a16
+    lda #$1234
+    sta dst0
+
+    @a8
+    lda #$12
+    sta dst1
+
+    @a16
+    lda #$3456
+    adc #$0001
+    sta dst2
+}

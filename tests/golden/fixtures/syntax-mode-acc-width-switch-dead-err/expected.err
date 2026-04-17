@@ -1,0 +1,19 @@
+Error: Accumulator value is dead after switching to @a8.
+   ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-dead-err/input.k65:7:5 ]
+   │
+ 7 │     sta dst
+   │     ───┬───  
+   │        ╰───── here
+   │ 
+   │ Help: load A again in 8-bit mode before using it
+───╯
+
+Error: Accumulator value is dead after switching to @a16.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-dead-err/input.k65:12:5 ]
+    │
+ 12 │     adc #$0001
+    │     ─────┬────  
+    │          ╰────── here
+    │ 
+    │ Help: load A again in 16-bit mode before using it
+────╯

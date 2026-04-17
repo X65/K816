@@ -1,14 +1,16 @@
 [default]
-000000: C2 20 EA A9 12 00 EA EB EA EB EA 60
+000000: C2 20 EA A9 12 00 E2 20 EA A9 12 EB EA EB EA 60
 
 
 [disasm obj#0 default::main]
 000000: C2 20       rep #$20
 000002: EA          nop
 000003: A9 12 00    lda #$0012
-000006: EA          nop
-000007: EB          xba
+000006: E2 20       sep #$20
 000008: EA          nop
-000009: EB          xba
-00000A: EA          nop
-00000B: 60          rts
+000009: A9 12       lda #$12
+00000B: EB          xba
+00000C: EA          nop
+00000D: EB          xba
+00000E: EA          nop
+00000F: 60          rts

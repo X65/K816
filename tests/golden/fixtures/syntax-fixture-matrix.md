@@ -7,6 +7,7 @@ Key focus areas:
 - one-letter/symbolic operator forms (`a+...`, `mem=a`, `c+?{...}`, `*`)
 - data/evaluator/control-flow shorthand patterns from examples
 - const declarations and compile-time symbol resolution
+- register-width transition safety (`@a8`/`@a16`, `@i8`/`@i16`)
 
 Primary operator-coverage fixtures:
 
@@ -21,5 +22,9 @@ Primary operator-coverage fixtures:
 - `syntax-c-addrmodes-indirect-xy`
 - `syntax-const-declarations`
 - `syntax-const-sequence`
+- `syntax-mode-acc-width-switch-dead-err`
+- `syntax-mode-acc-width-switch-reload`
+- `syntax-mode-index-truncation-warning`
+- `syntax-mode-index-truncation-safe`
 
 Fixtures are input-heavy by design. Some are intentionally ahead of implementation.

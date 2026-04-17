@@ -1,0 +1,13 @@
+var dst = $2000
+
+func main {
+    @a16
+    lda #$1234
+    @a8
+    sta dst
+
+    @a8
+    lda #$12
+    @a16
+    adc #$0001
+}

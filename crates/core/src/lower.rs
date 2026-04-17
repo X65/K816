@@ -12,7 +12,7 @@ use crate::ast::{
     NamedDataBlock, NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegName, RegWidth, Stmt,
 };
 use crate::data_blocks::lower_data_block;
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Severity};
 use crate::hir::{
     AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocation, ByteRelocationKind,
     IndexRegister, InstructionOp, Op, OperandOp, Program,
@@ -26,6 +26,12 @@ struct CallContractSummary {
     outputs: Vec<RegName>,
     clobbers: RegSet,
     is_naked: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LowerOutput {
+    pub program: Program,
+    pub warnings: Vec<Diagnostic>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +72,13 @@ struct ModeFrame {
     entry_mode: ModeState,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RegHazardState {
+    a_dead: bool,
+    x_truncated: bool,
+    y_truncated: bool,
+}
+
 #[derive(Debug)]
 struct LowerContext {
     next_label: usize,
@@ -80,6 +93,8 @@ struct LowerContext {
     return_modes: Vec<ModeState>,
     reachable: bool,
     is_far: bool,
+    hazards: RegHazardState,
+    label_entry_hazards: FxHashMap<String, RegHazardState>,
 }
 
 struct EvaluatedBytes {
@@ -114,6 +129,8 @@ impl Default for LowerContext {
             return_modes: Vec::new(),
             reachable: true,
             is_far: false,
+            hazards: RegHazardState::default(),
+            label_entry_hazards: FxHashMap::default(),
         }
     }
 }
@@ -154,8 +171,7 @@ fn call_mode_behavior(
         CallModeBehavior::PreserveCaller
     } else {
         CallModeBehavior::AdoptExit(
-            exit_summary
-                .expect("checked function contract calls must have an inferred exit mode"),
+            exit_summary.expect("checked function contract calls must have an inferred exit mode"),
         )
     }
 }
@@ -895,7 +911,9 @@ fn retarget_stmt_spans(stmt: &mut Stmt, target: Span) {
         Stmt::Hla(HlaStmt::NeverBlock { body }) => {
             retarget_spans(body, target);
         }
-        Stmt::Hla(HlaStmt::PrefixConditional { body, else_body, .. }) => {
+        Stmt::Hla(HlaStmt::PrefixConditional {
+            body, else_body, ..
+        }) => {
             retarget_spans(body, target);
             if let Some(else_body) = else_body {
                 retarget_spans(else_body, target);
@@ -910,6 +928,189 @@ fn reg_name_text(reg: RegName) -> &'static str {
         RegName::A => "a",
         RegName::X => "x",
         RegName::Y => "y",
+    }
+}
+
+fn merge_hazards(lhs: RegHazardState, rhs: RegHazardState) -> RegHazardState {
+    RegHazardState {
+        a_dead: lhs.a_dead || rhs.a_dead,
+        x_truncated: lhs.x_truncated || rhs.x_truncated,
+        y_truncated: lhs.y_truncated || rhs.y_truncated,
+    }
+}
+
+fn apply_mode_transition_hazards(
+    hazards: RegHazardState,
+    current_mode: ModeState,
+    a_width: Option<RegWidth>,
+    i_width: Option<RegWidth>,
+) -> RegHazardState {
+    let mut next = hazards;
+    if let Some(target) = a_width
+        && current_mode.a_width != Some(target)
+    {
+        next.a_dead = true;
+    }
+    if let Some(RegWidth::W8) = i_width
+        && current_mode.i_width != Some(RegWidth::W8)
+    {
+        next.x_truncated = true;
+        next.y_truncated = true;
+    }
+    next
+}
+
+fn apply_mode_restore_hazards(
+    hazards: RegHazardState,
+    current_mode: ModeState,
+    saved_mode: ModeState,
+) -> RegHazardState {
+    let mut next = hazards;
+    if saved_mode.a_width.is_some() && saved_mode.a_width != current_mode.a_width {
+        next.a_dead = true;
+    }
+    if saved_mode.i_width == Some(RegWidth::W8) && current_mode.i_width != Some(RegWidth::W8) {
+        next.x_truncated = true;
+        next.y_truncated = true;
+    }
+    next
+}
+
+fn apply_hazards_for_exited_frames(
+    hazards: RegHazardState,
+    current_mode: ModeState,
+    frames: &[ModeFrame],
+    exit_count: usize,
+) -> RegHazardState {
+    let mut next_hazards = hazards;
+    let mut mode = current_mode;
+    for frame in frames.iter().rev().take(exit_count) {
+        next_hazards = apply_mode_restore_hazards(next_hazards, mode, frame.entry_mode);
+        mode = frame.entry_mode;
+    }
+    next_hazards
+}
+
+fn accumulator_width_switch_error(span: Span, width: Option<RegWidth>) -> Diagnostic {
+    match width {
+        Some(RegWidth::W8) => {
+            Diagnostic::error(span, "Accumulator value is dead after switching to @a8.")
+                .with_help("load A again in 8-bit mode before using it")
+        }
+        Some(RegWidth::W16) => {
+            Diagnostic::error(span, "Accumulator value is dead after switching to @a16.")
+                .with_help("load A again in 16-bit mode before using it")
+        }
+        None => Diagnostic::error(
+            span,
+            "Accumulator value is dead after switching accumulator width.",
+        )
+        .with_help("load A again after the width change before using it"),
+    }
+}
+
+fn index_truncation_warning(span: Span, reg: RegName) -> Diagnostic {
+    let reg_name = reg_name_text(reg);
+    Diagnostic::warning(
+        span,
+        format!("register {reg_name} is used after @i8 without an 8-bit reload"),
+    )
+    .with_help(format!(
+        "the previous 16-bit value was truncated to 8 bits; read {reg_name} before @i8, or reload {reg_name} with an 8-bit value after @i8 before reading it"
+    ))
+}
+
+fn apply_reg_access_hazards(
+    hazards: RegHazardState,
+    effects: RegEffects,
+    mode: ModeState,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> RegHazardState {
+    if effects.reads.contains(RegSet::A) && hazards.a_dead {
+        diagnostics.push(accumulator_width_switch_error(span, mode.a_width));
+    }
+    if effects.reads.contains(RegSet::X) && hazards.x_truncated {
+        diagnostics.push(index_truncation_warning(span, RegName::X));
+    }
+    if effects.reads.contains(RegSet::Y) && hazards.y_truncated {
+        diagnostics.push(index_truncation_warning(span, RegName::Y));
+    }
+
+    let mut next = hazards;
+    if effects.modifies.contains(RegSet::A) {
+        next.a_dead = false;
+    }
+    if effects.modifies.contains(RegSet::X) {
+        next.x_truncated = false;
+    }
+    if effects.modifies.contains(RegSet::Y) {
+        next.y_truncated = false;
+    }
+    next
+}
+
+fn apply_call_summary_hazards(
+    hazards: RegHazardState,
+    summary: &CallContractSummary,
+    mode: ModeState,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> RegHazardState {
+    let mut reads = RegSet::NONE;
+    for param in &summary.inputs {
+        if let ContractParam::Register(reg) = param {
+            reads = reads | reg_name_set(*reg);
+        }
+    }
+    let effects = RegEffects {
+        reads,
+        modifies: summary.clobbers | reg_names_set(&summary.outputs),
+    };
+    apply_reg_access_hazards(hazards, effects, mode, span, diagnostics)
+}
+
+fn record_label_entry_hazards(ctx: &mut LowerContext, label: &str, hazards: RegHazardState) {
+    if let Some(existing) = ctx.label_entry_hazards.get(label).copied() {
+        ctx.label_entry_hazards
+            .insert(label.to_string(), merge_hazards(existing, hazards));
+    } else {
+        ctx.label_entry_hazards.insert(label.to_string(), hazards);
+    }
+}
+
+fn join_synthetic_label_state(
+    ctx: &mut LowerContext,
+    label: &str,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(incoming_mode) = ctx.label_entry_modes.get(label).copied() {
+        if ctx.reachable && ctx.mode != incoming_mode {
+            diagnostics.push(mode_mismatch_diagnostic(
+                span,
+                label,
+                ctx.mode,
+                incoming_mode,
+            ));
+        }
+        let merged_hazards =
+            if let Some(incoming_hazards) = ctx.label_entry_hazards.get(label).copied() {
+                if ctx.reachable {
+                    merge_hazards(ctx.hazards, incoming_hazards)
+                } else {
+                    incoming_hazards
+                }
+            } else {
+                ctx.hazards
+            };
+        ctx.mode = incoming_mode;
+        ctx.hazards = merged_hazards;
+        ctx.reachable = true;
+    } else if ctx.reachable {
+        ctx.label_entry_modes.insert(label.to_string(), ctx.mode);
+        ctx.label_entry_hazards
+            .insert(label.to_string(), ctx.hazards);
     }
 }
 
@@ -1284,10 +1485,7 @@ fn entry_mode_variants(is_entry: bool, mode_contract: ModeContract) -> Vec<ModeS
     variants
 }
 
-fn infer_exit_width(
-    variants: &[(ModeState, ModeState)],
-    reg: RegName,
-) -> ExitWidth {
+fn infer_exit_width(variants: &[(ModeState, ModeState)], reg: RegName) -> ExitWidth {
     let input_width = |mode: ModeState| match reg {
         RegName::A => mode.a_width,
         _ => mode.i_width,
@@ -1348,7 +1546,9 @@ fn collect_checked_call_dependencies(
                     out.push(call.target.clone());
                 }
             }
-            Stmt::ModeScopedBlock { body, .. } => collect_checked_call_dependencies(body, sema, out),
+            Stmt::ModeScopedBlock { body, .. } => {
+                collect_checked_call_dependencies(body, sema, out)
+            }
             Stmt::Hla(HlaStmt::NeverBlock { body }) => {
                 collect_checked_call_dependencies(body, sema, out);
             }
@@ -1531,9 +1731,7 @@ fn compute_exit_mode_summary<'a>(
         variant_modes.push((initial_mode, inferred));
     }
 
-    if divergent
-        && let Some(span) = block.name_span
-    {
+    if divergent && let Some(span) = block.name_span {
         diagnostics.push(
             Diagnostic::error(
                 span,
@@ -1584,12 +1782,12 @@ fn compute_exit_mode_summary<'a>(
     summary
 }
 
-pub fn lower(
+pub(crate) fn lower_with_warnings(
     file: &File,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     external_inline_bodies: Option<&IndexMap<String, CodeBlock>>,
-) -> Result<Program, Vec<Diagnostic>> {
+) -> Result<LowerOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut ops = Vec::new();
     let mut top_level_ctx = LowerContext {
@@ -1805,11 +2003,32 @@ pub fn lower(
         }
     }
 
-    if diagnostics.is_empty() {
-        Ok(Program { ops })
-    } else {
-        Err(diagnostics)
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    for diagnostic in diagnostics {
+        match diagnostic.severity {
+            Severity::Error => errors.push(diagnostic),
+            Severity::Warning => warnings.push(diagnostic),
+        }
     }
+
+    if errors.is_empty() {
+        Ok(LowerOutput {
+            program: Program { ops },
+            warnings,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+pub fn lower(
+    file: &File,
+    sema: &SemanticModel,
+    fs: &dyn AssetFS,
+    external_inline_bodies: Option<&IndexMap<String, CodeBlock>>,
+) -> Result<Program, Vec<Diagnostic>> {
+    lower_with_warnings(file, sema, fs, external_inline_bodies).map(|output| output.program)
 }
 
 fn collect_label_depths(
@@ -2271,11 +2490,21 @@ fn lower_stmt(
                             incoming_mode,
                         ));
                     }
+                    if let Some(incoming_hazards) = ctx.label_entry_hazards.get(&resolved).copied()
+                    {
+                        ctx.hazards = if ctx.reachable {
+                            merge_hazards(ctx.hazards, incoming_hazards)
+                        } else {
+                            incoming_hazards
+                        };
+                    }
                     ctx.mode = incoming_mode;
                     ctx.reachable = true;
                 } else if ctx.reachable {
                     ctx.mode = apply_declared_label_mode(ctx.mode, declared_mode);
                     ctx.label_entry_modes.insert(resolved.clone(), ctx.mode);
+                    ctx.label_entry_hazards
+                        .insert(resolved.clone(), ctx.hazards);
                 }
 
                 ops.push(Spanned::new(Op::Label(resolved.clone()), span));
@@ -2336,6 +2565,21 @@ fn lower_stmt(
                 else {
                     return;
                 };
+                if meta.has_contract {
+                    let summary = CallContractSummary {
+                        inputs: meta.params.clone(),
+                        outputs: meta.outputs.clone(),
+                        clobbers: RegSet::NONE,
+                        is_naked: meta.is_naked,
+                    };
+                    ctx.hazards = apply_call_summary_hazards(
+                        ctx.hazards,
+                        &summary,
+                        ctx.mode,
+                        span,
+                        diagnostics,
+                    );
+                }
                 lower_call_with_contract(
                     &target,
                     meta.is_far,
@@ -2390,6 +2634,21 @@ fn lower_stmt(
                         );
                     }
                 } else {
+                    if call.is_bare && meta.has_contract {
+                        let summary = CallContractSummary {
+                            inputs: meta.params.clone(),
+                            outputs: meta.outputs.clone(),
+                            clobbers: RegSet::NONE,
+                            is_naked: meta.is_naked,
+                        };
+                        ctx.hazards = apply_call_summary_hazards(
+                            ctx.hazards,
+                            &summary,
+                            ctx.mode,
+                            span,
+                            diagnostics,
+                        );
+                    }
                     lower_call_with_contract(
                         &target,
                         meta.is_far,
@@ -2398,7 +2657,9 @@ fn lower_stmt(
                         !call.is_bare || !meta.has_contract,
                         exit_summaries
                             .get(call.target.as_str())
-                            .is_some_and(|summary| summary.is_naked && call.is_bare && meta.has_contract),
+                            .is_some_and(|summary| {
+                                summary.is_naked && call.is_bare && meta.has_contract
+                            }),
                         span,
                         ctx,
                         ops,
@@ -2464,6 +2725,7 @@ fn lower_stmt(
                 );
             }
             ctx.reachable = saved_reachable;
+            join_synthetic_label_state(ctx, &skip_label, span, diagnostics);
             ops.push(Spanned::new(Op::Label(skip_label), span));
         }
         Stmt::Hla(HlaStmt::PrefixConditional {
@@ -2508,20 +2770,7 @@ fn lower_stmt(
                     );
                 }
                 emit_branch_to_label("bra", &end_label, scope, sema, span, ctx, diagnostics, ops);
-                if let Some(incoming_mode) = ctx.label_entry_modes.get(&else_label).copied() {
-                    if ctx.reachable && ctx.mode != incoming_mode {
-                        diagnostics.push(mode_mismatch_diagnostic(
-                            span,
-                            &else_label,
-                            ctx.mode,
-                            incoming_mode,
-                        ));
-                    }
-                    ctx.mode = incoming_mode;
-                    ctx.reachable = true;
-                } else if ctx.reachable {
-                    ctx.label_entry_modes.insert(else_label.clone(), ctx.mode);
-                }
+                join_synthetic_label_state(ctx, &else_label, span, diagnostics);
                 ops.push(Spanned::new(Op::Label(else_label), span));
                 for s in else_body {
                     lower_stmt(
@@ -2538,20 +2787,7 @@ fn lower_stmt(
                         ops,
                     );
                 }
-                if let Some(incoming_mode) = ctx.label_entry_modes.get(&end_label).copied() {
-                    if ctx.reachable && ctx.mode != incoming_mode {
-                        diagnostics.push(mode_mismatch_diagnostic(
-                            span,
-                            &end_label,
-                            ctx.mode,
-                            incoming_mode,
-                        ));
-                    }
-                    ctx.mode = incoming_mode;
-                    ctx.reachable = true;
-                } else if ctx.reachable {
-                    ctx.label_entry_modes.insert(end_label.clone(), ctx.mode);
-                }
+                join_synthetic_label_state(ctx, &end_label, span, diagnostics);
                 ops.push(Spanned::new(Op::Label(end_label), span));
             } else {
                 // Simple skip form (no else)
@@ -2585,20 +2821,7 @@ fn lower_stmt(
                         ops,
                     );
                 }
-                if let Some(incoming_mode) = ctx.label_entry_modes.get(&skip_label).copied() {
-                    if ctx.reachable && ctx.mode != incoming_mode {
-                        diagnostics.push(mode_mismatch_diagnostic(
-                            span,
-                            &skip_label,
-                            ctx.mode,
-                            incoming_mode,
-                        ));
-                    }
-                    ctx.mode = incoming_mode;
-                    ctx.reachable = true;
-                } else if ctx.reachable {
-                    ctx.label_entry_modes.insert(skip_label.clone(), ctx.mode);
-                }
+                join_synthetic_label_state(ctx, &skip_label, span, diagnostics);
                 ops.push(Spanned::new(Op::Label(skip_label), span));
             }
         }
@@ -2606,6 +2829,7 @@ fn lower_stmt(
             lower_hla_stmt(stmt, span, scope, sema, ctx, diagnostics, ops);
         }
         Stmt::ModeSet { a_width, i_width } => {
+            ctx.hazards = apply_mode_transition_hazards(ctx.hazards, ctx.mode, *a_width, *i_width);
             ctx.mode = lower_mode_contract_transition(ctx.mode, *a_width, *i_width, span, ops);
         }
         Stmt::ModeScopedBlock {
@@ -2617,6 +2841,7 @@ fn lower_stmt(
             ctx.mode_frames.push(ModeFrame {
                 entry_mode: saved_mode,
             });
+            ctx.hazards = apply_mode_transition_hazards(ctx.hazards, ctx.mode, *a_width, *i_width);
             ctx.mode = lower_mode_contract_transition(ctx.mode, *a_width, *i_width, span, ops);
             // Lower body
             for s in body {
@@ -2638,17 +2863,16 @@ fn lower_stmt(
             if ctx.reachable {
                 // Restore mode when control falls out of the block naturally.
                 lower_mode_restore(ctx.mode, saved_mode, span, ops);
+                ctx.hazards = apply_mode_restore_hazards(ctx.hazards, ctx.mode, saved_mode);
                 ctx.mode = saved_mode;
             }
         }
         Stmt::SwapAB => {
-            ops.push(Spanned::new(
-                Op::Instruction(InstructionOp {
-                    mnemonic: "xba".to_string(),
-                    operand: None,
-                }),
-                span,
-            ));
+            let instruction = Instruction {
+                mnemonic: "xba".to_string(),
+                operand: None,
+            };
+            lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         Stmt::Var(var) => {
             emit_var_absolute_symbols(var, span, sema, diagnostics, ops);
@@ -2965,6 +3189,8 @@ fn lower_instruction_stmt(
     ops: &mut Vec<Spanned<Op>>,
 ) {
     let mnemonic = instruction.mnemonic.to_ascii_lowercase();
+    let effects = instruction_effects(instruction);
+    ctx.hazards = apply_reg_access_hazards(ctx.hazards, effects, ctx.mode, span, diagnostics);
 
     validate_instruction_width_rules(instruction, sema, ctx.mode, span, diagnostics);
 
@@ -3002,9 +3228,12 @@ fn lower_instruction_stmt(
             span,
             ops,
         );
+        let hazards_after_jump =
+            apply_hazards_for_exited_frames(ctx.hazards, ctx.mode, &ctx.mode_frames, exit_frames);
 
         if let Some(target) = target_label.as_deref() {
             record_jump_target_mode(ctx, target, mode_after_jump, span, diagnostics);
+            record_label_entry_hazards(ctx, target, hazards_after_jump);
         }
 
         if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops) {
@@ -3012,6 +3241,7 @@ fn lower_instruction_stmt(
                 ctx.return_modes.push(mode_after_jump);
             }
             ctx.mode = mode_after_jump;
+            ctx.hazards = hazards_after_jump;
             ctx.reachable = false;
             if mnemonic == "plp" || mnemonic == "rti" {
                 ctx.mode = ModeState::default();
@@ -3022,6 +3252,7 @@ fn lower_instruction_stmt(
 
     if is_conditional_branch && let Some(target) = target_label.as_deref() {
         record_jump_target_mode(ctx, target, ctx.mode, span, diagnostics);
+        record_label_entry_hazards(ctx, target, ctx.hazards);
     }
 
     if lower_instruction_and_push(instruction, scope, sema, span, diagnostics, ops)
@@ -5770,10 +6001,7 @@ fn eval_index_expr(
 /// mirrors the predicate the peephole pass uses when rewriting `LDA #0; STA`.
 fn stz_compatible_dest_mode(dest: &HlaOperandExpr) -> bool {
     matches!(dest.addr_mode, OperandAddrMode::Direct)
-        && matches!(
-            dest.index,
-            None | Some(crate::ast::IndexRegister::X)
-        )
+        && matches!(dest.index, None | Some(crate::ast::IndexRegister::X))
 }
 
 fn lower_operand_mode(
@@ -6757,7 +6985,8 @@ mod tests {
 
     #[test]
     fn lowers_untyped_inline_immediate_contract_arguments() {
-        let source = "inline scale (#factor) {\n  lda #factor\n}\nfunc main @a16 {\n  scale #$1234\n}\n";
+        let source =
+            "inline scale (#factor) {\n  lda #factor\n}\nfunc main @a16 {\n  scale #$1234\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -6779,8 +7008,7 @@ mod tests {
 
     #[test]
     fn checked_inline_call_uses_inferred_exit_mode_without_restore() {
-        let source =
-            "inline widen @a8 () -> @a16 {\n  @a16\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
+        let source = "inline widen @a8 () -> @a16 {\n  @a16\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -6833,8 +7061,7 @@ mod tests {
 
     #[test]
     fn bare_contract_call_uses_inferred_exit_mode_without_restore() {
-        let source =
-            "func widen @a8 () -> @a16 {\n  @a16\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
+        let source = "func widen @a8 () -> @a16 {\n  @a16\n  nop\n}\nfunc main {\n  widen\n  lda #$1234\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -6860,8 +7087,7 @@ mod tests {
 
     #[test]
     fn rejects_exit_contract_mismatch_against_inferred_exit_mode() {
-        let source =
-            "inline widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n}\n";
+        let source = "inline widen @a8 () -> @a16 {\n  nop\n}\nfunc main {\n  widen\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -6977,6 +7203,53 @@ mod tests {
             error
                 .message
                 .contains("register x is live after call to 'touch' but clobbered by it")
+        }));
+    }
+
+    #[test]
+    fn rejects_accumulator_use_after_width_switch() {
+        let source = "var dst = $2000\nfunc main {\n  @a16\n  lda #$1234\n  @a8\n  sta dst\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
+
+        assert!(errors.iter().any(|error| {
+            error
+                .message
+                .contains("Accumulator value is dead after switching to @a8")
+        }));
+    }
+
+    #[test]
+    fn allows_accumulator_reload_after_width_switch() {
+        let source = "func main {\n  @a16\n  lda #$1234\n  @a8\n  lda #$12\n  nop\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let lowered = lower_with_warnings(&file, &sema, &fs, None).expect("lower");
+
+        assert!(lowered.warnings.is_empty());
+    }
+
+    #[test]
+    fn warns_on_index_use_after_narrowing_without_reload() {
+        let source = "func main {\n  @i16\n  ldx #$1234\n  ldy #$5678\n  @i8\n  txa\n  tya\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let lowered = lower_with_warnings(&file, &sema, &fs, None).expect("lower");
+
+        assert_eq!(lowered.warnings.len(), 2);
+        assert!(lowered.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("register x is used after @i8 without an 8-bit reload")
+        }));
+        assert!(lowered.warnings.iter().any(|warning| {
+            warning
+                .message
+                .contains("register y is used after @i8 without an 8-bit reload")
         }));
     }
 }

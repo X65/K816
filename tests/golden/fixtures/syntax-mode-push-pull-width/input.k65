@@ -8,25 +8,25 @@
 func main {
     // --- Accumulator push/pull: 16-bit mode ---
     @a16
-    pha
     pla
+    pha
 
     // --- Accumulator push/pull: 8-bit mode ---
     @a8
-    pha
     pla
+    pha
 
     // --- Index push/pull: 16-bit mode ---
     @i16
-    phx
     plx
-    phy
+    phx
     ply
+    phy
 
     // --- Index push/pull: 8-bit mode ---
     @i8
-    phx
     plx
-    phy
+    phx
     ply
+    phy
 }

@@ -1,16 +1,23 @@
 [default]
-000000: C2 30 AA A8 8A 98 E2 30 AA A8 8A 98 60
+000000: C2 30 A9 34 12 AA A8 A2 67 45 8A A0 AB 89 98 E2
+000010: 30 A9 12 AA A8 A2 34 8A A0 56 98 60
 
 
 [disasm obj#0 default::main]
 000000: C2 30       rep #$30
-000002: AA          tax
-000003: A8          tay
-000004: 8A          txa
-000005: 98          tya
-000006: E2 30       sep #$30
-000008: AA          tax
-000009: A8          tay
+000002: A9 34 12    lda #$1234
+000005: AA          tax
+000006: A8          tay
+000007: A2 67 45    ldx #$4567
 00000A: 8A          txa
-00000B: 98          tya
-00000C: 60          rts
+00000B: A0 AB 89    ldy #$89AB
+00000E: 98          tya
+00000F: E2 30       sep #$30
+000011: A9 12       lda #$12
+000013: AA          tax
+000014: A8          tay
+000015: A2 34       ldx #$34
+000017: 8A          txa
+000018: A0 56       ldy #$56
+00001A: 98          tya
+00001B: 60          rts

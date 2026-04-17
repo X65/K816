@@ -3,6 +3,7 @@
 
 func main {
     @a16
+    lda #$1234
     asl
     lsr
     rol
@@ -11,6 +12,7 @@ func main {
     dec
 
     @a8
+    lda #$12
     asl
     lsr
     rol

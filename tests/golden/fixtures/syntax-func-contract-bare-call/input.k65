@@ -16,6 +16,7 @@ func pair @a16 (a) -> a, y {
 
 func pair2 @a16 @i16 (a, x) -> @a8 @i16 a, y {
     @a8
+    txa
     tay
 }
 

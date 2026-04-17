@@ -1,0 +1,19 @@
+Warning: register x is used after @i8 without an 8-bit reload
+   ╭─[ tests/golden/fixtures/syntax-mode-index-truncation-warning/input.k65:6:5 ]
+   │
+ 6 │     txa
+   │     ─┬─  
+   │      ╰─── here
+   │ 
+   │ Help: the previous 16-bit value was truncated to 8 bits; read x before @i8, or reload x with an 8-bit value after @i8 before reading it
+───╯
+
+Warning: register y is used after @i8 without an 8-bit reload
+   ╭─[ tests/golden/fixtures/syntax-mode-index-truncation-warning/input.k65:7:5 ]
+   │
+ 7 │     tya
+   │     ─┬─  
+   │      ╰─── here
+   │ 
+   │ Help: the previous 16-bit value was truncated to 8 bits; read y before @i8, or reload y with an 8-bit value after @i8 before reading it
+───╯

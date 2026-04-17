@@ -3,14 +3,20 @@
 
 func main {
     @a16 @i16
+    lda #$1234
     tax
     tay
+    ldx #$4567
     txa
+    ldy #$89ab
     tya
 
     @a8 @i8
+    lda #$12
     tax
     tay
+    ldx #$34
     txa
+    ldy #$56
     tya
 }

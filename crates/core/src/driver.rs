@@ -11,7 +11,7 @@ use crate::diag::{Diagnostic, RenderOptions, render_diagnostics_with_options};
 use crate::emit_object::{AddressableSite, emit_object};
 use crate::eval_expand::expand_file;
 use crate::fold_mode::{eliminate_dead_mode_ops, fold_mode_ops};
-use crate::lower::lower;
+use crate::lower::lower_with_warnings;
 use crate::normalize_hla::normalize_file;
 use crate::parser::{parse_with_warnings_and_externals, scan_declared_function_names};
 use crate::peephole::peephole_optimize;
@@ -70,7 +70,16 @@ pub fn compile_source_with_fs(
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
 ) -> Result<CompileObjectOutput, CompileError> {
-    compile_source_inner(source_name, source_text, fs, options, None, None, None, None)
+    compile_source_inner(
+        source_name,
+        source_text,
+        fs,
+        options,
+        None,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Compile multiple sources for linking, sharing cross-unit constant values.
@@ -135,14 +144,7 @@ fn compile_source_inner(
     let parsed = parse_with_warnings_and_externals(source_id, source_text, external_function_names)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
     let ast = parsed.file;
-    let warnings = parsed.warnings;
-    let rendered_warnings = render_diagnostics_with_options(
-        &source_map,
-        &warnings,
-        RenderOptions {
-            color: options.color,
-        },
-    );
+    let mut warnings = parsed.warnings;
 
     let ast = expand_file(&ast, source_id)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
@@ -159,8 +161,17 @@ fn compile_source_inner(
         }
     }
 
-    let hir = lower(&ast, &sema, fs, external_inline_bodies)
+    let lower_output = lower_with_warnings(&ast, &sema, fs, external_inline_bodies)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    warnings.extend(lower_output.warnings);
+    let rendered_warnings = render_diagnostics_with_options(
+        &source_map,
+        &warnings,
+        RenderOptions {
+            color: options.color,
+        },
+    );
+    let hir = lower_output.program;
     let hir = eliminate_dead_mode_ops(&hir);
     let hir = fold_mode_ops(&hir);
     let hir = peephole_optimize(&hir);

@@ -1,0 +1,10 @@
+func main {
+    @i16
+    ldx #$1234
+    ldy #$5678
+    @i8
+    ldx #$34
+    ldy #$78
+    txa
+    tya
+}

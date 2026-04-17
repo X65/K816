@@ -179,15 +179,14 @@ impl ServerState {
         eprintln!("k816-lsp: compiling {} source(s)", sources.len());
 
         let external_consts = k816_core::collect_external_consts_for_link_sources(&sources);
-        let external_function_names =
-            k816_core::collect_all_declared_function_names(&sources);
+        let external_function_names = k816_core::collect_all_declared_function_names(&sources);
         let compile_results =
             k816_core::compile_sources(&sources, k816_core::CompileRenderOptions::plain());
 
         for (i, uri) in doc_uris.iter().enumerate() {
             let doc = self.documents.get_mut(uri).unwrap();
 
-            let compile_ref = compile_results[i].as_ref().map_err(|error| error);
+            let compile_ref = compile_results[i].as_ref();
             let (mut new_analysis, object, addressable_sites) = analyze_document(
                 &source_names[i],
                 &doc.text,

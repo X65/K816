@@ -257,9 +257,7 @@ where
 
     let operand_index_trailer = just(TokenKind::Comma)
         .ignore_then(ident_parser())
-        .try_map(|name, span| {
-            parse_index_register(Some(name), span).map(|reg| reg.unwrap())
-        });
+        .try_map(|name, span| parse_index_register(Some(name), span).map(|reg| reg.unwrap()));
 
     let long_indirect_operand = just(TokenKind::LBracket)
         .ignore_then(expr_parser())

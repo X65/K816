@@ -228,23 +228,23 @@ impl ServerState {
                     _ => continue,
                 };
                 // If var_name is given (qualified access), match exactly; otherwise search all vars.
-                if let Some(name) = var_name {
-                    if var.name != name {
-                        continue;
-                    }
+                if let Some(name) = var_name
+                    && var.name != name
+                {
+                    continue;
                 }
-                if let Some(fields) = &var.symbolic_subscript_fields {
-                    if let Some(span) = find_field_span(fields, field_key, "") {
-                        let range = byte_range_to_lsp(
-                            &ByteRange::from_span(span),
-                            &doc_state.line_index,
-                            &doc_state.text,
-                        );
-                        return Some(GotoDefinitionResponse::Array(vec![Location::new(
-                            doc_uri.clone(),
-                            range,
-                        )]));
-                    }
+                if let Some(fields) = &var.symbolic_subscript_fields
+                    && let Some(span) = find_field_span(fields, field_key, "")
+                {
+                    let range = byte_range_to_lsp(
+                        &ByteRange::from_span(span),
+                        &doc_state.line_index,
+                        &doc_state.text,
+                    );
+                    return Some(GotoDefinitionResponse::Array(vec![Location::new(
+                        doc_uri.clone(),
+                        range,
+                    )]));
                 }
             }
         }
@@ -267,10 +267,10 @@ fn find_field_span(
         if qualified == key {
             return Some(field.span);
         }
-        if let Some(nested) = &field.nested_fields {
-            if let Some(span) = find_field_span(nested, key, &qualified) {
-                return Some(span);
-            }
+        if let Some(nested) = &field.nested_fields
+            && let Some(span) = find_field_span(nested, key, &qualified)
+        {
+            return Some(span);
         }
     }
     None

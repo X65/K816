@@ -579,9 +579,9 @@ fn expand_symbolic_subscript_fields(
 
 fn expand_expr(
     expr: &Expr,
-    span: Span,
+    _span: Span,
     source_id: SourceId,
-    diagnostics: &mut Vec<Diagnostic>,
+    _diagnostics: &mut Vec<Diagnostic>,
 ) -> Expr {
     match expr {
         Expr::EvalText(input) => {
@@ -597,28 +597,28 @@ fn expand_expr(
         }
         Expr::Number(_, _) | Expr::Ident(_) | Expr::IdentSpanned { .. } => expr.clone(),
         Expr::Index { base, index } => Expr::Index {
-            base: Box::new(expand_expr(base, span, source_id, diagnostics)),
-            index: Box::new(expand_expr(index, span, source_id, diagnostics)),
+            base: Box::new(expand_expr(base, _span, source_id, _diagnostics)),
+            index: Box::new(expand_expr(index, _span, source_id, _diagnostics)),
         },
         Expr::Binary { op, lhs, rhs } => Expr::Binary {
             op: *op,
-            lhs: Box::new(expand_expr(lhs, span, source_id, diagnostics)),
-            rhs: Box::new(expand_expr(rhs, span, source_id, diagnostics)),
+            lhs: Box::new(expand_expr(lhs, _span, source_id, _diagnostics)),
+            rhs: Box::new(expand_expr(rhs, _span, source_id, _diagnostics)),
         },
         Expr::Unary { op, expr } => Expr::Unary {
             op: *op,
-            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
         },
         Expr::TypedView { expr, width } => Expr::TypedView {
-            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
             width: *width,
         },
         Expr::AddressHint { expr, hint } => Expr::AddressHint {
-            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
             hint: *hint,
         },
         Expr::MetadataQuery { expr, query } => Expr::MetadataQuery {
-            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
+            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
             query: *query,
         },
     }

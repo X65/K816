@@ -171,7 +171,7 @@ pub(super) fn hover_contents_for_subscript_field(
         let mut sub_fields = String::new();
         for (key, meta) in &ss.fields {
             if key.starts_with(&prefix) {
-                sub_fields.push_str("\n");
+                sub_fields.push('\n');
                 sub_fields.push_str(&format_subscript_field_line(key, meta));
             }
         }

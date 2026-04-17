@@ -1060,7 +1060,7 @@ fn apply_call_summary_hazards(
     let mut reads = RegSet::NONE;
     for param in &summary.inputs {
         if let ContractParam::Register(reg) = param {
-            reads = reads | reg_name_set(*reg);
+            reads |= reg_name_set(*reg);
         }
     }
     let effects = RegEffects {
@@ -1144,9 +1144,9 @@ fn build_call_contract_summaries(
     cache
 }
 
-fn compute_function_summary<'a>(
+fn compute_function_summary(
     name: &str,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     sema: &SemanticModel,
     cache: &mut FxHashMap<String, CallContractSummary>,
     visiting: &mut Vec<String>,
@@ -1198,10 +1198,10 @@ fn compute_function_summary<'a>(
     summary
 }
 
-fn summarize_stmt_sequence_summary<'a>(
+fn summarize_stmt_sequence_summary(
     stmts: &[Spanned<Stmt>],
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     cache: &mut FxHashMap<String, CallContractSummary>,
     visiting: &mut Vec<String>,
 ) -> RegEffects {
@@ -1215,10 +1215,10 @@ fn summarize_stmt_sequence_summary<'a>(
     effects
 }
 
-fn summarize_stmt_sequence_liveness<'a>(
+fn summarize_stmt_sequence_liveness(
     stmts: &[Spanned<Stmt>],
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     cache: &mut FxHashMap<String, CallContractSummary>,
     visiting: &mut Vec<String>,
 ) -> RegEffects {
@@ -1232,10 +1232,10 @@ fn summarize_stmt_sequence_liveness<'a>(
     effects
 }
 
-fn summary_stmt_effects<'a>(
+fn summary_stmt_effects(
     stmt: &Stmt,
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     cache: &mut FxHashMap<String, CallContractSummary>,
     visiting: &mut Vec<String>,
 ) -> RegEffects {
@@ -1258,10 +1258,10 @@ fn summary_stmt_effects<'a>(
     }
 }
 
-fn liveness_stmt_effects<'a>(
+fn liveness_stmt_effects(
     stmt: &Stmt,
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     cache: &mut FxHashMap<String, CallContractSummary>,
     visiting: &mut Vec<String>,
 ) -> RegEffects {
@@ -1291,10 +1291,10 @@ fn liveness_stmt_effects<'a>(
     }
 }
 
-fn call_stmt_effects<'a>(
+fn call_stmt_effects(
     call: &CallStmt,
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     cache: &mut FxHashMap<String, CallContractSummary>,
     visiting: &mut Vec<String>,
 ) -> RegEffects {
@@ -1320,10 +1320,10 @@ fn call_stmt_effects<'a>(
     }
 }
 
-fn check_damage_for_sequence<'a>(
+fn check_damage_for_sequence(
     stmts: &[Spanned<Stmt>],
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     summaries: &mut FxHashMap<String, CallContractSummary>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -1377,10 +1377,10 @@ fn check_damage_for_sequence<'a>(
     }
 }
 
-fn forward_live_scan<'a>(
+fn forward_live_scan(
     stmts: &[Spanned<Stmt>],
     sema: &SemanticModel,
-    blocks: &FxHashMap<String, &'a CodeBlock>,
+    blocks: &FxHashMap<String, &CodeBlock>,
     summaries: &mut FxHashMap<String, CallContractSummary>,
 ) -> RegSet {
     let mut live = RegSet::NONE;
@@ -1607,6 +1607,7 @@ fn build_exit_mode_summaries(
     cache
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_exit_mode_summary<'a>(
     name: &str,
     blocks: &FxHashMap<String, &'a CodeBlock>,
@@ -2162,6 +2163,7 @@ fn collect_label_declared_modes_into(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_named_data_block(
     block: &NamedDataBlock,
     sema: &SemanticModel,
@@ -2234,6 +2236,7 @@ fn lower_named_data_block(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_named_data_entry(
     entry: &NamedDataEntry,
     span: Span,
@@ -2443,6 +2446,7 @@ fn lower_named_data_entry(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_stmt(
     stmt: &Stmt,
     span: Span,
@@ -3094,6 +3098,7 @@ fn finish_call_mode(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_call_with_contract(
     target: &str,
     is_far: bool,
@@ -3138,6 +3143,7 @@ fn lower_call_with_contract(
 }
 
 /// Inline a function body at the call site instead of emitting JSR/JSL.
+#[allow(clippy::too_many_arguments)]
 fn lower_inline_call(
     block_name: &str,
     body: &[Spanned<Stmt>],
@@ -3516,6 +3522,7 @@ fn validate_instruction_width_rules(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_mode_for_typed_access(
     span: Span,
     actual: Option<RegWidth>,
@@ -3842,6 +3849,7 @@ fn invalid_transfer_hint(dest: HlaCpuRegister, src: HlaCpuRegister) -> Option<&'
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_assignment_chain(
     idents: &[String],
     tail_expr: Option<&HlaOperandExpr>,
@@ -4543,6 +4551,7 @@ fn lower_hla_stmt(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_hla_postfix_close_op_branch(
     op: HlaCompareOp,
     loop_target: &str,
@@ -4584,6 +4593,7 @@ fn lower_hla_postfix_close_op_branch(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_hla_condition_branch(
     condition: &HlaCondition,
     loop_target: &str,
@@ -4697,6 +4707,7 @@ fn lower_hla_condition_branch(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_branch_to_label(
     mnemonic: &str,
     target: &str,

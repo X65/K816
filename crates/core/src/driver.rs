@@ -54,6 +54,14 @@ pub struct LinkCompileInput<'a> {
     pub source_text: &'a str,
 }
 
+#[derive(Clone, Copy, Default)]
+struct CompileExternals<'a> {
+    consts: Option<&'a IndexMap<String, ConstMeta>>,
+    functions: Option<&'a IndexMap<String, FunctionMeta>>,
+    function_names: Option<&'a HashSet<String>>,
+    inline_bodies: Option<&'a IndexMap<String, CodeBlock>>,
+}
+
 /// Compile a single source file.
 pub fn compile_source(
     source_name: &str,
@@ -75,10 +83,7 @@ pub fn compile_source_with_fs(
         source_text,
         fs,
         options,
-        None,
-        None,
-        None,
-        None,
+        CompileExternals::default(),
     )
 }
 
@@ -108,10 +113,12 @@ pub fn compile_sources(
                 source.source_text,
                 &fs,
                 options,
-                Some(&external_consts),
-                Some(&external_functions),
-                Some(&external_function_names),
-                Some(&external_inline_bodies),
+                CompileExternals {
+                    consts: Some(&external_consts),
+                    functions: Some(&external_functions),
+                    function_names: Some(&external_function_names),
+                    inline_bodies: Some(&external_inline_bodies),
+                },
             )
         })
         .collect()
@@ -133,16 +140,14 @@ fn compile_source_inner(
     source_text: &str,
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
-    external_consts: Option<&IndexMap<String, ConstMeta>>,
-    external_functions: Option<&IndexMap<String, FunctionMeta>>,
-    external_function_names: Option<&HashSet<String>>,
-    external_inline_bodies: Option<&IndexMap<String, CodeBlock>>,
+    externals: CompileExternals<'_>,
 ) -> Result<CompileObjectOutput, CompileError> {
     let mut source_map = SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
 
-    let parsed = parse_with_warnings_and_externals(source_id, source_text, external_function_names)
-        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    let parsed =
+        parse_with_warnings_and_externals(source_id, source_text, externals.function_names)
+            .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
     let ast = parsed.file;
     let mut warnings = parsed.warnings;
 
@@ -151,9 +156,9 @@ fn compile_source_inner(
     let ast = normalize_file(&ast)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
-    let mut sema = analyze_with_external_consts(&ast, external_consts)
+    let mut sema = analyze_with_external_consts(&ast, externals.consts)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
-    if let Some(external) = external_functions {
+    if let Some(external) = externals.functions {
         for (name, meta) in external {
             sema.functions
                 .entry(name.clone())
@@ -161,7 +166,7 @@ fn compile_source_inner(
         }
     }
 
-    let lower_output = lower_with_warnings(&ast, &sema, fs, external_inline_bodies)
+    let lower_output = lower_with_warnings(&ast, &sema, fs, externals.inline_bodies)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
     warnings.extend(lower_output.warnings);
     let rendered_warnings = render_diagnostics_with_options(
@@ -176,7 +181,7 @@ fn compile_source_inner(
     let hir = fold_mode_ops(&hir);
     let hir = peephole_optimize(&hir);
 
-    let emit_output = emit_object(&hir, &source_map, &sema, external_functions)
+    let emit_output = emit_object(&hir, &source_map, &sema, externals.functions)
         .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
 
     Ok(CompileObjectOutput {

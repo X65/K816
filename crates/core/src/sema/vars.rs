@@ -335,6 +335,7 @@ fn eval_symbolic_subscript_layout(
 
 /// Recursively evaluates symbolic subscript fields. Returns the total size of this
 /// level, and inserts all (possibly dotted) field entries into `resolved_fields`.
+#[allow(clippy::too_many_arguments)]
 fn eval_symbolic_subscript_fields(
     var_name: &str,
     default_width: Option<DataWidth>,

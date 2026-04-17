@@ -203,6 +203,11 @@ where
     }
 
     type FunctionBody = Vec<Spanned<Stmt>>;
+    type ContractClause = (bool, Vec<ContractParam>, Option<ModeContract>, Vec<RegName>);
+    type ExplicitFuncHead = ((String, SimpleSpan), ModeContract);
+    type ImplicitFuncHead = ((Vec<Modifier>, (String, SimpleSpan)), ModeContract);
+    type ExplicitFuncParts = ((ExplicitFuncHead, ContractClause), FunctionBody);
+    type ImplicitFuncParts = ((ImplicitFuncHead, ContractClause), FunctionBody);
 
     let modifier = just(TokenKind::Far)
         .to(Modifier::Far)
@@ -311,13 +316,7 @@ where
                     (has_contract, params, exit_contract, outputs),
                 ),
                 body,
-            ): (
-                (
-                    ((String, SimpleSpan), ModeContract),
-                    (bool, Vec<ContractParam>, Option<ModeContract>, Vec<RegName>),
-                ),
-                FunctionBody,
-            )| {
+            ): ExplicitFuncParts| {
                 let range = name_span.into_range();
                 CodeBlock {
                     name,
@@ -358,13 +357,7 @@ where
                     (has_contract, params, exit_contract, outputs),
                 ),
                 body,
-            ): (
-                (
-                    ((Vec<Modifier>, (String, SimpleSpan)), ModeContract),
-                    (bool, Vec<ContractParam>, Option<ModeContract>, Vec<RegName>),
-                ),
-                FunctionBody,
-            )| {
+            ): ImplicitFuncParts| {
                 let range = name_span.into_range();
                 let mut block = CodeBlock {
                     name,

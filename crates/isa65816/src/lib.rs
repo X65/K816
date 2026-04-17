@@ -536,22 +536,22 @@ pub fn mnemonic_effects(mnemonic: &str, on_accumulator: bool) -> RegEffects {
     let mut reads = RegSet::NONE;
     let mut modifies = RegSet::NONE;
     if a_read || block_move {
-        reads = reads | RegSet::A;
+        reads |= RegSet::A;
     }
     if x_read || block_move {
-        reads = reads | RegSet::X;
+        reads |= RegSet::X;
     }
     if y_read || block_move {
-        reads = reads | RegSet::Y;
+        reads |= RegSet::Y;
     }
     if a_mod || block_move {
-        modifies = modifies | RegSet::A;
+        modifies |= RegSet::A;
     }
     if x_mod || block_move {
-        modifies = modifies | RegSet::X;
+        modifies |= RegSet::X;
     }
     if y_mod || block_move {
-        modifies = modifies | RegSet::Y;
+        modifies |= RegSet::Y;
     }
 
     RegEffects { reads, modifies }
@@ -893,8 +893,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                             mode: AddressingMode::DirectPageIndirectLong,
                         });
                     }
-                    if let Some(opcode) =
-                        find_opcode(&lower, AddressingMode::AbsoluteIndirectLong)
+                    if let Some(opcode) = find_opcode(&lower, AddressingMode::AbsoluteIndirectLong)
                     {
                         return Ok(Encoding {
                             opcode,

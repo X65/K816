@@ -836,7 +836,8 @@ fn metadata_command(link_options: LinkPhaseOptions) -> anyhow::Result<()> {
     } else {
         k816_link::default_stub_config()
     };
-    let output_kind = resolve_output_kind(link_config.output.kind, None, link_options.output_format);
+    let output_kind =
+        resolve_output_kind(link_config.output.kind, None, link_options.output_format);
     let ext = output_extension(output_kind);
     let artifact_path = target_dir.join(format!("{}.{}", manifest.package.name, ext));
 

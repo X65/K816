@@ -88,7 +88,6 @@ impl ServerState {
                 if let Some(hover) = self.hover_subscript_field(
                     &resolved.var_name,
                     field_key,
-                    offset,
                     &doc.line_index,
                     &doc.text,
                     token.start,
@@ -153,7 +152,6 @@ impl ServerState {
                         if let Some(hover) = self.hover_subscript_field(
                             var_name,
                             field_key,
-                            offset,
                             &doc.line_index,
                             &doc.text,
                             range_start,
@@ -263,7 +261,6 @@ impl ServerState {
         &self,
         var_name: &str,
         field_key: &str,
-        _offset: usize,
         line_index: &super::LineIndex,
         text: &str,
         range_start: usize,

@@ -36,20 +36,13 @@ pub(super) fn coalesce_non_var_brackets(tokens: Vec<Token>, source: &str) -> Vec
         if !is_mnemonic(&name.to_ascii_lowercase()) {
             return false;
         }
-        let mut j = idx - 1;
-        while j > 0 {
-            j -= 1;
-            match &tokens[j].kind {
-                TokenKind::Newline
-                | TokenKind::Semi
-                | TokenKind::LBrace
-                | TokenKind::RBrace => return true,
-                _ => return false,
-            }
+        if idx == 1 {
+            return true;
         }
-        // Reached start of input without any intervening token — still an
-        // operand bracket (leading mnemonic at file start).
-        true
+        matches!(
+            &tokens[idx - 2].kind,
+            TokenKind::Newline | TokenKind::Semi | TokenKind::LBrace | TokenKind::RBrace
+        )
     };
 
     let find_matching_rbracket = |start: usize| -> Option<usize> {

@@ -144,8 +144,5 @@ fn a_dead_at(op: &Op) -> bool {
     let Op::Instruction(inst) = op else {
         return false;
     };
-    match inst.mnemonic.as_str() {
-        "lda" | "pla" | "txa" | "tya" => true,
-        _ => false,
-    }
+    matches!(inst.mnemonic.as_str(), "lda" | "pla" | "txa" | "tya")
 }

@@ -133,8 +133,10 @@ pub fn parse_with_warnings_and_externals(
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
-    let known_functions =
-        merge_known_functions(collect_declared_function_names(&tokens), external_function_names);
+    let known_functions = merge_known_functions(
+        collect_declared_function_names(&tokens),
+        external_function_names,
+    );
 
     let eval_ranges: Vec<(usize, usize)> = tokens
         .iter()
@@ -207,8 +209,10 @@ pub fn parse_lenient_and_externals(
     let (tokens, lex_diagnostics) = lex_lenient(source_id, source_text);
     let tokens = coalesce_non_var_brackets(tokens, source_text);
     let (tokens, comments) = strip_comments(tokens);
-    let known_functions =
-        merge_known_functions(collect_declared_function_names(&tokens), external_function_names);
+    let known_functions = merge_known_functions(
+        collect_declared_function_names(&tokens),
+        external_function_names,
+    );
     let end_offset = tokens.last().map(|token| token.span.end).unwrap_or(0);
     let token_stream = Stream::from_iter(tokens.into_iter().map(|token| {
         let span = (token.span.start..token.span.end).into();
@@ -283,6 +287,7 @@ pub fn parse_lenient_raw(
     (output, diagnostics)
 }
 
+#[allow(clippy::result_large_err)]
 pub fn parse_expression_fragment(
     source_id: SourceId,
     source_text: &str,

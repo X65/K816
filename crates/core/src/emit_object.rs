@@ -99,7 +99,8 @@ fn lookup_function<'a>(
     external: Option<&'a IndexMap<String, FunctionMeta>>,
     mnemonic: &str,
 ) -> Option<(&'a str, &'a FunctionMeta)> {
-    find_in_map(&sema.functions, mnemonic).or_else(|| external.and_then(|m| find_in_map(m, mnemonic)))
+    find_in_map(&sema.functions, mnemonic)
+        .or_else(|| external.and_then(|m| find_in_map(m, mnemonic)))
 }
 
 fn find_in_map<'a>(
@@ -1062,7 +1063,8 @@ mod tests {
             ],
         };
 
-        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None).expect("emit object");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect("emit object");
         let section = emitted
             .object
             .sections
@@ -1093,7 +1095,8 @@ mod tests {
             ],
         };
 
-        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None).expect("emit object");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect("emit object");
         let mut symbols = emitted.object.symbols;
         symbols.sort_by(|a, b| a.name.cmp(&b.name));
 
@@ -1125,8 +1128,8 @@ mod tests {
             }))],
         };
 
-        let emitted =
-            emit_object(&program, &source_map, &SemanticModel::default(), None).expect("unresolved labels deferred to linker");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect("unresolved labels deferred to linker");
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
@@ -1155,8 +1158,8 @@ mod tests {
             ],
         };
 
-        let emitted =
-            emit_object(&program, &source_map, &SemanticModel::default(), None).expect("unresolved labels deferred to linker");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect("unresolved labels deferred to linker");
         assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
@@ -1175,7 +1178,8 @@ mod tests {
             })],
         };
 
-        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None).expect("emit object");
+        let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect("emit object");
         assert_eq!(emitted.object.symbols.len(), 1);
         assert!(matches!(
             emitted.object.symbols[0].definition.as_ref(),
@@ -1202,7 +1206,8 @@ mod tests {
             ],
         };
 
-        let err = emit_object(&program, &source_map, &SemanticModel::default(), None).expect_err("should fail on 8-bit overflow");
+        let err = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect_err("should fail on 8-bit overflow");
         let msg = err
             .iter()
             .map(|d| d.message.as_str())
@@ -1230,7 +1235,8 @@ mod tests {
             ],
         };
 
-        let err = emit_object(&program, &source_map, &SemanticModel::default(), None).expect_err("should fail on 16-bit overflow");
+        let err = emit_object(&program, &source_map, &SemanticModel::default(), None)
+            .expect_err("should fail on 16-bit overflow");
         let msg = err
             .iter()
             .map(|d| d.message.as_str())

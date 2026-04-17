@@ -403,9 +403,11 @@ fn eval_symbolic_subscript_fields(
             };
 
             // Adjust child offsets: they were computed relative to 0, shift by current offset.
-            // Skip the parent key itself — it already has the correct offset.
+            // Match only true children (requires a dot boundary) so sibling fields
+            // sharing a prefix (e.g. `.ab` vs `.a`) aren't incorrectly shifted.
+            let qualified_prefix = format!("{qualified_name}.");
             for (key, meta) in resolved_fields.iter_mut() {
-                if key != &qualified_name && key.starts_with(&qualified_name) {
+                if key.starts_with(&qualified_prefix) {
                     meta.offset += offset;
                 }
             }

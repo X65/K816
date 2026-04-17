@@ -2,6 +2,11 @@ var BASE[
     .ab :byte
     .a[
         .x :byte
+        .y :byte
+    ]
+    .b[
+        .x :word
+        .y :word
     ]
 ] = $1000
 
@@ -9,4 +14,8 @@ func main @a8 @i8 {
     lda #BASE.ab:offsetof
     ldx #BASE.a:offsetof
     ldy #BASE.a.x:offsetof
+    ldy #BASE.a.y:offsetof
+    ldy #BASE.b:offsetof
+    ldy #BASE.b.x:offsetof
+    ldy #BASE.b.y:offsetof
 }

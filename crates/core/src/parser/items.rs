@@ -27,7 +27,7 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let separators = line_sep_parser().repeated();
-    let item = spanned(item_parser(source_id, known_functions.clone()), source_id);
+    let item = spanned(item_parser(source_id, known_functions), source_id);
     let boundary = line_sep_parser()
         .ignored()
         .or(just(TokenKind::RBrace).ignored())

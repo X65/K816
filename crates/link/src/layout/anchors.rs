@@ -272,7 +272,7 @@ fn render_anchor_context(
     )
     .with_message(message.to_string())
     .with_label(
-        Label::new((file_id.clone(), byte_offset + start..byte_offset + end))
+        Label::new((file_id, byte_offset + start..byte_offset + end))
             .with_message(label_message.to_string()),
     );
     if let Some(help) = help {

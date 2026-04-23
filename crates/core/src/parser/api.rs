@@ -166,7 +166,7 @@ pub fn parse_with_warnings_and_externals(
         (kind, span)
     });
 
-    let (output, errors) = file_parser(source_id, known_functions.clone())
+    let (output, errors) = file_parser(source_id, known_functions)
         .parse(token_stream)
         .into_output_errors();
     let diagnostics = errors
@@ -222,7 +222,7 @@ pub fn parse_lenient_and_externals(
         (kind, span)
     });
 
-    let (output, errors) = file_parser(source_id, known_functions.clone())
+    let (output, errors) = file_parser(source_id, known_functions)
         .parse(token_stream)
         .into_output_errors();
     let mut diagnostics: Vec<Diagnostic> = lex_diagnostics;
@@ -263,7 +263,7 @@ pub fn parse_lenient_raw(
         (kind, span)
     });
 
-    let (output, errors) = file_parser(source_id, known_functions.clone())
+    let (output, errors) = file_parser(source_id, known_functions)
         .parse(token_stream)
         .into_output_errors();
     let mut diagnostics: Vec<Diagnostic> = lex_diagnostics;

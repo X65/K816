@@ -110,7 +110,7 @@ impl ServerState {
         version: i32,
         open: bool,
     ) -> Result<()> {
-        self.upsert_document_without_analysis(uri.clone(), text, version, open);
+        self.upsert_document_without_analysis(uri, text, version, open);
         self.analyze_all_documents();
         Ok(())
     }

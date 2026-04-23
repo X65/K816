@@ -159,7 +159,6 @@ where
             .at_least(1)
             .collect::<Vec<_>>());
     let function_target = {
-        let known_functions = known_functions.clone();
         ident_parser().try_map(move |target, span| {
             if known_functions.contains(&target) {
                 Ok(target)

@@ -71,6 +71,13 @@ impl Diagnostic {
         self
     }
 
+    pub fn with_optional_help(self, help: Option<impl Into<String>>) -> Self {
+        match help {
+            Some(help) => self.with_help(help),
+            None => self,
+        }
+    }
+
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.supplements.push(Supplemental::Note(note.into()));
         self

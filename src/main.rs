@@ -385,6 +385,10 @@ fn print_banner() {
     println!("Provided AS IS, without warranty or liability.");
 }
 
+fn read_source_file(path: &Path) -> anyhow::Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("failed to read '{}'", path.display()))
+}
+
 fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object> {
     let is_k65 = input_path
         .extension()
@@ -397,7 +401,7 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
         );
     }
 
-    let source = std::fs::read_to_string(input_path)?;
+    let source = read_source_file(input_path)?;
     let render = k816_core::CompileRenderOptions {
         color: stderr_supports_color(),
     };
@@ -533,8 +537,7 @@ fn compile_command(
 fn fmt_command(args: FmtArgs) -> anyhow::Result<()> {
     let mut unformatted_count = 0u32;
     for path in &args.input {
-        let source = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read '{}'", path.display()))?;
+        let source = read_source_file(path)?;
         let formatted = k816_fmt::format_source(&source);
         if formatted == source {
             continue;
@@ -992,8 +995,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
             display_project_path(&project_root, source),
             display_project_path(&project_root, &object_path)
         );
-        let source_text = std::fs::read_to_string(source)
-            .with_context(|| format!("failed to read source '{}'", source.display()))?;
+        let source_text = read_source_file(source)?;
         loaded_sources.push((object_path, source.display().to_string(), source_text));
     }
 

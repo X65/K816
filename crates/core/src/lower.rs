@@ -399,6 +399,10 @@ fn hla_effects(stmt: &HlaStmt) -> RegEffects {
     }
 }
 
+fn call_signature_help(meta: &crate::sema::FunctionMeta, target: &str) -> String {
+    format!("call it as `{}`", meta.signature_call_form(target))
+}
+
 fn build_inline_bindings(
     call: &CallStmt,
     meta: &crate::sema::FunctionMeta,
@@ -443,10 +447,7 @@ fn build_inline_bindings(
                     call.args.len()
                 ),
             )
-            .with_help(format!(
-                "call it as `{}`",
-                meta.signature_call_form(&call.target)
-            )),
+            .with_help(call_signature_help(meta, &call.target)),
         );
         return None;
     }
@@ -464,10 +465,7 @@ fn build_inline_bindings(
                             reg_name_text(*expected)
                         ),
                     )
-                    .with_help(format!(
-                        "call it as `{}`",
-                        meta.signature_call_form(&call.target)
-                    )),
+                    .with_help(call_signature_help(meta, &call.target)),
                 );
                 return None;
             }
@@ -507,10 +505,7 @@ fn build_inline_bindings(
                             call.target, param.name
                         ),
                     )
-                    .with_help(format!(
-                        "call it as `{}`",
-                        meta.signature_call_form(&call.target)
-                    )),
+                    .with_help(call_signature_help(meta, &call.target)),
                 );
                 return None;
             }
@@ -528,10 +523,7 @@ fn build_inline_bindings(
                             call.target, name
                         ),
                     )
-                    .with_help(format!(
-                        "call it as `{}`",
-                        meta.signature_call_form(&call.target)
-                    )),
+                    .with_help(call_signature_help(meta, &call.target)),
                 );
                 return None;
             }
@@ -544,10 +536,7 @@ fn build_inline_bindings(
                 span,
                 format!("call to '{}' has mismatched output contract", call.target),
             )
-            .with_help(format!(
-                "call it as `{}`",
-                meta.signature_call_form(&call.target)
-            )),
+            .with_help(call_signature_help(meta, &call.target)),
         );
         return None;
     }
@@ -1138,7 +1127,7 @@ fn build_call_contract_summaries(
     let mut visiting = Vec::new();
 
     for name in blocks.keys() {
-        let _ = compute_function_summary(name, &blocks, sema, &mut cache, &mut visiting);
+        compute_function_summary(name, &blocks, sema, &mut cache, &mut visiting);
     }
 
     cache
@@ -1592,7 +1581,7 @@ fn build_exit_mode_summaries(
     let mut visiting = Vec::new();
 
     for name in blocks.keys() {
-        let _ = compute_exit_mode_summary(
+        compute_exit_mode_summary(
             name,
             &blocks,
             &inline_bodies,
@@ -1659,7 +1648,7 @@ fn compute_exit_mode_summary<'a>(
     visiting.push(name.to_string());
     for dep in deps {
         if dep != name {
-            let _ = compute_exit_mode_summary(
+            compute_exit_mode_summary(
                 &dep,
                 blocks,
                 inline_bodies,
@@ -1703,7 +1692,7 @@ fn compute_exit_mode_summary<'a>(
 
         let mut dummy_diagnostics = Vec::new();
         let mut dummy_ops = Vec::new();
-        let mut dummy_segment = "default".to_string();
+        let mut dummy_segment = crate::DEFAULT_SEGMENT.to_string();
         for stmt in &block.body {
             lower_stmt(
                 &stmt.node,
@@ -1794,7 +1783,7 @@ pub(crate) fn lower_with_warnings(
     let mut top_level_ctx = LowerContext {
         ..Default::default()
     };
-    let mut current_segment = "default".to_string();
+    let mut current_segment = crate::DEFAULT_SEGMENT.to_string();
 
     // Collect inline function bodies for substitution at call sites. Local
     // declarations win over cross-unit ones on name collisions. Bodies pulled
@@ -2863,7 +2852,7 @@ fn lower_stmt(
                     ops,
                 );
             }
-            let _ = ctx.mode_frames.pop();
+            ctx.mode_frames.pop();
             if ctx.reachable {
                 // Restore mode when control falls out of the block naturally.
                 lower_mode_restore(ctx.mode, saved_mode, span, ops);
@@ -2872,10 +2861,7 @@ fn lower_stmt(
             }
         }
         Stmt::SwapAB => {
-            let instruction = Instruction {
-                mnemonic: "xba".to_string(),
-                operand: None,
-            };
+            let instruction = make_instruction("xba", None);
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         Stmt::Var(var) => {
@@ -3587,12 +3573,7 @@ fn validate_mode_for_typed_access(
         )
     };
 
-    let diagnostic = if let Some(help) = help {
-        Diagnostic::error(span, message).with_help(help)
-    } else {
-        Diagnostic::error(span, message)
-    };
-    diagnostics.push(diagnostic);
+    diagnostics.push(Diagnostic::error(span, message).with_optional_help(help));
 }
 
 fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
@@ -3906,37 +3887,41 @@ fn resolve_chain_pair_ident(dest: &str, src: &str) -> Option<Instruction> {
 
     match (dest_register, src_register) {
         (Some(dest_register), Some(src_register)) => resolve_transfer(dest_register, src_register)
-            .map(|mnemonic| Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: None,
-            }),
-        (Some(dest_register), None) => {
-            load_mnemonic_for_register(dest_register).map(|mnemonic| Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: Some(Operand::Auto {
+            .map(|mnemonic| make_instruction(mnemonic, None)),
+        (Some(dest_register), None) => load_mnemonic_for_register(dest_register).map(|mnemonic| {
+            make_instruction(
+                mnemonic,
+                Some(Operand::Auto {
                     expr: Expr::Ident(src.to_string()),
                 }),
-            })
-        }
-        (None, Some(src_register)) => {
-            store_mnemonic_for_register(src_register).map(|mnemonic| Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: Some(Operand::Auto {
+            )
+        }),
+        (None, Some(src_register)) => store_mnemonic_for_register(src_register).map(|mnemonic| {
+            make_instruction(
+                mnemonic,
+                Some(Operand::Auto {
                     expr: Expr::Ident(dest.to_string()),
                 }),
-            })
-        }
+            )
+        }),
         (None, None) => None,
+    }
+}
+
+fn make_instruction(mnemonic: &str, operand: Option<Operand>) -> Instruction {
+    Instruction {
+        mnemonic: mnemonic.to_string(),
+        operand,
     }
 }
 
 fn resolve_chain_pair_expr(dest: &str, src: &HlaOperandExpr) -> Option<Instruction> {
     let dest_register = parse_cpu_register_name(dest)?;
     let mnemonic = load_mnemonic_for_register(dest_register)?;
-    Some(Instruction {
-        mnemonic: mnemonic.to_string(),
-        operand: Some(lower_hla_operand_to_operand(src)),
-    })
+    Some(make_instruction(
+        mnemonic,
+        Some(lower_hla_operand_to_operand(src)),
+    ))
 }
 
 fn lower_hla_stmt(
@@ -3966,10 +3951,7 @@ fn lower_hla_stmt(
                 }
                 return;
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: Some(lower_hla_operand_to_operand(rhs)),
-            };
+            let instruction = make_instruction(mnemonic, Some(lower_hla_operand_to_operand(rhs)));
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::RegisterStore { dest, src } => {
@@ -3983,15 +3965,15 @@ fn lower_hla_stmt(
                 ));
                 return;
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: Some(Operand::Value {
+            let instruction = make_instruction(
+                mnemonic,
+                Some(Operand::Value {
                     expr: dest.expr.clone(),
                     force_far: false,
                     index: dest.index,
                     addr_mode: dest.addr_mode,
                 }),
-            };
+            );
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::MemStoreZero { dest } => {
@@ -4003,15 +3985,15 @@ fn lower_hla_stmt(
                 ));
                 return;
             }
-            let instruction = Instruction {
-                mnemonic: "stz".to_string(),
-                operand: Some(Operand::Value {
+            let instruction = make_instruction(
+                "stz",
+                Some(Operand::Value {
                     expr: dest.expr.clone(),
                     force_far: false,
                     index: dest.index,
                     addr_mode: dest.addr_mode,
                 }),
-            };
+            );
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::RegisterTransfer { dest, src } => {
@@ -4021,17 +4003,13 @@ fn lower_hla_stmt(
                     format_hla_cpu_register(*src).to_ascii_uppercase(),
                     format_hla_cpu_register(*dest).to_ascii_uppercase(),
                 );
-                let diagnostic = match invalid_transfer_hint(*dest, *src) {
-                    Some(hint) => Diagnostic::error(span, msg).with_help(hint),
-                    None => Diagnostic::error(span, msg),
-                };
-                diagnostics.push(diagnostic);
+                diagnostics.push(
+                    Diagnostic::error(span, msg)
+                        .with_optional_help(invalid_transfer_hint(*dest, *src)),
+                );
                 return;
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: None,
-            };
+            let instruction = make_instruction(mnemonic, None);
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::AssignmentChain { idents, tail_expr } => {
@@ -4054,17 +4032,11 @@ fn lower_hla_stmt(
                 HlaAluOp::Or => "ora",
                 HlaAluOp::Xor => "eor",
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: Some(lower_hla_operand_to_operand(rhs)),
-            };
+            let instruction = make_instruction(mnemonic, Some(lower_hla_operand_to_operand(rhs)));
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::AccumulatorBitTest { rhs } => {
-            let instruction = Instruction {
-                mnemonic: "bit".to_string(),
-                operand: Some(lower_hla_operand_to_operand(rhs)),
-            };
+            let instruction = make_instruction("bit", Some(lower_hla_operand_to_operand(rhs)));
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::IndexCompare { register, rhs } => {
@@ -4076,10 +4048,7 @@ fn lower_hla_stmt(
                     return;
                 }
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: Some(lower_hla_operand_to_operand(rhs)),
-            };
+            let instruction = make_instruction(mnemonic, Some(lower_hla_operand_to_operand(rhs)));
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::IncDec { op, target } => {
@@ -4102,22 +4071,19 @@ fn lower_hla_stmt(
                             return;
                         }
                     };
-                    let instruction = Instruction {
-                        mnemonic: mnemonic.to_string(),
-                        operand: None,
-                    };
+                    let instruction = make_instruction(mnemonic, None);
                     lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
                 }
                 HlaIncDecTarget::Address(address) => {
-                    let instruction = Instruction {
-                        mnemonic: mnemonic.to_string(),
-                        operand: Some(Operand::Value {
+                    let instruction = make_instruction(
+                        mnemonic,
+                        Some(Operand::Value {
                             expr: address.expr.clone(),
                             force_far: false,
                             index: address.index,
                             addr_mode: address.addr_mode,
                         }),
-                    };
+                    );
                     lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
                 }
             }
@@ -4130,19 +4096,16 @@ fn lower_hla_stmt(
                 HlaShiftOp::Ror => "ror",
             };
             let instruction = match target {
-                HlaShiftTarget::Accumulator => Instruction {
-                    mnemonic: mnemonic.to_string(),
-                    operand: None,
-                },
-                HlaShiftTarget::Address(address) => Instruction {
-                    mnemonic: mnemonic.to_string(),
-                    operand: Some(Operand::Value {
+                HlaShiftTarget::Accumulator => make_instruction(mnemonic, None),
+                HlaShiftTarget::Address(address) => make_instruction(
+                    mnemonic,
+                    Some(Operand::Value {
                         expr: address.expr.clone(),
                         force_far: false,
                         index: address.index,
                         addr_mode: address.addr_mode,
                     }),
-                },
+                ),
             };
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
@@ -4164,10 +4127,7 @@ fn lower_hla_stmt(
                 ));
                 return;
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: None,
-            };
+            let instruction = make_instruction(mnemonic, None);
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::StackOp { target, push } => {
@@ -4185,10 +4145,7 @@ fn lower_hla_stmt(
                 (HlaStackTarget::P, true) => "php",
                 (HlaStackTarget::P, false) => "plp",
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: None,
-            };
+            let instruction = make_instruction(mnemonic, None);
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::Goto {
@@ -4196,9 +4153,9 @@ fn lower_hla_stmt(
             indirect,
             far,
         } => {
-            let instruction = Instruction {
-                mnemonic: if *far { "jml" } else { "jmp" }.to_string(),
-                operand: Some(Operand::Value {
+            let instruction = make_instruction(
+                if *far { "jml" } else { "jmp" },
+                Some(Operand::Value {
                     expr: target.clone(),
                     force_far: *far,
                     index: None,
@@ -4208,21 +4165,21 @@ fn lower_hla_stmt(
                         OperandAddrMode::Direct
                     },
                 }),
-            };
+            );
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::BranchGoto {
             mnemonic, target, ..
         } => {
-            let instruction = Instruction {
-                mnemonic: mnemonic.clone(),
-                operand: Some(Operand::Value {
+            let instruction = make_instruction(
+                mnemonic,
+                Some(Operand::Value {
                     expr: target.clone(),
                     force_far: false,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            };
+            );
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::Return { interrupt } => {
@@ -4233,27 +4190,21 @@ fn lower_hla_stmt(
             } else {
                 "rts"
             };
-            let instruction = Instruction {
-                mnemonic: mnemonic.to_string(),
-                operand: None,
-            };
+            let instruction = make_instruction(mnemonic, None);
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::XAssignImmediate { rhs } => {
-            let instruction = Instruction {
-                mnemonic: "ldx".to_string(),
-                operand: Some(Operand::Immediate {
+            let instruction = make_instruction(
+                "ldx",
+                Some(Operand::Immediate {
                     expr: rhs.clone(),
                     explicit_hash: false,
                 }),
-            };
+            );
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::XIncrement => {
-            let instruction = Instruction {
-                mnemonic: "inx".to_string(),
-                operand: None,
-            };
+            let instruction = make_instruction("inx", None);
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         HlaStmt::StoreFromA {
@@ -4262,9 +4213,9 @@ fn lower_hla_stmt(
             load_start,
             store_end,
         } => {
-            let lda_instruction = Instruction {
-                mnemonic: "lda".to_string(),
-                operand: Some(match rhs {
+            let lda_instruction = make_instruction(
+                "lda",
+                Some(match rhs {
                     HlaRhs::Immediate(expr) => Operand::Immediate {
                         expr: expr.clone(),
                         explicit_hash: false,
@@ -4279,7 +4230,7 @@ fn lower_hla_stmt(
                         addr_mode: *addr_mode,
                     }),
                 }),
-            };
+            );
             let lda_span = load_start
                 .map(|start| Span::new(span.source_id, start, span.end))
                 .unwrap_or(span);
@@ -4302,15 +4253,15 @@ fn lower_hla_stmt(
                 .map(|end| Span::new(span.source_id, span.start, end))
                 .unwrap_or(span);
             for dest in dests.iter().rev() {
-                let sta_instruction = Instruction {
-                    mnemonic: "sta".to_string(),
-                    operand: Some(Operand::Value {
+                let sta_instruction = make_instruction(
+                    "sta",
+                    Some(Operand::Value {
                         expr: Expr::Ident(dest.clone()),
                         force_far: false,
                         index: None,
                         addr_mode: OperandAddrMode::Direct,
                     }),
-                };
+                );
                 lower_instruction_stmt(
                     &sta_instruction,
                     scope,
@@ -4328,15 +4279,15 @@ fn lower_hla_stmt(
             };
             ops.push(Spanned::new(Op::Label(wait_label.clone()), span));
 
-            let bit_instruction = Instruction {
-                mnemonic: "bit".to_string(),
-                operand: Some(Operand::Value {
+            let bit_instruction = make_instruction(
+                "bit",
+                Some(Operand::Value {
                     expr: Expr::Ident(symbol.clone()),
                     force_far: false,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),
-            };
+            );
             let ops_len_before_bit = ops.len();
             lower_instruction_stmt(&bit_instruction, scope, sema, span, ctx, diagnostics, ops);
             if ops.len() == ops_len_before_bit {
@@ -4347,10 +4298,7 @@ fn lower_hla_stmt(
         }
         HlaStmt::ConditionSeed { .. } => {
             if let HlaStmt::ConditionSeed { rhs, .. } = stmt {
-                let instruction = Instruction {
-                    mnemonic: "cmp".to_string(),
-                    operand: Some(lower_hla_operand_to_operand(rhs)),
-                };
+                let instruction = make_instruction("cmp", Some(lower_hla_operand_to_operand(rhs)));
                 lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
             }
         }
@@ -4537,10 +4485,7 @@ fn lower_hla_stmt(
             );
         }
         HlaStmt::RepeatNop(count) => {
-            let nop = Instruction {
-                mnemonic: "nop".to_string(),
-                operand: None,
-            };
+            let nop = make_instruction("nop", None);
             for _ in 0..*count {
                 lower_instruction_stmt(&nop, scope, sema, span, ctx, diagnostics, ops);
             }
@@ -4621,13 +4566,13 @@ fn lower_hla_condition_branch(
     };
 
     let cmp_span = condition.seed_span.unwrap_or(span);
-    let compare_instruction = Instruction {
-        mnemonic: "cmp".to_string(),
-        operand: Some(Operand::Immediate {
+    let compare_instruction = make_instruction(
+        "cmp",
+        Some(Operand::Immediate {
             expr: Expr::Number(rhs_number, NumFmt::Dec),
             explicit_hash: false,
         }),
-    };
+    );
     let ops_len_before_cmp = ops.len();
     lower_instruction_stmt(
         &compare_instruction,
@@ -4718,15 +4663,15 @@ fn emit_branch_to_label(
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    let instruction = Instruction {
-        mnemonic: mnemonic.to_string(),
-        operand: Some(Operand::Value {
+    let instruction = make_instruction(
+        mnemonic,
+        Some(Operand::Value {
             expr: Expr::Ident(target.to_string()),
             force_far: false,
             index: None,
             addr_mode: OperandAddrMode::Direct,
         }),
-    };
+    );
     lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
 }
 
@@ -5889,7 +5834,7 @@ fn eval_to_number(
                 Ok(None) => {}
             }
 
-            let _ = resolve_symbol(name, scope, ident_span, diagnostics)?;
+            resolve_symbol(name, scope, ident_span, diagnostics)?;
             diagnostics.push(Diagnostic::error(
                 ident_span,
                 format!("unknown identifier '{name}'"),

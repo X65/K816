@@ -32,10 +32,9 @@ impl FileWatcher {
         }
 
         let (tx, rx) = unbounded::<WorkspaceFsEvent>();
-        let sender = tx.clone();
         let mut watcher = notify::recommended_watcher(move |res: Result<Event, Error>| {
             if let Ok(event) = res {
-                dispatch_event(&sender, event);
+                dispatch_event(&tx, event);
             }
         })
         .context("failed to create filesystem watcher")?;

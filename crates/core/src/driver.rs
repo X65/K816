@@ -390,7 +390,7 @@ mod tests {
         let main_object = &outputs[0].object;
         let section = main_object
             .sections
-            .get("default")
+            .get(crate::DEFAULT_SEGMENT)
             .expect("default section exists");
         let bytes = section
             .chunks

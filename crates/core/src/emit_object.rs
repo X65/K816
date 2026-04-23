@@ -66,14 +66,18 @@ enum UnknownWidthCause {
     Rti,
 }
 
+fn to_isa_index(index: IndexRegister) -> IsaIndexRegister {
+    match index {
+        IndexRegister::X => IsaIndexRegister::X,
+        IndexRegister::Y => IsaIndexRegister::Y,
+        IndexRegister::S => IsaIndexRegister::S,
+    }
+}
+
 fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
     match mode {
         AddressOperandMode::Direct { index } => IsaAddressOperandMode::Direct {
-            index: index.map(|index| match index {
-                IndexRegister::X => IsaIndexRegister::X,
-                IndexRegister::Y => IsaIndexRegister::Y,
-                IndexRegister::S => IsaIndexRegister::S,
-            }),
+            index: index.map(to_isa_index),
         },
         AddressOperandMode::Indirect => IsaAddressOperandMode::Indirect,
         AddressOperandMode::IndirectLong => IsaAddressOperandMode::IndirectLong,
@@ -134,7 +138,7 @@ pub fn emit_object(
     let mut labels: FxHashMap<String, (String, u32, Span)> = FxHashMap::default();
     let mut absolute_symbols: FxHashMap<String, (u32, Span)> = FxHashMap::default();
     let mut fixups = Vec::new();
-    let mut current_segment = "default".to_string();
+    let mut current_segment = crate::DEFAULT_SEGMENT.to_string();
     let mut current_function: Option<String> = None;
     let mut function_instruction_sites = Vec::new();
     let mut function_initial_modes: FxHashMap<(String, String), (bool, bool)> =
@@ -646,13 +650,13 @@ pub fn emit_object(
 
     let skip_default_empty = segments.len() > 1
         && segments
-            .get("default")
+            .get(crate::DEFAULT_SEGMENT)
             .is_some_and(|state| state.chunks.is_empty());
 
     let mut listing_blocks = Vec::new();
     let mut sections = IndexMap::new();
     for (segment_name, state) in &segments {
-        if skip_default_empty && segment_name == "default" {
+        if skip_default_empty && segment_name == crate::DEFAULT_SEGMENT {
             continue;
         }
 
@@ -667,7 +671,7 @@ pub fn emit_object(
 
     let mut symbols = Vec::new();
     for (name, (segment, offset, span)) in &labels {
-        if skip_default_empty && segment == "default" {
+        if skip_default_empty && segment == crate::DEFAULT_SEGMENT {
             continue;
         }
         symbols.push(Symbol {
@@ -696,7 +700,7 @@ pub fn emit_object(
 
     let mut relocations = Vec::new();
     for fixup in &fixups {
-        if skip_default_empty && fixup.segment == "default" {
+        if skip_default_empty && fixup.segment == crate::DEFAULT_SEGMENT {
             continue;
         }
         relocations.push(Relocation {
@@ -713,7 +717,7 @@ pub fn emit_object(
 
     let mut grouped_disassembly: IndexMap<(String, String), Vec<u32>> = IndexMap::new();
     for site in function_instruction_sites {
-        if skip_default_empty && site.segment == "default" {
+        if skip_default_empty && site.segment == crate::DEFAULT_SEGMENT {
             continue;
         }
         grouped_disassembly
@@ -1068,7 +1072,7 @@ mod tests {
         let section = emitted
             .object
             .sections
-            .get("default")
+            .get(crate::DEFAULT_SEGMENT)
             .expect("default section");
 
         assert_eq!(section.chunks.len(), 2);

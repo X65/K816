@@ -111,18 +111,12 @@ pub fn compile_sources(
     sources: &[LinkCompileInput<'_>],
     options: CompileRenderOptions,
 ) -> Vec<Result<CompileObjectOutput, CompileError>> {
-    // Build a shared SourceMap up front so every parsed source — including the
-    // silent metadata pre-scans inside `collect_workspace_externals` — gets a
-    // distinct SourceId. This is what makes the cross-file inline detection in
+    // Build a shared SourceMap up front so every parsed source gets a distinct
+    // SourceId. This is what makes the cross-file inline detection in
     // `retargeted_body_if_foreign` actually fire and lets emit-time
     // diagnostics anchored to a foreign source resolve through one consistent
     // SourceMap.
-    let mut source_map = SourceMap::default();
-    let source_ids: Vec<SourceId> = sources
-        .iter()
-        .map(|source| source_map.add_source(source.source_name, source.source_text))
-        .collect();
-
+    let (source_map, source_ids) = assign_source_ids(sources);
     let externals = collect_workspace_externals(sources);
     compile_sources_with_externals_inner(sources, &source_ids, &source_map, &externals, options)
 }
@@ -135,12 +129,22 @@ pub fn compile_sources_with_externals(
     externals: &WorkspaceExternals,
     options: CompileRenderOptions,
 ) -> Vec<Result<CompileObjectOutput, CompileError>> {
+    let (source_map, source_ids) = assign_source_ids(sources);
+    compile_sources_with_externals_inner(sources, &source_ids, &source_map, externals, options)
+}
+
+/// Build a `SourceMap` that owns every input source under a distinct
+/// `SourceId`, returning the map alongside the per-input ids in input order.
+/// Centralises the canonical "add every source up front" step shared by every
+/// driver entry point that needs span-bearing diagnostics back from the
+/// per-file compile pipeline.
+fn assign_source_ids(sources: &[LinkCompileInput<'_>]) -> (SourceMap, Vec<SourceId>) {
     let mut source_map = SourceMap::default();
-    let source_ids: Vec<SourceId> = sources
+    let source_ids = sources
         .iter()
         .map(|source| source_map.add_source(source.source_name, source.source_text))
         .collect();
-    compile_sources_with_externals_inner(sources, &source_ids, &source_map, externals, options)
+    (source_map, source_ids)
 }
 
 fn compile_sources_with_externals_inner(
@@ -262,11 +266,11 @@ fn parse_expand_normalize_source(
 pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> WorkspaceExternals {
     let function_names = collect_all_declared_function_names(sources);
     let addressable_names = collect_all_declared_addressable_names(sources);
-    let mut source_map = SourceMap::default();
+    let (_source_map, source_ids) = assign_source_ids(sources);
     let parsed_sources: Vec<Option<File>> = sources
         .iter()
-        .map(|source| {
-            let source_id = source_map.add_source(source.source_name, source.source_text);
+        .zip(source_ids.iter())
+        .map(|(source, &source_id)| {
             parse_expand_normalize_source(source_id, source.source_text, Some(&function_names))
         })
         .collect();
@@ -286,15 +290,16 @@ pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> Workspac
 
 /// Token-scan every link source for all declared addressable symbol names.
 /// See [`crate::parser::scan_declared_addressable_names`] for what counts.
+///
+/// This is a token-only scan — no spans are retained, so no `SourceMap` is
+/// needed and a sentinel `SourceId` is sufficient.
 pub fn collect_all_declared_addressable_names(
     sources: &[LinkCompileInput<'_>],
 ) -> HashSet<String> {
     let mut names = HashSet::new();
-    let mut source_map = SourceMap::default();
     for source in sources {
-        let source_id = source_map.add_source(source.source_name, source.source_text);
         names.extend(crate::parser::scan_declared_addressable_names(
-            source_id,
+            SourceId(0),
             source.source_text,
         ));
     }
@@ -348,12 +353,13 @@ fn collect_external_consts_from_parsed(
 /// Collect every declared top-level function name across all link sources via a
 /// cheap token-level scan. Feeds the parser's `known_functions` set so call-site
 /// syntax for cross-unit callees parses correctly.
+///
+/// This is a token-only scan — no spans are retained, so no `SourceMap` is
+/// needed and a sentinel `SourceId` is sufficient.
 pub fn collect_all_declared_function_names(sources: &[LinkCompileInput<'_>]) -> HashSet<String> {
     let mut names = HashSet::new();
-    let mut source_map = SourceMap::default();
     for source in sources {
-        let source_id = source_map.add_source(source.source_name, source.source_text);
-        names.extend(scan_declared_function_names(source_id, source.source_text));
+        names.extend(scan_declared_function_names(SourceId(0), source.source_text));
     }
     names
 }

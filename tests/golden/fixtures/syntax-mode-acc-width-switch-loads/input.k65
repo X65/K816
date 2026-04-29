@@ -1,0 +1,75 @@
+var dst0 = $2000
+var dst1 = $2001
+var dst2 = $2002
+var dst3 = $2003
+var dst4 = $2004
+var dst5 = $2005
+var dst6 = $2006
+var dst7 = $2007
+
+func load_lda {
+    @a16
+    lda #$1234
+    @a8
+    lda #$12
+    sta dst0
+}
+
+func load_pla {
+    @a16
+    lda #$1234
+    pha
+    @a8
+    pla
+    sta dst1
+}
+
+func load_txa @i8 {
+    ldx #$34
+    @a16
+    lda #$1234
+    @a8
+    txa
+    sta dst2
+}
+
+func load_tya @i8 {
+    ldy #$56
+    @a16
+    lda #$1234
+    @a8
+    tya
+    sta dst3
+}
+
+func load_tdc {
+    @a16
+    lda #$1234
+    @a8
+    tdc
+    sta dst4
+}
+
+func load_tsc {
+    @a16
+    lda #$1234
+    @a8
+    tsc
+    sta dst5
+}
+
+func load_xba {
+    @a16
+    lda #$1234
+    @a8
+    xba
+    sta dst6
+}
+
+func load_swap_ab {
+    @a16
+    lda #$1234
+    @a8
+    b><a
+    sta dst7
+}

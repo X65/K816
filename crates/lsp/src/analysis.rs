@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use lsp_types::{CompletionItemKind, SemanticTokenModifier, SemanticTokenType};
 
 use super::{ByteRange, DocumentAnalysis, ScopeRange, SemanticInfo, SymbolCategory, SymbolDef};
@@ -56,7 +58,7 @@ pub(super) fn analyze_document(
     }
 
     let (symbols, scopes) = if let Some(parsed_file) = parsed_file {
-        let symbol_collection = collect_symbols(&parsed_file);
+        let mut symbol_collection = collect_symbols(&parsed_file);
         ast = Some(parsed_file.clone());
 
         if let Ok(expanded) = k816_core::eval_expand::expand_file(&parsed_file, source_id)
@@ -74,6 +76,7 @@ pub(super) fn analyze_document(
                 semantic.vars.insert(name, meta);
             }
         }
+        filter_symbols_to_semantic_model(&mut symbol_collection, &semantic);
         (symbol_collection.symbols, symbol_collection.scopes)
     } else {
         let fallback = scan_tokens_for_symbols(source_id, source_text);
@@ -93,6 +96,49 @@ pub(super) fn analyze_document(
         object,
         addressable_sites,
     )
+}
+
+fn filter_symbols_to_semantic_model(symbols: &mut SymbolCollection, semantic: &SemanticInfo) {
+    let valid_function_scopes = semantic
+        .functions
+        .keys()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let mut seen_scope_names = HashSet::new();
+    let valid_scopes = symbols
+        .scopes
+        .iter()
+        .filter(|scope| {
+            valid_function_scopes.contains(scope.name.as_str())
+                && seen_scope_names.insert(scope.name.clone())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut accepted_seen = HashSet::new();
+
+    symbols.symbols.retain(|symbol| match symbol.category {
+        SymbolCategory::Function => {
+            semantic.functions.contains_key(&symbol.canonical)
+                && accepted_seen.insert((symbol.category, symbol.canonical.clone()))
+        }
+        SymbolCategory::Constant => {
+            semantic.consts.contains_key(&symbol.canonical)
+                && accepted_seen.insert((symbol.category, symbol.canonical.clone()))
+        }
+        SymbolCategory::Variable => {
+            semantic.vars.contains_key(&symbol.canonical)
+                && accepted_seen.insert((symbol.category, symbol.canonical.clone()))
+        }
+        SymbolCategory::Label => symbol.scope.as_deref().is_none_or(|scope| {
+            valid_scopes.iter().any(|valid| {
+                valid.name == scope
+                    && symbol.selection.start >= valid.range.start
+                    && symbol.selection.end <= valid.range.end
+            })
+        }),
+        SymbolCategory::DataBlock | SymbolCategory::Segment => true,
+    });
+    symbols.scopes = valid_scopes;
 }
 
 #[derive(Debug, Default)]

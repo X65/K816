@@ -159,6 +159,168 @@ fn read_lsp_message(reader: &mut impl BufRead) -> std::io::Result<Value> {
 }
 
 #[test]
+fn lsp_accepts_accumulator_width_switch_loads_fixture() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-lsp-it-acc-loads-{unique}"));
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
+    std::fs::write(
+        root.join("k816.toml"),
+        "[package]\nname = \"lsp-it-acc-loads\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("failed to write manifest");
+
+    let source = include_str!("golden/fixtures/syntax-mode-acc-width-switch-loads/input.k65");
+    let source_path = src_dir.join("main.k65");
+    std::fs::write(&source_path, source).expect("failed to write source");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 100,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let initialize_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(100))
+    });
+    assert!(initialize_response.get("result").is_some());
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+
+    let diagnostics_notification = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+    });
+    let diagnostics = diagnostics_notification["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for accumulator width-switch loads, got: {diagnostics:?}"
+    );
+
+    lsp.shutdown();
+}
+
+#[test]
+fn lsp_accepts_accumulator_width_switch_loads_fixture_in_repo_workspace() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source_path =
+        root.join("tests/golden/fixtures/syntax-mode-acc-width-switch-loads/input.k65");
+    let source = std::fs::read_to_string(&source_path).expect("failed to read source fixture");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 101,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let initialize_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(101))
+    });
+    assert!(initialize_response.get("result").is_some());
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+
+    let diagnostics_notification = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+    });
+    let diagnostics = diagnostics_notification["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics array");
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for accumulator width-switch loads in repo workspace, got: {diagnostics:?}"
+    );
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 102,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": file_uri },
+            "position": { "line": 13, "character": 5 }
+        }
+    }));
+    let hover_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(102))
+    });
+    let hover_text = hover_response["result"]["contents"]["value"]
+        .as_str()
+        .expect("hover markdown");
+    assert!(
+        hover_text.contains("**opcode** `lda`"),
+        "expected opcode hover for lda, got: {hover_text}"
+    );
+    assert!(
+        !hover_text.contains("**function** `lda`"),
+        "invalid reserved function leaked into hover: {hover_text}"
+    );
+
+    lsp.shutdown();
+}
+
+#[test]
 fn lsp_initialize_diagnostics_definition_and_hover() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

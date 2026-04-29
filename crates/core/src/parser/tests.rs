@@ -35,6 +35,15 @@ fn emits_warning_for_empty_function_body() {
 }
 
 #[test]
+fn function_name_scan_skips_reserved_mnemonics() {
+    let source = "func lda {\n  nop\n}\nfunc helper {\n  nop\n}\ninline xba {\n  nop\n}\n";
+    let names = scan_declared_function_names(SourceId(0), source);
+    assert!(names.contains("helper"));
+    assert!(!names.contains("lda"));
+    assert!(!names.contains("xba"));
+}
+
+#[test]
 fn parses_expression_fragment() {
     let expr = parse_expression_fragment(SourceId(0), "0x10").expect("parse");
     assert!(matches!(expr.node, Expr::Number(16, _)));

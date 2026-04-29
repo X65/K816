@@ -23,7 +23,9 @@ Primary operator-coverage fixtures:
 - `syntax-const-declarations`
 - `syntax-const-sequence`
 - `syntax-mode-acc-width-switch-dead-err`
+- `syntax-mode-acc-width-switch-loads`
 - `syntax-mode-acc-width-switch-reload`
+- `syntax-mode-acc-width-switch-uses-err`
 - `syntax-mode-index-truncation-warning`
 - `syntax-mode-index-truncation-safe`
 

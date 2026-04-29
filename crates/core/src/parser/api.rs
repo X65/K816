@@ -6,6 +6,7 @@ use chumsky::{
     Parser as _,
     input::{Input as _, Stream},
 };
+use k816_isa65816::is_mnemonic;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -39,6 +40,10 @@ fn merge_known_functions(
         }
         _ => local,
     }
+}
+
+fn is_reserved_function_name(name: &str) -> bool {
+    is_mnemonic(name)
 }
 
 fn collect_declared_function_names(tokens: &[Token]) -> Arc<HashSet<String>> {
@@ -89,7 +94,9 @@ fn collect_declared_function_names(tokens: &[Token]) -> Arc<HashSet<String>> {
                 ..
             }) = tokens.get(j)
             {
-                names.insert(name.clone());
+                if !is_reserved_function_name(name) {
+                    names.insert(name.clone());
+                }
             }
         } else if saw_modifier
             && let Some(Token {
@@ -97,7 +104,9 @@ fn collect_declared_function_names(tokens: &[Token]) -> Arc<HashSet<String>> {
                 ..
             }) = tokens.get(j)
         {
-            names.insert(name.clone());
+            if !is_reserved_function_name(name) {
+                names.insert(name.clone());
+            }
         }
 
         i += 1;

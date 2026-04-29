@@ -1,0 +1,209 @@
+Error: Accumulator value is dead after switching to @a8.
+   ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:7:5 ]
+   │
+ 7 │     adc #$01
+   │     ────┬───  
+   │         ╰───── here
+   │ 
+   │ Help: load A again in 8-bit mode before using it
+───╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:14:5 ]
+    │
+ 14 │     sbc #$01
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:21:5 ]
+    │
+ 21 │     and #$01
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:28:5 ]
+    │
+ 28 │     ora #$01
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:35:5 ]
+    │
+ 35 │     eor #$01
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:42:5 ]
+    │
+ 42 │     cmp #$01
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:49:5 ]
+    │
+ 49 │     bit #$01
+    │     ────┬───  
+    │         ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:56:5 ]
+    │
+ 56 │     sta dst
+    │     ───┬───  
+    │        ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:63:5 ]
+    │
+ 63 │     pha
+    │     ─┬─  
+    │      ╰─── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:70:5 ]
+    │
+ 70 │     tax
+    │     ─┬─  
+    │      ╰─── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:77:5 ]
+    │
+ 77 │     tay
+    │     ─┬─  
+    │      ╰─── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:84:5 ]
+    │
+ 84 │     tcd
+    │     ─┬─  
+    │      ╰─── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:91:5 ]
+    │
+ 91 │     tcs
+    │     ─┬─  
+    │      ╰─── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+    ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:98:5 ]
+    │
+ 98 │     trb dst
+    │     ───┬───  
+    │        ╰───── here
+    │ 
+    │ Help: load A again in 8-bit mode before using it
+────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:105:5 ]
+     │
+ 105 │     tsb dst
+     │     ───┬───  
+     │        ╰───── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:112:5 ]
+     │
+ 112 │     asl
+     │     ─┬─  
+     │      ╰─── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:119:5 ]
+     │
+ 119 │     lsr
+     │     ─┬─  
+     │      ╰─── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:126:5 ]
+     │
+ 126 │     rol
+     │     ─┬─  
+     │      ╰─── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:133:5 ]
+     │
+ 133 │     ror
+     │     ─┬─  
+     │      ╰─── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:140:5 ]
+     │
+ 140 │     inc
+     │     ─┬─  
+     │      ╰─── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯
+
+Error: Accumulator value is dead after switching to @a8.
+     ╭─[ tests/golden/fixtures/syntax-mode-acc-width-switch-uses-err/input.k65:147:5 ]
+     │
+ 147 │     dec
+     │     ─┬─  
+     │      ╰─── here
+     │ 
+     │ Help: load A again in 8-bit mode before using it
+─────╯

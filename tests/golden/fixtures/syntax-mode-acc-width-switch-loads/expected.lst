@@ -1,0 +1,76 @@
+[default]
+000000: C2 20 A9 34 12 E2 20 A9 12 8D 00 20 60 C2 20 A9
+000010: 34 12 48 E2 20 68 8D 01 20 60 A2 34 C2 20 A9 34
+000020: 12 E2 20 8A 8D 02 20 60 A0 56 C2 20 A9 34 12 E2
+000030: 20 98 8D 03 20 60 C2 20 A9 34 12 E2 20 7B 8D 04
+000040: 20 60 C2 20 A9 34 12 E2 20 3B 8D 05 20 60 C2 20
+000050: A9 34 12 E2 20 EB 8D 06 20 60 C2 20 A9 34 12 E2
+000060: 20 EB 8D 07 20 60
+
+
+[disasm obj#0 default::load_lda]
+000000: C2 20       rep #$20
+000002: A9 34 12    lda #$1234
+000005: E2 20       sep #$20
+000007: A9 12       lda #$12
+000009: 8D 00 20    sta $2000
+00000C: 60          rts
+
+[disasm obj#0 default::load_pla]
+00000D: C2 20       rep #$20
+00000F: A9 34 12    lda #$1234
+000012: 48          pha
+000013: E2 20       sep #$20
+000015: 68          pla
+000016: 8D 01 20    sta $2001
+000019: 60          rts
+
+[disasm obj#0 default::load_txa]
+00001A: A2 34       ldx #$34
+00001C: C2 20       rep #$20
+00001E: A9 34 12    lda #$1234
+000021: E2 20       sep #$20
+000023: 8A          txa
+000024: 8D 02 20    sta $2002
+000027: 60          rts
+
+[disasm obj#0 default::load_tya]
+000028: A0 56       ldy #$56
+00002A: C2 20       rep #$20
+00002C: A9 34 12    lda #$1234
+00002F: E2 20       sep #$20
+000031: 98          tya
+000032: 8D 03 20    sta $2003
+000035: 60          rts
+
+[disasm obj#0 default::load_tdc]
+000036: C2 20       rep #$20
+000038: A9 34 12    lda #$1234
+00003B: E2 20       sep #$20
+00003D: 7B          tdc
+00003E: 8D 04 20    sta $2004
+000041: 60          rts
+
+[disasm obj#0 default::load_tsc]
+000042: C2 20       rep #$20
+000044: A9 34 12    lda #$1234
+000047: E2 20       sep #$20
+000049: 3B          tsc
+00004A: 8D 05 20    sta $2005
+00004D: 60          rts
+
+[disasm obj#0 default::load_xba]
+00004E: C2 20       rep #$20
+000050: A9 34 12    lda #$1234
+000053: E2 20       sep #$20
+000055: EB          xba
+000056: 8D 06 20    sta $2006
+000059: 60          rts
+
+[disasm obj#0 default::load_swap_ab]
+00005A: C2 20       rep #$20
+00005C: A9 34 12    lda #$1234
+00005F: E2 20       sep #$20
+000061: EB          xba
+000062: 8D 07 20    sta $2007
+000065: 60          rts

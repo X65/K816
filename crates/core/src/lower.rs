@@ -239,6 +239,14 @@ fn instruction_effects(instruction: &Instruction) -> RegEffects {
     }
 }
 
+fn instruction_accumulator_load_wins(instruction: &Instruction, mode: ModeState) -> bool {
+    match instruction.mnemonic.to_ascii_lowercase().as_str() {
+        "lda" | "pla" | "txa" | "tya" | "tdc" | "tsc" => true,
+        "xba" => mode.a_width == Some(RegWidth::W8),
+        _ => false,
+    }
+}
+
 fn hla_effects(stmt: &HlaStmt) -> RegEffects {
     match stmt {
         HlaStmt::RegisterAssign { register, rhs } => RegEffects {
@@ -3181,7 +3189,10 @@ fn lower_instruction_stmt(
     ops: &mut Vec<Spanned<Op>>,
 ) {
     let mnemonic = instruction.mnemonic.to_ascii_lowercase();
-    let effects = instruction_effects(instruction);
+    let mut effects = instruction_effects(instruction);
+    if instruction_accumulator_load_wins(instruction, ctx.mode) {
+        effects.reads = effects.reads - RegSet::A;
+    }
     ctx.hazards = apply_reg_access_hazards(ctx.hazards, effects, ctx.mode, span, diagnostics);
 
     validate_instruction_width_rules(instruction, sema, ctx.mode, span, diagnostics);

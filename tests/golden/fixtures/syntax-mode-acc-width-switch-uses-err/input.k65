@@ -1,0 +1,148 @@
+var dst = $20
+
+func use_adc {
+    @a16
+    lda #$1234
+    @a8
+    adc #$01
+}
+
+func use_sbc {
+    @a16
+    lda #$1234
+    @a8
+    sbc #$01
+}
+
+func use_and {
+    @a16
+    lda #$1234
+    @a8
+    and #$01
+}
+
+func use_ora {
+    @a16
+    lda #$1234
+    @a8
+    ora #$01
+}
+
+func use_eor {
+    @a16
+    lda #$1234
+    @a8
+    eor #$01
+}
+
+func use_cmp {
+    @a16
+    lda #$1234
+    @a8
+    cmp #$01
+}
+
+func use_bit {
+    @a16
+    lda #$1234
+    @a8
+    bit #$01
+}
+
+func use_sta {
+    @a16
+    lda #$1234
+    @a8
+    sta dst
+}
+
+func use_pha {
+    @a16
+    lda #$1234
+    @a8
+    pha
+}
+
+func use_tax {
+    @a16
+    lda #$1234
+    @a8
+    tax
+}
+
+func use_tay {
+    @a16
+    lda #$1234
+    @a8
+    tay
+}
+
+func use_tcd {
+    @a16
+    lda #$1234
+    @a8
+    tcd
+}
+
+func use_tcs {
+    @a16
+    lda #$1234
+    @a8
+    tcs
+}
+
+func use_trb {
+    @a16
+    lda #$1234
+    @a8
+    trb dst
+}
+
+func use_tsb {
+    @a16
+    lda #$1234
+    @a8
+    tsb dst
+}
+
+func use_asl {
+    @a16
+    lda #$1234
+    @a8
+    asl
+}
+
+func use_lsr {
+    @a16
+    lda #$1234
+    @a8
+    lsr
+}
+
+func use_rol {
+    @a16
+    lda #$1234
+    @a8
+    rol
+}
+
+func use_ror {
+    @a16
+    lda #$1234
+    @a8
+    ror
+}
+
+func use_inc {
+    @a16
+    lda #$1234
+    @a8
+    inc
+}
+
+func use_dec {
+    @a16
+    lda #$1234
+    @a8
+    dec
+}

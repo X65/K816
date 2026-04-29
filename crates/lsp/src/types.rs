@@ -83,7 +83,7 @@ pub(super) struct ScopeRange {
     pub(super) range: ByteRange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum SymbolCategory {
     Function,
     Constant,

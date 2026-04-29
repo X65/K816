@@ -249,6 +249,51 @@ func main @a16 @i16 {
 }
 
 #[test]
+fn invalid_reserved_function_does_not_enter_symbol_index_or_hover() {
+    let uri_invalid = Uri::from_str("file:///project/tests/invalid.k65").expect("uri");
+    let invalid_text = "func lda {\n  nop\n}\n".to_string();
+
+    let uri_main = Uri::from_str("file:///project/tests/main.k65").expect("uri");
+    let main_text =
+        "var dst0 = $2000\nfunc main {\n  @a16\n  lda #$1234\n  @a8\n  lda #$12\n  sta dst0\n}\n"
+            .to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(uri_invalid.clone(), invalid_text, 1, false)
+        .expect("invalid doc");
+    state
+        .upsert_document(uri_main.clone(), main_text.clone(), 1, true)
+        .expect("main doc");
+
+    assert!(
+        !state.symbols.contains_key("lda"),
+        "reserved mnemonic declaration must not enter the symbol index: {:?}",
+        state.symbols.keys().collect::<Vec<_>>()
+    );
+
+    let doc = state.documents.get(&uri_main).expect("main doc");
+    let second_lda = main_text.rfind("lda #$12").expect("second lda");
+    let position = doc.line_index.to_position(&doc.text, second_lda + 1);
+    let hover = state
+        .hover(&uri_main, position)
+        .expect("instruction hover should resolve");
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markdown hover");
+    };
+    assert!(
+        markup.value.contains("**opcode** `lda`"),
+        "expected opcode hover, got: {}",
+        markup.value
+    );
+    assert!(
+        !markup.value.contains("**function** `lda`"),
+        "reserved invalid function leaked into hover: {}",
+        markup.value
+    );
+}
+
+#[test]
 fn token_match_includes_mode_directives() {
     let text = "@a16\n";
     let token = token_at_offset(text, 2).expect("token");

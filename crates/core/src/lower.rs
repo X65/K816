@@ -3,6 +3,7 @@ use k816_assets::AssetFS;
 use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
 use k816_isa65816::{RegEffects, RegSet, mnemonic_effects};
 use rustc_hash::FxHashMap;
+use std::collections::HashSet;
 
 use crate::ast::{
     AddressHint, CallArg, CallStmt, CodeBlock, ContractParam, DataWidth, Expr, ExprBinaryOp,
@@ -1792,6 +1793,7 @@ pub(crate) fn lower_with_warnings(
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     external_inline_bodies: Option<&IndexMap<String, CodeBlock>>,
+    workspace_addressable: Option<&HashSet<String>>,
 ) -> Result<LowerOutput, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
     let mut ops = Vec::new();
@@ -2017,6 +2019,15 @@ pub(crate) fn lower_with_warnings(
         }
     }
 
+    // Validate `&&NAME` and `&&&NAME` operands against the workspace's known
+    // addressable symbols. Without this, `lda &&unknown_symbol` silently
+    // emits a relocation and the error only surfaces at link time — useless
+    // for LSP feedback. With the workspace set in hand, we can flag undefined
+    // names per file at compile time.
+    if let Some(known) = workspace_addressable {
+        validate_address_of_relocations(&ops, sema, known, &mut errors);
+    }
+
     if errors.is_empty() {
         Ok(LowerOutput {
             program: Program { ops },
@@ -2033,7 +2044,64 @@ pub fn lower(
     fs: &dyn AssetFS,
     external_inline_bodies: Option<&IndexMap<String, CodeBlock>>,
 ) -> Result<Program, Vec<Diagnostic>> {
-    lower_with_warnings(file, sema, fs, external_inline_bodies).map(|output| output.program)
+    lower_with_warnings(file, sema, fs, external_inline_bodies, None).map(|output| output.program)
+}
+
+fn validate_address_of_relocations(
+    ops: &[Spanned<Op>],
+    sema: &SemanticModel,
+    workspace_addressable: &HashSet<String>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    for op in ops {
+        let Op::Instruction(instruction) = &op.node else {
+            continue;
+        };
+        let (label, kind_label, label_span) = match &instruction.operand {
+            Some(OperandOp::ImmediateWordRelocation {
+                label, label_span, ..
+            }) => (label, "&&", label_span.as_ref()),
+            Some(OperandOp::ImmediateFarRelocation {
+                label, label_span, ..
+            }) => (label, "&&&", label_span.as_ref()),
+            _ => continue,
+        };
+        if label.starts_with('.') {
+            // Local-scoped labels (`.label` form, scoped to the enclosing
+            // function) — handled by resolve_symbol earlier; not workspace
+            // visible.
+            continue;
+        }
+        if sema.functions.contains_key(label)
+            || sema.vars.contains_key(label)
+            || sema.consts.contains_key(label)
+            || workspace_addressable.contains(label)
+        {
+            continue;
+        }
+        // Symbolic subscript fields (e.g. `TASKS.name`) — resolved through
+        // `resolve_symbolic_subscript_name`; if the base var exists, the
+        // field reference is fine.
+        if let Some((base, _field)) = label.split_once('.')
+            && (sema.vars.contains_key(base) || workspace_addressable.contains(base))
+        {
+            continue;
+        }
+        // Anchor the diagnostic on the symbol name itself (so the squiggle
+        // covers `shell_main` only, not `lda &&shell_main`). Falls back to
+        // the instruction span when the source position wasn't preserved
+        // (e.g. for non-spanned `Ident` exprs from synthesized HIR).
+        let primary_span = label_span.copied().unwrap_or(op.span);
+        errors.push(
+            Diagnostic::error(
+                primary_span,
+                format!("undefined symbol '{label}' referenced by `{kind_label}`"),
+            )
+            .with_help(format!(
+                "no `func`, `var`, `data`, or label named '{label}' is declared in this workspace"
+            )),
+        );
+    }
 }
 
 fn collect_label_depths(
@@ -5828,7 +5896,7 @@ fn resolve_symbolic_address_immediate(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<OperandOp> {
-    let (is_far, name, addend) = peel_address_of(expr)?;
+    let (is_far, name, addend, label_span) = peel_address_of(expr, span)?;
     // Compile-time-known names (consts) flow through `eval_to_number` so the
     // result is an `Immediate(N)`. Only emit a relocation when the name is a
     // real address-bearing symbol — vars, functions, symbolic-subscript
@@ -5848,22 +5916,36 @@ fn resolve_symbolic_address_immediate(
     }
     let label = resolve_symbol(name, scope, span, diagnostics)?;
     Some(if is_far {
-        OperandOp::ImmediateFarRelocation { label, addend }
+        OperandOp::ImmediateFarRelocation {
+            label,
+            addend,
+            label_span,
+        }
     } else {
-        OperandOp::ImmediateWordRelocation { label, addend }
+        OperandOp::ImmediateWordRelocation {
+            label,
+            addend,
+            label_span,
+        }
     })
 }
 
-/// Decompose `&&LABEL` / `&&&LABEL` (optionally `± N`) into `(is_far, name, addend)`.
-fn peel_address_of(expr: &Expr) -> Option<(bool, &str, i32)> {
+/// Decompose `&&LABEL` / `&&&LABEL` (optionally `± N`) into
+/// `(is_far, name, addend, label_span)`. `label_span` covers just the symbol
+/// name in source if it was an `IdentSpanned`, so diagnostics can underline
+/// only `shell_main` rather than `lda &&shell_main`.
+fn peel_address_of<'a>(
+    expr: &'a Expr,
+    instruction_span: Span,
+) -> Option<(bool, &'a str, i32, Option<Span>)> {
     if let Expr::Unary { op, expr: inner } = expr {
         let is_far = match op {
             ExprUnaryOp::WordLittleEndian => false,
             ExprUnaryOp::FarLittleEndian => true,
             _ => return None,
         };
-        let (name, addend) = label_with_addend(inner.as_ref())?;
-        return Some((is_far, name, addend));
+        let (name, addend, label_span) = label_with_addend(inner.as_ref(), instruction_span)?;
+        return Some((is_far, name, addend, label_span));
     }
     if let Expr::Binary { op, lhs, rhs } = expr {
         match (op, lhs.as_ref(), rhs.as_ref()) {
@@ -5874,8 +5956,9 @@ fn peel_address_of(expr: &Expr) -> Option<(bool, &str, i32)> {
                     ExprUnaryOp::FarLittleEndian => true,
                     _ => return None,
                 };
-                let (name, base_addend) = label_with_addend(u_inner.as_ref())?;
-                return Some((is_far, name, base_addend + *n as i32));
+                let (name, base_addend, label_span) =
+                    label_with_addend(u_inner.as_ref(), instruction_span)?;
+                return Some((is_far, name, base_addend + *n as i32, label_span));
             }
             (ExprBinaryOp::Sub, Expr::Unary { op: u_op, expr: u_inner }, Expr::Number(n, _)) => {
                 let is_far = match u_op {
@@ -5883,8 +5966,9 @@ fn peel_address_of(expr: &Expr) -> Option<(bool, &str, i32)> {
                     ExprUnaryOp::FarLittleEndian => true,
                     _ => return None,
                 };
-                let (name, base_addend) = label_with_addend(u_inner.as_ref())?;
-                return Some((is_far, name, base_addend - *n as i32));
+                let (name, base_addend, label_span) =
+                    label_with_addend(u_inner.as_ref(), instruction_span)?;
+                return Some((is_far, name, base_addend - *n as i32, label_span));
             }
             _ => {}
         }
@@ -5893,21 +5977,32 @@ fn peel_address_of(expr: &Expr) -> Option<(bool, &str, i32)> {
 }
 
 /// Match `Ident(name)` or `Ident(name) + N` / `N + Ident(name)` / `Ident(name) - N`,
-/// returning the label name and signed addend.
-fn label_with_addend(expr: &Expr) -> Option<(&str, i32)> {
+/// returning the label name, signed addend, and (when available) the source
+/// span of just the identifier.
+fn label_with_addend<'a>(
+    expr: &'a Expr,
+    instruction_span: Span,
+) -> Option<(&'a str, i32, Option<Span>)> {
+    let ident_span = |start: usize, end: usize| Span::new(instruction_span.source_id, start, end);
     match expr {
-        Expr::Ident(name) => Some((name.as_str(), 0)),
-        Expr::IdentSpanned { name, .. } => Some((name.as_str(), 0)),
+        Expr::Ident(name) => Some((name.as_str(), 0, None)),
+        Expr::IdentSpanned { name, start, end } => {
+            Some((name.as_str(), 0, Some(ident_span(*start, *end))))
+        }
         Expr::Binary { op, lhs, rhs } => match (op, lhs.as_ref(), rhs.as_ref()) {
-            (ExprBinaryOp::Add, Expr::Ident(name), Expr::Number(n, _))
-            | (ExprBinaryOp::Add, Expr::IdentSpanned { name, .. }, Expr::Number(n, _))
-            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::Ident(name))
-            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::IdentSpanned { name, .. }) => {
-                Some((name.as_str(), *n as i32))
+            (ExprBinaryOp::Add, Expr::IdentSpanned { name, start, end }, Expr::Number(n, _))
+            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::IdentSpanned { name, start, end }) => {
+                Some((name.as_str(), *n as i32, Some(ident_span(*start, *end))))
             }
-            (ExprBinaryOp::Sub, Expr::Ident(name), Expr::Number(n, _))
-            | (ExprBinaryOp::Sub, Expr::IdentSpanned { name, .. }, Expr::Number(n, _)) => {
-                Some((name.as_str(), -(*n as i32)))
+            (ExprBinaryOp::Sub, Expr::IdentSpanned { name, start, end }, Expr::Number(n, _)) => {
+                Some((name.as_str(), -(*n as i32), Some(ident_span(*start, *end))))
+            }
+            (ExprBinaryOp::Add, Expr::Ident(name), Expr::Number(n, _))
+            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::Ident(name)) => {
+                Some((name.as_str(), *n as i32, None))
+            }
+            (ExprBinaryOp::Sub, Expr::Ident(name), Expr::Number(n, _)) => {
+                Some((name.as_str(), -(*n as i32), None))
             }
             _ => None,
         },
@@ -6641,7 +6736,7 @@ mod tests {
 
         assert!(matches!(
             operand,
-            OperandOp::ImmediateWordRelocation { label, addend: 0 } if label == "dbg_task"
+            OperandOp::ImmediateWordRelocation { label, addend: 0, .. } if label == "dbg_task"
         ));
     }
 
@@ -6666,7 +6761,7 @@ mod tests {
 
         assert!(matches!(
             operand,
-            OperandOp::ImmediateWordRelocation { label, addend: 2 } if label == "TASKS"
+            OperandOp::ImmediateWordRelocation { label, addend: 2, .. } if label == "TASKS"
         ));
     }
 
@@ -6774,7 +6869,7 @@ mod tests {
 
         assert!(matches!(
             operand,
-            OperandOp::ImmediateFarRelocation { label, addend: 0 } if label == "main"
+            OperandOp::ImmediateFarRelocation { label, addend: 0, .. } if label == "main"
         ));
     }
 
@@ -7598,7 +7693,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let lowered = lower_with_warnings(&file, &sema, &fs, None).expect("lower");
+        let lowered = lower_with_warnings(&file, &sema, &fs, None, None).expect("lower");
 
         assert!(lowered.warnings.is_empty());
     }
@@ -7609,7 +7704,7 @@ mod tests {
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let lowered = lower_with_warnings(&file, &sema, &fs, None).expect("lower");
+        let lowered = lower_with_warnings(&file, &sema, &fs, None, None).expect("lower");
 
         assert_eq!(lowered.warnings.len(), 2);
         assert!(lowered.warnings.iter().any(|warning| {

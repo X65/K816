@@ -599,7 +599,7 @@ pub fn emit_object(
                             call_metadata: None,
                         });
                     }
-                    Some(OperandOp::ImmediateWordRelocation { label, addend }) => {
+                    Some(OperandOp::ImmediateWordRelocation { label, addend, .. }) => {
                         if width != 2 {
                             diagnostics.push(
                                 Diagnostic::error(
@@ -626,7 +626,7 @@ pub fn emit_object(
                             call_metadata: None,
                         });
                     }
-                    Some(OperandOp::ImmediateFarRelocation { label, addend }) => {
+                    Some(OperandOp::ImmediateFarRelocation { label, addend, .. }) => {
                         if width != 3 {
                             diagnostics.push(
                                 Diagnostic::error(

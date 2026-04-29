@@ -28,6 +28,93 @@ pub fn scan_declared_function_names(source_id: SourceId, source_text: &str) -> H
     (*arc).clone()
 }
 
+/// Scan a source for the names of every declared addressable symbol — every
+/// `func`/`naked`/`inline`/`var`/`data` declaration, plus every `name:` label
+/// (top-level or inside a function body). Used for `&&name` validation: the
+/// lower pass rejects `&&UNKNOWN` references where `UNKNOWN` isn't declared
+/// anywhere in the workspace, surfacing what would otherwise be a link-time
+/// "undefined symbol" error during compile/LSP analysis.
+pub fn scan_declared_addressable_names(
+    source_id: SourceId,
+    source_text: &str,
+) -> HashSet<String> {
+    let preprocessed = preprocess_source(source_text);
+    let (tokens, _) = lex_lenient(source_id, preprocessed.as_str());
+    let tokens = coalesce_non_var_brackets(tokens, preprocessed.as_str());
+    let (tokens, _) = strip_comments(tokens);
+    collect_declared_addressable_names(&tokens)
+}
+
+fn collect_declared_addressable_names(tokens: &[Token]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    // Functions (top-level only — nested funcs aren't K65 syntax anyway, but
+    // brace depth tracking matches `collect_declared_function_names`).
+    let function_names = collect_declared_function_names(tokens);
+    names.extend((*function_names).iter().cloned());
+
+    let mut i = 0usize;
+    while i < tokens.len() {
+        match &tokens[i].kind {
+            // `var NAME`, `var NAME, NAME2, ...`. Multiple names per line allowed.
+            TokenKind::Var => {
+                let mut j = i + 1;
+                loop {
+                    if let Some(Token {
+                        kind: TokenKind::Ident(name),
+                        ..
+                    }) = tokens.get(j)
+                    {
+                        if !name.starts_with('.') {
+                            names.insert(name.clone());
+                        }
+                        j += 1;
+                        // Comma → consume and look for another ident.
+                        if matches!(
+                            tokens.get(j),
+                            Some(Token { kind: TokenKind::Comma, .. })
+                        ) {
+                            j += 1;
+                            continue;
+                        }
+                    }
+                    break;
+                }
+                i = j.max(i + 1);
+                continue;
+            }
+            // `data NAME { ... }` — the name immediately follows `data`.
+            TokenKind::Data => {
+                if let Some(Token {
+                    kind: TokenKind::Ident(name),
+                    ..
+                }) = tokens.get(i + 1)
+                    && !name.starts_with('.')
+                {
+                    names.insert(name.clone());
+                }
+                i += 1;
+                continue;
+            }
+            // Labels: `name:` — only count global (non-`.`-prefixed) ones.
+            // Local `.label` forms are scope-local and never used as `&&` targets.
+            TokenKind::Ident(name) if !name.starts_with('.') => {
+                if matches!(
+                    tokens.get(i + 1),
+                    Some(Token { kind: TokenKind::Colon, .. })
+                ) {
+                    names.insert(name.clone());
+                }
+                i += 1;
+                continue;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    names
+}
+
 fn merge_known_functions(
     local: Arc<HashSet<String>>,
     external: Option<&HashSet<String>>,

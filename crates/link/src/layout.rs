@@ -125,11 +125,23 @@ pub fn link_objects_with_options(
         }
     }
 
+    // Cross-phase error accumulator. Phases that previously short-circuited on
+    // first error now push into this list and continue, so the user sees
+    // *all* link problems in a single run instead of having later phases
+    // hidden by an early bail. We bail at the very end if any errors were
+    // recorded. Phases that produce non-recoverable internal-state corruption
+    // (config validation, allocation overflows) still bail immediately above.
+    let mut errors: Vec<String> = Vec::new();
+
+    // Phase 3: place fixed-address chunks. On failure, still record a
+    // placement entry so symbols defined in this chunk resolve to a nominal
+    // address — without that, every reference to those symbols would cascade
+    // into "undefined symbol" noise, drowning out the original overlap error.
     for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_some()) {
         let base = chunk
             .fixed_addr
             .expect("filtered fixed chunk must have address");
-        place_chunk(
+        if let Err(err) = place_chunk(
             chunk,
             base,
             objects,
@@ -137,12 +149,23 @@ pub fn link_objects_with_options(
             &mut placed_by_section,
             true,
             options,
-        )?;
+        ) {
+            errors.push(err.to_string());
+            record_unplaced_chunk(chunk, base, &mut placed_by_section);
+        }
     }
 
+    // Phase 4: place relocatable chunks. Same accumulating strategy.
     for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_none()) {
-        let base = choose_reloc_base(chunk, objects, &mut memory_map, options)?;
-        place_chunk(
+        let base = match choose_reloc_base(chunk, objects, &mut memory_map, options) {
+            Ok(base) => base,
+            Err(err) => {
+                errors.push(err.to_string());
+                record_unplaced_chunk(chunk, 0, &mut placed_by_section);
+                continue;
+            }
+        };
+        if let Err(err) = place_chunk(
             chunk,
             base,
             objects,
@@ -150,13 +173,19 @@ pub fn link_objects_with_options(
             &mut placed_by_section,
             false,
             options,
-        )?;
+        ) {
+            errors.push(err.to_string());
+            record_unplaced_chunk(chunk, base, &mut placed_by_section);
+        }
     }
 
     for chunks in placed_by_section.values_mut() {
         chunks.sort_by_key(|chunk| chunk.section_offset);
     }
 
+    // Phase 5: build the symbol table. Duplicates are accumulated, not fatal —
+    // the first definition wins and processing continues so that downstream
+    // relocation errors still surface.
     let mut symbols: HashMap<String, ResolvedSymbol> = HashMap::new();
     for (obj_idx, object) in objects.iter().enumerate() {
         for symbol in &object.symbols {
@@ -171,23 +200,20 @@ pub fn link_objects_with_options(
                     source,
                 } => {
                     let section_key = (obj_idx, section.clone());
-                    let placements = placed_by_section.get(&section_key).ok_or_else(|| {
-                        anyhow::anyhow!(
+                    let Some(placements) = placed_by_section.get(&section_key) else {
+                        errors.push(format!(
                             "symbol '{}' references unknown section '{}'",
-                            symbol.name,
-                            section
-                        )
-                    })?;
-
-                    let addr = resolve_symbol_addr(placements, *offset).ok_or_else(|| {
-                        anyhow::anyhow!(
+                            symbol.name, section
+                        ));
+                        continue;
+                    };
+                    let Some(addr) = resolve_symbol_addr(placements, *offset) else {
+                        errors.push(format!(
                             "symbol '{}' offset {:#X} is outside section '{}'",
-                            symbol.name,
-                            offset,
-                            section
-                        )
-                    })?;
-
+                            symbol.name, offset, section
+                        ));
+                        continue;
+                    };
                     ResolvedSymbol {
                         addr,
                         segment: section.clone(),
@@ -200,25 +226,25 @@ pub fn link_objects_with_options(
                     source: source.clone(),
                 },
             };
+
             if let Some(existing) = symbols.get(&symbol.name) {
                 let new_source = match def {
                     SymbolDefinition::Section { source, .. }
                     | SymbolDefinition::Absolute { source, .. } => source.as_ref(),
                 };
-                bail!(
-                    "{}",
-                    render_duplicate_symbol_error(
-                        &symbol.name,
-                        existing.source.as_ref(),
-                        new_source,
-                        options,
-                    )
-                );
+                errors.push(render_duplicate_symbol_error(
+                    &symbol.name,
+                    existing.source.as_ref(),
+                    new_source,
+                    options,
+                ));
+                continue;
             }
             symbols.insert(symbol.name.clone(), resolved);
         }
     }
 
+    // Phase 6: resolve link-config-supplied symbols (imports / absolutes).
     for link_symbol in &config.symbols {
         let value = match &link_symbol.value {
             SymbolValue::Absolute(addr) => ResolvedSymbol {
@@ -226,13 +252,16 @@ pub fn link_objects_with_options(
                 segment: ABSOLUTE_SYMBOL_SEGMENT.to_string(),
                 source: None,
             },
-            SymbolValue::Import(name) => symbols.get(name).cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "link symbol '{}' imports undefined symbol '{}'",
-                    link_symbol.name,
-                    name
-                )
-            })?,
+            SymbolValue::Import(name) => match symbols.get(name).cloned() {
+                Some(value) => value,
+                None => {
+                    errors.push(format!(
+                        "link symbol '{}' imports undefined symbol '{}'",
+                        link_symbol.name, name
+                    ));
+                    continue;
+                }
+            },
         };
         symbols.insert(link_symbol.name.clone(), value);
     }
@@ -246,126 +275,38 @@ pub fn link_objects_with_options(
         }
     }
 
-    validate_call_metadata(objects, &symbols, &function_metadata_map, options)?;
+    // Phase 7: validate call metadata (already accumulating; just merge into
+    // the cross-phase error list instead of bailing on it).
+    let call_errors = collect_call_metadata_errors(
+        objects,
+        &symbols,
+        &function_metadata_map,
+        options,
+    );
+    errors.extend(call_errors);
 
+    // Phase 8: resolve relocations. Each relocation is processed
+    // independently — undefined symbols, out-of-range relative jumps, and
+    // bad widths all accumulate so the user sees every problem in one shot.
     for (obj_idx, object) in objects.iter().enumerate() {
         for reloc in &object.relocations {
-            let section_key = (obj_idx, reloc.section.clone());
-            let placements = placed_by_section.get(&section_key).ok_or_else(|| {
-                anyhow::anyhow!("relocation references unknown section '{}'", reloc.section)
-            })?;
-
-            let (site_memory_name, site_addr) =
-                resolve_reloc_site(placements, reloc.offset, reloc.width).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "relocation site {:#X}..{:#X} is outside section '{}'",
-                        reloc.offset,
-                        reloc.offset.saturating_add(u32::from(reloc.width)),
-                        reloc.section
-                    )
-                })?;
-
-            let target = symbols.get(&reloc.symbol).cloned().ok_or_else(|| {
-                let detail = format!("undefined symbol '{}'", reloc.symbol);
-                let label_message = format!("symbol '{}' referenced here", reloc.symbol);
-                let anchor = reloc
-                    .source
-                    .as_ref()
-                    .map(|source| AnchorContext {
-                        symbol_name: reloc.symbol.clone(),
-                        source: Some(source.clone()),
-                    })
-                    .or_else(|| {
-                        find_section_anchor_context(objects, obj_idx, &reloc.section, reloc.offset)
-                    });
-                anyhow::anyhow!(
-                    "{}",
-                    decorate_with_anchor_with_label(
-                        &detail,
-                        anchor.as_ref(),
-                        options,
-                        Some(&label_message),
-                        None,
-                    )
-                )
-            })?;
-
-            if reloc.kind == RelocationKind::Absolute
-                && reloc.width == 2
-                && target.segment != ABSOLUTE_SYMBOL_SEGMENT
-                && reloc.section != target.segment
-                && reloc.call_metadata.is_some()
-            {
-                bail!(
-                    "16-bit relocation from segment '{}' to '{}' requires far addressing",
-                    reloc.section,
-                    target.segment
-                );
-            }
-
-            let mem = memory_map.get_mut(site_memory_name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "internal linker error: memory '{}' missing",
-                    site_memory_name
-                )
-            })?;
-
-            if site_addr < mem.spec.start {
-                bail!("relocation site underflows memory range");
-            }
-
-            let rel_idx = (site_addr - mem.spec.start) as usize;
-            let end_idx = rel_idx.saturating_add(reloc.width as usize);
-            if end_idx > mem.bytes.len() {
-                bail!("relocation writes outside memory range");
-            }
-
-            let effective_addr = (target.addr as i64 + reloc.addend as i64) as u32;
-            match reloc.kind {
-                RelocationKind::Absolute => write_value(
-                    &mut mem.bytes[rel_idx..end_idx],
-                    effective_addr,
-                    reloc.width,
-                )?,
-                RelocationKind::Relative => match reloc.width {
-                    1 => {
-                        let delta = effective_addr as i64 - (site_addr as i64 + 1);
-                        if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
-                            bail!(
-                                "relative relocation to '{}' out of range at {:#X}",
-                                reloc.symbol,
-                                site_addr
-                            );
-                        }
-                        mem.bytes[rel_idx] = delta as i8 as u8;
-                    }
-                    2 => {
-                        let delta = effective_addr as i64 - (site_addr as i64 + 2);
-                        if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
-                            bail!(
-                                "relative relocation to '{}' out of range at {:#X}",
-                                reloc.symbol,
-                                site_addr
-                            );
-                        }
-                        mem.bytes[rel_idx..end_idx].copy_from_slice(&(delta as i16).to_le_bytes());
-                    }
-                    _ => bail!("relative relocation width must be 1 or 2 bytes"),
-                },
-                RelocationKind::LowByte => {
-                    if reloc.width != 1 {
-                        bail!("low-byte relocation width must be 1");
-                    }
-                    mem.bytes[rel_idx] = (effective_addr & 0xFF) as u8;
-                }
-                RelocationKind::HighByte => {
-                    if reloc.width != 1 {
-                        bail!("high-byte relocation width must be 1");
-                    }
-                    mem.bytes[rel_idx] = ((effective_addr >> 8) & 0xFF) as u8;
-                }
+            if let Err(msg) = resolve_one_relocation(
+                obj_idx,
+                object,
+                objects,
+                reloc,
+                &placed_by_section,
+                &symbols,
+                &mut memory_map,
+                options,
+            ) {
+                errors.push(msg);
             }
         }
+    }
+
+    if !errors.is_empty() {
+        bail!("{}", errors.join("\n\n"));
     }
 
     let runs = collect_linked_runs(config, &memory_map)?;
@@ -414,13 +355,179 @@ pub fn link_objects_with_options(
     })
 }
 
-fn validate_call_metadata(
+/// Record a chunk in `placed_by_section` without writing bytes or marking
+/// memory as used. Used when `place_chunk` failed (overlap / out of range)
+/// so that symbols defined inside the chunk can still resolve to a nominal
+/// address — preventing a "1 overlap error → N undefined-symbol cascade
+/// errors" amplification that would drown the real diagnostic.
+fn record_unplaced_chunk(
+    chunk: &PlannedChunk,
+    base: u32,
+    placed_by_section: &mut HashMap<(usize, String), Vec<PlacedChunk>>,
+) {
+    let key = (chunk.obj_idx, chunk.segment.clone());
+    placed_by_section.entry(key).or_default().push(PlacedChunk {
+        section_offset: chunk.section_offset,
+        len: chunk.len,
+        base_addr: base,
+        memory_name: chunk.memory_name.clone(),
+    });
+}
+
+/// Resolve a single relocation. Returns the rendered error message on
+/// failure so the caller can accumulate it. Reasons for failure:
+/// missing section placement, site outside section, undefined symbol, range
+/// overflow on relative jumps, width mismatch on byte halves.
+#[allow(clippy::too_many_arguments)]
+fn resolve_one_relocation(
+    obj_idx: usize,
+    object: &O65Object,
+    objects: &[O65Object],
+    reloc: &k816_o65::Relocation,
+    placed_by_section: &HashMap<(usize, String), Vec<PlacedChunk>>,
+    symbols: &HashMap<String, ResolvedSymbol>,
+    memory_map: &mut HashMap<String, MemoryState>,
+    options: LinkRenderOptions,
+) -> std::result::Result<(), String> {
+    let _ = object;
+    let section_key = (obj_idx, reloc.section.clone());
+    let placements = placed_by_section.get(&section_key).ok_or_else(|| {
+        format!("relocation references unknown section '{}'", reloc.section)
+    })?;
+
+    let (site_memory_name, site_addr) =
+        resolve_reloc_site(placements, reloc.offset, reloc.width).ok_or_else(|| {
+            format!(
+                "relocation site {:#X}..{:#X} is outside section '{}'",
+                reloc.offset,
+                reloc.offset.saturating_add(u32::from(reloc.width)),
+                reloc.section
+            )
+        })?;
+
+    let target = symbols.get(&reloc.symbol).cloned().ok_or_else(|| {
+        let detail = format!("undefined symbol '{}'", reloc.symbol);
+        let label_message = format!("symbol '{}' referenced here", reloc.symbol);
+        let anchor = reloc
+            .source
+            .as_ref()
+            .map(|source| AnchorContext {
+                symbol_name: reloc.symbol.clone(),
+                source: Some(source.clone()),
+            })
+            .or_else(|| {
+                find_section_anchor_context(objects, obj_idx, &reloc.section, reloc.offset)
+            });
+        decorate_with_anchor_with_label(
+            &detail,
+            anchor.as_ref(),
+            options,
+            Some(&label_message),
+            None,
+        )
+    })?;
+
+    if reloc.kind == RelocationKind::Absolute
+        && reloc.width == 2
+        && target.segment != ABSOLUTE_SYMBOL_SEGMENT
+        && reloc.section != target.segment
+        && reloc.call_metadata.is_some()
+    {
+        return Err(format!(
+            "16-bit relocation from segment '{}' to '{}' requires far addressing",
+            reloc.section, target.segment
+        ));
+    }
+
+    let mem = memory_map
+        .get_mut(site_memory_name)
+        .ok_or_else(|| format!("internal linker error: memory '{}' missing", site_memory_name))?;
+
+    if site_addr < mem.spec.start {
+        return Err("relocation site underflows memory range".to_string());
+    }
+
+    let rel_idx = (site_addr - mem.spec.start) as usize;
+    let end_idx = rel_idx.saturating_add(reloc.width as usize);
+    if end_idx > mem.bytes.len() {
+        return Err("relocation writes outside memory range".to_string());
+    }
+
+    let effective_addr = (target.addr as i64 + reloc.addend as i64) as u32;
+    match reloc.kind {
+        RelocationKind::Absolute => write_value(
+            &mut mem.bytes[rel_idx..end_idx],
+            effective_addr,
+            reloc.width,
+        )
+        .map_err(|e| e.to_string())?,
+        RelocationKind::Relative => match reloc.width {
+            1 => {
+                let delta = effective_addr as i64 - (site_addr as i64 + 1);
+                if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
+                    return Err(format!(
+                        "relative relocation to '{}' out of range at {:#X}",
+                        reloc.symbol, site_addr
+                    ));
+                }
+                mem.bytes[rel_idx] = delta as i8 as u8;
+            }
+            2 => {
+                let delta = effective_addr as i64 - (site_addr as i64 + 2);
+                if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
+                    return Err(format!(
+                        "relative relocation to '{}' out of range at {:#X}",
+                        reloc.symbol, site_addr
+                    ));
+                }
+                mem.bytes[rel_idx..end_idx].copy_from_slice(&(delta as i16).to_le_bytes());
+            }
+            _ => return Err("relative relocation width must be 1 or 2 bytes".to_string()),
+        },
+        RelocationKind::LowByte => {
+            if reloc.width != 1 {
+                return Err("low-byte relocation width must be 1".to_string());
+            }
+            mem.bytes[rel_idx] = (effective_addr & 0xFF) as u8;
+        }
+        RelocationKind::HighByte => {
+            if reloc.width != 1 {
+                return Err("high-byte relocation width must be 1".to_string());
+            }
+            mem.bytes[rel_idx] = ((effective_addr >> 8) & 0xFF) as u8;
+        }
+    }
+    Ok(())
+}
+
+/// Like [`validate_call_metadata`] but returns the accumulated error list
+/// directly instead of bailing — the caller merges it into the cross-phase
+/// error accumulator so call-metadata problems show up alongside undefined
+/// symbols, overlaps, etc.
+fn collect_call_metadata_errors(
     objects: &[O65Object],
     symbols: &HashMap<String, ResolvedSymbol>,
     function_metadata_map: &HashMap<String, FunctionMetadata>,
     options: LinkRenderOptions,
-) -> Result<()> {
+) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
+    let _ = validate_call_metadata_inner(
+        objects,
+        symbols,
+        function_metadata_map,
+        options,
+        &mut errors,
+    );
+    errors
+}
+
+fn validate_call_metadata_inner(
+    objects: &[O65Object],
+    symbols: &HashMap<String, ResolvedSymbol>,
+    function_metadata_map: &HashMap<String, FunctionMetadata>,
+    options: LinkRenderOptions,
+    errors: &mut Vec<String>,
+) {
 
     for (obj_idx, object) in objects.iter().enumerate() {
         for reloc in &object.relocations {
@@ -475,15 +582,9 @@ fn validate_call_metadata(
                 &reloc.symbol,
                 anchor.as_ref(),
                 options,
-                &mut errors,
+                errors,
             );
         }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        bail!("{}", errors.join("\n\n"));
     }
 }
 

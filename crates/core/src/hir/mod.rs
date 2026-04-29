@@ -1,5 +1,5 @@
 use crate::ast::ModeContract;
-use crate::span::Spanned;
+use crate::span::{Span, Spanned};
 
 #[derive(Debug, Clone, Default)]
 pub struct Program {
@@ -111,9 +111,13 @@ pub enum OperandOp {
     /// 16-bit immediate address-of, from `&&label` (with optional `+N` addend).
     /// Resolved during emit/link as a 2-byte word relocation against `label`.
     /// Requires the surrounding accumulator/index width to be 16-bit.
+    /// `label_span` covers just the symbol name in source — used by the
+    /// compile-time `&&` validator to anchor diagnostics on the symbol rather
+    /// than on the whole instruction.
     ImmediateWordRelocation {
         label: String,
         addend: i32,
+        label_span: Option<Span>,
     },
     /// 24-bit immediate far address-of, from `&&&label` (with optional `+N`
     /// addend). Resolved during emit/link as a 3-byte far relocation. Requires
@@ -121,6 +125,7 @@ pub enum OperandOp {
     ImmediateFarRelocation {
         label: String,
         addend: i32,
+        label_span: Option<Span>,
     },
     Address {
         value: AddressValue,

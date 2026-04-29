@@ -11,3 +11,18 @@ Error: duplicate global symbol 'BAR'
    │ ─────────┬─────────  
    │          ╰─────────── first defined here
 ───╯
+
+
+Error: duplicate global symbol 'BAZ'
+   ╭─[ tests/golden/fixtures/syntax-const-expr-mult-err/input.20-const.k65:2:1 ]
+   │
+ 2 │ const BAZ = 1337
+   │ ────────┬───────  
+   │         ╰───────── duplicate definition
+   │
+   ├─[ tests/golden/fixtures/syntax-const-expr-mult-err/input.10-main.k65:3:1 ]
+   │
+ 3 │ const BAZ = 100
+   │ ───────┬───────  
+   │        ╰───────── first defined here
+───╯

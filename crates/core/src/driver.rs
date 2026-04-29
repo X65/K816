@@ -75,6 +75,13 @@ pub struct WorkspaceExternals {
     pub functions: IndexMap<String, FunctionMeta>,
     pub function_names: HashSet<String>,
     pub inline_bodies: IndexMap<String, CodeBlock>,
+    /// Names of every declared addressable symbol across all link sources —
+    /// functions, vars (regardless of whether the address is known), data
+    /// blocks, and global (non-`.`-prefixed) code labels. Used by lower to
+    /// validate `&&NAME` operands at compile time, surfacing what would
+    /// otherwise be a link-time "undefined symbol" error during per-file LSP
+    /// analysis.
+    pub addressable_names: HashSet<String>,
 }
 
 /// Compile a single source file.
@@ -205,8 +212,10 @@ fn compile_source_inner(
     }
 
     let inline_bodies = externals.map(|e| &e.inline_bodies);
-    let lower_output = lower_with_warnings(&ast, &sema, fs, inline_bodies)
-        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
+    let workspace_addressable = externals.map(|e| &e.addressable_names);
+    let lower_output =
+        lower_with_warnings(&ast, &sema, fs, inline_bodies, workspace_addressable)
+            .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     warnings.extend(lower_output.warnings);
     let rendered_warnings = render_diagnostics_with_options(
         source_map,
@@ -252,6 +261,7 @@ fn parse_expand_normalize_source(
 /// [`compile_sources_with_externals`] and to the LSP's `analyze_document`.
 pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> WorkspaceExternals {
     let function_names = collect_all_declared_function_names(sources);
+    let addressable_names = collect_all_declared_addressable_names(sources);
     let mut source_map = SourceMap::default();
     let parsed_sources: Vec<Option<File>> = sources
         .iter()
@@ -270,7 +280,25 @@ pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> Workspac
         functions,
         function_names,
         inline_bodies,
+        addressable_names,
     }
+}
+
+/// Token-scan every link source for all declared addressable symbol names.
+/// See [`crate::parser::scan_declared_addressable_names`] for what counts.
+pub fn collect_all_declared_addressable_names(
+    sources: &[LinkCompileInput<'_>],
+) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let mut source_map = SourceMap::default();
+    for source in sources {
+        let source_id = source_map.add_source(source.source_name, source.source_text);
+        names.extend(crate::parser::scan_declared_addressable_names(
+            source_id,
+            source.source_text,
+        ));
+    }
+    names
 }
 
 pub fn collect_external_consts_for_link_sources(

@@ -1,0 +1,8 @@
+// `&&NAME` is the address-of operator. Any identifier it references must be
+// a declared addressable symbol somewhere in the workspace — a `func`, `var`,
+// `data` block, or top-level label. Compile fails per-file when it isn't,
+// surfacing what would otherwise be a link-time "undefined symbol" error
+// during compile / LSP analysis.
+func main @a16 {
+    lda &&shell_main        // ERR: shell_main is not declared anywhere
+}

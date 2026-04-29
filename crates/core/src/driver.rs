@@ -301,21 +301,6 @@ pub fn collect_all_declared_addressable_names(
     names
 }
 
-pub fn collect_external_consts_for_link_sources(
-    sources: &[LinkCompileInput<'_>],
-) -> IndexMap<String, ConstMeta> {
-    let names = collect_all_declared_function_names(sources);
-    let mut source_map = SourceMap::default();
-    let parsed_sources: Vec<Option<File>> = sources
-        .iter()
-        .map(|source| {
-            let source_id = source_map.add_source(source.source_name, source.source_text);
-            parse_expand_normalize_source(source_id, source.source_text, Some(&names))
-        })
-        .collect();
-    collect_external_consts_from_parsed(&parsed_sources)
-}
-
 fn collect_external_consts_from_parsed(
     parsed_sources: &[Option<File>],
 ) -> IndexMap<String, ConstMeta> {
@@ -371,21 +356,6 @@ pub fn collect_all_declared_function_names(sources: &[LinkCompileInput<'_>]) -> 
         names.extend(scan_declared_function_names(source_id, source.source_text));
     }
     names
-}
-
-pub fn collect_external_functions_for_link_sources(
-    sources: &[LinkCompileInput<'_>],
-) -> IndexMap<String, FunctionMeta> {
-    let names = collect_all_declared_function_names(sources);
-    let mut source_map = SourceMap::default();
-    let parsed_sources: Vec<Option<File>> = sources
-        .iter()
-        .map(|source| {
-            let source_id = source_map.add_source(source.source_name, source.source_text);
-            parse_expand_normalize_source(source_id, source.source_text, Some(&names))
-        })
-        .collect();
-    collect_external_functions_from_parsed(&parsed_sources)
 }
 
 fn collect_external_functions_from_parsed(
@@ -463,21 +433,6 @@ fn collect_external_vars_from_parsed(
 ///
 /// First-declaration-wins on name collisions, matching the policy for consts
 /// and function metadata.
-pub fn collect_external_inline_bodies_for_link_sources(
-    sources: &[LinkCompileInput<'_>],
-) -> IndexMap<String, CodeBlock> {
-    let names = collect_all_declared_function_names(sources);
-    let mut source_map = SourceMap::default();
-    let parsed_sources: Vec<Option<File>> = sources
-        .iter()
-        .map(|source| {
-            let source_id = source_map.add_source(source.source_name, source.source_text);
-            parse_expand_normalize_source(source_id, source.source_text, Some(&names))
-        })
-        .collect();
-    collect_external_inline_bodies_from_parsed(&parsed_sources)
-}
-
 fn collect_external_inline_bodies_from_parsed(
     parsed_sources: &[Option<File>],
 ) -> IndexMap<String, CodeBlock> {

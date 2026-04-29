@@ -8,7 +8,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, any, end, just, skip_then_retry_until},
+    prelude::{SimpleSpan, any, choice, end, just, skip_then_retry_until},
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -28,17 +28,19 @@ where
 {
     let separators = line_sep_parser().repeated();
     let item = spanned(item_parser(source_id, known_functions), source_id);
-    let boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored());
+    let boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ));
     let recover_item = item.recover_with(skip_then_retry_until(any().ignored(), boundary));
 
-    let mode_token = just(TokenKind::ModeA8)
-        .to((Some(RegWidth::W8), None))
-        .or(just(TokenKind::ModeA16).to((Some(RegWidth::W16), None)))
-        .or(just(TokenKind::ModeI8).to((None, Some(RegWidth::W8))))
-        .or(just(TokenKind::ModeI16).to((None, Some(RegWidth::W16))));
+    let mode_token = choice((
+        just(TokenKind::ModeA8).to((Some(RegWidth::W8), None)),
+        just(TokenKind::ModeA16).to((Some(RegWidth::W16), None)),
+        just(TokenKind::ModeI8).to((None, Some(RegWidth::W8))),
+        just(TokenKind::ModeI16).to((None, Some(RegWidth::W16))),
+    ));
     let module_mode = mode_token
         .then_ignore(line_sep_parser().repeated())
         .repeated()
@@ -148,16 +150,18 @@ where
         }
     });
 
-    preproc_item
-        .or(eval_block_item)
-        .or(image_binary_var_item)
-        .or(segment_item)
-        .or(const_item)
-        .or(var_item)
-        .or(data_item)
-        .or(code_block_item)
-        .or(stmt_item)
-        .boxed()
+    choice((
+        preproc_item,
+        eval_block_item,
+        image_binary_var_item,
+        segment_item,
+        const_item,
+        var_item,
+        data_item,
+        code_block_item,
+        stmt_item,
+    ))
+    .boxed()
 }
 
 pub(super) fn mode_annotation_parser<'src, I>()
@@ -165,11 +169,12 @@ pub(super) fn mode_annotation_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let mode_token = just(TokenKind::ModeA8)
-        .to((Some(RegWidth::W8), None))
-        .or(just(TokenKind::ModeA16).to((Some(RegWidth::W16), None)))
-        .or(just(TokenKind::ModeI8).to((None, Some(RegWidth::W8))))
-        .or(just(TokenKind::ModeI16).to((None, Some(RegWidth::W16))));
+    let mode_token = choice((
+        just(TokenKind::ModeA8).to((Some(RegWidth::W8), None)),
+        just(TokenKind::ModeA16).to((Some(RegWidth::W16), None)),
+        just(TokenKind::ModeI8).to((None, Some(RegWidth::W8))),
+        just(TokenKind::ModeI16).to((None, Some(RegWidth::W16))),
+    ));
 
     mode_token
         .repeated()
@@ -209,18 +214,20 @@ where
     type ExplicitFuncParts = ((ExplicitFuncHead, ContractClause), FunctionBody);
     type ImplicitFuncParts = ((ImplicitFuncHead, ContractClause), FunctionBody);
 
-    let modifier = just(TokenKind::Far)
-        .to(Modifier::Far)
-        .or(just(TokenKind::Naked).to(Modifier::Naked))
-        .or(just(TokenKind::Inline).to(Modifier::Inline));
+    let modifier = choice((
+        just(TokenKind::Far).to(Modifier::Far),
+        just(TokenKind::Naked).to(Modifier::Naked),
+        just(TokenKind::Inline).to(Modifier::Inline),
+    ));
 
     let modifiers = modifier.clone().repeated().collect::<Vec<_>>();
     let required_modifiers = modifier.repeated().at_least(1).collect::<Vec<_>>();
     let stmt = spanned(stmt_parser(source_id, known_functions), source_id);
-    let stmt_boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored());
+    let stmt_boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ));
     let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
     let separators = line_sep_parser().repeated();
     let body = just(TokenKind::LBrace)

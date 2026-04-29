@@ -8,7 +8,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, end, just},
+    prelude::{SimpleSpan, choice, end, just},
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -185,18 +185,15 @@ where
 
     let hla_wait_stmt = hla_wait_loop_stmt_parser();
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
-    let hla_do_close_suffix = hla_condition_parser()
-        .map(|condition| Stmt::Hla(HlaStmt::DoClose { condition }))
-        .or(hla_flag_close_stmt_parser())
-        .or(hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })))
-        .or(
-            chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
-                .to(Stmt::Hla(HlaStmt::DoCloseAlways)),
-        )
-        .or(
-            chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => () }
-                .to(Stmt::Hla(HlaStmt::DoCloseNever)),
-        );
+    let hla_do_close_suffix = choice((
+        hla_condition_parser().map(|condition| Stmt::Hla(HlaStmt::DoClose { condition })),
+        hla_flag_close_stmt_parser(),
+        hla_compare_op_parser().map(|op| Stmt::Hla(HlaStmt::DoCloseWithOp { op })),
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("always") => () }
+            .to(Stmt::Hla(HlaStmt::DoCloseAlways)),
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => () }
+            .to(Stmt::Hla(HlaStmt::DoCloseNever)),
+    ));
     let hla_do_close_stmt = just(TokenKind::RBrace)
         .then(hla_do_close_suffix.clone().or_not())
         .rewind()
@@ -219,23 +216,24 @@ where
     let chain_stmt = chain_stmt_parser();
     let discard_stmt = discard_stmt_parser();
 
-    let mode_set_stmt = just(TokenKind::ModeA8)
-        .to(Stmt::ModeSet {
+    let mode_set_stmt = choice((
+        just(TokenKind::ModeA8).to(Stmt::ModeSet {
             a_width: Some(RegWidth::W8),
             i_width: None,
-        })
-        .or(just(TokenKind::ModeA16).to(Stmt::ModeSet {
+        }),
+        just(TokenKind::ModeA16).to(Stmt::ModeSet {
             a_width: Some(RegWidth::W16),
             i_width: None,
-        }))
-        .or(just(TokenKind::ModeI8).to(Stmt::ModeSet {
+        }),
+        just(TokenKind::ModeI8).to(Stmt::ModeSet {
             a_width: None,
             i_width: Some(RegWidth::W8),
-        }))
-        .or(just(TokenKind::ModeI16).to(Stmt::ModeSet {
+        }),
+        just(TokenKind::ModeI16).to(Stmt::ModeSet {
             a_width: None,
             i_width: Some(RegWidth::W16),
-        }));
+        }),
+    ));
 
     let swap_ab_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("b") || value.eq_ignore_ascii_case("a") => value
@@ -248,11 +246,12 @@ where
 
     let mnemonic = ident_parser().try_map(|mnemonic, _span| Ok(mnemonic));
 
-    let operand_boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored())
-        .rewind();
+    let operand_boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ))
+    .rewind();
 
     let operand_index_trailer = just(TokenKind::Comma)
         .ignore_then(ident_parser())
@@ -308,53 +307,52 @@ where
             }))
         });
 
-    let operand = operand_boundary
-        .to(None)
-        .or(just(TokenKind::Hash)
-            .ignore_then(expr_parser())
-            .map(|expr| {
-                Some(Operand::Immediate {
-                    expr,
-                    explicit_hash: true,
-                })
-            }))
-        .or(long_indirect_operand)
-        .or(parenthesized_operand)
-        .or(just(TokenKind::Far)
-            .or_not()
-            .then(
-                expr_parser().then(
-                    just(TokenKind::Comma)
-                        .ignore_then(
-                            // Try index register (,x / ,y / ,s) first
-                            ident_parser()
-                                .try_map(|name, span| {
-                                    parse_index_register(Some(name), span)
-                                        .map(|reg| CommaTrailer::Index(reg.unwrap()))
-                                })
-                                // Otherwise parse a second expression for block move (src,dst)
-                                .or(expr_parser().map(CommaTrailer::BlockMoveDst)),
-                        )
-                        .or_not(),
-                ),
-            )
-            .map(|(force_far, (expr, trailer))| match trailer {
-                Some(CommaTrailer::Index(index)) => Some(Operand::Value {
-                    expr,
-                    force_far: force_far.is_some(),
-                    index: Some(index),
-                    addr_mode: OperandAddrMode::Direct,
-                }),
-                Some(CommaTrailer::BlockMoveDst(dst)) => {
-                    Some(Operand::BlockMove { src: expr, dst })
-                }
-                None => Some(Operand::Value {
-                    expr,
-                    force_far: force_far.is_some(),
-                    index: None,
-                    addr_mode: OperandAddrMode::Direct,
-                }),
-            }));
+    let direct_operand = just(TokenKind::Far)
+        .or_not()
+        .then(
+            expr_parser().then(
+                just(TokenKind::Comma)
+                    .ignore_then(
+                        // Try index register (,x / ,y / ,s) first
+                        ident_parser()
+                            .try_map(|name, span| {
+                                parse_index_register(Some(name), span)
+                                    .map(|reg| CommaTrailer::Index(reg.unwrap()))
+                            })
+                            // Otherwise parse a second expression for block move (src,dst)
+                            .or(expr_parser().map(CommaTrailer::BlockMoveDst)),
+                    )
+                    .or_not(),
+            ),
+        )
+        .map(|(force_far, (expr, trailer))| match trailer {
+            Some(CommaTrailer::Index(index)) => Some(Operand::Value {
+                expr,
+                force_far: force_far.is_some(),
+                index: Some(index),
+                addr_mode: OperandAddrMode::Direct,
+            }),
+            Some(CommaTrailer::BlockMoveDst(dst)) => Some(Operand::BlockMove { src: expr, dst }),
+            None => Some(Operand::Value {
+                expr,
+                force_far: force_far.is_some(),
+                index: None,
+                addr_mode: OperandAddrMode::Direct,
+            }),
+        });
+    let immediate_operand = just(TokenKind::Hash).ignore_then(expr_parser()).map(|expr| {
+        Some(Operand::Immediate {
+            expr,
+            explicit_hash: true,
+        })
+    });
+    let operand = choice((
+        operand_boundary.to(None),
+        immediate_operand,
+        long_indirect_operand,
+        parenthesized_operand,
+        direct_operand,
+    ));
 
     let instruction = mnemonic
         .then(operand)
@@ -362,44 +360,47 @@ where
 
     let separators_inner = line_sep_parser().repeated();
 
-    let common_stmt = mode_set_stmt
-        .or(swap_ab_stmt)
-        .or(segment_stmt)
-        .or(var_stmt)
-        .or(data_stmt)
-        .or(address_stmt)
-        .or(align_stmt)
-        .or(nocross_stmt)
-        .or(call_stmt)
-        .or(invalid_flag_goto_stmt)
-        .or(hla_condition_seed_stmt)
-        .or(hla_x_increment_stmt)
-        .or(hla_x_assign_stmt)
-        .or(hla_store_from_a_stmt)
-        .or(chain_stmt)
-        .or(assign_stmt)
-        .or(store_stmt)
-        .or(alu_stmt)
-        .or(incdec_stmt)
-        .or(shift_stmt)
-        .or(flow_stmt)
-        .or(flag_stmt)
-        .or(stack_stmt)
-        .or(nop_stmt)
-        .or(discard_stmt)
-        .or(label_stmt)
-        .or(bare_call_stmt)
-        .or(instruction)
-        .boxed();
+    // Split into two `choice` groups so we stay under chumsky's 26-tuple
+    // arity for `Choice`. The single `.or` between them is fine — the
+    // expensive case is *long chains* of `Or`, not a single layer.
+    let common_stmt_a = choice((
+        mode_set_stmt,
+        swap_ab_stmt,
+        segment_stmt,
+        var_stmt,
+        data_stmt,
+        address_stmt,
+        align_stmt,
+        nocross_stmt,
+        call_stmt,
+        invalid_flag_goto_stmt,
+        hla_condition_seed_stmt,
+        hla_x_increment_stmt,
+        hla_x_assign_stmt,
+        hla_store_from_a_stmt,
+    ));
+    let common_stmt_b = choice((
+        chain_stmt,
+        assign_stmt,
+        store_stmt,
+        alu_stmt,
+        incdec_stmt,
+        shift_stmt,
+        flow_stmt,
+        flag_stmt,
+        stack_stmt,
+        nop_stmt,
+        discard_stmt,
+        label_stmt,
+        bare_call_stmt,
+        instruction,
+    ));
+    let common_stmt = common_stmt_a.or(common_stmt_b).boxed();
 
     // Flat statement parsers (no brace-delimited blocks)
     let flat_stmt_inner = common_stmt.clone();
 
-    let base_stmt = common_stmt
-        .or(hla_wait_stmt)
-        .or(hla_do_close_stmt)
-        .or(hla_do_open_stmt)
-        .boxed();
+    let base_stmt = choice((common_stmt, hla_wait_stmt, hla_do_close_stmt, hla_do_open_stmt)).boxed();
 
     // Use recursive to allow mode_scoped_block and prefix_conditional
     // to nest inside each other's bodies
@@ -448,10 +449,8 @@ where
             .ignore_then(block_body)
             .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
 
-            let inner_stmt = mode_scoped_block
-                .or(prefix_conditional)
-                .or(never_block)
-                .or(flat_stmt_inner);
+            let inner_stmt =
+                choice((mode_scoped_block, prefix_conditional, never_block, flat_stmt_inner));
 
             spanned(inner_stmt, source_id)
         });
@@ -500,9 +499,11 @@ where
     .ignore_then(block_body_top)
     .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
 
-    mode_scoped_block_top
-        .or(prefix_conditional_top)
-        .or(never_block_top)
-        .or(base_stmt)
-        .boxed()
+    choice((
+        mode_scoped_block_top,
+        prefix_conditional_top,
+        never_block_top,
+        base_stmt,
+    ))
+    .boxed()
 }

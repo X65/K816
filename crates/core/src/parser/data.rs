@@ -8,7 +8,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, any, end, just, skip_then_retry_until},
+    prelude::{SimpleSpan, any, choice, end, just, skip_then_retry_until},
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,10 +32,11 @@ where
 {
     let separators = line_sep_parser().repeated();
     let command = spanned(data_command_parser(), source_id);
-    let command_boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored());
+    let command_boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ));
     let recover_command =
         command.recover_with(skip_then_retry_until(any().ignored(), command_boundary));
 
@@ -60,10 +61,11 @@ where
 {
     let separators = line_sep_parser().repeated();
     let entry = spanned(named_data_entry_parser(source_id), source_id);
-    let entry_boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored());
+    let entry_boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ));
     let recover_entry = entry.recover_with(skip_then_retry_until(any().ignored(), entry_boundary));
 
     ident_parser()
@@ -159,56 +161,54 @@ where
     let string_entry =
         chumsky::select! { TokenKind::String(value) => value }.map(NamedDataEntry::String);
 
-    let address_byte_expr = just(TokenKind::Amp).ignore_then(
-        just(TokenKind::Lt)
-            .ignore_then(expr_parser())
-            .map(|expr| {
+    let address_byte_expr = just(TokenKind::Amp).ignore_then(choice((
+        just(TokenKind::Lt).ignore_then(expr_parser()).map(|expr| {
+            vec![Expr::Unary {
+                op: ExprUnaryOp::LowByte,
+                expr: Box::new(expr),
+            }]
+        }),
+        just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
+            vec![Expr::Unary {
+                op: ExprUnaryOp::HighByte,
+                expr: Box::new(expr),
+            }]
+        }),
+        just(TokenKind::Amp).ignore_then(choice((
+            just(TokenKind::Amp).ignore_then(expr_parser()).map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::LowByte,
+                    op: ExprUnaryOp::FarLittleEndian,
                     expr: Box::new(expr),
                 }]
-            })
-            .or(just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
+            }),
+            expr_parser().map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::HighByte,
+                    op: ExprUnaryOp::WordLittleEndian,
                     expr: Box::new(expr),
                 }]
-            }))
-            .or(just(TokenKind::Amp).ignore_then(
-                just(TokenKind::Amp)
-                    .ignore_then(expr_parser())
-                    .map(|expr| {
-                        vec![Expr::Unary {
-                            op: ExprUnaryOp::FarLittleEndian,
-                            expr: Box::new(expr),
-                        }]
-                    })
-                    .or(expr_parser().map(|expr| {
-                        vec![Expr::Unary {
-                            op: ExprUnaryOp::WordLittleEndian,
-                            expr: Box::new(expr),
-                        }]
-                    })),
-            )),
-    );
+            }),
+        ))),
+    )));
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
 
-    let far_value = number_parser()
-        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
-        .or(address_byte_expr.clone())
-        .or(undef_byte.clone())
-        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+    let far_value = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr.clone(),
+        undef_byte.clone(),
+        ident_parser().map(|name| vec![Expr::Ident(name)]),
+    ));
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
         .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
-    let word_value = number_parser()
-        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
-        .or(address_byte_expr.clone())
-        .or(undef_byte.clone())
-        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+    let word_value = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr.clone(),
+        undef_byte.clone(),
+        ident_parser().map(|name| vec![Expr::Ident(name)]),
+    ));
 
     let word_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
@@ -216,14 +216,15 @@ where
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
     .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
-    let bytes_entry = number_parser()
-        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
-        .or(address_byte_expr)
-        .or(undef_byte)
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
+    let bytes_entry = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr,
+        undef_byte,
+    ))
+    .repeated()
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let eval_bytes_entry =
         chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
@@ -257,10 +258,11 @@ where
 
     let data_body = |src_id| {
         let inner_entry = spanned(named_data_entry_flat_parser(), src_id);
-        let inner_boundary = line_sep_parser()
-            .ignored()
-            .or(just(TokenKind::RBrace).ignored())
-            .or(end().ignored());
+        let inner_boundary = choice((
+            line_sep_parser().ignored(),
+            just(TokenKind::RBrace).ignored(),
+            end().ignored(),
+        ));
         let recover_inner =
             inner_entry.recover_with(skip_then_retry_until(any().ignored(), inner_boundary));
         let seps = line_sep_parser().repeated();
@@ -290,10 +292,11 @@ where
 
     let code_body = {
         let stmt = spanned(stmt_parser(source_id, Arc::new(HashSet::new())), source_id);
-        let stmt_boundary = line_sep_parser()
-            .ignored()
-            .or(just(TokenKind::RBrace).ignored())
-            .or(end().ignored());
+        let stmt_boundary = choice((
+            line_sep_parser().ignored(),
+            just(TokenKind::RBrace).ignored(),
+            end().ignored(),
+        ));
         let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
         just(TokenKind::LBrace)
             .ignore_then(separators_data.clone())
@@ -326,22 +329,24 @@ where
     .ignore_then(chumsky::select! { TokenKind::String(value) => value })
     .map(NamedDataEntry::Charset);
 
-    string_entry
-        .or(segment_entry)
-        .or(address_entry)
-        .or(align_entry)
-        .or(nocross_entry)
-        .or(for_eval_entry)
-        .or(repeat_entry)
-        .or(code_entry)
-        .or(evaluator_entry)
-        .or(charset_entry)
-        .or(far_entry)
-        .or(word_entry)
-        .or(bytes_entry)
-        .or(eval_bytes_entry)
-        .or(ident_entry)
-        .boxed()
+    choice((
+        string_entry,
+        segment_entry,
+        address_entry,
+        align_entry,
+        nocross_entry,
+        for_eval_entry,
+        repeat_entry,
+        code_entry,
+        evaluator_entry,
+        charset_entry,
+        far_entry,
+        word_entry,
+        bytes_entry,
+        eval_bytes_entry,
+        ident_entry,
+    ))
+    .boxed()
 }
 
 fn named_data_entry_flat_parser<'src, I>()
@@ -407,56 +412,54 @@ where
     let string_entry =
         chumsky::select! { TokenKind::String(value) => value }.map(NamedDataEntry::String);
 
-    let address_byte_expr = just(TokenKind::Amp).ignore_then(
-        just(TokenKind::Lt)
-            .ignore_then(expr_parser())
-            .map(|expr| {
+    let address_byte_expr = just(TokenKind::Amp).ignore_then(choice((
+        just(TokenKind::Lt).ignore_then(expr_parser()).map(|expr| {
+            vec![Expr::Unary {
+                op: ExprUnaryOp::LowByte,
+                expr: Box::new(expr),
+            }]
+        }),
+        just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
+            vec![Expr::Unary {
+                op: ExprUnaryOp::HighByte,
+                expr: Box::new(expr),
+            }]
+        }),
+        just(TokenKind::Amp).ignore_then(choice((
+            just(TokenKind::Amp).ignore_then(expr_parser()).map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::LowByte,
+                    op: ExprUnaryOp::FarLittleEndian,
                     expr: Box::new(expr),
                 }]
-            })
-            .or(just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
+            }),
+            expr_parser().map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::HighByte,
+                    op: ExprUnaryOp::WordLittleEndian,
                     expr: Box::new(expr),
                 }]
-            }))
-            .or(just(TokenKind::Amp).ignore_then(
-                just(TokenKind::Amp)
-                    .ignore_then(expr_parser())
-                    .map(|expr| {
-                        vec![Expr::Unary {
-                            op: ExprUnaryOp::FarLittleEndian,
-                            expr: Box::new(expr),
-                        }]
-                    })
-                    .or(expr_parser().map(|expr| {
-                        vec![Expr::Unary {
-                            op: ExprUnaryOp::WordLittleEndian,
-                            expr: Box::new(expr),
-                        }]
-                    })),
-            )),
-    );
+            }),
+        ))),
+    )));
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
 
-    let far_value = number_parser()
-        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
-        .or(address_byte_expr.clone())
-        .or(undef_byte.clone())
-        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+    let far_value = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr.clone(),
+        undef_byte.clone(),
+        ident_parser().map(|name| vec![Expr::Ident(name)]),
+    ));
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
         .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
-    let word_value = number_parser()
-        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
-        .or(address_byte_expr.clone())
-        .or(undef_byte.clone())
-        .or(ident_parser().map(|name| vec![Expr::Ident(name)]));
+    let word_value = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr.clone(),
+        undef_byte.clone(),
+        ident_parser().map(|name| vec![Expr::Ident(name)]),
+    ));
 
     let word_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
@@ -464,14 +467,15 @@ where
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
     .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
-    let bytes_entry = number_parser()
-        .map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)])
-        .or(address_byte_expr)
-        .or(undef_byte)
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
+    let bytes_entry = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr,
+        undef_byte,
+    ))
+    .repeated()
+    .at_least(1)
+    .collect::<Vec<_>>()
+    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
 
     let eval_bytes_entry =
         chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
@@ -486,18 +490,20 @@ where
     .ignore_then(chumsky::select! { TokenKind::String(value) => value })
     .map(NamedDataEntry::Charset);
 
-    string_entry
-        .or(segment_entry)
-        .or(address_entry)
-        .or(align_entry)
-        .or(nocross_entry)
-        .or(charset_entry)
-        .or(far_entry)
-        .or(word_entry)
-        .or(bytes_entry)
-        .or(eval_bytes_entry)
-        .or(ident_entry)
-        .boxed()
+    choice((
+        string_entry,
+        segment_entry,
+        address_entry,
+        align_entry,
+        nocross_entry,
+        charset_entry,
+        far_entry,
+        word_entry,
+        bytes_entry,
+        eval_bytes_entry,
+        ident_entry,
+    ))
+    .boxed()
 }
 
 fn data_command_parser<'src, I>()
@@ -561,7 +567,7 @@ where
         .collect::<Vec<_>>()
         .map(DataCommand::Bytes);
 
-    align.or(address).or(nocross).or(convert).or(bytes).boxed()
+    choice((align, address, nocross, convert, bytes)).boxed()
 }
 
 fn data_arg_parser<'src, I>() -> impl chumsky::Parser<'src, I, DataArg, ParseExtra<'src>> + Clone

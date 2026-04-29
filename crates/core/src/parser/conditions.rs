@@ -4,7 +4,7 @@ use chumsky::{
     Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, just},
+    prelude::{SimpleSpan, choice, just},
 };
 
 use super::{ParseExtra, expr_parser, ident_parser, operand_expr_parser, zero_number_token};
@@ -14,13 +14,14 @@ pub(super) fn hla_compare_op_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::EqEq)
-        .to(HlaCompareOp::Eq)
-        .or(just(TokenKind::BangEq).to(HlaCompareOp::Ne))
-        .or(just(TokenKind::LtEq).to(HlaCompareOp::Le))
-        .or(just(TokenKind::GtEq).to(HlaCompareOp::Ge))
-        .or(just(TokenKind::Lt).to(HlaCompareOp::Lt))
-        .or(just(TokenKind::Gt).to(HlaCompareOp::Gt))
+    choice((
+        just(TokenKind::EqEq).to(HlaCompareOp::Eq),
+        just(TokenKind::BangEq).to(HlaCompareOp::Ne),
+        just(TokenKind::LtEq).to(HlaCompareOp::Le),
+        just(TokenKind::GtEq).to(HlaCompareOp::Ge),
+        just(TokenKind::Lt).to(HlaCompareOp::Lt),
+        just(TokenKind::Gt).to(HlaCompareOp::Gt),
+    ))
 }
 
 pub(super) fn hla_flag_close_stmt_parser<'src, I>()
@@ -86,12 +87,7 @@ where
         .to(do_close_branch("bvs"))
         .or(just(TokenKind::GtGtEq).to(do_close_branch("bvc")));
 
-    n_flag
-        .or(c_flag)
-        .or(z_flag)
-        .or(v_flag)
-        .or(signed_cmp)
-        .or(overflow_cmp)
+    choice((n_flag, c_flag, z_flag, v_flag, signed_cmp, overflow_cmp))
 }
 
 pub(super) fn hla_condition_seed_stmt_parser<'src, I>()

@@ -8,7 +8,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, end, just},
+    prelude::{SimpleSpan, choice, end, just},
 };
 
 use super::{
@@ -137,11 +137,12 @@ pub(super) fn chain_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let stmt_boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored())
-        .rewind();
+    let stmt_boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ))
+    .rewind();
 
     let all_ident = ident_parser()
         .then_ignore(just(TokenKind::Eq))
@@ -180,11 +181,12 @@ pub(super) fn assign_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let stmt_boundary = line_sep_parser()
-        .ignored()
-        .or(just(TokenKind::RBrace).ignored())
-        .or(end().ignored())
-        .rewind();
+    let stmt_boundary = choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ))
+    .rewind();
 
     let register_transfer = chumsky::select! {
         TokenKind::Ident(value) if is_register_name(&value) => value
@@ -317,14 +319,13 @@ where
     let a_alu = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
     }
-    .ignore_then(
-        just(TokenKind::Plus)
-            .to(HlaAluOp::Add)
-            .or(just(TokenKind::Minus).to(HlaAluOp::Sub))
-            .or(just(TokenKind::Amp).to(HlaAluOp::And))
-            .or(just(TokenKind::Pipe).to(HlaAluOp::Or))
-            .or(just(TokenKind::Caret).to(HlaAluOp::Xor)),
-    )
+    .ignore_then(choice((
+        just(TokenKind::Plus).to(HlaAluOp::Add),
+        just(TokenKind::Minus).to(HlaAluOp::Sub),
+        just(TokenKind::Amp).to(HlaAluOp::And),
+        just(TokenKind::Pipe).to(HlaAluOp::Or),
+        just(TokenKind::Caret).to(HlaAluOp::Xor),
+    )))
     .then(operand_expr_parser())
     .map(|(op, rhs)| Stmt::Hla(HlaStmt::AccumulatorAlu { op, rhs }));
 
@@ -342,7 +343,7 @@ where
         Stmt::Hla(HlaStmt::IndexCompare { register, rhs })
     });
 
-    a_bit.or(a_alu).or(xy_cmp)
+    choice((a_bit, a_alu, xy_cmp))
 }
 
 pub(super) fn incdec_stmt_parser<'src, I>()
@@ -434,7 +435,7 @@ where
             })
         });
 
-    indexed_inc.or(indexed_dec).or(inc).or(dec)
+    choice((indexed_inc, indexed_dec, inc, dec))
 }
 
 pub(super) fn shift_stmt_parser<'src, I>()
@@ -442,20 +443,22 @@ pub(super) fn shift_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let shift_op = just(TokenKind::Lt)
-        .then_ignore(just(TokenKind::Lt))
-        .then_ignore(just(TokenKind::Lt))
-        .to(HlaShiftOp::Rol)
-        .or(just(TokenKind::Gt)
-            .then_ignore(just(TokenKind::Gt))
-            .then_ignore(just(TokenKind::Gt))
-            .to(HlaShiftOp::Ror))
-        .or(just(TokenKind::Lt)
+    let shift_op = choice((
+        just(TokenKind::Lt)
             .then_ignore(just(TokenKind::Lt))
-            .to(HlaShiftOp::Asl))
-        .or(just(TokenKind::Gt)
+            .then_ignore(just(TokenKind::Lt))
+            .to(HlaShiftOp::Rol),
+        just(TokenKind::Gt)
             .then_ignore(just(TokenKind::Gt))
-            .to(HlaShiftOp::Lsr));
+            .then_ignore(just(TokenKind::Gt))
+            .to(HlaShiftOp::Ror),
+        just(TokenKind::Lt)
+            .then_ignore(just(TokenKind::Lt))
+            .to(HlaShiftOp::Asl),
+        just(TokenKind::Gt)
+            .then_ignore(just(TokenKind::Gt))
+            .to(HlaShiftOp::Lsr),
+    ));
 
     let indexed = ident_parser()
         .then_ignore(just(TokenKind::Comma))

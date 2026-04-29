@@ -5,7 +5,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, empty, end, just},
+    prelude::{SimpleSpan, choice, empty, end, just},
     recursive::recursive,
 };
 
@@ -55,12 +55,14 @@ where
             )
         });
 
-        let base_atom = number_atom
-            .or(ident_atom)
-            .or(eval_atom)
-            .or(just(TokenKind::LParen)
+        let base_atom = choice((
+            number_atom,
+            ident_atom,
+            eval_atom,
+            just(TokenKind::LParen)
                 .ignore_then(expr.clone())
-                .then_ignore(just(TokenKind::RParen)));
+                .then_ignore(just(TokenKind::RParen)),
+        ));
 
         // Collect sequences of [.field] eval suffixes interleaved with trailing .ident tokens.
         // This handles forms like TASKS[.message].from where `.from` is a separate Ident token
@@ -108,16 +110,14 @@ where
         // The 2- and 3-byte forms work for *any* addressable symbol — vars,
         // funcs, code labels — and are resolved at link time.
         let unary = just(TokenKind::Amp)
-            .ignore_then(
-                just(TokenKind::Amp)
-                    .ignore_then(
-                        just(TokenKind::Amp)
-                            .to(ExprUnaryOp::FarLittleEndian)
-                            .or(empty().to(ExprUnaryOp::WordLittleEndian)),
-                    )
-                    .or(just(TokenKind::Lt).to(ExprUnaryOp::LowByte))
-                    .or(just(TokenKind::Gt).to(ExprUnaryOp::HighByte)),
-            )
+            .ignore_then(choice((
+                just(TokenKind::Amp).ignore_then(choice((
+                    just(TokenKind::Amp).to(ExprUnaryOp::FarLittleEndian),
+                    empty().to(ExprUnaryOp::WordLittleEndian),
+                ))),
+                just(TokenKind::Lt).to(ExprUnaryOp::LowByte),
+                just(TokenKind::Gt).to(ExprUnaryOp::HighByte),
+            )))
             .repeated()
             .collect::<Vec<_>>()
             .then(atom)

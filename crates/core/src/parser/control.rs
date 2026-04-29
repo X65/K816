@@ -4,7 +4,7 @@ use chumsky::{
     Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, just},
+    prelude::{SimpleSpan, choice, just},
 };
 
 use super::{
@@ -100,22 +100,24 @@ where
         .to(("bvs", HlaBranchForm::Symbolic))
         .or(just(TokenKind::GtGtEq).to(("bvc", HlaBranchForm::Symbolic)));
 
-    let symbolic_branch_goto_stmt = v_flag_goto
-        .or(signed_goto)
-        .or(overflow_goto)
-        .or(just(TokenKind::Lt).to(("bcc", HlaBranchForm::Symbolic)))
-        .or(just(TokenKind::GtEq).to(("bcs", HlaBranchForm::Symbolic)))
-        .or(just(TokenKind::EqEq).to(("beq", HlaBranchForm::Symbolic)))
-        .or(just(TokenKind::BangEq).to(("bne", HlaBranchForm::Symbolic)))
-        .then_ignore(goto_kw)
-        .then(expr_parser())
-        .map(|((mnemonic, form), target)| {
-            Stmt::Hla(HlaStmt::BranchGoto {
-                mnemonic: mnemonic.to_string(),
-                target,
-                form,
-            })
-        });
+    let symbolic_branch_goto_stmt = choice((
+        v_flag_goto,
+        signed_goto,
+        overflow_goto,
+        just(TokenKind::Lt).to(("bcc", HlaBranchForm::Symbolic)),
+        just(TokenKind::GtEq).to(("bcs", HlaBranchForm::Symbolic)),
+        just(TokenKind::EqEq).to(("beq", HlaBranchForm::Symbolic)),
+        just(TokenKind::BangEq).to(("bne", HlaBranchForm::Symbolic)),
+    ))
+    .then_ignore(goto_kw)
+    .then(expr_parser())
+    .map(|((mnemonic, form), target)| {
+        Stmt::Hla(HlaStmt::BranchGoto {
+            mnemonic: mnemonic.to_string(),
+            target,
+            form,
+        })
+    });
 
     let branch_goto_stmt = question_flag_goto.or(symbolic_branch_goto_stmt);
 
@@ -154,16 +156,18 @@ where
     let repeat_kw =
         chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("repeat") => () };
 
-    let branch_condition = just(TokenKind::Lt)
-        .ignore_then(zero_number_token().or_not())
-        .map(|zero| if zero.is_some() { "bmi" } else { "bcc" })
-        .or(just(TokenKind::GtEq)
+    let branch_condition = choice((
+        just(TokenKind::Lt)
             .ignore_then(zero_number_token().or_not())
-            .map(|zero| if zero.is_some() { "bpl" } else { "bcs" }))
-        .or(just(TokenKind::EqEq).to("beq"))
-        .or(just(TokenKind::BangEq).to("bne"))
-        .or(just(TokenKind::LtLtEq).to("bvs"))
-        .or(just(TokenKind::GtGtEq).to("bvc"));
+            .map(|zero| if zero.is_some() { "bmi" } else { "bcc" }),
+        just(TokenKind::GtEq)
+            .ignore_then(zero_number_token().or_not())
+            .map(|zero| if zero.is_some() { "bpl" } else { "bcs" }),
+        just(TokenKind::EqEq).to("beq"),
+        just(TokenKind::BangEq).to("bne"),
+        just(TokenKind::LtLtEq).to("bvs"),
+        just(TokenKind::GtGtEq).to("bvc"),
+    ));
 
     let conditional_break = branch_condition.clone().then_ignore(break_kw).map(|m| {
         Stmt::Hla(HlaStmt::LoopBreak {
@@ -185,17 +189,21 @@ where
         mnemonic: "bra".to_string(),
     }));
 
-    let break_repeat_stmt = conditional_break
-        .or(conditional_repeat)
-        .or(unconditional_break)
-        .or(unconditional_repeat);
+    let break_repeat_stmt = choice((
+        conditional_break,
+        conditional_repeat,
+        unconditional_break,
+        unconditional_repeat,
+    ));
 
-    goto_stmt
-        .or(branch_goto_stmt)
-        .or(return_stmt)
-        .or(far_goto_stmt)
-        .or(far_call_stmt)
-        .or(break_repeat_stmt)
+    choice((
+        goto_stmt,
+        branch_goto_stmt,
+        return_stmt,
+        far_goto_stmt,
+        far_call_stmt,
+        break_repeat_stmt,
+    ))
 }
 
 pub(super) fn invalid_flag_goto_stmt_parser<'src, I>()
@@ -259,15 +267,16 @@ where
                 Stmt::Empty
             });
 
-    let operator = just(TokenKind::EqEq)
-        .to("==")
-        .or(just(TokenKind::BangEq).to("!="))
-        .or(just(TokenKind::LtLtEq).to("<<="))
-        .or(just(TokenKind::GtGtEq).to(">>="))
-        .or(just(TokenKind::LtEq).to("<="))
-        .or(just(TokenKind::GtEq).to(">="))
-        .or(just(TokenKind::Lt).to("<"))
-        .or(just(TokenKind::Gt).to(">"));
+    let operator = choice((
+        just(TokenKind::EqEq).to("=="),
+        just(TokenKind::BangEq).to("!="),
+        just(TokenKind::LtLtEq).to("<<="),
+        just(TokenKind::GtGtEq).to(">>="),
+        just(TokenKind::LtEq).to("<="),
+        just(TokenKind::GtEq).to(">="),
+        just(TokenKind::Lt).to("<"),
+        just(TokenKind::Gt).to(">"),
+    ));
 
     let data_keyword = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset")
@@ -291,5 +300,5 @@ where
             Stmt::Empty
         });
 
-    preprocessor.or(data_keyword).or(generic)
+    choice((preprocessor, data_keyword, generic))
 }

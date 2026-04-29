@@ -7,7 +7,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, just},
+    prelude::{SimpleSpan, choice, just},
     recursive::recursive,
 };
 
@@ -256,16 +256,17 @@ where
                         .to(("bvs", HlaBranchForm::FlagQuestion))),
             );
 
-    let cmp_based = just(TokenKind::GtEq)
-        .ignore_then(zero_number_token().or_not())
-        .map(|zero| {
-            if zero.is_some() {
-                ("bmi", HlaBranchForm::Symbolic)
-            } else {
-                ("bcc", HlaBranchForm::Symbolic)
-            }
-        })
-        .or(just(TokenKind::Lt)
+    let cmp_based = choice((
+        just(TokenKind::GtEq)
+            .ignore_then(zero_number_token().or_not())
+            .map(|zero| {
+                if zero.is_some() {
+                    ("bmi", HlaBranchForm::Symbolic)
+                } else {
+                    ("bcc", HlaBranchForm::Symbolic)
+                }
+            }),
+        just(TokenKind::Lt)
             .ignore_then(zero_number_token().or_not())
             .map(|zero| {
                 if zero.is_some() {
@@ -273,11 +274,12 @@ where
                 } else {
                     ("bcs", HlaBranchForm::Symbolic)
                 }
-            }))
-        .or(just(TokenKind::EqEq).to(("bne", HlaBranchForm::Symbolic)))
-        .or(just(TokenKind::BangEq).to(("beq", HlaBranchForm::Symbolic)))
-        .or(just(TokenKind::LtLtEq).to(("bvc", HlaBranchForm::Symbolic)))
-        .or(just(TokenKind::GtGtEq).to(("bvs", HlaBranchForm::Symbolic)));
+            }),
+        just(TokenKind::EqEq).to(("bne", HlaBranchForm::Symbolic)),
+        just(TokenKind::BangEq).to(("beq", HlaBranchForm::Symbolic)),
+        just(TokenKind::LtLtEq).to(("bvc", HlaBranchForm::Symbolic)),
+        just(TokenKind::GtGtEq).to(("bvs", HlaBranchForm::Symbolic)),
+    ));
 
-    c_flag.or(z_flag).or(n_flag).or(v_flag).or(cmp_based)
+    choice((c_flag, z_flag, n_flag, v_flag, cmp_based))
 }

@@ -5,7 +5,7 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, end, just},
+    prelude::{SimpleSpan, empty, end, just},
     recursive::recursive,
 };
 
@@ -99,10 +99,23 @@ where
                 None => expr,
             });
 
+        // Address-of prefix operators on code expressions, mirroring the data-
+        // block prefix syntax (see `parser/data.rs`):
+        //   `&<expr`  → low byte of address    (1 byte, ImmediateByteRelocation)
+        //   `&>expr`  → high byte of address   (1 byte, ImmediateByteRelocation)
+        //   `&&expr`  → 16-bit address-of      (2 bytes, ImmediateWordRelocation)
+        //   `&&&expr` → 24-bit far address-of  (3 bytes, ImmediateFarRelocation)
+        // The 2- and 3-byte forms work for *any* addressable symbol — vars,
+        // funcs, code labels — and are resolved at link time.
         let unary = just(TokenKind::Amp)
             .ignore_then(
-                just(TokenKind::Lt)
-                    .to(ExprUnaryOp::LowByte)
+                just(TokenKind::Amp)
+                    .ignore_then(
+                        just(TokenKind::Amp)
+                            .to(ExprUnaryOp::FarLittleEndian)
+                            .or(empty().to(ExprUnaryOp::WordLittleEndian)),
+                    )
+                    .or(just(TokenKind::Lt).to(ExprUnaryOp::LowByte))
                     .or(just(TokenKind::Gt).to(ExprUnaryOp::HighByte)),
             )
             .repeated()

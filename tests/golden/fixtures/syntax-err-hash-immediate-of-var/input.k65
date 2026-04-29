@@ -1,0 +1,5 @@
+var TASKS = $4000
+
+func main @a16 {
+    lda #TASKS          // ERR: ambiguous, use && instead
+}

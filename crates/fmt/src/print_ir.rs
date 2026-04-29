@@ -75,6 +75,24 @@ pub fn format_ir(program: &Program) -> String {
                             out.push_str(prefix);
                             out.push_str(label);
                         }
+                        OperandOp::ImmediateWordRelocation { label, addend } => {
+                            out.push_str("&&");
+                            out.push_str(label);
+                            if *addend > 0 {
+                                out.push_str(&format!("+{addend}"));
+                            } else if *addend < 0 {
+                                out.push_str(&format!("{addend}"));
+                            }
+                        }
+                        OperandOp::ImmediateFarRelocation { label, addend } => {
+                            out.push_str("&&&");
+                            out.push_str(label);
+                            if *addend > 0 {
+                                out.push_str(&format!("+{addend}"));
+                            } else if *addend < 0 {
+                                out.push_str(&format!("{addend}"));
+                            }
+                        }
                         OperandOp::Address {
                             value,
                             size_hint,

@@ -452,6 +452,8 @@ pub fn emit_object(
                     // encoding selection should not depend on the literal magnitude here.
                     Some(OperandOp::Immediate(_)) => OperandShape::Immediate(0),
                     Some(OperandOp::ImmediateByteRelocation { .. }) => OperandShape::Immediate(0),
+                    Some(OperandOp::ImmediateWordRelocation { .. }) => OperandShape::Immediate(0),
+                    Some(OperandOp::ImmediateFarRelocation { .. }) => OperandShape::Immediate(0),
                     Some(OperandOp::Address {
                         value,
                         size_hint,
@@ -593,6 +595,60 @@ pub fn emit_object(
                             kind: reloc_kind,
                             label: label.clone(),
                             addend: 0,
+                            span: relocation_span,
+                            call_metadata: None,
+                        });
+                    }
+                    Some(OperandOp::ImmediateWordRelocation { label, addend }) => {
+                        if width != 2 {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    op.span,
+                                    "`&&` immediate address-of requires 16-bit accumulator/index width",
+                                )
+                                .with_help(
+                                    "switch to `@a16`/`@i16`, or use `&<symbol`/`&>symbol` for byte halves in 8-bit mode",
+                                ),
+                            );
+                            emit_zeroes(segment, width, op.span, &mut diagnostics);
+                            continue;
+                        }
+                        emit_zeroes(segment, width, op.span, &mut diagnostics);
+                        let relocation_span = relocation_span_for_label(source_map, op.span, label);
+                        fixups.push(Fixup {
+                            segment: current_segment.clone(),
+                            offset: operand_offset,
+                            width: 2,
+                            kind: RelocationKind::Absolute,
+                            label: label.clone(),
+                            addend: *addend,
+                            span: relocation_span,
+                            call_metadata: None,
+                        });
+                    }
+                    Some(OperandOp::ImmediateFarRelocation { label, addend }) => {
+                        if width != 3 {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    op.span,
+                                    "`&&&` immediate far address-of requires 24-bit operand width",
+                                )
+                                .with_help(
+                                    "this operator is only valid for far-immediate instructions in `@a16`/`@al` mode",
+                                ),
+                            );
+                            emit_zeroes(segment, width, op.span, &mut diagnostics);
+                            continue;
+                        }
+                        emit_zeroes(segment, width, op.span, &mut diagnostics);
+                        let relocation_span = relocation_span_for_label(source_map, op.span, label);
+                        fixups.push(Fixup {
+                            segment: current_segment.clone(),
+                            offset: operand_offset,
+                            width: 3,
+                            kind: RelocationKind::Absolute,
+                            label: label.clone(),
+                            addend: *addend,
                             span: relocation_span,
                             call_metadata: None,
                         });

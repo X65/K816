@@ -1,0 +1,9 @@
+Error: ambiguous immediate `#TASKS`: 'TASKS' is a var, not a numeric value
+   ╭─[ tests/golden/fixtures/syntax-err-hash-immediate-of-var/input.k65:4:10 ]
+   │
+ 4 │     lda #TASKS          // ERR: ambiguous, use && instead
+   │          ──┬──  
+   │            ╰──── here
+   │ 
+   │ Help: use `&&TASKS` to load its 16-bit address, or `&&&TASKS` for the far address
+───╯

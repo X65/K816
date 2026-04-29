@@ -108,6 +108,20 @@ pub enum OperandOp {
         kind: ByteRelocationKind,
         label: String,
     },
+    /// 16-bit immediate address-of, from `&&label` (with optional `+N` addend).
+    /// Resolved during emit/link as a 2-byte word relocation against `label`.
+    /// Requires the surrounding accumulator/index width to be 16-bit.
+    ImmediateWordRelocation {
+        label: String,
+        addend: i32,
+    },
+    /// 24-bit immediate far address-of, from `&&&label` (with optional `+N`
+    /// addend). Resolved during emit/link as a 3-byte far relocation. Requires
+    /// the surrounding accumulator width to be 16-bit (`@a16` / `@al`).
+    ImmediateFarRelocation {
+        label: String,
+        addend: i32,
+    },
     Address {
         value: AddressValue,
         size_hint: AddressSizeHint,

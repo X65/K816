@@ -1,0 +1,15 @@
+// Callee with @a16 entry but no exit-width annotation; body ends with PLP,
+// which makes the inferred exit width Unknown. At the call site, this
+// Unknown is treated as Preserve, so the caller's tracked widths survive
+// the call and the following `lda #$1234` is sized as 16-bit. See
+// docs/register-width-aware-syntax.md, "Unknown exit contracts preserve
+// caller mode".
+
+func plp_helper @a16 {
+    plp
+}
+
+func main @a16 {
+    plp_helper          // checked bare call: post-call mode preserved at @a16
+    lda #$1234          // sized as 16-bit thanks to the rule
+}

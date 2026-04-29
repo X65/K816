@@ -105,6 +105,36 @@ jsr wide_all
 jsr uncolored   ; no bridge -- uncolored
 ```
 
+### Unknown exit contracts preserve caller mode
+
+Every function has an outbound width contract — declared (`-> @a16` etc.) or
+inferred from the body's reachable returns. The inferred contract has three
+shapes:
+
+| Inferred form | Meaning                                              |
+|---------------|------------------------------------------------------|
+| `Fixed(@aN)`  | All reachable returns exit at the same fixed width.  |
+| `Preserve`    | Every return exits at the same width it entered.     |
+| `Unknown`     | Cannot be classified as `Fixed` or `Preserve`.       |
+
+**An `Unknown` outbound contract is treated as `Preserve` at the call site.**
+That is, the language guarantees that a function whose outbound width cannot
+be statically determined is required to leave the caller's tracked widths
+unchanged. The caller's tracker therefore stays anchored at its pre-call
+state across such a call, and width-dependent immediates that follow remain
+sized against the caller's signature.
+
+This is what makes the function signature the single source of truth for
+width tracking: a caller with `@a16 @i16` declared can reason about every
+`lda #imm` in its body purely from its own contract plus the contracts (or
+`Preserve` defaults) of the functions it calls. Cross-unit and
+forward-reference callees, whose body has not been inferred yet, fall under
+the same rule: `Unknown` ⇒ `Preserve`.
+
+Genuinely *divergent* exit modes — different `Fixed` widths on different
+reachable returns — are still rejected as a hard error at the callee site.
+The `Unknown ⇒ Preserve` rule never silently masks that.
+
 ### Label-site bridging
 
 `goto`/branch transfers to labels use label-anchored bridging: when the target

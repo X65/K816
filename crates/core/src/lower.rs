@@ -1424,10 +1424,13 @@ fn mode_state_to_contract(mode: ModeState) -> ModeContract {
 }
 
 fn apply_exit_width(width: ExitWidth, entry: Option<RegWidth>) -> Option<RegWidth> {
+    // An `Unknown` outbound contract is treated as `Preserve` at the call site:
+    // the callee is required to leave the caller's tracked width unchanged.
+    // See docs/register-width-aware-syntax.md, "Unknown exit contracts preserve
+    // caller mode".
     match width {
-        ExitWidth::Preserve => entry,
+        ExitWidth::Preserve | ExitWidth::Unknown => entry,
         ExitWidth::Fixed(width) => Some(width),
-        ExitWidth::Unknown => None,
     }
 }
 

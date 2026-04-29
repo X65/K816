@@ -1,0 +1,13 @@
+[default]
+000000: 28 60 C2 20 20 00 00 A9 34 12 60
+
+
+[disasm obj#0 default::plp_helper]
+000000: 28          plp
+000001: 60          rts
+
+[disasm obj#0 default::main]
+000002: C2 20       rep #$20
+000004: 20 00 00    jsr $0000
+000007: A9 34 12    lda #$1234
+00000A: 60          rts

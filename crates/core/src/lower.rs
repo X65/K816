@@ -4796,6 +4796,37 @@ fn fresh_local_label(
     resolve_symbol(&raw, scope, span, diagnostics)
 }
 
+#[derive(Copy, Clone)]
+struct WidthSpec {
+    width: usize,
+    kind_label: &'static str,
+    full_reloc: Option<ByteRelocationKind>,
+}
+
+const BYTE_SPEC: WidthSpec = WidthSpec {
+    width: 1,
+    kind_label: "byte",
+    full_reloc: None,
+};
+
+const WORD_SPEC: WidthSpec = WidthSpec {
+    width: 2,
+    kind_label: "word",
+    full_reloc: Some(ByteRelocationKind::FullWord),
+};
+
+const FAR_SPEC: WidthSpec = WidthSpec {
+    width: 3,
+    kind_label: "far address",
+    full_reloc: Some(ByteRelocationKind::FullLong),
+};
+
+enum PrefixOutcome {
+    Handled,
+    Failed,
+    NotHandled,
+}
+
 fn evaluate_byte_exprs(
     values: &[Expr],
     scope: Option<&str>,
@@ -4803,139 +4834,17 @@ fn evaluate_byte_exprs(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<EvaluatedBytes> {
-    let mut bytes = Vec::with_capacity(values.len());
-    let mut relocations = Vec::new();
-
-    for value in values {
-        if let Expr::Unary { op, expr } = value {
-            match op {
-                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => {
-                    let byte_count = match op {
-                        ExprUnaryOp::WordLittleEndian => 2usize,
-                        ExprUnaryOp::FarLittleEndian => 3usize,
-                        _ => unreachable!(),
-                    };
-                    if let Some(number) = eval_to_number_strict(expr, sema, span, diagnostics) {
-                        let range_ok = match op {
-                            ExprUnaryOp::WordLittleEndian => (0..=0xFFFF).contains(&number),
-                            ExprUnaryOp::FarLittleEndian => (0..=0xFFFFFF).contains(&number),
-                            _ => false,
-                        };
-                        if !range_ok {
-                            let kind = match op {
-                                ExprUnaryOp::WordLittleEndian => "word",
-                                ExprUnaryOp::FarLittleEndian => "far address",
-                                _ => unreachable!(),
-                            };
-                            diagnostics.push(Diagnostic::error(
-                                span,
-                                format!("{kind} literal out of range: {number}"),
-                            ));
-                            return None;
-                        }
-                        let le = (number as u32).to_le_bytes();
-                        bytes.extend_from_slice(&le[..byte_count]);
-                        continue;
-                    }
-
-                    if let Some(symbol) = expr_ident_name(expr.as_ref())
-                        && !sema.vars.contains_key(symbol)
-                        && !sema.consts.contains_key(symbol)
-                    {
-                        match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
-                            Ok(Some(_)) | Err(()) => {}
-                            Ok(None) => {
-                                let label = resolve_symbol(symbol, scope, span, diagnostics)?;
-                                let kind = match op {
-                                    ExprUnaryOp::WordLittleEndian => ByteRelocationKind::FullWord,
-                                    ExprUnaryOp::FarLittleEndian => ByteRelocationKind::FullLong,
-                                    _ => unreachable!(),
-                                };
-                                let offset = u32::try_from(bytes.len())
-                                    .expect("byte expression offset should fit in u32");
-                                bytes.extend(std::iter::repeat_n(0, byte_count));
-                                relocations.push(ByteRelocation {
-                                    offset,
-                                    kind,
-                                    label,
-                                });
-                                continue;
-                            }
-                        }
-                    }
-
-                    diagnostics.push(
-                        Diagnostic::error(
-                            span,
-                            "packed address expression must be a constant or plain symbol reference",
-                        )
-                        .with_help("supported symbolic forms are '&&label' and '&&&label'"),
-                    );
-                    return None;
-                }
-                ExprUnaryOp::LowByte | ExprUnaryOp::HighByte | ExprUnaryOp::EvalBracketed => {}
-            }
-        }
-
-        if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
-            match u8::try_from(number) {
-                Ok(byte) => bytes.push(byte),
-                Err(_) => {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!("byte literal out of range: {number}"),
-                    ));
-                    return None;
-                }
-            }
-            continue;
-        }
-
-        if matches!(
-            value,
-            Expr::Unary {
-                op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
-                ..
-            }
-        ) {
-            if let Some((kind, label)) =
-                resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
-            {
-                let offset =
-                    u32::try_from(bytes.len()).expect("byte expression offset should fit in u32");
-                bytes.push(0);
-                relocations.push(ByteRelocation {
-                    offset,
-                    kind,
-                    label,
-                });
-                continue;
-            }
-
-            diagnostics.push(
-                Diagnostic::error(
-                    span,
-                    "low/high-byte expression must be a constant or plain symbol reference",
-                )
-                .with_help("supported symbolic forms are '&<label' and '&>label'"),
-            );
-            return None;
-        }
-
-        let number = eval_to_number(value, scope, sema, span, diagnostics)?;
-        match u8::try_from(number) {
-            Ok(byte) => bytes.push(byte),
-            Err(_) => {
-                diagnostics.push(Diagnostic::error(
-                    span,
-                    format!("byte literal out of range: {number}"),
-                ));
-                return None;
-            }
-        }
-    }
-
-    Some(EvaluatedBytes { bytes, relocations })
+    evaluate_width_exprs(
+        BYTE_SPEC,
+        values,
+        scope,
+        sema,
+        span,
+        diagnostics,
+        |value, bytes, relocations, diagnostics| {
+            try_handle_packed_byte_unary(value, bytes, relocations, scope, sema, span, diagnostics)
+        },
+    )
 }
 
 fn evaluate_word_exprs(
@@ -4945,96 +4854,15 @@ fn evaluate_word_exprs(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<EvaluatedBytes> {
-    let mut bytes = Vec::with_capacity(values.len() * 2);
-    let mut relocations = Vec::new();
-
-    for value in values {
-        // Try to resolve as a compile-time number (literal, const, var address, expr).
-        if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
-            match u16::try_from(number) {
-                Ok(word) => bytes.extend_from_slice(&word.to_le_bytes()),
-                Err(_) => {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!("word literal out of range: {number}"),
-                    ));
-                    return None;
-                }
-            }
-            continue;
-        }
-
-        // &< / &> unary: emit single-byte relocation (same as in bytes context).
-        if matches!(
-            value,
-            Expr::Unary {
-                op: ExprUnaryOp::LowByte | ExprUnaryOp::HighByte,
-                ..
-            }
-        ) {
-            if let Some((kind, label)) =
-                resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
-            {
-                let offset =
-                    u32::try_from(bytes.len()).expect("word expression offset should fit in u32");
-                bytes.extend_from_slice(&[0, 0]);
-                relocations.push(ByteRelocation {
-                    offset,
-                    kind,
-                    label,
-                });
-                continue;
-            }
-
-            diagnostics.push(
-                Diagnostic::error(
-                    span,
-                    "low/high-byte expression must be a constant or plain symbol reference",
-                )
-                .with_help("supported symbolic forms are '&<label' and '&>label'"),
-            );
-            return None;
-        }
-
-        // Bare ident that is a label: emit a full 16-bit word relocation.
-        if let Some(symbol) = expr_ident_name(value)
-            && !sema.vars.contains_key(symbol)
-            && !sema.consts.contains_key(symbol)
-        {
-            match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
-                Ok(Some(_)) | Err(()) => {}
-                Ok(None) => {
-                    if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
-                        let offset = u32::try_from(bytes.len())
-                            .expect("word expression offset should fit in u32");
-                        bytes.extend_from_slice(&[0, 0]);
-                        relocations.push(ByteRelocation {
-                            offset,
-                            kind: ByteRelocationKind::FullWord,
-                            label: resolved,
-                        });
-                        continue;
-                    }
-                    return None;
-                }
-            }
-        }
-
-        // Fallback: try general numeric evaluation.
-        let number = eval_to_number(value, scope, sema, span, diagnostics)?;
-        match u16::try_from(number) {
-            Ok(word) => bytes.extend_from_slice(&word.to_le_bytes()),
-            Err(_) => {
-                diagnostics.push(Diagnostic::error(
-                    span,
-                    format!("word literal out of range: {number}"),
-                ));
-                return None;
-            }
-        }
-    }
-
-    Some(EvaluatedBytes { bytes, relocations })
+    evaluate_width_exprs(
+        WORD_SPEC,
+        values,
+        scope,
+        sema,
+        span,
+        diagnostics,
+        |_, _, _, _| PrefixOutcome::NotHandled,
+    )
 }
 
 fn evaluate_far_exprs(
@@ -5044,25 +4872,48 @@ fn evaluate_far_exprs(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<EvaluatedBytes> {
-    let mut bytes = Vec::with_capacity(values.len() * 3);
+    evaluate_width_exprs(
+        FAR_SPEC,
+        values,
+        scope,
+        sema,
+        span,
+        diagnostics,
+        |_, _, _, _| PrefixOutcome::NotHandled,
+    )
+}
+
+fn evaluate_width_exprs(
+    spec: WidthSpec,
+    values: &[Expr],
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    mut handle_prefix: impl FnMut(
+        &Expr,
+        &mut Vec<u8>,
+        &mut Vec<ByteRelocation>,
+        &mut Vec<Diagnostic>,
+    ) -> PrefixOutcome,
+) -> Option<EvaluatedBytes> {
+    let mut bytes = Vec::with_capacity(values.len() * spec.width);
     let mut relocations = Vec::new();
 
     for value in values {
-        // Try to resolve as a compile-time number (literal, const, var address, expr).
+        match handle_prefix(value, &mut bytes, &mut relocations, diagnostics) {
+            PrefixOutcome::Handled => continue,
+            PrefixOutcome::Failed => return None,
+            PrefixOutcome::NotHandled => {}
+        }
+
+        // Strict numeric: literal / const / var-address / pure expression.
         if let Some(number) = eval_to_number_strict(value, sema, span, diagnostics) {
-            if !(0..=0xFFFFFF).contains(&number) {
-                diagnostics.push(Diagnostic::error(
-                    span,
-                    format!("far address literal out of range: {number}"),
-                ));
-                return None;
-            }
-            let le = (number as u32).to_le_bytes();
-            bytes.extend_from_slice(&le[..3]);
+            push_le_bytes(&mut bytes, number, spec, span, diagnostics)?;
             continue;
         }
 
-        // &< / &> unary: emit single-byte relocation (same as in bytes context).
+        // &< / &> unary: emit single-byte relocation in a width-byte slot.
         if matches!(
             value,
             Expr::Unary {
@@ -5074,8 +4925,8 @@ fn evaluate_far_exprs(
                 resolve_symbolic_byte_relocation(value, scope, sema, span, diagnostics)
             {
                 let offset =
-                    u32::try_from(bytes.len()).expect("far expression offset should fit in u32");
-                bytes.extend_from_slice(&[0, 0, 0]);
+                    u32::try_from(bytes.len()).expect("expression offset should fit in u32");
+                bytes.extend(std::iter::repeat_n(0u8, spec.width));
                 relocations.push(ByteRelocation {
                     offset,
                     kind,
@@ -5083,7 +4934,6 @@ fn evaluate_far_exprs(
                 });
                 continue;
             }
-
             diagnostics.push(
                 Diagnostic::error(
                     span,
@@ -5094,44 +4944,126 @@ fn evaluate_far_exprs(
             return None;
         }
 
-        // Bare ident that is a label: emit a full 24-bit far relocation.
-        if let Some(symbol) = expr_ident_name(value)
+        // Bare ident that is a label: emit a full-width relocation (word/far only).
+        if let Some(full_kind) = spec.full_reloc
+            && let Some(symbol) = expr_ident_name(value)
             && !sema.vars.contains_key(symbol)
             && !sema.consts.contains_key(symbol)
         {
             match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
                 Ok(Some(_)) | Err(()) => {}
                 Ok(None) => {
-                    if let Some(resolved) = resolve_symbol(symbol, scope, span, diagnostics) {
-                        let offset = u32::try_from(bytes.len())
-                            .expect("far expression offset should fit in u32");
-                        bytes.extend_from_slice(&[0, 0, 0]);
-                        relocations.push(ByteRelocation {
-                            offset,
-                            kind: ByteRelocationKind::FullLong,
-                            label: resolved,
-                        });
-                        continue;
-                    }
-                    return None;
+                    let resolved = resolve_symbol(symbol, scope, span, diagnostics)?;
+                    let offset =
+                        u32::try_from(bytes.len()).expect("expression offset should fit in u32");
+                    bytes.extend(std::iter::repeat_n(0u8, spec.width));
+                    relocations.push(ByteRelocation {
+                        offset,
+                        kind: full_kind,
+                        label: resolved,
+                    });
+                    continue;
                 }
             }
         }
 
-        // Fallback: try general numeric evaluation.
+        // Fallback: full numeric evaluation (with scope).
         let number = eval_to_number(value, scope, sema, span, diagnostics)?;
-        if !(0..=0xFFFFFF).contains(&number) {
-            diagnostics.push(Diagnostic::error(
-                span,
-                format!("far address literal out of range: {number}"),
-            ));
-            return None;
-        }
-        let le = (number as u32).to_le_bytes();
-        bytes.extend_from_slice(&le[..3]);
+        push_le_bytes(&mut bytes, number, spec, span, diagnostics)?;
     }
 
     Some(EvaluatedBytes { bytes, relocations })
+}
+
+fn push_le_bytes(
+    bytes: &mut Vec<u8>,
+    number: i64,
+    spec: WidthSpec,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<()> {
+    let max: i64 = match spec.width {
+        1 => 0xFF,
+        2 => 0xFFFF,
+        3 => 0xFFFFFF,
+        _ => unreachable!("WidthSpec.width must be 1, 2, or 3"),
+    };
+    if !(0..=max).contains(&number) {
+        diagnostics.push(Diagnostic::error(
+            span,
+            format!("{} literal out of range: {number}", spec.kind_label),
+        ));
+        return None;
+    }
+    let le = (number as u32).to_le_bytes();
+    bytes.extend_from_slice(&le[..spec.width]);
+    Some(())
+}
+
+fn try_handle_packed_byte_unary(
+    value: &Expr,
+    bytes: &mut Vec<u8>,
+    relocations: &mut Vec<ByteRelocation>,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> PrefixOutcome {
+    let Expr::Unary { op, expr } = value else {
+        return PrefixOutcome::NotHandled;
+    };
+    let (byte_count, kind_label, range_max, reloc_kind) = match op {
+        ExprUnaryOp::WordLittleEndian => (2usize, "word", 0xFFFFi64, ByteRelocationKind::FullWord),
+        ExprUnaryOp::FarLittleEndian => {
+            (3usize, "far address", 0xFFFFFFi64, ByteRelocationKind::FullLong)
+        }
+        _ => return PrefixOutcome::NotHandled,
+    };
+
+    if let Some(number) = eval_to_number_strict(expr, sema, span, diagnostics) {
+        if !(0..=range_max).contains(&number) {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("{kind_label} literal out of range: {number}"),
+            ));
+            return PrefixOutcome::Failed;
+        }
+        let le = (number as u32).to_le_bytes();
+        bytes.extend_from_slice(&le[..byte_count]);
+        return PrefixOutcome::Handled;
+    }
+
+    if let Some(symbol) = expr_ident_name(expr.as_ref())
+        && !sema.vars.contains_key(symbol)
+        && !sema.consts.contains_key(symbol)
+    {
+        match resolve_symbolic_subscript_name(symbol, sema, span, diagnostics) {
+            Ok(Some(_)) | Err(()) => {}
+            Ok(None) => {
+                let Some(label) = resolve_symbol(symbol, scope, span, diagnostics) else {
+                    return PrefixOutcome::Failed;
+                };
+                let offset =
+                    u32::try_from(bytes.len()).expect("byte expression offset should fit in u32");
+                bytes.extend(std::iter::repeat_n(0u8, byte_count));
+                relocations.push(ByteRelocation {
+                    offset,
+                    kind: reloc_kind,
+                    label,
+                });
+                return PrefixOutcome::Handled;
+            }
+        }
+    }
+
+    diagnostics.push(
+        Diagnostic::error(
+            span,
+            "packed address expression must be a constant or plain symbol reference",
+        )
+        .with_help("supported symbolic forms are '&&label' and '&&&label'"),
+    );
+    PrefixOutcome::Failed
 }
 
 fn eval_to_number_strict(

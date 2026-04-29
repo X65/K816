@@ -402,11 +402,9 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
     }
 
     let source = read_source_file(input_path)?;
-    let render = k816_core::CompileRenderOptions {
-        color: stderr_supports_color(),
-    };
-    let output = k816_core::compile_source(&input_path.display().to_string(), &source, render)
-        .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+    let output =
+        k816_core::compile_source(&input_path.display().to_string(), &source, auto_compile_render())
+            .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
     if !output.rendered_warnings.trim().is_empty() {
         eprintln!("{}", output.rendered_warnings.trim_end());
     }
@@ -429,6 +427,25 @@ fn stderr_supports_color() -> bool {
     }
 
     std::io::stderr().is_terminal()
+}
+
+fn auto_compile_render() -> k816_core::CompileRenderOptions {
+    k816_core::CompileRenderOptions {
+        color: stderr_supports_color(),
+    }
+}
+
+fn auto_link_render() -> k816_link::LinkRenderOptions {
+    k816_link::LinkRenderOptions {
+        color: stderr_supports_color(),
+    }
+}
+
+fn load_link_config(path: Option<&Path>) -> anyhow::Result<k816_link::LinkerConfig> {
+    match path {
+        Some(path) => k816_link::load_config(path),
+        None => Ok(k816_link::default_stub_config()),
+    }
 }
 
 fn default_object_path_for_input(input_path: &Path) -> PathBuf {
@@ -570,11 +587,7 @@ fn link_command(
         objects.push(k816_o65::read_object(object_path)?);
     }
 
-    let mut config = if let Some(path) = options.config.as_deref() {
-        k816_link::load_config(path)?
-    } else {
-        k816_link::default_stub_config()
-    };
+    let mut config = load_link_config(options.config.as_deref())?;
 
     let output_path = if let Some(path) = output {
         path
@@ -590,13 +603,7 @@ fn link_command(
         options.output_format,
     );
 
-    let linked = k816_link::link_objects_with_options(
-        &objects,
-        &config,
-        k816_link::LinkRenderOptions {
-            color: stderr_supports_color(),
-        },
-    )?;
+    let linked = k816_link::link_objects_with_options(&objects, &config, auto_link_render())?;
 
     let listing_path = resolve_listing_path(&output_path, options.listing.as_deref());
     write_link_output(
@@ -617,11 +624,7 @@ fn single_file_build_command(
     let resolved_config_path = link_options
         .config
         .or_else(|| discover_adjacent_config_path(&input_path));
-    let mut config = if let Some(path) = resolved_config_path.as_deref() {
-        k816_link::load_config(path)?
-    } else {
-        k816_link::default_stub_config()
-    };
+    let mut config = load_link_config(resolved_config_path.as_deref())?;
     let config_output_path = resolve_config_output_path(&config, resolved_config_path.as_deref());
     let output_kind = resolve_output_kind(
         config.output.kind,
@@ -629,13 +632,7 @@ fn single_file_build_command(
         link_options.output_format,
     );
     config.output.kind = output_kind;
-    let linked = k816_link::link_objects_with_options(
-        &[object],
-        &config,
-        k816_link::LinkRenderOptions {
-            color: stderr_supports_color(),
-        },
-    )?;
+    let linked = k816_link::link_objects_with_options(&[object], &config, auto_link_render())?;
     let output_path = output
         .or(config_output_path)
         .unwrap_or_else(|| default_build_output_path(&input_path, output_kind));
@@ -850,11 +847,7 @@ fn metadata_command(link_options: LinkPhaseOptions) -> anyhow::Result<()> {
     let target_dir = project_root.join(PROJECT_TARGET_DIR);
 
     let resolved_config = resolve_project_link_config_path(&project_root, &manifest, &link_options);
-    let link_config = if let Some(path) = resolved_config.as_deref() {
-        k816_link::load_config(path)?
-    } else {
-        k816_link::default_stub_config()
-    };
+    let link_config = load_link_config(resolved_config.as_deref())?;
     let output_kind =
         resolve_output_kind(link_config.output.kind, None, link_options.output_format);
     let ext = output_extension(output_kind);
@@ -1008,13 +1001,9 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
             },
         )
         .collect::<Vec<_>>();
-    let compile_outputs = k816_core::compile_sources_all_or_nothing(
-        &compile_inputs,
-        k816_core::CompileRenderOptions {
-            color: stderr_supports_color(),
-        },
-    )
-    .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+    let compile_outputs =
+        k816_core::compile_sources_all_or_nothing(&compile_inputs, auto_compile_render())
+            .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
 
     let mut objects = Vec::with_capacity(compile_outputs.len());
     for ((object_path, _source_name, _source_text), output) in
@@ -1028,11 +1017,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
     }
 
     let resolved_config = resolve_project_link_config_path(&project_root, &manifest, link_options);
-    let mut config = if let Some(path) = resolved_config.as_deref() {
-        k816_link::load_config(path)?
-    } else {
-        k816_link::default_stub_config()
-    };
+    let mut config = load_link_config(resolved_config.as_deref())?;
     config.output.kind = resolve_output_kind(config.output.kind, None, link_options.output_format);
 
     let artifact_path = target_dir.join(format!(
@@ -1048,13 +1033,7 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         display_project_path(&project_root, &artifact_path)
     );
 
-    let linked = k816_link::link_objects_with_options(
-        &objects,
-        &config,
-        k816_link::LinkRenderOptions {
-            color: stderr_supports_color(),
-        },
-    )?;
+    let linked = k816_link::link_objects_with_options(&objects, &config, auto_link_render())?;
     let listing_path = match &manifest.link.listing {
         ListingOption::Bool(false) => None,
         ListingOption::Bool(true) => Some(artifact_path.with_extension("lst")),

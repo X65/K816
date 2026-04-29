@@ -8,8 +8,7 @@ pub(super) fn analyze_document(
     source_name: &str,
     source_text: &str,
     compile_result: Option<Result<&k816_core::CompileObjectOutput, &k816_core::CompileError>>,
-    external_consts: Option<&indexmap::IndexMap<String, k816_core::sema::ConstMeta>>,
-    external_function_names: Option<&std::collections::HashSet<String>>,
+    externals: Option<&k816_core::WorkspaceExternals>,
 ) -> (
     DocumentAnalysis,
     Option<k816_o65::O65Object>,
@@ -48,6 +47,7 @@ pub(super) fn analyze_document(
     let mut ast = None;
     let mut semantic = SemanticInfo::default();
 
+    let external_function_names = externals.map(|e| &e.function_names);
     let (parsed_file, parse_diagnostics) = k816_core::parser::parse_lenient_and_externals(
         source_id,
         source_text,
@@ -64,8 +64,12 @@ pub(super) fn analyze_document(
         if let Ok(expanded) = k816_core::eval_expand::expand_file(&parsed_file, source_id)
             && let Ok(normalized) = k816_core::normalize_hla::normalize_file(&expanded)
         {
+            let analysis_externals = k816_core::sema::AnalysisExternals {
+                consts: externals.map(|e| &e.consts),
+                vars: externals.map(|e| &e.vars),
+            };
             let (model, _sema_diagnostics) =
-                k816_core::sema::analyze_partial(&normalized, external_consts);
+                k816_core::sema::analyze_partial(&normalized, analysis_externals);
             for (name, meta) in model.functions {
                 semantic.functions.insert(name, meta);
             }

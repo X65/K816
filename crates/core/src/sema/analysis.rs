@@ -3,14 +3,14 @@ use std::collections::HashSet;
 use super::*;
 
 pub fn analyze(file: &File) -> Result<SemanticModel, Vec<Diagnostic>> {
-    analyze_with_external_consts(file, None)
+    analyze_with_externals(file, AnalysisExternals::default())
 }
 
-pub(crate) fn analyze_with_external_consts(
+pub(crate) fn analyze_with_externals(
     file: &File,
-    external_consts: Option<&IndexMap<String, ConstMeta>>,
+    externals: AnalysisExternals<'_>,
 ) -> Result<SemanticModel, Vec<Diagnostic>> {
-    let (model, diagnostics) = analyze_partial(file, external_consts);
+    let (model, diagnostics) = analyze_partial(file, externals);
     if diagnostics.is_empty() {
         Ok(model)
     } else {
@@ -20,7 +20,7 @@ pub(crate) fn analyze_with_external_consts(
 
 pub fn analyze_partial(
     file: &File,
-    external_consts: Option<&IndexMap<String, ConstMeta>>,
+    externals: AnalysisExternals<'_>,
 ) -> (SemanticModel, Vec<Diagnostic>) {
     let mut model = SemanticModel::default();
     let mut diagnostics = Vec::new();
@@ -28,10 +28,16 @@ pub fn analyze_partial(
     let mut evaluator_context = EvalContext::default();
 
     let mut external_names = HashSet::new();
-    if let Some(ext) = external_consts {
+    if let Some(ext) = externals.consts {
         for (name, meta) in ext {
             model.consts.insert(name.clone(), *meta);
             evaluator_context.set(name.clone(), meta.value);
+            external_names.insert(name.clone());
+        }
+    }
+    if let Some(ext) = externals.vars {
+        for (name, meta) in ext {
+            model.vars.insert(name.clone(), meta.clone());
             external_names.insert(name.clone());
         }
     }

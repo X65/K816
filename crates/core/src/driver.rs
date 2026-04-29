@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use k816_assets::{AssetFS, StdAssetFS};
 use k816_o65::O65Object;
 
-use crate::ast::{CodeBlock, File, Item};
+use crate::ast::{CodeBlock, File, Item, Stmt};
 use crate::diag::{Diagnostic, RenderOptions, render_diagnostics_with_options};
 use crate::emit_object::{AddressableSite, emit_object};
 use crate::eval_expand::expand_file;
@@ -15,7 +15,9 @@ use crate::lower::lower_with_warnings;
 use crate::normalize_hla::normalize_file;
 use crate::parser::{parse_with_warnings_and_externals, scan_declared_function_names};
 use crate::peephole::peephole_optimize;
-use crate::sema::{ConstMeta, FunctionMeta, analyze_partial, analyze_with_external_consts};
+use crate::sema::{
+    AnalysisExternals, ConstMeta, FunctionMeta, VarMeta, analyze_partial, analyze_with_externals,
+};
 use crate::span::{SourceId, SourceMap};
 
 #[derive(Debug, Clone)]
@@ -54,12 +56,25 @@ pub struct LinkCompileInput<'a> {
     pub source_text: &'a str,
 }
 
-#[derive(Clone, Copy, Default)]
-struct CompileExternals<'a> {
-    consts: Option<&'a IndexMap<String, ConstMeta>>,
-    functions: Option<&'a IndexMap<String, FunctionMeta>>,
-    function_names: Option<&'a HashSet<String>>,
-    inline_bodies: Option<&'a IndexMap<String, CodeBlock>>,
+/// Cross-unit symbols collected once per multi-source compile. Threaded into
+/// each per-file compile so `lower` and `analyze_partial` can resolve symbols
+/// declared in other translation units in the same link group.
+///
+/// The same value also drives the LSP's per-file diagnostics, so editor
+/// squiggles agree with what `compile_sources` would actually emit.
+#[derive(Debug, Clone, Default)]
+pub struct WorkspaceExternals {
+    pub consts: IndexMap<String, ConstMeta>,
+    /// Cross-unit vars resolvable at compile time (declarations carrying an
+    /// explicit `= <addr>` initializer). Auto-addressed vars are intentionally
+    /// excluded — their per-file address is meaningless across translation
+    /// units. Bare references to such names fall through
+    /// `lower::resolve_operand_ident` to a label-relocation path the linker
+    /// resolves.
+    pub vars: IndexMap<String, VarMeta>,
+    pub functions: IndexMap<String, FunctionMeta>,
+    pub function_names: HashSet<String>,
+    pub inline_bodies: IndexMap<String, CodeBlock>,
 }
 
 /// Compile a single source file.
@@ -80,67 +95,66 @@ pub fn compile_source_with_fs(
 ) -> Result<CompileObjectOutput, CompileError> {
     let mut source_map = SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
-    compile_source_inner(
-        &source_map,
-        source_id,
-        source_text,
-        fs,
-        options,
-        CompileExternals::default(),
-    )
+    compile_source_inner(&source_map, source_id, source_text, fs, options, None)
 }
 
-/// Compile multiple sources for linking, sharing cross-unit constant values.
+/// Compile multiple sources for linking, sharing cross-unit symbol values.
 /// Returns per-file results so each file gets its own diagnostics.
 pub fn compile_sources(
     sources: &[LinkCompileInput<'_>],
     options: CompileRenderOptions,
 ) -> Vec<Result<CompileObjectOutput, CompileError>> {
-    let external_function_names = collect_all_declared_function_names(sources);
-
     // Build a shared SourceMap up front so every parsed source — including the
-    // silent metadata pre-scans below — gets a distinct SourceId. This is what
-    // makes the cross-file inline detection in `retargeted_body_if_foreign`
-    // actually fire and lets emit-time diagnostics anchored to a foreign source
-    // resolve through one consistent SourceMap.
+    // silent metadata pre-scans inside `collect_workspace_externals` — gets a
+    // distinct SourceId. This is what makes the cross-file inline detection in
+    // `retargeted_body_if_foreign` actually fire and lets emit-time
+    // diagnostics anchored to a foreign source resolve through one consistent
+    // SourceMap.
     let mut source_map = SourceMap::default();
     let source_ids: Vec<SourceId> = sources
         .iter()
         .map(|source| source_map.add_source(source.source_name, source.source_text))
         .collect();
 
-    let parsed_sources: Vec<Option<File>> = sources
-        .iter()
-        .zip(source_ids.iter())
-        .map(|(source, &source_id)| {
-            parse_expand_normalize_source(
-                source_id,
-                source.source_text,
-                Some(&external_function_names),
-            )
-        })
-        .collect();
-    let external_consts = collect_external_consts_from_parsed(&parsed_sources);
-    let external_functions = collect_external_functions_from_parsed(&parsed_sources);
-    let external_inline_bodies = collect_external_inline_bodies_from_parsed(&parsed_sources);
-    let fs = StdAssetFS;
+    let externals = collect_workspace_externals(sources);
+    compile_sources_with_externals_inner(sources, &source_ids, &source_map, &externals, options)
+}
 
+/// Like [`compile_sources`], but reuses pre-collected cross-unit metadata.
+/// Useful for callers (such as the LSP) that already have a
+/// `WorkspaceExternals` in hand and want to avoid re-parsing every source.
+pub fn compile_sources_with_externals(
+    sources: &[LinkCompileInput<'_>],
+    externals: &WorkspaceExternals,
+    options: CompileRenderOptions,
+) -> Vec<Result<CompileObjectOutput, CompileError>> {
+    let mut source_map = SourceMap::default();
+    let source_ids: Vec<SourceId> = sources
+        .iter()
+        .map(|source| source_map.add_source(source.source_name, source.source_text))
+        .collect();
+    compile_sources_with_externals_inner(sources, &source_ids, &source_map, externals, options)
+}
+
+fn compile_sources_with_externals_inner(
+    sources: &[LinkCompileInput<'_>],
+    source_ids: &[SourceId],
+    source_map: &SourceMap,
+    externals: &WorkspaceExternals,
+    options: CompileRenderOptions,
+) -> Vec<Result<CompileObjectOutput, CompileError>> {
+    let fs = StdAssetFS;
     sources
         .iter()
         .zip(source_ids.iter())
         .map(|(source, &source_id)| {
             compile_source_inner(
-                &source_map,
+                source_map,
                 source_id,
                 source.source_text,
                 &fs,
                 options,
-                CompileExternals {
-                    consts: Some(&external_consts),
-                    functions: Some(&external_functions),
-                    function_names: Some(&external_function_names),
-                    inline_bodies: Some(&external_inline_bodies),
-                },
+                Some(externals),
             )
         })
         .collect()
@@ -163,11 +177,11 @@ fn compile_source_inner(
     source_text: &str,
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
-    externals: CompileExternals<'_>,
+    externals: Option<&WorkspaceExternals>,
 ) -> Result<CompileObjectOutput, CompileError> {
-    let parsed =
-        parse_with_warnings_and_externals(source_id, source_text, externals.function_names)
-            .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
+    let function_names = externals.map(|e| &e.function_names);
+    let parsed = parse_with_warnings_and_externals(source_id, source_text, function_names)
+        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     let ast = parsed.file;
     let mut warnings = parsed.warnings;
 
@@ -176,17 +190,22 @@ fn compile_source_inner(
     let ast = normalize_file(&ast)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
 
-    let mut sema = analyze_with_external_consts(&ast, externals.consts)
+    let analysis_externals = AnalysisExternals {
+        consts: externals.map(|e| &e.consts),
+        vars: externals.map(|e| &e.vars),
+    };
+    let mut sema = analyze_with_externals(&ast, analysis_externals)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
-    if let Some(external) = externals.functions {
-        for (name, meta) in external {
+    if let Some(external) = externals {
+        for (name, meta) in &external.functions {
             sema.functions
                 .entry(name.clone())
                 .or_insert_with(|| meta.clone());
         }
     }
 
-    let lower_output = lower_with_warnings(&ast, &sema, fs, externals.inline_bodies)
+    let inline_bodies = externals.map(|e| &e.inline_bodies);
+    let lower_output = lower_with_warnings(&ast, &sema, fs, inline_bodies)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     warnings.extend(lower_output.warnings);
     let rendered_warnings = render_diagnostics_with_options(
@@ -201,7 +220,8 @@ fn compile_source_inner(
     let hir = fold_mode_ops(&hir);
     let hir = peephole_optimize(&hir);
 
-    let emit_output = emit_object(&hir, source_map, &sema, externals.functions)
+    let external_functions = externals.map(|e| &e.functions);
+    let emit_output = emit_object(&hir, source_map, &sema, external_functions)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
 
     Ok(CompileObjectOutput {
@@ -224,6 +244,33 @@ fn parse_expand_normalize_source(
     let parsed = parse_with_warnings_and_externals(source_id, source_text, names).ok()?;
     let ast = expand_file(&parsed.file, source_id).ok()?;
     normalize_file(&ast).ok()
+}
+
+/// Collect every cross-unit symbol — consts, explicit-address vars, function
+/// metadata, function names, and inline bodies — from the given link sources
+/// in one pass. The result is the canonical input to per-file compiles via
+/// [`compile_sources_with_externals`] and to the LSP's `analyze_document`.
+pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> WorkspaceExternals {
+    let function_names = collect_all_declared_function_names(sources);
+    let mut source_map = SourceMap::default();
+    let parsed_sources: Vec<Option<File>> = sources
+        .iter()
+        .map(|source| {
+            let source_id = source_map.add_source(source.source_name, source.source_text);
+            parse_expand_normalize_source(source_id, source.source_text, Some(&function_names))
+        })
+        .collect();
+    let consts = collect_external_consts_from_parsed(&parsed_sources);
+    let vars = collect_external_vars_from_parsed(&parsed_sources, &consts);
+    let functions = collect_external_functions_from_parsed(&parsed_sources);
+    let inline_bodies = collect_external_inline_bodies_from_parsed(&parsed_sources);
+    WorkspaceExternals {
+        consts,
+        vars,
+        functions,
+        function_names,
+        inline_bodies,
+    }
 }
 
 pub fn collect_external_consts_for_link_sources(
@@ -253,7 +300,11 @@ fn collect_external_consts_from_parsed(
 
         for ast in parsed_sources {
             let Some(ast) = ast else { continue };
-            let (sema, _diagnostics) = analyze_partial(ast, Some(&consts));
+            let externals = AnalysisExternals {
+                consts: Some(&consts),
+                vars: None,
+            };
+            let (sema, _diagnostics) = analyze_partial(ast, externals);
 
             for (name, meta) in sema.consts {
                 if ambiguous.contains(&name) {
@@ -315,12 +366,65 @@ fn collect_external_functions_from_parsed(
     let mut functions: IndexMap<String, FunctionMeta> = IndexMap::new();
     for ast in parsed_sources {
         let Some(ast) = ast else { continue };
-        let (sema, _) = analyze_partial(ast, None);
+        let (sema, _) = analyze_partial(ast, AnalysisExternals::default());
         for (name, meta) in sema.functions {
             functions.entry(name).or_insert(meta);
         }
     }
     functions
+}
+
+/// Collect cross-unit vars whose addresses can be known at compile time —
+/// i.e. those declared with an explicit initializer (`var X = $1234`). Vars
+/// without an initializer use a per-file auto-allocator whose value is
+/// meaningless across translation units, so they are intentionally excluded;
+/// `lower::resolve_operand_ident` already falls through to a label-relocation
+/// path for any name absent from the per-file `sema`, which the linker then
+/// resolves.
+///
+/// First-declaration-wins on name collisions, matching the policy for consts,
+/// functions, and inline bodies.
+fn collect_external_vars_from_parsed(
+    parsed_sources: &[Option<File>],
+    consts: &IndexMap<String, ConstMeta>,
+) -> IndexMap<String, VarMeta> {
+    // Walk each AST to find names of top-level vars carrying an explicit
+    // address initializer. Function-body local vars are deliberately skipped:
+    // they share the global namespace today but should not leak across files.
+    let mut explicit_addr_names: HashSet<String> = HashSet::new();
+    for ast in parsed_sources {
+        let Some(ast) = ast else { continue };
+        for item in &ast.items {
+            match &item.node {
+                Item::Var(var) | Item::Statement(Stmt::Var(var)) => {
+                    if var.initializer.is_some() {
+                        explicit_addr_names.insert(var.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Run analyze_partial against each parsed source so var sizes, layouts,
+    // and symbolic-subscript fields are evaluated with cross-unit consts in
+    // scope, then keep only the entries belonging to the explicit-addr set.
+    let mut vars: IndexMap<String, VarMeta> = IndexMap::new();
+    for ast in parsed_sources {
+        let Some(ast) = ast else { continue };
+        let externals = AnalysisExternals {
+            consts: Some(consts),
+            vars: None,
+        };
+        let (sema, _) = analyze_partial(ast, externals);
+        for (name, meta) in sema.vars {
+            if !explicit_addr_names.contains(&name) {
+                continue;
+            }
+            vars.entry(name).or_insert(meta);
+        }
+    }
+    vars
 }
 
 /// Collect `CodeBlock` bodies for every `inline` function declared across the
@@ -433,6 +537,156 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(bytes.windows(3).any(|window| window == [0xA9, 0x39, 0x05]));
+    }
+
+    /// Cross-unit var with an explicit-address initializer (`var BAR = $1234`)
+    /// must resolve at compile time when referenced from a sibling source —
+    /// previously this errored with `unknown identifier 'BAR'` because
+    /// `compile_sources` only threaded cross-unit consts and functions.
+    #[test]
+    fn multi_source_cross_unit_explicit_addr_var_resolves() {
+        let sources = [
+            LinkCompileInput {
+                source_name: "main.k65",
+                source_text: "func main @a16 {\n  lda BAR\n}\n",
+            },
+            LinkCompileInput {
+                source_name: "vars.k65",
+                source_text: "var BAR = $1234\n",
+            },
+        ];
+
+        let outputs = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+            .expect("compile");
+        let main_object = &outputs[0].object;
+        let section = main_object
+            .sections
+            .get(crate::DEFAULT_SEGMENT)
+            .expect("default section exists");
+        let bytes = section
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.iter().copied())
+            .collect::<Vec<_>>();
+
+        // `lda $1234` (absolute, A=16) → AD 34 12.
+        assert!(
+            bytes.windows(3).any(|window| window == [0xAD, 0x34, 0x12]),
+            "expected `lda $1234` bytes in {bytes:02X?}"
+        );
+    }
+
+    /// Cross-unit var with an explicit-address initializer must also resolve
+    /// in arithmetic operand expressions (`BAR + 1`). Previously the inner
+    /// `eval_to_number` short-circuited with `unknown identifier 'BAR'` before
+    /// `try_label_offset_operand` got a chance to run.
+    #[test]
+    fn multi_source_cross_unit_explicit_addr_var_in_binary_expr() {
+        let sources = [
+            LinkCompileInput {
+                source_name: "main.k65",
+                source_text: "func main @a16 {\n  lda BAR + 2\n}\n",
+            },
+            LinkCompileInput {
+                source_name: "vars.k65",
+                source_text: "var BAR = $1234\n",
+            },
+        ];
+
+        let outputs = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+            .expect("compile");
+        let main_object = &outputs[0].object;
+        let section = main_object
+            .sections
+            .get(crate::DEFAULT_SEGMENT)
+            .expect("default section exists");
+        let bytes = section
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.iter().copied())
+            .collect::<Vec<_>>();
+
+        // `lda $1236` → AD 36 12.
+        assert!(
+            bytes.windows(3).any(|window| window == [0xAD, 0x36, 0x12]),
+            "expected `lda $1236` bytes in {bytes:02X?}"
+        );
+    }
+
+    /// Cross-unit var with a symbolic-subscript field list (`var TASKS[.name(8), .state]:byte = $4000`)
+    /// must allow field access (`TASKS.state`, `TASKS.name + idx`) from a
+    /// sibling source. This is the exact pattern blocking `os-816/main.k65` —
+    /// see the plan referenced in the user_role memory.
+    #[test]
+    fn multi_source_cross_unit_var_subscript_field() {
+        let sources = [
+            LinkCompileInput {
+                source_name: "main.k65",
+                source_text: "func main @a8 @i16 {\n  ldy #0\n  lda TASKS.state, y\n  sta TASKS.name + 1, y\n}\n",
+            },
+            LinkCompileInput {
+                source_name: "task.k65",
+                source_text: "var TASKS [\n  .name [4]:byte\n  .state :byte\n] = $4000\n",
+            },
+        ];
+
+        let outputs = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+            .expect("compile");
+        let main_object = &outputs[0].object;
+        let section = main_object
+            .sections
+            .get(crate::DEFAULT_SEGMENT)
+            .expect("default section exists");
+        let bytes = section
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.bytes.iter().copied())
+            .collect::<Vec<_>>();
+
+        // `lda TASKS.state, y` → B9 04 40  (state offset = 4, base = $4000).
+        // `sta TASKS.name + 1, y` → 99 01 40  (name offset = 0, +1, base = $4000).
+        assert!(
+            bytes.windows(3).any(|window| window == [0xB9, 0x04, 0x40]),
+            "expected `lda $4004, y` bytes in {bytes:02X?}"
+        );
+        assert!(
+            bytes.windows(3).any(|window| window == [0x99, 0x01, 0x40]),
+            "expected `sta $4001, y` bytes in {bytes:02X?}"
+        );
+    }
+
+    /// Auto-addressed cross-unit vars (declared without `= <addr>`) are
+    /// intentionally NOT threaded through the workspace externals — their
+    /// address would be a per-file auto-allocator value meaningless across
+    /// translation units. Bare references should still compile via the
+    /// label-relocation fallback in `lower::resolve_operand_ident`. This test
+    /// locks in that behavior so a future change doesn't accidentally start
+    /// emitting bogus literal addresses for auto-addressed externs.
+    #[test]
+    fn multi_source_cross_unit_auto_addr_var_falls_through_to_label() {
+        let sources = [
+            LinkCompileInput {
+                source_name: "main.k65",
+                source_text: "func main @a16 {\n  lda CURRENT_TASK\n}\n",
+            },
+            LinkCompileInput {
+                source_name: "task.k65",
+                source_text: "var CURRENT_TASK : word\n",
+            },
+        ];
+
+        let results = compile_sources(&sources, CompileRenderOptions::plain());
+        // main.k65 must compile (no `unknown identifier` diagnostic).
+        let main_err = results[0].as_ref().err();
+        if let Some(err) = main_err {
+            for diag in &err.diagnostics {
+                assert!(
+                    !diag.message.contains("unknown identifier"),
+                    "unexpected unknown-identifier diagnostic: {}",
+                    diag.message
+                );
+            }
+        }
     }
 
     /// When an inline body declared in a *different* source produces a

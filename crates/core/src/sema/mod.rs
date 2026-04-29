@@ -19,7 +19,7 @@ mod tests;
 
 mod vars;
 
-pub(crate) use self::analysis::analyze_with_external_consts;
+pub(crate) use self::analysis::analyze_with_externals;
 pub use self::analysis::{analyze, analyze_partial};
 use self::consts::{
     ConstExprError, collect_const, collect_evaluator_block, collect_named_data_block_array,
@@ -27,7 +27,7 @@ use self::consts::{
 };
 use self::functions::collect_function;
 pub use self::model::{
-    ConstMeta, FunctionMeta, SemanticModel, SymbolicSubscriptFieldMeta, SymbolicSubscriptMeta,
-    VarMeta,
+    AnalysisExternals, ConstMeta, FunctionMeta, SemanticModel, SymbolicSubscriptFieldMeta,
+    SymbolicSubscriptMeta, VarMeta,
 };
 use self::vars::collect_var;

@@ -110,3 +110,18 @@ pub struct SemanticModel {
     pub vars: IndexMap<String, VarMeta>,
     pub consts: IndexMap<String, ConstMeta>,
 }
+
+/// Cross-unit symbols seeded into a per-file `analyze_partial` so that the
+/// per-file pass can see consts/vars declared in other translation units in
+/// the same link group. Used by `driver::compile_sources` and the LSP.
+#[derive(Default, Clone, Copy)]
+pub struct AnalysisExternals<'a> {
+    pub consts: Option<&'a IndexMap<String, ConstMeta>>,
+    /// Cross-unit vars whose address is *resolvable at compile time* — i.e. the
+    /// declaration carried an explicit initializer (`var X = $1234`). Vars with
+    /// per-file auto-allocated addresses must NOT be threaded here, since their
+    /// `address` field is meaningless across translation units; bare references
+    /// to such names already fall through `lower::resolve_operand_ident` to a
+    /// label-relocation path.
+    pub vars: Option<&'a IndexMap<String, VarMeta>>,
+}

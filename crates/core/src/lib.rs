@@ -17,9 +17,10 @@ pub mod sema;
 pub mod span;
 
 pub use driver::{
-    CompileError, CompileObjectOutput, CompileRenderOptions, LinkCompileInput,
+    CompileError, CompileObjectOutput, CompileRenderOptions, LinkCompileInput, WorkspaceExternals,
     collect_all_declared_function_names, collect_external_consts_for_link_sources,
     collect_external_functions_for_link_sources, collect_external_inline_bodies_for_link_sources,
-    compile_source, compile_source_with_fs, compile_sources, compile_sources_all_or_nothing,
+    collect_workspace_externals, compile_source, compile_source_with_fs, compile_sources,
+    compile_sources_all_or_nothing, compile_sources_with_externals,
 };
 pub use emit_object::AddressableSite;

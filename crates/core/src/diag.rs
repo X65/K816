@@ -24,7 +24,10 @@ pub enum Supplemental {
     /// Marks a diagnostic as originating from an inlined-from-elsewhere body.
     /// `span` is the original (foreign-source) location; `label` is the
     /// human-readable annotation (e.g. `"Inlined from helpers.k65:3"`).
-    InlineOrigin { span: Span, label: String },
+    InlineOrigin {
+        span: Span,
+        label: String,
+    },
 }
 
 #[derive(Debug, Clone)]

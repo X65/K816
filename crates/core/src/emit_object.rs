@@ -145,8 +145,10 @@ fn attach_inline_origin(diag: &mut Diagnostic, origin: Span, source_map: &Source
     };
     let (line, _col) = file.line_col(origin.start);
     let label = format!("Inlined from {}:{}", file.name, line);
-    diag.supplements
-        .push(Supplemental::InlineOrigin { span: origin, label });
+    diag.supplements.push(Supplemental::InlineOrigin {
+        span: origin,
+        label,
+    });
 }
 
 pub fn emit_object(
@@ -720,7 +722,6 @@ pub fn emit_object(
                 }
             }
         }
-
     }
 
     // Post-loop pass: any diagnostic whose primary span matches an op that was
@@ -742,11 +743,7 @@ pub fn emit_object(
     }
     if !origin_for_span.is_empty() {
         for diag in diagnostics.iter_mut() {
-            let key = (
-                diag.primary.source_id,
-                diag.primary.start,
-                diag.primary.end,
-            );
+            let key = (diag.primary.source_id, diag.primary.start, diag.primary.end);
             if let Some(&origin) = origin_for_span.get(&key) {
                 attach_inline_origin(diag, origin, source_map);
             }

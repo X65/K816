@@ -304,9 +304,7 @@ pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> Workspac
 ///
 /// This is a token-only scan — no spans are retained, so no `SourceMap` is
 /// needed and a sentinel `SourceId` is sufficient.
-pub fn collect_all_declared_addressable_names(
-    sources: &[LinkCompileInput<'_>],
-) -> HashSet<String> {
+pub fn collect_all_declared_addressable_names(sources: &[LinkCompileInput<'_>]) -> HashSet<String> {
     let mut names = HashSet::new();
     for source in sources {
         names.extend(crate::parser::scan_declared_addressable_names(
@@ -370,7 +368,10 @@ fn collect_external_consts_from_parsed(
 pub fn collect_all_declared_function_names(sources: &[LinkCompileInput<'_>]) -> HashSet<String> {
     let mut names = HashSet::new();
     for source in sources {
-        names.extend(scan_declared_function_names(SourceId(0), source.source_text));
+        names.extend(scan_declared_function_names(
+            SourceId(0),
+            source.source_text,
+        ));
     }
     names
 }
@@ -708,12 +709,12 @@ mod tests {
     ///     wrong file);
     ///   - carry an `InlineOrigin` supplement whose `span.source_id` points
     ///     back to the foreign source, with a label naming that file:line.
+    ///
     /// Regression coverage for the LSP `(TCB)` underline bug.
     #[test]
     fn inline_call_diagnostic_carries_inline_origin_supplement() {
         let helpers = "inline add (a, #b) -> a {\n    clc\n    adc #b\n}\n";
-        let main =
-            "func main {\n    @a8 { txa }\n    plp\n    add a, #1 -> a\n    rts\n}\n";
+        let main = "func main {\n    @a8 { txa }\n    plp\n    add a, #1 -> a\n    rts\n}\n";
         let sources = [
             LinkCompileInput {
                 source_name: "helpers.k65",
@@ -725,7 +726,7 @@ mod tests {
             },
         ];
         let results = compile_sources(&sources, CompileRenderOptions::plain());
-        let main_err = results[1].as_ref().err().expect("main.k65 must error");
+        let main_err = results[1].as_ref().expect_err("main.k65 must error");
         let diagnostic = main_err
             .diagnostics
             .iter()

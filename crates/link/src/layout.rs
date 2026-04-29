@@ -277,12 +277,8 @@ pub fn link_objects_with_options(
 
     // Phase 7: validate call metadata (already accumulating; just merge into
     // the cross-phase error list instead of bailing on it).
-    let call_errors = collect_call_metadata_errors(
-        objects,
-        &symbols,
-        &function_metadata_map,
-        options,
-    );
+    let call_errors =
+        collect_call_metadata_errors(objects, &symbols, &function_metadata_map, options);
     errors.extend(call_errors);
 
     // Phase 8: resolve relocations. Each relocation is processed
@@ -391,19 +387,19 @@ fn resolve_one_relocation(
 ) -> std::result::Result<(), String> {
     let _ = object;
     let section_key = (obj_idx, reloc.section.clone());
-    let placements = placed_by_section.get(&section_key).ok_or_else(|| {
-        format!("relocation references unknown section '{}'", reloc.section)
-    })?;
+    let placements = placed_by_section
+        .get(&section_key)
+        .ok_or_else(|| format!("relocation references unknown section '{}'", reloc.section))?;
 
-    let (site_memory_name, site_addr) =
-        resolve_reloc_site(placements, reloc.offset, reloc.width).ok_or_else(|| {
-            format!(
-                "relocation site {:#X}..{:#X} is outside section '{}'",
-                reloc.offset,
-                reloc.offset.saturating_add(u32::from(reloc.width)),
-                reloc.section
-            )
-        })?;
+    let (site_memory_name, site_addr) = resolve_reloc_site(placements, reloc.offset, reloc.width)
+        .ok_or_else(|| {
+        format!(
+            "relocation site {:#X}..{:#X} is outside section '{}'",
+            reloc.offset,
+            reloc.offset.saturating_add(u32::from(reloc.width)),
+            reloc.section
+        )
+    })?;
 
     let target = symbols.get(&reloc.symbol).cloned().ok_or_else(|| {
         let detail = format!("undefined symbol '{}'", reloc.symbol);
@@ -439,9 +435,12 @@ fn resolve_one_relocation(
         ));
     }
 
-    let mem = memory_map
-        .get_mut(site_memory_name)
-        .ok_or_else(|| format!("internal linker error: memory '{}' missing", site_memory_name))?;
+    let mem = memory_map.get_mut(site_memory_name).ok_or_else(|| {
+        format!(
+            "internal linker error: memory '{}' missing",
+            site_memory_name
+        )
+    })?;
 
     if site_addr < mem.spec.start {
         return Err("relocation site underflows memory range".to_string());
@@ -511,7 +510,7 @@ fn collect_call_metadata_errors(
     options: LinkRenderOptions,
 ) -> Vec<String> {
     let mut errors: Vec<String> = Vec::new();
-    let _ = validate_call_metadata_inner(
+    validate_call_metadata_inner(
         objects,
         symbols,
         function_metadata_map,
@@ -528,7 +527,6 @@ fn validate_call_metadata_inner(
     options: LinkRenderOptions,
     errors: &mut Vec<String>,
 ) {
-
     for (obj_idx, object) in objects.iter().enumerate() {
         for reloc in &object.relocations {
             let Some(call_meta) = &reloc.call_metadata else {

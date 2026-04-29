@@ -5826,9 +5826,7 @@ fn reject_address_taking_immediate(
     Some(
         Diagnostic::error(
             primary_span,
-            format!(
-                "ambiguous immediate `#{name}`: '{name}' is a {kind}, not a numeric value"
-            ),
+            format!("ambiguous immediate `#{name}`: '{name}' is a {kind}, not a numeric value"),
         )
         .with_help(format!(
             "use `&&{name}` to load its 16-bit address, or `&&&{name}` for the far address"
@@ -5841,10 +5839,7 @@ fn reject_address_taking_immediate(
 /// or as `ident ± N` — return that name. Returns `None` for expressions that
 /// resolve through pure compile-time numerics (consts, `:sizeof`/`:offsetof`,
 /// literal arithmetic).
-fn address_taking_ident_in_immediate<'a>(
-    expr: &'a Expr,
-    sema: &SemanticModel,
-) -> Option<&'a str> {
+fn address_taking_ident_in_immediate<'a>(expr: &'a Expr, sema: &SemanticModel) -> Option<&'a str> {
     let name = match expr {
         Expr::Ident(name) => name.as_str(),
         Expr::IdentSpanned { name, .. } => name.as_str(),
@@ -5911,7 +5906,7 @@ fn resolve_symbolic_address_immediate(
             .ok()
             .flatten()
             .is_some();
-    if !(known_addressable || !name.starts_with('.')) {
+    if !known_addressable && name.starts_with('.') {
         return None;
     }
     let label = resolve_symbol(name, scope, span, diagnostics)?;
@@ -5934,10 +5929,7 @@ fn resolve_symbolic_address_immediate(
 /// `(is_far, name, addend, label_span)`. `label_span` covers just the symbol
 /// name in source if it was an `IdentSpanned`, so diagnostics can underline
 /// only `shell_main` rather than `lda &&shell_main`.
-fn peel_address_of<'a>(
-    expr: &'a Expr,
-    instruction_span: Span,
-) -> Option<(bool, &'a str, i32, Option<Span>)> {
+fn peel_address_of(expr: &Expr, instruction_span: Span) -> Option<(bool, &str, i32, Option<Span>)> {
     if let Expr::Unary { op, expr: inner } = expr {
         let is_far = match op {
             ExprUnaryOp::WordLittleEndian => false,
@@ -5949,8 +5941,22 @@ fn peel_address_of<'a>(
     }
     if let Expr::Binary { op, lhs, rhs } = expr {
         match (op, lhs.as_ref(), rhs.as_ref()) {
-            (ExprBinaryOp::Add, Expr::Unary { op: u_op, expr: u_inner }, Expr::Number(n, _))
-            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::Unary { op: u_op, expr: u_inner }) => {
+            (
+                ExprBinaryOp::Add,
+                Expr::Unary {
+                    op: u_op,
+                    expr: u_inner,
+                },
+                Expr::Number(n, _),
+            )
+            | (
+                ExprBinaryOp::Add,
+                Expr::Number(n, _),
+                Expr::Unary {
+                    op: u_op,
+                    expr: u_inner,
+                },
+            ) => {
                 let is_far = match u_op {
                     ExprUnaryOp::WordLittleEndian => false,
                     ExprUnaryOp::FarLittleEndian => true,
@@ -5960,7 +5966,14 @@ fn peel_address_of<'a>(
                     label_with_addend(u_inner.as_ref(), instruction_span)?;
                 return Some((is_far, name, base_addend + *n as i32, label_span));
             }
-            (ExprBinaryOp::Sub, Expr::Unary { op: u_op, expr: u_inner }, Expr::Number(n, _)) => {
+            (
+                ExprBinaryOp::Sub,
+                Expr::Unary {
+                    op: u_op,
+                    expr: u_inner,
+                },
+                Expr::Number(n, _),
+            ) => {
                 let is_far = match u_op {
                     ExprUnaryOp::WordLittleEndian => false,
                     ExprUnaryOp::FarLittleEndian => true,
@@ -5979,10 +5992,7 @@ fn peel_address_of<'a>(
 /// Match `Ident(name)` or `Ident(name) + N` / `N + Ident(name)` / `Ident(name) - N`,
 /// returning the label name, signed addend, and (when available) the source
 /// span of just the identifier.
-fn label_with_addend<'a>(
-    expr: &'a Expr,
-    instruction_span: Span,
-) -> Option<(&'a str, i32, Option<Span>)> {
+fn label_with_addend(expr: &Expr, instruction_span: Span) -> Option<(&str, i32, Option<Span>)> {
     let ident_span = |start: usize, end: usize| Span::new(instruction_span.source_id, start, end);
     match expr {
         Expr::Ident(name) => Some((name.as_str(), 0, None)),
@@ -6158,8 +6168,7 @@ fn eval_to_number(
             }
 
             resolve_symbol(name, scope, ident_span, diagnostics)?;
-            let mut diag =
-                Diagnostic::error(ident_span, format!("unknown identifier '{name}'"));
+            let mut diag = Diagnostic::error(ident_span, format!("unknown identifier '{name}'"));
             if let Some(help) = address_of_help_for_name(name, sema, ident_span) {
                 diag = diag.with_help(help);
             }

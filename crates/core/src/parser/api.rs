@@ -34,10 +34,7 @@ pub fn scan_declared_function_names(source_id: SourceId, source_text: &str) -> H
 /// lower pass rejects `&&UNKNOWN` references where `UNKNOWN` isn't declared
 /// anywhere in the workspace, surfacing what would otherwise be a link-time
 /// "undefined symbol" error during compile/LSP analysis.
-pub fn scan_declared_addressable_names(
-    source_id: SourceId,
-    source_text: &str,
-) -> HashSet<String> {
+pub fn scan_declared_addressable_names(source_id: SourceId, source_text: &str) -> HashSet<String> {
     let preprocessed = preprocess_source(source_text);
     let (tokens, _) = lex_lenient(source_id, preprocessed.as_str());
     let tokens = coalesce_non_var_brackets(tokens, preprocessed.as_str());
@@ -71,7 +68,10 @@ fn collect_declared_addressable_names(tokens: &[Token]) -> HashSet<String> {
                         // Comma → consume and look for another ident.
                         if matches!(
                             tokens.get(j),
-                            Some(Token { kind: TokenKind::Comma, .. })
+                            Some(Token {
+                                kind: TokenKind::Comma,
+                                ..
+                            })
                         ) {
                             j += 1;
                             continue;
@@ -100,7 +100,10 @@ fn collect_declared_addressable_names(tokens: &[Token]) -> HashSet<String> {
             TokenKind::Ident(name) if !name.starts_with('.') => {
                 if matches!(
                     tokens.get(i + 1),
-                    Some(Token { kind: TokenKind::Colon, .. })
+                    Some(Token {
+                        kind: TokenKind::Colon,
+                        ..
+                    })
                 ) {
                     names.insert(name.clone());
                 }
@@ -180,20 +183,18 @@ fn collect_declared_function_names(tokens: &[Token]) -> Arc<HashSet<String>> {
                 kind: TokenKind::Ident(name),
                 ..
             }) = tokens.get(j)
+                && !is_reserved_function_name(name)
             {
-                if !is_reserved_function_name(name) {
-                    names.insert(name.clone());
-                }
+                names.insert(name.clone());
             }
         } else if saw_modifier
             && let Some(Token {
                 kind: TokenKind::Ident(name),
                 ..
             }) = tokens.get(j)
+            && !is_reserved_function_name(name)
         {
-            if !is_reserved_function_name(name) {
-                names.insert(name.clone());
-            }
+            names.insert(name.clone());
         }
 
         i += 1;

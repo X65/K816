@@ -417,7 +417,13 @@ where
     // Flat statement parsers (no brace-delimited blocks)
     let flat_stmt_inner = common_stmt.clone();
 
-    let base_stmt = choice((common_stmt, hla_wait_stmt, hla_do_close_stmt, hla_do_open_stmt)).boxed();
+    let base_stmt = choice((
+        common_stmt,
+        hla_wait_stmt,
+        hla_do_close_stmt,
+        hla_do_open_stmt,
+    ))
+    .boxed();
 
     // Use recursive to allow mode_scoped_block and prefix_conditional
     // to nest inside each other's bodies
@@ -471,9 +477,13 @@ where
             .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }))
             .boxed();
 
-            let inner_stmt =
-                choice((mode_scoped_block, prefix_conditional, never_block, flat_stmt_inner))
-                    .boxed();
+            let inner_stmt = choice((
+                mode_scoped_block,
+                prefix_conditional,
+                never_block,
+                flat_stmt_inner,
+            ))
+            .boxed();
 
             spanned(inner_stmt, source_id)
         });

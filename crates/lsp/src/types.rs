@@ -28,9 +28,9 @@ pub(super) static INSTRUCTION_METADATA: LazyLock<HashMap<String, InstructionMeta
             .expect("embedded instruction metadata must be valid JSON")
     });
 
-pub(super) const PROJECT_MANIFEST: &str = "k816.toml";
-pub(super) const PROJECT_SRC_DIR: &str = "src";
-pub(super) const PROJECT_TESTS_DIR: &str = "tests";
+pub(super) const PROJECT_MANIFEST: &str = k816_project::PROJECT_MANIFEST;
+pub(super) const PROJECT_SRC_DIR: &str = k816_project::PROJECT_SRC_DIR;
+pub(super) const PROJECT_TESTS_DIR: &str = k816_project::PROJECT_TESTS_DIR;
 pub(super) const DID_CHANGE_DEBOUNCE: Duration = Duration::from_millis(200);
 pub(super) const LOOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 

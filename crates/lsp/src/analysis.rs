@@ -14,7 +14,7 @@ pub(super) fn analyze_document(
     Option<k816_o65::O65Object>,
     Vec<k816_core::AddressableSite>,
 ) {
-    let (mut diagnostics, compile_failed, object, addressable_sites) =
+    let (mut diagnostics, compile_failed, object, addressable_sites, frontend) =
         if let Some(result) = compile_result {
             match result {
                 Ok(output) => (
@@ -22,8 +22,9 @@ pub(super) fn analyze_document(
                     false,
                     Some(output.object.clone()),
                     output.addressable_sites.clone(),
+                    Some(output.frontend.clone()),
                 ),
-                Err(error) => (error.diagnostics.clone(), true, None, Vec::new()),
+                Err(error) => (error.diagnostics.clone(), true, None, Vec::new(), None),
             }
         } else {
             match k816_core::compile_source(
@@ -36,55 +37,68 @@ pub(super) fn analyze_document(
                     false,
                     Some(output.object),
                     output.addressable_sites,
+                    Some(output.frontend),
                 ),
-                Err(error) => (error.diagnostics, true, None, Vec::new()),
+                Err(error) => (error.diagnostics, true, None, Vec::new(), None),
             }
         };
 
     let mut source_map = k816_core::span::SourceMap::default();
     let source_id = source_map.add_source(source_name, source_text);
 
-    let mut ast = None;
-    let mut semantic = SemanticInfo::default();
-
-    let external_function_names = externals.map(|e| &e.function_names);
-    let (parsed_file, parse_diagnostics) = k816_core::parser::parse_lenient_and_externals(
-        source_id,
-        source_text,
-        external_function_names,
-    );
-    if compile_failed {
-        diagnostics.extend(parse_diagnostics);
-    }
-
-    let (symbols, scopes) = if let Some(parsed_file) = parsed_file {
-        let mut symbol_collection = collect_symbols(&parsed_file);
-        ast = Some(parsed_file.clone());
-
-        if let Ok(expanded) = k816_core::eval_expand::expand_file(&parsed_file, source_id)
-            && let Ok(normalized) = k816_core::normalize_hla::normalize_file(&expanded)
-        {
-            let analysis_externals = k816_core::sema::AnalysisExternals {
-                consts: externals.map(|e| &e.consts),
-                vars: externals.map(|e| &e.vars),
-            };
-            let (model, _sema_diagnostics) =
-                k816_core::sema::analyze_partial(&normalized, analysis_externals);
-            for (name, meta) in model.functions {
-                semantic.functions.insert(name, meta);
-            }
-            for (name, meta) in model.consts {
-                semantic.consts.insert(name, meta);
-            }
-            for (name, meta) in model.vars {
-                semantic.vars.insert(name, meta);
-            }
-        }
+    let (symbols, scopes, semantic, ast) = if let Some(frontend) = frontend {
+        let mut symbol_collection = collect_symbols(&frontend.parsed);
+        let semantic = semantic_info_from_model(&frontend.semantic);
         filter_symbols_to_semantic_model(&mut symbol_collection, &semantic);
-        (symbol_collection.symbols, symbol_collection.scopes)
+        (
+            symbol_collection.symbols,
+            symbol_collection.scopes,
+            semantic,
+            Some(frontend.parsed),
+        )
     } else {
-        let fallback = scan_tokens_for_symbols(source_id, source_text);
-        (fallback.symbols, fallback.scopes)
+        let mut ast = None;
+        let mut semantic = SemanticInfo::default();
+        let external_function_names = externals.map(|e| &e.function_names);
+        let (parsed_file, parse_diagnostics) = k816_core::parser::parse_lenient_and_externals(
+            source_id,
+            source_text,
+            external_function_names,
+        );
+        if compile_failed {
+            diagnostics.extend(parse_diagnostics);
+        }
+
+        let (symbols, scopes) = if let Some(parsed_file) = parsed_file {
+            let mut symbol_collection = collect_symbols(&parsed_file);
+            ast = Some(parsed_file.clone());
+
+            if let Ok(expanded) = k816_core::eval_expand::expand_file(&parsed_file, source_id)
+                && let Ok(normalized) = k816_core::normalize_hla::normalize_file(&expanded)
+            {
+                let analysis_externals = k816_core::sema::AnalysisExternals {
+                    consts: externals.map(|e| &e.consts),
+                    vars: externals.map(|e| &e.vars),
+                };
+                let (model, _sema_diagnostics) =
+                    k816_core::sema::analyze_partial(&normalized, analysis_externals);
+                for (name, meta) in model.functions {
+                    semantic.functions.insert(name, meta);
+                }
+                for (name, meta) in model.consts {
+                    semantic.consts.insert(name, meta);
+                }
+                for (name, meta) in model.vars {
+                    semantic.vars.insert(name, meta);
+                }
+            }
+            filter_symbols_to_semantic_model(&mut symbol_collection, &semantic);
+            (symbol_collection.symbols, symbol_collection.scopes)
+        } else {
+            let fallback = scan_tokens_for_symbols(source_id, source_text);
+            (fallback.symbols, fallback.scopes)
+        };
+        (symbols, scopes, semantic, ast)
     };
 
     super::dedup_diagnostics(&mut diagnostics);
@@ -100,6 +114,26 @@ pub(super) fn analyze_document(
         object,
         addressable_sites,
     )
+}
+
+fn semantic_info_from_model(model: &k816_core::sema::SemanticModel) -> SemanticInfo {
+    SemanticInfo {
+        functions: model
+            .functions
+            .iter()
+            .map(|(name, meta)| (name.clone(), meta.clone()))
+            .collect(),
+        consts: model
+            .consts
+            .iter()
+            .map(|(name, meta)| (name.clone(), *meta))
+            .collect(),
+        vars: model
+            .vars
+            .iter()
+            .map(|(name, meta)| (name.clone(), meta.clone()))
+            .collect(),
+    }
 }
 
 fn filter_symbols_to_semantic_model(symbols: &mut SymbolCollection, semantic: &SemanticInfo) {

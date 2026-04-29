@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use lsp_types::{Diagnostic, Uri};
 
-use super::project::{
-    ProjectManifest, discover_workspace_sources, uri_from_file_path, uri_to_file_path,
-};
+use super::project::{discover_workspace_sources, uri_from_file_path, uri_to_file_path};
 use super::protocol::{
     QueryMemoryMapDetail, QueryMemoryMapMemory, QueryMemoryMapParams, QueryMemoryMapResult,
     QueryMemoryMapRun, QueryMemoryMapStatus, memory_kind_label,
@@ -14,8 +12,7 @@ use super::protocol::{
 use super::watcher::WorkspaceFsEvent;
 use super::{
     ByteRange, DocumentAnalysis, DocumentState, ForeignSource, LineIndex, PROJECT_MANIFEST,
-    ServerState, SymbolLocation, SymbolOccurrence, analyze_document,
-    diagnostic_to_lsp,
+    ServerState, SymbolLocation, SymbolOccurrence, analyze_document, diagnostic_to_lsp,
 };
 
 impl ServerState {
@@ -44,8 +41,7 @@ impl ServerState {
     pub(super) fn load_linker_config(&mut self) {
         let manifest_path = self.workspace_root.join(PROJECT_MANIFEST);
         if manifest_path.is_file()
-            && let Ok(text) = fs::read_to_string(&manifest_path)
-            && let Ok(manifest) = toml::from_str::<ProjectManifest>(&text)
+            && let Ok(manifest) = k816_project::load_project_manifest(&self.workspace_root)
             && let Some(script) = manifest.link.script
         {
             let config_path = if script.is_absolute() {
@@ -424,84 +420,56 @@ impl ServerState {
             };
         };
 
-        let filter = params
-            .memory_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty());
+        let include_runs = params.detail == QueryMemoryMapDetail::Runs;
+        let usage = match k816_link::memory_usage(
+            &self.linker_config,
+            layout,
+            params.memory_name.as_deref(),
+            include_runs,
+        ) {
+            Ok(usage) => usage,
+            Err(error) => {
+                return QueryMemoryMapResult {
+                    status: QueryMemoryMapStatus::Unavailable,
+                    reason: Some(error.to_string()),
+                    memories: Vec::new(),
+                    runs: Vec::new(),
+                };
+            }
+        };
 
-        let filtered_specs: Vec<&k816_link::MemoryArea> = self
-            .linker_config
-            .memory
-            .iter()
-            .filter(|memory| match filter {
-                Some(name) => memory.name.eq_ignore_ascii_case(name),
-                None => true,
-            })
-            .collect();
-
-        if filtered_specs.is_empty() {
+        if usage.memories.is_empty() {
             return QueryMemoryMapResult {
                 status: QueryMemoryMapStatus::Unavailable,
-                reason: filter
-                    .map(|name| format!("memory area '{name}' was not found in linker config")),
+                reason: None,
                 memories: Vec::new(),
                 runs: Vec::new(),
             };
         }
 
-        let mut memories = Vec::with_capacity(filtered_specs.len());
-        for spec in filtered_specs {
-            let used = layout
-                .runs
-                .iter()
-                .filter(|run| run.memory_name == spec.name)
-                .fold(0u64, |acc, run| acc.saturating_add(run.bytes.len() as u64));
-            let size = u64::from(spec.size);
-            let free = size.saturating_sub(used);
-            let utilization_percent = if size == 0 {
-                0.0
-            } else {
-                ((used as f64) * 100.0) / (size as f64)
-            };
-
-            memories.push(QueryMemoryMapMemory {
-                name: spec.name.clone(),
-                start: spec.start,
-                size: spec.size,
-                kind: memory_kind_label(spec.kind).to_string(),
-                used: used.min(u64::from(u32::MAX)) as u32,
-                free: free.min(u64::from(u32::MAX)) as u32,
-                utilization_percent,
-            });
-        }
-
-        let runs = if params.detail == QueryMemoryMapDetail::Runs {
-            let mut rows = Vec::new();
-            for run in &layout.runs {
-                if let Some(name) = filter
-                    && !run.memory_name.eq_ignore_ascii_case(name)
-                {
-                    continue;
-                }
-                let size = run.bytes.len().min(u32::MAX as usize) as u32;
-                let end = if size == 0 {
-                    run.start_addr
-                } else {
-                    run.start_addr.saturating_add(size.saturating_sub(1))
-                };
-                rows.push(QueryMemoryMapRun {
-                    memory_name: run.memory_name.clone(),
-                    start: run.start_addr,
-                    end,
-                    size,
-                });
-            }
-            rows.sort_by_key(|run| (run.memory_name.clone(), run.start));
-            rows
-        } else {
-            Vec::new()
-        };
+        let memories = usage
+            .memories
+            .into_iter()
+            .map(|memory| QueryMemoryMapMemory {
+                name: memory.name,
+                start: memory.start,
+                size: memory.size,
+                kind: memory_kind_label(memory.kind).to_string(),
+                used: memory.used,
+                free: memory.free,
+                utilization_percent: memory.utilization_percent,
+            })
+            .collect();
+        let runs = usage
+            .runs
+            .into_iter()
+            .map(|run| QueryMemoryMapRun {
+                memory_name: run.memory_name,
+                start: run.start,
+                end: run.end,
+                size: run.size,
+            })
+            .collect();
 
         QueryMemoryMapResult {
             status: QueryMemoryMapStatus::Ok,
@@ -530,13 +498,7 @@ impl ServerState {
             .diagnostics
             .iter()
             .map(|diag| {
-                diagnostic_to_lsp(
-                    diag,
-                    &doc.uri,
-                    &doc.line_index,
-                    &doc.text,
-                    &foreign_sources,
-                )
+                diagnostic_to_lsp(diag, &doc.uri, &doc.line_index, &doc.text, &foreign_sources)
             })
             .collect()
     }

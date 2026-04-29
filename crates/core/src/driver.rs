@@ -21,7 +21,14 @@ use crate::sema::{
 use crate::span::{SourceId, SourceMap};
 
 #[derive(Debug, Clone)]
+pub struct CompileFrontendOutput {
+    pub parsed: File,
+    pub semantic: crate::sema::SemanticModel,
+}
+
+#[derive(Debug, Clone)]
 pub struct CompileObjectOutput {
+    pub frontend: CompileFrontendOutput,
     pub object: O65Object,
     pub addressable_sites: Vec<AddressableSite>,
     pub warnings: Vec<Diagnostic>,
@@ -193,10 +200,10 @@ fn compile_source_inner(
     let function_names = externals.map(|e| &e.function_names);
     let parsed = parse_with_warnings_and_externals(source_id, source_text, function_names)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
-    let ast = parsed.file;
+    let parsed_ast = parsed.file;
     let mut warnings = parsed.warnings;
 
-    let ast = expand_file(&ast, source_id)
+    let ast = expand_file(&parsed_ast, source_id)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     let ast = normalize_file(&ast)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
@@ -238,6 +245,10 @@ fn compile_source_inner(
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
 
     Ok(CompileObjectOutput {
+        frontend: CompileFrontendOutput {
+            parsed: parsed_ast,
+            semantic: sema,
+        },
         object: emit_output.object,
         addressable_sites: emit_output.addressable_sites,
         warnings,
@@ -497,6 +508,18 @@ mod tests {
             &source[diagnostic.primary.start..diagnostic.primary.end],
             "J"
         );
+    }
+
+    #[test]
+    fn compile_output_includes_frontend_ast_and_semantic_metadata() {
+        let source = "const FOO = 1\nvar BAR = $20\nfunc main {\n  nop\n}\n";
+        let output =
+            compile_source("test.k65", source, CompileRenderOptions::plain()).expect("compile");
+
+        assert!(!output.frontend.parsed.items.is_empty());
+        assert!(output.frontend.semantic.consts.contains_key("FOO"));
+        assert!(output.frontend.semantic.vars.contains_key("BAR"));
+        assert!(output.frontend.semantic.functions.contains_key("main"));
     }
 
     #[test]

@@ -638,6 +638,7 @@ dependencies = [
  "k816-link",
  "k816-lsp",
  "k816-o65",
+ "k816-project",
  "predicates",
  "serde",
  "serde_json",
@@ -729,6 +730,7 @@ dependencies = [
  "k816-isa65816",
  "k816-link",
  "k816-o65",
+ "k816-project",
  "lsp-server",
  "lsp-types",
  "notify",
@@ -736,9 +738,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
- "toml",
  "url",
- "walkdir",
 ]
 
 [[package]]
@@ -747,6 +747,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "indexmap",
+]
+
+[[package]]
+name = "k816-project"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

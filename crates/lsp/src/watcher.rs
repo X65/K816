@@ -62,7 +62,7 @@ fn dispatch_event(sender: &Sender<WorkspaceFsEvent>, event: Event) {
         return;
     }
     for path in event.paths {
-        if !is_k65_source(&path) {
+        if !k816_project::is_k65_source_path(&path) {
             continue;
         }
         let msg = if is_removal {
@@ -83,10 +83,4 @@ fn classify(kind: &EventKind) -> (bool, bool) {
         EventKind::Remove(RemoveKind::File | RemoveKind::Any) => (true, true),
         _ => (false, false),
     }
-}
-
-fn is_k65_source(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("k65"))
 }

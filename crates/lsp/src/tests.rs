@@ -113,10 +113,7 @@ fn renders_inline_origin_supplement_with_foreign_related_info() {
         .message
         .find("(Inlined from helpers.k65:3)")
         .expect("inline-origin line present");
-    let help_pos = converted
-        .message
-        .find("help: ")
-        .expect("help line present");
+    let help_pos = converted.message.find("help: ").expect("help line present");
     assert!(
         inline_pos < help_pos,
         "inline-origin line should precede help: {:?}",
@@ -134,6 +131,53 @@ fn renders_inline_origin_supplement_with_foreign_related_info() {
         .find(|info| info.location.uri == foreign_uri)
         .expect("foreign-uri related entry");
     assert_eq!(foreign_entry.message, "Inlined from helpers.k65:3");
+}
+
+#[test]
+fn analyze_document_uses_successful_compile_frontend_output() {
+    let source = "const FOO = 1\nvar BAR = $20\nfunc main {\n  nop\n}\n";
+    let output =
+        k816_core::compile_source("test.k65", source, k816_core::CompileRenderOptions::plain())
+            .expect("compile");
+
+    let (analysis, object, _sites) = analyze_document("test.k65", source, Some(Ok(&output)), None);
+
+    assert!(object.is_some());
+    assert!(analysis.ast.is_some());
+    assert!(analysis.semantic.consts.contains_key("FOO"));
+    assert!(analysis.semantic.vars.contains_key("BAR"));
+    assert!(analysis.semantic.functions.contains_key("main"));
+    assert!(
+        analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.canonical == "main")
+    );
+}
+
+#[test]
+fn analyze_document_falls_back_to_lenient_symbols_after_compile_failure() {
+    let source = "func main {\n  nop\n}\n\nfunc broken {\n  <<<bad>>>\n}\n";
+    let error = k816_core::compile_source(
+        "broken.k65",
+        source,
+        k816_core::CompileRenderOptions::plain(),
+    )
+    .expect_err("compile should fail");
+
+    let (analysis, object, _sites) =
+        analyze_document("broken.k65", source, Some(Err(&error)), None);
+
+    assert!(object.is_none());
+    assert!(!analysis.diagnostics.is_empty());
+    assert!(
+        analysis
+            .symbols
+            .iter()
+            .any(|symbol| symbol.canonical == "main"),
+        "expected lenient fallback to retain main symbol: {:?}",
+        analysis.symbols
+    );
 }
 
 #[test]

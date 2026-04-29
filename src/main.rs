@@ -1,16 +1,17 @@
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fmt, io::IsTerminal};
 
 use anyhow::Context;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
-use serde::Deserialize;
+use k816_project::{
+    ListingOption, PROJECT_DEFAULT_LINK_SCRIPT, PROJECT_MANIFEST, PROJECT_SRC_DIR,
+    discover_sources, load_project_manifest, resolve_project_link_config_path,
+    validate_package_name,
+};
 
 const LISTING_AUTO_SENTINEL: &str = "__auto__";
-const PROJECT_MANIFEST: &str = "k816.toml";
-const PROJECT_DEFAULT_LINK_SCRIPT: &str = "link.ron";
-const PROJECT_SRC_DIR: &str = "src";
 const PROJECT_MAIN_SOURCE: &str = "main.k65";
 const PROJECT_TARGET_DIR: &str = "target";
 const PROJECT_OBJECT_DIR: &str = "obj";
@@ -402,9 +403,12 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
     }
 
     let source = read_source_file(input_path)?;
-    let output =
-        k816_core::compile_source(&input_path.display().to_string(), &source, auto_compile_render())
-            .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+    let output = k816_core::compile_source(
+        &input_path.display().to_string(),
+        &source,
+        auto_compile_render(),
+    )
+    .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
     if !output.rendered_warnings.trim().is_empty() {
         eprintln!("{}", output.rendered_warnings.trim_end());
     }
@@ -640,81 +644,9 @@ fn single_file_build_command(
     write_link_output(&output_path, listing_path.as_deref(), &linked, output_kind)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectManifest {
-    package: ProjectPackage,
-    #[serde(default)]
-    link: ProjectLink,
-    #[serde(default)]
-    run: ProjectRun,
-}
-
-impl ProjectManifest {
-    fn validate(&self) -> anyhow::Result<()> {
-        validate_package_name(&self.package.name)?;
-        if self.package.version.trim().is_empty() {
-            anyhow::bail!("package.version must not be empty");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProjectPackage {
-    name: String,
-    #[serde(default = "default_manifest_version")]
-    version: String,
-}
-
-fn default_manifest_version() -> String {
-    "0.1.0".to_string()
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ProjectLink {
-    script: Option<PathBuf>,
-    #[serde(default)]
-    listing: ListingOption,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum ListingOption {
-    Path(String),
-    Bool(bool),
-}
-
-impl Default for ListingOption {
-    fn default() -> Self {
-        Self::Bool(false)
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ProjectRun {
-    runner: Option<String>,
-    args: Vec<String>,
-}
-
 struct ProjectBuildResult {
     project_root: PathBuf,
     artifact_path: PathBuf,
-}
-
-fn validate_package_name(name: &str) -> anyhow::Result<()> {
-    if name.trim().is_empty() {
-        anyhow::bail!("package.name is required in k816.toml");
-    }
-
-    let mut components = Path::new(name).components();
-    match (components.next(), components.next()) {
-        (Some(Component::Normal(_)), None) => Ok(()),
-        _ => anyhow::bail!("package.name '{}' must be a single path component", name),
-    }
 }
 
 fn init_command(args: InitArgs) -> anyhow::Result<()> {
@@ -846,7 +778,8 @@ fn metadata_command(link_options: LinkPhaseOptions) -> anyhow::Result<()> {
     let manifest = load_project_manifest(&project_root)?;
     let target_dir = project_root.join(PROJECT_TARGET_DIR);
 
-    let resolved_config = resolve_project_link_config_path(&project_root, &manifest, &link_options);
+    let resolved_config =
+        resolve_project_link_config_path(&project_root, &manifest, link_options.config.as_deref());
     let link_config = load_link_config(resolved_config.as_deref())?;
     let output_kind =
         resolve_output_kind(link_config.output.kind, None, link_options.output_format);
@@ -1016,7 +949,8 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         objects.push(output.object);
     }
 
-    let resolved_config = resolve_project_link_config_path(&project_root, &manifest, link_options);
+    let resolved_config =
+        resolve_project_link_config_path(&project_root, &manifest, link_options.config.as_deref());
     let mut config = load_link_config(resolved_config.as_deref())?;
     config.output.kind = resolve_output_kind(config.output.kind, None, link_options.output_format);
 
@@ -1052,30 +986,6 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
     })
 }
 
-fn resolve_project_link_config_path(
-    project_root: &Path,
-    manifest: &ProjectManifest,
-    link_options: &LinkPhaseOptions,
-) -> Option<PathBuf> {
-    if let Some(path) = link_options.config.as_deref() {
-        return Some(path.to_path_buf());
-    }
-
-    if let Some(script) = manifest.link.script.as_deref() {
-        if script.is_absolute() {
-            return Some(script.to_path_buf());
-        }
-        return Some(project_root.join(script));
-    }
-
-    let script = project_root.join(PROJECT_DEFAULT_LINK_SCRIPT);
-    if script.exists() {
-        return Some(script);
-    }
-
-    None
-}
-
 fn output_extension(kind: k816_link::OutputKind) -> &'static str {
     match kind {
         k816_link::OutputKind::RawBinary => "bin",
@@ -1100,42 +1010,6 @@ fn object_path_for_source(
     Ok(object_root.join(rel_object))
 }
 
-fn discover_sources(source_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    discover_sources_rec(source_root, &mut out)?;
-    Ok(out)
-}
-
-fn discover_sources_rec(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-    let mut entries = std::fs::read_dir(dir)
-        .with_context(|| format!("failed to read source directory '{}'", dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to read source directory '{}'", dir.display()))?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to inspect '{}'", path.display()))?;
-        if file_type.is_dir() {
-            discover_sources_rec(&path, out)?;
-            continue;
-        }
-        if file_type.is_file() && is_k65_source_path(&path) {
-            out.push(path);
-        }
-    }
-
-    Ok(())
-}
-
-fn is_k65_source_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("k65"))
-}
-
 fn resolve_project_root() -> anyhow::Result<PathBuf> {
     let cwd = env::current_dir().context("failed to resolve current directory")?;
     find_project_root(&cwd).ok_or_else(|| anyhow::anyhow!("No k816.toml found (run k816 init)."))
@@ -1149,16 +1023,6 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn load_project_manifest(project_root: &Path) -> anyhow::Result<ProjectManifest> {
-    let manifest_path = project_root.join(PROJECT_MANIFEST);
-    let text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("failed to read '{}'", manifest_path.display()))?;
-    let manifest: ProjectManifest = toml::from_str(&text)
-        .with_context(|| format!("failed to parse '{}'", manifest_path.display()))?;
-    manifest.validate()?;
-    Ok(manifest)
 }
 
 fn display_project_path(project_root: &Path, path: &Path) -> String {

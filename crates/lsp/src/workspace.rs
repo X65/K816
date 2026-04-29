@@ -164,14 +164,12 @@ impl ServerState {
                     .unwrap_or_else(|| doc.uri.to_string())
             })
             .collect();
-        let sources: Vec<k816_core::LinkCompileInput> = doc_uris
-            .iter()
-            .zip(source_names.iter())
-            .map(|(uri, name)| k816_core::LinkCompileInput {
-                source_name: name.as_str(),
-                source_text: self.documents[uri].text.as_str(),
-            })
-            .collect();
+        let sources = k816_core::LinkCompileInput::from_pairs(
+            doc_uris
+                .iter()
+                .zip(source_names.iter())
+                .map(|(uri, name)| (name.as_str(), self.documents[uri].text.as_str())),
+        );
 
         eprintln!("k816-lsp: compiling {} source(s)", sources.len());
 

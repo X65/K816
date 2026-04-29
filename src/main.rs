@@ -937,15 +937,13 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         loaded_sources.push((object_path, source.display().to_string(), source_text));
     }
 
-    let compile_inputs = loaded_sources
-        .iter()
-        .map(
-            |(_object_path, source_name, source_text)| k816_core::LinkCompileInput {
-                source_name,
-                source_text,
-            },
-        )
-        .collect::<Vec<_>>();
+    let compile_inputs = k816_core::LinkCompileInput::from_pairs(
+        loaded_sources
+            .iter()
+            .map(|(_object_path, source_name, source_text)| {
+                (source_name.as_str(), source_text.as_str())
+            }),
+    );
     let compile_outputs =
         k816_core::compile_sources_all_or_nothing(&compile_inputs, auto_compile_render())
             .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;

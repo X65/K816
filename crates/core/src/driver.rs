@@ -63,6 +63,24 @@ pub struct LinkCompileInput<'a> {
     pub source_text: &'a str,
 }
 
+impl<'a> LinkCompileInput<'a> {
+    /// Collect `(source_name, source_text)` borrows into a `Vec` ready for the
+    /// multi-source compile entry points. Centralised so CLI and LSP construct
+    /// inputs identically and the struct can grow fields without churning callers.
+    pub fn from_pairs<I>(pairs: I) -> Vec<Self>
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        pairs
+            .into_iter()
+            .map(|(source_name, source_text)| Self {
+                source_name,
+                source_text,
+            })
+            .collect()
+    }
+}
+
 /// Cross-unit symbols collected once per multi-source compile. Threaded into
 /// each per-file compile so `lower` and `analyze_partial` can resolve symbols
 /// declared in other translation units in the same link group.

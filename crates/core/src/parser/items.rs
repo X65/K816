@@ -73,6 +73,7 @@ where
             items,
             comments: Vec::new(),
         })
+        .boxed()
 }
 
 fn item_parser<'src, I>(
@@ -191,6 +192,7 @@ where
             }
             contract
         })
+        .boxed()
 }
 
 fn code_block_parser<'src, I>(
@@ -271,14 +273,16 @@ where
                 Some(reg) => ContractParam::Register(reg),
                 None => ContractParam::Alias(name),
             }),
-        );
+        )
+        .boxed();
     let params = just(TokenKind::LParen)
         .ignore_then(
             contract_param
                 .separated_by(just(TokenKind::Comma))
                 .collect::<Vec<_>>(),
         )
-        .then_ignore(just(TokenKind::RParen));
+        .then_ignore(just(TokenKind::RParen))
+        .boxed();
     let arrow_clause = just(TokenKind::Arrow)
         .ignore_then(
             mode_annotation_parser().then(
@@ -300,7 +304,8 @@ where
                 (exit_contract != ModeContract::default()).then_some(exit_contract),
                 outputs.unwrap_or_default(),
             )
-        });
+        })
+        .boxed();
     let contract_clause = params
         .then(arrow_clause.clone().or_not())
         .map(|(params, arrow)| {
@@ -309,7 +314,8 @@ where
         })
         .or(arrow_clause.map(|(exit_contract, outputs)| (true, Vec::new(), exit_contract, outputs)))
         .or_not()
-        .map(|clause| clause.unwrap_or((false, Vec::new(), None, Vec::new())));
+        .map(|clause| clause.unwrap_or((false, Vec::new(), None, Vec::new())))
+        .boxed();
 
     let func = just(TokenKind::Func)
         .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
@@ -339,18 +345,22 @@ where
                     body,
                 }
             },
-        );
+        )
+        .boxed();
 
-    let explicit_block = modifiers.then(func).map(|(mods, mut block)| {
-        for modifier in mods {
-            match modifier {
-                Modifier::Far => block.is_far = true,
-                Modifier::Naked => block.is_naked = true,
-                Modifier::Inline => block.is_inline = true,
+    let explicit_block = modifiers
+        .then(func)
+        .map(|(mods, mut block)| {
+            for modifier in mods {
+                match modifier {
+                    Modifier::Far => block.is_far = true,
+                    Modifier::Naked => block.is_naked = true,
+                    Modifier::Inline => block.is_inline = true,
+                }
             }
-        }
-        block
-    });
+            block
+        })
+        .boxed();
 
     let implicit_func = required_modifiers
         .then(ident_parser().map_with(|name, extra| (name, extra.span())))
@@ -388,7 +398,8 @@ where
                 }
                 block
             },
-        );
+        )
+        .boxed();
 
     explicit_block.or(implicit_func).boxed()
 }

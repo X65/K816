@@ -40,7 +40,7 @@ where
         })
     });
 
-    let goto_stmt = goto_indirect.or(goto_direct);
+    let goto_stmt = goto_indirect.or(goto_direct).boxed();
 
     let question_flag_goto = chumsky::select! {
         TokenKind::Ident(value) if value.chars().count() == 1 => value
@@ -79,7 +79,8 @@ where
             target,
             form: HlaBranchForm::FlagQuestion,
         }))
-    });
+    })
+    .boxed();
 
     let v_flag_goto =
         chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
@@ -117,16 +118,18 @@ where
             target,
             form,
         })
-    });
+    })
+    .boxed();
 
-    let branch_goto_stmt = question_flag_goto.or(symbolic_branch_goto_stmt);
+    let branch_goto_stmt = question_flag_goto.or(symbolic_branch_goto_stmt).boxed();
 
     let return_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("return") || value.eq_ignore_ascii_case("return_i") => value
     }
     .map(|keyword| Stmt::Hla(HlaStmt::Return {
         interrupt: keyword.eq_ignore_ascii_case("return_i"),
-    }));
+    }))
+    .boxed();
 
     let far_goto_stmt = just(TokenKind::Far)
         .ignore_then(goto_kw)
@@ -137,7 +140,8 @@ where
                 indirect: false,
                 far: true,
             })
-        });
+        })
+        .boxed();
 
     let far_call_stmt = just(TokenKind::Far)
         .ignore_then(ident_parser())
@@ -149,7 +153,8 @@ where
                 outputs: Vec::new(),
                 is_bare: false,
             })
-        });
+        })
+        .boxed();
 
     let break_kw =
         chumsky::select! { TokenKind::Ident(v) if v.eq_ignore_ascii_case("break") => () };
@@ -194,7 +199,8 @@ where
         conditional_repeat,
         unconditional_break,
         unconditional_repeat,
-    ));
+    ))
+    .boxed();
 
     choice((
         goto_stmt,
@@ -204,6 +210,7 @@ where
         far_call_stmt,
         break_repeat_stmt,
     ))
+    .boxed()
 }
 
 pub(super) fn invalid_flag_goto_stmt_parser<'src, I>()
@@ -238,6 +245,7 @@ where
             format!("unsupported flag shorthand '{flag}{sign}?'"),
         ))
     })
+    .boxed()
 }
 
 pub(super) fn nop_stmt_parser<'src, I>()
@@ -249,6 +257,7 @@ where
         .ignore_then(number_parser().map(|n| n.value).or_not())
         .map(|count| Stmt::Hla(HlaStmt::RepeatNop(count.unwrap_or(1) as usize)))
         .or(just(TokenKind::Percent).to(Stmt::Hla(HlaStmt::RepeatNop(1))))
+        .boxed()
 }
 
 pub(super) fn discard_stmt_parser<'src, I>()
@@ -300,5 +309,5 @@ where
             Stmt::Empty
         });
 
-    choice((preprocessor, data_keyword, generic))
+    choice((preprocessor, data_keyword, generic)).boxed()
 }

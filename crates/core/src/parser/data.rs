@@ -105,7 +105,8 @@ where
 {
     let segment_entry = just(TokenKind::Segment)
         .ignore_then(ident_parser())
-        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
+        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }))
+        .boxed();
 
     let ident_entry = ident_parser()
         .then(
@@ -120,19 +121,19 @@ where
                 emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
                 NamedDataEntry::Bytes(vec![])
             }
-        });
+        })
+        .boxed();
 
-    let address_entry =
-        just(TokenKind::Address)
-            .ignore_then(expr_parser())
-            .try_map(|value, span| {
-                let value = eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "address value must be a constant expression")
-                })?;
-                u32::try_from(value)
-                    .map(NamedDataEntry::Address)
-                    .map_err(|_| Rich::custom(span, "address value must fit in u32"))
-            });
+    let address_entry = just(TokenKind::Address)
+        .ignore_then(expr_parser())
+        .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
+            u32::try_from(value)
+                .map(NamedDataEntry::Address)
+                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+        })
+        .boxed();
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
@@ -142,7 +143,8 @@ where
             u16::try_from(value)
                 .map(NamedDataEntry::Align)
                 .map_err(|_| Rich::custom(span, "align value must fit in u16"))
-        });
+        })
+        .boxed();
 
     let nocross_entry = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
@@ -156,39 +158,43 @@ where
             u16::try_from(value)
                 .map(NamedDataEntry::Nocross)
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
-        });
+        })
+        .boxed();
 
-    let string_entry =
-        chumsky::select! { TokenKind::String(value) => value }.map(NamedDataEntry::String);
+    let string_entry = chumsky::select! { TokenKind::String(value) => value }
+        .map(NamedDataEntry::String)
+        .boxed();
 
-    let address_byte_expr = just(TokenKind::Amp).ignore_then(choice((
-        just(TokenKind::Lt).ignore_then(expr_parser()).map(|expr| {
-            vec![Expr::Unary {
-                op: ExprUnaryOp::LowByte,
-                expr: Box::new(expr),
-            }]
-        }),
-        just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
-            vec![Expr::Unary {
-                op: ExprUnaryOp::HighByte,
-                expr: Box::new(expr),
-            }]
-        }),
-        just(TokenKind::Amp).ignore_then(choice((
-            just(TokenKind::Amp).ignore_then(expr_parser()).map(|expr| {
+    let address_byte_expr = just(TokenKind::Amp)
+        .ignore_then(choice((
+            just(TokenKind::Lt).ignore_then(expr_parser()).map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::FarLittleEndian,
+                    op: ExprUnaryOp::LowByte,
                     expr: Box::new(expr),
                 }]
             }),
-            expr_parser().map(|expr| {
+            just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::WordLittleEndian,
+                    op: ExprUnaryOp::HighByte,
                     expr: Box::new(expr),
                 }]
             }),
-        ))),
-    )));
+            just(TokenKind::Amp).ignore_then(choice((
+                just(TokenKind::Amp).ignore_then(expr_parser()).map(|expr| {
+                    vec![Expr::Unary {
+                        op: ExprUnaryOp::FarLittleEndian,
+                        expr: Box::new(expr),
+                    }]
+                }),
+                expr_parser().map(|expr| {
+                    vec![Expr::Unary {
+                        op: ExprUnaryOp::WordLittleEndian,
+                        expr: Box::new(expr),
+                    }]
+                }),
+            ))),
+        )))
+        .boxed();
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
 
@@ -201,7 +207,8 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
+        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .boxed();
 
     let word_value = choice((
         number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
@@ -214,7 +221,8 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
+    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .boxed();
 
     let bytes_entry = choice((
         number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
@@ -224,14 +232,16 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
+    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .boxed();
 
     let eval_bytes_entry =
         chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(NamedDataEntry::Bytes);
+            .map(NamedDataEntry::Bytes)
+            .boxed();
 
     let for_eval_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("for") => ()
@@ -252,7 +262,8 @@ where
             end,
             eval,
         })
-    });
+    })
+    .boxed();
 
     let separators_data = line_sep_parser().repeated();
 
@@ -275,6 +286,7 @@ where
                     .collect::<Vec<_>>(),
             )
             .then_ignore(just(TokenKind::RBrace))
+            .boxed()
     };
 
     let repeat_entry = chumsky::select! {
@@ -288,7 +300,8 @@ where
         let count =
             u16::try_from(count).map_err(|_| Rich::custom(span, "repeat count must fit in u16"))?;
         Ok(NamedDataEntry::Repeat { count, body })
-    });
+    })
+    .boxed();
 
     let code_body = {
         let stmt = spanned(stmt_parser(source_id, Arc::new(HashSet::new())), source_id);
@@ -307,6 +320,7 @@ where
                     .collect::<Vec<_>>(),
             )
             .then_ignore(just(TokenKind::RBrace))
+            .boxed()
     };
 
     let code_entry = just(TokenKind::Nocross)
@@ -315,19 +329,22 @@ where
             TokenKind::Ident(value) if value.eq_ignore_ascii_case("code") => ()
         })
         .ignore_then(code_body)
-        .map(NamedDataEntry::Code);
+        .map(NamedDataEntry::Code)
+        .boxed();
 
     let evaluator_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("evaluator") => ()
     }
     .ignore_then(chumsky::select! { TokenKind::Eval(value) => value })
-    .map(NamedDataEntry::Evaluator);
+    .map(NamedDataEntry::Evaluator)
+    .boxed();
 
     let charset_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset") => ()
     }
     .ignore_then(chumsky::select! { TokenKind::String(value) => value })
-    .map(NamedDataEntry::Charset);
+    .map(NamedDataEntry::Charset)
+    .boxed();
 
     choice((
         string_entry,
@@ -356,7 +373,8 @@ where
 {
     let segment_entry = just(TokenKind::Segment)
         .ignore_then(ident_parser())
-        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }));
+        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }))
+        .boxed();
 
     let ident_entry = ident_parser()
         .then(
@@ -371,19 +389,19 @@ where
                 emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
                 NamedDataEntry::Bytes(vec![])
             }
-        });
+        })
+        .boxed();
 
-    let address_entry =
-        just(TokenKind::Address)
-            .ignore_then(expr_parser())
-            .try_map(|value, span| {
-                let value = eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "address value must be a constant expression")
-                })?;
-                u32::try_from(value)
-                    .map(NamedDataEntry::Address)
-                    .map_err(|_| Rich::custom(span, "address value must fit in u32"))
-            });
+    let address_entry = just(TokenKind::Address)
+        .ignore_then(expr_parser())
+        .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
+            u32::try_from(value)
+                .map(NamedDataEntry::Address)
+                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+        })
+        .boxed();
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
@@ -393,7 +411,8 @@ where
             u16::try_from(value)
                 .map(NamedDataEntry::Align)
                 .map_err(|_| Rich::custom(span, "align value must fit in u16"))
-        });
+        })
+        .boxed();
 
     let nocross_entry = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
@@ -407,39 +426,43 @@ where
             u16::try_from(value)
                 .map(NamedDataEntry::Nocross)
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
-        });
+        })
+        .boxed();
 
-    let string_entry =
-        chumsky::select! { TokenKind::String(value) => value }.map(NamedDataEntry::String);
+    let string_entry = chumsky::select! { TokenKind::String(value) => value }
+        .map(NamedDataEntry::String)
+        .boxed();
 
-    let address_byte_expr = just(TokenKind::Amp).ignore_then(choice((
-        just(TokenKind::Lt).ignore_then(expr_parser()).map(|expr| {
-            vec![Expr::Unary {
-                op: ExprUnaryOp::LowByte,
-                expr: Box::new(expr),
-            }]
-        }),
-        just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
-            vec![Expr::Unary {
-                op: ExprUnaryOp::HighByte,
-                expr: Box::new(expr),
-            }]
-        }),
-        just(TokenKind::Amp).ignore_then(choice((
-            just(TokenKind::Amp).ignore_then(expr_parser()).map(|expr| {
+    let address_byte_expr = just(TokenKind::Amp)
+        .ignore_then(choice((
+            just(TokenKind::Lt).ignore_then(expr_parser()).map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::FarLittleEndian,
+                    op: ExprUnaryOp::LowByte,
                     expr: Box::new(expr),
                 }]
             }),
-            expr_parser().map(|expr| {
+            just(TokenKind::Gt).ignore_then(expr_parser()).map(|expr| {
                 vec![Expr::Unary {
-                    op: ExprUnaryOp::WordLittleEndian,
+                    op: ExprUnaryOp::HighByte,
                     expr: Box::new(expr),
                 }]
             }),
-        ))),
-    )));
+            just(TokenKind::Amp).ignore_then(choice((
+                just(TokenKind::Amp).ignore_then(expr_parser()).map(|expr| {
+                    vec![Expr::Unary {
+                        op: ExprUnaryOp::FarLittleEndian,
+                        expr: Box::new(expr),
+                    }]
+                }),
+                expr_parser().map(|expr| {
+                    vec![Expr::Unary {
+                        op: ExprUnaryOp::WordLittleEndian,
+                        expr: Box::new(expr),
+                    }]
+                }),
+            ))),
+        )))
+        .boxed();
 
     let undef_byte = just(TokenKind::Question).to(vec![Expr::Number(0, NumFmt::Dec)]);
 
@@ -452,7 +475,8 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()));
+        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .boxed();
 
     let word_value = choice((
         number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
@@ -465,7 +489,8 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()));
+    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .boxed();
 
     let bytes_entry = choice((
         number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
@@ -475,20 +500,23 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()));
+    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .boxed();
 
     let eval_bytes_entry =
         chumsky::select! { TokenKind::Eval(value) => parse_eval_expr_token(&value) }
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(NamedDataEntry::Bytes);
+            .map(NamedDataEntry::Bytes)
+            .boxed();
 
     let charset_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset") => ()
     }
     .ignore_then(chumsky::select! { TokenKind::String(value) => value })
-    .map(NamedDataEntry::Charset);
+    .map(NamedDataEntry::Charset)
+    .boxed();
 
     choice((
         string_entry,
@@ -586,11 +614,13 @@ pub(super) fn data_width_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Colon).ignore_then(chumsky::select! {
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => DataWidth::Byte,
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => DataWidth::Word,
-        TokenKind::Far => DataWidth::Far,
-    })
+    just(TokenKind::Colon)
+        .ignore_then(chumsky::select! {
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => DataWidth::Byte,
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => DataWidth::Word,
+            TokenKind::Far => DataWidth::Far,
+        })
+        .boxed()
 }
 
 pub(super) fn address_hint_parser<'src, I>()
@@ -598,9 +628,11 @@ pub(super) fn address_hint_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Colon).ignore_then(chumsky::select! {
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("abs") => AddressHint::ForceAbsolute16,
-    })
+    just(TokenKind::Colon)
+        .ignore_then(chumsky::select! {
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("abs") => AddressHint::ForceAbsolute16,
+        })
+        .boxed()
 }
 
 pub(super) fn metadata_query_parser<'src, I>()
@@ -608,8 +640,10 @@ pub(super) fn metadata_query_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Colon).ignore_then(chumsky::select! {
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("sizeof") => MetadataQuery::SizeOf,
-        TokenKind::Ident(value) if value.eq_ignore_ascii_case("offsetof") => MetadataQuery::OffsetOf,
-    })
+    just(TokenKind::Colon)
+        .ignore_then(chumsky::select! {
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("sizeof") => MetadataQuery::SizeOf,
+            TokenKind::Ident(value) if value.eq_ignore_ascii_case("offsetof") => MetadataQuery::OffsetOf,
+        })
+        .boxed()
 }

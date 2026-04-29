@@ -62,7 +62,8 @@ where
             just(TokenKind::LParen)
                 .ignore_then(expr.clone())
                 .then_ignore(just(TokenKind::RParen)),
-        ));
+        ))
+        .boxed();
 
         // Collect sequences of [.field] eval suffixes interleaved with trailing .ident tokens.
         // This handles forms like TASKS[.message].from where `.from` is a separate Ident token
@@ -87,7 +88,8 @@ where
                     };
                 }
                 Ok(result)
-            });
+            })
+            .boxed();
 
         // Metadata queries (:sizeof, :offsetof) bind tightly at atom level
         // so that `TASKS:sizeof + 1` parses as `(TASKS:sizeof) + 1`.
@@ -99,7 +101,8 @@ where
                     query,
                 },
                 None => expr,
-            });
+            })
+            .boxed();
 
         // Address-of prefix operators on code expressions, mirroring the data-
         // block prefix syntax (see `parser/data.rs`):
@@ -129,7 +132,8 @@ where
                     };
                 }
                 inner
-            });
+            })
+            .boxed();
 
         let mul_expr = unary
             .clone()
@@ -146,7 +150,8 @@ where
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 })
-            });
+            })
+            .boxed();
 
         mul_expr
             .clone()
@@ -270,6 +275,7 @@ where
         .ignore_then(expr)
         .then_ignore(line_sep_parser().repeated())
         .then_ignore(end())
+        .boxed()
 }
 
 pub(super) fn parse_eval_expr_token(value: &str) -> Expr {

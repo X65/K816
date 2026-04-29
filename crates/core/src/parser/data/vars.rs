@@ -187,11 +187,13 @@ where
         .repeated()
         .at_least(1)
         .collect::<Vec<_>>()
-        .map(VarBracketPayload::SymbolicSubscriptFields);
+        .map(VarBracketPayload::SymbolicSubscriptFields)
+        .boxed();
 
     let array_len = expr_parser()
         .then_ignore(seps.clone())
-        .map(VarBracketPayload::ArrayLen);
+        .map(VarBracketPayload::ArrayLen)
+        .boxed();
 
     just(TokenKind::LBracket)
         .ignore_then(seps)
@@ -281,5 +283,5 @@ where
         just(TokenKind::GtGtEq).to(("bvs", HlaBranchForm::Symbolic)),
     ));
 
-    choice((c_flag, z_flag, n_flag, v_flag, cmp_based))
+    choice((c_flag, z_flag, n_flag, v_flag, cmp_based)).boxed()
 }

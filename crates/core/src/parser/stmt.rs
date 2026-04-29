@@ -38,7 +38,7 @@ pub(super) fn zero_number_token<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! { TokenKind::Number(NumLit { value: 0, .. }) => () }
+    chumsky::select! { TokenKind::Number(NumLit { value: 0, .. }) => () }.boxed()
 }
 
 pub(super) fn stmt_parser<'src, I>(
@@ -50,25 +50,26 @@ where
 {
     let segment_stmt = just(TokenKind::Segment)
         .ignore_then(ident_parser())
-        .map(|name| Stmt::Segment(SegmentDecl { name }));
+        .map(|name| Stmt::Segment(SegmentDecl { name }))
+        .boxed();
 
-    let var_stmt = var_decl_parser(source_id).map(Stmt::Var);
+    let var_stmt = var_decl_parser(source_id).map(Stmt::Var).boxed();
 
     let data_stmt = just(TokenKind::Data)
         .ignore_then(data_block_parser(source_id))
-        .map(Stmt::DataBlock);
+        .map(Stmt::DataBlock)
+        .boxed();
 
-    let address_stmt =
-        just(TokenKind::Address)
-            .ignore_then(expr_parser())
-            .try_map(|value, span| {
-                let value = eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "address value must be a constant expression")
-                })?;
-                u32::try_from(value)
-                    .map(Stmt::Address)
-                    .map_err(|_| Rich::custom(span, "address value must fit in u32"))
-            });
+    let address_stmt = just(TokenKind::Address)
+        .ignore_then(expr_parser())
+        .try_map(|value, span| {
+            let value = eval_static_expr(&value)
+                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
+            u32::try_from(value)
+                .map(Stmt::Address)
+                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+        })
+        .boxed();
 
     let align_stmt = just(TokenKind::Align)
         .ignore_then(expr_parser())
@@ -89,7 +90,8 @@ where
                 None => 0,
             };
             Ok(Stmt::Align { boundary, offset })
-        });
+        })
+        .boxed();
 
     let nocross_stmt = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
@@ -103,7 +105,8 @@ where
             u16::try_from(value)
                 .map(Stmt::Nocross)
                 .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
-        });
+        })
+        .boxed();
 
     let call_stmt = just(TokenKind::Call)
         .ignore_then(just(TokenKind::Far).or_not())
@@ -116,11 +119,13 @@ where
                 outputs: Vec::new(),
                 is_bare: false,
             })
-        });
+        })
+        .boxed();
 
     let label_stmt = ident_parser()
         .then_ignore(just(TokenKind::Colon))
-        .map(|name| Stmt::Label(LabelDecl { name }));
+        .map(|name| Stmt::Label(LabelDecl { name }))
+        .boxed();
 
     let call_reg = ident_parser().try_map(|name, span| {
         parse_contract_register(&name).ok_or_else(|| {
@@ -181,7 +186,8 @@ where
                 outputs: outputs.unwrap_or_default(),
                 is_bare: true,
             })
-        });
+        })
+        .boxed();
 
     let hla_wait_stmt = hla_wait_loop_stmt_parser();
     let hla_do_open_stmt = just(TokenKind::LBrace).to(Stmt::Hla(HlaStmt::DoOpen));
@@ -193,12 +199,14 @@ where
             .to(Stmt::Hla(HlaStmt::DoCloseAlways)),
         chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => () }
             .to(Stmt::Hla(HlaStmt::DoCloseNever)),
-    ));
+    ))
+    .boxed();
     let hla_do_close_stmt = just(TokenKind::RBrace)
         .then(hla_do_close_suffix.clone().or_not())
         .rewind()
         .try_map(|(_, suffix), span| suffix.ok_or_else(|| Rich::custom(span, "unexpected '}'")))
-        .ignore_then(just(TokenKind::RBrace).ignore_then(hla_do_close_suffix));
+        .ignore_then(just(TokenKind::RBrace).ignore_then(hla_do_close_suffix))
+        .boxed();
     let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();
     let hla_x_assign_stmt = hla_x_assign_stmt_parser();
     let hla_x_increment_stmt = hla_x_increment_stmt_parser();
@@ -233,7 +241,8 @@ where
             a_width: None,
             i_width: Some(RegWidth::W16),
         }),
-    ));
+    ))
+    .boxed();
 
     let swap_ab_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("b") || value.eq_ignore_ascii_case("a") => value
@@ -242,7 +251,8 @@ where
     .then(chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") || value.eq_ignore_ascii_case("b") => ()
     })
-    .to(Stmt::SwapAB);
+    .to(Stmt::SwapAB)
+    .boxed();
 
     let mnemonic = ident_parser().try_map(|mnemonic, _span| Ok(mnemonic));
 
@@ -278,7 +288,8 @@ where
                 index: None,
                 addr_mode,
             }))
-        });
+        })
+        .boxed();
 
     let parenthesized_operand = just(TokenKind::LParen)
         .ignore_then(expr_parser().then(operand_index_trailer.clone().or_not()))
@@ -305,7 +316,8 @@ where
                 index: None,
                 addr_mode,
             }))
-        });
+        })
+        .boxed();
 
     let direct_operand = just(TokenKind::Far)
         .or_not()
@@ -339,13 +351,17 @@ where
                 index: None,
                 addr_mode: OperandAddrMode::Direct,
             }),
-        });
-    let immediate_operand = just(TokenKind::Hash).ignore_then(expr_parser()).map(|expr| {
-        Some(Operand::Immediate {
-            expr,
-            explicit_hash: true,
         })
-    });
+        .boxed();
+    let immediate_operand = just(TokenKind::Hash)
+        .ignore_then(expr_parser())
+        .map(|expr| {
+            Some(Operand::Immediate {
+                expr,
+                explicit_hash: true,
+            })
+        })
+        .boxed();
     let operand = choice((
         operand_boundary.to(None),
         immediate_operand,
@@ -356,7 +372,8 @@ where
 
     let instruction = mnemonic
         .then(operand)
-        .map(|(mnemonic, operand)| Stmt::Instruction(Instruction { mnemonic, operand }));
+        .map(|(mnemonic, operand)| Stmt::Instruction(Instruction { mnemonic, operand }))
+        .boxed();
 
     let separators_inner = line_sep_parser().repeated();
 
@@ -414,13 +431,15 @@ where
                         .repeated()
                         .collect::<Vec<_>>(),
                 )
-                .then_ignore(just(TokenKind::RBrace));
+                .then_ignore(just(TokenKind::RBrace))
+                .boxed();
 
             let else_body_inner = chumsky::select! {
                 TokenKind::Ident(value) if value.eq_ignore_ascii_case("else") => ()
             }
             .ignore_then(block_body.clone())
-            .or_not();
+            .or_not()
+            .boxed();
 
             let prefix_conditional = prefix_condition_parser()
                 .then(block_body.clone())
@@ -432,7 +451,8 @@ where
                         body,
                         else_body,
                     })
-                });
+                })
+                .boxed();
 
             let mode_scoped_block = mode_annotation_parser()
                 .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
@@ -441,16 +461,19 @@ where
                     a_width: contract.a_width,
                     i_width: contract.i_width,
                     body,
-                });
+                })
+                .boxed();
 
             let never_block = chumsky::select! {
                 TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => ()
             }
             .ignore_then(block_body)
-            .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
+            .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }))
+            .boxed();
 
             let inner_stmt =
-                choice((mode_scoped_block, prefix_conditional, never_block, flat_stmt_inner));
+                choice((mode_scoped_block, prefix_conditional, never_block, flat_stmt_inner))
+                    .boxed();
 
             spanned(inner_stmt, source_id)
         });
@@ -464,13 +487,15 @@ where
                 .repeated()
                 .collect::<Vec<_>>(),
         )
-        .then_ignore(just(TokenKind::RBrace));
+        .then_ignore(just(TokenKind::RBrace))
+        .boxed();
 
     let else_body_top = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("else") => ()
     }
     .ignore_then(block_body_top.clone())
-    .or_not();
+    .or_not()
+    .boxed();
 
     let prefix_conditional_top = prefix_condition_parser()
         .then(block_body_top.clone())
@@ -482,7 +507,8 @@ where
                 body,
                 else_body,
             })
-        });
+        })
+        .boxed();
 
     let mode_scoped_block_top = mode_annotation_parser()
         .filter(|c: &ModeContract| c.a_width.is_some() || c.i_width.is_some())
@@ -491,13 +517,15 @@ where
             a_width: contract.a_width,
             i_width: contract.i_width,
             body,
-        });
+        })
+        .boxed();
 
     let never_block_top = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("never") => ()
     }
     .ignore_then(block_body_top)
-    .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }));
+    .map(|body| Stmt::Hla(HlaStmt::NeverBlock { body }))
+    .boxed();
 
     choice((
         mode_scoped_block_top,

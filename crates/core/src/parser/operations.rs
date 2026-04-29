@@ -46,6 +46,7 @@ where
             }
             Ok(Stmt::Hla(HlaStmt::WaitLoopWhileNFlagClear { symbol }))
         })
+        .boxed()
 }
 
 pub(super) fn hla_x_assign_stmt_parser<'src, I>()
@@ -53,7 +54,9 @@ pub(super) fn hla_x_assign_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    chumsky::select! { TokenKind::Ident(value) if false => value }.map(|_: String| Stmt::Empty)
+    chumsky::select! { TokenKind::Ident(value) if false => value }
+        .map(|_: String| Stmt::Empty)
+        .boxed()
 }
 
 pub(super) fn hla_x_increment_stmt_parser<'src, I>()
@@ -72,6 +75,7 @@ where
             }
             Ok(Stmt::Hla(HlaStmt::XIncrement))
         })
+        .boxed()
 }
 
 fn hla_store_rhs_parser<'src, I>() -> impl chumsky::Parser<'src, I, HlaRhs, ParseExtra<'src>> + Clone
@@ -130,6 +134,7 @@ where
                 store_end: Some(middle.span.end),
             }))
         })
+        .boxed()
 }
 
 pub(super) fn chain_stmt_parser<'src, I>()
@@ -158,7 +163,8 @@ where
                 idents: operands,
                 tail_expr: None,
             })
-        });
+        })
+        .boxed();
 
     let with_expr = ident_parser()
         .then_ignore(just(TokenKind::Eq))
@@ -171,9 +177,10 @@ where
                 idents,
                 tail_expr: Some(rhs),
             })
-        });
+        })
+        .boxed();
 
-    all_ident.or(with_expr)
+    all_ident.or(with_expr).boxed()
 }
 
 pub(super) fn assign_stmt_parser<'src, I>()
@@ -216,7 +223,8 @@ where
             },
         ));
         Stmt::Empty
-    });
+    })
+    .boxed();
 
     let register_load = chumsky::select! {
         TokenKind::Ident(value) if is_register_name(&value) => value
@@ -249,9 +257,10 @@ where
             register,
             rhs: parsed,
         })
-    });
+    })
+    .boxed();
 
-    register_transfer.or(register_load)
+    register_transfer.or(register_load).boxed()
 }
 
 pub(super) fn store_stmt_parser<'src, I>()
@@ -284,6 +293,7 @@ where
                 }
             }
         })
+        .boxed()
 }
 
 fn register_from_bare_ident(rhs: &Expr) -> Option<HlaCpuRegister> {
@@ -314,7 +324,8 @@ where
     .then_ignore(just(TokenKind::Amp))
     .then_ignore(just(TokenKind::Question))
     .ignore_then(operand_expr_parser())
-    .map(|rhs| Stmt::Hla(HlaStmt::AccumulatorBitTest { rhs }));
+    .map(|rhs| Stmt::Hla(HlaStmt::AccumulatorBitTest { rhs }))
+    .boxed();
 
     let a_alu = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") => ()
@@ -327,7 +338,8 @@ where
         just(TokenKind::Caret).to(HlaAluOp::Xor),
     )))
     .then(operand_expr_parser())
-    .map(|(op, rhs)| Stmt::Hla(HlaStmt::AccumulatorAlu { op, rhs }));
+    .map(|(op, rhs)| Stmt::Hla(HlaStmt::AccumulatorAlu { op, rhs }))
+    .boxed();
 
     let xy_cmp = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("x") || value.eq_ignore_ascii_case("y") => value
@@ -343,7 +355,7 @@ where
         Stmt::Hla(HlaStmt::IndexCompare { register, rhs })
     });
 
-    choice((a_bit, a_alu, xy_cmp))
+    choice((a_bit, a_alu, xy_cmp)).boxed()
 }
 
 pub(super) fn incdec_stmt_parser<'src, I>()
@@ -365,7 +377,8 @@ where
                     addr_mode: OperandAddrMode::Direct,
                 }),
             }))
-        });
+        })
+        .boxed();
 
     let indexed_dec = ident_parser()
         .then_ignore(just(TokenKind::Comma))
@@ -382,7 +395,8 @@ where
                     addr_mode: OperandAddrMode::Direct,
                 }),
             }))
-        });
+        })
+        .boxed();
 
     let inc = ident_parser()
         .then_ignore(just(TokenKind::PlusPlus))
@@ -407,7 +421,8 @@ where
                     addr_mode: OperandAddrMode::Direct,
                 }),
             })
-        });
+        })
+        .boxed();
 
     let dec = ident_parser()
         .then_ignore(just(TokenKind::Minus))
@@ -433,9 +448,10 @@ where
                     addr_mode: OperandAddrMode::Direct,
                 }),
             })
-        });
+        })
+        .boxed();
 
-    choice((indexed_inc, indexed_dec, inc, dec))
+    choice((indexed_inc, indexed_dec, inc, dec)).boxed()
 }
 
 pub(super) fn shift_stmt_parser<'src, I>()
@@ -474,27 +490,31 @@ where
                     addr_mode: OperandAddrMode::Direct,
                 }),
             }))
-        });
+        })
+        .boxed();
 
-    let plain = ident_parser().then(shift_op).map(|(target, op)| {
-        if target.eq_ignore_ascii_case("a") {
-            Stmt::Hla(HlaStmt::ShiftRotate {
-                op,
-                target: HlaShiftTarget::Accumulator,
-            })
-        } else {
-            Stmt::Hla(HlaStmt::ShiftRotate {
-                op,
-                target: HlaShiftTarget::Address(HlaOperandExpr {
-                    expr: Expr::Ident(target),
-                    index: None,
-                    addr_mode: OperandAddrMode::Direct,
-                }),
-            })
-        }
-    });
+    let plain = ident_parser()
+        .then(shift_op)
+        .map(|(target, op)| {
+            if target.eq_ignore_ascii_case("a") {
+                Stmt::Hla(HlaStmt::ShiftRotate {
+                    op,
+                    target: HlaShiftTarget::Accumulator,
+                })
+            } else {
+                Stmt::Hla(HlaStmt::ShiftRotate {
+                    op,
+                    target: HlaShiftTarget::Address(HlaOperandExpr {
+                        expr: Expr::Ident(target),
+                        index: None,
+                        addr_mode: OperandAddrMode::Direct,
+                    }),
+                })
+            }
+        })
+        .boxed();
 
-    indexed.or(plain)
+    indexed.or(plain).boxed()
 }
 
 pub(super) fn flag_stmt_parser<'src, I>()
@@ -547,6 +567,7 @@ where
                 )),
             }
         })
+        .boxed()
 }
 
 pub(super) fn stack_stmt_parser<'src, I>()
@@ -574,4 +595,5 @@ where
             };
             Stmt::Hla(HlaStmt::StackOp { target, push })
         })
+        .boxed()
 }

@@ -22,6 +22,7 @@ where
         just(TokenKind::Lt).to(HlaCompareOp::Lt),
         just(TokenKind::Gt).to(HlaCompareOp::Gt),
     ))
+    .boxed()
 }
 
 pub(super) fn hla_flag_close_stmt_parser<'src, I>()
@@ -87,7 +88,7 @@ where
         .to(do_close_branch("bvs"))
         .or(just(TokenKind::GtGtEq).to(do_close_branch("bvc")));
 
-    choice((n_flag, c_flag, z_flag, v_flag, signed_cmp, overflow_cmp))
+    choice((n_flag, c_flag, z_flag, v_flag, signed_cmp, overflow_cmp)).boxed()
 }
 
 pub(super) fn hla_condition_seed_stmt_parser<'src, I>()
@@ -104,6 +105,7 @@ where
                 rhs: parsed,
             })
         })
+        .boxed()
 }
 
 pub(super) fn hla_condition_parser<'src, I>()
@@ -131,4 +133,5 @@ where
             rhs,
             seed_span: None,
         })
+        .boxed()
 }

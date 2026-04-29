@@ -29,6 +29,7 @@ where
             name_span,
             initializer,
         })
+        .boxed()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,5 +123,7 @@ where
             })
         });
 
-    chumsky::primitive::just(TokenKind::Const).ignore_then(bindings)
+    chumsky::primitive::just(TokenKind::Const)
+        .ignore_then(bindings)
+        .boxed()
 }

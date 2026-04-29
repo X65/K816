@@ -18,7 +18,7 @@ pub(super) fn line_sep_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Newline).or(just(TokenKind::Semi))
+    just(TokenKind::Newline).or(just(TokenKind::Semi)).boxed()
 }
 
 pub(super) fn line_tail_parser<'src, I>()
@@ -30,6 +30,7 @@ where
         .filter(|token: &TokenKind| !matches!(token, TokenKind::Newline | TokenKind::Semi))
         .repeated()
         .collect::<Vec<_>>()
+        .boxed()
 }
 
 pub(super) fn ident_parser<'src, I>()

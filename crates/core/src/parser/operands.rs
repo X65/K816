@@ -100,5 +100,5 @@ where
             })
         });
 
-    long_indirect.or(parenthesized).or(plain)
+    long_indirect.or(parenthesized).or(plain).boxed()
 }

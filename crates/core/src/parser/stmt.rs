@@ -8,13 +8,13 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, choice, end, just},
+    prelude::{SimpleSpan, choice, just},
 };
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::ParseExtra;
-use super::common::{ident_parser, line_sep_parser, spanned};
+use super::common::{boundary_parser, ident_parser, line_sep_parser, spanned};
 use super::conditions::{
     hla_compare_op_parser, hla_condition_parser, hla_condition_seed_stmt_parser,
     hla_flag_close_stmt_parser,
@@ -23,7 +23,7 @@ use super::control::{
     discard_stmt_parser, flow_stmt_parser, invalid_flag_goto_stmt_parser, nop_stmt_parser,
 };
 use super::data::{CommaTrailer, data_block_parser, prefix_condition_parser, var_decl_parser};
-use super::expr::{eval_static_expr, expr_parser};
+use super::expr::{eval_const_into, expr_parser};
 use super::items::mode_annotation_parser;
 use super::operations::{
     alu_stmt_parser, assign_stmt_parser, chain_stmt_parser, flag_stmt_parser,
@@ -62,31 +62,16 @@ where
 
     let address_stmt = just(TokenKind::Address)
         .ignore_then(expr_parser())
-        .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
-            u32::try_from(value)
-                .map(Stmt::Address)
-                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
-        })
+        .try_map(|value, span| eval_const_into::<u32>(&value, span, "address value").map(Stmt::Address))
         .boxed();
 
     let align_stmt = just(TokenKind::Align)
         .ignore_then(expr_parser())
         .then(just(TokenKind::Plus).ignore_then(expr_parser()).or_not())
         .try_map(|(value, offset), span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
-            let boundary = u16::try_from(value)
-                .map_err(|_| Rich::custom(span, "align value must fit in u16"))?;
+            let boundary = eval_const_into::<u16>(&value, span, "align value")?;
             let offset = match offset {
-                Some(offset_expr) => {
-                    let offset_val = eval_static_expr(&offset_expr).ok_or_else(|| {
-                        Rich::custom(span, "align offset must be a constant expression")
-                    })?;
-                    u16::try_from(offset_val)
-                        .map_err(|_| Rich::custom(span, "align offset must fit in u16"))?
-                }
+                Some(offset_expr) => eval_const_into::<u16>(&offset_expr, span, "align offset")?,
                 None => 0,
             };
             Ok(Stmt::Align { boundary, offset })
@@ -95,16 +80,9 @@ where
 
     let nocross_stmt = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
-        .try_map(|value, span| {
-            let value = match value {
-                Some(value) => eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "nocross value must be a constant expression")
-                })?,
-                None => 256,
-            };
-            u16::try_from(value)
-                .map(Stmt::Nocross)
-                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        .try_map(|value, span| match value {
+            Some(value) => eval_const_into::<u16>(&value, span, "nocross value").map(Stmt::Nocross),
+            None => Ok(Stmt::Nocross(256)),
         })
         .boxed();
 
@@ -256,12 +234,7 @@ where
 
     let mnemonic = ident_parser().try_map(|mnemonic, _span| Ok(mnemonic));
 
-    let operand_boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ))
-    .rewind();
+    let operand_boundary = boundary_parser().rewind();
 
     let operand_index_trailer = just(TokenKind::Comma)
         .ignore_then(ident_parser())

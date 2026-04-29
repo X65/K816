@@ -3,7 +3,7 @@ use crate::span::{SourceId, Span, Spanned};
 use chumsky::{
     IterParser, Parser as _,
     input::ValueInput,
-    prelude::{SimpleSpan, any, just},
+    prelude::{SimpleSpan, any, choice, end, just},
 };
 
 use super::ParseExtra;
@@ -19,6 +19,23 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     just(TokenKind::Newline).or(just(TokenKind::Semi)).boxed()
+}
+
+/// A statement/entry boundary: a line separator, a closing brace, or end-of-input.
+///
+/// Used both as a recovery sync point for `skip_then_retry_until` and (with
+/// `.rewind()`) as a non-consuming lookahead at the end of a token-level statement.
+pub(super) fn boundary_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, (), ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    choice((
+        line_sep_parser().ignored(),
+        just(TokenKind::RBrace).ignored(),
+        end().ignored(),
+    ))
+    .boxed()
 }
 
 pub(super) fn line_tail_parser<'src, I>()

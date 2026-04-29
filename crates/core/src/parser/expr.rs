@@ -372,3 +372,24 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
         Expr::MetadataQuery { .. } => None,
     }
 }
+
+/// Statically evaluate `expr` and narrow it to `T`, producing chumsky errors with
+/// the standard "{label} must be a constant expression" / "{label} must fit in {type}"
+/// phrasing used across statement and data-block parsers.
+pub(super) fn eval_const_into<'src, T>(
+    expr: &Expr,
+    span: SimpleSpan,
+    label: &'static str,
+) -> Result<T, Rich<'src, TokenKind>>
+where
+    T: TryFrom<i64>,
+{
+    let value = eval_static_expr(expr)
+        .ok_or_else(|| Rich::custom(span, format!("{label} must be a constant expression")))?;
+    T::try_from(value).map_err(|_| {
+        Rich::custom(
+            span,
+            format!("{label} must fit in {}", std::any::type_name::<T>()),
+        )
+    })
+}

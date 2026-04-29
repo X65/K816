@@ -42,8 +42,8 @@ pub use self::api::{
     scan_declared_addressable_names, scan_declared_function_names,
 };
 use self::common::{
-    ident_parser, line_sep_parser, line_tail_parser, number_parser, simple_span_to_ast_span,
-    spanned,
+    boundary_parser, ident_parser, line_sep_parser, line_tail_parser, number_parser,
+    simple_span_to_ast_span, spanned,
 };
 #[cfg(test)]
 use self::control::invalid_flag_goto_stmt_parser;
@@ -53,7 +53,8 @@ use self::data::{
 };
 use self::diagnostics::rich_error_to_diagnostic;
 use self::expr::{
-    eval_static_expr, expr_parser, expression_fragment_parser, is_ident_text, parse_eval_expr_token,
+    eval_const_into, eval_static_expr, expr_parser, expression_fragment_parser, is_ident_text,
+    parse_eval_expr_token,
 };
 use self::items::file_parser;
 use self::operands::operand_expr_parser;

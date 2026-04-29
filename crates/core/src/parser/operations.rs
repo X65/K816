@@ -8,13 +8,13 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, choice, end, just},
+    prelude::{SimpleSpan, choice, just},
 };
 
 use super::{
-    ParseExtra, eval_static_expr, expr_parser, ident_parser, invalid_transfer_hint,
-    is_register_name, line_sep_parser, operand_expr_parser, parse_cpu_register,
-    parse_index_register, parse_stack_target, resolve_transfer, spanned,
+    ParseExtra, boundary_parser, eval_static_expr, expr_parser, ident_parser, invalid_transfer_hint,
+    is_register_name, operand_expr_parser, parse_cpu_register, parse_index_register,
+    parse_stack_target, resolve_transfer, spanned,
 };
 
 pub(super) fn hla_wait_loop_stmt_parser<'src, I>()
@@ -142,12 +142,7 @@ pub(super) fn chain_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let stmt_boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ))
-    .rewind();
+    let stmt_boundary = boundary_parser().rewind();
 
     let all_ident = ident_parser()
         .then_ignore(just(TokenKind::Eq))
@@ -188,12 +183,7 @@ pub(super) fn assign_stmt_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let stmt_boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ))
-    .rewind();
+    let stmt_boundary = boundary_parser().rewind();
 
     let register_transfer = chumsky::select! {
         TokenKind::Ident(value) if is_register_name(&value) => value

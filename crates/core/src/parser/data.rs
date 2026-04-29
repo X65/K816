@@ -8,14 +8,14 @@ use chumsky::{
     IterParser, Parser as _,
     error::Rich,
     input::ValueInput,
-    prelude::{SimpleSpan, any, choice, end, just, skip_then_retry_until},
+    prelude::{SimpleSpan, any, choice, just, skip_then_retry_until},
 };
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{
-    ParseExtra, eval_static_expr, expr_parser, ident_parser, line_sep_parser, line_tail_parser,
-    number_parser, parse_eval_expr_token, spanned, stmt_parser,
+    ParseExtra, boundary_parser, eval_const_into, expr_parser, ident_parser, line_sep_parser,
+    line_tail_parser, number_parser, parse_eval_expr_token, spanned, stmt_parser,
 };
 
 mod consts;
@@ -32,13 +32,8 @@ where
 {
     let separators = line_sep_parser().repeated();
     let command = spanned(data_command_parser(), source_id);
-    let command_boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ));
     let recover_command =
-        command.recover_with(skip_then_retry_until(any().ignored(), command_boundary));
+        command.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
 
     just(TokenKind::LBrace)
         .ignore_then(separators.clone())
@@ -61,12 +56,8 @@ where
 {
     let separators = line_sep_parser().repeated();
     let entry = spanned(named_data_entry_parser(source_id), source_id);
-    let entry_boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ));
-    let recover_entry = entry.recover_with(skip_then_retry_until(any().ignored(), entry_boundary));
+    let recover_entry =
+        entry.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
 
     ident_parser()
         .map_with(|name, extra| (name, extra.span()))
@@ -127,37 +118,24 @@ where
     let address_entry = just(TokenKind::Address)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
-            u32::try_from(value)
-                .map(NamedDataEntry::Address)
-                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+            eval_const_into::<u32>(&value, span, "address value").map(NamedDataEntry::Address)
         })
         .boxed();
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
-            u16::try_from(value)
-                .map(NamedDataEntry::Align)
-                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+            eval_const_into::<u16>(&value, span, "align value").map(NamedDataEntry::Align)
         })
         .boxed();
 
     let nocross_entry = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
-        .try_map(|value, span| {
-            let value = match value {
-                Some(value) => eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "nocross value must be a constant expression")
-                })?,
-                None => 256,
-            };
-            u16::try_from(value)
-                .map(NamedDataEntry::Nocross)
-                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        .try_map(|value, span| match value {
+            Some(value) => {
+                eval_const_into::<u16>(&value, span, "nocross value").map(NamedDataEntry::Nocross)
+            }
+            None => Ok(NamedDataEntry::Nocross(256)),
         })
         .boxed();
 
@@ -269,13 +247,8 @@ where
 
     let data_body = |src_id| {
         let inner_entry = spanned(named_data_entry_flat_parser(), src_id);
-        let inner_boundary = choice((
-            line_sep_parser().ignored(),
-            just(TokenKind::RBrace).ignored(),
-            end().ignored(),
-        ));
         let recover_inner =
-            inner_entry.recover_with(skip_then_retry_until(any().ignored(), inner_boundary));
+            inner_entry.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
         let seps = line_sep_parser().repeated();
         just(TokenKind::LBrace)
             .ignore_then(seps.clone())
@@ -295,22 +268,15 @@ where
     .ignore_then(expr_parser())
     .then(data_body(source_id))
     .try_map(|(count_expr, body), span| {
-        let count = eval_static_expr(&count_expr)
-            .ok_or_else(|| Rich::custom(span, "repeat count must be a constant expression"))?;
-        let count =
-            u16::try_from(count).map_err(|_| Rich::custom(span, "repeat count must fit in u16"))?;
+        let count = eval_const_into::<u16>(&count_expr, span, "repeat count")?;
         Ok(NamedDataEntry::Repeat { count, body })
     })
     .boxed();
 
     let code_body = {
         let stmt = spanned(stmt_parser(source_id, Arc::new(HashSet::new())), source_id);
-        let stmt_boundary = choice((
-            line_sep_parser().ignored(),
-            just(TokenKind::RBrace).ignored(),
-            end().ignored(),
-        ));
-        let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
+        let recover_stmt =
+            stmt.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
         just(TokenKind::LBrace)
             .ignore_then(separators_data.clone())
             .ignore_then(
@@ -395,37 +361,24 @@ where
     let address_entry = just(TokenKind::Address)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
-            u32::try_from(value)
-                .map(NamedDataEntry::Address)
-                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+            eval_const_into::<u32>(&value, span, "address value").map(NamedDataEntry::Address)
         })
         .boxed();
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
-            u16::try_from(value)
-                .map(NamedDataEntry::Align)
-                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+            eval_const_into::<u16>(&value, span, "align value").map(NamedDataEntry::Align)
         })
         .boxed();
 
     let nocross_entry = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
-        .try_map(|value, span| {
-            let value = match value {
-                Some(value) => eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "nocross value must be a constant expression")
-                })?,
-                None => 256,
-            };
-            u16::try_from(value)
-                .map(NamedDataEntry::Nocross)
-                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        .try_map(|value, span| match value {
+            Some(value) => {
+                eval_const_into::<u16>(&value, span, "nocross value").map(NamedDataEntry::Nocross)
+            }
+            None => Ok(NamedDataEntry::Nocross(256)),
         })
         .boxed();
 
@@ -542,35 +495,22 @@ where
     let align = just(TokenKind::Align)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "align value must be a constant expression"))?;
-            u16::try_from(value)
-                .map(DataCommand::Align)
-                .map_err(|_| Rich::custom(span, "align value must fit in u16"))
+            eval_const_into::<u16>(&value, span, "align value").map(DataCommand::Align)
         });
 
     let address = just(TokenKind::Address)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            let value = eval_static_expr(&value)
-                .ok_or_else(|| Rich::custom(span, "address value must be a constant expression"))?;
-            u32::try_from(value)
-                .map(DataCommand::Address)
-                .map_err(|_| Rich::custom(span, "address value must fit in u32"))
+            eval_const_into::<u32>(&value, span, "address value").map(DataCommand::Address)
         });
 
     let nocross = just(TokenKind::Nocross)
         .ignore_then(expr_parser().or_not())
-        .try_map(|value, span| {
-            let value = match value {
-                Some(value) => eval_static_expr(&value).ok_or_else(|| {
-                    Rich::custom(span, "nocross value must be a constant expression")
-                })?,
-                None => 256,
-            };
-            u16::try_from(value)
-                .map(DataCommand::Nocross)
-                .map_err(|_| Rich::custom(span, "nocross value must fit in u16"))
+        .try_map(|value, span| match value {
+            Some(value) => {
+                eval_const_into::<u16>(&value, span, "nocross value").map(DataCommand::Nocross)
+            }
+            None => Ok(DataCommand::Nocross(256)),
         });
 
     let args = data_arg_parser()

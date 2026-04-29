@@ -14,9 +14,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{
-    ParseExtra, const_decl_item_parser, data_block_parser, ident_parser, line_sep_parser,
-    line_tail_parser, named_data_block_parser, parse_contract_register, spanned, stmt_parser,
-    var_decl_parser,
+    ParseExtra, boundary_parser, const_decl_item_parser, data_block_parser, ident_parser,
+    line_sep_parser, line_tail_parser, named_data_block_parser, parse_contract_register, spanned,
+    stmt_parser, var_decl_parser,
 };
 
 pub(super) fn file_parser<'src, I>(
@@ -28,12 +28,8 @@ where
 {
     let separators = line_sep_parser().repeated();
     let item = spanned(item_parser(source_id, known_functions), source_id);
-    let boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ));
-    let recover_item = item.recover_with(skip_then_retry_until(any().ignored(), boundary));
+    let recover_item =
+        item.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
 
     let mode_token = choice((
         just(TokenKind::ModeA8).to((Some(RegWidth::W8), None)),
@@ -225,12 +221,8 @@ where
     let modifiers = modifier.clone().repeated().collect::<Vec<_>>();
     let required_modifiers = modifier.repeated().at_least(1).collect::<Vec<_>>();
     let stmt = spanned(stmt_parser(source_id, known_functions), source_id);
-    let stmt_boundary = choice((
-        line_sep_parser().ignored(),
-        just(TokenKind::RBrace).ignored(),
-        end().ignored(),
-    ));
-    let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), stmt_boundary));
+    let recover_stmt =
+        stmt.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
     let separators = line_sep_parser().repeated();
     let body = just(TokenKind::LBrace)
         .ignore_then(separators.clone())

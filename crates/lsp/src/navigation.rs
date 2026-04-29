@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use lsp_types::{
-    GotoDefinitionResponse, Location, Position, PrepareRenameResponse, ReferenceContext, TextEdit,
-    Uri, WorkspaceEdit,
+    GotoDefinitionResponse, Location, Position, PrepareRenameResponse, Range, ReferenceContext,
+    TextEdit, Uri, WorkspaceEdit,
 };
 
 use super::text::{
@@ -15,6 +15,51 @@ use super::{
 };
 
 impl ServerState {
+    /// Convert a byte range living in `uri`'s document to an LSP `Range`,
+    /// looking up the document's `LineIndex` and text in one step. Returns
+    /// `None` if the URI is not tracked.
+    pub(super) fn convert_doc_range(&self, uri: &Uri, range: &ByteRange) -> Option<Range> {
+        let doc = self.documents.get(uri)?;
+        Some(byte_range_to_lsp(range, &doc.line_index, &doc.text))
+    }
+
+    /// Build LSP `Location`s for every definition of `canonical` recorded in
+    /// the cross-file symbol index. Skips definitions whose owning document is
+    /// no longer tracked.
+    pub(super) fn definition_locations(&self, canonical: &str) -> Vec<Location> {
+        let Some(definitions) = self.symbols.get(canonical) else {
+            return Vec::new();
+        };
+        definitions
+            .iter()
+            .filter_map(|definition| {
+                let range = self.convert_doc_range(&definition.uri, &definition.selection)?;
+                Some(Location::new(definition.uri.clone(), range))
+            })
+            .collect()
+    }
+
+    /// Build LSP `Location`s for every recorded occurrence of `canonical`,
+    /// optionally filtering out declaration sites (used for "find references"
+    /// when the editor doesn't want declarations included).
+    pub(super) fn occurrence_locations(
+        &self,
+        canonical: &str,
+        include_declaration: bool,
+    ) -> Vec<Location> {
+        let Some(occurrences) = self.symbol_occurrences.get(canonical) else {
+            return Vec::new();
+        };
+        occurrences
+            .iter()
+            .filter(|occurrence| include_declaration || !occurrence.is_declaration)
+            .filter_map(|occurrence| {
+                let range = self.convert_doc_range(&occurrence.uri, &occurrence.range)?;
+                Some(Location::new(occurrence.uri.clone(), range))
+            })
+            .collect()
+    }
+
     pub(super) fn definition(
         &self,
         uri: &Uri,
@@ -26,19 +71,9 @@ impl ServerState {
         let scope = doc.analysis.scope_at_offset(offset);
         let canonical = canonical_symbol(&token.text, scope);
 
-        if let Some(definitions) = self.symbols.get(&canonical) {
-            let mut locations = Vec::new();
-            for definition in definitions {
-                let Some(def_doc) = self.documents.get(&definition.uri) else {
-                    continue;
-                };
-                let range =
-                    byte_range_to_lsp(&definition.selection, &def_doc.line_index, &def_doc.text);
-                locations.push(Location::new(definition.uri.clone(), range));
-            }
-            if !locations.is_empty() {
-                return Some(GotoDefinitionResponse::Array(locations));
-            }
+        let locations = self.definition_locations(&canonical);
+        if !locations.is_empty() {
+            return Some(GotoDefinitionResponse::Array(locations));
         }
 
         // Standalone subscript field (e.g. `.from` inside brackets): resolve
@@ -61,22 +96,9 @@ impl ServerState {
             match seg {
                 QualifiedSegment::Var { name, .. } => {
                     let var_canonical = canonical_symbol(name, scope);
-                    if let Some(defs) = self.symbols.get(&var_canonical) {
-                        let mut locations = Vec::new();
-                        for def in defs {
-                            let Some(def_doc) = self.documents.get(&def.uri) else {
-                                continue;
-                            };
-                            let range = byte_range_to_lsp(
-                                &def.selection,
-                                &def_doc.line_index,
-                                &def_doc.text,
-                            );
-                            locations.push(Location::new(def.uri.clone(), range));
-                        }
-                        if !locations.is_empty() {
-                            return Some(GotoDefinitionResponse::Array(locations));
-                        }
+                    let locations = self.definition_locations(&var_canonical);
+                    if !locations.is_empty() {
+                        return Some(GotoDefinitionResponse::Array(locations));
                     }
                 }
                 QualifiedSegment::Field {
@@ -99,20 +121,7 @@ impl ServerState {
         context: &ReferenceContext,
     ) -> Option<Vec<Location>> {
         let (canonical, _, _) = self.symbol_at_position(uri, position)?;
-        let occurrences = self.symbol_occurrences.get(&canonical)?;
-
-        let mut locations = Vec::new();
-        for occurrence in occurrences {
-            if occurrence.is_declaration && !context.include_declaration {
-                continue;
-            }
-            let Some(doc) = self.documents.get(&occurrence.uri) else {
-                continue;
-            };
-            let range = byte_range_to_lsp(&occurrence.range, &doc.line_index, &doc.text);
-            locations.push(Location::new(occurrence.uri.clone(), range));
-        }
-        Some(locations)
+        Some(self.occurrence_locations(&canonical, context.include_declaration))
     }
 
     pub(super) fn prepare_rename(
@@ -128,15 +137,13 @@ impl ServerState {
         {
             return None;
         }
-        let doc = self.documents.get(uri)?;
-        let range = byte_range_to_lsp(
+        let range = self.convert_doc_range(
+            uri,
             &ByteRange {
                 start: token.start,
                 end: token.end,
             },
-            &doc.line_index,
-            &doc.text,
-        );
+        )?;
         Some(PrepareRenameResponse::Range(range))
     }
 
@@ -164,17 +171,16 @@ impl ServerState {
 
         let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
         for occurrence in self.symbol_occurrences.get(&canonical)? {
-            let Some(doc) = self.documents.get(&occurrence.uri) else {
+            let Some(range) = self.convert_doc_range(&occurrence.uri, &occurrence.range) else {
                 continue;
-            };
-            let edit = TextEdit {
-                range: byte_range_to_lsp(&occurrence.range, &doc.line_index, &doc.text),
-                new_text: new_name.to_string(),
             };
             changes
                 .entry(occurrence.uri.clone())
                 .or_default()
-                .push(edit);
+                .push(TextEdit {
+                    range,
+                    new_text: new_name.to_string(),
+                });
         }
 
         if changes.is_empty() {
@@ -235,12 +241,9 @@ impl ServerState {
                 }
                 if let Some(fields) = &var.symbolic_subscript_fields
                     && let Some(span) = find_field_span(fields, field_key, "")
+                    && let Some(range) =
+                        self.convert_doc_range(doc_uri, &ByteRange::from_span(span))
                 {
-                    let range = byte_range_to_lsp(
-                        &ByteRange::from_span(span),
-                        &doc_state.line_index,
-                        &doc_state.text,
-                    );
                     return Some(GotoDefinitionResponse::Array(vec![Location::new(
                         doc_uri.clone(),
                         range,

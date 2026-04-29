@@ -452,6 +452,35 @@ fn load_link_config(path: Option<&Path>) -> anyhow::Result<k816_link::LinkerConf
     }
 }
 
+/// Bundles a loaded linker config with its source path and resolved `output.file`,
+/// and exposes a single point that applies the output-kind precedence rules
+/// (CLI `--format` override > `output_path` extension > config `output.kind`).
+struct LinkPhaseContext {
+    config: k816_link::LinkerConfig,
+    config_output_path: Option<PathBuf>,
+}
+
+impl LinkPhaseContext {
+    fn load(config_path: Option<&Path>) -> anyhow::Result<Self> {
+        let config = load_link_config(config_path)?;
+        let config_output_path = resolve_config_output_path(&config, config_path);
+        Ok(Self {
+            config,
+            config_output_path,
+        })
+    }
+
+    fn apply_output_kind(
+        &mut self,
+        hint: Option<&Path>,
+        format: Option<CliOutputFormat>,
+    ) -> k816_link::OutputKind {
+        let kind = resolve_output_kind(self.config.output.kind, hint, format);
+        self.config.output.kind = kind;
+        kind
+    }
+}
+
 fn default_object_path_for_input(input_path: &Path) -> PathBuf {
     let stem = input_path
         .file_stem()
@@ -591,31 +620,20 @@ fn link_command(
         objects.push(k816_o65::read_object(object_path)?);
     }
 
-    let mut config = load_link_config(options.config.as_deref())?;
+    let mut ctx = LinkPhaseContext::load(options.config.as_deref())?;
 
-    let output_path = if let Some(path) = output {
-        path
-    } else if let Some(path) = resolve_config_output_path(&config, options.config.as_deref()) {
-        path
-    } else {
-        anyhow::bail!("output file must be provided via linker config output.file or -o");
-    };
+    let output_path = output
+        .or_else(|| ctx.config_output_path.clone())
+        .ok_or_else(|| {
+            anyhow::anyhow!("output file must be provided via linker config output.file or -o")
+        })?;
 
-    config.output.kind = resolve_output_kind(
-        config.output.kind,
-        Some(&output_path),
-        options.output_format,
-    );
+    let output_kind = ctx.apply_output_kind(Some(&output_path), options.output_format);
 
-    let linked = k816_link::link_objects_with_options(&objects, &config, auto_link_render())?;
+    let linked = k816_link::link_objects_with_options(&objects, &ctx.config, auto_link_render())?;
 
     let listing_path = resolve_listing_path(&output_path, options.listing.as_deref());
-    write_link_output(
-        &output_path,
-        listing_path.as_deref(),
-        &linked,
-        config.output.kind,
-    )
+    write_link_output(&output_path, listing_path.as_deref(), &linked, output_kind)
 }
 
 fn single_file_build_command(
@@ -628,15 +646,10 @@ fn single_file_build_command(
     let resolved_config_path = link_options
         .config
         .or_else(|| discover_adjacent_config_path(&input_path));
-    let mut config = load_link_config(resolved_config_path.as_deref())?;
-    let config_output_path = resolve_config_output_path(&config, resolved_config_path.as_deref());
-    let output_kind = resolve_output_kind(
-        config.output.kind,
-        config_output_path.as_deref(),
-        link_options.output_format,
-    );
-    config.output.kind = output_kind;
-    let linked = k816_link::link_objects_with_options(&[object], &config, auto_link_render())?;
+    let mut ctx = LinkPhaseContext::load(resolved_config_path.as_deref())?;
+    let config_output_path = ctx.config_output_path.clone();
+    let output_kind = ctx.apply_output_kind(config_output_path.as_deref(), link_options.output_format);
+    let linked = k816_link::link_objects_with_options(&[object], &ctx.config, auto_link_render())?;
     let output_path = output
         .or(config_output_path)
         .unwrap_or_else(|| default_build_output_path(&input_path, output_kind));
@@ -780,9 +793,8 @@ fn metadata_command(link_options: LinkPhaseOptions) -> anyhow::Result<()> {
 
     let resolved_config =
         resolve_project_link_config_path(&project_root, &manifest, link_options.config.as_deref());
-    let link_config = load_link_config(resolved_config.as_deref())?;
-    let output_kind =
-        resolve_output_kind(link_config.output.kind, None, link_options.output_format);
+    let mut ctx = LinkPhaseContext::load(resolved_config.as_deref())?;
+    let output_kind = ctx.apply_output_kind(None, link_options.output_format);
     let ext = output_extension(output_kind);
     let artifact_path = target_dir.join(format!("{}.{}", manifest.package.name, ext));
 
@@ -951,13 +963,13 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
 
     let resolved_config =
         resolve_project_link_config_path(&project_root, &manifest, link_options.config.as_deref());
-    let mut config = load_link_config(resolved_config.as_deref())?;
-    config.output.kind = resolve_output_kind(config.output.kind, None, link_options.output_format);
+    let mut ctx = LinkPhaseContext::load(resolved_config.as_deref())?;
+    let output_kind = ctx.apply_output_kind(None, link_options.output_format);
 
     let artifact_path = target_dir.join(format!(
         "{}.{}",
         manifest.package.name,
-        output_extension(config.output.kind)
+        output_extension(output_kind)
     ));
     let objects = k816_link::bfs_reorder(objects)?;
 
@@ -967,18 +979,13 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         display_project_path(&project_root, &artifact_path)
     );
 
-    let linked = k816_link::link_objects_with_options(&objects, &config, auto_link_render())?;
+    let linked = k816_link::link_objects_with_options(&objects, &ctx.config, auto_link_render())?;
     let listing_path = match &manifest.link.listing {
         ListingOption::Bool(false) => None,
         ListingOption::Bool(true) => Some(artifact_path.with_extension("lst")),
         ListingOption::Path(path) => Some(project_root.join(path)),
     };
-    write_link_output(
-        &artifact_path,
-        listing_path.as_deref(),
-        &linked,
-        config.output.kind,
-    )?;
+    write_link_output(&artifact_path, listing_path.as_deref(), &linked, output_kind)?;
 
     Ok(ProjectBuildResult {
         project_root,

@@ -887,7 +887,8 @@ fn retargeted_body_if_foreign(
 /// at `target`. Used for cross-TU inline expansions so body-internal
 /// diagnostics anchor on the call site in the caller's `SourceMap` instead of
 /// pointing at byte offsets in a source file the caller's `SourceMap` does not
-/// know about.
+/// know about. The pre-retarget span is preserved on `Spanned::origin` so a
+/// downstream emit-time helper can attach an "(Inlined from …)" annotation.
 fn retarget_spans(body: &mut [Spanned<Stmt>], target: Span) {
     let zero = Span {
         source_id: target.source_id,
@@ -895,6 +896,9 @@ fn retarget_spans(body: &mut [Spanned<Stmt>], target: Span) {
         end: target.start,
     };
     for stmt in body {
+        if stmt.origin.is_none() {
+            stmt.origin = Some(stmt.span);
+        }
         stmt.span = zero;
         retarget_stmt_spans(&mut stmt.node, zero);
     }
@@ -3158,9 +3162,14 @@ fn lower_inline_call(
     let saved_mode = enter_call_mode(Some(meta.mode_contract), span, ctx, ops);
     let entered_mode = ctx.mode;
 
-    // Lower the inline function's body statements in-place.
+    // Lower the inline function's body statements in-place. For statements that
+    // came from a foreign inline body (origin set by `retarget_spans`), stamp
+    // the origin onto each newly-pushed `Spanned<Op>` so emit-time diagnostics
+    // can attach an "(Inlined from …)" annotation pointing back to the original
+    // source location.
     let inline_scope = Some(block_name);
     for stmt in body {
+        let before = ops.len();
         lower_stmt(
             &stmt.node,
             stmt.span,
@@ -3174,6 +3183,13 @@ fn lower_inline_call(
             diagnostics,
             ops,
         );
+        if let Some(origin) = stmt.origin {
+            for op in &mut ops[before..] {
+                if op.origin.is_none() {
+                    op.origin = Some(origin);
+                }
+            }
+        }
     }
 
     finish_call_mode(saved_mode, entered_mode, behavior, false, span, ctx, ops);

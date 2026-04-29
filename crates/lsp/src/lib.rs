@@ -19,7 +19,7 @@ use self::analysis::{
     semantic_token_type_for_category, semantic_token_type_index,
 };
 use self::convert::{
-    byte_range_to_lsp, dedup_diagnostics, diagnostic_to_lsp, is_valid_symbol_name,
+    ForeignSource, byte_range_to_lsp, dedup_diagnostics, diagnostic_to_lsp, is_valid_symbol_name,
 };
 use self::types::{
     ByteRange, DocumentAnalysis, DocumentState, INSTRUCTION_DESCRIPTIONS, INSTRUCTION_METADATA,

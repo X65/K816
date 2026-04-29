@@ -265,6 +265,10 @@ pub(super) struct ServerState {
     pub(super) linker_config: k816_link::LinkerConfig,
     pub(super) last_link_layout: Option<k816_link::LinkedLayout>,
     pub(super) last_link_error: Option<String>,
+    /// URIs indexed by `SourceId.0`, captured during the last `compile_sources`
+    /// pass. Used to resolve a foreign-source `Span` (carried by an
+    /// `InlineOrigin` supplement) back to a clickable LSP location.
+    pub(super) source_id_uris: Vec<Uri>,
 }
 
 impl ServerState {
@@ -278,6 +282,7 @@ impl ServerState {
             linker_config: k816_link::default_stub_config(),
             last_link_layout: None,
             last_link_error: None,
+            source_id_uris: Vec::new(),
         }
     }
 

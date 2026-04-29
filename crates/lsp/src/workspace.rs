@@ -13,8 +13,9 @@ use super::protocol::{
 };
 use super::watcher::WorkspaceFsEvent;
 use super::{
-    ByteRange, DocumentAnalysis, DocumentState, LineIndex, PROJECT_MANIFEST, ServerState,
-    SymbolLocation, SymbolOccurrence, analyze_document, canonical_symbol, diagnostic_to_lsp,
+    ByteRange, DocumentAnalysis, DocumentState, ForeignSource, LineIndex, PROJECT_MANIFEST,
+    ServerState, SymbolLocation, SymbolOccurrence, analyze_document, canonical_symbol,
+    diagnostic_to_lsp,
 };
 
 impl ServerState {
@@ -182,6 +183,11 @@ impl ServerState {
         let external_function_names = k816_core::collect_all_declared_function_names(&sources);
         let compile_results =
             k816_core::compile_sources(&sources, k816_core::CompileRenderOptions::plain());
+
+        // Record the per-source ordering used by `compile_sources` so foreign
+        // `Span`s on diagnostic supplements (`InlineOrigin`) can be resolved
+        // back to their owning document URI when rendering for the LSP.
+        self.source_id_uris = doc_uris.clone();
 
         for (i, uri) in doc_uris.iter().enumerate() {
             let doc = self.documents.get_mut(uri).unwrap();
@@ -509,10 +515,29 @@ impl ServerState {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
+        let foreign_sources: Vec<Option<ForeignSource<'_>>> = self
+            .source_id_uris
+            .iter()
+            .map(|src_uri| {
+                self.documents.get(src_uri).map(|src_doc| ForeignSource {
+                    uri: src_doc.uri.clone(),
+                    line_index: &src_doc.line_index,
+                    text: &src_doc.text,
+                })
+            })
+            .collect();
         doc.analysis
             .diagnostics
             .iter()
-            .map(|diag| diagnostic_to_lsp(diag, &doc.uri, &doc.line_index, &doc.text))
+            .map(|diag| {
+                diagnostic_to_lsp(
+                    diag,
+                    &doc.uri,
+                    &doc.line_index,
+                    &doc.text,
+                    &foreign_sources,
+                )
+            })
             .collect()
     }
 }

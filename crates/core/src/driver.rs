@@ -16,7 +16,7 @@ use crate::normalize_hla::normalize_file;
 use crate::parser::{parse_with_warnings_and_externals, scan_declared_function_names};
 use crate::peephole::peephole_optimize;
 use crate::sema::{ConstMeta, FunctionMeta, analyze_partial, analyze_with_external_consts};
-use crate::span::SourceMap;
+use crate::span::{SourceId, SourceMap};
 
 #[derive(Debug, Clone)]
 pub struct CompileObjectOutput {
@@ -78,8 +78,11 @@ pub fn compile_source_with_fs(
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
 ) -> Result<CompileObjectOutput, CompileError> {
+    let mut source_map = SourceMap::default();
+    let source_id = source_map.add_source(source_name, source_text);
     compile_source_inner(
-        source_name,
+        &source_map,
+        source_id,
         source_text,
         fs,
         options,
@@ -94,10 +97,27 @@ pub fn compile_sources(
     options: CompileRenderOptions,
 ) -> Vec<Result<CompileObjectOutput, CompileError>> {
     let external_function_names = collect_all_declared_function_names(sources);
+
+    // Build a shared SourceMap up front so every parsed source — including the
+    // silent metadata pre-scans below — gets a distinct SourceId. This is what
+    // makes the cross-file inline detection in `retargeted_body_if_foreign`
+    // actually fire and lets emit-time diagnostics anchored to a foreign source
+    // resolve through one consistent SourceMap.
+    let mut source_map = SourceMap::default();
+    let source_ids: Vec<SourceId> = sources
+        .iter()
+        .map(|source| source_map.add_source(source.source_name, source.source_text))
+        .collect();
+
     let parsed_sources: Vec<Option<File>> = sources
         .iter()
-        .map(|source| {
-            parse_expand_normalize_source(source.source_text, Some(&external_function_names))
+        .zip(source_ids.iter())
+        .map(|(source, &source_id)| {
+            parse_expand_normalize_source(
+                source_id,
+                source.source_text,
+                Some(&external_function_names),
+            )
         })
         .collect();
     let external_consts = collect_external_consts_from_parsed(&parsed_sources);
@@ -107,9 +127,11 @@ pub fn compile_sources(
 
     sources
         .iter()
-        .map(|source| {
+        .zip(source_ids.iter())
+        .map(|(source, &source_id)| {
             compile_source_inner(
-                source.source_name,
+                &source_map,
+                source_id,
                 source.source_text,
                 &fs,
                 options,
@@ -136,28 +158,26 @@ pub fn compile_sources_all_or_nothing(
 // --- Internal implementation ---
 
 fn compile_source_inner(
-    source_name: &str,
+    source_map: &SourceMap,
+    source_id: SourceId,
     source_text: &str,
     fs: &dyn AssetFS,
     options: CompileRenderOptions,
     externals: CompileExternals<'_>,
 ) -> Result<CompileObjectOutput, CompileError> {
-    let mut source_map = SourceMap::default();
-    let source_id = source_map.add_source(source_name, source_text);
-
     let parsed =
         parse_with_warnings_and_externals(source_id, source_text, externals.function_names)
-            .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+            .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     let ast = parsed.file;
     let mut warnings = parsed.warnings;
 
     let ast = expand_file(&ast, source_id)
-        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     let ast = normalize_file(&ast)
-        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
 
     let mut sema = analyze_with_external_consts(&ast, externals.consts)
-        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     if let Some(external) = externals.functions {
         for (name, meta) in external {
             sema.functions
@@ -167,10 +187,10 @@ fn compile_source_inner(
     }
 
     let lower_output = lower_with_warnings(&ast, &sema, fs, externals.inline_bodies)
-        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     warnings.extend(lower_output.warnings);
     let rendered_warnings = render_diagnostics_with_options(
-        &source_map,
+        source_map,
         &warnings,
         RenderOptions {
             color: options.color,
@@ -181,8 +201,8 @@ fn compile_source_inner(
     let hir = fold_mode_ops(&hir);
     let hir = peephole_optimize(&hir);
 
-    let emit_output = emit_object(&hir, &source_map, &sema, externals.functions)
-        .map_err(|diagnostics| fail_with_rendered(&source_map, diagnostics, options))?;
+    let emit_output = emit_object(&hir, source_map, &sema, externals.functions)
+        .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
 
     Ok(CompileObjectOutput {
         object: emit_output.object,
@@ -197,10 +217,10 @@ fn compile_source_inner(
 /// skip the source silently (diagnostics for that source will surface during
 /// the main per-file compile anyway).
 fn parse_expand_normalize_source(
+    source_id: SourceId,
     source_text: &str,
     names: Option<&HashSet<String>>,
 ) -> Option<File> {
-    let source_id = crate::span::SourceId(0);
     let parsed = parse_with_warnings_and_externals(source_id, source_text, names).ok()?;
     let ast = expand_file(&parsed.file, source_id).ok()?;
     normalize_file(&ast).ok()
@@ -210,9 +230,13 @@ pub fn collect_external_consts_for_link_sources(
     sources: &[LinkCompileInput<'_>],
 ) -> IndexMap<String, ConstMeta> {
     let names = collect_all_declared_function_names(sources);
+    let mut source_map = SourceMap::default();
     let parsed_sources: Vec<Option<File>> = sources
         .iter()
-        .map(|source| parse_expand_normalize_source(source.source_text, Some(&names)))
+        .map(|source| {
+            let source_id = source_map.add_source(source.source_name, source.source_text);
+            parse_expand_normalize_source(source_id, source.source_text, Some(&names))
+        })
         .collect();
     collect_external_consts_from_parsed(&parsed_sources)
 }
@@ -262,8 +286,9 @@ fn collect_external_consts_from_parsed(
 /// syntax for cross-unit callees parses correctly.
 pub fn collect_all_declared_function_names(sources: &[LinkCompileInput<'_>]) -> HashSet<String> {
     let mut names = HashSet::new();
+    let mut source_map = SourceMap::default();
     for source in sources {
-        let source_id = crate::span::SourceId(0);
+        let source_id = source_map.add_source(source.source_name, source.source_text);
         names.extend(scan_declared_function_names(source_id, source.source_text));
     }
     names
@@ -273,9 +298,13 @@ pub fn collect_external_functions_for_link_sources(
     sources: &[LinkCompileInput<'_>],
 ) -> IndexMap<String, FunctionMeta> {
     let names = collect_all_declared_function_names(sources);
+    let mut source_map = SourceMap::default();
     let parsed_sources: Vec<Option<File>> = sources
         .iter()
-        .map(|source| parse_expand_normalize_source(source.source_text, Some(&names)))
+        .map(|source| {
+            let source_id = source_map.add_source(source.source_name, source.source_text);
+            parse_expand_normalize_source(source_id, source.source_text, Some(&names))
+        })
         .collect();
     collect_external_functions_from_parsed(&parsed_sources)
 }
@@ -306,9 +335,13 @@ pub fn collect_external_inline_bodies_for_link_sources(
     sources: &[LinkCompileInput<'_>],
 ) -> IndexMap<String, CodeBlock> {
     let names = collect_all_declared_function_names(sources);
+    let mut source_map = SourceMap::default();
     let parsed_sources: Vec<Option<File>> = sources
         .iter()
-        .map(|source| parse_expand_normalize_source(source.source_text, Some(&names)))
+        .map(|source| {
+            let source_id = source_map.add_source(source.source_name, source.source_text);
+            parse_expand_normalize_source(source_id, source.source_text, Some(&names))
+        })
         .collect();
     collect_external_inline_bodies_from_parsed(&parsed_sources)
 }
@@ -352,7 +385,8 @@ fn fail_with_rendered(
 #[cfg(test)]
 mod tests {
     use super::{
-        CompileRenderOptions, LinkCompileInput, compile_source, compile_sources_all_or_nothing,
+        CompileRenderOptions, LinkCompileInput, compile_source, compile_sources,
+        compile_sources_all_or_nothing,
     };
 
     #[test]
@@ -399,5 +433,57 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(bytes.windows(3).any(|window| window == [0xA9, 0x39, 0x05]));
+    }
+
+    /// When an inline body declared in a *different* source produces a
+    /// diagnostic during emit, the diagnostic must:
+    ///   - have its `primary` span resolve in the calling file (so the editor
+    ///     squiggle lands at the call site, not at random byte offsets in the
+    ///     wrong file);
+    ///   - carry an `InlineOrigin` supplement whose `span.source_id` points
+    ///     back to the foreign source, with a label naming that file:line.
+    /// Regression coverage for the LSP `(TCB)` underline bug.
+    #[test]
+    fn inline_call_diagnostic_carries_inline_origin_supplement() {
+        let helpers = "inline add (a, #b) -> a {\n    clc\n    adc #b\n}\n";
+        let main =
+            "func main {\n    @a8 { txa }\n    plp\n    add a, #1 -> a\n    rts\n}\n";
+        let sources = [
+            LinkCompileInput {
+                source_name: "helpers.k65",
+                source_text: helpers,
+            },
+            LinkCompileInput {
+                source_name: "main.k65",
+                source_text: main,
+            },
+        ];
+        let results = compile_sources(&sources, CompileRenderOptions::plain());
+        let main_err = results[1].as_ref().err().expect("main.k65 must error");
+        let diagnostic = main_err
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("`adc`") && d.message.contains("accumulator width"))
+            .expect("expected an adc width-unknown diagnostic from main.k65");
+
+        // Primary span must resolve in main.k65 (source_id 1).
+        assert_eq!(diagnostic.primary.source_id.0, 1);
+
+        // The diagnostic must carry an InlineOrigin supplement with a label
+        // pointing back at the *helpers.k65* source (source_id 0).
+        let inline_origin = diagnostic
+            .supplements
+            .iter()
+            .find_map(|s| match s {
+                crate::diag::Supplemental::InlineOrigin { span, label } => Some((*span, label)),
+                _ => None,
+            })
+            .expect("InlineOrigin supplement");
+        assert_eq!(inline_origin.0.source_id.0, 0);
+        assert!(
+            inline_origin.1.starts_with("Inlined from helpers.k65:"),
+            "label was {:?}",
+            inline_origin.1,
+        );
     }
 }

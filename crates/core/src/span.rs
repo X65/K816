@@ -28,17 +28,31 @@ impl Span {
 pub struct Spanned<T> {
     pub node: T,
     pub span: Span,
+    /// When this node is the result of inline expansion of a body declared in a
+    /// different source than `span.source_id`, `origin` records the body's
+    /// original location. `span` is the call site (so diagnostics anchor in the
+    /// caller); `origin` lets callers attach a "(Inlined from …)" annotation.
+    pub origin: Option<Span>,
 }
 
 impl<T> Spanned<T> {
     pub fn new(node: T, span: Span) -> Self {
-        Self { node, span }
+        Self {
+            node,
+            span,
+            origin: None,
+        }
+    }
+
+    pub fn with_origin(node: T, span: Span, origin: Option<Span>) -> Self {
+        Self { node, span, origin }
     }
 
     pub fn map<U>(self, mapper: impl FnOnce(T) -> U) -> Spanned<U> {
         Spanned {
             node: mapper(self.node),
             span: self.span,
+            origin: self.origin,
         }
     }
 }

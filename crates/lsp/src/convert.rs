@@ -26,32 +26,64 @@ pub(super) fn byte_range_to_lsp(range: &ByteRange, line_index: &LineIndex, text:
     }
 }
 
+/// Per-source rendering context the LSP can resolve a foreign `Span` against.
+/// Indexed by `SourceId.0 as usize` matching the ordering used when the
+/// workspace handed sources to `compile_sources`.
+pub(super) struct ForeignSource<'a> {
+    pub uri: Uri,
+    pub line_index: &'a LineIndex,
+    pub text: &'a str,
+}
+
 pub(super) fn diagnostic_to_lsp(
     diagnostic: &k816_core::diag::Diagnostic,
     uri: &Uri,
     line_index: &LineIndex,
     text: &str,
+    foreign_sources: &[Option<ForeignSource<'_>>],
 ) -> Diagnostic {
     let primary = byte_range_to_lsp(&ByteRange::from_span(diagnostic.primary), line_index, text);
-    let related_information = if diagnostic.labels.is_empty() {
-        None
-    } else {
-        Some(
-            diagnostic
-                .labels
-                .iter()
-                .map(|label| DiagnosticRelatedInformation {
-                    location: Location::new(
-                        uri.clone(),
-                        byte_range_to_lsp(&ByteRange::from_span(label.span), line_index, text),
-                    ),
-                    message: label.message.clone(),
-                })
-                .collect::<Vec<_>>(),
-        )
-    };
+
+    let mut related = Vec::new();
+    for label in &diagnostic.labels {
+        related.push(DiagnosticRelatedInformation {
+            location: Location::new(
+                uri.clone(),
+                byte_range_to_lsp(&ByteRange::from_span(label.span), line_index, text),
+            ),
+            message: label.message.clone(),
+        });
+    }
 
     let mut message = diagnostic.message.clone();
+    // Inline-origin annotations come first so they read like a continuation of
+    // the message body, before help/note prefixes. Foreign-source spans get
+    // turned into related-information entries so editors can navigate to the
+    // original location.
+    for supplement in &diagnostic.supplements {
+        if let k816_core::diag::Supplemental::InlineOrigin { span, label } = supplement {
+            message.push('\n');
+            message.push('(');
+            message.push_str(label);
+            message.push(')');
+            if let Some(foreign) = foreign_sources
+                .get(span.source_id.0 as usize)
+                .and_then(|slot| slot.as_ref())
+            {
+                related.push(DiagnosticRelatedInformation {
+                    location: Location::new(
+                        foreign.uri.clone(),
+                        byte_range_to_lsp(
+                            &ByteRange::from_span(*span),
+                            foreign.line_index,
+                            foreign.text,
+                        ),
+                    ),
+                    message: label.clone(),
+                });
+            }
+        }
+    }
     for supplement in &diagnostic.supplements {
         match supplement {
             k816_core::diag::Supplemental::Help(help) => {
@@ -62,6 +94,7 @@ pub(super) fn diagnostic_to_lsp(
                 message.push_str("\nnote: ");
                 message.push_str(note);
             }
+            k816_core::diag::Supplemental::InlineOrigin { .. } => {}
         }
     }
 
@@ -75,7 +108,11 @@ pub(super) fn diagnostic_to_lsp(
         code_description: None,
         source: Some("k816".to_string()),
         message,
-        related_information,
+        related_information: if related.is_empty() {
+            None
+        } else {
+            Some(related)
+        },
         tags: None,
         data: None,
     }

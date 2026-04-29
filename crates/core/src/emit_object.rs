@@ -127,6 +127,28 @@ fn function_call_help(name: &str, meta: &FunctionMeta) -> String {
     )
 }
 
+/// If `origin` resolves to a known source, append an `InlineOrigin` supplement
+/// to `diag` so renderers can show "(Inlined from …)" pointing to the original
+/// (foreign-source) location of an inlined op. Idempotent: skips if `diag`
+/// already carries an `InlineOrigin` supplement.
+fn attach_inline_origin(diag: &mut Diagnostic, origin: Span, source_map: &SourceMap) {
+    use crate::diag::Supplemental;
+    if diag
+        .supplements
+        .iter()
+        .any(|s| matches!(s, Supplemental::InlineOrigin { .. }))
+    {
+        return;
+    }
+    let Some(file) = source_map.get(origin.source_id) else {
+        return;
+    };
+    let (line, _col) = file.line_col(origin.start);
+    let label = format!("Inlined from {}:{}", file.name, line);
+    diag.supplements
+        .push(Supplemental::InlineOrigin { span: origin, label });
+}
+
 pub fn emit_object(
     program: &Program,
     source_map: &SourceMap,
@@ -640,6 +662,37 @@ pub fn emit_object(
                     m_unknown_cause = Some(cause);
                     x_unknown_cause = Some(cause);
                 }
+            }
+        }
+
+    }
+
+    // Post-loop pass: any diagnostic whose primary span matches an op that was
+    // inlined from a foreign source gets an `InlineOrigin` supplement pointing
+    // back to the original location. We walk ops in reverse so that, when
+    // multiple inlined ops collapse to the same call-site span (every inlined
+    // op shares the call site after `retarget_spans`), the *last* statement's
+    // origin wins — most diagnostics are produced for the trailing instruction
+    // of an inline body (e.g. the `adc` of `clc; adc #b`), which is the line
+    // the user wants to see referenced.
+    let mut origin_for_span: rustc_hash::FxHashMap<(crate::span::SourceId, usize, usize), Span> =
+        rustc_hash::FxHashMap::default();
+    for op in program.ops.iter().rev() {
+        if let Some(origin) = op.origin {
+            origin_for_span
+                .entry((op.span.source_id, op.span.start, op.span.end))
+                .or_insert(origin);
+        }
+    }
+    if !origin_for_span.is_empty() {
+        for diag in diagnostics.iter_mut() {
+            let key = (
+                diag.primary.source_id,
+                diag.primary.start,
+                diag.primary.end,
+            );
+            if let Some(&origin) = origin_for_span.get(&key) {
+                attach_inline_origin(diag, origin, source_map);
             }
         }
     }

@@ -43,7 +43,7 @@ fn converts_diagnostics_with_related_info() {
         .with_label(related, "related")
         .with_help("fix it");
 
-    let converted = diagnostic_to_lsp(&diagnostic, &uri, &index, text);
+    let converted = diagnostic_to_lsp(&diagnostic, &uri, &index, text, &[]);
     assert_eq!(converted.severity, Some(DiagnosticSeverity::ERROR));
     assert!(converted.message.contains("help: fix it"));
     assert_eq!(
@@ -54,6 +54,86 @@ fn converts_diagnostics_with_related_info() {
             .len(),
         1
     );
+}
+
+/// An `InlineOrigin` supplement on a diagnostic must be rendered both as a
+/// human-readable line in the message text *and* as a clickable
+/// `DiagnosticRelatedInformation` entry pointing at the foreign source's URI.
+/// Regression coverage for the `(TCB)` doc-comment underline bug — the LSP
+/// must produce a diagnostic whose primary range stays in the caller file
+/// while a separate related entry leads to the inline body.
+#[test]
+fn renders_inline_origin_supplement_with_foreign_related_info() {
+    let caller_uri = Uri::from_str("file:///tmp/main.k65").expect("uri");
+    let foreign_uri = Uri::from_str("file:///tmp/helpers.k65").expect("uri");
+    let caller_text = "func main {\n    add a, #1 -> a\n}\n";
+    let foreign_text = "inline add (a, #b) -> a {\n    clc\n    adc #b\n}\n";
+    let caller_index = LineIndex::new(caller_text);
+    let foreign_index = LineIndex::new(foreign_text);
+
+    // SourceIds match the order workspace.rs hands documents to compile_sources:
+    // foreign first (id 0), caller second (id 1) for this test.
+    let foreign_id = k816_core::span::SourceId(0);
+    let caller_id = k816_core::span::SourceId(1);
+
+    let primary = k816_core::span::Span::new(caller_id, 16, 16); // call site in caller
+    let origin = k816_core::span::Span::new(foreign_id, 38, 44); // `adc #b` in foreign
+
+    let diagnostic = k816_core::diag::Diagnostic::error(
+        primary,
+        "`adc` uses a width-dependent immediate but accumulator width is unknown",
+    )
+    .with_help("add @a8 or @a16 to the enclosing function")
+    .with_inline_origin(origin, "Inlined from helpers.k65:3");
+
+    let foreign_sources = vec![
+        Some(ForeignSource {
+            uri: foreign_uri.clone(),
+            line_index: &foreign_index,
+            text: foreign_text,
+        }),
+        Some(ForeignSource {
+            uri: caller_uri.clone(),
+            line_index: &caller_index,
+            text: caller_text,
+        }),
+    ];
+
+    let converted = diagnostic_to_lsp(
+        &diagnostic,
+        &caller_uri,
+        &caller_index,
+        caller_text,
+        &foreign_sources,
+    );
+
+    // Message must show the inline-origin annotation before the help line, and
+    // it should not bleed into the help text itself.
+    let inline_pos = converted
+        .message
+        .find("(Inlined from helpers.k65:3)")
+        .expect("inline-origin line present");
+    let help_pos = converted
+        .message
+        .find("help: ")
+        .expect("help line present");
+    assert!(
+        inline_pos < help_pos,
+        "inline-origin line should precede help: {:?}",
+        converted.message,
+    );
+
+    // Related-info must include exactly one entry whose location URI is the
+    // foreign source — that's the clickable navigation back to the inline body.
+    let related = converted
+        .related_information
+        .as_ref()
+        .expect("related info present");
+    let foreign_entry = related
+        .iter()
+        .find(|info| info.location.uri == foreign_uri)
+        .expect("foreign-uri related entry");
+    assert_eq!(foreign_entry.message, "Inlined from helpers.k65:3");
 }
 
 #[test]

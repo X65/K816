@@ -21,6 +21,10 @@ pub struct LabelledSpan {
 pub enum Supplemental {
     Help(String),
     Note(String),
+    /// Marks a diagnostic as originating from an inlined-from-elsewhere body.
+    /// `span` is the original (foreign-source) location; `label` is the
+    /// human-readable annotation (e.g. `"Inlined from helpers.k65:3"`).
+    InlineOrigin { span: Span, label: String },
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +84,14 @@ impl Diagnostic {
 
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.supplements.push(Supplemental::Note(note.into()));
+        self
+    }
+
+    pub fn with_inline_origin(mut self, span: Span, label: impl Into<String>) -> Self {
+        self.supplements.push(Supplemental::InlineOrigin {
+            span,
+            label: label.into(),
+        });
         self
     }
 }
@@ -202,6 +214,13 @@ pub fn render_diagnostic_with_options(
         report = match supplement {
             Supplemental::Help(help) => report.with_help(help.clone()),
             Supplemental::Note(note) => report.with_note(note.clone()),
+            Supplemental::InlineOrigin { span, label } => report
+                .with_label(
+                    Label::new((span.source_id, span.as_range()))
+                        .with_color(colors.next())
+                        .with_message(label.clone()),
+                )
+                .with_note(label.clone()),
         };
     }
 
@@ -224,6 +243,7 @@ pub fn render_diagnostic_with_options(
         match supplement {
             Supplemental::Help(help) => fallback.push_str(&format!("\nHelp: {help}")),
             Supplemental::Note(note) => fallback.push_str(&format!("\nNote: {note}")),
+            Supplemental::InlineOrigin { label, .. } => fallback.push_str(&format!("\n{label}")),
         }
     }
     fallback

@@ -165,6 +165,13 @@ impl DocumentAnalysis {
             .min_by_key(|scope| scope.range.end.saturating_sub(scope.range.start))
             .map(|scope| scope.name.as_str())
     }
+
+    /// Canonical symbol form for `name` appearing at `offset` in this
+    /// document. Combines `scope_at_offset` with the canonical transformation
+    /// that prefixes scope-local `.foo` names with their enclosing function.
+    pub(super) fn canonical_at_offset(&self, name: &str, offset: usize) -> String {
+        super::canonical_symbol(name, self.scope_at_offset(offset))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -298,4 +305,50 @@ impl ServerState {
             .find(|d| &d.uri == preferred_uri)
             .or_else(|| definitions.first())
     }
+
+    /// Resolve `(document, byte offset)` for an LSP position. Returns `None`
+    /// if `uri` isn't tracked or the position is outside the document.
+    pub(super) fn doc_and_offset(
+        &self,
+        uri: &Uri,
+        position: Position,
+    ) -> Option<(&DocumentState, usize)> {
+        let doc = self.documents.get(uri)?;
+        let offset = doc.line_index.to_offset(&doc.text, position)?;
+        Some((doc, offset))
+    }
+
+    /// Resolve the lexical context at `position`: the document, byte offset,
+    /// token under the cursor, enclosing function scope, and canonical
+    /// symbol form for that token. Returns `None` only when the cursor is not
+    /// on a token (e.g. inside whitespace) or the URI/position is invalid.
+    pub(super) fn token_context_at(
+        &self,
+        uri: &Uri,
+        position: Position,
+    ) -> Option<PositionContext<'_>> {
+        let (doc, offset) = self.doc_and_offset(uri, position)?;
+        let token = super::text::token_at_offset(&doc.text, offset)?;
+        let scope = doc.analysis.scope_at_offset(offset);
+        let canonical = super::canonical_symbol(&token.text, scope);
+        Some(PositionContext {
+            doc,
+            offset,
+            token,
+            scope,
+            canonical,
+        })
+    }
+}
+
+/// Context resolved from a position-bearing LSP request: the owning document,
+/// byte offset, identifier token under the cursor, enclosing function scope,
+/// and canonical (scope-qualified) form of the token. Lifetimes are tied to
+/// the borrowed `&ServerState`.
+pub(super) struct PositionContext<'a> {
+    pub(super) doc: &'a DocumentState,
+    pub(super) offset: usize,
+    pub(super) token: super::text::TokenMatch,
+    pub(super) scope: Option<&'a str>,
+    pub(super) canonical: String,
 }

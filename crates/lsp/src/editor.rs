@@ -35,8 +35,7 @@ fn split_var_field(qualified: &str) -> (&str, Option<&str>) {
 
 impl ServerState {
     pub(super) fn hover(&self, uri: &Uri, position: Position) -> Option<Hover> {
-        let doc = self.documents.get(uri)?;
-        let offset = doc.line_index.to_offset(&doc.text, position)?;
+        let (doc, offset) = self.doc_and_offset(uri, position)?;
 
         if let Some((range, value)) = numeric_literal_at_offset(&doc.text, offset) {
             return Some(Hover {
@@ -417,8 +416,7 @@ impl ServerState {
     }
 
     pub(super) fn completion(&self, uri: &Uri, position: Position) -> Option<CompletionResponse> {
-        let doc = self.documents.get(uri)?;
-        let offset = doc.line_index.to_offset(&doc.text, position)?;
+        let (doc, offset) = self.doc_and_offset(uri, position)?;
         let raw_prefix = token_prefix_at_offset(&doc.text, offset);
         let prefix = raw_prefix.to_ascii_lowercase();
         let scope = doc.analysis.scope_at_offset(offset);
@@ -841,8 +839,7 @@ impl ServerState {
                     } else if opcode_keywords().iter().any(|op| op == &lower) {
                         semantic_token_type_index("keyword")
                     } else {
-                        let scope = doc.analysis.scope_at_offset(span.start);
-                        let canonical = canonical_symbol(name, scope);
+                        let canonical = doc.analysis.canonical_at_offset(name, span.start);
                         if let Some(defs) = self.symbols.get(&canonical) {
                             modifiers |= semantic_token_modifier_bit("resolved");
                             if name.starts_with('.') {
@@ -1116,8 +1113,7 @@ impl ServerState {
     }
 
     pub(super) fn signature_help(&self, uri: &Uri, position: Position) -> Option<SignatureHelp> {
-        let doc = self.documents.get(uri)?;
-        let offset = doc.line_index.to_offset(&doc.text, position)?;
+        let (doc, offset) = self.doc_and_offset(uri, position)?;
         let (function_name, active_param) = evaluator_call_at_offset(&doc.text, offset)?;
         let signature = evaluator_signature(function_name.as_str())?;
 

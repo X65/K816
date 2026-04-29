@@ -7,7 +7,7 @@ use super::protocol::{
     ResolveInlineSymbolsResult, symbol_category_label,
 };
 use super::text::token_matches_in_range;
-use super::{ServerState, SymbolCategory, SymbolLocation, canonical_symbol};
+use super::{ServerState, SymbolCategory, SymbolLocation};
 
 impl ServerState {
     pub(super) fn resolve_addresses_for_lines(
@@ -86,8 +86,7 @@ impl ServerState {
         let mut symbols = Vec::new();
 
         for token in token_matches_in_range(&doc.text, start_offset, end_offset) {
-            let scope = doc.analysis.scope_at_offset(token.start);
-            let canonical = canonical_symbol(&token.text, scope);
+            let canonical = doc.analysis.canonical_at_offset(&token.text, token.start);
             let Some(definition) = self.preferred_definition(&canonical, uri) else {
                 continue;
             };

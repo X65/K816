@@ -7,10 +7,10 @@ use lsp_types::{
 
 use super::text::{
     QualifiedSegment, TokenMatch, cumulative_field_key, resolve_field_from_ast,
-    resolve_qualified_segment, token_at_offset,
+    resolve_qualified_segment,
 };
 use super::{
-    ByteRange, ServerState, SymbolCategory, byte_range_to_lsp, canonical_symbol,
+    ByteRange, ServerState, SymbolCategory, byte_range_to_lsp,
     document_symbols::document_symbols_from_ast, is_valid_symbol_name,
 };
 
@@ -65,37 +65,34 @@ impl ServerState {
         uri: &Uri,
         position: Position,
     ) -> Option<GotoDefinitionResponse> {
-        let doc = self.documents.get(uri)?;
-        let offset = doc.line_index.to_offset(&doc.text, position)?;
-        let token = token_at_offset(&doc.text, offset)?;
-        let scope = doc.analysis.scope_at_offset(offset);
-        let canonical = canonical_symbol(&token.text, scope);
+        let ctx = self.token_context_at(uri, position)?;
 
-        let locations = self.definition_locations(&canonical);
+        let locations = self.definition_locations(&ctx.canonical);
         if !locations.is_empty() {
             return Some(GotoDefinitionResponse::Array(locations));
         }
 
         // Standalone subscript field (e.g. `.from` inside brackets): resolve
         // via AST to get the full qualified path (var + field key).
-        if token.text.starts_with('.')
-            && let Some(resolved) = doc
+        if ctx.token.text.starts_with('.')
+            && let Some(resolved) = ctx
+                .doc
                 .analysis
                 .ast
                 .as_ref()
-                .and_then(|ast| resolve_field_from_ast(ast, offset))
+                .and_then(|ast| resolve_field_from_ast(ast, ctx.offset))
         {
-            let segment_name = &token.text[1..];
+            let segment_name = &ctx.token.text[1..];
             let field_key = cumulative_field_key(&resolved.field_key, segment_name)
                 .unwrap_or(&resolved.field_key);
             return self.definition_for_subscript_field(Some(&resolved.var_name), field_key);
         }
 
         // Qualified subscript field access: VAR.field1.field2... (position-aware per segment)
-        if let Some(seg) = resolve_qualified_segment(&token.text, token.start, offset) {
+        if let Some(seg) = resolve_qualified_segment(&ctx.token.text, ctx.token.start, ctx.offset) {
             match seg {
                 QualifiedSegment::Var { name, .. } => {
-                    let var_canonical = canonical_symbol(name, scope);
+                    let var_canonical = super::canonical_symbol(name, ctx.scope);
                     let locations = self.definition_locations(&var_canonical);
                     if !locations.is_empty() {
                         return Some(GotoDefinitionResponse::Array(locations));
@@ -199,17 +196,13 @@ impl ServerState {
         uri: &Uri,
         position: Position,
     ) -> Option<(String, TokenMatch, SymbolCategory)> {
-        let doc = self.documents.get(uri)?;
-        let offset = doc.line_index.to_offset(&doc.text, position)?;
-        let token = token_at_offset(&doc.text, offset)?;
-        let scope = doc.analysis.scope_at_offset(offset);
-        let canonical = canonical_symbol(&token.text, scope);
+        let ctx = self.token_context_at(uri, position)?;
         let category = self
             .symbols
-            .get(&canonical)
+            .get(&ctx.canonical)
             .and_then(|defs| defs.first())
             .map(|def| def.category)?;
-        Some((canonical, token, category))
+        Some((ctx.canonical, ctx.token, category))
     }
 
     pub(super) fn document_symbols(&self, uri: &Uri) -> Option<lsp_types::DocumentSymbolResponse> {

@@ -14,7 +14,7 @@ use super::protocol::{
 use super::watcher::WorkspaceFsEvent;
 use super::{
     ByteRange, DocumentAnalysis, DocumentState, ForeignSource, LineIndex, PROJECT_MANIFEST,
-    ServerState, SymbolLocation, SymbolOccurrence, analyze_document, canonical_symbol,
+    ServerState, SymbolLocation, SymbolOccurrence, analyze_document,
     diagnostic_to_lsp,
 };
 
@@ -329,8 +329,7 @@ impl ServerState {
                 let k816_core::lexer::TokenKind::Ident(name) = token.kind else {
                     continue;
                 };
-                let scope = doc.analysis.scope_at_offset(token.span.start);
-                let canonical = canonical_symbol(&name, scope);
+                let canonical = doc.analysis.canonical_at_offset(&name, token.span.start);
                 if !self.symbols.contains_key(&canonical) {
                     continue;
                 }

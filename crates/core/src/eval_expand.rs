@@ -33,10 +33,7 @@ fn expand_item(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Item {
     match item {
-        Item::Const(const_decl) => {
-            Item::Const(expand_const(const_decl, span, source_id, diagnostics))
-        }
-        Item::ConstGroup(consts) => Item::ConstGroup(
+        Item::Const(consts) => Item::Const(
             consts
                 .iter()
                 .map(|const_decl| expand_const(const_decl, span, source_id, diagnostics))

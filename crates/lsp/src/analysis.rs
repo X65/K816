@@ -225,17 +225,7 @@ fn collect_symbols(file: &k816_core::ast::File) -> SymbolCollection {
                     scope: None,
                 });
             }
-            k816_core::ast::Item::Const(const_decl) => {
-                let range = ByteRange::from_span(item.span);
-                out.symbols.push(SymbolDef {
-                    canonical: const_decl.name.clone(),
-                    name: const_decl.name.clone(),
-                    category: SymbolCategory::Constant,
-                    selection: range,
-                    scope: None,
-                });
-            }
-            k816_core::ast::Item::ConstGroup(consts) => {
+            k816_core::ast::Item::Const(consts) => {
                 let range = ByteRange::from_span(item.span);
                 for const_decl in consts {
                     out.symbols.push(SymbolDef {

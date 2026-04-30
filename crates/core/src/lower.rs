@@ -1730,10 +1730,7 @@ pub(crate) fn lower_with_warnings(
                 );
             }
             Item::EvaluatorBlock(_) => {}
-            Item::Const(c) => {
-                emit_const_absolute_symbol(c, item.span, sema, &mut ops);
-            }
-            Item::ConstGroup(consts) => {
+            Item::Const(consts) => {
                 for c in consts {
                     emit_const_absolute_symbol(c, item.span, sema, &mut ops);
                 }

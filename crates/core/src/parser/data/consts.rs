@@ -80,15 +80,7 @@ fn desugar_const_bindings(
         });
     }
 
-    if is_group {
-        Ok(Item::ConstGroup(decls))
-    } else {
-        let decl = decls
-            .into_iter()
-            .next()
-            .expect("const declaration must contain one binding");
-        Ok(Item::Const(decl))
-    }
+    Ok(Item::Const(decls))
 }
 
 pub(in super::super) fn const_decl_item_parser<'src, I>(

@@ -6,9 +6,11 @@ fn parses_const_declaration() {
     let file = parse(SourceId(0), source).expect("parse");
     assert_eq!(file.items.len(), 1);
 
-    let Item::Const(const_decl) = &file.items[0].node else {
+    let Item::Const(consts) = &file.items[0].node else {
         panic!("expected const item");
     };
+    assert_eq!(consts.len(), 1);
+    let const_decl = &consts[0];
     assert_eq!(const_decl.name, "LIMIT");
     assert!(matches!(const_decl.initializer, Expr::Number(16, _)));
     assert!(const_decl.initializer_span.is_some());
@@ -19,7 +21,7 @@ fn preprocesses_comma_separated_const_declarations() {
     let source = "const A = 1, B = 2\n";
     let file = parse(SourceId(0), source).expect("parse");
     assert_eq!(file.items.len(), 1);
-    let Item::ConstGroup(consts) = &file.items[0].node else {
+    let Item::Const(consts) = &file.items[0].node else {
         panic!("expected const group");
     };
     assert_eq!(consts.len(), 2);
@@ -31,7 +33,7 @@ fn preprocesses_comma_separated_const_declarations() {
 fn preprocesses_const_group_with_omitted_initializers() {
     let source = "const A = 0, B, C\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::ConstGroup(consts) = &file.items[0].node else {
+    let Item::Const(consts) = &file.items[0].node else {
         panic!("expected const group");
     };
     assert_eq!(consts.len(), 3);
@@ -47,7 +49,7 @@ fn preprocesses_const_group_with_omitted_initializers() {
 fn preprocesses_const_group_with_implicit_zero_first() {
     let source = "const A, B, C\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::ConstGroup(consts) = &file.items[0].node else {
+    let Item::Const(consts) = &file.items[0].node else {
         panic!("expected const group");
     };
     assert_eq!(consts.len(), 3);
@@ -60,7 +62,7 @@ fn preprocesses_const_group_with_implicit_zero_first() {
 fn preprocesses_const_group_with_explicit_resets() {
     let source = "const A = 0, B, C = 10, D\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::ConstGroup(consts) = &file.items[0].node else {
+    let Item::Const(consts) = &file.items[0].node else {
         panic!("expected const group");
     };
     assert_eq!(consts.len(), 4);
@@ -73,7 +75,7 @@ fn preprocesses_const_group_with_explicit_resets() {
 fn preprocesses_const_group_with_multiline_trailing_comma() {
     let source = "const A = 0,\n      B,\n      C,\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::ConstGroup(consts) = &file.items[0].node else {
+    let Item::Const(consts) = &file.items[0].node else {
         panic!("expected const group");
     };
     assert_eq!(consts.len(), 3);
@@ -87,7 +89,7 @@ fn preprocesses_const_group_with_resolvable_identifier_seed() {
     let source = "const BASE = 10\nconst A = BASE, B, C\n";
     let file = parse(SourceId(0), source).expect("parse");
     assert_eq!(file.items.len(), 2);
-    let Item::ConstGroup(consts) = &file.items[1].node else {
+    let Item::Const(consts) = &file.items[1].node else {
         panic!("expected const group");
     };
     assert_eq!(consts.len(), 3);

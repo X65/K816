@@ -287,8 +287,7 @@ pub(super) fn resolve_field_from_ast(
         let result = match &item.node {
             Item::CodeBlock(block) => check_stmts(&block.body, offset),
             Item::Statement(stmt) => check_stmt(stmt, offset),
-            Item::Const(c) => check_expr(&c.initializer, offset),
-            Item::ConstGroup(cs) => cs.iter().find_map(|c| check_expr(&c.initializer, offset)),
+            Item::Const(cs) => cs.iter().find_map(|c| check_expr(&c.initializer, offset)),
             Item::Var(v) => v.initializer.as_ref().and_then(|e| check_expr(e, offset)),
             _ => None,
         };

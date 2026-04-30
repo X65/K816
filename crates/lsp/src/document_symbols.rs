@@ -36,16 +36,7 @@ pub(super) fn document_symbols_from_ast(
                 line_index,
                 text,
             )),
-            k816_core::ast::Item::Const(const_decl) => symbols.push(make_document_symbol(
-                const_decl.name.clone(),
-                SymbolCategory::Constant,
-                item.span,
-                item.span,
-                None,
-                line_index,
-                text,
-            )),
-            k816_core::ast::Item::ConstGroup(consts) => {
+            k816_core::ast::Item::Const(consts) => {
                 for const_decl in consts {
                     symbols.push(make_document_symbol(
                         const_decl.name.clone(),

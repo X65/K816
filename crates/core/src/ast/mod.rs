@@ -91,8 +91,7 @@ pub struct File {
 #[derive(Debug, Clone)]
 pub enum Item {
     Segment(SegmentDecl),
-    Const(ConstDecl),
-    ConstGroup(Vec<ConstDecl>),
+    Const(Vec<ConstDecl>),
     EvaluatorBlock(EvaluatorBlock),
     Var(VarDecl),
     DataBlock(DataBlock),

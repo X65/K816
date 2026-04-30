@@ -44,15 +44,7 @@ pub fn analyze_partial(
 
     for item in &file.items {
         match &item.node {
-            Item::Const(const_decl) => collect_const(
-                const_decl,
-                item.span,
-                &mut model,
-                &mut evaluator_context,
-                &external_names,
-                &mut diagnostics,
-            ),
-            Item::ConstGroup(consts) => {
+            Item::Const(consts) => {
                 for const_decl in consts {
                     collect_const(
                         const_decl,

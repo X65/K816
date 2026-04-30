@@ -18,8 +18,7 @@ pub fn normalize_file(file: &File) -> Result<File, Vec<Diagnostic>> {
 fn normalize_item(item: &Item) -> Item {
     match item {
         Item::Segment(segment) => Item::Segment(segment.clone()),
-        Item::Const(const_decl) => Item::Const(const_decl.clone()),
-        Item::ConstGroup(consts) => Item::ConstGroup(consts.clone()),
+        Item::Const(consts) => Item::Const(consts.clone()),
         Item::EvaluatorBlock(block) => Item::EvaluatorBlock(block.clone()),
         Item::Var(var) => Item::Var(var.clone()),
         Item::DataBlock(block) => Item::DataBlock(normalize_data_block(block)),

@@ -1,0 +1,19 @@
+const A = -1, B, C
+const X = -3, Y = 2, Z
+
+const NEG = -5
+
+func main @a8 {
+    lda #A
+    lda #B
+    lda #C
+
+    lda #X
+    lda #Y
+    lda #Z
+
+    @a16
+    lda #A
+    lda #X
+    lda #NEG
+}

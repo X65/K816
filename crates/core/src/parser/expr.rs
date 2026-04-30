@@ -135,12 +135,31 @@ where
             })
             .boxed();
 
-        let mul_expr = unary
+        // Unary minus: numeric negation prefix. Sits outside the `&` address-of
+        // chain and inside `mul_expr`, so `5 - -1` parses as binary-sub of 5
+        // and Negate(1): the add-level loop greedily takes the binary `-`,
+        // and `signed_unary` then consumes the second `-`.
+        let signed_unary = just(TokenKind::Minus)
+            .repeated()
+            .count()
+            .then(unary)
+            .map(|(minus_count, mut inner)| {
+                for _ in 0..minus_count {
+                    inner = Expr::Unary {
+                        op: ExprUnaryOp::Negate,
+                        expr: Box::new(inner),
+                    };
+                }
+                inner
+            })
+            .boxed();
+
+        let mul_expr = signed_unary
             .clone()
             .then(
                 just(TokenKind::Star)
                     .to(ExprBinaryOp::Mul)
-                    .then(unary)
+                    .then(signed_unary)
                     .repeated()
                     .collect::<Vec<_>>(),
             )
@@ -365,6 +384,7 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
+                ExprUnaryOp::Negate => value.checked_neg(),
             }
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => eval_static_expr(expr),

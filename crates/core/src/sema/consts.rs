@@ -341,6 +341,10 @@ fn eval_const_expr(
                     Ok(Number::Int(value))
                 }
                 ExprUnaryOp::EvalBracketed => Ok(Number::Int(value)),
+                ExprUnaryOp::Negate => value
+                    .checked_neg()
+                    .map(Number::Int)
+                    .ok_or(ConstExprError::Overflow),
             }
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {

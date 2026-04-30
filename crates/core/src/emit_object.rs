@@ -565,13 +565,39 @@ pub fn emit_object(
                 match &instruction.operand {
                     None => {}
                     Some(OperandOp::Immediate(value)) => {
-                        if let Ok(raw) = u32::try_from(*value) {
-                            emit_literal(segment, raw, width, op.span, &mut diagnostics);
+                        // Positive values flow through emit_literal's existing
+                        // unsigned range check. Negative values that fit the
+                        // operand's signed range wrap as two's complement to
+                        // the operand width (per docs/syntax-reference.md).
+                        let v = *value;
+                        if v >= 0 {
+                            match u32::try_from(v) {
+                                Ok(raw) => emit_literal(
+                                    segment, raw, width, op.span, &mut diagnostics,
+                                ),
+                                Err(_) => diagnostics.push(Diagnostic::error(
+                                    op.span,
+                                    "immediate value out of range",
+                                )),
+                            }
                         } else {
-                            diagnostics.push(Diagnostic::error(
-                                op.span,
-                                "immediate value cannot be negative",
-                            ));
+                            let (min, mask): (i64, u32) = match width {
+                                1 => (-(1i64 << 7), 0xFF),
+                                2 => (-(1i64 << 15), 0xFFFF),
+                                3 => (-(1i64 << 23), 0xFF_FFFF),
+                                _ => (0, 0),
+                            };
+                            if v >= min {
+                                let raw = (v as u32) & mask;
+                                emit_literal(
+                                    segment, raw, width, op.span, &mut diagnostics,
+                                );
+                            } else {
+                                diagnostics.push(Diagnostic::error(
+                                    op.span,
+                                    "immediate value cannot be negative",
+                                ));
+                            }
                         }
                     }
                     Some(OperandOp::ImmediateByteRelocation { kind, label }) => {

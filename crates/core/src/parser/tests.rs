@@ -17,6 +17,20 @@ fn assert_add_one_from(expr: &Expr, previous: &str) {
     ));
 }
 
+fn assert_negate_of(expr: &Expr, expected_inner: i64) {
+    let Expr::Unary {
+        op: ExprUnaryOp::Negate,
+        expr: inner,
+    } = expr
+    else {
+        panic!("expected Unary(Negate, ...), got {expr:?}");
+    };
+    assert!(
+        matches!(inner.as_ref(), Expr::Number(n, _) if *n == expected_inner),
+        "expected Negate of Number({expected_inner}), got Negate of {inner:?}",
+    );
+}
+
 #[test]
 fn parses_far_function_and_call() {
     let source = "far func target {\n nop\n}\nfunc main {\n call target\n}\n";
@@ -71,6 +85,40 @@ fn parses_expression_fragment_with_address_hint_suffix() {
             } if is_ident_named(expr.as_ref(), "foo")
         )
     ));
+}
+
+#[test]
+fn parses_unary_minus_on_number() {
+    let expr = parse_expression_fragment(SourceId(0), "-1").expect("parse");
+    assert_negate_of(&expr.node, 1);
+}
+
+#[test]
+fn parses_binary_minus_with_unary_minus_rhs() {
+    let expr = parse_expression_fragment(SourceId(0), "5 - -1").expect("parse");
+    let Expr::Binary {
+        op: ExprBinaryOp::Sub,
+        lhs,
+        rhs,
+    } = &expr.node
+    else {
+        panic!("expected Binary(Sub, ...), got {:?}", expr.node);
+    };
+    assert!(matches!(lhs.as_ref(), Expr::Number(5, _)));
+    assert_negate_of(rhs.as_ref(), 1);
+}
+
+#[test]
+fn parses_repeated_unary_minus() {
+    let expr = parse_expression_fragment(SourceId(0), "--1").expect("parse");
+    let Expr::Unary {
+        op: ExprUnaryOp::Negate,
+        expr: inner,
+    } = &expr.node
+    else {
+        panic!("expected outer Unary(Negate, ...), got {:?}", expr.node);
+    };
+    assert_negate_of(inner.as_ref(), 1);
 }
 
 #[test]

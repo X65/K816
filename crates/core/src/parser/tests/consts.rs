@@ -99,6 +99,32 @@ fn preprocesses_const_group_with_resolvable_identifier_seed() {
 }
 
 #[test]
+fn preprocesses_const_group_with_negative_seed() {
+    let source = "const A = -1, B, C\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::Const(consts) = &file.items[0].node else {
+        panic!("expected const group");
+    };
+    assert_eq!(consts.len(), 3);
+    assert_negate_of(&consts[0].initializer, 1);
+    assert_add_one_from(&consts[1].initializer, "A");
+    assert_add_one_from(&consts[2].initializer, "B");
+}
+
+#[test]
+fn preprocesses_const_group_with_negative_seed_and_explicit_reset() {
+    let source = "const X = -3, Y = 2, Z\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::Const(consts) = &file.items[0].node else {
+        panic!("expected const group");
+    };
+    assert_eq!(consts.len(), 3);
+    assert_negate_of(&consts[0].initializer, 3);
+    assert!(matches!(consts[1].initializer, Expr::Number(2, _)));
+    assert_add_one_from(&consts[2].initializer, "Y");
+}
+
+#[test]
 fn parses_top_level_evaluator_block_item() {
     let source = "[ A = 1 ]\n";
     let file = parse(SourceId(0), source).expect("parse");

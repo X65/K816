@@ -528,6 +528,7 @@ pub enum ExprUnaryOp {
     WordLittleEndian,
     FarLittleEndian,
     EvalBracketed,
+    Negate,
 }
 
 #[derive(Debug, Clone)]

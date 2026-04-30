@@ -3594,13 +3594,13 @@ fn capitalize(text: &str) -> String {
 }
 
 fn value_fits_reg_width(value: i64, width: RegWidth) -> bool {
-    if value < 0 {
-        return false;
-    }
-    match width {
-        RegWidth::W8 => value <= i64::from(u8::MAX),
-        RegWidth::W16 => value <= i64::from(u16::MAX),
-    }
+    let bits = match width {
+        RegWidth::W8 => 8,
+        RegWidth::W16 => 16,
+    };
+    let min = -(1i64 << (bits - 1));
+    let max = (1i64 << bits) - 1;
+    (min..=max).contains(&value)
 }
 
 fn immediate_width_error(span: Span, value: i64, width: RegWidth, mnemonic: &str) -> Diagnostic {
@@ -4185,6 +4185,10 @@ fn eval_to_number_strict(
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
+                ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                }),
             }
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
@@ -4364,7 +4368,8 @@ fn resolve_symbolic_byte_relocation(
         ExprUnaryOp::HighByte => ByteRelocationKind::HighByte,
         ExprUnaryOp::WordLittleEndian
         | ExprUnaryOp::FarLittleEndian
-        | ExprUnaryOp::EvalBracketed => return None,
+        | ExprUnaryOp::EvalBracketed
+        | ExprUnaryOp::Negate => return None,
     };
 
     let symbol = expr_ident_name(expr.as_ref())?;
@@ -5196,6 +5201,10 @@ fn eval_to_number(
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
+                ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                }),
             }
         }
         Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
@@ -5597,6 +5606,70 @@ mod tests {
             .expect("lda operand");
 
         assert!(matches!(operand, OperandOp::Immediate(0x34)));
+    }
+
+    #[test]
+    fn resolves_negative_const_operand_to_signed_immediate() {
+        let source = "const A = -1\nfunc main @a8 {\n  lda #A\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs, None).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(operand, OperandOp::Immediate(-1)));
+    }
+
+    #[test]
+    fn accepts_immediate_at_signed_lower_bound_a8() {
+        // -128 fits the signed range of 8-bit accumulator immediates.
+        let source = "func main @a8 {\n  lda #-128\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        lower(&file, &sema, &fs, None).expect("lower");
+    }
+
+    #[test]
+    fn rejects_immediate_below_signed_lower_bound_a8() {
+        // -129 falls outside both i8 and u8 — error.
+        let source = "func main @a8 {\n  lda #-129\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("does not fit in @a8")),
+            "expected @a8 width error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_immediate_above_unsigned_upper_bound_a8() {
+        // 256 fits neither i8 nor u8 — error.
+        let source = "func main @a8 {\n  lda #256\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("does not fit in @a8")),
+            "expected @a8 width error, got {errors:?}"
+        );
     }
 
     #[test]

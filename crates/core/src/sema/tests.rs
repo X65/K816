@@ -60,6 +60,20 @@ fn const_sequence_implicit_initializers_are_resolved() {
 }
 
 #[test]
+fn const_sequence_with_negative_seed_increments_into_zero_and_above() {
+    let source = "const A = -1, B, C\nconst X = -3, Y = 2, Z\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let sema = analyze(&file).expect("analyze");
+
+    assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(-1));
+    assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(0));
+    assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(1));
+    assert_eq!(sema.consts.get("X").expect("X").value, Number::Int(-3));
+    assert_eq!(sema.consts.get("Y").expect("Y").value, Number::Int(2));
+    assert_eq!(sema.consts.get("Z").expect("Z").value, Number::Int(3));
+}
+
+#[test]
 fn const_sequence_explicit_initializer_resets_increment_chain() {
     let source = "const A = 0, B, C = 10, D\nvar ptr = D\n";
     let file = parse(SourceId(0), source).expect("parse");

@@ -1,0 +1,15 @@
+// Bare labels passed to strictly-immediate mnemonics should produce a help
+// line suggesting the `#&&label` (Immediate16) or `#&label` (Immediate8) form.
+//
+// `pea` is Immediate16-only -> suggest `pea #&&prompt`.
+// `cop` is Immediate8-only  -> suggest `cop #&handler`.
+
+data {
+    prompt: 1 2 3
+    handler: 4 5 6
+}
+
+func main {
+    pea prompt
+    cop handler
+}

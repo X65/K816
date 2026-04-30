@@ -1142,6 +1142,12 @@ fn matching_modes(mnemonic: &str) -> Vec<AddressingMode> {
         .collect()
 }
 
+/// Public, case-insensitive view of the addressing modes accepted by `mnemonic`.
+/// Used by diagnostic code to tailor hints for invalid operands.
+pub fn supported_modes(mnemonic: &str) -> Vec<AddressingMode> {
+    matching_modes(&mnemonic.to_ascii_lowercase())
+}
+
 fn find_opcode(mnemonic: &str, mode: AddressingMode) -> Option<u8> {
     OPCODE_TABLE
         .iter()

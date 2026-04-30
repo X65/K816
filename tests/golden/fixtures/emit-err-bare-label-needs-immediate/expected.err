@@ -1,0 +1,19 @@
+Error: mnemonic 'pea' does not accept this operand
+    ╭─[ tests/golden/fixtures/emit-err-bare-label-needs-immediate/input.k65:13:5 ]
+    │
+ 13 │     pea prompt
+    │     ─────┬────  
+    │          ╰────── here
+    │ 
+    │ Help: `pea` requires an immediate operand; use `pea #&&prompt` to pass the 16-bit address of `prompt`
+────╯
+
+Error: mnemonic 'cop' does not accept this operand
+    ╭─[ tests/golden/fixtures/emit-err-bare-label-needs-immediate/input.k65:14:5 ]
+    │
+ 14 │     cop handler
+    │     ─────┬─────  
+    │          ╰─────── here
+    │ 
+    │ Help: `cop` requires an immediate operand; pass a `#`-prefixed constant value (e.g. `cop #$00`)
+────╯

@@ -4,7 +4,7 @@ use rustc_hash::FxHashMap;
 use k816_isa65816::{
     AddressOperandMode as IsaAddressOperandMode, AddressSizeHint as IsaAddressSizeHint,
     AddressingMode, EncodeError, IndexRegister as IsaIndexRegister, OperandShape,
-    operand_width_for_mode, select_encoding,
+    operand_width_for_mode, select_encoding, supported_modes,
 };
 use k816_o65::{
     CallMetadata, DataStringFragment, FunctionDisassembly, FunctionMetadata, O65Object, Relocation,
@@ -125,6 +125,55 @@ fn function_call_help(name: &str, meta: &FunctionMeta) -> String {
         kind = meta.kind_prefix_with_article(),
         sig = meta.signature_call_form(name),
     )
+}
+
+/// If the user gave a bare label as the operand to a strictly-immediate mnemonic
+/// (e.g. `pea label`), explain that an immediate is required and — for the
+/// 16-bit `Immediate16` case — suggest the address-of form `pea #&&label`.
+///
+/// Rule: triggers only when every accepted addressing mode for the mnemonic is
+/// some flavor of immediate. Mnemonics that also accept Direct addressing
+/// (`lda`, `ldx`, …) take the bare label through the address path and never
+/// reach `InvalidOperand`, so they are filtered out automatically.
+fn invalid_operand_help(mnemonic: &str, operand: &Option<OperandOp>) -> Option<String> {
+    let label = match operand {
+        Some(OperandOp::Address {
+            value: AddressValue::Label(name),
+            mode: AddressOperandMode::Direct { index: None },
+            ..
+        }) => name.as_str(),
+        Some(OperandOp::Address {
+            value: AddressValue::LabelOffset { label, .. },
+            mode: AddressOperandMode::Direct { index: None },
+            ..
+        }) => label.as_str(),
+        _ => return None,
+    };
+
+    let modes = supported_modes(mnemonic);
+    let all_immediate = !modes.is_empty()
+        && modes.iter().all(|m| {
+            matches!(
+                m,
+                AddressingMode::Immediate8
+                    | AddressingMode::Immediate16
+                    | AddressingMode::ImmediateM
+                    | AddressingMode::ImmediateX
+            )
+        });
+    if !all_immediate {
+        return None;
+    }
+
+    if modes.contains(&AddressingMode::Immediate16) {
+        Some(format!(
+            "`{mnemonic}` requires an immediate operand; use `{mnemonic} #&&{label}` to pass the 16-bit address of `{label}`"
+        ))
+    } else {
+        Some(format!(
+            "`{mnemonic}` requires an immediate operand; pass a `#`-prefixed constant value (e.g. `{mnemonic} #$00`)"
+        ))
+    }
 }
 
 /// If `origin` resolves to a known source, append an `InlineOrigin` supplement
@@ -481,11 +530,22 @@ pub fn emit_object(
                     Ok(encoding) => encoding,
                     Err(err) => {
                         let mut diag = Diagnostic::error(op.span, err.to_string());
-                        if let EncodeError::UnknownMnemonic { mnemonic } = &err
-                            && let Some((name, meta)) =
-                                lookup_function(sema, external_functions, mnemonic)
-                        {
-                            diag = diag.with_help(function_call_help(name, meta));
+                        match &err {
+                            EncodeError::UnknownMnemonic { mnemonic } => {
+                                if let Some((name, meta)) =
+                                    lookup_function(sema, external_functions, mnemonic)
+                                {
+                                    diag = diag.with_help(function_call_help(name, meta));
+                                }
+                            }
+                            EncodeError::InvalidOperand { mnemonic } => {
+                                if let Some(help) =
+                                    invalid_operand_help(mnemonic, &instruction.operand)
+                                {
+                                    diag = diag.with_help(help);
+                                }
+                            }
+                            _ => {}
                         }
                         diagnostics.push(diag);
                         continue;

@@ -24,6 +24,10 @@ mod vars;
 pub(super) use self::consts::const_decl_item_parser;
 pub(super) use self::vars::{CommaTrailer, prefix_condition_parser, var_decl_parser};
 
+fn make_values(width: DataWidth, values: Vec<Expr>) -> DataEntry {
+    DataEntry::Values { width, values }
+}
+
 pub(super) fn data_block_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, DataBlock, ParseExtra<'src>> + Clone
@@ -118,7 +122,7 @@ where
                 DataEntry::Label(name)
             } else {
                 emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
-                DataEntry::Bytes(vec![])
+                make_values(DataWidth::Byte, vec![])
             }
         })
         .boxed();
@@ -193,7 +197,7 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| DataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .map(|chunks| make_values(DataWidth::Far, chunks.into_iter().flatten().collect::<Vec<_>>()))
         .boxed();
 
     let word_value = choice((
@@ -207,7 +211,7 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| DataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| make_values(DataWidth::Word, chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let bytes_entry = choice((
@@ -218,7 +222,7 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| DataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| make_values(DataWidth::Byte, chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let eval_bytes_entry =
@@ -226,7 +230,7 @@ where
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(DataEntry::Bytes)
+            .map(|values| make_values(DataWidth::Byte, values))
             .boxed();
 
     let for_eval_entry = chumsky::select! {
@@ -385,7 +389,7 @@ where
                 DataEntry::Label(name)
             } else {
                 emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
-                DataEntry::Bytes(vec![])
+                make_values(DataWidth::Byte, vec![])
             }
         })
         .boxed();
@@ -460,7 +464,7 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| DataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .map(|chunks| make_values(DataWidth::Far, chunks.into_iter().flatten().collect::<Vec<_>>()))
         .boxed();
 
     let word_value = choice((
@@ -474,7 +478,7 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| DataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| make_values(DataWidth::Word, chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let bytes_entry = choice((
@@ -485,7 +489,7 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| DataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| make_values(DataWidth::Byte, chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let eval_bytes_entry =
@@ -493,7 +497,7 @@ where
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(DataEntry::Bytes)
+            .map(|values| make_values(DataWidth::Byte, values))
             .boxed();
 
     let charset_entry = chumsky::select! {

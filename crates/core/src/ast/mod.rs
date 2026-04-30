@@ -552,9 +552,7 @@ pub enum DataEntry {
     Address(u32),
     Align(u16),
     Nocross(u16),
-    Bytes(Vec<Expr>),
-    Words(Vec<Expr>),
-    Fars(Vec<Expr>),
+    Values { width: DataWidth, values: Vec<Expr> },
     ForEvalRange(DataForEvalRange),
     String(String),
     Repeat {

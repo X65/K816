@@ -156,24 +156,13 @@ fn expand_data_entry(
         DataEntry::Address(value) => DataEntry::Address(*value),
         DataEntry::Align(value) => DataEntry::Align(*value),
         DataEntry::Nocross(value) => DataEntry::Nocross(*value),
-        DataEntry::Bytes(values) => DataEntry::Bytes(
-            values
+        DataEntry::Values { width, values } => DataEntry::Values {
+            width: *width,
+            values: values
                 .iter()
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
-        ),
-        DataEntry::Words(values) => DataEntry::Words(
-            values
-                .iter()
-                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
-                .collect(),
-        ),
-        DataEntry::Fars(values) => DataEntry::Fars(
-            values
-                .iter()
-                .map(|expr| expand_expr(expr, span, source_id, diagnostics))
-                .collect(),
-        ),
+        },
         DataEntry::ForEvalRange(range) => {
             DataEntry::ForEvalRange(DataForEvalRange {
                 iterator: range.iterator.clone(),

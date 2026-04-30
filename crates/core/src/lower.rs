@@ -2112,34 +2112,10 @@ fn lower_data_entry(
         DataEntry::Nocross(value) => {
             ops.push(Spanned::new(Op::Nocross(*value), span));
         }
-        DataEntry::Bytes(values) => {
-            if let Some(evaluated) = evaluate_byte_exprs(values, None, sema, span, diagnostics) {
-                let op = if evaluated.relocations.is_empty() {
-                    Op::EmitBytes(evaluated.bytes)
-                } else {
-                    Op::EmitRelocBytes {
-                        bytes: evaluated.bytes,
-                        relocations: evaluated.relocations,
-                    }
-                };
-                ops.push(Spanned::new(op, span));
-            }
-        }
-        DataEntry::Words(values) => {
-            if let Some(evaluated) = evaluate_word_exprs(values, None, sema, span, diagnostics) {
-                let op = if evaluated.relocations.is_empty() {
-                    Op::EmitBytes(evaluated.bytes)
-                } else {
-                    Op::EmitRelocBytes {
-                        bytes: evaluated.bytes,
-                        relocations: evaluated.relocations,
-                    }
-                };
-                ops.push(Spanned::new(op, span));
-            }
-        }
-        DataEntry::Fars(values) => {
-            if let Some(evaluated) = evaluate_far_exprs(values, None, sema, span, diagnostics) {
+        DataEntry::Values { width, values } => {
+            if let Some(evaluated) =
+                evaluate_data_value_exprs(*width, values, None, sema, span, diagnostics)
+            {
                 let op = if evaluated.relocations.is_empty() {
                     Op::EmitBytes(evaluated.bytes)
                 } else {
@@ -3933,59 +3909,38 @@ enum PrefixOutcome {
     NotHandled,
 }
 
-fn evaluate_byte_exprs(
+fn evaluate_data_value_exprs(
+    width: DataWidth,
     values: &[Expr],
     scope: Option<&str>,
     sema: &SemanticModel,
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<EvaluatedBytes> {
+    let spec = match width {
+        DataWidth::Byte => BYTE_SPEC,
+        DataWidth::Word => WORD_SPEC,
+        DataWidth::Far => FAR_SPEC,
+    };
     evaluate_width_exprs(
-        BYTE_SPEC,
+        spec,
         values,
         scope,
         sema,
         span,
         diagnostics,
-        |value, bytes, relocations, diagnostics| {
-            try_handle_packed_byte_unary(value, bytes, relocations, scope, sema, span, diagnostics)
+        |value, bytes, relocations, diagnostics| match width {
+            DataWidth::Byte => try_handle_packed_byte_unary(
+                value,
+                bytes,
+                relocations,
+                scope,
+                sema,
+                span,
+                diagnostics,
+            ),
+            DataWidth::Word | DataWidth::Far => PrefixOutcome::NotHandled,
         },
-    )
-}
-
-fn evaluate_word_exprs(
-    values: &[Expr],
-    scope: Option<&str>,
-    sema: &SemanticModel,
-    span: Span,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<EvaluatedBytes> {
-    evaluate_width_exprs(
-        WORD_SPEC,
-        values,
-        scope,
-        sema,
-        span,
-        diagnostics,
-        |_, _, _, _| PrefixOutcome::NotHandled,
-    )
-}
-
-fn evaluate_far_exprs(
-    values: &[Expr],
-    scope: Option<&str>,
-    sema: &SemanticModel,
-    span: Span,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<EvaluatedBytes> {
-    evaluate_width_exprs(
-        FAR_SPEC,
-        values,
-        scope,
-        sema,
-        span,
-        diagnostics,
-        |_, _, _, _| PrefixOutcome::NotHandled,
     )
 }
 

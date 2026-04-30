@@ -62,9 +62,10 @@ fn normalize_data_entry(entry: &DataEntry) -> DataEntry {
         DataEntry::Address(value) => DataEntry::Address(*value),
         DataEntry::Align(value) => DataEntry::Align(*value),
         DataEntry::Nocross(value) => DataEntry::Nocross(*value),
-        DataEntry::Bytes(values) => DataEntry::Bytes(values.clone()),
-        DataEntry::Words(values) => DataEntry::Words(values.clone()),
-        DataEntry::Fars(values) => DataEntry::Fars(values.clone()),
+        DataEntry::Values { width, values } => DataEntry::Values {
+            width: *width,
+            values: values.clone(),
+        },
         DataEntry::ForEvalRange(range) => DataEntry::ForEvalRange(range.clone()),
         DataEntry::String(value) => DataEntry::String(value.clone()),
         DataEntry::Repeat { count, body } => DataEntry::Repeat {

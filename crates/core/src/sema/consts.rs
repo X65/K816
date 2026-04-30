@@ -132,27 +132,20 @@ fn try_collect_data_block_values(
             DataEntry::String(value) => {
                 out.extend(value.bytes().map(|byte| Number::Int(i64::from(byte))));
             }
-            DataEntry::Bytes(values) => {
+            DataEntry::Values { width, values } => {
                 for expr in values {
                     let value = eval_const_expr_to_int(expr, consts).ok()?;
-                    let byte = u8::try_from(value).ok()?;
-                    out.push(Number::Int(i64::from(byte)));
-                }
-            }
-            DataEntry::Words(values) => {
-                for expr in values {
-                    let value = eval_const_expr_to_int(expr, consts).ok()?;
-                    let word = u16::try_from(value).ok()?;
-                    out.push(Number::Int(i64::from(word)));
-                }
-            }
-            DataEntry::Fars(values) => {
-                for expr in values {
-                    let value = eval_const_expr_to_int(expr, consts).ok()?;
-                    if !(0..=0xFFFFFF).contains(&value) {
-                        return None;
-                    }
-                    out.push(Number::Int(value));
+                    let normalized = match width {
+                        DataWidth::Byte => i64::from(u8::try_from(value).ok()?),
+                        DataWidth::Word => i64::from(u16::try_from(value).ok()?),
+                        DataWidth::Far => {
+                            if !(0..=0xFFFFFF).contains(&value) {
+                                return None;
+                            }
+                            value
+                        }
+                    };
+                    out.push(Number::Int(normalized));
                 }
             }
             DataEntry::ForEvalRange(range) => {

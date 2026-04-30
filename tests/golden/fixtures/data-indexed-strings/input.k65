@@ -1,0 +1,17 @@
+data errno_strings {
+    word str_EUNKNOWN str_ENOENT str_ESRCH  str_ENXIO
+    word str_E2BIG    str_EBADF  str_EAGAIN str_ENOMEM
+
+    str_EUNKNOWN: "Unknown" 00
+    str_ENOENT:   "No such file or directory" 00
+    str_ESRCH:    "No such process" 00
+    str_ENXIO:    "No such device or address" 00
+    str_E2BIG:    "Argument list too long" 00
+    str_EBADF:    "Bad file number" 00
+    str_EAGAIN:   "Try again" 00
+    str_ENOMEM:   "Out of memory" 00
+}
+
+func main @a16 {
+    lda &&str_ENXIO
+}

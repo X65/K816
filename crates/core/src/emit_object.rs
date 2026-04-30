@@ -317,7 +317,7 @@ pub fn emit_object(
                     .expect("current segment must exist during emit");
                 segment.nocross_boundary = Some(*boundary);
             }
-            Op::Rep(mask) | Op::FixedRep(mask) => {
+            Op::Rep { mask, .. } => {
                 if mask & 0x20 != 0 {
                     m_wide = Some(true);
                     m_unknown_cause = None;
@@ -346,7 +346,7 @@ pub fn emit_object(
                 let bytes = [0xC2, *mask];
                 append_bytes(segment, &bytes, op.span, &mut diagnostics);
             }
-            Op::Sep(mask) | Op::FixedSep(mask) => {
+            Op::Sep { mask, .. } => {
                 if mask & 0x20 != 0 {
                     m_wide = Some(false);
                     m_unknown_cause = None;
@@ -1308,7 +1308,7 @@ mod tests {
         // cmp #256 uses ImmediateM → width=1 → 256 overflows u8.
         let program = Program {
             ops: vec![
-                op(Op::Sep(0x20)),
+                op(Op::Sep { mask: 0x20, fixed: false }),
                 op(Op::Instruction(InstructionOp {
                     mnemonic: "cmp".to_string(),
                     operand: Some(OperandOp::Immediate(0x100)),
@@ -1337,7 +1337,7 @@ mod tests {
         // cmp #0x10000 uses ImmediateM → width=2 → 0x10000 overflows u16.
         let program = Program {
             ops: vec![
-                op(Op::Rep(0x20)),
+                op(Op::Rep { mask: 0x20, fixed: false }),
                 op(Op::Instruction(InstructionOp {
                     mnemonic: "cmp".to_string(),
                     operand: Some(OperandOp::Immediate(0x10000)),

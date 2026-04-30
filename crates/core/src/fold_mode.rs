@@ -165,7 +165,7 @@ fn process_function(
     let mut masks: Vec<u8> = ops
         .iter()
         .map(|op| match &op.node {
-            Op::Rep(mask) | Op::Sep(mask) => *mask,
+            Op::Rep { mask, .. } | Op::Sep { mask, .. } => *mask,
             _ => 0,
         })
         .collect();
@@ -193,7 +193,7 @@ fn process_function(
                     }
                 }
             }
-            Op::FixedRep(mask) | Op::FixedSep(mask) => {
+            Op::Rep { mask, fixed: true } | Op::Sep { mask, fixed: true } => {
                 if mask & 0x20 != 0 {
                     need_m = false;
                 }
@@ -201,7 +201,7 @@ fn process_function(
                     need_x = false;
                 }
             }
-            Op::Rep(mask) | Op::Sep(mask) => {
+            Op::Rep { mask, fixed: false } | Op::Sep { mask, fixed: false } => {
                 let mut new_mask = 0u8;
                 if mask & 0x20 != 0 {
                     if need_m {
@@ -264,13 +264,25 @@ fn process_function(
                     op.span,
                 ));
             }
-            Op::Rep(_) => {
-                result.push(Spanned::new(Op::Rep(masks[idx]), op.span));
+            Op::Rep { fixed: false, .. } => {
+                result.push(Spanned::new(
+                    Op::Rep {
+                        mask: masks[idx],
+                        fixed: false,
+                    },
+                    op.span,
+                ));
             }
-            Op::Sep(_) => {
-                result.push(Spanned::new(Op::Sep(masks[idx]), op.span));
+            Op::Sep { fixed: false, .. } => {
+                result.push(Spanned::new(
+                    Op::Sep {
+                        mask: masks[idx],
+                        fixed: false,
+                    },
+                    op.span,
+                ));
             }
-            Op::FixedRep(_) | Op::FixedSep(_) => {
+            Op::Rep { fixed: true, .. } | Op::Sep { fixed: true, .. } => {
                 result.push(op.clone());
             }
             _ => {
@@ -294,17 +306,17 @@ pub fn fold_mode_ops(program: &Program) -> Program {
 
     for op in &program.ops {
         match &op.node {
-            Op::Rep(mask) => {
+            Op::Rep { mask, fixed: false } => {
                 want_rep |= mask;
                 want_sep &= !mask;
                 last_mode_span = Some(op.span);
             }
-            Op::Sep(mask) => {
+            Op::Sep { mask, fixed: false } => {
                 want_sep |= mask;
                 want_rep &= !mask;
                 last_mode_span = Some(op.span);
             }
-            Op::FixedRep(_) | Op::FixedSep(_) => {
+            Op::Rep { fixed: true, .. } | Op::Sep { fixed: true, .. } => {
                 flush_mode_ops(&mut out, &mut want_rep, &mut want_sep, last_mode_span);
                 last_mode_span = None;
                 out.push(op.clone());
@@ -334,10 +346,22 @@ fn flush_mode_ops(
     };
 
     if *want_rep != 0 {
-        out.push(Spanned::new(Op::Rep(*want_rep), span));
+        out.push(Spanned::new(
+            Op::Rep {
+                mask: *want_rep,
+                fixed: false,
+            },
+            span,
+        ));
     }
     if *want_sep != 0 {
-        out.push(Spanned::new(Op::Sep(*want_sep), span));
+        out.push(Spanned::new(
+            Op::Sep {
+                mask: *want_sep,
+                fixed: false,
+            },
+            span,
+        ));
     }
     *want_rep = 0;
     *want_sep = 0;
@@ -382,60 +406,60 @@ mod tests {
     fn folds_adjacent_rep_ops() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep(0x20), test_span()),
-                Spanned::new(Op::Rep(0x10), test_span()),
+                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()),
+                Spanned::new(Op::Rep { mask: 0x10, fixed: false }, test_span()),
                 nop_op(),
             ],
         };
         let folded = fold_mode_ops(&program);
         assert_eq!(folded.ops.len(), 2); // REP #$30 + NOP
-        assert!(matches!(folded.ops[0].node, Op::Rep(0x30)));
+        assert!(matches!(folded.ops[0].node, Op::Rep { mask: 0x30, .. }));
     }
 
     #[test]
     fn cancels_opposite_mode_ops() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep(0x20), test_span()),
-                Spanned::new(Op::Sep(0x20), test_span()),
+                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()),
+                Spanned::new(Op::Sep { mask: 0x20, fixed: false }, test_span()),
                 nop_op(),
             ],
         };
         let folded = fold_mode_ops(&program);
         // Rep(0x20) then Sep(0x20) => want_rep=0, want_sep=0x20 => emit Sep(0x20) + NOP
         assert_eq!(folded.ops.len(), 2);
-        assert!(matches!(folded.ops[0].node, Op::Sep(0x20)));
+        assert!(matches!(folded.ops[0].node, Op::Sep { mask: 0x20, .. }));
     }
 
     #[test]
     fn does_not_fold_across_non_mode_ops() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep(0x20), test_span()),
+                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()),
                 nop_op(),
-                Spanned::new(Op::Rep(0x10), test_span()),
+                Spanned::new(Op::Rep { mask: 0x10, fixed: false }, test_span()),
                 nop_op(),
             ],
         };
         let folded = fold_mode_ops(&program);
         assert_eq!(folded.ops.len(), 4); // REP #$20 + NOP + REP #$10 + NOP
-        assert!(matches!(folded.ops[0].node, Op::Rep(0x20)));
-        assert!(matches!(folded.ops[2].node, Op::Rep(0x10)));
+        assert!(matches!(folded.ops[0].node, Op::Rep { mask: 0x20, .. }));
+        assert!(matches!(folded.ops[2].node, Op::Rep { mask: 0x10, .. }));
     }
 
     #[test]
     fn mixed_rep_sep_folds_to_both() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep(0x20), test_span()), // A to 16-bit
-                Spanned::new(Op::Sep(0x10), test_span()), // Index to 8-bit
+                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()), // A to 16-bit
+                Spanned::new(Op::Sep { mask: 0x10, fixed: false }, test_span()), // Index to 8-bit
                 nop_op(),
             ],
         };
         let folded = fold_mode_ops(&program);
         assert_eq!(folded.ops.len(), 3); // REP #$20 + SEP #$10 + NOP
-        assert!(matches!(folded.ops[0].node, Op::Rep(0x20)));
-        assert!(matches!(folded.ops[1].node, Op::Sep(0x10)));
+        assert!(matches!(folded.ops[0].node, Op::Rep { mask: 0x20, .. }));
+        assert!(matches!(folded.ops[1].node, Op::Sep { mask: 0x10, .. }));
     }
 
     #[test]
@@ -452,16 +476,16 @@ mod tests {
                     },
                     span,
                 ),
-                Spanned::new(Op::Rep(0x20), span),
+                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, span),
                 abs_op("lda", 0x2000),
-                Spanned::new(Op::Sep(0x20), span),
+                Spanned::new(Op::Sep { mask: 0x20, fixed: false }, span),
                 abs_op("sta", 0x2000),
                 Spanned::new(Op::FunctionEnd, span),
             ],
         };
 
         let pruned = eliminate_dead_mode_ops(&program);
-        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Rep(0x20))));
-        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Sep(0x20))));
+        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Rep { mask: 0x20, .. })));
+        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Sep { mask: 0x20, .. })));
     }
 }

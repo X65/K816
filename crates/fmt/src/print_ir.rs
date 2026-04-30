@@ -20,10 +20,10 @@ pub fn format_ir(program: &Program) -> String {
             }
             Op::Address(value) => out.push_str(&format!("address {value}\n")),
             Op::Nocross(value) => out.push_str(&format!("nocross {value}\n")),
-            Op::Rep(mask) => out.push_str(&format!("rep #{mask:#04X}\n")),
-            Op::Sep(mask) => out.push_str(&format!("sep #{mask:#04X}\n")),
-            Op::FixedRep(mask) => out.push_str(&format!("fixed_rep #{mask:#04X}\n")),
-            Op::FixedSep(mask) => out.push_str(&format!("fixed_sep #{mask:#04X}\n")),
+            Op::Rep { mask, fixed: false } => out.push_str(&format!("rep #{mask:#04X}\n")),
+            Op::Sep { mask, fixed: false } => out.push_str(&format!("sep #{mask:#04X}\n")),
+            Op::Rep { mask, fixed: true } => out.push_str(&format!("fixed_rep #{mask:#04X}\n")),
+            Op::Sep { mask, fixed: true } => out.push_str(&format!("fixed_sep #{mask:#04X}\n")),
             Op::DefineAbsoluteSymbol { name, address } => {
                 out.push_str(&format!("abs_symbol {name} {address:#X}\n"));
             }

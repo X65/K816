@@ -33,16 +33,14 @@ pub enum Op {
     Nocross(u16),
     /// REP pseudo-op: clear processor status bits (set register to 16-bit).
     /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
-    Rep(u8),
+    /// `fixed: true` anchors the op at a label bridge point — never removed or
+    /// folded away by mode optimization passes.
+    Rep { mask: u8, fixed: bool },
     /// SEP pseudo-op: set processor status bits (set register to 8-bit).
     /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
-    Sep(u8),
-    /// Fixed REP pseudo-op anchored at a label bridge point.
-    /// Never removed or folded away by mode optimization passes.
-    FixedRep(u8),
-    /// Fixed SEP pseudo-op anchored at a label bridge point.
-    /// Never removed or folded away by mode optimization passes.
-    FixedSep(u8),
+    /// `fixed: true` anchors the op at a label bridge point — never removed or
+    /// folded away by mode optimization passes.
+    Sep { mask: u8, fixed: bool },
     /// Defines an absolute symbol exported to object/link stage.
     DefineAbsoluteSymbol {
         name: String,

@@ -1660,10 +1660,10 @@ pub(crate) fn lower_with_warnings(
                 // 8-bit mode, so only emit Rep for 16-bit contracts.
                 if is_entry {
                     if effective_contract.a_width == Some(RegWidth::W16) {
-                        ops.push(Spanned::new(Op::Rep(0x20), label_span));
+                        ops.push(Spanned::new(Op::Rep { mask: 0x20, fixed: false }, label_span));
                     }
                     if effective_contract.i_width == Some(RegWidth::W16) {
-                        ops.push(Spanned::new(Op::Rep(0x10), label_span));
+                        ops.push(Spanned::new(Op::Rep { mask: 0x10, fixed: false }, label_span));
                     }
                 }
                 for stmt in block.body.iter().skip(body_start) {
@@ -2853,13 +2853,13 @@ fn lower_mode_set(
     // @a16 => rep(0x20), @a8 => sep(0x20)
     // @i16 => rep(0x10), @i8 => sep(0x10)
     match a_width {
-        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep(0x20), span)),
-        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep(0x20), span)),
+        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep { mask: 0x20, fixed: false }, span)),
+        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep { mask: 0x20, fixed: false }, span)),
         None => {}
     }
     match i_width {
-        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep(0x10), span)),
-        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep(0x10), span)),
+        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep { mask: 0x10, fixed: false }, span)),
+        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep { mask: 0x10, fixed: false }, span)),
         None => {}
     }
 }
@@ -2883,10 +2883,22 @@ fn emit_fixed_mode_set(
         None => {}
     }
     if rep_mask != 0 {
-        ops.push(Spanned::new(Op::FixedRep(rep_mask), span));
+        ops.push(Spanned::new(
+            Op::Rep {
+                mask: rep_mask,
+                fixed: true,
+            },
+            span,
+        ));
     }
     if sep_mask != 0 {
-        ops.push(Spanned::new(Op::FixedSep(sep_mask), span));
+        ops.push(Spanned::new(
+            Op::Sep {
+                mask: sep_mask,
+                fixed: true,
+            },
+            span,
+        ));
     }
 }
 
@@ -2924,20 +2936,20 @@ fn lower_mode_restore(
     // Restore A width
     match (saved.a_width, current.a_width) {
         (Some(RegWidth::W16), Some(RegWidth::W8)) => {
-            ops.push(Spanned::new(Op::Rep(0x20), span));
+            ops.push(Spanned::new(Op::Rep { mask: 0x20, fixed: false }, span));
         }
         (Some(RegWidth::W8), Some(RegWidth::W16)) => {
-            ops.push(Spanned::new(Op::Sep(0x20), span));
+            ops.push(Spanned::new(Op::Sep { mask: 0x20, fixed: false }, span));
         }
         _ => {}
     }
     // Restore index width
     match (saved.i_width, current.i_width) {
         (Some(RegWidth::W16), Some(RegWidth::W8)) => {
-            ops.push(Spanned::new(Op::Rep(0x10), span));
+            ops.push(Spanned::new(Op::Rep { mask: 0x10, fixed: false }, span));
         }
         (Some(RegWidth::W8), Some(RegWidth::W16)) => {
-            ops.push(Spanned::new(Op::Sep(0x10), span));
+            ops.push(Spanned::new(Op::Sep { mask: 0x10, fixed: false }, span));
         }
         _ => {}
     }
@@ -6523,8 +6535,8 @@ mod tests {
             .iter()
             .filter_map(|op| match &op.node {
                 Op::Instruction(instruction) => Some(instruction.mnemonic.clone()),
-                Op::Rep(mask) => Some(format!("rep:{mask:#04x}")),
-                Op::Sep(mask) => Some(format!("sep:{mask:#04x}")),
+                Op::Rep { mask, .. } => Some(format!("rep:{mask:#04x}")),
+                Op::Sep { mask, .. } => Some(format!("sep:{mask:#04x}")),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -6549,8 +6561,8 @@ mod tests {
             .iter()
             .filter_map(|op| match &op.node {
                 Op::Instruction(instruction) => Some(instruction.mnemonic.clone()),
-                Op::Rep(mask) => Some(format!("rep:{mask:#04x}")),
-                Op::Sep(mask) => Some(format!("sep:{mask:#04x}")),
+                Op::Rep { mask, .. } => Some(format!("rep:{mask:#04x}")),
+                Op::Sep { mask, .. } => Some(format!("sep:{mask:#04x}")),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -6576,8 +6588,8 @@ mod tests {
             .iter()
             .filter_map(|op| match &op.node {
                 Op::Instruction(instruction) => Some(instruction.mnemonic.clone()),
-                Op::Rep(mask) => Some(format!("rep:{mask:#04x}")),
-                Op::Sep(mask) => Some(format!("sep:{mask:#04x}")),
+                Op::Rep { mask, .. } => Some(format!("rep:{mask:#04x}")),
+                Op::Sep { mask, .. } => Some(format!("sep:{mask:#04x}")),
                 _ => None,
             })
             .collect::<Vec<_>>();

@@ -205,10 +205,8 @@ where
 
     type FunctionBody = Vec<Spanned<Stmt>>;
     type ContractClause = (bool, Vec<ContractParam>, Option<ModeContract>, Vec<RegName>);
-    type ExplicitFuncHead = ((String, SimpleSpan), ModeContract);
-    type ImplicitFuncHead = ((Vec<Modifier>, (String, SimpleSpan)), ModeContract);
-    type ExplicitFuncParts = ((ExplicitFuncHead, ContractClause), FunctionBody);
-    type ImplicitFuncParts = ((ImplicitFuncHead, ContractClause), FunctionBody);
+    type FuncHead = ((Vec<Modifier>, (String, SimpleSpan)), ModeContract);
+    type FuncParts = ((FuncHead, ContractClause), FunctionBody);
 
     let modifier = choice((
         just(TokenKind::Far).to(Modifier::Far),
@@ -307,53 +305,18 @@ where
         .map(|clause| clause.unwrap_or((false, Vec::new(), None, Vec::new())))
         .boxed();
 
-    let func = just(TokenKind::Func)
-        .ignore_then(ident_parser().map_with(|name, extra| (name, extra.span())))
-        .then(mode_annotations.clone())
-        .then(contract_clause.clone())
-        .then(body.clone())
-        .map(
-            move |(
-                (
-                    ((name, name_span), mode_contract),
-                    (has_contract, params, exit_contract, outputs),
-                ),
-                body,
-            ): ExplicitFuncParts| {
-                let range = name_span.into_range();
-                CodeBlock {
-                    name,
-                    name_span: Some(Span::new(source_id, range.start, range.end)),
-                    is_far: false,
-                    is_naked: false,
-                    is_inline: false,
-                    has_contract,
-                    params,
-                    outputs,
-                    mode_contract,
-                    exit_contract,
-                    body,
-                }
-            },
-        )
+    // A code block is introduced by either:
+    //   (a) optional modifiers followed by the `func` keyword, or
+    //   (b) one or more modifiers without `func` (implicit form, e.g. `inline name { … }`).
+    // Both shapes feed the same suffix (name, mode, contract, body) and produce
+    // the same CodeBlock — only the head detection differs.
+    let head_with_func = modifiers
+        .then_ignore(just(TokenKind::Func))
         .boxed();
+    let head_without_func = required_modifiers.boxed();
+    let head = head_with_func.or(head_without_func);
 
-    let explicit_block = modifiers
-        .then(func)
-        .map(|(mods, mut block)| {
-            for modifier in mods {
-                match modifier {
-                    Modifier::Far => block.is_far = true,
-                    Modifier::Naked => block.is_naked = true,
-                    Modifier::Inline => block.is_inline = true,
-                }
-            }
-            block
-        })
-        .boxed();
-
-    let implicit_func = required_modifiers
-        .then(ident_parser().map_with(|name, extra| (name, extra.span())))
+    head.then(ident_parser().map_with(|name, extra| (name, extra.span())))
         .then(mode_annotations)
         .then(contract_clause)
         .then(body)
@@ -364,7 +327,7 @@ where
                     (has_contract, params, exit_contract, outputs),
                 ),
                 body,
-            ): ImplicitFuncParts| {
+            ): FuncParts| {
                 let range = name_span.into_range();
                 let mut block = CodeBlock {
                     name,
@@ -389,7 +352,5 @@ where
                 block
             },
         )
-        .boxed();
-
-    explicit_block.or(implicit_func).boxed()
+        .boxed()
 }

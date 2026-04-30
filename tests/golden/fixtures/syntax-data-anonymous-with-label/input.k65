@@ -1,0 +1,21 @@
+// Anonymous data block with a leading inner label is equivalent to
+// a named data block: the block name is just syntactic sugar for a
+// label at the beginning. Both forms must produce the same emitted
+// bytes and resolve to the same address for downstream references.
+
+data named_form {
+    1 2 3 4 5
+    extra: 6 7 8
+}
+
+data {
+    anon_form: 11 12 13 14 15
+    extra2: 16 17 18
+}
+
+func main {
+    a=named_form
+    a=anon_form
+    a=extra
+    a=extra2
+}

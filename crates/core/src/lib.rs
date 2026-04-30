@@ -1,7 +1,6 @@
 pub(crate) const DEFAULT_SEGMENT: &str = "default";
 
 pub mod ast;
-pub mod data_blocks;
 pub mod diag;
 pub mod driver;
 pub mod emit_object;

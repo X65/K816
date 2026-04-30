@@ -58,15 +58,6 @@ pub(super) fn document_symbols_from_ast(
                     ));
                 }
             }
-            k816_core::ast::Item::NamedDataBlock(block) => symbols.push(make_document_symbol(
-                block.name.clone(),
-                SymbolCategory::DataBlock,
-                item.span,
-                block.name_span,
-                None,
-                line_index,
-                text,
-            )),
             k816_core::ast::Item::Segment(segment) => symbols.push(make_document_symbol(
                 segment.name.clone(),
                 SymbolCategory::Segment,
@@ -82,7 +73,19 @@ pub(super) fn document_symbols_from_ast(
                 }
             }
             k816_core::ast::Item::EvaluatorBlock(_) => {}
-            k816_core::ast::Item::DataBlock(_) => {}
+            k816_core::ast::Item::DataBlock(block) => {
+                if let (Some(name), Some(name_span)) = (&block.name, block.name_span) {
+                    symbols.push(make_document_symbol(
+                        name.clone(),
+                        SymbolCategory::DataBlock,
+                        item.span,
+                        name_span,
+                        None,
+                        line_index,
+                        text,
+                    ));
+                }
+            }
         }
     }
     symbols

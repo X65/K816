@@ -1,7 +1,6 @@
 use crate::ast::{
-    CodeBlock, ConstDecl, Expr, File, HlaCondition, HlaRhs, HlaStmt, Instruction, Item,
-    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt, Operand, Stmt,
-    SymbolicSubscriptFieldDecl, VarDecl,
+    CodeBlock, ConstDecl, DataBlock, DataEntry, DataForEvalRange, Expr, File, HlaCondition, HlaRhs,
+    HlaStmt, Instruction, Item, NumFmt, Operand, Stmt, SymbolicSubscriptFieldDecl, VarDecl,
 };
 use crate::diag::Diagnostic;
 use crate::parser::parse_expression_fragment;
@@ -48,9 +47,8 @@ fn expand_item(
         Item::CodeBlock(block) => Item::CodeBlock(expand_code_block(block, source_id, diagnostics)),
         Item::Statement(stmt) => Item::Statement(expand_stmt(stmt, span, source_id, diagnostics)),
         Item::Segment(segment) => Item::Segment(segment.clone()),
-        Item::DataBlock(block) => Item::DataBlock(block.clone()),
-        Item::NamedDataBlock(block) => {
-            Item::NamedDataBlock(expand_named_data_block(block, source_id, diagnostics))
+        Item::DataBlock(block) => {
+            Item::DataBlock(expand_data_block(block, source_id, diagnostics))
         }
     }
 }
@@ -98,7 +96,7 @@ fn expand_stmt(
             source_id,
             diagnostics,
         )),
-        Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
+        Stmt::DataBlock(block) => Stmt::DataBlock(expand_data_block(block, source_id, diagnostics)),
         Stmt::Address(value) => Stmt::Address(*value),
         Stmt::Align { boundary, offset } => Stmt::Align {
             boundary: *boundary,
@@ -129,78 +127,78 @@ fn expand_stmt(
     }
 }
 
-fn expand_named_data_block(
-    block: &NamedDataBlock,
+fn expand_data_block(
+    block: &DataBlock,
     source_id: SourceId,
     diagnostics: &mut Vec<Diagnostic>,
-) -> NamedDataBlock {
+) -> DataBlock {
     let mut entries = Vec::with_capacity(block.entries.len());
     for entry in &block.entries {
         entries.push(Spanned::new(
-            expand_named_data_entry(&entry.node, entry.span, source_id, diagnostics),
+            expand_data_entry(&entry.node, entry.span, source_id, diagnostics),
             entry.span,
         ));
     }
 
-    NamedDataBlock {
+    DataBlock {
         name: block.name.clone(),
         name_span: block.name_span,
         entries,
     }
 }
 
-fn expand_named_data_entry(
-    entry: &NamedDataEntry,
+fn expand_data_entry(
+    entry: &DataEntry,
     span: Span,
     source_id: SourceId,
     diagnostics: &mut Vec<Diagnostic>,
-) -> NamedDataEntry {
+) -> DataEntry {
     match entry {
-        NamedDataEntry::Segment(segment) => NamedDataEntry::Segment(segment.clone()),
-        NamedDataEntry::Label(name) => NamedDataEntry::Label(name.clone()),
-        NamedDataEntry::Address(value) => NamedDataEntry::Address(*value),
-        NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
-        NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
-        NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(
+        DataEntry::Segment(segment) => DataEntry::Segment(segment.clone()),
+        DataEntry::Label(name) => DataEntry::Label(name.clone()),
+        DataEntry::Address(value) => DataEntry::Address(*value),
+        DataEntry::Align(value) => DataEntry::Align(*value),
+        DataEntry::Nocross(value) => DataEntry::Nocross(*value),
+        DataEntry::Bytes(values) => DataEntry::Bytes(
             values
                 .iter()
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
-        NamedDataEntry::Words(values) => NamedDataEntry::Words(
+        DataEntry::Words(values) => DataEntry::Words(
             values
                 .iter()
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
-        NamedDataEntry::Fars(values) => NamedDataEntry::Fars(
+        DataEntry::Fars(values) => DataEntry::Fars(
             values
                 .iter()
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         ),
-        NamedDataEntry::ForEvalRange(range) => {
-            NamedDataEntry::ForEvalRange(NamedDataForEvalRange {
+        DataEntry::ForEvalRange(range) => {
+            DataEntry::ForEvalRange(DataForEvalRange {
                 iterator: range.iterator.clone(),
                 start: expand_expr(&range.start, span, source_id, diagnostics),
                 end: expand_expr(&range.end, span, source_id, diagnostics),
                 eval: range.eval.clone(),
             })
         }
-        NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
-        NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {
+        DataEntry::String(value) => DataEntry::String(value.clone()),
+        DataEntry::Repeat { count, body } => DataEntry::Repeat {
             count: *count,
             body: body
                 .iter()
                 .map(|e| {
                     crate::span::Spanned::new(
-                        expand_named_data_entry(&e.node, e.span, source_id, diagnostics),
+                        expand_data_entry(&e.node, e.span, source_id, diagnostics),
                         e.span,
                     )
                 })
                 .collect(),
         },
-        NamedDataEntry::Code(stmts) => NamedDataEntry::Code(
+        DataEntry::Code(stmts) => DataEntry::Code(
             stmts
                 .iter()
                 .map(|s| {
@@ -211,8 +209,12 @@ fn expand_named_data_entry(
                 })
                 .collect(),
         ),
-        NamedDataEntry::Evaluator(text) => NamedDataEntry::Evaluator(text.clone()),
-        NamedDataEntry::Charset(value) => NamedDataEntry::Charset(value.clone()),
+        DataEntry::Evaluator(text) => DataEntry::Evaluator(text.clone()),
+        DataEntry::Charset(value) => DataEntry::Charset(value.clone()),
+        DataEntry::Convert { kind, args } => DataEntry::Convert {
+            kind: kind.clone(),
+            args: args.clone(),
+        },
     }
 }
 

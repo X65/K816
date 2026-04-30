@@ -30,7 +30,7 @@ Warning: invalid syntax: preprocessor directive not processed
    │        ╰──── here
 ───╯
 
-Error: invalid syntax: expected newline, ';', 'align', 'address', 'nocross', something else, '?', or '}', found '#'
+Error: invalid syntax: unexpected '#'
     ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:13:9 ]
     │
  13 │         #else

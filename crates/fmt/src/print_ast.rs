@@ -1,4 +1,4 @@
-use k816_core::ast::{File, HlaStmt, Item, NamedDataEntry, Stmt};
+use k816_core::ast::{DataEntry, File, HlaStmt, Item, Stmt};
 use k816_core::parser;
 use k816_core::span::{SourceId, Span, Spanned};
 use pretty::{Arena, DocAllocator};
@@ -75,9 +75,7 @@ fn regions_from_ast(file: &File) -> Vec<Region> {
     let mut out = Vec::new();
     for item in &file.items {
         let kind = match &item.node {
-            Item::CodeBlock(_) | Item::DataBlock(_) | Item::NamedDataBlock(_) => {
-                Some(RegionKind::RootBlock)
-            }
+            Item::CodeBlock(_) | Item::DataBlock(_) => Some(RegionKind::RootBlock),
             Item::Var(_) => Some(RegionKind::Var),
             Item::EvaluatorBlock(_) => Some(RegionKind::Eval),
             _ => None,
@@ -633,9 +631,9 @@ fn collect_statement_spans(file: &File) -> Vec<Span> {
                     collect_stmt_spans_from_stmt(stmt, &mut out);
                 }
             }
-            Item::NamedDataBlock(block) => {
+            Item::DataBlock(block) => {
                 for entry in &block.entries {
-                    if let NamedDataEntry::Code(stmts) = &entry.node {
+                    if let DataEntry::Code(stmts) = &entry.node {
                         for stmt in stmts {
                             collect_stmt_spans_from_stmt(stmt, &mut out);
                         }

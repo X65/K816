@@ -109,9 +109,9 @@ pub fn analyze_partial(
                     }
                 }
             }
-            Item::NamedDataBlock(block) => {
+            Item::DataBlock(block) => {
                 for entry in &block.entries {
-                    if let NamedDataEntry::Evaluator(text) = &entry.node {
+                    if let DataEntry::Evaluator(text) = &entry.node {
                         let eval_block = EvaluatorBlock { text: text.clone() };
                         collect_evaluator_block(
                             &eval_block,
@@ -123,7 +123,7 @@ pub fn analyze_partial(
                         );
                     }
                 }
-                collect_named_data_block_array(block, &model.consts, &mut evaluator_context)
+                collect_data_block_array(block, &model.consts, &mut evaluator_context)
             }
             _ => {}
         }

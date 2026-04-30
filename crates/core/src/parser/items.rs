@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use super::{
     ParseExtra, boundary_parser, const_decl_item_parser, data_block_parser, ident_parser,
-    line_sep_parser, line_tail_parser, named_data_block_parser, parse_contract_register, spanned,
-    stmt_parser, var_decl_parser,
+    line_sep_parser, line_tail_parser, parse_contract_register, spanned, stmt_parser,
+    var_decl_parser,
 };
 
 pub(super) fn file_parser<'src, I>(
@@ -87,11 +87,9 @@ where
 
     let var_item = var_decl_parser(source_id).map(Item::Var);
 
-    let data_item = just(TokenKind::Data).ignore_then(
-        named_data_block_parser(source_id)
-            .map(Item::NamedDataBlock)
-            .or(data_block_parser(source_id).map(Item::DataBlock)),
-    );
+    let data_item = just(TokenKind::Data)
+        .ignore_then(data_block_parser(source_id))
+        .map(Item::DataBlock);
 
     let code_block_item =
         code_block_parser(source_id, known_functions.clone()).map(Item::CodeBlock);

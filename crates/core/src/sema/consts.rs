@@ -102,48 +102,51 @@ pub(super) fn collect_evaluator_block(
     *evaluator_context = block_context;
 }
 
-pub(super) fn collect_named_data_block_array(
-    block: &NamedDataBlock,
+pub(super) fn collect_data_block_array(
+    block: &DataBlock,
     consts: &IndexMap<String, ConstMeta>,
     evaluator_context: &mut EvalContext,
 ) {
-    let Some(values) = try_collect_named_data_block_values(block, consts, evaluator_context) else {
+    let Some(name) = block.name.clone() else {
         return;
     };
-    evaluator_context.set_array(block.name.clone(), values);
+    let Some(values) = try_collect_data_block_values(block, consts, evaluator_context) else {
+        return;
+    };
+    evaluator_context.set_array(name, values);
 }
 
-fn try_collect_named_data_block_values(
-    block: &NamedDataBlock,
+fn try_collect_data_block_values(
+    block: &DataBlock,
     consts: &IndexMap<String, ConstMeta>,
     evaluator_context: &EvalContext,
 ) -> Option<Vec<Number>> {
     let mut out = Vec::new();
     for entry in &block.entries {
         match &entry.node {
-            NamedDataEntry::Segment(_)
-            | NamedDataEntry::Label(_)
-            | NamedDataEntry::Address(_)
-            | NamedDataEntry::Align(_)
-            | NamedDataEntry::Nocross(_) => {}
-            NamedDataEntry::String(value) => {
+            DataEntry::Segment(_)
+            | DataEntry::Label(_)
+            | DataEntry::Address(_)
+            | DataEntry::Align(_)
+            | DataEntry::Nocross(_) => {}
+            DataEntry::String(value) => {
                 out.extend(value.bytes().map(|byte| Number::Int(i64::from(byte))));
             }
-            NamedDataEntry::Bytes(values) => {
+            DataEntry::Bytes(values) => {
                 for expr in values {
                     let value = eval_const_expr_to_int(expr, consts).ok()?;
                     let byte = u8::try_from(value).ok()?;
                     out.push(Number::Int(i64::from(byte)));
                 }
             }
-            NamedDataEntry::Words(values) => {
+            DataEntry::Words(values) => {
                 for expr in values {
                     let value = eval_const_expr_to_int(expr, consts).ok()?;
                     let word = u16::try_from(value).ok()?;
                     out.push(Number::Int(i64::from(word)));
                 }
             }
-            NamedDataEntry::Fars(values) => {
+            DataEntry::Fars(values) => {
                 for expr in values {
                     let value = eval_const_expr_to_int(expr, consts).ok()?;
                     if !(0..=0xFFFFFF).contains(&value) {
@@ -152,35 +155,39 @@ fn try_collect_named_data_block_values(
                     out.push(Number::Int(value));
                 }
             }
-            NamedDataEntry::ForEvalRange(range) => {
-                out.extend(try_collect_named_data_range_values(
+            DataEntry::ForEvalRange(range) => {
+                out.extend(try_collect_data_range_values(
                     range,
                     consts,
                     evaluator_context,
                 )?);
             }
-            NamedDataEntry::Repeat { count, body } => {
-                let inner = NamedDataBlock {
-                    name: String::new(),
-                    name_span: entry.span,
+            DataEntry::Repeat { count, body } => {
+                let inner = DataBlock {
+                    name: None,
+                    name_span: None,
                     entries: body.clone(),
                 };
                 let inner_values =
-                    try_collect_named_data_block_values(&inner, consts, evaluator_context)?;
+                    try_collect_data_block_values(&inner, consts, evaluator_context)?;
                 for _ in 0..*count {
                     out.extend(inner_values.iter().cloned());
                 }
             }
-            NamedDataEntry::Code(_) | NamedDataEntry::Evaluator(_) | NamedDataEntry::Charset(_) => {
-                // Code blocks, evaluator and charset directives don't contribute to static data values
+            DataEntry::Code(_)
+            | DataEntry::Evaluator(_)
+            | DataEntry::Charset(_)
+            | DataEntry::Convert { .. } => {
+                // Code blocks, evaluator/charset directives, and converter
+                // entries don't contribute to static const-array values.
             }
         }
     }
     Some(out)
 }
 
-fn try_collect_named_data_range_values(
-    range: &NamedDataForEvalRange,
+fn try_collect_data_range_values(
+    range: &DataForEvalRange,
     consts: &IndexMap<String, ConstMeta>,
     evaluator_context: &EvalContext,
 ) -> Option<Vec<Number>> {

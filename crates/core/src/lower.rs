@@ -6,12 +6,11 @@ use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
 use crate::ast::{
-    AddressHint, CallArg, CallStmt, CodeBlock, ContractParam, DataWidth, Expr, ExprBinaryOp,
-    ExprUnaryOp, File, HlaCondition, HlaCpuRegister, HlaOperandExpr, HlaRhs, HlaStackTarget,
-    HlaStmt, ImmediateParamType, Instruction, Item, MetadataQuery, ModeContract, NamedDataBlock,
-    NamedDataEntry, NumFmt, Operand, OperandAddrMode, RegName, RegWidth, Stmt,
+    AddressHint, CallArg, CallStmt, CodeBlock, ContractParam, DataArg, DataBlock, DataEntry,
+    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCondition, HlaCpuRegister, HlaOperandExpr,
+    HlaRhs, HlaStackTarget, HlaStmt, ImmediateParamType, Instruction, Item, MetadataQuery,
+    ModeContract, NumFmt, Operand, OperandAddrMode, RegName, RegWidth, Stmt,
 };
-use crate::data_blocks::lower_data_block;
 use crate::diag::{Diagnostic, Severity};
 use crate::hir::{
     AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocation, ByteRelocationKind,
@@ -1580,12 +1579,8 @@ pub(crate) fn lower_with_warnings(
                 ));
                 current_segment = segment.name.clone();
             }
-            Item::DataBlock(block) => match lower_data_block(block, fs) {
-                Ok(mut lowered) => ops.append(&mut lowered),
-                Err(mut errs) => diagnostics.append(&mut errs),
-            },
-            Item::NamedDataBlock(block) => {
-                lower_named_data_block(
+            Item::DataBlock(block) => {
+                lower_data_block(
                     block,
                     sema,
                     fs,
@@ -1975,8 +1970,8 @@ fn collect_label_declared_modes_into(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_named_data_block(
-    block: &NamedDataBlock,
+fn lower_data_block(
+    block: &DataBlock,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
     inline_bodies: &FxHashMap<String, &CodeBlock>,
@@ -1985,24 +1980,51 @@ fn lower_named_data_block(
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
-    let Some(name) = resolve_symbol(&block.name, None, block.name_span, diagnostics) else {
-        return;
+    let resolved_name = match (&block.name, block.name_span) {
+        (Some(name), Some(span)) => match resolve_symbol(name, None, span, diagnostics) {
+            Some(resolved) => Some((resolved, span)),
+            None => return,
+        },
+        _ => None,
     };
+
+    let mut segment_seen = false;
     let mut label_emitted = false;
     let mut block_segment = outer_segment.to_string();
     let mut charset: Option<String> = None;
 
-    for entry in &block.entries {
+    for (idx, entry) in block.entries.iter().enumerate() {
+        if matches!(entry.node, DataEntry::Segment(_)) {
+            if idx != 0 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        entry.span,
+                        "`segment` directive must appear as the first entry of a data block",
+                    )
+                    .with_help("move the `segment` directive to the top of the block, before any data"),
+                );
+                continue;
+            }
+            if segment_seen {
+                diagnostics.push(Diagnostic::error(
+                    entry.span,
+                    "`segment` directive may appear at most once per data block",
+                ));
+                continue;
+            }
+            segment_seen = true;
+        }
+
         if !label_emitted
             && matches!(
                 entry.node,
-                NamedDataEntry::Segment(_)
-                    | NamedDataEntry::Address(_)
-                    | NamedDataEntry::Align(_)
-                    | NamedDataEntry::Nocross(_)
+                DataEntry::Segment(_)
+                    | DataEntry::Address(_)
+                    | DataEntry::Align(_)
+                    | DataEntry::Nocross(_)
             )
         {
-            lower_named_data_entry(
+            lower_data_entry(
                 &entry.node,
                 entry.span,
                 sema,
@@ -2018,11 +2040,13 @@ fn lower_named_data_block(
         }
 
         if !label_emitted {
-            ops.push(Spanned::new(Op::Label(name.clone()), block.name_span));
+            if let Some((name, name_span)) = &resolved_name {
+                ops.push(Spanned::new(Op::Label(name.clone()), *name_span));
+            }
             label_emitted = true;
         }
 
-        lower_named_data_entry(
+        lower_data_entry(
             &entry.node,
             entry.span,
             sema,
@@ -2036,20 +2060,26 @@ fn lower_named_data_block(
         );
     }
 
-    if !label_emitted {
-        ops.push(Spanned::new(Op::Label(name), block.name_span));
+    if !label_emitted
+        && let Some((name, name_span)) = &resolved_name
+    {
+        ops.push(Spanned::new(Op::Label(name.clone()), *name_span));
     }
     if block_segment != outer_segment {
+        let restore_span = block
+            .name_span
+            .or_else(|| block.entries.last().map(|e| e.span))
+            .unwrap_or_else(|| Span::new(SourceId(0), 0, 0));
         ops.push(Spanned::new(
             Op::SelectSegment(outer_segment.to_string()),
-            block.name_span,
+            restore_span,
         ));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lower_named_data_entry(
-    entry: &NamedDataEntry,
+fn lower_data_entry(
+    entry: &DataEntry,
     span: Span,
     sema: &SemanticModel,
     fs: &dyn AssetFS,
@@ -2061,19 +2091,19 @@ fn lower_named_data_entry(
     ops: &mut Vec<Spanned<Op>>,
 ) {
     match entry {
-        NamedDataEntry::Segment(segment) => {
+        DataEntry::Segment(segment) => {
             ops.push(Spanned::new(Op::SelectSegment(segment.name.clone()), span));
             *current_segment = segment.name.clone();
         }
-        NamedDataEntry::Label(name) => {
+        DataEntry::Label(name) => {
             if let Some(resolved) = resolve_symbol(name, None, span, diagnostics) {
                 ops.push(Spanned::new(Op::Label(resolved), span));
             }
         }
-        NamedDataEntry::Address(value) => {
+        DataEntry::Address(value) => {
             ops.push(Spanned::new(Op::Address(*value), span));
         }
-        NamedDataEntry::Align(value) => {
+        DataEntry::Align(value) => {
             ops.push(Spanned::new(
                 Op::Align {
                     boundary: *value,
@@ -2082,10 +2112,10 @@ fn lower_named_data_entry(
                 span,
             ));
         }
-        NamedDataEntry::Nocross(value) => {
+        DataEntry::Nocross(value) => {
             ops.push(Spanned::new(Op::Nocross(*value), span));
         }
-        NamedDataEntry::Bytes(values) => {
+        DataEntry::Bytes(values) => {
             if let Some(evaluated) = evaluate_byte_exprs(values, None, sema, span, diagnostics) {
                 let op = if evaluated.relocations.is_empty() {
                     Op::EmitBytes(evaluated.bytes)
@@ -2098,7 +2128,7 @@ fn lower_named_data_entry(
                 ops.push(Spanned::new(op, span));
             }
         }
-        NamedDataEntry::Words(values) => {
+        DataEntry::Words(values) => {
             if let Some(evaluated) = evaluate_word_exprs(values, None, sema, span, diagnostics) {
                 let op = if evaluated.relocations.is_empty() {
                     Op::EmitBytes(evaluated.bytes)
@@ -2111,7 +2141,7 @@ fn lower_named_data_entry(
                 ops.push(Spanned::new(op, span));
             }
         }
-        NamedDataEntry::Fars(values) => {
+        DataEntry::Fars(values) => {
             if let Some(evaluated) = evaluate_far_exprs(values, None, sema, span, diagnostics) {
                 let op = if evaluated.relocations.is_empty() {
                     Op::EmitBytes(evaluated.bytes)
@@ -2124,7 +2154,7 @@ fn lower_named_data_entry(
                 ops.push(Spanned::new(op, span));
             }
         }
-        NamedDataEntry::ForEvalRange(range) => {
+        DataEntry::ForEvalRange(range) => {
             let Some(start) = eval_to_number_strict(&range.start, sema, span, diagnostics) else {
                 return;
             };
@@ -2189,7 +2219,7 @@ fn lower_named_data_entry(
 
             ops.push(Spanned::new(Op::EmitBytes(bytes), span));
         }
-        NamedDataEntry::String(value) => {
+        DataEntry::String(value) => {
             let bytes = if let &mut Some(ref cs) = charset {
                 value
                     .chars()
@@ -2200,10 +2230,10 @@ fn lower_named_data_entry(
             };
             ops.push(Spanned::new(Op::EmitBytes(bytes), span));
         }
-        NamedDataEntry::Repeat { count, body } => {
+        DataEntry::Repeat { count, body } => {
             for _ in 0..*count {
                 for entry in body {
-                    lower_named_data_entry(
+                    lower_data_entry(
                         &entry.node,
                         entry.span,
                         sema,
@@ -2218,7 +2248,7 @@ fn lower_named_data_entry(
                 }
             }
         }
-        NamedDataEntry::Code(stmts) => {
+        DataEntry::Code(stmts) => {
             let mode_contract = crate::ast::ModeContract {
                 a_width: Some(RegWidth::W8),
                 i_width: Some(RegWidth::W8),
@@ -2248,12 +2278,60 @@ fn lower_named_data_entry(
                 );
             }
         }
-        NamedDataEntry::Evaluator(_text) => {
+        DataEntry::Evaluator(_text) => {
             // Evaluator blocks are handled at the sema level; no lowering needed.
         }
-        NamedDataEntry::Charset(value) => {
+        DataEntry::Charset(value) => {
             *charset = Some(value.clone());
         }
+        DataEntry::Convert { kind, args } => {
+            lower_convert_entry(kind, args, span, fs, diagnostics, ops);
+        }
+    }
+}
+
+fn lower_convert_entry(
+    kind: &str,
+    args: &[DataArg],
+    span: Span,
+    fs: &dyn AssetFS,
+    diagnostics: &mut Vec<Diagnostic>,
+    ops: &mut Vec<Spanned<Op>>,
+) {
+    let converters = k816_assets::builtin_registry();
+    let Some(converter) = converters.iter().find(|c| c.kind() == kind) else {
+        diagnostics.push(
+            Diagnostic::error(span, format!("unknown data converter '{kind}'"))
+                .with_help("expected one of: binary, charset, image"),
+        );
+        return;
+    };
+
+    let converted_args: Vec<k816_assets::Arg> = args
+        .iter()
+        .map(|arg| match arg {
+            DataArg::Int(value) => k816_assets::Arg::Int(*value),
+            DataArg::Str(value) => k816_assets::Arg::Str(value.clone()),
+        })
+        .collect();
+    let converter_span = k816_assets::Span {
+        source_id: span.source_id.0,
+        start: span.start,
+        end: span.end,
+    };
+    let request = k816_assets::ConvertRequest {
+        kind,
+        args: &converted_args,
+        span: converter_span,
+        fs,
+    };
+
+    match converter.convert(request) {
+        Ok(bytes) => ops.push(Spanned::new(Op::EmitBytes(bytes), span)),
+        Err(err) => diagnostics.push(Diagnostic::error(
+            span,
+            format!("converter '{kind}' failed: {err}"),
+        )),
     }
 }
 
@@ -2496,10 +2574,18 @@ fn lower_stmt(
                 );
             }
         }
-        Stmt::DataBlock(block) => match lower_data_block(block, fs) {
-            Ok(mut lowered) => ops.append(&mut lowered),
-            Err(mut errs) => diagnostics.append(&mut errs),
-        },
+        Stmt::DataBlock(block) => {
+            lower_data_block(
+                block,
+                sema,
+                fs,
+                inline_bodies,
+                exit_summaries,
+                current_segment,
+                diagnostics,
+                ops,
+            );
+        }
         Stmt::Address(address) => {
             ops.push(Spanned::new(Op::Address(*address), span));
         }

@@ -22,7 +22,9 @@ use super::conditions::{
 use super::control::{
     discard_stmt_parser, flow_stmt_parser, invalid_flag_goto_stmt_parser, nop_stmt_parser,
 };
-use super::data::{CommaTrailer, data_block_parser, prefix_condition_parser, var_decl_parser};
+use super::data::{
+    CommaTrailer, data_block_inline_parser, prefix_condition_parser, var_decl_parser,
+};
 use super::expr::{eval_const_into, expr_parser};
 use super::items::mode_annotation_parser;
 use super::operations::{
@@ -56,7 +58,7 @@ where
     let var_stmt = var_decl_parser(source_id).map(Stmt::Var).boxed();
 
     let data_stmt = just(TokenKind::Data)
-        .ignore_then(data_block_parser(source_id))
+        .ignore_then(data_block_inline_parser(source_id))
         .map(Stmt::DataBlock)
         .boxed();
 

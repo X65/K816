@@ -1,6 +1,6 @@
 use crate::ast::{
-    AddressHint, DataArg, DataBlock, DataCommand, DataWidth, Expr, ExprUnaryOp, MetadataQuery,
-    NamedDataBlock, NamedDataEntry, NamedDataForEvalRange, NumFmt, SegmentDecl,
+    AddressHint, DataArg, DataBlock, DataEntry, DataForEvalRange, DataWidth, Expr, ExprUnaryOp,
+    MetadataQuery, NumFmt, SegmentDecl,
 };
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::{SourceId, Span, Spanned};
@@ -30,37 +30,41 @@ pub(super) fn data_block_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let separators = line_sep_parser().repeated();
-    let command = spanned(data_command_parser(), source_id);
-    let recover_command =
-        command.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
-
-    just(TokenKind::LBrace)
-        .ignore_then(separators.clone())
-        .ignore_then(
-            recover_command
-                .then_ignore(separators.clone())
-                .repeated()
-                .collect::<Vec<_>>(),
-        )
-        .then_ignore(just(TokenKind::RBrace))
-        .map(|commands| DataBlock { commands })
-        .boxed()
+    data_block_parser_inner(source_id, true)
 }
 
-pub(super) fn named_data_block_parser<'src, I>(
+/// Inline variant for use inside statement positions (e.g. inside a function
+/// body). Identical to [`data_block_parser`] except `code { }` entries are
+/// disallowed — they would create an infinite mutual recursion through
+/// `stmt_parser` at parser construction time, and a code block inside a
+/// statement-level data block is redundant since the surrounding context is
+/// already executable.
+pub(super) fn data_block_inline_parser<'src, I>(
     source_id: SourceId,
-) -> impl chumsky::Parser<'src, I, NamedDataBlock, ParseExtra<'src>> + Clone
+) -> impl chumsky::Parser<'src, I, DataBlock, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    data_block_parser_inner(source_id, false)
+}
+
+fn data_block_parser_inner<'src, I>(
+    source_id: SourceId,
+    allow_code: bool,
+) -> impl chumsky::Parser<'src, I, DataBlock, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let separators = line_sep_parser().repeated();
-    let entry = spanned(named_data_entry_parser(source_id), source_id);
+    let entry = spanned(data_entry_parser(source_id, allow_code), source_id);
     let recover_entry =
         entry.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
 
-    ident_parser()
+    let optional_name = ident_parser()
         .map_with(|name, extra| (name, extra.span()))
+        .or_not();
+
+    optional_name
         .then(
             just(TokenKind::LBrace)
                 .ignore_then(separators.clone())
@@ -73,14 +77,17 @@ where
                 .then_ignore(just(TokenKind::RBrace)),
         )
         .map(
-            move |((name, name_span), entries): (
-                (String, SimpleSpan),
-                Vec<Spanned<NamedDataEntry>>,
-            )| {
-                let range = name_span.into_range();
-                NamedDataBlock {
+            move |(name, entries): (Option<(String, SimpleSpan)>, Vec<Spanned<DataEntry>>)| {
+                let (name, name_span) = match name {
+                    Some((n, span)) => {
+                        let range = span.into_range();
+                        (Some(n), Some(Span::new(source_id, range.start, range.end)))
+                    }
+                    None => (None, None),
+                };
+                DataBlock {
                     name,
-                    name_span: Span::new(source_id, range.start, range.end),
+                    name_span,
                     entries,
                 }
             },
@@ -88,15 +95,16 @@ where
         .boxed()
 }
 
-fn named_data_entry_parser<'src, I>(
+fn data_entry_parser<'src, I>(
     source_id: SourceId,
-) -> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
+    allow_code: bool,
+) -> impl chumsky::Parser<'src, I, DataEntry, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let segment_entry = just(TokenKind::Segment)
         .ignore_then(ident_parser())
-        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }))
+        .map(|name| DataEntry::Segment(SegmentDecl { name }))
         .boxed();
 
     let ident_entry = ident_parser()
@@ -107,10 +115,10 @@ where
         )
         .validate(|(name, is_label), extra, emitter| {
             if is_label {
-                NamedDataEntry::Label(name)
+                DataEntry::Label(name)
             } else {
                 emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
-                NamedDataEntry::Bytes(vec![])
+                DataEntry::Bytes(vec![])
             }
         })
         .boxed();
@@ -118,14 +126,14 @@ where
     let address_entry = just(TokenKind::Address)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            eval_const_into::<u32>(&value, span, "address value").map(NamedDataEntry::Address)
+            eval_const_into::<u32>(&value, span, "address value").map(DataEntry::Address)
         })
         .boxed();
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            eval_const_into::<u16>(&value, span, "align value").map(NamedDataEntry::Align)
+            eval_const_into::<u16>(&value, span, "align value").map(DataEntry::Align)
         })
         .boxed();
 
@@ -133,14 +141,14 @@ where
         .ignore_then(expr_parser().or_not())
         .try_map(|value, span| match value {
             Some(value) => {
-                eval_const_into::<u16>(&value, span, "nocross value").map(NamedDataEntry::Nocross)
+                eval_const_into::<u16>(&value, span, "nocross value").map(DataEntry::Nocross)
             }
-            None => Ok(NamedDataEntry::Nocross(256)),
+            None => Ok(DataEntry::Nocross(256)),
         })
         .boxed();
 
     let string_entry = chumsky::select! { TokenKind::String(value) => value }
-        .map(NamedDataEntry::String)
+        .map(DataEntry::String)
         .boxed();
 
     let address_byte_expr = just(TokenKind::Amp)
@@ -185,7 +193,7 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .map(|chunks| DataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
         .boxed();
 
     let word_value = choice((
@@ -199,7 +207,7 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| DataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let bytes_entry = choice((
@@ -210,7 +218,7 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| DataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let eval_bytes_entry =
@@ -218,7 +226,7 @@ where
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(NamedDataEntry::Bytes)
+            .map(DataEntry::Bytes)
             .boxed();
 
     let for_eval_entry = chumsky::select! {
@@ -234,7 +242,7 @@ where
     })
     .then(chumsky::select! { TokenKind::Eval(value) => value })
     .map(|(((iterator, start), end), eval)| {
-        NamedDataEntry::ForEvalRange(NamedDataForEvalRange {
+        DataEntry::ForEvalRange(DataForEvalRange {
             iterator,
             start,
             end,
@@ -246,7 +254,7 @@ where
     let separators_data = line_sep_parser().repeated();
 
     let data_body = |src_id| {
-        let inner_entry = spanned(named_data_entry_flat_parser(), src_id);
+        let inner_entry = spanned(data_entry_flat_parser(), src_id);
         let recover_inner =
             inner_entry.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
         let seps = line_sep_parser().repeated();
@@ -269,15 +277,15 @@ where
     .then(data_body(source_id))
     .try_map(|(count_expr, body), span| {
         let count = eval_const_into::<u16>(&count_expr, span, "repeat count")?;
-        Ok(NamedDataEntry::Repeat { count, body })
+        Ok(DataEntry::Repeat { count, body })
     })
     .boxed();
 
-    let code_body = {
+    let code_entry = if allow_code {
         let stmt = spanned(stmt_parser(source_id, Arc::new(HashSet::new())), source_id);
         let recover_stmt =
             stmt.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
-        just(TokenKind::LBrace)
+        let code_body = just(TokenKind::LBrace)
             .ignore_then(separators_data.clone())
             .ignore_then(
                 recover_stmt
@@ -286,31 +294,54 @@ where
                     .collect::<Vec<_>>(),
             )
             .then_ignore(just(TokenKind::RBrace))
+            .boxed();
+
+        just(TokenKind::Nocross)
+            .or_not()
+            .ignore_then(chumsky::select! {
+                TokenKind::Ident(value) if value.eq_ignore_ascii_case("code") => ()
+            })
+            .ignore_then(code_body)
+            .map(DataEntry::Code)
+            .boxed()
+    } else {
+        // Inline data blocks (inside function bodies) cannot contain `code { }`
+        // entries — the surrounding scope is already executable, and allowing
+        // them would create a parser-construction cycle through stmt_parser.
+        // Emit a never-matching parser placeholder so the `choice` tuple stays
+        // shape-compatible with the item-level form.
+        any().filter(|_| false)
+            .map(|_| DataEntry::Code(Vec::new()))
             .boxed()
     };
-
-    let code_entry = just(TokenKind::Nocross)
-        .or_not()
-        .ignore_then(chumsky::select! {
-            TokenKind::Ident(value) if value.eq_ignore_ascii_case("code") => ()
-        })
-        .ignore_then(code_body)
-        .map(NamedDataEntry::Code)
-        .boxed();
 
     let evaluator_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("evaluator") => ()
     }
     .ignore_then(chumsky::select! { TokenKind::Eval(value) => value })
-    .map(NamedDataEntry::Evaluator)
+    .map(DataEntry::Evaluator)
     .boxed();
 
     let charset_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset") => ()
     }
     .ignore_then(chumsky::select! { TokenKind::String(value) => value })
-    .map(NamedDataEntry::Charset)
+    .map(DataEntry::Charset)
     .boxed();
+
+    let convert_args = data_arg_parser()
+        .separated_by(just(TokenKind::Comma))
+        .collect::<Vec<_>>()
+        .or_not()
+        .map(|args: Option<Vec<DataArg>>| args.unwrap_or_default());
+    let convert_entry = ident_parser()
+        .then(
+            just(TokenKind::LParen)
+                .ignore_then(convert_args)
+                .then_ignore(just(TokenKind::RParen)),
+        )
+        .map(|(kind, args)| DataEntry::Convert { kind, args })
+        .boxed();
 
     choice((
         string_entry,
@@ -325,6 +356,7 @@ where
         charset_entry,
         far_entry,
         word_entry,
+        convert_entry,
         bytes_entry,
         eval_bytes_entry,
         ident_entry,
@@ -332,14 +364,14 @@ where
     .boxed()
 }
 
-fn named_data_entry_flat_parser<'src, I>()
--> impl chumsky::Parser<'src, I, NamedDataEntry, ParseExtra<'src>> + Clone
+fn data_entry_flat_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, DataEntry, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let segment_entry = just(TokenKind::Segment)
         .ignore_then(ident_parser())
-        .map(|name| NamedDataEntry::Segment(SegmentDecl { name }))
+        .map(|name| DataEntry::Segment(SegmentDecl { name }))
         .boxed();
 
     let ident_entry = ident_parser()
@@ -350,10 +382,10 @@ where
         )
         .validate(|(name, is_label), extra, emitter| {
             if is_label {
-                NamedDataEntry::Label(name)
+                DataEntry::Label(name)
             } else {
                 emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
-                NamedDataEntry::Bytes(vec![])
+                DataEntry::Bytes(vec![])
             }
         })
         .boxed();
@@ -361,14 +393,14 @@ where
     let address_entry = just(TokenKind::Address)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            eval_const_into::<u32>(&value, span, "address value").map(NamedDataEntry::Address)
+            eval_const_into::<u32>(&value, span, "address value").map(DataEntry::Address)
         })
         .boxed();
 
     let align_entry = just(TokenKind::Align)
         .ignore_then(expr_parser())
         .try_map(|value, span| {
-            eval_const_into::<u16>(&value, span, "align value").map(NamedDataEntry::Align)
+            eval_const_into::<u16>(&value, span, "align value").map(DataEntry::Align)
         })
         .boxed();
 
@@ -376,14 +408,14 @@ where
         .ignore_then(expr_parser().or_not())
         .try_map(|value, span| match value {
             Some(value) => {
-                eval_const_into::<u16>(&value, span, "nocross value").map(NamedDataEntry::Nocross)
+                eval_const_into::<u16>(&value, span, "nocross value").map(DataEntry::Nocross)
             }
-            None => Ok(NamedDataEntry::Nocross(256)),
+            None => Ok(DataEntry::Nocross(256)),
         })
         .boxed();
 
     let string_entry = chumsky::select! { TokenKind::String(value) => value }
-        .map(NamedDataEntry::String)
+        .map(DataEntry::String)
         .boxed();
 
     let address_byte_expr = just(TokenKind::Amp)
@@ -428,7 +460,7 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| NamedDataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .map(|chunks| DataEntry::Fars(chunks.into_iter().flatten().collect::<Vec<_>>()))
         .boxed();
 
     let word_value = choice((
@@ -442,7 +474,7 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| NamedDataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| DataEntry::Words(chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let bytes_entry = choice((
@@ -453,7 +485,7 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| NamedDataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| DataEntry::Bytes(chunks.into_iter().flatten().collect::<Vec<_>>()))
     .boxed();
 
     let eval_bytes_entry =
@@ -461,15 +493,29 @@ where
             .repeated()
             .at_least(1)
             .collect::<Vec<_>>()
-            .map(NamedDataEntry::Bytes)
+            .map(DataEntry::Bytes)
             .boxed();
 
     let charset_entry = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("charset") => ()
     }
     .ignore_then(chumsky::select! { TokenKind::String(value) => value })
-    .map(NamedDataEntry::Charset)
+    .map(DataEntry::Charset)
     .boxed();
+
+    let convert_args = data_arg_parser()
+        .separated_by(just(TokenKind::Comma))
+        .collect::<Vec<_>>()
+        .or_not()
+        .map(|args: Option<Vec<DataArg>>| args.unwrap_or_default());
+    let convert_entry = ident_parser()
+        .then(
+            just(TokenKind::LParen)
+                .ignore_then(convert_args)
+                .then_ignore(just(TokenKind::RParen)),
+        )
+        .map(|(kind, args)| DataEntry::Convert { kind, args })
+        .boxed();
 
     choice((
         string_entry,
@@ -480,62 +526,12 @@ where
         charset_entry,
         far_entry,
         word_entry,
+        convert_entry,
         bytes_entry,
         eval_bytes_entry,
         ident_entry,
     ))
     .boxed()
-}
-
-fn data_command_parser<'src, I>()
--> impl chumsky::Parser<'src, I, DataCommand, ParseExtra<'src>> + Clone
-where
-    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
-{
-    let align = just(TokenKind::Align)
-        .ignore_then(expr_parser())
-        .try_map(|value, span| {
-            eval_const_into::<u16>(&value, span, "align value").map(DataCommand::Align)
-        });
-
-    let address = just(TokenKind::Address)
-        .ignore_then(expr_parser())
-        .try_map(|value, span| {
-            eval_const_into::<u32>(&value, span, "address value").map(DataCommand::Address)
-        });
-
-    let nocross = just(TokenKind::Nocross)
-        .ignore_then(expr_parser().or_not())
-        .try_map(|value, span| match value {
-            Some(value) => {
-                eval_const_into::<u16>(&value, span, "nocross value").map(DataCommand::Nocross)
-            }
-            None => Ok(DataCommand::Nocross(256)),
-        });
-
-    let args = data_arg_parser()
-        .separated_by(just(TokenKind::Comma))
-        .collect::<Vec<_>>()
-        .or_not()
-        .map(|args: Option<Vec<DataArg>>| args.unwrap_or_default());
-
-    let convert = ident_parser()
-        .then(
-            just(TokenKind::LParen)
-                .ignore_then(args)
-                .then_ignore(just(TokenKind::RParen)),
-        )
-        .map(|(kind, args)| DataCommand::Convert { kind, args });
-
-    let bytes = number_parser()
-        .map(|n| n.value)
-        .or(just(TokenKind::Question).to(0i64))
-        .repeated()
-        .at_least(1)
-        .collect::<Vec<_>>()
-        .map(DataCommand::Bytes);
-
-    choice((align, address, nocross, convert, bytes)).boxed()
 }
 
 fn data_arg_parser<'src, I>() -> impl chumsky::Parser<'src, I, DataArg, ParseExtra<'src>> + Clone

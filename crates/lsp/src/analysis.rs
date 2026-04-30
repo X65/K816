@@ -247,15 +247,6 @@ fn collect_symbols(file: &k816_core::ast::File) -> SymbolCollection {
                     });
                 }
             }
-            k816_core::ast::Item::NamedDataBlock(block) => {
-                out.symbols.push(SymbolDef {
-                    canonical: block.name.clone(),
-                    name: block.name.clone(),
-                    category: SymbolCategory::DataBlock,
-                    selection: ByteRange::from_span(block.name_span),
-                    scope: None,
-                });
-            }
             k816_core::ast::Item::Segment(segment) => {
                 let range = ByteRange::from_span(item.span);
                 out.symbols.push(SymbolDef {
@@ -270,7 +261,17 @@ fn collect_symbols(file: &k816_core::ast::File) -> SymbolCollection {
                 collect_stmt_symbols(stmt, item.span, None, &mut out.symbols);
             }
             k816_core::ast::Item::EvaluatorBlock(_) => {}
-            k816_core::ast::Item::DataBlock(_) => {}
+            k816_core::ast::Item::DataBlock(block) => {
+                if let (Some(name), Some(name_span)) = (&block.name, block.name_span) {
+                    out.symbols.push(SymbolDef {
+                        canonical: name.clone(),
+                        name: name.clone(),
+                        category: SymbolCategory::DataBlock,
+                        selection: ByteRange::from_span(name_span),
+                        scope: None,
+                    });
+                }
+            }
         }
     }
     out

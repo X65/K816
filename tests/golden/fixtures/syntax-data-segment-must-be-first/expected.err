@@ -1,0 +1,9 @@
+Error: `segment` directive must appear as the first entry of a data block
+   ╭─[ tests/golden/fixtures/syntax-data-segment-must-be-first/input.k65:8:5 ]
+   │
+ 8 │     segment OTHER
+   │     ──────┬──────  
+   │           ╰──────── here
+   │ 
+   │ Help: move the `segment` directive to the top of the block, before any data
+───╯

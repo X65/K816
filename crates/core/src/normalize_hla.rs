@@ -1,6 +1,4 @@
-use crate::ast::{
-    Expr, File, HlaCondition, HlaStmt, Item, NamedDataBlock, NamedDataEntry, NumFmt, Stmt,
-};
+use crate::ast::{DataBlock, DataEntry, Expr, File, HlaCondition, HlaStmt, Item, NumFmt, Stmt};
 use crate::diag::Diagnostic;
 use crate::span::Spanned;
 
@@ -24,8 +22,7 @@ fn normalize_item(item: &Item) -> Item {
         Item::ConstGroup(consts) => Item::ConstGroup(consts.clone()),
         Item::EvaluatorBlock(block) => Item::EvaluatorBlock(block.clone()),
         Item::Var(var) => Item::Var(var.clone()),
-        Item::DataBlock(block) => Item::DataBlock(block.clone()),
-        Item::NamedDataBlock(block) => Item::NamedDataBlock(normalize_named_data_block(block)),
+        Item::DataBlock(block) => Item::DataBlock(normalize_data_block(block)),
         Item::CodeBlock(block) => {
             let body = normalize_stmt_sequence(&block.body);
             Item::CodeBlock(crate::ast::CodeBlock {
@@ -46,44 +43,45 @@ fn normalize_item(item: &Item) -> Item {
     }
 }
 
-fn normalize_named_data_block(block: &NamedDataBlock) -> NamedDataBlock {
+fn normalize_data_block(block: &DataBlock) -> DataBlock {
     let mut entries = Vec::with_capacity(block.entries.len());
     for entry in &block.entries {
-        entries.push(Spanned::new(
-            normalize_named_data_entry(&entry.node),
-            entry.span,
-        ));
+        entries.push(Spanned::new(normalize_data_entry(&entry.node), entry.span));
     }
 
-    NamedDataBlock {
+    DataBlock {
         name: block.name.clone(),
         name_span: block.name_span,
         entries,
     }
 }
 
-fn normalize_named_data_entry(entry: &NamedDataEntry) -> NamedDataEntry {
+fn normalize_data_entry(entry: &DataEntry) -> DataEntry {
     match entry {
-        NamedDataEntry::Segment(segment) => NamedDataEntry::Segment(segment.clone()),
-        NamedDataEntry::Label(name) => NamedDataEntry::Label(name.clone()),
-        NamedDataEntry::Address(value) => NamedDataEntry::Address(*value),
-        NamedDataEntry::Align(value) => NamedDataEntry::Align(*value),
-        NamedDataEntry::Nocross(value) => NamedDataEntry::Nocross(*value),
-        NamedDataEntry::Bytes(values) => NamedDataEntry::Bytes(values.clone()),
-        NamedDataEntry::Words(values) => NamedDataEntry::Words(values.clone()),
-        NamedDataEntry::Fars(values) => NamedDataEntry::Fars(values.clone()),
-        NamedDataEntry::ForEvalRange(range) => NamedDataEntry::ForEvalRange(range.clone()),
-        NamedDataEntry::String(value) => NamedDataEntry::String(value.clone()),
-        NamedDataEntry::Repeat { count, body } => NamedDataEntry::Repeat {
+        DataEntry::Segment(segment) => DataEntry::Segment(segment.clone()),
+        DataEntry::Label(name) => DataEntry::Label(name.clone()),
+        DataEntry::Address(value) => DataEntry::Address(*value),
+        DataEntry::Align(value) => DataEntry::Align(*value),
+        DataEntry::Nocross(value) => DataEntry::Nocross(*value),
+        DataEntry::Bytes(values) => DataEntry::Bytes(values.clone()),
+        DataEntry::Words(values) => DataEntry::Words(values.clone()),
+        DataEntry::Fars(values) => DataEntry::Fars(values.clone()),
+        DataEntry::ForEvalRange(range) => DataEntry::ForEvalRange(range.clone()),
+        DataEntry::String(value) => DataEntry::String(value.clone()),
+        DataEntry::Repeat { count, body } => DataEntry::Repeat {
             count: *count,
             body: body
                 .iter()
-                .map(|e| crate::span::Spanned::new(normalize_named_data_entry(&e.node), e.span))
+                .map(|e| crate::span::Spanned::new(normalize_data_entry(&e.node), e.span))
                 .collect(),
         },
-        NamedDataEntry::Code(stmts) => NamedDataEntry::Code(normalize_stmt_sequence(stmts)),
-        NamedDataEntry::Evaluator(text) => NamedDataEntry::Evaluator(text.clone()),
-        NamedDataEntry::Charset(value) => NamedDataEntry::Charset(value.clone()),
+        DataEntry::Code(stmts) => DataEntry::Code(normalize_stmt_sequence(stmts)),
+        DataEntry::Evaluator(text) => DataEntry::Evaluator(text.clone()),
+        DataEntry::Charset(value) => DataEntry::Charset(value.clone()),
+        DataEntry::Convert { kind, args } => DataEntry::Convert {
+            kind: kind.clone(),
+            args: args.clone(),
+        },
     }
 }
 
@@ -92,7 +90,7 @@ fn normalize_stmt(stmt: &Stmt) -> Stmt {
         Stmt::Segment(segment) => Stmt::Segment(segment.clone()),
         Stmt::Label(label) => Stmt::Label(label.clone()),
         Stmt::Var(var) => Stmt::Var(var.clone()),
-        Stmt::DataBlock(block) => Stmt::DataBlock(block.clone()),
+        Stmt::DataBlock(block) => Stmt::DataBlock(normalize_data_block(block)),
         Stmt::Address(value) => Stmt::Address(*value),
         Stmt::Align { boundary, offset } => Stmt::Align {
             boundary: *boundary,

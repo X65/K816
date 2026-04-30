@@ -1,0 +1,10 @@
+// `segment` directive inside a data block must appear at most once and
+// must be the first entry. Otherwise its placement is ambiguous with
+// respect to the data emitted before it. The compiler must reject
+// misplaced segment directives.
+
+data table {
+    1 2 3
+    segment OTHER
+    4 5 6
+}

@@ -96,7 +96,6 @@ pub enum Item {
     EvaluatorBlock(EvaluatorBlock),
     Var(VarDecl),
     DataBlock(DataBlock),
-    NamedDataBlock(NamedDataBlock),
     CodeBlock(CodeBlock),
     Statement(Stmt),
 }
@@ -533,14 +532,14 @@ pub enum ExprUnaryOp {
 }
 
 #[derive(Debug, Clone)]
-pub struct NamedDataBlock {
-    pub name: String,
-    pub name_span: Span,
-    pub entries: Vec<Spanned<NamedDataEntry>>,
+pub struct DataBlock {
+    pub name: Option<String>,
+    pub name_span: Option<Span>,
+    pub entries: Vec<Spanned<DataEntry>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct NamedDataForEvalRange {
+pub struct DataForEvalRange {
     pub iterator: String,
     pub start: Expr,
     pub end: Expr,
@@ -548,7 +547,7 @@ pub struct NamedDataForEvalRange {
 }
 
 #[derive(Debug, Clone)]
-pub enum NamedDataEntry {
+pub enum DataEntry {
     Segment(SegmentDecl),
     Label(String),
     Address(u32),
@@ -557,30 +556,19 @@ pub enum NamedDataEntry {
     Bytes(Vec<Expr>),
     Words(Vec<Expr>),
     Fars(Vec<Expr>),
-    ForEvalRange(NamedDataForEvalRange),
+    ForEvalRange(DataForEvalRange),
     String(String),
     Repeat {
         count: u16,
-        body: Vec<Spanned<NamedDataEntry>>,
+        body: Vec<Spanned<DataEntry>>,
     },
     Code(Vec<Spanned<Stmt>>),
     Evaluator(String),
     Charset(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct DataBlock {
-    pub commands: Vec<Spanned<DataCommand>>,
-}
-
-#[derive(Debug, Clone)]
-pub enum DataCommand {
-    Align(u16),
-    Address(u32),
-    Nocross(u16),
-    Bytes(Vec<i64>),
-    Convert { kind: String, args: Vec<DataArg> },
-    Ignored,
+    Convert {
+        kind: String,
+        args: Vec<DataArg>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

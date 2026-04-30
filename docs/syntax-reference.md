@@ -407,9 +407,34 @@ The linker validates calling convention consistency across units:
 - A `call far` to a regular (near) `func` produces a linker error.
 - Register width mismatches (caller's A/I width differs from callee's declared `@a8`/`@a16`/`@i8`/`@i16` contract) produce linker errors.
 
-## Raw Data
+## Data Blocks
 
-Raw data bytes can be emitted inline in code sections using `data { }`:
+Data blocks are defined using the `data` keyword. They support two interchangeable surface forms:
+
+- **Named** — `data NAME { ... }`. The block name is a label at the first emitted byte; the block is addressable as `NAME` (and indexable via `NAME,x`).
+- **Anonymous** — `data { ... }`. No leading label is implied; if you want one, write it explicitly inside the block (`NAME: ...`).
+
+The two forms are semantically identical otherwise. Specifically:
+
+```k65
+data SOMEBLOCK {
+   0 1 2 3 4
+   FOO: 5 6 7
+}
+```
+
+is equivalent to:
+
+```k65
+data {
+  SOMEBLOCK: 0 1 2 3 4
+  FOO: 5 6 7
+}
+```
+
+Both produce the same bytes, the same labels, and the same HIR. Every entry described in the rest of this section (placement directives, `word`/`far`, strings, `code { }`, `repeat`, `for…eval`, `charset`, address-byte operators, …) is available in both forms — except `code { }`, which is only meaningful at the top level (an anonymous block embedded inside a function body cannot contain `code { }`, since the surrounding scope is already executable).
+
+Anonymous blocks embedded inside a function body emit raw bytes inline:
 
 ```k65
 var bcol=0xd020
@@ -428,9 +453,24 @@ func main {
 //.C:0819  4C 16 08    JMP $0816
 ```
 
-## Data Blocks
+### `segment` placement rule
 
-Data blocks are defined using the `data` keyword. Defining a data block simultaneously defines a label at its first element, so the block is accessible using simple indexing like `MyData,x`. Data blocks can have optional alignment or no-page-crossing restrictions.
+A `segment <NAME>` directive inside a data block is scope-local: it switches segments for the block's contents and is restored to the outer segment when the block ends. Because of that, it must appear **at most once** and **as the first entry** of the block — otherwise its placement relative to bytes already emitted before it would be ambiguous, and the compiler reports an error.
+
+```k65
+// OK: segment selected before any data is emitted, including the block label.
+data VECTORS {
+  segment VECTORS
+  word reset_handler nmi_handler
+}
+
+// Error: `segment` directive must appear as the first entry of a data block.
+data BAD {
+  1 2 3
+  segment OTHER
+  4 5 6
+}
+```
 
 ### Placement Directives
 

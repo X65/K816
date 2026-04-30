@@ -150,7 +150,7 @@ fn rejects_empty_symbolic_subscript_array_count_at_field_slice() {
 }
 
 #[test]
-fn parses_data_block_commands() {
+fn parses_anonymous_data_block_with_converter_and_directives() {
     let source = "data {\n align 16\n address 0x1234\n nocross 0x100\n binary(\"tiles\", 3)\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
     assert_eq!(file.items.len(), 1);
@@ -158,20 +158,15 @@ fn parses_data_block_commands() {
     let Item::DataBlock(block) = &file.items[0].node else {
         panic!("expected data block");
     };
-    assert_eq!(block.commands.len(), 4);
+    assert!(block.name.is_none());
+    assert_eq!(block.entries.len(), 4);
 
-    assert!(matches!(block.commands[0].node, DataCommand::Align(16)));
-    assert!(matches!(
-        block.commands[1].node,
-        DataCommand::Address(0x1234)
-    ));
-    assert!(matches!(
-        block.commands[2].node,
-        DataCommand::Nocross(0x100)
-    ));
+    assert!(matches!(block.entries[0].node, DataEntry::Align(16)));
+    assert!(matches!(block.entries[1].node, DataEntry::Address(0x1234)));
+    assert!(matches!(block.entries[2].node, DataEntry::Nocross(0x100)));
 
-    let DataCommand::Convert { kind, args } = &block.commands[3].node else {
-        panic!("expected converter command");
+    let DataEntry::Convert { kind, args } = &block.entries[3].node else {
+        panic!("expected converter entry");
     };
     assert_eq!(kind, "binary");
     assert_eq!(
@@ -181,29 +176,56 @@ fn parses_data_block_commands() {
 }
 
 #[test]
+fn named_and_anonymous_data_blocks_produce_equivalent_ast() {
+    let named = parse(SourceId(0), "data SOMEBLOCK {\n 0 1 2 3 4\n FOO: 5 6 7\n}\n")
+        .expect("parse named");
+    let anon = parse(SourceId(0), "data {\n SOMEBLOCK: 0 1 2 3 4\n FOO: 5 6 7\n}\n")
+        .expect("parse anon");
+
+    let Item::DataBlock(named_block) = &named.items[0].node else {
+        panic!("expected named data block");
+    };
+    let Item::DataBlock(anon_block) = &anon.items[0].node else {
+        panic!("expected anonymous data block");
+    };
+
+    assert_eq!(named_block.name.as_deref(), Some("SOMEBLOCK"));
+    assert!(anon_block.name.is_none());
+
+    // The anonymous form has the leading label `SOMEBLOCK:` as its first entry,
+    // followed by the same body as the named form.
+    assert!(matches!(
+        anon_block.entries[0].node,
+        DataEntry::Label(ref n) if n == "SOMEBLOCK"
+    ));
+    let anon_tail: Vec<_> = anon_block.entries.iter().skip(1).collect();
+    assert_eq!(anon_tail.len(), named_block.entries.len());
+}
+
+#[test]
 fn parses_named_data_block_entries() {
     let source = "data text {\n  segment INFO\n  \"Hello\"\n  $0D 'A' $00\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::NamedDataBlock(block) = &file.items[0].node else {
+    let Item::DataBlock(block) = &file.items[0].node else {
         panic!("expected named data block");
     };
-    assert_eq!(block.name, "text");
+    assert_eq!(block.name.as_deref(), Some("text"));
     assert_eq!(block.entries.len(), 3);
-    assert!(matches!(block.entries[0].node, NamedDataEntry::Segment(_)));
-    assert!(matches!(block.entries[1].node, NamedDataEntry::String(_)));
-    assert!(matches!(block.entries[2].node, NamedDataEntry::Bytes(_)));
+    assert!(matches!(block.entries[0].node, DataEntry::Segment(_)));
+    assert!(matches!(block.entries[1].node, DataEntry::String(_)));
+    assert!(matches!(block.entries[2].node, DataEntry::Bytes(_)));
 }
 
 #[test]
 fn parses_named_data_for_eval_range_entries() {
     let source = "data table {\n  for i=0..4 eval [ i * FACTOR ]\n  for j=4..0 eval [ j ]\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::NamedDataBlock(block) = &file.items[0].node else {
+    let Item::DataBlock(block) = &file.items[0].node else {
         panic!("expected named data block");
     };
     assert_eq!(block.entries.len(), 2);
 
-    let NamedDataEntry::ForEvalRange(forward) = &block.entries[0].node else {
+    let DataEntry::ForEvalRange(forward) = &block.entries[0].node else {
         panic!("expected forward for-eval entry");
     };
     assert_eq!(forward.iterator, "i");
@@ -211,7 +233,7 @@ fn parses_named_data_for_eval_range_entries() {
     assert!(matches!(forward.end, Expr::Number(4, _)));
     assert_eq!(forward.eval.trim(), "i * FACTOR");
 
-    let NamedDataEntry::ForEvalRange(reverse) = &block.entries[1].node else {
+    let DataEntry::ForEvalRange(reverse) = &block.entries[1].node else {
         panic!("expected reverse for-eval entry");
     };
     assert_eq!(reverse.iterator, "j");
@@ -233,7 +255,7 @@ fn data_block_recovers_from_unknown_entries() {
         assert!(
             file.items
                 .iter()
-                .any(|i| matches!(&i.node, Item::NamedDataBlock(_))),
+                .any(|i| matches!(&i.node, Item::DataBlock(b) if b.name.is_some())),
             "data block not found in AST for: {source:?}",
         );
     }
@@ -245,12 +267,12 @@ fn parses_main_symbol_in_address_byte_entries() {
     let file = parse(SourceId(0), source).expect("parse");
     assert_eq!(file.items.len(), 2);
 
-    let Item::NamedDataBlock(block) = &file.items[0].node else {
+    let Item::DataBlock(block) = &file.items[0].node else {
         panic!("expected named data block");
     };
     assert_eq!(block.entries.len(), 1);
 
-    let NamedDataEntry::Bytes(values) = &block.entries[0].node else {
+    let DataEntry::Bytes(values) = &block.entries[0].node else {
         panic!("expected bytes entry");
     };
     assert_eq!(values.len(), 2);
@@ -274,12 +296,12 @@ fn parses_main_symbol_in_address_byte_entries() {
 fn parses_packed_address_operators_in_bytes_entries() {
     let source = "data bytes {\n  &&ptr\n  &&&ptr\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::NamedDataBlock(block) = &file.items[0].node else {
+    let Item::DataBlock(block) = &file.items[0].node else {
         panic!("expected named data block");
     };
     assert_eq!(block.entries.len(), 2);
 
-    let NamedDataEntry::Bytes(first) = &block.entries[0].node else {
+    let DataEntry::Bytes(first) = &block.entries[0].node else {
         panic!("expected bytes entry");
     };
     assert_eq!(first.len(), 1);
@@ -291,7 +313,7 @@ fn parses_packed_address_operators_in_bytes_entries() {
         } if is_ident_named(expr.as_ref(), "ptr")
     ));
 
-    let NamedDataEntry::Bytes(second) = &block.entries[1].node else {
+    let DataEntry::Bytes(second) = &block.entries[1].node else {
         panic!("expected bytes entry");
     };
     assert_eq!(second.len(), 1);
@@ -308,12 +330,12 @@ fn parses_packed_address_operators_in_bytes_entries() {
 fn keeps_bracketed_eval_ident_in_data_entries() {
     let source = "data text_data {\n  evaluator [ SCALE = 2 ]\n  [SCALE]\n}\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let Item::NamedDataBlock(block) = &file.items[0].node else {
+    let Item::DataBlock(block) = &file.items[0].node else {
         panic!("expected named data block");
     };
     assert_eq!(block.entries.len(), 2);
 
-    let NamedDataEntry::Bytes(values) = &block.entries[1].node else {
+    let DataEntry::Bytes(values) = &block.entries[1].node else {
         panic!("expected bytes entry");
     };
     assert_eq!(values.len(), 1);

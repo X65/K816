@@ -1,4 +1,4 @@
-naked main {
+naked main @a8 @i8 {
     c+ c-
     d+ d-
     i+ i-

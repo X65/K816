@@ -1,0 +1,9 @@
+Error: `stx` writes a width-dependent number of bytes but index width is unknown
+    ╭─[ tests/golden/fixtures/syntax-mode-uncolored-mem-x/input.k65:10:5 ]
+    │
+ 10 │     stx zp
+    │     ───┬──  
+    │        ╰──── here
+    │ 
+    │ Help: add @i8 or @i16 to the enclosing function
+────╯

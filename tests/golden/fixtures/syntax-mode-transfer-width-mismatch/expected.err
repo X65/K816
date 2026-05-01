@@ -1,0 +1,9 @@
+Error: `tax` requires accumulator and index widths to match (a=8, i=16)
+    ╭─[ tests/golden/fixtures/syntax-mode-transfer-width-mismatch/input.k65:10:5 ]
+    │
+ 10 │     tax
+    │     ─┬─  
+    │      ╰─── here
+    │ 
+    │ Help: use @a8 @i8 or @a16 @i16 around this transfer, or omit one width to defer the choice
+────╯

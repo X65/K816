@@ -1,0 +1,15 @@
+// Error: A<->X/Y transfer with a known M/X width mismatch.
+//
+// `tax`/`tay`/`txa`/`tya` move the full register width. When the accumulator
+// and index widths are both known but differ, only half the value is moved
+// and the other half silently keeps its previous contents — almost always a
+// bug. If either width is unknown the programmer is presumed to know what
+// they're doing and no error fires (see syntax-mode-transfer-width-deferred).
+
+func bad @a8 @i16 {
+    tax
+}
+
+func main {
+    nop
+}

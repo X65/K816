@@ -1,0 +1,9 @@
+Error: `stz` writes a width-dependent number of bytes but accumulator width is unknown
+    ╭─[ tests/golden/fixtures/syntax-mode-uncolored-mem-m/input.k65:10:5 ]
+    │
+ 10 │     stz zp
+    │     ───┬──  
+    │        ╰──── here
+    │ 
+    │ Help: add @a8 or @a16 to the enclosing function
+────╯

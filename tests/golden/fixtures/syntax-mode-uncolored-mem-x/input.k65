@@ -1,0 +1,15 @@
+// Error: width-dependent memory-operand instruction in uncolored function (index)
+//
+// `stx` (and other X-flag-dependent ops like ldx/ldy/sty with non-immediate operands)
+// compile to identical bytes regardless of index width but read or write 1 vs 2 bytes
+// at runtime. They require @i8 or @i16 on the enclosing function.
+
+var zp = 0x20
+
+func uncolored {
+    stx zp
+}
+
+func main {
+    nop
+}

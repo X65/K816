@@ -1,0 +1,15 @@
+// Error: width-dependent memory-operand instruction in uncolored function (accumulator)
+//
+// `stz` (and other M-flag-dependent ops like sta/lda/cmp/sbc/adc with non-immediate
+// operands) compile to identical bytes regardless of accumulator width but read or
+// write 1 vs 2 bytes at runtime. They require @a8 or @a16 on the enclosing function.
+
+var zp = 0x20
+
+func uncolored {
+    stz zp
+}
+
+func main {
+    nop
+}

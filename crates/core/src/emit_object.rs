@@ -13,8 +13,8 @@ use k816_o65::{
 
 use crate::diag::Diagnostic;
 use crate::hir::{
-    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister, Op,
-    OperandOp, Program,
+    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister,
+    InstructionOp, Op, OperandOp, Program,
 };
 use crate::sema::{FunctionMeta, SemanticModel};
 use crate::span::{SourceMap, Span};
@@ -64,6 +64,42 @@ struct FunctionInstructionSite {
 enum UnknownWidthCause {
     Plp,
     Rti,
+}
+
+/// Classifies how an instruction's runtime byte count depends on the M/X flags.
+///
+/// Only memory-bus operations (loads/stores against an address operand) are
+/// flagged: their behavior silently changes with the relevant width while the
+/// emitted bytes stay identical. Pure register ops (inx/dex/txy/pha/...) and
+/// stack push/pull are excluded — paired correctly they are width-agnostic
+/// from the programmer's standpoint, and the new check would only add noise.
+/// Cross-bank transfers (tax/tay/txa/tya) are flagged separately because the
+/// hazard is a *known* width mismatch between A and X/Y, not "unknown width".
+enum WidthDependence {
+    None,
+    MemoryM,
+    MemoryX,
+    Transfer,
+}
+
+fn width_dependence(instruction: &InstructionOp) -> WidthDependence {
+    match instruction.mnemonic.to_ascii_lowercase().as_str() {
+        "adc" | "and" | "bit" | "cmp" | "eor" | "lda" | "ora" | "sbc" | "sta" | "stz" | "trb"
+        | "tsb" => WidthDependence::MemoryM,
+        "cpx" | "cpy" | "ldx" | "ldy" | "stx" | "sty" => WidthDependence::MemoryX,
+        "tax" | "tay" | "txa" | "tya" => WidthDependence::Transfer,
+        _ => WidthDependence::None,
+    }
+}
+
+/// English verb describing what a memory-bus instruction does to its operand,
+/// for the width-dependence error message ("`{mnemonic}` {verb} a width-dependent…").
+fn memory_access_verb(mnemonic: &str) -> &'static str {
+    match mnemonic.to_ascii_lowercase().as_str() {
+        "sta" | "stx" | "sty" | "stz" => "writes",
+        "trb" | "tsb" => "modifies",
+        _ => "reads",
+    }
 }
 
 fn to_isa_index(index: IndexRegister) -> IsaIndexRegister {
@@ -223,6 +259,11 @@ pub fn emit_object(
     let mut x_wide: Option<bool> = None; // index width: None=unknown, Some(true)=16-bit, Some(false)=8-bit
     let mut m_unknown_cause: Option<UnknownWidthCause> = None;
     let mut x_unknown_cause: Option<UnknownWidthCause> = None;
+    // Function-level commitment to a width (explicit @a/@i contract OR entry-point default).
+    // Used by the memory-access width-dependence check to trust the programmer's intent
+    // even after a PLP/RTI scrambles runtime tracking.
+    let mut m_wide_contract: Option<bool> = None;
+    let mut x_wide_contract: Option<bool> = None;
 
     segments
         .entry(current_segment.clone())
@@ -264,6 +305,8 @@ pub fn emit_object(
                     .i_width
                     .map(|w| w == crate::ast::RegWidth::W16)
                     .or(default);
+                m_wide_contract = m_wide;
+                x_wide_contract = x_wide;
                 m_unknown_cause = None;
                 x_unknown_cause = None;
                 function_initial_modes.insert(
@@ -285,6 +328,8 @@ pub fn emit_object(
             }
             Op::FunctionEnd => {
                 current_function = None;
+                m_wide_contract = None;
+                x_wide_contract = None;
                 m_unknown_cause = None;
                 x_unknown_cause = None;
             }
@@ -595,6 +640,83 @@ pub fn emit_object(
                         .with_help(help),
                     );
                     continue;
+                }
+
+                match width_dependence(instruction) {
+                    WidthDependence::MemoryM => {
+                        if m_wide.is_none() && m_wide_contract.is_none() {
+                            let help = match m_unknown_cause {
+                                Some(UnknownWidthCause::Plp) => {
+                                    "PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width"
+                                }
+                                Some(UnknownWidthCause::Rti) => {
+                                    "RTI restores processor flags from runtime state; add @a8 or @a16 to re-establish accumulator width"
+                                }
+                                None => "add @a8 or @a16 to the enclosing function",
+                            };
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    op.span,
+                                    format!(
+                                        "`{}` {} a width-dependent number of bytes but accumulator width is unknown",
+                                        instruction.mnemonic,
+                                        memory_access_verb(&instruction.mnemonic),
+                                    ),
+                                )
+                                .with_help(help),
+                            );
+                            continue;
+                        }
+                    }
+                    WidthDependence::MemoryX => {
+                        if x_wide.is_none() && x_wide_contract.is_none() {
+                            let help = match x_unknown_cause {
+                                Some(UnknownWidthCause::Plp) => {
+                                    "PLP restores processor flags from runtime stack; add @i8 or @i16 to re-establish index width"
+                                }
+                                Some(UnknownWidthCause::Rti) => {
+                                    "RTI restores processor flags from runtime state; add @i8 or @i16 to re-establish index width"
+                                }
+                                None => "add @i8 or @i16 to the enclosing function",
+                            };
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    op.span,
+                                    format!(
+                                        "`{}` {} a width-dependent number of bytes but index width is unknown",
+                                        instruction.mnemonic,
+                                        memory_access_verb(&instruction.mnemonic),
+                                    ),
+                                )
+                                .with_help(help),
+                            );
+                            continue;
+                        }
+                    }
+                    WidthDependence::Transfer => {
+                        if let (Some(m), Some(x)) = (m_wide, x_wide)
+                            && m != x
+                        {
+                            let (a, i) = (
+                                if m { 16 } else { 8 },
+                                if x { 16 } else { 8 },
+                            );
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    op.span,
+                                    format!(
+                                        "`{}` requires accumulator and index widths to match (a={a}, i={i})",
+                                        instruction.mnemonic,
+                                    ),
+                                )
+                                .with_help(
+                                    "use @a8 @i8 or @a16 @i16 around this transfer, or omit one width to defer the choice",
+                                ),
+                            );
+                            continue;
+                        }
+                    }
+                    WidthDependence::None => {}
                 }
 
                 let width = operand_width_for_mode(
@@ -1314,19 +1436,27 @@ mod tests {
         let mut source_map = SourceMap::default();
         source_map.add_source("test.k65", "func a {}\n");
         let program = Program {
-            ops: vec![op(Op::Instruction(InstructionOp {
-                mnemonic: "lda".to_string(),
-                operand: Some(OperandOp::Address {
-                    value: AddressValue::Label("missing".to_string()),
-                    size_hint: AddressSizeHint::Auto,
-                    mode: AddressOperandMode::Direct { index: None },
+            ops: vec![
+                op(Op::FunctionStart {
+                    name: "main".to_string(),
+                    mode_contract: ModeContract::default(),
+                    is_entry: true,
+                    is_far: false,
                 }),
-            }))],
+                op(Op::Instruction(InstructionOp {
+                    mnemonic: "lda".to_string(),
+                    operand: Some(OperandOp::Address {
+                        value: AddressValue::Label("missing".to_string()),
+                        size_hint: AddressSizeHint::Auto,
+                        mode: AddressOperandMode::Direct { index: None },
+                    }),
+                })),
+                op(Op::FunctionEnd),
+            ],
         };
 
         let emitted = emit_object(&program, &source_map, &SemanticModel::default(), None)
             .expect("unresolved labels deferred to linker");
-        assert_eq!(emitted.object.symbols.len(), 0);
         assert_eq!(emitted.object.relocations.len(), 1);
         assert_eq!(emitted.object.relocations[0].symbol, "missing");
     }

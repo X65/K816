@@ -1,4 +1,4 @@
-inline inl {
+inline inl @i8 {
     x++
 }
 

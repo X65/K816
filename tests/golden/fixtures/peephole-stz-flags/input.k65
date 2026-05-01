@@ -1,0 +1,17 @@
+var flag_dst = $10
+var opt_dst1 = $11
+var opt_dst2 = $12
+
+func main {
+    // The zero flag from `lda #0` is used by the following branch shorthand,
+    // so this must remain `lda #0; sta`.
+    flag_dst = a = 0
+    z+?{ a = 2 }
+
+    // This later load refreshes A and N/Z, so the zero-store run can become
+    // STZ without changing the flags observed by subsequent code.
+    opt_dst1 = opt_dst2 = a = 0
+    a = 1
+
+    return
+}

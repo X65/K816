@@ -65,7 +65,8 @@ fn collapse_duplicate_returns(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
 ///
 /// STZ supports direct-page, direct-page,X, absolute, and absolute,X addressing
 /// modes (but not absolute-long or any indirect/Y form). This pass only
-/// introduces STZ when it can also remove the corresponding accumulator load.
+/// introduces STZ when it can also remove the corresponding accumulator load
+/// and the status flags set by that load cannot be observed.
 fn stz_rewrite(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
     let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
     let mut i = 0;
@@ -98,14 +99,17 @@ fn stz_rewrite(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
             continue;
         }
 
-        // Determine whether A is dead immediately after the run: the next op
-        // must be an instruction that overwrites A without reading it.
-        let a_dead_after = ops
+        // Determine whether the zero load is dead immediately after the run.
+        // Dropping `lda #0` is safe only if the next instruction overwrites A
+        // without reading it and refreshes the N/Z flags that `lda #0` would
+        // have set. Otherwise a following branch or flag shorthand could
+        // observe different processor state.
+        let zero_load_dead_after = ops
             .get(run_end)
-            .map(|next| a_dead_at(&next.node))
+            .map(|next| a_zero_load_dead_at(&next.node))
             .unwrap_or(false);
 
-        if a_dead_after {
+        if zero_load_dead_after {
             // STZ is a shorter zero-store, but it no longer shows the store as
             // coming from A. Only perform that substitution when the original
             // zero load into A is dead and can be removed at the same time.
@@ -155,14 +159,23 @@ fn stz_compatible(operand: Option<&OperandOp>) -> bool {
     )
 }
 
-/// Returns `true` if `op` definitely overwrites A without reading it.
-fn a_dead_at(op: &Op) -> bool {
+/// Returns `true` if `op` definitely kills both `A = 0` and the N/Z flags from
+/// the removed `LDA #0`.
+fn a_zero_load_dead_at(op: &Op) -> bool {
     let Op::Instruction(inst) = op else {
         return false;
     };
     let on_accumulator = inst.operand.is_none();
     let effects = mnemonic_effects(&inst.mnemonic, on_accumulator);
-    effects.modifies.contains(RegSet::A) && !effects.reads.contains(RegSet::A)
+    let overwrites_a = effects.modifies.contains(RegSet::A) && !effects.reads.contains(RegSet::A);
+    overwrites_a && refreshes_nz_after_a_overwrite(&inst.mnemonic)
+}
+
+fn refreshes_nz_after_a_overwrite(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic.to_ascii_lowercase().as_str(),
+        "lda" | "pla" | "txa" | "tya" | "tsc" | "tdc"
+    )
 }
 
 #[cfg(test)]
@@ -215,10 +228,10 @@ mod tests {
             .collect()
     }
 
-    /// `tdc` overwrites A without reading it (per `mnemonic_effects`), so the
+    /// `tdc` overwrites A without reading it and refreshes N/Z, so the
     /// preceding `lda #0` is dead and gets dropped, leaving just the `stz`.
     #[test]
-    fn drops_lda_zero_before_tdc() {
+    fn drops_lda_zero_before_tdc_flag_refresh() {
         let program = Program {
             ops: vec![
                 instr("lda", Some(OperandOp::Immediate(0))),
@@ -230,8 +243,22 @@ mod tests {
         assert_eq!(mnemonics(&out), vec!["stz", "tdc"]);
     }
 
+    #[test]
+    fn drops_lda_zero_before_tdc_even_with_later_branch() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_dp(0x10),
+                instr("tdc", None),
+                instr("bne", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["stz", "tdc", "bne"]);
+    }
+
     /// `xba` reads *and* modifies A (it byte-swaps), so it does NOT make A
-    /// dead. The leading `lda #0` must be preserved.
+    /// dead. The leading `lda #0` must be preserved, including its flags.
     #[test]
     fn keeps_lda_zero_before_xba() {
         let program = Program {
@@ -243,6 +270,19 @@ mod tests {
         };
         let out = peephole_optimize(&program);
         assert_eq!(mnemonics(&out), vec!["lda", "sta", "xba"]);
+    }
+
+    #[test]
+    fn keeps_lda_zero_before_direct_flag_branch() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_dp(0x10),
+                instr("beq", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["lda", "sta", "beq"]);
     }
 
     #[test]

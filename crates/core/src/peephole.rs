@@ -5,16 +5,24 @@ use crate::hir::{
 };
 use crate::span::Spanned;
 
-/// Returns `true` if the mnemonic is an unconditional return instruction.
-fn is_return_mnemonic(m: &str) -> bool {
-    matches!(m, "rts" | "rtl" | "rti")
+/// Returns the canonical mnemonic for an unconditional return instruction.
+fn return_mnemonic(m: &str) -> Option<&'static str> {
+    if m.eq_ignore_ascii_case("rts") {
+        Some("rts")
+    } else if m.eq_ignore_ascii_case("rtl") {
+        Some("rtl")
+    } else if m.eq_ignore_ascii_case("rti") {
+        Some("rti")
+    } else {
+        None
+    }
 }
 
 /// Peephole optimization pass.
 ///
 /// Runs the collected peephole rewrites over the whole program in order:
-/// 1. `stz_rewrite` — replaces `LDA #0; STA mem[,X]` runs with `STZ`.
-/// 2. `collapse_duplicate_returns` — drops a trailing `rts`/`rtl`/`rti`
+/// 1. `stz_rewrite` — replaces dead `LDA #0; STA mem[,X]` runs with `STZ`.
+/// 2. `collapse_duplicate_returns` — drops an adjacent `rts`/`rtl`/`rti`
 ///    that is preceded by an identical return.
 pub fn peephole_optimize(program: &Program) -> Program {
     let ops = stz_rewrite(&program.ops);
@@ -24,23 +32,23 @@ pub fn peephole_optimize(program: &Program) -> Program {
 
 fn collapse_duplicate_returns(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
     let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
-    let mut last_return: Option<&str> = None;
+    let mut last_return: Option<&'static str> = None;
 
     for op in ops {
         match &op.node {
             Op::Instruction(InstructionOp {
                 mnemonic,
                 operand: None,
-            }) if is_return_mnemonic(mnemonic) => {
-                if last_return == Some(mnemonic.as_str()) {
+            }) => {
+                let Some(return_mnemonic) = return_mnemonic(mnemonic) else {
+                    last_return = None;
+                    out.push(op.clone());
+                    continue;
+                };
+                if last_return == Some(return_mnemonic) {
                     continue;
                 }
-                last_return = Some(match mnemonic.as_str() {
-                    "rts" => "rts",
-                    "rtl" => "rtl",
-                    "rti" => "rti",
-                    _ => unreachable!(),
-                });
+                last_return = Some(return_mnemonic);
                 out.push(op.clone());
             }
             _ => {
@@ -53,12 +61,11 @@ fn collapse_duplicate_returns(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
     out
 }
 
-/// Rewrite `LDA #0` followed by one or more `STA mem[,X]` into `STZ` stores.
+/// Rewrite dead `LDA #0` followed by one or more `STA mem[,X]` into `STZ`.
 ///
 /// STZ supports direct-page, direct-page,X, absolute, and absolute,X addressing
-/// modes (but not absolute-long or any indirect/Y form). When every `STA` in
-/// the run can be rewritten and the remaining `A=0` value is dead immediately
-/// afterwards, the leading `LDA #0` is dropped.
+/// modes (but not absolute-long or any indirect/Y form). This pass only
+/// introduces STZ when it can also remove the corresponding accumulator load.
 fn stz_rewrite(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
     let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
     let mut i = 0;
@@ -74,7 +81,7 @@ fn stz_rewrite(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
         let mut any_rewrite = false;
         while run_end < ops.len() {
             if let Op::Instruction(inst) = &ops[run_end].node
-                && inst.mnemonic == "sta"
+                && inst.mnemonic.eq_ignore_ascii_case("sta")
                 && stz_compatible(inst.operand.as_ref())
             {
                 run_end += 1;
@@ -98,15 +105,22 @@ fn stz_rewrite(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
             .map(|next| a_dead_at(&next.node))
             .unwrap_or(false);
 
-        if !a_dead_after {
-            out.push(ops[i].clone());
-        }
-        for op in &ops[i + 1..run_end] {
-            let mut stz_op = op.clone();
-            if let Op::Instruction(inst) = &mut stz_op.node {
-                inst.mnemonic = "stz".to_string();
+        if a_dead_after {
+            // STZ is a shorter zero-store, but it no longer shows the store as
+            // coming from A. Only perform that substitution when the original
+            // zero load into A is dead and can be removed at the same time.
+            // When A remains live, keeping the original STA sequence preserves
+            // the programmer's expressed data flow in generated listings and
+            // avoids turning a non-size-changing rewrite into a cosmetic one.
+            for op in &ops[i + 1..run_end] {
+                let mut stz_op = op.clone();
+                if let Op::Instruction(inst) = &mut stz_op.node {
+                    inst.mnemonic = "stz".to_string();
+                }
+                out.push(stz_op);
             }
-            out.push(stz_op);
+        } else {
+            out.extend(ops[i..run_end].iter().cloned());
         }
         i = run_end;
     }
@@ -119,7 +133,7 @@ fn is_lda_zero(op: &Op) -> bool {
         Op::Instruction(InstructionOp {
             mnemonic,
             operand: Some(OperandOp::Immediate(0)),
-        }) if mnemonic == "lda"
+        }) if mnemonic.eq_ignore_ascii_case("lda")
     )
 }
 
@@ -179,6 +193,17 @@ mod tests {
         )
     }
 
+    fn sta_absolute_long(addr: u32) -> Spanned<Op> {
+        instr(
+            "sta",
+            Some(OperandOp::Address {
+                value: AddressValue::Literal(addr),
+                size_hint: AddressSizeHint::ForceAbsoluteLong,
+                mode: AddressOperandMode::Direct { index: None },
+            }),
+        )
+    }
+
     fn mnemonics(program: &Program) -> Vec<&str> {
         program
             .ops
@@ -217,6 +242,64 @@ mod tests {
             ],
         };
         let out = peephole_optimize(&program);
-        assert_eq!(mnemonics(&out), vec!["lda", "stz", "xba"]);
+        assert_eq!(mnemonics(&out), vec!["lda", "sta", "xba"]);
+    }
+
+    #[test]
+    fn uppercase_lda_zero_sta_rewrites_when_a_is_dead() {
+        let program = Program {
+            ops: vec![
+                instr("LDA", Some(OperandOp::Immediate(0))),
+                instr(
+                    "STA",
+                    Some(OperandOp::Address {
+                        value: AddressValue::Literal(0x10),
+                        size_hint: AddressSizeHint::Auto,
+                        mode: AddressOperandMode::Direct { index: None },
+                    }),
+                ),
+                instr("LDA", Some(OperandOp::Immediate(1))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["stz", "LDA"]);
+    }
+
+    #[test]
+    fn incompatible_sta_preserves_original_sequence() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_absolute_long(0x12_3456),
+                instr("lda", Some(OperandOp::Immediate(1))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["lda", "sta", "lda"]);
+    }
+
+    #[test]
+    fn collapses_adjacent_duplicate_returns() {
+        let program = Program {
+            ops: vec![
+                instr("rts", None),
+                instr("RTS", None),
+                instr("rtl", None),
+                instr("RTL", None),
+                instr("rti", None),
+                instr("RTI", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["rts", "rtl", "rti"]);
+    }
+
+    #[test]
+    fn keeps_mixed_adjacent_returns() {
+        let program = Program {
+            ops: vec![instr("rts", None), instr("rtl", None), instr("rti", None)],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["rts", "rtl", "rti"]);
     }
 }

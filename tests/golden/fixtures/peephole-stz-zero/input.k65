@@ -10,9 +10,11 @@ func main {
     a = 1
 
     // Absolute + absolute,X rewrite. X-indexed variant exercises the `,X`
-    // STZ form. `return` at the end keeps A live, so `lda #0` is kept.
+    // STZ form. A is dead after (next op is `lda #1`), so `lda #0` is dropped.
     big1 = a = 0
     big2,x = a
+
+    a = 1
 
     return
 }

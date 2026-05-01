@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use k816_assets::AssetFS;
 use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
-use k816_isa65816::{RegEffects, RegSet, mnemonic_effects};
+use k816_isa65816::{RegEffects, RegSet, mnemonic_effects, mnemonic_width_sensitivity};
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
@@ -245,11 +245,14 @@ fn instruction_effects(instruction: &Instruction) -> RegEffects {
 }
 
 fn instruction_accumulator_load_wins(instruction: &Instruction, mode: ModeState) -> bool {
-    match instruction.mnemonic.to_ascii_lowercase().as_str() {
-        "lda" | "pla" | "txa" | "tya" | "tdc" | "tsc" => true,
-        "xba" => mode.a_width == Some(RegWidth::W8),
-        _ => false,
-    }
+    let lower = instruction.mnemonic.to_ascii_lowercase();
+    let effects = mnemonic_effects(&lower, instruction.operand.is_none());
+    let kills_a = effects.modifies.contains(RegSet::A) && !effects.reads.contains(RegSet::A);
+    // `xba` reads+writes A (byte-swap), so it doesn't fall under `kills_a`,
+    // but in 8-bit accumulator mode the visible A is replaced by the prior
+    // hidden high byte — close enough that the existing rule treats it as
+    // an A-load win.
+    kills_a || (lower == "xba" && mode.a_width == Some(RegWidth::W8))
 }
 
 fn hla_effects(stmt: &HlaStmt) -> RegEffects {
@@ -3322,9 +3325,9 @@ fn validate_instruction_width_rules(
     };
 
     if let Some(expr) = imm_expr {
-        let reg_mode = match mnemonic.as_str() {
-            "lda" | "cmp" | "and" | "ora" | "eor" | "adc" | "sbc" | "bit" => mode.a_width,
-            "ldx" | "ldy" | "cpx" | "cpy" => mode.i_width,
+        let reg_mode = match mnemonic_width_sensitivity(&mnemonic, false) {
+            (true, false) => mode.a_width,
+            (false, true) => mode.i_width,
             _ => None,
         };
         if let Some(reg_width) = reg_mode
@@ -3371,49 +3374,31 @@ fn validate_instruction_width_rules(
     };
     let var_name = base_ident(expr);
 
-    match mnemonic.as_str() {
-        "lda" => validate_mode_for_typed_access(
-            span,
-            mode.a_width,
-            required_width,
-            "load",
-            "a",
-            var_name,
-            data_width,
-            diagnostics,
-        ),
-        "ldx" | "ldy" => validate_mode_for_typed_access(
-            span,
-            mode.i_width,
-            required_width,
-            "load",
-            "i",
-            var_name,
-            data_width,
-            diagnostics,
-        ),
-        "sta" => validate_mode_for_typed_access(
-            span,
-            mode.a_width,
-            required_width,
-            "store",
-            "a",
-            var_name,
-            data_width,
-            diagnostics,
-        ),
-        "stx" | "sty" => validate_mode_for_typed_access(
-            span,
-            mode.i_width,
-            required_width,
-            "store",
-            "i",
-            var_name,
-            data_width,
-            diagnostics,
-        ),
-        _ => {}
+    if !matches!(
+        mnemonic.as_str(),
+        "lda" | "ldx" | "ldy" | "sta" | "stx" | "sty"
+    ) {
+        return;
     }
+    let effects = mnemonic_effects(&mnemonic, false);
+    let is_load = !effects.modifies.is_empty();
+    let touches_a = effects.modifies.contains(RegSet::A) || effects.reads.contains(RegSet::A);
+    let (verb, family, width) = match (is_load, touches_a) {
+        (true, true) => ("load", "a", mode.a_width),
+        (true, false) => ("load", "i", mode.i_width),
+        (false, true) => ("store", "a", mode.a_width),
+        (false, false) => ("store", "i", mode.i_width),
+    };
+    validate_mode_for_typed_access(
+        span,
+        width,
+        required_width,
+        verb,
+        family,
+        var_name,
+        data_width,
+        diagnostics,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]

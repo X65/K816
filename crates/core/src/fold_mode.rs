@@ -9,24 +9,13 @@ use crate::hir::AddressSizeHint;
 
 /// Returns (needs_m, needs_x) for an instruction.
 ///
-/// This models semantic width dependencies, not just immediate operand sizing.
+/// Thin wrapper over `k816_isa65816::mnemonic_width_sensitivity` that maps the
+/// HIR's `operand: None` convention to the ISA helper's `on_accumulator` flag.
 pub(crate) fn instruction_mode_needs(instruction: &InstructionOp) -> (bool, bool) {
-    let mnemonic = instruction.mnemonic.to_ascii_lowercase();
-    match mnemonic.as_str() {
-        // Accumulator-width sensitive (M flag).
-        "adc" | "and" | "bit" | "cmp" | "eor" | "lda" | "ora" | "pha" | "pla" | "sbc" | "sta"
-        | "stz" | "trb" | "tsb" => (true, false),
-        // Index-width sensitive (X flag, applies to both X and Y registers).
-        "cpx" | "cpy" | "dex" | "dey" | "inx" | "iny" | "ldx" | "ldy" | "phx" | "phy" | "plx"
-        | "ply" | "stx" | "sty" | "tsx" | "txs" | "txy" | "tyx" => (false, true),
-        // Transfer ops that cross A and index registers depend on both dimensions.
-        "tax" | "tay" | "txa" | "tya" => (true, true),
-        // Shift/rotate/inc/dec are width-sensitive only in accumulator form.
-        "asl" | "dec" | "inc" | "lsr" | "rol" | "ror" if instruction.operand.is_none() => {
-            (true, false)
-        }
-        _ => (false, false),
-    }
+    k816_isa65816::mnemonic_width_sensitivity(
+        &instruction.mnemonic,
+        instruction.operand.is_none(),
+    )
 }
 
 /// Extract the label target from a JSR/JSL instruction.

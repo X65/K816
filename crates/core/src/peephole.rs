@@ -1,3 +1,5 @@
+use k816_isa65816::{RegSet, mnemonic_effects};
+
 use crate::hir::{
     AddressOperandMode, AddressSizeHint, IndexRegister, InstructionOp, Op, OperandOp, Program,
 };
@@ -144,5 +146,77 @@ fn a_dead_at(op: &Op) -> bool {
     let Op::Instruction(inst) = op else {
         return false;
     };
-    matches!(inst.mnemonic.as_str(), "lda" | "pla" | "txa" | "tya")
+    let on_accumulator = inst.operand.is_none();
+    let effects = mnemonic_effects(&inst.mnemonic, on_accumulator);
+    effects.modifies.contains(RegSet::A) && !effects.reads.contains(RegSet::A)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir::AddressValue;
+    use crate::span::{SourceId, Span, Spanned};
+
+    fn op(node: Op) -> Spanned<Op> {
+        Spanned::new(node, Span::new(SourceId(0), 0, 0))
+    }
+
+    fn instr(mnemonic: &str, operand: Option<OperandOp>) -> Spanned<Op> {
+        op(Op::Instruction(InstructionOp {
+            mnemonic: mnemonic.to_string(),
+            operand,
+        }))
+    }
+
+    fn sta_dp(addr: u32) -> Spanned<Op> {
+        instr(
+            "sta",
+            Some(OperandOp::Address {
+                value: AddressValue::Literal(addr),
+                size_hint: AddressSizeHint::Auto,
+                mode: AddressOperandMode::Direct { index: None },
+            }),
+        )
+    }
+
+    fn mnemonics(program: &Program) -> Vec<&str> {
+        program
+            .ops
+            .iter()
+            .filter_map(|sp| match &sp.node {
+                Op::Instruction(inst) => Some(inst.mnemonic.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `tdc` overwrites A without reading it (per `mnemonic_effects`), so the
+    /// preceding `lda #0` is dead and gets dropped, leaving just the `stz`.
+    #[test]
+    fn drops_lda_zero_before_tdc() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_dp(0x10),
+                instr("tdc", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["stz", "tdc"]);
+    }
+
+    /// `xba` reads *and* modifies A (it byte-swaps), so it does NOT make A
+    /// dead. The leading `lda #0` must be preserved.
+    #[test]
+    fn keeps_lda_zero_before_xba() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_dp(0x10),
+                instr("xba", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["lda", "stz", "xba"]);
+    }
 }

@@ -585,6 +585,38 @@ pub fn mnemonic_effects(mnemonic: &str, on_accumulator: bool) -> RegEffects {
     RegEffects { reads, modifies }
 }
 
+/// Whether this mnemonic's operand-byte count tracks the M flag, the X flag,
+/// or neither. Returns `(needs_m, needs_x)` where both can be true for
+/// cross-bank transfers (`tax`/`tay`/`txa`/`tya`) whose two register operands
+/// must agree on width.
+///
+/// This is *operand-width* sensitivity, not register flow — distinct from
+/// `mnemonic_effects`. The two diverge in three exception classes:
+///   - `stz` is M-sensitive (1- vs 2-byte store) but touches no register.
+///   - `tcd`/`tcs`/`tdc`/`tsc` touch A but transfer a fixed 16-bit value
+///     regardless of M.
+///   - `xba` touches A but always swaps a 16-bit value regardless of M.
+///
+/// `on_accumulator` must be true when the operand is the accumulator
+/// (`asl a`, `inc a`, …); the shift/rotate/inc/dec family is M-sensitive
+/// only in that form.
+pub fn mnemonic_width_sensitivity(mnemonic: &str, on_accumulator: bool) -> (bool, bool) {
+    let lower = mnemonic.to_ascii_lowercase();
+    match lower.as_str() {
+        // Accumulator-width sensitive (M flag).
+        "adc" | "and" | "bit" | "cmp" | "eor" | "lda" | "ora" | "pha" | "pla" | "sbc" | "sta"
+        | "stz" | "trb" | "tsb" => (true, false),
+        // Index-width sensitive (X flag, applies to both X and Y registers).
+        "cpx" | "cpy" | "dex" | "dey" | "inx" | "iny" | "ldx" | "ldy" | "phx" | "phy" | "plx"
+        | "ply" | "stx" | "sty" | "tsx" | "txs" | "txy" | "tyx" => (false, true),
+        // Transfers crossing A and an index register depend on both axes.
+        "tax" | "tay" | "txa" | "tya" => (true, true),
+        // Shift/rotate/inc/dec are M-sensitive only in accumulator form.
+        "asl" | "dec" | "inc" | "lsr" | "rol" | "ror" if on_accumulator => (true, false),
+        _ => (false, false),
+    }
+}
+
 pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding, EncodeError> {
     let lower = mnemonic.to_ascii_lowercase();
     let modes = matching_modes(&lower);
@@ -1553,5 +1585,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn width_sensitivity_axes() {
+        // M-only.
+        assert_eq!(mnemonic_width_sensitivity("lda", false), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("sta", false), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("stz", false), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("trb", false), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("pha", false), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("pla", false), (true, false));
+        // X-only.
+        assert_eq!(mnemonic_width_sensitivity("ldx", false), (false, true));
+        assert_eq!(mnemonic_width_sensitivity("cpy", false), (false, true));
+        assert_eq!(mnemonic_width_sensitivity("inx", false), (false, true));
+        assert_eq!(mnemonic_width_sensitivity("txs", false), (false, true));
+        // Transfers — both axes.
+        assert_eq!(mnemonic_width_sensitivity("tax", false), (true, true));
+        assert_eq!(mnemonic_width_sensitivity("tay", false), (true, true));
+        assert_eq!(mnemonic_width_sensitivity("txa", false), (true, true));
+        assert_eq!(mnemonic_width_sensitivity("tya", false), (true, true));
+        // Exceptions: touch A but transfer a fixed 16-bit value, so not M-sensitive.
+        assert_eq!(mnemonic_width_sensitivity("tcd", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("tcs", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("tdc", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("tsc", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("xba", false), (false, false));
+        // Shift/rotate/inc/dec: M-sensitive only on the accumulator form.
+        assert_eq!(mnemonic_width_sensitivity("asl", true), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("asl", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("inc", true), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("inc", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("rol", true), (true, false));
+        assert_eq!(mnemonic_width_sensitivity("ror", false), (false, false));
+        // Pure control flow / flag toggles: insensitive.
+        assert_eq!(mnemonic_width_sensitivity("nop", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("jmp", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("clc", false), (false, false));
+        assert_eq!(mnemonic_width_sensitivity("rts", false), (false, false));
+        // Case-insensitive.
+        assert_eq!(mnemonic_width_sensitivity("LDA", false), (true, false));
     }
 }

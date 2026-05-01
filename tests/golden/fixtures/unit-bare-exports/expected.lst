@@ -7,7 +7,7 @@
 
 
 [obj#2 default]
-00000D: 20 00 00 60
+00000D: 4C 00 00
 
 
 [disasm obj#1 default::test]
@@ -20,5 +20,4 @@
 00000C: 60          rts
 
 [disasm obj#2 default::main]
-00000D: 20 00 00    jsr $0000
-000010: 60          rts
+00000D: 4C 00 00    jmp $0000

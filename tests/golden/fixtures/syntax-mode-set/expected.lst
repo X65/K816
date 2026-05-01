@@ -1,6 +1,6 @@
 [default]
-000000: EA EA EA EA 20 0E 00 20 10 00 20 12 00 60 EA 60
-000010: EA 60 EA 60
+000000: EA EA EA EA 20 0D 00 20 0F 00 4C 11 00 EA 60 EA
+000010: 60 EA 60
 
 
 [disasm obj#0 default::main]
@@ -8,19 +8,18 @@
 000001: EA          nop
 000002: EA          nop
 000003: EA          nop
-000004: 20 0E 00    jsr $000E
-000007: 20 10 00    jsr $0010
-00000A: 20 12 00    jsr $0012
-00000D: 60          rts
+000004: 20 0D 00    jsr $000D
+000007: 20 0F 00    jsr $000F
+00000A: 4C 11 00    jmp $0011
 
 [disasm obj#0 default::uncolored]
-00000E: EA          nop
-00000F: 60          rts
+00000D: EA          nop
+00000E: 60          rts
 
 [disasm obj#0 default::colored_a]
-000010: EA          nop
-000011: 60          rts
+00000F: EA          nop
+000010: 60          rts
 
 [disasm obj#0 default::colored_i]
-000012: EA          nop
-000013: 60          rts
+000011: EA          nop
+000012: 60          rts

@@ -1,17 +1,25 @@
 [default]
-000000: A9 FF A9 00 A9 01 A9 FD A9 02 A9 03 C2 20 A9 FF
-000010: FF A9 FD FF A9 FB FF 60
+000000: A9 FF 48 A9 00 48 A9 01 48 A9 FD 48 A9 02 48 A9
+000010: 03 48 C2 20 A9 FF FF 48 A9 FD FF 48 A9 FB FF 60
 
 
 [disasm obj#0 default::main]
 000000: A9 FF       lda #$FF
-000002: A9 00       lda #$00
-000004: A9 01       lda #$01
-000006: A9 FD       lda #$FD
-000008: A9 02       lda #$02
-00000A: A9 03       lda #$03
-00000C: C2 20       rep #$20
-00000E: A9 FF FF    lda #$FFFF
-000011: A9 FD FF    lda #$FFFD
-000014: A9 FB FF    lda #$FFFB
-000017: 60          rts
+000002: 48          pha
+000003: A9 00       lda #$00
+000005: 48          pha
+000006: A9 01       lda #$01
+000008: 48          pha
+000009: A9 FD       lda #$FD
+00000B: 48          pha
+00000C: A9 02       lda #$02
+00000E: 48          pha
+00000F: A9 03       lda #$03
+000011: 48          pha
+000012: C2 20       rep #$20
+000014: A9 FF FF    lda #$FFFF
+000017: 48          pha
+000018: A9 FD FF    lda #$FFFD
+00001B: 48          pha
+00001C: A9 FB FF    lda #$FFFB
+00001F: 60          rts

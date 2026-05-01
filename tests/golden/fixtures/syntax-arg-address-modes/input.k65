@@ -11,5 +11,6 @@ func main {
     a=(ptr,x)
     a=(ptr),y
     a=&<abs
+    pha
     a=&>abs
 }

@@ -247,6 +247,10 @@ naked part_41 @a8 @i8 {
     clv
     lda x0:abs,y
     tsx
+    // empty label between two adjacent register-only writes to X
+    // prevents the peephole optimizer from folding `tsx` away. A
+    // label emits no bytes, preserving the exhaustive opcode order.
+    .between_tsx_tyx:
     tyx
     ldy x0:abs,x
     lda x0:abs,x

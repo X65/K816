@@ -5,6 +5,9 @@ func main {
     @i8
     ldx #$34
     ldy #$78
+    // `pha` between transfers keeps both observable so the optimizer
+    // does not fold the dead `txa` into the following `tya`.
     txa
+    pha
     tya
 }

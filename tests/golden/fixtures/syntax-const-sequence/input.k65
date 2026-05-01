@@ -10,21 +10,36 @@ var ptr_c = R
 var ptr_d = P2
 
 func main {
+    // `pha` between immediates keeps each load observable so the
+    // optimizer cannot fold them, preserving this fixture's
+    // verification of every constant value in the sequence.
     lda #A
+    pha
     lda #B
+    pha
     lda #C
+    pha
 
     lda #X
+    pha
     lda #Y
+    pha
     lda #Z
+    pha
 
     lda #P
+    pha
     lda #Q
+    pha
     lda #R
+    pha
 
     lda #M
+    pha
     lda #N
+    pha
     lda #O
+    pha
     lda #P2
 
     lda ptr_a

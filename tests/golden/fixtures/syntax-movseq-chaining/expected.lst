@@ -1,5 +1,5 @@
 [default]
-000000: A5 12 85 11 85 10 A5 10 AA AA 9B 60
+000000: A5 12 85 11 85 10 A5 10 AA DA AA 9B 60
 
 
 [disasm obj#0 default::main]
@@ -8,6 +8,7 @@
 000004: 85 10       sta $10
 000006: A5 10       lda $10
 000008: AA          tax
-000009: AA          tax
-00000A: 9B          txy
-00000B: 60          rts
+000009: DA          phx
+00000A: AA          tax
+00000B: 9B          txy
+00000C: 60          rts

@@ -1,0 +1,21 @@
+[default]
+000000: A9 55 60 EA 6B 4C 00 00 5C 03 00 00 A9 01 60
+
+
+[disasm obj#0 default::tail_target]
+000000: A9 55       lda #$55
+000002: 60          rts
+
+[disasm obj#0 default::far_tail_target]
+000003: EA          nop
+000004: 6B          rtl
+
+[disasm obj#0 default::near_tail_entry]
+000005: 4C 00 00    jmp $0000
+
+[disasm obj#0 default::far_tail_entry]
+000008: 5C 03 00 00 jml $000003
+
+[disasm obj#0 default::main]
+00000C: A9 01       lda #$01
+00000E: 60          rts

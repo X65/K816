@@ -1,6 +1,12 @@
 func main {
+    // `pha` between assignments keeps each immediate load observable
+    // so the optimizer cannot fold them, preserving this fixture's
+    // verification of character literal values.
     a='A'
+    pha
     a='0'
+    pha
     a='\n'
+    pha
     a=['s' + 1]
 }

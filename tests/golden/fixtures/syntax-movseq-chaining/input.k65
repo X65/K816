@@ -3,7 +3,11 @@ var dst1 = 0x11
 var src = 0x12
 
 func main {
+    // `phx` between the chained assignments keeps both `tax` ops
+    // observable so the optimizer does not fold the first into the
+    // second, preserving the lowering of every chained move.
     dst0=dst1=a=src
     x=a=dst0
+    phx
     y=x=a
 }

@@ -1,6 +1,12 @@
 func main {
+    // `pha` between assignments keeps each immediate load observable
+    // so the optimizer cannot fold them, preserving this fixture's
+    // verification of number literal parsing.
     a=123
+    pha
     a=0x1F
+    pha
     a=0b10101010
+    pha
     a=[1.5 + .5]
 }

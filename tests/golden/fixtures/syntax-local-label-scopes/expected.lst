@@ -1,5 +1,5 @@
 [default]
-000000: E8 D0 FD 60 C8 D0 FD 60 20 00 00 20 04 00 60
+000000: E8 D0 FD 60 C8 D0 FD 60 20 00 00 4C 04 00
 
 
 [disasm obj#0 default::one]
@@ -14,5 +14,4 @@
 
 [disasm obj#0 default::main]
 000008: 20 00 00    jsr $0000
-00000B: 20 04 00    jsr $0004
-00000E: 60          rts
+00000B: 4C 04 00    jmp $0004

@@ -1,6 +1,10 @@
 const FOO = 42
 
 func main @a16 {
+    // `pha` keeps both immediate loads observable so the optimizer
+    // does not fold `lda FOO` into `lda BAR`, preserving this
+    // fixture's verification of cross-unit constant resolution.
     lda FOO
+    pha
     lda BAR
 }

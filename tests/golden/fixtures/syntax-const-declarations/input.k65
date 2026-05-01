@@ -5,7 +5,11 @@ var ptr = OFFSET
 var arr[A + B]
 
 func main {
+    // `pha` between adjacent immediates keeps each load observable so
+    // the optimizer cannot fold them, preserving this fixture's
+    // verification of every constant value.
     lda #A
+    pha
     lda #B
     lda ptr
     lda arr

@@ -11,11 +11,19 @@ var BASE[
 ] = $1000
 
 func main @a8 @i8 {
+    // `phy` between consecutive `ldy` immediates makes each load
+    // observable so the optimizer cannot fold them, preserving this
+    // fixture's purpose: verifying every :offsetof value is computed
+    // correctly.
     lda #BASE.ab:offsetof
     ldx #BASE.a:offsetof
     ldy #BASE.a.x:offsetof
+    phy
     ldy #BASE.a.y:offsetof
+    phy
     ldy #BASE.b:offsetof
+    phy
     ldy #BASE.b.x:offsetof
+    phy
     ldy #BASE.b.y:offsetof
 }

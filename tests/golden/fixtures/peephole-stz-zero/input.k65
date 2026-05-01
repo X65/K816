@@ -8,6 +8,9 @@ func main {
     // dead after (next op is `lda #1`), so `lda #0` is dropped.
     dst1 = dst2 = a = 0
     a = 1
+    // `pha` keeps `a = 1` observable across the next `big1 = a = 0`,
+    // otherwise the new dead-register pass would also drop it.
+    pha
 
     // Absolute + absolute,X rewrite. X-indexed variant exercises the `,X`
     // STZ form. A is dead after (next op is `lda #1`), so `lda #0` is dropped.

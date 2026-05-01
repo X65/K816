@@ -1,0 +1,23 @@
+var dst1 = 0x10
+var dst2 = 0x11
+var zero1 = 0x12
+var zero2 = 0x13
+
+func main {
+    // The second identical load is redundant because only stores sit between
+    // the two loads, and stores do not change A or N/Z.
+    lda #7
+    sta dst1
+    lda #7
+    sta dst2
+
+    // Repeated zero loads coalesce first, which lets the existing STZ rewrite
+    // see one contiguous dead zero-store run.
+    lda #0
+    sta zero1
+    lda #0
+    sta zero2
+    lda #1
+
+    return
+}

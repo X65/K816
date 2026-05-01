@@ -1,0 +1,31 @@
+var mmio_like = 0x20
+var sink = 0x21
+
+func main {
+    // Exact duplicate flag writes collapse, but opposite flag writes remain.
+    clc
+    clc
+    sec
+    sec
+    clc
+    sec
+
+    // Adjacent register-only writes are dropped when immediately overwritten
+    // by another register-only write that refreshes N/Z.
+    lda #1
+    lda #2
+    tax
+    ldx #4
+    inx
+    ldx #5
+
+    // Memory reads and stack pulls are preserved even when the register is
+    // overwritten immediately afterward.
+    lda mmio_like
+    lda #3
+    pla
+    lda #4
+    sta sink
+
+    return
+}

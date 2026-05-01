@@ -7,6 +7,9 @@ func main {
     // store run can become STZ.
     dst1 = dst2 = a = 0
     a = 1
+    // `pha` keeps `a = 1` observable across the next `dst3 = a = 0`,
+    // otherwise the new dead-register pass would also drop it.
+    pha
 
     // A is used by the transfer, so keep the visible LDA/STA data flow.
     dst3 = a = 0

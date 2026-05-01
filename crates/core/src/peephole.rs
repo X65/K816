@@ -1,9 +1,58 @@
 use k816_isa65816::{RegSet, mnemonic_effects};
 
 use crate::hir::{
-    AddressOperandMode, AddressSizeHint, IndexRegister, InstructionOp, Op, OperandOp, Program,
+    AddressOperandMode, AddressSizeHint, AddressValue, IndexRegister, InstructionOp, Op, OperandOp,
+    Program,
 };
 use crate::span::Spanned;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuReg {
+    A,
+    X,
+    Y,
+}
+
+impl CpuReg {
+    fn index(self) -> usize {
+        match self {
+            CpuReg::A => 0,
+            CpuReg::X => 1,
+            CpuReg::Y => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlagSet(u8);
+
+impl FlagSet {
+    const NONE: Self = Self(0);
+    const N: Self = Self(1 << 0);
+    const Z: Self = Self(1 << 1);
+    const C: Self = Self(1 << 2);
+    const V: Self = Self(1 << 3);
+    const D: Self = Self(1 << 4);
+    const I: Self = Self(1 << 5);
+    const M_WIDTH: Self = Self(1 << 6);
+    const X_WIDTH: Self = Self(1 << 7);
+
+    fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+}
+
+impl std::ops::BitOr for FlagSet {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+fn canonical_mnemonic(m: &str) -> String {
+    m.to_ascii_lowercase()
+}
 
 /// Returns the canonical mnemonic for an unconditional return instruction.
 fn return_mnemonic(m: &str) -> Option<&'static str> {
@@ -21,13 +70,545 @@ fn return_mnemonic(m: &str) -> Option<&'static str> {
 /// Peephole optimization pass.
 ///
 /// Runs the collected peephole rewrites over the whole program in order:
-/// 1. `stz_rewrite` — replaces dead `LDA #0; STA mem[,X]` runs with `STZ`.
-/// 2. `collapse_duplicate_returns` — drops an adjacent `rts`/`rtl`/`rti`
+/// 1. `coalesce_repeated_immediate_loads` — drops repeated literal register
+///    loads when only flag-preserving stores sit between them.
+/// 2. `remove_dead_adjacent_register_writes` — drops adjacent register-only
+///    writes that are immediately overwritten with fresh N/Z flags.
+/// 3. `stz_rewrite` — replaces dead `LDA #0; STA mem[,X]` runs with `STZ`.
+/// 4. `collapse_duplicate_flag_ops` — drops repeated adjacent flag set/clear
+///    ops.
+/// 5. `rewrite_tail_calls` — turns adjacent `jsr; rts` / `jsl; rtl` into
+///    `jmp` / `jml`.
+/// 6. `prune_unreachable_instructions` — drops plain instructions after an
+///    unconditional branch/jump until the next reachable boundary. Runs
+///    before `remove_branch_to_next_label` so branches separated from their
+///    target only by other unreachable branches still collapse.
+/// 7. `remove_branch_to_next_label` — removes branches/jumps to the next
+///    label.
+/// 8. `collapse_duplicate_returns` — drops an adjacent `rts`/`rtl`/`rti`
 ///    that is preceded by an identical return.
 pub fn peephole_optimize(program: &Program) -> Program {
-    let ops = stz_rewrite(&program.ops);
+    let ops = coalesce_repeated_immediate_loads(&program.ops);
+    let ops = remove_dead_adjacent_register_writes(&ops);
+    let ops = stz_rewrite(&ops);
+    let ops = collapse_duplicate_flag_ops(&ops);
+    let ops = rewrite_tail_calls(&ops);
+    let ops = prune_unreachable_instructions(&ops);
+    let ops = remove_branch_to_next_label(&ops);
     let ops = collapse_duplicate_returns(&ops);
     Program { ops }
+}
+
+fn coalesce_repeated_immediate_loads(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+    let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+    let mut known_loads: [Option<i64>; 3] = [None, None, None];
+
+    for op in ops {
+        if is_basic_block_barrier(&op.node) {
+            known_loads = [None, None, None];
+            out.push(op.clone());
+            continue;
+        }
+
+        match &op.node {
+            Op::Instruction(inst) => {
+                if let Some((reg, value)) = immediate_register_load(inst) {
+                    let idx = reg.index();
+                    if known_loads[idx] == Some(value) {
+                        continue;
+                    }
+                    known_loads = [None, None, None];
+                    known_loads[idx] = Some(value);
+                    out.push(op.clone());
+                } else if is_flag_preserving_store(inst) {
+                    out.push(op.clone());
+                } else {
+                    known_loads = [None, None, None];
+                    out.push(op.clone());
+                }
+            }
+            _ => {
+                known_loads = [None, None, None];
+                out.push(op.clone());
+            }
+        }
+    }
+
+    out
+}
+
+fn remove_dead_adjacent_register_writes(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+    let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+    let mut i = 0;
+    while i < ops.len() {
+        if i + 1 < ops.len() && dead_adjacent_register_write(&ops[i].node, &ops[i + 1].node) {
+            i += 1;
+            continue;
+        }
+        out.push(ops[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn collapse_duplicate_flag_ops(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+    let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+    let mut last_flag_op: Option<&'static str> = None;
+
+    for op in ops {
+        match &op.node {
+            Op::Instruction(InstructionOp {
+                mnemonic,
+                operand: None,
+            }) => {
+                let Some(flag_op) = duplicate_flag_op_mnemonic(mnemonic) else {
+                    last_flag_op = None;
+                    out.push(op.clone());
+                    continue;
+                };
+                if last_flag_op == Some(flag_op) {
+                    continue;
+                }
+                last_flag_op = Some(flag_op);
+                out.push(op.clone());
+            }
+            _ => {
+                last_flag_op = None;
+                out.push(op.clone());
+            }
+        }
+    }
+
+    out
+}
+
+fn rewrite_tail_calls(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+    let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+    let mut i = 0;
+    while i < ops.len() {
+        if i + 1 < ops.len()
+            && let Some(replacement) = tail_call_replacement(&ops[i].node, &ops[i + 1].node)
+        {
+            let mut rewritten = ops[i].clone();
+            if let Op::Instruction(inst) = &mut rewritten.node {
+                inst.mnemonic = replacement.to_string();
+            }
+            out.push(rewritten);
+            i += 2;
+            continue;
+        }
+        out.push(ops[i].clone());
+        i += 1;
+    }
+    out
+}
+
+fn remove_branch_to_next_label(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+    let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+
+    for (idx, op) in ops.iter().enumerate() {
+        if let Some(target) = branch_or_jump_direct_label(&op.node)
+            && next_label_matches(ops, idx + 1, target)
+        {
+            continue;
+        }
+        out.push(op.clone());
+    }
+
+    out
+}
+
+fn prune_unreachable_instructions(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+    let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+    let mut unreachable = false;
+
+    for op in ops {
+        if unreachable {
+            if starts_reachable_region(&op.node) {
+                unreachable = false;
+            } else if matches!(op.node, Op::Instruction(_)) {
+                continue;
+            }
+        }
+
+        out.push(op.clone());
+
+        if is_unconditional_prune_transfer(&op.node) {
+            unreachable = true;
+        }
+    }
+
+    out
+}
+
+fn immediate_register_load(inst: &InstructionOp) -> Option<(CpuReg, i64)> {
+    let value = match inst.operand {
+        Some(OperandOp::Immediate(value)) => value,
+        _ => return None,
+    };
+    let reg = match canonical_mnemonic(&inst.mnemonic).as_str() {
+        "lda" => CpuReg::A,
+        "ldx" => CpuReg::X,
+        "ldy" => CpuReg::Y,
+        _ => return None,
+    };
+    Some((reg, value))
+}
+
+fn is_flag_preserving_store(inst: &InstructionOp) -> bool {
+    if !matches!(inst.operand, Some(OperandOp::Address { .. })) {
+        return false;
+    }
+    matches!(
+        canonical_mnemonic(&inst.mnemonic).as_str(),
+        "sta" | "stx" | "sty" | "stz"
+    )
+}
+
+fn dead_adjacent_register_write(prev: &Op, next: &Op) -> bool {
+    let (Op::Instruction(prev), Op::Instruction(next)) = (prev, next) else {
+        return false;
+    };
+    let Some(prev_reg) = register_only_nz_write(prev) else {
+        return false;
+    };
+    let Some(next_reg) = register_only_nz_overwrite(next) else {
+        return false;
+    };
+    prev_reg == next_reg
+}
+
+fn register_only_nz_write(inst: &InstructionOp) -> Option<CpuReg> {
+    if flags_written_by_instruction(inst).intersects(
+        FlagSet::C | FlagSet::V | FlagSet::D | FlagSet::I | FlagSet::M_WIDTH | FlagSet::X_WIDTH,
+    ) {
+        return None;
+    }
+    if let Some((reg, _)) = immediate_register_load(inst) {
+        return Some(reg);
+    }
+    match (canonical_mnemonic(&inst.mnemonic).as_str(), &inst.operand) {
+        ("tax" | "tsx" | "tyx" | "inx" | "dex", None) => Some(CpuReg::X),
+        ("tay" | "txy" | "iny" | "dey", None) => Some(CpuReg::Y),
+        ("txa" | "tya" | "tsc" | "tdc", None) => Some(CpuReg::A),
+        _ => None,
+    }
+}
+
+fn register_only_nz_overwrite(inst: &InstructionOp) -> Option<CpuReg> {
+    if flags_written_by_instruction(inst).intersects(
+        FlagSet::C | FlagSet::V | FlagSet::D | FlagSet::I | FlagSet::M_WIDTH | FlagSet::X_WIDTH,
+    ) {
+        return None;
+    }
+    if let Some((reg, _)) = immediate_register_load(inst) {
+        return Some(reg);
+    }
+    match (canonical_mnemonic(&inst.mnemonic).as_str(), &inst.operand) {
+        ("tax" | "tsx" | "tyx", None) => Some(CpuReg::X),
+        ("tay" | "txy", None) => Some(CpuReg::Y),
+        ("txa" | "tya" | "tsc" | "tdc", None) => Some(CpuReg::A),
+        _ => None,
+    }
+}
+
+fn flags_written_by_instruction(inst: &InstructionOp) -> FlagSet {
+    match (canonical_mnemonic(&inst.mnemonic).as_str(), &inst.operand) {
+        ("clc" | "sec", None) => FlagSet::C,
+        ("cld" | "sed", None) => FlagSet::D,
+        ("cli" | "sei", None) => FlagSet::I,
+        ("clv", None) => FlagSet::V,
+        ("rep" | "sep", Some(OperandOp::Immediate(mask))) => {
+            let mut flags = FlagSet::NONE;
+            if mask & 0x80 != 0 {
+                flags = flags | FlagSet::N;
+            }
+            if mask & 0x40 != 0 {
+                flags = flags | FlagSet::V;
+            }
+            if mask & 0x20 != 0 {
+                flags = flags | FlagSet::M_WIDTH;
+            }
+            if mask & 0x10 != 0 {
+                flags = flags | FlagSet::X_WIDTH;
+            }
+            if mask & 0x08 != 0 {
+                flags = flags | FlagSet::D;
+            }
+            if mask & 0x04 != 0 {
+                flags = flags | FlagSet::I;
+            }
+            if mask & 0x02 != 0 {
+                flags = flags | FlagSet::Z;
+            }
+            if mask & 0x01 != 0 {
+                flags = flags | FlagSet::C;
+            }
+            flags
+        }
+        ("adc" | "cmp" | "cpx" | "cpy" | "sbc" | "asl" | "lsr" | "rol" | "ror", _) => {
+            FlagSet::N | FlagSet::Z | FlagSet::C | FlagSet::V
+        }
+        (
+            "and" | "bit" | "dec" | "dex" | "dey" | "eor" | "inc" | "inx" | "iny" | "lda" | "ldx"
+            | "ldy" | "ora" | "pla" | "plx" | "ply" | "tax" | "tay" | "tdc" | "tsc" | "tsx" | "txa"
+            | "txy" | "tya" | "tyx" | "xba",
+            _,
+        ) => FlagSet::N | FlagSet::Z,
+        ("trb" | "tsb", _) => FlagSet::Z,
+        _ => FlagSet::NONE,
+    }
+}
+
+fn duplicate_flag_op_mnemonic(mnemonic: &str) -> Option<&'static str> {
+    match canonical_mnemonic(mnemonic).as_str() {
+        "clc" => Some("clc"),
+        "sec" => Some("sec"),
+        "cld" => Some("cld"),
+        "sed" => Some("sed"),
+        "cli" => Some("cli"),
+        "sei" => Some("sei"),
+        "clv" => Some("clv"),
+        _ => None,
+    }
+}
+
+fn tail_call_replacement(call: &Op, ret: &Op) -> Option<&'static str> {
+    let (
+        Op::Instruction(InstructionOp {
+            mnemonic: call_mnemonic,
+            operand: Some(_),
+        }),
+        Op::Instruction(InstructionOp {
+            mnemonic: ret_mnemonic,
+            operand: None,
+        }),
+    ) = (call, ret)
+    else {
+        return None;
+    };
+    match (
+        canonical_mnemonic(call_mnemonic).as_str(),
+        canonical_mnemonic(ret_mnemonic).as_str(),
+    ) {
+        ("jsr", "rts") => Some("jmp"),
+        ("jsl", "rtl") => Some("jml"),
+        _ => None,
+    }
+}
+
+fn branch_or_jump_direct_label(op: &Op) -> Option<&str> {
+    let Op::Instruction(inst) = op else {
+        return None;
+    };
+    let m = canonical_mnemonic(&inst.mnemonic);
+    if !is_branch_mnemonic(&m) && !matches!(m.as_str(), "jmp" | "jml") {
+        return None;
+    }
+    let target = direct_label_operand(inst.operand.as_ref())?;
+    is_synthetic_label(target).then_some(target)
+}
+
+fn direct_label_operand(operand: Option<&OperandOp>) -> Option<&str> {
+    match operand {
+        Some(OperandOp::Address {
+            value: AddressValue::Label(label),
+            mode: AddressOperandMode::Direct { index: None },
+            ..
+        }) => Some(label.as_str()),
+        _ => None,
+    }
+}
+
+fn next_label_matches(ops: &[Spanned<Op>], start: usize, target: &str) -> bool {
+    for op in &ops[start..] {
+        match &op.node {
+            Op::Label(label) if label == target => return true,
+            Op::Label(_) => continue,
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn is_branch_mnemonic(mnemonic: &str) -> bool {
+    matches!(
+        mnemonic,
+        "bcc" | "bcs" | "beq" | "bmi" | "bne" | "bpl" | "bra" | "brl" | "bvc" | "bvs"
+    )
+}
+
+fn is_call_mnemonic(mnemonic: &str) -> bool {
+    matches!(mnemonic, "jsr" | "jsl")
+}
+
+fn is_synthetic_label(label: &str) -> bool {
+    label.contains(".__k816_")
+}
+
+fn is_unconditional_control_transfer(op: &Op) -> bool {
+    let Op::Instruction(InstructionOp {
+        mnemonic,
+        operand: _,
+    }) = op
+    else {
+        return false;
+    };
+    matches!(
+        canonical_mnemonic(mnemonic).as_str(),
+        "rts" | "rtl" | "rti" | "jmp" | "jml" | "bra" | "brl"
+    )
+}
+
+fn is_unconditional_prune_transfer(op: &Op) -> bool {
+    let Op::Instruction(inst) = op else {
+        return false;
+    };
+    let Some(target) = direct_label_operand(inst.operand.as_ref()) else {
+        return false;
+    };
+    if !is_synthetic_label(target) {
+        return false;
+    }
+    matches!(
+        canonical_mnemonic(&inst.mnemonic).as_str(),
+        "jmp" | "jml" | "bra" | "brl"
+    )
+}
+
+fn is_basic_block_barrier(op: &Op) -> bool {
+    match op {
+        Op::SelectSegment(_)
+        | Op::FunctionStart { .. }
+        | Op::FunctionEnd
+        | Op::Label(_)
+        | Op::EmitBytes(_)
+        | Op::EmitRelocBytes { .. }
+        | Op::Align { .. }
+        | Op::Address(_)
+        | Op::Nocross(_)
+        | Op::Rep { .. }
+        | Op::Sep { .. }
+        | Op::DefineAbsoluteSymbol { .. }
+        | Op::SetMode(_) => true,
+        Op::Instruction(inst) => {
+            let m = canonical_mnemonic(&inst.mnemonic);
+            is_call_mnemonic(&m) || is_branch_mnemonic(&m) || is_unconditional_control_transfer(op)
+        }
+    }
+}
+
+fn starts_reachable_region(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::SelectSegment(_)
+            | Op::FunctionStart { .. }
+            | Op::FunctionEnd
+            | Op::Label(_)
+            | Op::Align { .. }
+            | Op::Address(_)
+            | Op::Nocross(_)
+            | Op::Rep { .. }
+            | Op::Sep { .. }
+            | Op::DefineAbsoluteSymbol { .. }
+            | Op::SetMode(_)
+    )
+}
+
+#[cfg(test)]
+fn operands_equal(left: Option<&OperandOp>, right: Option<&OperandOp>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => operand_equal(left, right),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+fn operand_equal(left: &OperandOp, right: &OperandOp) -> bool {
+    match (left, right) {
+        (OperandOp::Immediate(left), OperandOp::Immediate(right)) => left == right,
+        (
+            OperandOp::ImmediateByteRelocation {
+                kind: left_kind,
+                label: left_label,
+            },
+            OperandOp::ImmediateByteRelocation {
+                kind: right_kind,
+                label: right_label,
+            },
+        ) => left_kind == right_kind && left_label == right_label,
+        (
+            OperandOp::ImmediateWordRelocation {
+                label: left_label,
+                addend: left_addend,
+                ..
+            },
+            OperandOp::ImmediateWordRelocation {
+                label: right_label,
+                addend: right_addend,
+                ..
+            },
+        ) => left_label == right_label && left_addend == right_addend,
+        (
+            OperandOp::ImmediateFarRelocation {
+                label: left_label,
+                addend: left_addend,
+                ..
+            },
+            OperandOp::ImmediateFarRelocation {
+                label: right_label,
+                addend: right_addend,
+                ..
+            },
+        ) => left_label == right_label && left_addend == right_addend,
+        (
+            OperandOp::Address {
+                value: left_value,
+                size_hint: left_hint,
+                mode: left_mode,
+            },
+            OperandOp::Address {
+                value: right_value,
+                size_hint: right_hint,
+                mode: right_mode,
+            },
+        ) => {
+            left_hint == right_hint
+                && left_mode == right_mode
+                && address_value_equal(left_value, right_value)
+        }
+        (
+            OperandOp::BlockMove {
+                src: left_src,
+                dst: left_dst,
+            },
+            OperandOp::BlockMove {
+                src: right_src,
+                dst: right_dst,
+            },
+        ) => left_src == right_src && left_dst == right_dst,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+fn address_value_equal(left: &AddressValue, right: &AddressValue) -> bool {
+    match (left, right) {
+        (AddressValue::Literal(left), AddressValue::Literal(right)) => left == right,
+        (AddressValue::Label(left), AddressValue::Label(right)) => left == right,
+        (
+            AddressValue::LabelOffset {
+                label: left_label,
+                addend: left_addend,
+            },
+            AddressValue::LabelOffset {
+                label: right_label,
+                addend: right_addend,
+            },
+        ) => left_label == right_label && left_addend == right_addend,
+        _ => false,
+    }
 }
 
 fn collapse_duplicate_returns(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
@@ -206,6 +787,26 @@ mod tests {
         )
     }
 
+    fn addr_dp(addr: u32) -> OperandOp {
+        OperandOp::Address {
+            value: AddressValue::Literal(addr),
+            size_hint: AddressSizeHint::Auto,
+            mode: AddressOperandMode::Direct { index: None },
+        }
+    }
+
+    fn branch_target(label: &str) -> OperandOp {
+        OperandOp::Address {
+            value: AddressValue::Label(label.to_string()),
+            size_hint: AddressSizeHint::Auto,
+            mode: AddressOperandMode::Direct { index: None },
+        }
+    }
+
+    fn label(name: &str) -> Spanned<Op> {
+        op(Op::Label(name.to_string()))
+    }
+
     fn sta_absolute_long(addr: u32) -> Spanned<Op> {
         instr(
             "sta",
@@ -324,8 +925,10 @@ mod tests {
             ops: vec![
                 instr("rts", None),
                 instr("RTS", None),
+                label("main::.far_return"),
                 instr("rtl", None),
                 instr("RTL", None),
+                label("main::.interrupt_return"),
                 instr("rti", None),
                 instr("RTI", None),
             ],
@@ -335,11 +938,259 @@ mod tests {
     }
 
     #[test]
-    fn keeps_mixed_adjacent_returns() {
+    fn keeps_returns_at_separate_label_entry_points() {
         let program = Program {
-            ops: vec![instr("rts", None), instr("rtl", None), instr("rti", None)],
+            ops: vec![
+                instr("rts", None),
+                label("main::.far_return"),
+                instr("rtl", None),
+                label("main::.interrupt_return"),
+                instr("rti", None),
+            ],
         };
         let out = peephole_optimize(&program);
         assert_eq!(mnemonics(&out), vec!["rts", "rtl", "rti"]);
+    }
+
+    #[test]
+    fn coalesces_repeated_immediate_loads_before_stores() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x10),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x11),
+                instr("lda", Some(OperandOp::Immediate(1))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["lda", "sta", "sta", "lda"]);
+    }
+
+    #[test]
+    fn coalesced_zero_store_run_feeds_stz_rewrite() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_dp(0x10),
+                instr("lda", Some(OperandOp::Immediate(0))),
+                sta_dp(0x11),
+                instr("lda", Some(OperandOp::Immediate(1))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["stz", "stz", "lda"]);
+    }
+
+    #[test]
+    fn repeated_load_coalescing_does_not_cross_barriers() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x10),
+                label("main::.barrier"),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x11),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x12),
+                instr("jsr", Some(branch_target("helper"))),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x13),
+                instr("pha", None),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x14),
+                instr("lda", Some(addr_dp(0x20))),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x15),
+                op(Op::Sep {
+                    mask: 0x20,
+                    fixed: false,
+                }),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x16),
+                op(Op::EmitBytes(vec![0xEA])),
+                instr("lda", Some(OperandOp::Immediate(7))),
+                sta_dp(0x17),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(
+            mnemonics(&out),
+            vec![
+                "lda", "sta", "lda", "sta", "sta", "jsr", "lda", "sta", "pha", "lda", "sta", "lda",
+                "lda", "sta", "lda", "sta", "lda", "sta"
+            ]
+        );
+    }
+
+    #[test]
+    fn removes_dead_adjacent_register_writes() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(OperandOp::Immediate(1))),
+                instr("lda", Some(OperandOp::Immediate(2))),
+                instr("tax", None),
+                instr("ldx", Some(OperandOp::Immediate(4))),
+                instr("inx", None),
+                instr("ldx", Some(OperandOp::Immediate(5))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["lda", "ldx", "ldx"]);
+    }
+
+    #[test]
+    fn collapses_dead_register_writes_across_distinct_source_spans() {
+        // Each ldy comes from its own source line, so the spans differ. The
+        // overwrites are still safe (immediate loads do not read Y), so all
+        // but the last load should be dropped.
+        let mut ops: Vec<Spanned<Op>> = Vec::new();
+        for (offset, value) in [(10usize, 1i64), (20, 2), (30, 3), (40, 5)] {
+            ops.push(Spanned::new(
+                Op::Instruction(InstructionOp {
+                    mnemonic: "ldy".to_string(),
+                    operand: Some(OperandOp::Immediate(value)),
+                }),
+                Span::new(SourceId(0), offset, offset + 1),
+            ));
+        }
+        let program = Program { ops };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["ldy"]);
+        let Op::Instruction(only) = &out.ops[0].node else {
+            panic!("expected single ldy");
+        };
+        assert!(matches!(only.operand, Some(OperandOp::Immediate(5))));
+    }
+
+    #[test]
+    fn keeps_side_effecting_dead_write_candidates() {
+        let program = Program {
+            ops: vec![
+                instr("lda", Some(addr_dp(0x20))),
+                instr("lda", Some(OperandOp::Immediate(2))),
+                instr("pla", None),
+                instr("lda", Some(OperandOp::Immediate(3))),
+                sta_dp(0x10),
+                instr("lda", Some(OperandOp::Immediate(4))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(
+            mnemonics(&out),
+            vec!["lda", "lda", "pla", "lda", "sta", "lda"]
+        );
+    }
+
+    #[test]
+    fn collapses_adjacent_duplicate_flag_ops_only() {
+        let program = Program {
+            ops: vec![
+                instr("clc", None),
+                instr("CLC", None),
+                instr("sec", None),
+                instr("sec", None),
+                instr("cld", None),
+                instr("cld", None),
+                instr("sed", None),
+                instr("sed", None),
+                instr("cli", None),
+                instr("cli", None),
+                instr("sei", None),
+                instr("sei", None),
+                instr("clv", None),
+                instr("clv", None),
+                instr("clc", None),
+                instr("sec", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(
+            mnemonics(&out),
+            vec![
+                "clc", "sec", "cld", "sed", "cli", "sei", "clv", "clc", "sec"
+            ]
+        );
+    }
+
+    #[test]
+    fn rewrites_adjacent_tail_calls() {
+        let program = Program {
+            ops: vec![
+                instr("jsr", Some(branch_target("near_target"))),
+                instr("rts", None),
+                label("main::.far_tail"),
+                instr("jsl", Some(branch_target("far_target"))),
+                instr("rtl", None),
+                label("main::.mixed_tail"),
+                instr("jsr", Some(branch_target("mixed_target"))),
+                instr("rtl", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["jmp", "jml", "jsr", "rtl"]);
+        let Op::Instruction(first) = &out.ops[0].node else {
+            panic!("expected first op to be rewritten tail call");
+        };
+        assert!(operands_equal(
+            first.operand.as_ref(),
+            Some(&branch_target("near_target"))
+        ));
+    }
+
+    #[test]
+    fn removes_branch_or_jump_to_next_label_only() {
+        let program = Program {
+            ops: vec![
+                instr("bra", Some(branch_target("main::.__k816_next_0"))),
+                label("main::.__k816_next_0"),
+                instr("beq", Some(branch_target("main::.__k816_also_next_1"))),
+                label("main::.__k816_also_next_1"),
+                instr("jmp", Some(branch_target("main::.__k816_jump_next_2"))),
+                label("main::.__k816_jump_next_2"),
+                instr("bne", Some(branch_target("main::.not_next"))),
+                label("main::.not_next"),
+                instr("nop", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["bne", "nop"]);
+    }
+
+    #[test]
+    fn removes_branch_to_next_label_after_pruning_intervening_branch() {
+        // Mirrors the lowering of `break; } always`: an unconditional bra to
+        // a synthetic break label, followed by another unconditional bra to
+        // a synthetic loop label, followed by the break label itself. The
+        // second bra is unreachable and must be pruned first so that the
+        // first bra becomes a branch-to-next-label and is removed.
+        let program = Program {
+            ops: vec![
+                instr("bra", Some(branch_target("main::.__k816_break_0"))),
+                instr("bra", Some(branch_target("main::.__k816_loop_1"))),
+                label("main::.__k816_break_0"),
+                instr("nop", None),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["nop"]);
+        assert!(matches!(out.ops[0].node, Op::Label(ref l) if l == "main::.__k816_break_0"));
+    }
+
+    #[test]
+    fn prunes_unreachable_plain_instructions_but_keeps_emitted_data() {
+        let program = Program {
+            ops: vec![
+                instr("jmp", Some(branch_target("main::.__k816_live_0"))),
+                instr("lda", Some(OperandOp::Immediate(1))),
+                op(Op::EmitBytes(vec![0xAA])),
+                instr("sta", Some(addr_dp(0x10))),
+                label("main::.__k816_live_0"),
+                instr("lda", Some(OperandOp::Immediate(2))),
+            ],
+        };
+        let out = peephole_optimize(&program);
+        assert_eq!(mnemonics(&out), vec!["jmp", "lda"]);
+        assert!(matches!(out.ops[1].node, Op::EmitBytes(_)));
     }
 }

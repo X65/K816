@@ -1,0 +1,33 @@
+var scratch = 0x10
+
+func tail_target @a8 {
+    lda #$55
+    return
+}
+
+far func far_tail_target {
+    nop
+}
+
+func near_tail_entry {
+    jsr tail_target
+}
+
+far func far_tail_entry {
+    jsl far_tail_target
+}
+
+func main @a8 {
+    bra .__k816_bra_next_0
+.__k816_bra_next_0:
+    beq .__k816_beq_next_1
+.__k816_beq_next_1:
+    jmp .__k816_jmp_next_2
+.__k816_jmp_next_2:
+    jmp .__k816_live_3
+    lda #$7f
+    sta scratch
+.__k816_live_3:
+    lda #$01
+    return
+}

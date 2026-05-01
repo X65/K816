@@ -29,6 +29,10 @@ func main {
     x=a
     y=a
     a=x
+    // empty label keeps `a=x` (txa) observable so the optimizer
+    // does not fold it into the following `a=y` (tya). A label
+    // emits no bytes, preserving exhaustive opcode coverage.
+    .between_a_eq_x_and_a_eq_y:
     a=y
     x=s
     s=x

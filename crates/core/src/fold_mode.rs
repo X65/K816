@@ -12,10 +12,7 @@ use crate::hir::AddressSizeHint;
 /// Thin wrapper over `k816_isa65816::mnemonic_width_sensitivity` that maps the
 /// HIR's `operand: None` convention to the ISA helper's `on_accumulator` flag.
 pub(crate) fn instruction_mode_needs(instruction: &InstructionOp) -> (bool, bool) {
-    k816_isa65816::mnemonic_width_sensitivity(
-        &instruction.mnemonic,
-        instruction.operand.is_none(),
-    )
+    k816_isa65816::mnemonic_width_sensitivity(&instruction.mnemonic, instruction.operand.is_none())
 }
 
 /// Extract the label target from a JSR/JSL instruction.
@@ -395,8 +392,20 @@ mod tests {
     fn folds_adjacent_rep_ops() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()),
-                Spanned::new(Op::Rep { mask: 0x10, fixed: false }, test_span()),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x10,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
                 nop_op(),
             ],
         };
@@ -409,8 +418,20 @@ mod tests {
     fn cancels_opposite_mode_ops() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()),
-                Spanned::new(Op::Sep { mask: 0x20, fixed: false }, test_span()),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
+                Spanned::new(
+                    Op::Sep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
                 nop_op(),
             ],
         };
@@ -424,9 +445,21 @@ mod tests {
     fn does_not_fold_across_non_mode_ops() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
                 nop_op(),
-                Spanned::new(Op::Rep { mask: 0x10, fixed: false }, test_span()),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x10,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
                 nop_op(),
             ],
         };
@@ -440,8 +473,20 @@ mod tests {
     fn mixed_rep_sep_folds_to_both() {
         let program = Program {
             ops: vec![
-                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, test_span()), // A to 16-bit
-                Spanned::new(Op::Sep { mask: 0x10, fixed: false }, test_span()), // Index to 8-bit
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    test_span(),
+                ), // A to 16-bit
+                Spanned::new(
+                    Op::Sep {
+                        mask: 0x10,
+                        fixed: false,
+                    },
+                    test_span(),
+                ), // Index to 8-bit
                 nop_op(),
             ],
         };
@@ -465,16 +510,38 @@ mod tests {
                     },
                     span,
                 ),
-                Spanned::new(Op::Rep { mask: 0x20, fixed: false }, span),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    span,
+                ),
                 abs_op("lda", 0x2000),
-                Spanned::new(Op::Sep { mask: 0x20, fixed: false }, span),
+                Spanned::new(
+                    Op::Sep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    span,
+                ),
                 abs_op("sta", 0x2000),
                 Spanned::new(Op::FunctionEnd, span),
             ],
         };
 
         let pruned = eliminate_dead_mode_ops(&program);
-        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Rep { mask: 0x20, .. })));
-        assert!(pruned.ops.iter().any(|op| matches!(op.node, Op::Sep { mask: 0x20, .. })));
+        assert!(
+            pruned
+                .ops
+                .iter()
+                .any(|op| matches!(op.node, Op::Rep { mask: 0x20, .. }))
+        );
+        assert!(
+            pruned
+                .ops
+                .iter()
+                .any(|op| matches!(op.node, Op::Sep { mask: 0x20, .. }))
+        );
     }
 }

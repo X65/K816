@@ -197,7 +197,12 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| make_values(DataWidth::Far, chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .map(|chunks| {
+            make_values(
+                DataWidth::Far,
+                chunks.into_iter().flatten().collect::<Vec<_>>(),
+            )
+        })
         .boxed();
 
     let word_value = choice((
@@ -211,7 +216,12 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| make_values(DataWidth::Word, chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| {
+        make_values(
+            DataWidth::Word,
+            chunks.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    })
     .boxed();
 
     let bytes_entry = choice((
@@ -222,7 +232,12 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| make_values(DataWidth::Byte, chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| {
+        make_values(
+            DataWidth::Byte,
+            chunks.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    })
     .boxed();
 
     let eval_bytes_entry =
@@ -314,7 +329,8 @@ where
         // them would create a parser-construction cycle through stmt_parser.
         // Emit a never-matching parser placeholder so the `choice` tuple stays
         // shape-compatible with the item-level form.
-        any().filter(|_| false)
+        any()
+            .filter(|_| false)
             .map(|_| DataEntry::Code(Vec::new()))
             .boxed()
     };
@@ -464,7 +480,12 @@ where
 
     let far_entry = just(TokenKind::Far)
         .ignore_then(far_value.repeated().at_least(1).collect::<Vec<_>>())
-        .map(|chunks| make_values(DataWidth::Far, chunks.into_iter().flatten().collect::<Vec<_>>()))
+        .map(|chunks| {
+            make_values(
+                DataWidth::Far,
+                chunks.into_iter().flatten().collect::<Vec<_>>(),
+            )
+        })
         .boxed();
 
     let word_value = choice((
@@ -478,7 +499,12 @@ where
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("word") => ()
     }
     .ignore_then(word_value.repeated().at_least(1).collect::<Vec<_>>())
-    .map(|chunks| make_values(DataWidth::Word, chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| {
+        make_values(
+            DataWidth::Word,
+            chunks.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    })
     .boxed();
 
     let bytes_entry = choice((
@@ -489,7 +515,12 @@ where
     .repeated()
     .at_least(1)
     .collect::<Vec<_>>()
-    .map(|chunks| make_values(DataWidth::Byte, chunks.into_iter().flatten().collect::<Vec<_>>()))
+    .map(|chunks| {
+        make_values(
+            DataWidth::Byte,
+            chunks.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    })
     .boxed();
 
     let eval_bytes_entry =

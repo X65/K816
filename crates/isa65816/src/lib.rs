@@ -1470,26 +1470,80 @@ mod tests {
         assert_eq!(opcode_descriptor(0xA9).memory_effect, MemoryEffect::None); // lda ImmediateM
         assert_eq!(opcode_descriptor(0x89).memory_effect, MemoryEffect::None); // bit ImmediateM
         // Stack pushes.
-        assert_eq!(opcode_descriptor(0x48).memory_effect, MemoryEffect::StackPush); // pha
-        assert_eq!(opcode_descriptor(0xDA).memory_effect, MemoryEffect::StackPush); // phx
-        assert_eq!(opcode_descriptor(0x08).memory_effect, MemoryEffect::StackPush); // php
-        assert_eq!(opcode_descriptor(0x20).memory_effect, MemoryEffect::StackPush); // jsr Absolute
-        assert_eq!(opcode_descriptor(0x22).memory_effect, MemoryEffect::StackPush); // jsl
-        assert_eq!(opcode_descriptor(0x00).memory_effect, MemoryEffect::StackPush); // brk
-        assert_eq!(opcode_descriptor(0x02).memory_effect, MemoryEffect::StackPush); // cop
-        assert_eq!(opcode_descriptor(0xF4).memory_effect, MemoryEffect::StackPush); // pea
-        assert_eq!(opcode_descriptor(0xD4).memory_effect, MemoryEffect::StackPush); // pei
-        assert_eq!(opcode_descriptor(0x62).memory_effect, MemoryEffect::StackPush); // per
+        assert_eq!(
+            opcode_descriptor(0x48).memory_effect,
+            MemoryEffect::StackPush
+        ); // pha
+        assert_eq!(
+            opcode_descriptor(0xDA).memory_effect,
+            MemoryEffect::StackPush
+        ); // phx
+        assert_eq!(
+            opcode_descriptor(0x08).memory_effect,
+            MemoryEffect::StackPush
+        ); // php
+        assert_eq!(
+            opcode_descriptor(0x20).memory_effect,
+            MemoryEffect::StackPush
+        ); // jsr Absolute
+        assert_eq!(
+            opcode_descriptor(0x22).memory_effect,
+            MemoryEffect::StackPush
+        ); // jsl
+        assert_eq!(
+            opcode_descriptor(0x00).memory_effect,
+            MemoryEffect::StackPush
+        ); // brk
+        assert_eq!(
+            opcode_descriptor(0x02).memory_effect,
+            MemoryEffect::StackPush
+        ); // cop
+        assert_eq!(
+            opcode_descriptor(0xF4).memory_effect,
+            MemoryEffect::StackPush
+        ); // pea
+        assert_eq!(
+            opcode_descriptor(0xD4).memory_effect,
+            MemoryEffect::StackPush
+        ); // pei
+        assert_eq!(
+            opcode_descriptor(0x62).memory_effect,
+            MemoryEffect::StackPush
+        ); // per
         // Stack pulls.
-        assert_eq!(opcode_descriptor(0x68).memory_effect, MemoryEffect::StackPull); // pla
-        assert_eq!(opcode_descriptor(0xFA).memory_effect, MemoryEffect::StackPull); // plx
-        assert_eq!(opcode_descriptor(0x28).memory_effect, MemoryEffect::StackPull); // plp
-        assert_eq!(opcode_descriptor(0x60).memory_effect, MemoryEffect::StackPull); // rts
-        assert_eq!(opcode_descriptor(0x6B).memory_effect, MemoryEffect::StackPull); // rtl
-        assert_eq!(opcode_descriptor(0x40).memory_effect, MemoryEffect::StackPull); // rti
+        assert_eq!(
+            opcode_descriptor(0x68).memory_effect,
+            MemoryEffect::StackPull
+        ); // pla
+        assert_eq!(
+            opcode_descriptor(0xFA).memory_effect,
+            MemoryEffect::StackPull
+        ); // plx
+        assert_eq!(
+            opcode_descriptor(0x28).memory_effect,
+            MemoryEffect::StackPull
+        ); // plp
+        assert_eq!(
+            opcode_descriptor(0x60).memory_effect,
+            MemoryEffect::StackPull
+        ); // rts
+        assert_eq!(
+            opcode_descriptor(0x6B).memory_effect,
+            MemoryEffect::StackPull
+        ); // rtl
+        assert_eq!(
+            opcode_descriptor(0x40).memory_effect,
+            MemoryEffect::StackPull
+        ); // rti
         // Block move.
-        assert_eq!(opcode_descriptor(0x44).memory_effect, MemoryEffect::BlockMove); // mvp
-        assert_eq!(opcode_descriptor(0x54).memory_effect, MemoryEffect::BlockMove); // mvn
+        assert_eq!(
+            opcode_descriptor(0x44).memory_effect,
+            MemoryEffect::BlockMove
+        ); // mvp
+        assert_eq!(
+            opcode_descriptor(0x54).memory_effect,
+            MemoryEffect::BlockMove
+        ); // mvn
         // Pure register / control flow / flag toggles.
         assert_eq!(opcode_descriptor(0xEA).memory_effect, MemoryEffect::None); // nop
         assert_eq!(opcode_descriptor(0xAA).memory_effect, MemoryEffect::None); // tax

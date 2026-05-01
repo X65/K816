@@ -28,8 +28,7 @@ where
 {
     let separators = line_sep_parser().repeated();
     let item = spanned(item_parser(source_id, known_functions), source_id);
-    let recover_item =
-        item.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
+    let recover_item = item.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
 
     let mode_token = choice((
         just(TokenKind::ModeA8).to((Some(RegWidth::W8), None)),
@@ -217,8 +216,7 @@ where
     let modifiers = modifier.clone().repeated().collect::<Vec<_>>();
     let required_modifiers = modifier.repeated().at_least(1).collect::<Vec<_>>();
     let stmt = spanned(stmt_parser(source_id, known_functions), source_id);
-    let recover_stmt =
-        stmt.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
+    let recover_stmt = stmt.recover_with(skip_then_retry_until(any().ignored(), boundary_parser()));
     let separators = line_sep_parser().repeated();
     let body = just(TokenKind::LBrace)
         .ignore_then(separators.clone())
@@ -310,9 +308,7 @@ where
     //   (b) one or more modifiers without `func` (implicit form, e.g. `inline name { … }`).
     // Both shapes feed the same suffix (name, mode, contract, body) and produce
     // the same CodeBlock — only the head detection differs.
-    let head_with_func = modifiers
-        .then_ignore(just(TokenKind::Func))
-        .boxed();
+    let head_with_func = modifiers.then_ignore(just(TokenKind::Func)).boxed();
     let head_without_func = required_modifiers.boxed();
     let head = head_with_func.or(head_without_func);
 

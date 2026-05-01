@@ -1663,10 +1663,22 @@ pub(crate) fn lower_with_warnings(
                 // 8-bit mode, so only emit Rep for 16-bit contracts.
                 if is_entry {
                     if effective_contract.a_width == Some(RegWidth::W16) {
-                        ops.push(Spanned::new(Op::Rep { mask: 0x20, fixed: false }, label_span));
+                        ops.push(Spanned::new(
+                            Op::Rep {
+                                mask: 0x20,
+                                fixed: false,
+                            },
+                            label_span,
+                        ));
                     }
                     if effective_contract.i_width == Some(RegWidth::W16) {
-                        ops.push(Spanned::new(Op::Rep { mask: 0x10, fixed: false }, label_span));
+                        ops.push(Spanned::new(
+                            Op::Rep {
+                                mask: 0x10,
+                                fixed: false,
+                            },
+                            label_span,
+                        ));
                     }
                 }
                 for stmt in block.body.iter().skip(body_start) {
@@ -2001,7 +2013,9 @@ fn lower_data_block(
                         entry.span,
                         "`segment` directive must appear as the first entry of a data block",
                     )
-                    .with_help("move the `segment` directive to the top of the block, before any data"),
+                    .with_help(
+                        "move the `segment` directive to the top of the block, before any data",
+                    ),
                 );
                 continue;
             }
@@ -2060,9 +2074,7 @@ fn lower_data_block(
         );
     }
 
-    if !label_emitted
-        && let Some((name, name_span)) = &resolved_name
-    {
+    if !label_emitted && let Some((name, name_span)) = &resolved_name {
         ops.push(Spanned::new(Op::Label(name.clone()), *name_span));
     }
     if block_segment != outer_segment {
@@ -2829,13 +2841,37 @@ fn lower_mode_set(
     // @a16 => rep(0x20), @a8 => sep(0x20)
     // @i16 => rep(0x10), @i8 => sep(0x10)
     match a_width {
-        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep { mask: 0x20, fixed: false }, span)),
-        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep { mask: 0x20, fixed: false }, span)),
+        Some(RegWidth::W16) => ops.push(Spanned::new(
+            Op::Rep {
+                mask: 0x20,
+                fixed: false,
+            },
+            span,
+        )),
+        Some(RegWidth::W8) => ops.push(Spanned::new(
+            Op::Sep {
+                mask: 0x20,
+                fixed: false,
+            },
+            span,
+        )),
         None => {}
     }
     match i_width {
-        Some(RegWidth::W16) => ops.push(Spanned::new(Op::Rep { mask: 0x10, fixed: false }, span)),
-        Some(RegWidth::W8) => ops.push(Spanned::new(Op::Sep { mask: 0x10, fixed: false }, span)),
+        Some(RegWidth::W16) => ops.push(Spanned::new(
+            Op::Rep {
+                mask: 0x10,
+                fixed: false,
+            },
+            span,
+        )),
+        Some(RegWidth::W8) => ops.push(Spanned::new(
+            Op::Sep {
+                mask: 0x10,
+                fixed: false,
+            },
+            span,
+        )),
         None => {}
     }
 }
@@ -2912,20 +2948,44 @@ fn lower_mode_restore(
     // Restore A width
     match (saved.a_width, current.a_width) {
         (Some(RegWidth::W16), Some(RegWidth::W8)) => {
-            ops.push(Spanned::new(Op::Rep { mask: 0x20, fixed: false }, span));
+            ops.push(Spanned::new(
+                Op::Rep {
+                    mask: 0x20,
+                    fixed: false,
+                },
+                span,
+            ));
         }
         (Some(RegWidth::W8), Some(RegWidth::W16)) => {
-            ops.push(Spanned::new(Op::Sep { mask: 0x20, fixed: false }, span));
+            ops.push(Spanned::new(
+                Op::Sep {
+                    mask: 0x20,
+                    fixed: false,
+                },
+                span,
+            ));
         }
         _ => {}
     }
     // Restore index width
     match (saved.i_width, current.i_width) {
         (Some(RegWidth::W16), Some(RegWidth::W8)) => {
-            ops.push(Spanned::new(Op::Rep { mask: 0x10, fixed: false }, span));
+            ops.push(Spanned::new(
+                Op::Rep {
+                    mask: 0x10,
+                    fixed: false,
+                },
+                span,
+            ));
         }
         (Some(RegWidth::W8), Some(RegWidth::W16)) => {
-            ops.push(Spanned::new(Op::Sep { mask: 0x10, fixed: false }, span));
+            ops.push(Spanned::new(
+                Op::Sep {
+                    mask: 0x10,
+                    fixed: false,
+                },
+                span,
+            ));
         }
         _ => {}
     }
@@ -4060,9 +4120,12 @@ fn try_handle_packed_byte_unary(
     };
     let (byte_count, kind_label, range_max, reloc_kind) = match op {
         ExprUnaryOp::WordLittleEndian => (2usize, "word", 0xFFFFi64, ByteRelocationKind::FullWord),
-        ExprUnaryOp::FarLittleEndian => {
-            (3usize, "far address", 0xFFFFFFi64, ByteRelocationKind::FullLong)
-        }
+        ExprUnaryOp::FarLittleEndian => (
+            3usize,
+            "far address",
+            0xFFFFFFi64,
+            ByteRelocationKind::FullLong,
+        ),
         _ => return PrefixOutcome::NotHandled,
     };
 

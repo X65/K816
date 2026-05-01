@@ -12,9 +12,9 @@ use chumsky::{
 };
 
 use super::{
-    ParseExtra, boundary_parser, eval_static_expr, expr_parser, ident_parser, invalid_transfer_hint,
-    is_register_name, operand_expr_parser, parse_cpu_register, parse_index_register,
-    parse_stack_target, resolve_transfer, spanned,
+    ParseExtra, boundary_parser, eval_static_expr, expr_parser, ident_parser,
+    invalid_transfer_hint, is_register_name, operand_expr_parser, parse_cpu_register,
+    parse_index_register, parse_stack_target, resolve_transfer, spanned,
 };
 
 pub(super) fn hla_wait_loop_stmt_parser<'src, I>()

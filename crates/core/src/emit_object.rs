@@ -732,9 +732,9 @@ pub fn emit_object(
                         let v = *value;
                         if v >= 0 {
                             match u32::try_from(v) {
-                                Ok(raw) => emit_literal(
-                                    segment, raw, width, op.span, &mut diagnostics,
-                                ),
+                                Ok(raw) => {
+                                    emit_literal(segment, raw, width, op.span, &mut diagnostics)
+                                }
                                 Err(_) => diagnostics.push(Diagnostic::error(
                                     op.span,
                                     "immediate value out of range",
@@ -749,9 +749,7 @@ pub fn emit_object(
                             };
                             if v >= min {
                                 let raw = (v as u32) & mask;
-                                emit_literal(
-                                    segment, raw, width, op.span, &mut diagnostics,
-                                );
+                                emit_literal(segment, raw, width, op.span, &mut diagnostics);
                             } else {
                                 diagnostics.push(Diagnostic::error(
                                     op.span,
@@ -1502,7 +1500,10 @@ mod tests {
         // cmp #256 uses ImmediateM → width=1 → 256 overflows u8.
         let program = Program {
             ops: vec![
-                op(Op::Sep { mask: 0x20, fixed: false }),
+                op(Op::Sep {
+                    mask: 0x20,
+                    fixed: false,
+                }),
                 op(Op::Instruction(InstructionOp {
                     mnemonic: "cmp".to_string(),
                     operand: Some(OperandOp::Immediate(0x100)),
@@ -1531,7 +1532,10 @@ mod tests {
         // cmp #0x10000 uses ImmediateM → width=2 → 0x10000 overflows u16.
         let program = Program {
             ops: vec![
-                op(Op::Rep { mask: 0x20, fixed: false }),
+                op(Op::Rep {
+                    mask: 0x20,
+                    fixed: false,
+                }),
                 op(Op::Instruction(InstructionOp {
                     mnemonic: "cmp".to_string(),
                     operand: Some(OperandOp::Immediate(0x10000)),

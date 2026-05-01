@@ -648,7 +648,8 @@ fn single_file_build_command(
         .or_else(|| discover_adjacent_config_path(&input_path));
     let mut ctx = LinkPhaseContext::load(resolved_config_path.as_deref())?;
     let config_output_path = ctx.config_output_path.clone();
-    let output_kind = ctx.apply_output_kind(config_output_path.as_deref(), link_options.output_format);
+    let output_kind =
+        ctx.apply_output_kind(config_output_path.as_deref(), link_options.output_format);
     let linked = k816_link::link_objects_with_options(&[object], &ctx.config, auto_link_render())?;
     let output_path = output
         .or(config_output_path)
@@ -937,13 +938,9 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         loaded_sources.push((object_path, source.display().to_string(), source_text));
     }
 
-    let compile_inputs = k816_core::LinkCompileInput::from_pairs(
-        loaded_sources
-            .iter()
-            .map(|(_object_path, source_name, source_text)| {
-                (source_name.as_str(), source_text.as_str())
-            }),
-    );
+    let compile_inputs = k816_core::LinkCompileInput::from_pairs(loaded_sources.iter().map(
+        |(_object_path, source_name, source_text)| (source_name.as_str(), source_text.as_str()),
+    ));
     let compile_outputs =
         k816_core::compile_sources_all_or_nothing(&compile_inputs, auto_compile_render())
             .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
@@ -983,7 +980,12 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         ListingOption::Bool(true) => Some(artifact_path.with_extension("lst")),
         ListingOption::Path(path) => Some(project_root.join(path)),
     };
-    write_link_output(&artifact_path, listing_path.as_deref(), &linked, output_kind)?;
+    write_link_output(
+        &artifact_path,
+        listing_path.as_deref(),
+        &linked,
+        output_kind,
+    )?;
 
     Ok(ProjectBuildResult {
         project_root,

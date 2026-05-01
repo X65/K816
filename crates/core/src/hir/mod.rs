@@ -35,12 +35,18 @@ pub enum Op {
     /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
     /// `fixed: true` anchors the op at a label bridge point — never removed or
     /// folded away by mode optimization passes.
-    Rep { mask: u8, fixed: bool },
+    Rep {
+        mask: u8,
+        fixed: bool,
+    },
     /// SEP pseudo-op: set processor status bits (set register to 8-bit).
     /// mask bits: 0x20 = M flag (A width), 0x10 = X flag (index width).
     /// `fixed: true` anchors the op at a label bridge point — never removed or
     /// folded away by mode optimization passes.
-    Sep { mask: u8, fixed: bool },
+    Sep {
+        mask: u8,
+        fixed: bool,
+    },
     /// Defines an absolute symbol exported to object/link stage.
     DefineAbsoluteSymbol {
         name: String,

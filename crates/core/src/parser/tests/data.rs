@@ -177,10 +177,16 @@ fn parses_anonymous_data_block_with_converter_and_directives() {
 
 #[test]
 fn named_and_anonymous_data_blocks_produce_equivalent_ast() {
-    let named = parse(SourceId(0), "data SOMEBLOCK {\n 0 1 2 3 4\n FOO: 5 6 7\n}\n")
-        .expect("parse named");
-    let anon = parse(SourceId(0), "data {\n SOMEBLOCK: 0 1 2 3 4\n FOO: 5 6 7\n}\n")
-        .expect("parse anon");
+    let named = parse(
+        SourceId(0),
+        "data SOMEBLOCK {\n 0 1 2 3 4\n FOO: 5 6 7\n}\n",
+    )
+    .expect("parse named");
+    let anon = parse(
+        SourceId(0),
+        "data {\n SOMEBLOCK: 0 1 2 3 4\n FOO: 5 6 7\n}\n",
+    )
+    .expect("parse anon");
 
     let Item::DataBlock(named_block) = &named.items[0].node else {
         panic!("expected named data block");
@@ -215,7 +221,10 @@ fn parses_named_data_block_entries() {
     assert!(matches!(block.entries[1].node, DataEntry::String(_)));
     assert!(matches!(
         block.entries[2].node,
-        DataEntry::Values { width: DataWidth::Byte, .. }
+        DataEntry::Values {
+            width: DataWidth::Byte,
+            ..
+        }
     ));
 }
 
@@ -275,7 +284,11 @@ fn parses_main_symbol_in_address_byte_entries() {
     };
     assert_eq!(block.entries.len(), 1);
 
-    let DataEntry::Values { width: DataWidth::Byte, values } = &block.entries[0].node else {
+    let DataEntry::Values {
+        width: DataWidth::Byte,
+        values,
+    } = &block.entries[0].node
+    else {
         panic!("expected bytes entry");
     };
     assert_eq!(values.len(), 2);
@@ -304,7 +317,11 @@ fn parses_packed_address_operators_in_bytes_entries() {
     };
     assert_eq!(block.entries.len(), 2);
 
-    let DataEntry::Values { width: DataWidth::Byte, values: first } = &block.entries[0].node else {
+    let DataEntry::Values {
+        width: DataWidth::Byte,
+        values: first,
+    } = &block.entries[0].node
+    else {
         panic!("expected bytes entry");
     };
     assert_eq!(first.len(), 1);
@@ -316,7 +333,11 @@ fn parses_packed_address_operators_in_bytes_entries() {
         } if is_ident_named(expr.as_ref(), "ptr")
     ));
 
-    let DataEntry::Values { width: DataWidth::Byte, values: second } = &block.entries[1].node else {
+    let DataEntry::Values {
+        width: DataWidth::Byte,
+        values: second,
+    } = &block.entries[1].node
+    else {
         panic!("expected bytes entry");
     };
     assert_eq!(second.len(), 1);
@@ -338,7 +359,11 @@ fn keeps_bracketed_eval_ident_in_data_entries() {
     };
     assert_eq!(block.entries.len(), 2);
 
-    let DataEntry::Values { width: DataWidth::Byte, values } = &block.entries[1].node else {
+    let DataEntry::Values {
+        width: DataWidth::Byte,
+        values,
+    } = &block.entries[1].node
+    else {
         panic!("expected bytes entry");
     };
     assert_eq!(values.len(), 1);

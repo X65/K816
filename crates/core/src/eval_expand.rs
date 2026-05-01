@@ -44,9 +44,7 @@ fn expand_item(
         Item::CodeBlock(block) => Item::CodeBlock(expand_code_block(block, source_id, diagnostics)),
         Item::Statement(stmt) => Item::Statement(expand_stmt(stmt, span, source_id, diagnostics)),
         Item::Segment(segment) => Item::Segment(segment.clone()),
-        Item::DataBlock(block) => {
-            Item::DataBlock(expand_data_block(block, source_id, diagnostics))
-        }
+        Item::DataBlock(block) => Item::DataBlock(expand_data_block(block, source_id, diagnostics)),
     }
 }
 
@@ -163,14 +161,12 @@ fn expand_data_entry(
                 .map(|expr| expand_expr(expr, span, source_id, diagnostics))
                 .collect(),
         },
-        DataEntry::ForEvalRange(range) => {
-            DataEntry::ForEvalRange(DataForEvalRange {
-                iterator: range.iterator.clone(),
-                start: expand_expr(&range.start, span, source_id, diagnostics),
-                end: expand_expr(&range.end, span, source_id, diagnostics),
-                eval: range.eval.clone(),
-            })
-        }
+        DataEntry::ForEvalRange(range) => DataEntry::ForEvalRange(DataForEvalRange {
+            iterator: range.iterator.clone(),
+            start: expand_expr(&range.start, span, source_id, diagnostics),
+            end: expand_expr(&range.end, span, source_id, diagnostics),
+            eval: range.eval.clone(),
+        }),
         DataEntry::String(value) => DataEntry::String(value.clone()),
         DataEntry::Repeat { count, body } => DataEntry::Repeat {
             count: *count,

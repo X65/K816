@@ -64,7 +64,9 @@ where
 
     let address_stmt = just(TokenKind::Address)
         .ignore_then(expr_parser())
-        .try_map(|value, span| eval_const_into::<u32>(&value, span, "address value").map(Stmt::Address))
+        .try_map(|value, span| {
+            eval_const_into::<u32>(&value, span, "address value").map(Stmt::Address)
+        })
         .boxed();
 
     let align_stmt = just(TokenKind::Align)

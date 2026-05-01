@@ -90,10 +90,37 @@ pub enum EncodeError {
     ImmediateOutOfRange,
 }
 
+/// What an instruction does to memory at the address resolved from its operand.
+///
+/// Orthogonal to the M/X width axis tracked by `mnemonic_effects` /
+/// `RegEffects`, which model only A/X/Y register flow. `MemoryEffect` covers
+/// what the instruction does to its memory operand (or the stack, for
+/// implied-stack ops). It exists so callers can answer questions like "does
+/// this instruction load, store, or read-modify-write its operand?" without
+/// hardcoding mnemonic lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryEffect {
+    /// No operand memory access (Implied / Accumulator / Immediate* / Relative branches / control transfers / register transfers / flag toggles).
+    None,
+    /// Reads operand bytes (lda/cmp/adc/sbc/and/ora/eor/bit-with-address, ldx/ldy/cpx/cpy with address operand).
+    Load,
+    /// Writes operand bytes (sta/stx/sty/stz).
+    Store,
+    /// Reads then writes operand bytes (trb/tsb, asl/lsr/rol/ror/inc/dec on memory).
+    Modify,
+    /// Pushes onto the stack (pha/phb/phd/phk/php/phx/phy/pea/pei/per/jsr/jsl/brk/cop).
+    StackPush,
+    /// Pulls from the stack (pla/plb/pld/plp/plx/ply/rts/rtl/rti).
+    StackPull,
+    /// Block move — reads source range, writes destination range (mvn/mvp).
+    BlockMove,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpcodeDescriptor {
     pub mnemonic: &'static str,
     pub mode: AddressingMode,
+    pub memory_effect: MemoryEffect,
 }
 
 #[derive(Debug)]
@@ -129,287 +156,288 @@ pub enum DecodeError {
 }
 
 macro_rules! op {
-    ($mnemonic:literal, $mode:ident) => {
+    ($mnemonic:literal, $mode:ident, $effect:ident) => {
         OpcodeDescriptor {
             mnemonic: $mnemonic,
             mode: AddressingMode::$mode,
+            memory_effect: MemoryEffect::$effect,
         }
     };
 }
 
 const OPCODE_TABLE: [OpcodeDescriptor; 256] = [
     // 0x00
-    op!("brk", Immediate8),
-    op!("ora", DirectPageIndexedIndirectX),
-    op!("cop", Immediate8),
-    op!("ora", StackRelative),
-    op!("tsb", DirectPage),
-    op!("ora", DirectPage),
-    op!("asl", DirectPage),
-    op!("ora", DirectPageIndirectLong),
-    op!("php", Implied),
-    op!("ora", ImmediateM),
-    op!("asl", Accumulator),
-    op!("phd", Implied),
-    op!("tsb", Absolute),
-    op!("ora", Absolute),
-    op!("asl", Absolute),
-    op!("ora", AbsoluteLong),
+    op!("brk", Immediate8, StackPush),
+    op!("ora", DirectPageIndexedIndirectX, Load),
+    op!("cop", Immediate8, StackPush),
+    op!("ora", StackRelative, Load),
+    op!("tsb", DirectPage, Modify),
+    op!("ora", DirectPage, Load),
+    op!("asl", DirectPage, Modify),
+    op!("ora", DirectPageIndirectLong, Load),
+    op!("php", Implied, StackPush),
+    op!("ora", ImmediateM, None),
+    op!("asl", Accumulator, None),
+    op!("phd", Implied, StackPush),
+    op!("tsb", Absolute, Modify),
+    op!("ora", Absolute, Load),
+    op!("asl", Absolute, Modify),
+    op!("ora", AbsoluteLong, Load),
     // 0x10
-    op!("bpl", Relative8),
-    op!("ora", DirectPageIndirectIndexedY),
-    op!("ora", DirectPageIndirect),
-    op!("ora", StackRelativeIndirectIndexedY),
-    op!("trb", DirectPage),
-    op!("ora", DirectPageX),
-    op!("asl", DirectPageX),
-    op!("ora", DirectPageIndirectLongIndexedY),
-    op!("clc", Implied),
-    op!("ora", AbsoluteY),
-    op!("inc", Accumulator),
-    op!("tcs", Implied),
-    op!("trb", Absolute),
-    op!("ora", AbsoluteX),
-    op!("asl", AbsoluteX),
-    op!("ora", AbsoluteLongX),
+    op!("bpl", Relative8, None),
+    op!("ora", DirectPageIndirectIndexedY, Load),
+    op!("ora", DirectPageIndirect, Load),
+    op!("ora", StackRelativeIndirectIndexedY, Load),
+    op!("trb", DirectPage, Modify),
+    op!("ora", DirectPageX, Load),
+    op!("asl", DirectPageX, Modify),
+    op!("ora", DirectPageIndirectLongIndexedY, Load),
+    op!("clc", Implied, None),
+    op!("ora", AbsoluteY, Load),
+    op!("inc", Accumulator, None),
+    op!("tcs", Implied, None),
+    op!("trb", Absolute, Modify),
+    op!("ora", AbsoluteX, Load),
+    op!("asl", AbsoluteX, Modify),
+    op!("ora", AbsoluteLongX, Load),
     // 0x20
-    op!("jsr", Absolute),
-    op!("and", DirectPageIndexedIndirectX),
-    op!("jsl", AbsoluteLong),
-    op!("and", StackRelative),
-    op!("bit", DirectPage),
-    op!("and", DirectPage),
-    op!("rol", DirectPage),
-    op!("and", DirectPageIndirectLong),
-    op!("plp", Implied),
-    op!("and", ImmediateM),
-    op!("rol", Accumulator),
-    op!("pld", Implied),
-    op!("bit", Absolute),
-    op!("and", Absolute),
-    op!("rol", Absolute),
-    op!("and", AbsoluteLong),
+    op!("jsr", Absolute, StackPush),
+    op!("and", DirectPageIndexedIndirectX, Load),
+    op!("jsl", AbsoluteLong, StackPush),
+    op!("and", StackRelative, Load),
+    op!("bit", DirectPage, Load),
+    op!("and", DirectPage, Load),
+    op!("rol", DirectPage, Modify),
+    op!("and", DirectPageIndirectLong, Load),
+    op!("plp", Implied, StackPull),
+    op!("and", ImmediateM, None),
+    op!("rol", Accumulator, None),
+    op!("pld", Implied, StackPull),
+    op!("bit", Absolute, Load),
+    op!("and", Absolute, Load),
+    op!("rol", Absolute, Modify),
+    op!("and", AbsoluteLong, Load),
     // 0x30
-    op!("bmi", Relative8),
-    op!("and", DirectPageIndirectIndexedY),
-    op!("and", DirectPageIndirect),
-    op!("and", StackRelativeIndirectIndexedY),
-    op!("bit", DirectPageX),
-    op!("and", DirectPageX),
-    op!("rol", DirectPageX),
-    op!("and", DirectPageIndirectLongIndexedY),
-    op!("sec", Implied),
-    op!("and", AbsoluteY),
-    op!("dec", Accumulator),
-    op!("tsc", Implied),
-    op!("bit", AbsoluteX),
-    op!("and", AbsoluteX),
-    op!("rol", AbsoluteX),
-    op!("and", AbsoluteLongX),
+    op!("bmi", Relative8, None),
+    op!("and", DirectPageIndirectIndexedY, Load),
+    op!("and", DirectPageIndirect, Load),
+    op!("and", StackRelativeIndirectIndexedY, Load),
+    op!("bit", DirectPageX, Load),
+    op!("and", DirectPageX, Load),
+    op!("rol", DirectPageX, Modify),
+    op!("and", DirectPageIndirectLongIndexedY, Load),
+    op!("sec", Implied, None),
+    op!("and", AbsoluteY, Load),
+    op!("dec", Accumulator, None),
+    op!("tsc", Implied, None),
+    op!("bit", AbsoluteX, Load),
+    op!("and", AbsoluteX, Load),
+    op!("rol", AbsoluteX, Modify),
+    op!("and", AbsoluteLongX, Load),
     // 0x40
-    op!("rti", Implied),
-    op!("eor", DirectPageIndexedIndirectX),
-    op!("wdm", Immediate8),
-    op!("eor", StackRelative),
-    op!("mvp", BlockMove),
-    op!("eor", DirectPage),
-    op!("lsr", DirectPage),
-    op!("eor", DirectPageIndirectLong),
-    op!("pha", Implied),
-    op!("eor", ImmediateM),
-    op!("lsr", Accumulator),
-    op!("phk", Implied),
-    op!("jmp", Absolute),
-    op!("eor", Absolute),
-    op!("lsr", Absolute),
-    op!("eor", AbsoluteLong),
+    op!("rti", Implied, StackPull),
+    op!("eor", DirectPageIndexedIndirectX, Load),
+    op!("wdm", Immediate8, None),
+    op!("eor", StackRelative, Load),
+    op!("mvp", BlockMove, BlockMove),
+    op!("eor", DirectPage, Load),
+    op!("lsr", DirectPage, Modify),
+    op!("eor", DirectPageIndirectLong, Load),
+    op!("pha", Implied, StackPush),
+    op!("eor", ImmediateM, None),
+    op!("lsr", Accumulator, None),
+    op!("phk", Implied, StackPush),
+    op!("jmp", Absolute, None),
+    op!("eor", Absolute, Load),
+    op!("lsr", Absolute, Modify),
+    op!("eor", AbsoluteLong, Load),
     // 0x50
-    op!("bvc", Relative8),
-    op!("eor", DirectPageIndirectIndexedY),
-    op!("eor", DirectPageIndirect),
-    op!("eor", StackRelativeIndirectIndexedY),
-    op!("mvn", BlockMove),
-    op!("eor", DirectPageX),
-    op!("lsr", DirectPageX),
-    op!("eor", DirectPageIndirectLongIndexedY),
-    op!("cli", Implied),
-    op!("eor", AbsoluteY),
-    op!("phy", Implied),
-    op!("tcd", Implied),
-    op!("jml", AbsoluteLong),
-    op!("eor", AbsoluteX),
-    op!("lsr", AbsoluteX),
-    op!("eor", AbsoluteLongX),
+    op!("bvc", Relative8, None),
+    op!("eor", DirectPageIndirectIndexedY, Load),
+    op!("eor", DirectPageIndirect, Load),
+    op!("eor", StackRelativeIndirectIndexedY, Load),
+    op!("mvn", BlockMove, BlockMove),
+    op!("eor", DirectPageX, Load),
+    op!("lsr", DirectPageX, Modify),
+    op!("eor", DirectPageIndirectLongIndexedY, Load),
+    op!("cli", Implied, None),
+    op!("eor", AbsoluteY, Load),
+    op!("phy", Implied, StackPush),
+    op!("tcd", Implied, None),
+    op!("jml", AbsoluteLong, None),
+    op!("eor", AbsoluteX, Load),
+    op!("lsr", AbsoluteX, Modify),
+    op!("eor", AbsoluteLongX, Load),
     // 0x60
-    op!("rts", Implied),
-    op!("adc", DirectPageIndexedIndirectX),
-    op!("per", Relative16),
-    op!("adc", StackRelative),
-    op!("stz", DirectPage),
-    op!("adc", DirectPage),
-    op!("ror", DirectPage),
-    op!("adc", DirectPageIndirectLong),
-    op!("pla", Implied),
-    op!("adc", ImmediateM),
-    op!("ror", Accumulator),
-    op!("rtl", Implied),
-    op!("jmp", AbsoluteIndirect),
-    op!("adc", Absolute),
-    op!("ror", Absolute),
-    op!("adc", AbsoluteLong),
+    op!("rts", Implied, StackPull),
+    op!("adc", DirectPageIndexedIndirectX, Load),
+    op!("per", Relative16, StackPush),
+    op!("adc", StackRelative, Load),
+    op!("stz", DirectPage, Store),
+    op!("adc", DirectPage, Load),
+    op!("ror", DirectPage, Modify),
+    op!("adc", DirectPageIndirectLong, Load),
+    op!("pla", Implied, StackPull),
+    op!("adc", ImmediateM, None),
+    op!("ror", Accumulator, None),
+    op!("rtl", Implied, StackPull),
+    op!("jmp", AbsoluteIndirect, None),
+    op!("adc", Absolute, Load),
+    op!("ror", Absolute, Modify),
+    op!("adc", AbsoluteLong, Load),
     // 0x70
-    op!("bvs", Relative8),
-    op!("adc", DirectPageIndirectIndexedY),
-    op!("adc", DirectPageIndirect),
-    op!("adc", StackRelativeIndirectIndexedY),
-    op!("stz", DirectPageX),
-    op!("adc", DirectPageX),
-    op!("ror", DirectPageX),
-    op!("adc", DirectPageIndirectLongIndexedY),
-    op!("sei", Implied),
-    op!("adc", AbsoluteY),
-    op!("ply", Implied),
-    op!("tdc", Implied),
-    op!("jmp", AbsoluteIndexedIndirectX),
-    op!("adc", AbsoluteX),
-    op!("ror", AbsoluteX),
-    op!("adc", AbsoluteLongX),
+    op!("bvs", Relative8, None),
+    op!("adc", DirectPageIndirectIndexedY, Load),
+    op!("adc", DirectPageIndirect, Load),
+    op!("adc", StackRelativeIndirectIndexedY, Load),
+    op!("stz", DirectPageX, Store),
+    op!("adc", DirectPageX, Load),
+    op!("ror", DirectPageX, Modify),
+    op!("adc", DirectPageIndirectLongIndexedY, Load),
+    op!("sei", Implied, None),
+    op!("adc", AbsoluteY, Load),
+    op!("ply", Implied, StackPull),
+    op!("tdc", Implied, None),
+    op!("jmp", AbsoluteIndexedIndirectX, None),
+    op!("adc", AbsoluteX, Load),
+    op!("ror", AbsoluteX, Modify),
+    op!("adc", AbsoluteLongX, Load),
     // 0x80
-    op!("bra", Relative8),
-    op!("sta", DirectPageIndexedIndirectX),
-    op!("brl", Relative16),
-    op!("sta", StackRelative),
-    op!("sty", DirectPage),
-    op!("sta", DirectPage),
-    op!("stx", DirectPage),
-    op!("sta", DirectPageIndirectLong),
-    op!("dey", Implied),
-    op!("bit", ImmediateM),
-    op!("txa", Implied),
-    op!("phb", Implied),
-    op!("sty", Absolute),
-    op!("sta", Absolute),
-    op!("stx", Absolute),
-    op!("sta", AbsoluteLong),
+    op!("bra", Relative8, None),
+    op!("sta", DirectPageIndexedIndirectX, Store),
+    op!("brl", Relative16, None),
+    op!("sta", StackRelative, Store),
+    op!("sty", DirectPage, Store),
+    op!("sta", DirectPage, Store),
+    op!("stx", DirectPage, Store),
+    op!("sta", DirectPageIndirectLong, Store),
+    op!("dey", Implied, None),
+    op!("bit", ImmediateM, None),
+    op!("txa", Implied, None),
+    op!("phb", Implied, StackPush),
+    op!("sty", Absolute, Store),
+    op!("sta", Absolute, Store),
+    op!("stx", Absolute, Store),
+    op!("sta", AbsoluteLong, Store),
     // 0x90
-    op!("bcc", Relative8),
-    op!("sta", DirectPageIndirectIndexedY),
-    op!("sta", DirectPageIndirect),
-    op!("sta", StackRelativeIndirectIndexedY),
-    op!("sty", DirectPageX),
-    op!("sta", DirectPageX),
-    op!("stx", DirectPageY),
-    op!("sta", DirectPageIndirectLongIndexedY),
-    op!("tya", Implied),
-    op!("sta", AbsoluteY),
-    op!("txs", Implied),
-    op!("txy", Implied),
-    op!("stz", Absolute),
-    op!("sta", AbsoluteX),
-    op!("stz", AbsoluteX),
-    op!("sta", AbsoluteLongX),
+    op!("bcc", Relative8, None),
+    op!("sta", DirectPageIndirectIndexedY, Store),
+    op!("sta", DirectPageIndirect, Store),
+    op!("sta", StackRelativeIndirectIndexedY, Store),
+    op!("sty", DirectPageX, Store),
+    op!("sta", DirectPageX, Store),
+    op!("stx", DirectPageY, Store),
+    op!("sta", DirectPageIndirectLongIndexedY, Store),
+    op!("tya", Implied, None),
+    op!("sta", AbsoluteY, Store),
+    op!("txs", Implied, None),
+    op!("txy", Implied, None),
+    op!("stz", Absolute, Store),
+    op!("sta", AbsoluteX, Store),
+    op!("stz", AbsoluteX, Store),
+    op!("sta", AbsoluteLongX, Store),
     // 0xA0
-    op!("ldy", ImmediateX),
-    op!("lda", DirectPageIndexedIndirectX),
-    op!("ldx", ImmediateX),
-    op!("lda", StackRelative),
-    op!("ldy", DirectPage),
-    op!("lda", DirectPage),
-    op!("ldx", DirectPage),
-    op!("lda", DirectPageIndirectLong),
-    op!("tay", Implied),
-    op!("lda", ImmediateM),
-    op!("tax", Implied),
-    op!("plb", Implied),
-    op!("ldy", Absolute),
-    op!("lda", Absolute),
-    op!("ldx", Absolute),
-    op!("lda", AbsoluteLong),
+    op!("ldy", ImmediateX, None),
+    op!("lda", DirectPageIndexedIndirectX, Load),
+    op!("ldx", ImmediateX, None),
+    op!("lda", StackRelative, Load),
+    op!("ldy", DirectPage, Load),
+    op!("lda", DirectPage, Load),
+    op!("ldx", DirectPage, Load),
+    op!("lda", DirectPageIndirectLong, Load),
+    op!("tay", Implied, None),
+    op!("lda", ImmediateM, None),
+    op!("tax", Implied, None),
+    op!("plb", Implied, StackPull),
+    op!("ldy", Absolute, Load),
+    op!("lda", Absolute, Load),
+    op!("ldx", Absolute, Load),
+    op!("lda", AbsoluteLong, Load),
     // 0xB0
-    op!("bcs", Relative8),
-    op!("lda", DirectPageIndirectIndexedY),
-    op!("lda", DirectPageIndirect),
-    op!("lda", StackRelativeIndirectIndexedY),
-    op!("ldy", DirectPageX),
-    op!("lda", DirectPageX),
-    op!("ldx", DirectPageY),
-    op!("lda", DirectPageIndirectLongIndexedY),
-    op!("clv", Implied),
-    op!("lda", AbsoluteY),
-    op!("tsx", Implied),
-    op!("tyx", Implied),
-    op!("ldy", AbsoluteX),
-    op!("lda", AbsoluteX),
-    op!("ldx", AbsoluteY),
-    op!("lda", AbsoluteLongX),
+    op!("bcs", Relative8, None),
+    op!("lda", DirectPageIndirectIndexedY, Load),
+    op!("lda", DirectPageIndirect, Load),
+    op!("lda", StackRelativeIndirectIndexedY, Load),
+    op!("ldy", DirectPageX, Load),
+    op!("lda", DirectPageX, Load),
+    op!("ldx", DirectPageY, Load),
+    op!("lda", DirectPageIndirectLongIndexedY, Load),
+    op!("clv", Implied, None),
+    op!("lda", AbsoluteY, Load),
+    op!("tsx", Implied, None),
+    op!("tyx", Implied, None),
+    op!("ldy", AbsoluteX, Load),
+    op!("lda", AbsoluteX, Load),
+    op!("ldx", AbsoluteY, Load),
+    op!("lda", AbsoluteLongX, Load),
     // 0xC0
-    op!("cpy", ImmediateX),
-    op!("cmp", DirectPageIndexedIndirectX),
-    op!("rep", Immediate8),
-    op!("cmp", StackRelative),
-    op!("cpy", DirectPage),
-    op!("cmp", DirectPage),
-    op!("dec", DirectPage),
-    op!("cmp", DirectPageIndirectLong),
-    op!("iny", Implied),
-    op!("cmp", ImmediateM),
-    op!("dex", Implied),
-    op!("wai", Implied),
-    op!("cpy", Absolute),
-    op!("cmp", Absolute),
-    op!("dec", Absolute),
-    op!("cmp", AbsoluteLong),
+    op!("cpy", ImmediateX, None),
+    op!("cmp", DirectPageIndexedIndirectX, Load),
+    op!("rep", Immediate8, None),
+    op!("cmp", StackRelative, Load),
+    op!("cpy", DirectPage, Load),
+    op!("cmp", DirectPage, Load),
+    op!("dec", DirectPage, Modify),
+    op!("cmp", DirectPageIndirectLong, Load),
+    op!("iny", Implied, None),
+    op!("cmp", ImmediateM, None),
+    op!("dex", Implied, None),
+    op!("wai", Implied, None),
+    op!("cpy", Absolute, Load),
+    op!("cmp", Absolute, Load),
+    op!("dec", Absolute, Modify),
+    op!("cmp", AbsoluteLong, Load),
     // 0xD0
-    op!("bne", Relative8),
-    op!("cmp", DirectPageIndirectIndexedY),
-    op!("cmp", DirectPageIndirect),
-    op!("cmp", StackRelativeIndirectIndexedY),
-    op!("pei", DirectPageIndirect),
-    op!("cmp", DirectPageX),
-    op!("dec", DirectPageX),
-    op!("cmp", DirectPageIndirectLongIndexedY),
-    op!("cld", Implied),
-    op!("cmp", AbsoluteY),
-    op!("phx", Implied),
-    op!("stp", Implied),
-    op!("jmp", AbsoluteIndirectLong),
-    op!("cmp", AbsoluteX),
-    op!("dec", AbsoluteX),
-    op!("cmp", AbsoluteLongX),
+    op!("bne", Relative8, None),
+    op!("cmp", DirectPageIndirectIndexedY, Load),
+    op!("cmp", DirectPageIndirect, Load),
+    op!("cmp", StackRelativeIndirectIndexedY, Load),
+    op!("pei", DirectPageIndirect, StackPush),
+    op!("cmp", DirectPageX, Load),
+    op!("dec", DirectPageX, Modify),
+    op!("cmp", DirectPageIndirectLongIndexedY, Load),
+    op!("cld", Implied, None),
+    op!("cmp", AbsoluteY, Load),
+    op!("phx", Implied, StackPush),
+    op!("stp", Implied, None),
+    op!("jmp", AbsoluteIndirectLong, None),
+    op!("cmp", AbsoluteX, Load),
+    op!("dec", AbsoluteX, Modify),
+    op!("cmp", AbsoluteLongX, Load),
     // 0xE0
-    op!("cpx", ImmediateX),
-    op!("sbc", DirectPageIndexedIndirectX),
-    op!("sep", Immediate8),
-    op!("sbc", StackRelative),
-    op!("cpx", DirectPage),
-    op!("sbc", DirectPage),
-    op!("inc", DirectPage),
-    op!("sbc", DirectPageIndirectLong),
-    op!("inx", Implied),
-    op!("sbc", ImmediateM),
-    op!("nop", Implied),
-    op!("xba", Implied),
-    op!("cpx", Absolute),
-    op!("sbc", Absolute),
-    op!("inc", Absolute),
-    op!("sbc", AbsoluteLong),
+    op!("cpx", ImmediateX, None),
+    op!("sbc", DirectPageIndexedIndirectX, Load),
+    op!("sep", Immediate8, None),
+    op!("sbc", StackRelative, Load),
+    op!("cpx", DirectPage, Load),
+    op!("sbc", DirectPage, Load),
+    op!("inc", DirectPage, Modify),
+    op!("sbc", DirectPageIndirectLong, Load),
+    op!("inx", Implied, None),
+    op!("sbc", ImmediateM, None),
+    op!("nop", Implied, None),
+    op!("xba", Implied, None),
+    op!("cpx", Absolute, Load),
+    op!("sbc", Absolute, Load),
+    op!("inc", Absolute, Modify),
+    op!("sbc", AbsoluteLong, Load),
     // 0xF0
-    op!("beq", Relative8),
-    op!("sbc", DirectPageIndirectIndexedY),
-    op!("sbc", DirectPageIndirect),
-    op!("sbc", StackRelativeIndirectIndexedY),
-    op!("pea", Immediate16),
-    op!("sbc", DirectPageX),
-    op!("inc", DirectPageX),
-    op!("sbc", DirectPageIndirectLongIndexedY),
-    op!("sed", Implied),
-    op!("sbc", AbsoluteY),
-    op!("plx", Implied),
-    op!("xce", Implied),
-    op!("jsr", AbsoluteIndexedIndirectX),
-    op!("sbc", AbsoluteX),
-    op!("inc", AbsoluteX),
-    op!("sbc", AbsoluteLongX),
+    op!("beq", Relative8, None),
+    op!("sbc", DirectPageIndirectIndexedY, Load),
+    op!("sbc", DirectPageIndirect, Load),
+    op!("sbc", StackRelativeIndirectIndexedY, Load),
+    op!("pea", Immediate16, StackPush),
+    op!("sbc", DirectPageX, Load),
+    op!("inc", DirectPageX, Modify),
+    op!("sbc", DirectPageIndirectLongIndexedY, Load),
+    op!("sed", Implied, None),
+    op!("sbc", AbsoluteY, Load),
+    op!("plx", Implied, StackPull),
+    op!("xce", Implied, None),
+    op!("jsr", AbsoluteIndexedIndirectX, StackPush),
+    op!("sbc", AbsoluteX, Load),
+    op!("inc", AbsoluteX, Modify),
+    op!("sbc", AbsoluteLongX, Load),
 ];
 
 pub fn opcode_descriptor(opcode: u8) -> OpcodeDescriptor {
@@ -1380,5 +1408,150 @@ mod tests {
         let mvn = mnemonic_effects("mvn", false);
         assert_eq!(mvn.reads, RegSet::A | RegSet::X | RegSet::Y);
         assert_eq!(mvn.modifies, RegSet::A | RegSet::X | RegSet::Y);
+    }
+
+    #[test]
+    fn memory_effect_spot_checks() {
+        // Loads.
+        assert_eq!(opcode_descriptor(0xA5).memory_effect, MemoryEffect::Load); // lda DirectPage
+        assert_eq!(opcode_descriptor(0xAD).memory_effect, MemoryEffect::Load); // lda Absolute
+        assert_eq!(opcode_descriptor(0xA6).memory_effect, MemoryEffect::Load); // ldx DirectPage
+        assert_eq!(opcode_descriptor(0x2C).memory_effect, MemoryEffect::Load); // bit Absolute
+        assert_eq!(opcode_descriptor(0xC5).memory_effect, MemoryEffect::Load); // cmp DirectPage
+        // Stores.
+        assert_eq!(opcode_descriptor(0x85).memory_effect, MemoryEffect::Store); // sta DirectPage
+        assert_eq!(opcode_descriptor(0x8D).memory_effect, MemoryEffect::Store); // sta Absolute
+        assert_eq!(opcode_descriptor(0x86).memory_effect, MemoryEffect::Store); // stx DirectPage
+        assert_eq!(opcode_descriptor(0x64).memory_effect, MemoryEffect::Store); // stz DirectPage
+        assert_eq!(opcode_descriptor(0x9C).memory_effect, MemoryEffect::Store); // stz Absolute
+        // Read-modify-write on memory.
+        assert_eq!(opcode_descriptor(0x06).memory_effect, MemoryEffect::Modify); // asl DirectPage
+        assert_eq!(opcode_descriptor(0xE6).memory_effect, MemoryEffect::Modify); // inc DirectPage
+        assert_eq!(opcode_descriptor(0xC6).memory_effect, MemoryEffect::Modify); // dec DirectPage
+        assert_eq!(opcode_descriptor(0x14).memory_effect, MemoryEffect::Modify); // trb DirectPage
+        assert_eq!(opcode_descriptor(0x04).memory_effect, MemoryEffect::Modify); // tsb DirectPage
+        // Accumulator-form RMW: no memory access.
+        assert_eq!(opcode_descriptor(0x0A).memory_effect, MemoryEffect::None); // asl Accumulator
+        assert_eq!(opcode_descriptor(0x1A).memory_effect, MemoryEffect::None); // inc Accumulator
+        assert_eq!(opcode_descriptor(0x3A).memory_effect, MemoryEffect::None); // dec Accumulator
+        // Immediate forms: operand is data, not address.
+        assert_eq!(opcode_descriptor(0xA9).memory_effect, MemoryEffect::None); // lda ImmediateM
+        assert_eq!(opcode_descriptor(0x89).memory_effect, MemoryEffect::None); // bit ImmediateM
+        // Stack pushes.
+        assert_eq!(opcode_descriptor(0x48).memory_effect, MemoryEffect::StackPush); // pha
+        assert_eq!(opcode_descriptor(0xDA).memory_effect, MemoryEffect::StackPush); // phx
+        assert_eq!(opcode_descriptor(0x08).memory_effect, MemoryEffect::StackPush); // php
+        assert_eq!(opcode_descriptor(0x20).memory_effect, MemoryEffect::StackPush); // jsr Absolute
+        assert_eq!(opcode_descriptor(0x22).memory_effect, MemoryEffect::StackPush); // jsl
+        assert_eq!(opcode_descriptor(0x00).memory_effect, MemoryEffect::StackPush); // brk
+        assert_eq!(opcode_descriptor(0x02).memory_effect, MemoryEffect::StackPush); // cop
+        assert_eq!(opcode_descriptor(0xF4).memory_effect, MemoryEffect::StackPush); // pea
+        assert_eq!(opcode_descriptor(0xD4).memory_effect, MemoryEffect::StackPush); // pei
+        assert_eq!(opcode_descriptor(0x62).memory_effect, MemoryEffect::StackPush); // per
+        // Stack pulls.
+        assert_eq!(opcode_descriptor(0x68).memory_effect, MemoryEffect::StackPull); // pla
+        assert_eq!(opcode_descriptor(0xFA).memory_effect, MemoryEffect::StackPull); // plx
+        assert_eq!(opcode_descriptor(0x28).memory_effect, MemoryEffect::StackPull); // plp
+        assert_eq!(opcode_descriptor(0x60).memory_effect, MemoryEffect::StackPull); // rts
+        assert_eq!(opcode_descriptor(0x6B).memory_effect, MemoryEffect::StackPull); // rtl
+        assert_eq!(opcode_descriptor(0x40).memory_effect, MemoryEffect::StackPull); // rti
+        // Block move.
+        assert_eq!(opcode_descriptor(0x44).memory_effect, MemoryEffect::BlockMove); // mvp
+        assert_eq!(opcode_descriptor(0x54).memory_effect, MemoryEffect::BlockMove); // mvn
+        // Pure register / control flow / flag toggles.
+        assert_eq!(opcode_descriptor(0xEA).memory_effect, MemoryEffect::None); // nop
+        assert_eq!(opcode_descriptor(0xAA).memory_effect, MemoryEffect::None); // tax
+        assert_eq!(opcode_descriptor(0xE8).memory_effect, MemoryEffect::None); // inx
+        assert_eq!(opcode_descriptor(0xCA).memory_effect, MemoryEffect::None); // dex
+        assert_eq!(opcode_descriptor(0x18).memory_effect, MemoryEffect::None); // clc
+        assert_eq!(opcode_descriptor(0x4C).memory_effect, MemoryEffect::None); // jmp Absolute
+        assert_eq!(opcode_descriptor(0x6C).memory_effect, MemoryEffect::None); // jmp AbsoluteIndirect
+        assert_eq!(opcode_descriptor(0xC2).memory_effect, MemoryEffect::None); // rep
+        assert_eq!(opcode_descriptor(0xE2).memory_effect, MemoryEffect::None); // sep
+    }
+
+    /// Cross-check: every opcode whose mnemonic models a register-modifying
+    /// load (e.g. `lda`/`ldx`/`ldy` modify A/X/Y in `mnemonic_effects`) must
+    /// also carry `MemoryEffect::Load` when it has an address-bearing mode —
+    /// catches accidentally-missed annotations across the 256 entries.
+    #[test]
+    fn memory_effect_consistent_with_register_loads() {
+        for opcode in 0u16..=0xFFu16 {
+            let descriptor = opcode_descriptor(opcode as u8);
+            let on_accumulator = descriptor.mode == AddressingMode::Accumulator;
+            let effects = mnemonic_effects(descriptor.mnemonic, on_accumulator);
+            let has_address_operand = !matches!(
+                descriptor.mode,
+                AddressingMode::Implied
+                    | AddressingMode::Accumulator
+                    | AddressingMode::Immediate8
+                    | AddressingMode::Immediate16
+                    | AddressingMode::ImmediateM
+                    | AddressingMode::ImmediateX
+                    | AddressingMode::Relative8
+                    | AddressingMode::Relative16
+                    | AddressingMode::BlockMove
+            );
+
+            // ldx/ldy/lda load directly into A/X/Y. With an address operand,
+            // the MemoryEffect must be Load.
+            if matches!(descriptor.mnemonic, "lda" | "ldx" | "ldy") && has_address_operand {
+                assert_eq!(
+                    descriptor.memory_effect,
+                    MemoryEffect::Load,
+                    "opcode {opcode:#04X} {} {:?} should be Load",
+                    descriptor.mnemonic,
+                    descriptor.mode
+                );
+                // Register modify should match.
+                let expected_modify = match descriptor.mnemonic {
+                    "lda" => RegSet::A,
+                    "ldx" => RegSet::X,
+                    "ldy" => RegSet::Y,
+                    _ => unreachable!(),
+                };
+                assert_eq!(effects.modifies, expected_modify);
+            }
+
+            // sta/stx/sty/stz: must be Store with an address operand.
+            if matches!(descriptor.mnemonic, "sta" | "stx" | "sty" | "stz") && has_address_operand {
+                assert_eq!(
+                    descriptor.memory_effect,
+                    MemoryEffect::Store,
+                    "opcode {opcode:#04X} {} {:?} should be Store",
+                    descriptor.mnemonic,
+                    descriptor.mode
+                );
+            }
+
+            // RMW mnemonics on memory must be Modify.
+            if matches!(
+                descriptor.mnemonic,
+                "asl" | "lsr" | "rol" | "ror" | "inc" | "dec" | "trb" | "tsb"
+            ) && has_address_operand
+            {
+                assert_eq!(
+                    descriptor.memory_effect,
+                    MemoryEffect::Modify,
+                    "opcode {opcode:#04X} {} {:?} should be Modify",
+                    descriptor.mnemonic,
+                    descriptor.mode
+                );
+            }
+
+            // Accumulator-form RMW must be None.
+            if matches!(
+                descriptor.mnemonic,
+                "asl" | "lsr" | "rol" | "ror" | "inc" | "dec"
+            ) && on_accumulator
+            {
+                assert_eq!(
+                    descriptor.memory_effect,
+                    MemoryEffect::None,
+                    "opcode {opcode:#04X} {} Accumulator should be None",
+                    descriptor.mnemonic,
+                );
+            }
+        }
     }
 }

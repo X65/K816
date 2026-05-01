@@ -3,8 +3,8 @@ use rustc_hash::FxHashMap;
 
 use k816_isa65816::{
     AddressOperandMode as IsaAddressOperandMode, AddressSizeHint as IsaAddressSizeHint,
-    AddressingMode, EncodeError, IndexRegister as IsaIndexRegister, OperandShape,
-    operand_width_for_mode, select_encoding, supported_modes,
+    AddressingMode, EncodeError, IndexRegister as IsaIndexRegister, MemoryEffect, OperandShape,
+    opcode_descriptor, operand_width_for_mode, select_encoding, supported_modes,
 };
 use k816_o65::{
     CallMetadata, DataStringFragment, FunctionDisassembly, FunctionMetadata, O65Object, Relocation,
@@ -12,9 +12,10 @@ use k816_o65::{
 };
 
 use crate::diag::Diagnostic;
+use crate::fold_mode::instruction_mode_needs;
 use crate::hir::{
-    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister,
-    InstructionOp, Op, OperandOp, Program,
+    AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocationKind, IndexRegister, Op,
+    OperandOp, Program,
 };
 use crate::sema::{FunctionMeta, SemanticModel};
 use crate::span::{SourceMap, Span};
@@ -66,39 +67,20 @@ enum UnknownWidthCause {
     Rti,
 }
 
-/// Classifies how an instruction's runtime byte count depends on the M/X flags.
-///
-/// Only memory-bus operations (loads/stores against an address operand) are
-/// flagged: their behavior silently changes with the relevant width while the
-/// emitted bytes stay identical. Pure register ops (inx/dex/txy/pha/...) and
-/// stack push/pull are excluded — paired correctly they are width-agnostic
-/// from the programmer's standpoint, and the new check would only add noise.
-/// Cross-bank transfers (tax/tay/txa/tya) are flagged separately because the
-/// hazard is a *known* width mismatch between A and X/Y, not "unknown width".
-enum WidthDependence {
-    None,
-    MemoryM,
-    MemoryX,
-    Transfer,
-}
-
-fn width_dependence(instruction: &InstructionOp) -> WidthDependence {
-    match instruction.mnemonic.to_ascii_lowercase().as_str() {
-        "adc" | "and" | "bit" | "cmp" | "eor" | "lda" | "ora" | "sbc" | "sta" | "stz" | "trb"
-        | "tsb" => WidthDependence::MemoryM,
-        "cpx" | "cpy" | "ldx" | "ldy" | "stx" | "sty" => WidthDependence::MemoryX,
-        "tax" | "tay" | "txa" | "tya" => WidthDependence::Transfer,
-        _ => WidthDependence::None,
-    }
-}
-
-/// English verb describing what a memory-bus instruction does to its operand,
-/// for the width-dependence error message ("`{mnemonic}` {verb} a width-dependent…").
-fn memory_access_verb(mnemonic: &str) -> &'static str {
-    match mnemonic.to_ascii_lowercase().as_str() {
-        "sta" | "stx" | "sty" | "stz" => "writes",
-        "trb" | "tsb" => "modifies",
-        _ => "reads",
+/// English verb describing how an instruction touches its memory operand,
+/// for the width-dependence error message
+/// (`` `{mnemonic}` {verb} a width-dependent number of bytes... ``).
+fn memory_access_verb(effect: MemoryEffect) -> Option<&'static str> {
+    match effect {
+        MemoryEffect::Load => Some("reads"),
+        MemoryEffect::Store => Some("writes"),
+        MemoryEffect::Modify => Some("modifies"),
+        // Stack ops, block move, and non-memory ops aren't flagged by the
+        // width-unknown check — paired-by-convention or fixed-width.
+        MemoryEffect::None
+        | MemoryEffect::StackPush
+        | MemoryEffect::StackPull
+        | MemoryEffect::BlockMove => None,
     }
 }
 
@@ -642,81 +624,77 @@ pub fn emit_object(
                     continue;
                 }
 
-                match width_dependence(instruction) {
-                    WidthDependence::MemoryM => {
-                        if m_wide.is_none() && m_wide_contract.is_none() {
-                            let help = match m_unknown_cause {
-                                Some(UnknownWidthCause::Plp) => {
-                                    "PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width"
-                                }
-                                Some(UnknownWidthCause::Rti) => {
-                                    "RTI restores processor flags from runtime state; add @a8 or @a16 to re-establish accumulator width"
-                                }
-                                None => "add @a8 or @a16 to the enclosing function",
-                            };
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    op.span,
-                                    format!(
-                                        "`{}` {} a width-dependent number of bytes but accumulator width is unknown",
-                                        instruction.mnemonic,
-                                        memory_access_verb(&instruction.mnemonic),
-                                    ),
-                                )
-                                .with_help(help),
-                            );
-                            continue;
-                        }
-                    }
-                    WidthDependence::MemoryX => {
-                        if x_wide.is_none() && x_wide_contract.is_none() {
-                            let help = match x_unknown_cause {
-                                Some(UnknownWidthCause::Plp) => {
-                                    "PLP restores processor flags from runtime stack; add @i8 or @i16 to re-establish index width"
-                                }
-                                Some(UnknownWidthCause::Rti) => {
-                                    "RTI restores processor flags from runtime state; add @i8 or @i16 to re-establish index width"
-                                }
-                                None => "add @i8 or @i16 to the enclosing function",
-                            };
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    op.span,
-                                    format!(
-                                        "`{}` {} a width-dependent number of bytes but index width is unknown",
-                                        instruction.mnemonic,
-                                        memory_access_verb(&instruction.mnemonic),
-                                    ),
-                                )
-                                .with_help(help),
-                            );
-                            continue;
-                        }
-                    }
-                    WidthDependence::Transfer => {
-                        if let (Some(m), Some(x)) = (m_wide, x_wide)
-                            && m != x
-                        {
-                            let (a, i) = (
-                                if m { 16 } else { 8 },
-                                if x { 16 } else { 8 },
-                            );
-                            diagnostics.push(
-                                Diagnostic::error(
-                                    op.span,
-                                    format!(
-                                        "`{}` requires accumulator and index widths to match (a={a}, i={i})",
-                                        instruction.mnemonic,
-                                    ),
-                                )
-                                .with_help(
-                                    "use @a8 @i8 or @a16 @i16 around this transfer, or omit one width to defer the choice",
+                let descriptor = opcode_descriptor(encoding.opcode);
+                let (needs_m, needs_x) = instruction_mode_needs(instruction);
+
+                if let Some(verb) = memory_access_verb(descriptor.memory_effect) {
+                    if needs_m && m_wide.is_none() && m_wide_contract.is_none() {
+                        let help = match m_unknown_cause {
+                            Some(UnknownWidthCause::Plp) => {
+                                "PLP restores processor flags from runtime stack; add @a8 or @a16 to re-establish accumulator width"
+                            }
+                            Some(UnknownWidthCause::Rti) => {
+                                "RTI restores processor flags from runtime state; add @a8 or @a16 to re-establish accumulator width"
+                            }
+                            None => "add @a8 or @a16 to the enclosing function",
+                        };
+                        diagnostics.push(
+                            Diagnostic::error(
+                                op.span,
+                                format!(
+                                    "`{}` {} a width-dependent number of bytes but accumulator width is unknown",
+                                    instruction.mnemonic, verb,
                                 ),
-                            );
-                            continue;
-                        }
+                            )
+                            .with_help(help),
+                        );
+                        continue;
                     }
-                    WidthDependence::None => {}
+                    if needs_x && x_wide.is_none() && x_wide_contract.is_none() {
+                        let help = match x_unknown_cause {
+                            Some(UnknownWidthCause::Plp) => {
+                                "PLP restores processor flags from runtime stack; add @i8 or @i16 to re-establish index width"
+                            }
+                            Some(UnknownWidthCause::Rti) => {
+                                "RTI restores processor flags from runtime state; add @i8 or @i16 to re-establish index width"
+                            }
+                            None => "add @i8 or @i16 to the enclosing function",
+                        };
+                        diagnostics.push(
+                            Diagnostic::error(
+                                op.span,
+                                format!(
+                                    "`{}` {} a width-dependent number of bytes but index width is unknown",
+                                    instruction.mnemonic, verb,
+                                ),
+                            )
+                            .with_help(help),
+                        );
+                        continue;
+                    }
+                } else if needs_m && needs_x {
+                    // Cross-bank transfer (tax/tay/txa/tya): error only when
+                    // both widths are *known* and *different*. If either is
+                    // unknown the programmer is presumed to know what they're
+                    // doing.
+                    if let (Some(m), Some(x)) = (m_wide, x_wide)
+                        && m != x
+                    {
+                        let (a, i) = (if m { 16 } else { 8 }, if x { 16 } else { 8 });
+                        diagnostics.push(
+                            Diagnostic::error(
+                                op.span,
+                                format!(
+                                    "`{}` requires accumulator and index widths to match (a={a}, i={i})",
+                                    instruction.mnemonic,
+                                ),
+                            )
+                            .with_help(
+                                "use @a8 @i8 or @a16 @i16 around this transfer, or omit one width to defer the choice",
+                            ),
+                        );
+                        continue;
+                    }
                 }
 
                 let width = operand_width_for_mode(

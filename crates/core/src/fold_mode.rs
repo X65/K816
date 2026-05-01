@@ -10,7 +10,7 @@ use crate::hir::AddressSizeHint;
 /// Returns (needs_m, needs_x) for an instruction.
 ///
 /// This models semantic width dependencies, not just immediate operand sizing.
-fn instruction_mode_needs(instruction: &InstructionOp) -> (bool, bool) {
+pub(crate) fn instruction_mode_needs(instruction: &InstructionOp) -> (bool, bool) {
     let mnemonic = instruction.mnemonic.to_ascii_lowercase();
     match mnemonic.as_str() {
         // Accumulator-width sensitive (M flag).

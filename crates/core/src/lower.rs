@@ -411,7 +411,7 @@ fn hla_effects(stmt: &HlaStmt) -> RegEffects {
         | HlaStmt::DoCloseBranch { .. }
         | HlaStmt::LoopBreak { .. }
         | HlaStmt::LoopRepeat { .. }
-        | HlaStmt::RepeatNop(_) => RegEffects::default(),
+        | HlaStmt::RepeatInstruction { .. } => RegEffects::default(),
     }
 }
 

@@ -452,7 +452,7 @@ pub enum HlaStmt {
     NeverBlock {
         body: Vec<Spanned<Stmt>>,
     },
-    RepeatNop(usize),
+    RepeatInstruction { mnemonic: String, count: Expr },
     PrefixConditional {
         skip_mnemonic: String,
         form: HlaBranchForm,

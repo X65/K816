@@ -1682,7 +1682,9 @@ LSR  Shift One Bit Right (Memory or Accumulator)
 ### `NOP` no operation
 
 - `*` for single NOP
-- `*<number>` to wait `<number>` of cycles
+- `* N` to emit `N` NOPs (where `N` is a constant expression: literal, global `const`, or inline-fn `#param`)
+- `<mnemonic> * N` to repeat any implied-addressing instruction `N` times (e.g. `inx * 3`, `clc * 2`, `pha * 4`)
+- `%` is shorthand for `brk #0`
 
 ```none
 NOP  No Operation
@@ -3039,9 +3041,11 @@ The `>` and `<=` postfix operators emit efficiency warnings:
 ## NOP and Wait Shorthand
 
 ```k65
-*                       // single NOP (2 cycles)
-* 5                     // wait 5 cycles
-%                       // BRK (debug breakpoint)
+*                       // single NOP
+* 5                     // 5 NOPs
+* COUNT                 // N NOPs, with N from a global `const`
+inx * 3                 // repeat any implied-mode instruction N times
+%                       // brk #0 (debug breakpoint)
 ```
 
 ## Preprocessor Directives

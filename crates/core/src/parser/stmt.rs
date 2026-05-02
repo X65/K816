@@ -1,6 +1,6 @@
 use crate::ast::{
-    CallArg, CallStmt, HlaStmt, Instruction, LabelDecl, ModeContract, Operand, OperandAddrMode,
-    RegName, RegWidth, SegmentDecl, Stmt,
+    CallArg, CallStmt, Expr, HlaStmt, Instruction, LabelDecl, ModeContract, NumFmt, Operand,
+    OperandAddrMode, RegName, RegWidth, SegmentDecl, Stmt,
 };
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::{SourceId, Spanned};
@@ -347,9 +347,21 @@ where
         direct_operand,
     ));
 
+    let repeat_suffix = just(TokenKind::Star)
+        .ignore_then(expr_parser().or_not())
+        .map(|count_opt| {
+            (
+                None,
+                Some(count_opt.unwrap_or(Expr::Number(1, NumFmt::Dec))),
+            )
+        });
+
     let instruction = mnemonic
-        .then(operand)
-        .map(|(mnemonic, operand)| Stmt::Instruction(Instruction { mnemonic, operand }))
+        .then(repeat_suffix.or(operand.map(|op| (op, None))))
+        .map(|(mnemonic, (operand, repeat))| match repeat {
+            Some(count) => Stmt::Hla(HlaStmt::RepeatInstruction { mnemonic, count }),
+            None => Stmt::Instruction(Instruction { mnemonic, operand }),
+        })
         .boxed();
 
     let separators_inner = line_sep_parser().repeated();

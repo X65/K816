@@ -1,4 +1,4 @@
-use crate::ast::{CallStmt, HlaBranchForm, HlaStmt, Stmt};
+use crate::ast::{CallStmt, Expr, HlaBranchForm, HlaStmt, Instruction, NumFmt, Operand, Stmt};
 use crate::lexer::TokenKind;
 use chumsky::{
     Parser as _,
@@ -8,7 +8,7 @@ use chumsky::{
 };
 
 use super::{
-    ParseExtra, expr_parser, ident_parser, line_tail_parser, number_parser, zero_number_token,
+    ParseExtra, expr_parser, ident_parser, line_tail_parser, zero_number_token,
 };
 
 pub(super) fn flow_stmt_parser<'src, I>()
@@ -254,9 +254,20 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     just(TokenKind::Star)
-        .ignore_then(number_parser().map(|n| n.value).or_not())
-        .map(|count| Stmt::Hla(HlaStmt::RepeatNop(count.unwrap_or(1) as usize)))
-        .or(just(TokenKind::Percent).to(Stmt::Hla(HlaStmt::RepeatNop(1))))
+        .ignore_then(expr_parser().or_not())
+        .map(|count| {
+            Stmt::Hla(HlaStmt::RepeatInstruction {
+                mnemonic: "nop".to_string(),
+                count: count.unwrap_or(Expr::Number(1, NumFmt::Dec)),
+            })
+        })
+        .or(just(TokenKind::Percent).to(Stmt::Instruction(Instruction {
+            mnemonic: "brk".to_string(),
+            operand: Some(Operand::Immediate {
+                expr: Expr::Number(0, NumFmt::Dec),
+                explicit_hash: true,
+            }),
+        })))
         .boxed()
 }
 

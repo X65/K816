@@ -258,7 +258,10 @@ fn normalize_hla_stmt(stmt: &HlaStmt) -> HlaStmt {
         HlaStmt::NeverBlock { body } => HlaStmt::NeverBlock {
             body: normalize_stmt_sequence(body),
         },
-        HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
+        HlaStmt::RepeatInstruction { mnemonic, count } => HlaStmt::RepeatInstruction {
+            mnemonic: mnemonic.clone(),
+            count: count.clone(),
+        },
         HlaStmt::PrefixConditional {
             skip_mnemonic,
             form,

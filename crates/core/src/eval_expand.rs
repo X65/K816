@@ -352,7 +352,10 @@ fn expand_hla_stmt(
                 body: expanded_body,
             }
         }
-        HlaStmt::RepeatNop(n) => HlaStmt::RepeatNop(*n),
+        HlaStmt::RepeatInstruction { mnemonic, count } => HlaStmt::RepeatInstruction {
+            mnemonic: mnemonic.clone(),
+            count: expand_expr(count, span, source_id, diagnostics),
+        },
         HlaStmt::PrefixConditional {
             skip_mnemonic,
             form,

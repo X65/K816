@@ -581,10 +581,20 @@ pub(super) fn lower_hla_stmt(
                 ops,
             );
         }
-        HlaStmt::RepeatNop(count) => {
-            let nop = make_instruction("nop", None);
-            for _ in 0..*count {
-                lower_instruction_stmt(&nop, scope, sema, span, ctx, diagnostics, ops);
+        HlaStmt::RepeatInstruction { mnemonic, count } => {
+            let Some(n) = eval_to_number(count, scope, sema, span, diagnostics) else {
+                return;
+            };
+            if n < 0 {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("'* N' repeat count must be non-negative, got {n}"),
+                ));
+                return;
+            }
+            let inst = make_instruction(mnemonic, None);
+            for _ in 0..n as usize {
+                lower_instruction_stmt(&inst, scope, sema, span, ctx, diagnostics, ops);
             }
         }
         HlaStmt::NeverBlock { .. } | HlaStmt::PrefixConditional { .. } => {

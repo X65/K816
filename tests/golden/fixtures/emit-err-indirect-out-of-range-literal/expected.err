@@ -1,0 +1,11 @@
+Error: `lda (addr)` requires the address to lie within the direct page
+   ╭─[ tests/golden/fixtures/emit-err-indirect-out-of-range-literal/input.k65:6:5 ]
+   │
+ 6 │     lda ($1234)
+   │     ─────┬─────  
+   │          ╰─────── indirect operand
+   │ 
+   │ Help: value $1234 exceeds the direct-page range (0x00..=0xFF); only direct-page indirect forms are encodable for `lda`
+   │ 
+   │ Note: `lda` has no `(abs)` form on the W65C816 — only `jmp`, `jsl`, and `jsr` accept absolute-indirect addressing
+───╯

@@ -195,6 +195,161 @@ fn invalid_operand_help(mnemonic: &str, operand: &Option<OperandOp>) -> Option<S
     }
 }
 
+/// True when `name` resolves to a function, var, const, or symbolic-subscript
+/// field defined in this translation unit. Mirrors the lookup at
+/// `lower.rs:1849`. Used to detect unresolved labels at encode-error time.
+fn is_locally_resolvable(sema: &SemanticModel, name: &str) -> bool {
+    if sema.functions.contains_key(name)
+        || sema.vars.contains_key(name)
+        || sema.consts.contains_key(name)
+    {
+        return true;
+    }
+    if let Some((base, _field)) = name.split_once('.')
+        && sema.vars.contains_key(base)
+    {
+        return true;
+    }
+    false
+}
+
+/// Build a `Diagnostic` for an `EncodeError`. Centralizes the per-variant
+/// enrichment that decorates the bare error message with help/labels/notes
+/// drawn from `instruction.operand`, `sema`, and `supported_modes`.
+fn build_encode_diagnostic(
+    span: Span,
+    instruction_mnemonic: &str,
+    operand: &Option<OperandOp>,
+    err: &EncodeError,
+    sema: &SemanticModel,
+    external_functions: Option<&IndexMap<String, FunctionMeta>>,
+) -> Diagnostic {
+    let mut diag = Diagnostic::error(span, err.to_string());
+    match err {
+        EncodeError::UnknownMnemonic { mnemonic } => {
+            if let Some((name, meta)) = lookup_function(sema, external_functions, mnemonic) {
+                diag = diag.with_help(function_call_help(name, meta));
+            }
+        }
+        EncodeError::InvalidOperand { mnemonic } => {
+            if let Some(help) = invalid_operand_help(mnemonic, operand) {
+                diag = diag.with_help(help);
+            } else if let Some(enriched) = enrich_invalid_indirect(span, mnemonic, operand, sema) {
+                diag = enriched;
+            }
+        }
+        EncodeError::NoDirectPageForm => {
+            diag = Diagnostic::error(
+                span,
+                format!(
+                    "`{instruction_mnemonic}` has no direct-page form for this operand",
+                ),
+            )
+            .with_primary_label("forced direct-page operand".to_string())
+            .with_help(format!(
+                "drop the `dp` prefix; `{instruction_mnemonic}` only accepts absolute or long addressing here"
+            ));
+        }
+        EncodeError::DirectPageOutOfRange => {
+            let value_phrase = match operand {
+                Some(OperandOp::Address {
+                    value: AddressValue::Literal(v),
+                    ..
+                }) => Some(format!("value ${v:X}")),
+                Some(OperandOp::Address {
+                    value: AddressValue::LabelOffset { label, addend },
+                    ..
+                }) => Some(format!("`{label}+{addend}`")),
+                Some(OperandOp::Address {
+                    value: AddressValue::Label(name),
+                    ..
+                }) => Some(format!("`{name}`")),
+                _ => None,
+            };
+            let primary = match &value_phrase {
+                Some(p) => format!(
+                    "forced direct-page {p} is out of range for `{instruction_mnemonic}` (must fit in 0x00..=0xFF)",
+                ),
+                None => format!(
+                    "forced direct-page operand for `{instruction_mnemonic}` is out of range (must fit in 0x00..=0xFF)"
+                ),
+            };
+            diag = Diagnostic::error(span, primary)
+                .with_primary_label("forced direct-page operand".to_string())
+                .with_help(format!(
+                    "drop the `dp` prefix to let `{instruction_mnemonic}` use absolute addressing, or place the symbol at a zero-page address"
+                ));
+        }
+        _ => {}
+    }
+    diag
+}
+
+/// For an `InvalidOperand` error on an indirect-family operand (`(addr)`,
+/// `(addr,X)`, `(addr),Y`, `[addr]`, `[addr],Y`), build a diagnostic that
+/// names the symbol, explains the direct-page constraint, and points at the
+/// fix. Returns `None` for non-indirect operands so callers can fall through
+/// to the bare-error path.
+fn enrich_invalid_indirect(
+    span: Span,
+    mnemonic: &str,
+    operand: &Option<OperandOp>,
+    sema: &SemanticModel,
+) -> Option<Diagnostic> {
+    let Some(OperandOp::Address { value, mode, .. }) = operand else {
+        return None;
+    };
+    let (mode_syntax, label_phrase) = match mode {
+        AddressOperandMode::Indirect => ("(addr)", "indirect operand"),
+        AddressOperandMode::IndexedIndirectX => ("(addr,X)", "indexed-indirect operand"),
+        AddressOperandMode::IndirectIndexedY => ("(addr),Y", "indirect-indexed operand"),
+        AddressOperandMode::IndirectLong => ("[addr]", "long-indirect operand"),
+        AddressOperandMode::IndirectLongIndexedY => {
+            ("[addr],Y", "long-indirect-indexed operand")
+        }
+        _ => return None,
+    };
+
+    let primary_msg = format!(
+        "`{mnemonic} {mode_syntax}` requires the address to lie within the direct page",
+    );
+    let inner_syntax = match mode {
+        AddressOperandMode::Indirect => "(dp X)",
+        AddressOperandMode::IndexedIndirectX => "(dp X,X)",
+        AddressOperandMode::IndirectIndexedY => "(dp X),Y",
+        AddressOperandMode::IndirectLong => "[dp X]",
+        AddressOperandMode::IndirectLongIndexedY => "[dp X],Y",
+        _ => unreachable!(),
+    };
+    let help = match value {
+        AddressValue::Label(name) | AddressValue::LabelOffset { label: name, .. } => {
+            if is_locally_resolvable(sema, name) {
+                format!(
+                    "use the `dp` prefix to force direct-page indirect (write `{}`), or declare `{name}` at a direct-page address",
+                    inner_syntax.replace('X', name),
+                )
+            } else {
+                format!(
+                    "symbol `{name}` is not declared in this file; declare it as a zero-page `var` (e.g. `var {name} = $80`), or use the `dp` prefix to force direct-page indirect (`{}`)",
+                    inner_syntax.replace('X', name),
+                )
+            }
+        }
+        AddressValue::Literal(value) => format!(
+            "value ${value:X} exceeds the direct-page range (0x00..=0xFF); only direct-page indirect forms are encodable for `{mnemonic}`"
+        ),
+    };
+    let mut diag = Diagnostic::error(span, primary_msg)
+        .with_primary_label(label_phrase.to_string())
+        .with_help(help);
+    if matches!(mode, AddressOperandMode::Indirect) && mnemonic.eq_ignore_ascii_case("lda") {
+        diag = diag.with_note(
+            "`lda` has no `(abs)` form on the W65C816 — only `jmp`, `jsl`, and `jsr` accept absolute-indirect addressing".to_string(),
+        );
+    }
+    Some(diag)
+}
+
 /// If `origin` resolves to a known source, append an `InlineOrigin` supplement
 /// to `diag` so renderers can show "(Inlined from …)" pointing to the original
 /// (foreign-source) location of an inlined op. Idempotent: skips if `diag`
@@ -557,25 +712,14 @@ pub fn emit_object(
                 let encoding = match select_encoding(&instruction.mnemonic, operand_shape) {
                     Ok(encoding) => encoding,
                     Err(err) => {
-                        let mut diag = Diagnostic::error(op.span, err.to_string());
-                        match &err {
-                            EncodeError::UnknownMnemonic { mnemonic } => {
-                                if let Some((name, meta)) =
-                                    lookup_function(sema, external_functions, mnemonic)
-                                {
-                                    diag = diag.with_help(function_call_help(name, meta));
-                                }
-                            }
-                            EncodeError::InvalidOperand { mnemonic } => {
-                                if let Some(help) =
-                                    invalid_operand_help(mnemonic, &instruction.operand)
-                                {
-                                    diag = diag.with_help(help);
-                                }
-                            }
-                            _ => {}
-                        }
-                        diagnostics.push(diag);
+                        diagnostics.push(build_encode_diagnostic(
+                            op.span,
+                            &instruction.mnemonic,
+                            &instruction.operand,
+                            &err,
+                            sema,
+                            external_functions,
+                        ));
                         continue;
                     }
                 };
@@ -1555,5 +1699,18 @@ mod tests {
             msg.contains("value does not fit in 16-bit operand"),
             "unexpected error: {msg}"
         );
+    }
+
+    #[test]
+    fn is_locally_resolvable_checks_all_namespaces() {
+        let mut sema = SemanticModel::default();
+        sema.consts.insert(
+            "ZP_TEMP".into(),
+            crate::sema::ConstMeta {
+                value: k816_eval::Number::int(0),
+            },
+        );
+        assert!(is_locally_resolvable(&sema, "ZP_TEMP"));
+        assert!(!is_locally_resolvable(&sema, "missing"));
     }
 }

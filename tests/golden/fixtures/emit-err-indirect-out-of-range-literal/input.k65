@@ -1,0 +1,7 @@
+// `lda (literal)` requires the literal to fit in the direct page.
+// $1234 exceeds zero-page range and `lda` has no `(abs)` indirect form,
+// so the encoder must reject this operand with a clear range diagnostic.
+
+func main {
+    lda ($1234)
+}

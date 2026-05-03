@@ -1,7 +1,9 @@
-Error: This operand does not support forced direct-page addressing
+Error: `jmp` has no direct-page form for this operand
    ╭─[ tests/golden/fixtures/prefix-dp-no-dp-form/input.k65:4:5 ]
    │
  4 │     jsr dp main
    │     ─────┬─────  
-   │          ╰─────── here
+   │          ╰─────── forced direct-page operand
+   │ 
+   │ Help: drop the `dp` prefix; `jmp` only accepts absolute or long addressing here
 ───╯

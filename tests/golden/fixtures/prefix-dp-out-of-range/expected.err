@@ -1,7 +1,9 @@
-Error: forced direct-page operand value out of range (must fit in 0x00..=0xFF)
+Error: forced direct-page value $1234 is out of range for `lda` (must fit in 0x00..=0xFF)
    ╭─[ tests/golden/fixtures/prefix-dp-out-of-range/input.k65:5:5 ]
    │
  5 │     lda dp hi
    │     ────┬────  
-   │         ╰────── here
+   │         ╰────── forced direct-page operand
+   │ 
+   │ Help: drop the `dp` prefix to let `lda` use absolute addressing, or place the symbol at a zero-page address
 ───╯

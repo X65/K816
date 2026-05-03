@@ -542,7 +542,11 @@ mod tests {
     }
 
     #[test]
-    fn multi_source_link_compile_treats_cross_unit_const_as_immediate() {
+    fn multi_source_link_compile_rejects_cross_unit_const_as_address() {
+        // A cross-unit `const` referenced bare (`lda BAR`, no `#`) must error:
+        // the user wrote address syntax, but a const is a compile-time value
+        // with no memory location. The fix forces `#BAR` (immediate) or a
+        // `var BAR = ...` declaration for memory access.
         let sources = [
             LinkCompileInput {
                 source_name: "main.k65",
@@ -554,20 +558,14 @@ mod tests {
             },
         ];
 
-        let outputs = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
-            .expect("compile");
-        let main_object = &outputs[0].object;
-        let section = main_object
-            .sections
-            .get(crate::DEFAULT_SEGMENT)
-            .expect("default section exists");
-        let bytes = section
-            .chunks
-            .iter()
-            .flat_map(|chunk| chunk.bytes.iter().copied())
-            .collect::<Vec<_>>();
-
-        assert!(bytes.windows(3).any(|window| window == [0xA9, 0x39, 0x05]));
+        let err = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+            .expect_err("expected const-as-address rejection");
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("`const BAR`")
+                && rendered.contains("cannot be used as an address"),
+            "expected const-as-address diagnostic, got {rendered}"
+        );
     }
 
     /// Cross-unit var with an explicit-address initializer (`var BAR = $1234`)

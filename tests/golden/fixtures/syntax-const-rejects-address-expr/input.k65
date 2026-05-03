@@ -1,6 +1,5 @@
 const FOO = 42
 
 func main {
-    lda #FOO
-    lda #BAR
+    lda FOO + 1
 }

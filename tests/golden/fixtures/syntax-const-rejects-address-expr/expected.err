@@ -1,0 +1,9 @@
+Error: address expression depends on `const FOO`, which has no memory location
+   ╭─[ tests/golden/fixtures/syntax-const-rejects-address-expr/input.k65:4:5 ]
+   │
+ 4 │     lda FOO + 1
+   │     ─────┬─────  
+   │          ╰─────── expression rooted in const, not in a label or var
+   │ 
+   │ Help: consts contribute numeric values, not addresses; for a memory operand, root the expression in a `var` or label (e.g. `data_block + FOO`); for an immediate, prefix the whole expression with `#`
+───╯

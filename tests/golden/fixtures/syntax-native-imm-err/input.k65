@@ -4,6 +4,6 @@ naked dbg_task {
     a=1
     {
         a++
-        sta $82
+        sta #$82
     } always
 }

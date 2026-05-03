@@ -4454,12 +4454,62 @@ fn value_operand_uses_immediate(
     index: Option<crate::ast::IndexRegister>,
     addr_mode: OperandAddrMode,
     expr: &Expr,
-    sema: &SemanticModel,
+    _sema: &SemanticModel,
 ) -> bool {
     if addr_mode_override.is_some() || index.is_some() || addr_mode != OperandAddrMode::Direct {
         return false;
     }
-    is_immediate_expression(expr, sema)
+    // Native `Operand::Value` (no `#`) means address-mode by default. The
+    // only legitimate exception is `&&label` / `&&&label` (address-of
+    // operators), whose semantics are inherently immediate even without `#` —
+    // that's the operator's whole job. Auto-routing anything else (bare
+    // consts, plain numbers, arbitrary expressions) would silently rewrite
+    // the user's address-mode operand into an immediate.
+    is_address_of_expr(expr)
+}
+
+/// Detect `&&label` / `&&&label` (with optional `± N` addend) shapes that
+/// `lower_immediate_operand` → `resolve_symbolic_address_immediate` will
+/// handle as a relocation. Mirrors `peel_address_of`'s shape detection without
+/// extracting the name/addend.
+fn is_address_of_expr(expr: &Expr) -> bool {
+    fn is_address_of_unary(op: &ExprUnaryOp, inner: &Expr) -> bool {
+        matches!(
+            op,
+            ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian
+        ) && matches!(inner, Expr::Ident(_) | Expr::IdentSpanned { .. })
+    }
+    match expr {
+        Expr::Unary { op, expr: inner } => is_address_of_unary(op, inner.as_ref()),
+        Expr::Binary { op, lhs, rhs } => match (op, lhs.as_ref(), rhs.as_ref()) {
+            (
+                ExprBinaryOp::Add,
+                Expr::Unary {
+                    op: u_op,
+                    expr: u_inner,
+                },
+                Expr::Number(_, _),
+            )
+            | (
+                ExprBinaryOp::Add,
+                Expr::Number(_, _),
+                Expr::Unary {
+                    op: u_op,
+                    expr: u_inner,
+                },
+            )
+            | (
+                ExprBinaryOp::Sub,
+                Expr::Unary {
+                    op: u_op,
+                    expr: u_inner,
+                },
+                Expr::Number(_, _),
+            ) => is_address_of_unary(u_op, u_inner.as_ref()),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// Determines whether an expression should be treated as an immediate value
@@ -5185,8 +5235,48 @@ fn lower_address_operand(
         }
         Expr::Index { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
             // Try compile-time evaluation first (works for vars, consts, symbolic subscripts).
+            // Tracks provenance so a `const`-only expression in address position is rejected
+            // rather than silently materialized as a literal address. Stack-relative modes
+            // invert the rule: numeric (Number/ConstTainted) results are valid offsets,
+            // address-rooted results are rejected.
+            let stack_rel = is_stack_relative_mode(mode);
             let saved_diag_len = diagnostics.len();
-            if let Some(value) = eval_to_number(expr, scope, sema, span, diagnostics) {
+            if let Some((value, prov)) = eval_address_expr(expr, scope, sema, span, diagnostics) {
+                if stack_rel && matches!(prov, AddressProvenance::Address) {
+                    diagnostics.truncate(saved_diag_len);
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            "address expression cannot be used as a stack-relative offset",
+                        )
+                        .with_primary_label(
+                            "expression rooted in a label or var, not a numeric offset".to_string(),
+                        )
+                        .with_help(
+                            "stack-relative modes (`,s` / `(,s),y`) take a byte offset from the stack pointer; use a numeric literal or a `const`-rooted expression instead, or pick a non-stack-relative addressing mode for memory access",
+                        ),
+                    );
+                    return None;
+                }
+                if !stack_rel && matches!(prov, AddressProvenance::ConstTainted) {
+                    diagnostics.truncate(saved_diag_len);
+                    let const_name = first_const_ref(expr, sema).unwrap_or("<const>");
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "address expression depends on `const {const_name}`, which has no memory location",
+                            ),
+                        )
+                        .with_primary_label(
+                            "expression rooted in const, not in a label or var".to_string(),
+                        )
+                        .with_help(format!(
+                            "consts contribute numeric values, not addresses; for a memory operand, root the expression in a `var` or label (e.g. `data_block + {const_name}`); for an immediate, prefix the whole expression with `#`",
+                        )),
+                    );
+                    return None;
+                }
                 let Ok(address) = u32::try_from(value) else {
                     diagnostics.push(Diagnostic::error(
                         span,
@@ -5200,11 +5290,14 @@ fn lower_address_operand(
                     mode,
                 });
             }
-            // eval_to_number failed — try to decompose as label ± constant for link-time
-            // resolution (e.g. `data_block_name + 1`).
-            if let Some(result) = try_label_offset_operand(expr, scope, sema, span, size_hint, mode)
+            // eval_address_expr failed — try to decompose as label ± constant for link-time
+            // resolution (e.g. `data_block_name + 1`). Stack-relative modes never accept
+            // label-rooted forms, so skip the fallback there.
+            if !stack_rel
+                && let Some(result) =
+                    try_label_offset_operand(expr, scope, sema, span, size_hint, mode)
             {
-                // Remove diagnostics added by the failed eval_to_number attempt.
+                // Remove diagnostics added by the failed eval_address_expr attempt.
                 diagnostics.truncate(saved_diag_len);
                 return Some(result);
             }
@@ -5217,6 +5310,160 @@ fn lower_address_operand(
             ));
             None
         }
+    }
+}
+
+/// Provenance tag for expression values evaluated in address-operand position.
+///
+/// `const` declarations hold compile-time *values*, not memory locations. An
+/// expression evaluated as an instruction-operand address is only legal when
+/// it is rooted in a label/var (`Address`) or written entirely from numeric
+/// literals (`PureLiteral`). A `ConstTainted` result — any path that touched
+/// a const and never touched a label/var — must be rejected with a
+/// diagnostic.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AddressProvenance {
+    /// At least one leaf is a label, var, or symbolic-subscript root.
+    Address,
+    /// Only number literals or metadata-query results; safe as a hardcoded address.
+    PureLiteral,
+    /// At least one const reference, no label/var anywhere — illegal as an address.
+    ConstTainted,
+}
+
+impl AddressProvenance {
+    fn join(self, other: AddressProvenance) -> AddressProvenance {
+        use AddressProvenance::*;
+        match (self, other) {
+            (Address, _) | (_, Address) => Address,
+            (ConstTainted, _) | (_, ConstTainted) => ConstTainted,
+            (PureLiteral, PureLiteral) => PureLiteral,
+        }
+    }
+}
+
+/// Evaluate an `Expr` for use as an instruction-operand address, returning the
+/// numeric value alongside an `AddressProvenance` tag. Mirrors `eval_to_number`
+/// structurally but propagates provenance so the caller can reject
+/// const-tainted expressions in address position.
+///
+/// Note the asymmetry with `eval_to_number`: this helper is *only* called from
+/// `lower_address_operand`'s expression arm. Bare `Expr::Ident` operands go
+/// through `resolve_operand_ident` separately, which handles the bare-const
+/// rejection at its own site.
+fn eval_address_expr(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(i64, AddressProvenance)> {
+    match expr {
+        Expr::Number(value, _) => Some((*value, AddressProvenance::PureLiteral)),
+        Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
+            let ident_span = expr_ident_span(expr, span).unwrap_or(span);
+            if let Some(var) = sema.vars.get(name) {
+                return Some((i64::from(var.address), AddressProvenance::Address));
+            }
+            if let Some(constant) = sema.consts.get(name) {
+                let value = constant_to_exact_i64(
+                    name,
+                    constant.value,
+                    ident_span,
+                    diagnostics,
+                    "address expression",
+                )?;
+                return Some((value, AddressProvenance::ConstTainted));
+            }
+            match resolve_symbolic_subscript_name(name, sema, ident_span, diagnostics) {
+                Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
+                | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
+                    return Some((i64::from(address), AddressProvenance::Address));
+                }
+                Err(()) => return None,
+                Ok(None) => {}
+            }
+
+            resolve_symbol(name, scope, ident_span, diagnostics)?;
+            let mut diag = Diagnostic::error(ident_span, format!("unknown identifier '{name}'"));
+            if let Some(help) = address_of_help_for_name(name, sema, ident_span) {
+                diag = diag.with_help(help);
+            }
+            diagnostics.push(diag);
+            None
+        }
+        Expr::EvalText(_) => {
+            diagnostics.push(Diagnostic::error(
+                span,
+                "internal error: eval text should be expanded before lowering",
+            ));
+            None
+        }
+        Expr::Index { base, index } => {
+            // Indexing always targets a var/label/aggregate base; the result
+            // is an address regardless of whether the index is a literal or
+            // a const-tainted expression.
+            let value = eval_index_expr(base, index, scope, sema, span, diagnostics)?;
+            Some((value, AddressProvenance::Address))
+        }
+        Expr::Binary { op, lhs, rhs } => {
+            let (lhs_val, lhs_prov) = eval_address_expr(lhs, scope, sema, span, diagnostics)?;
+            let (rhs_val, rhs_prov) = eval_address_expr(rhs, scope, sema, span, diagnostics)?;
+            let value = match op {
+                ExprBinaryOp::Add => lhs_val.checked_add(rhs_val),
+                ExprBinaryOp::Sub => lhs_val.checked_sub(rhs_val),
+                ExprBinaryOp::Mul => lhs_val.checked_mul(rhs_val),
+            }
+            .or_else(|| {
+                diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                None
+            })?;
+            Some((value, lhs_prov.join(rhs_prov)))
+        }
+        Expr::Unary { op, expr } => {
+            let (value, prov) = eval_address_expr(expr, scope, sema, span, diagnostics)?;
+            let new_value = match op {
+                ExprUnaryOp::LowByte => value & 0xFF,
+                ExprUnaryOp::HighByte => (value >> 8) & 0xFF,
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => value,
+                ExprUnaryOp::EvalBracketed => value,
+                ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                    None
+                })?,
+            };
+            Some((new_value, prov))
+        }
+        Expr::TypedView { expr, .. } => eval_address_expr(expr, scope, sema, span, diagnostics),
+        Expr::MetadataQuery { expr, query } => {
+            let value = resolve_metadata_query(expr, *query, sema, span, diagnostics)?;
+            Some((value, AddressProvenance::PureLiteral))
+        }
+    }
+}
+
+/// Walk an `Expr` and return the name of the first const-referenced
+/// identifier, or `None` if no const is mentioned. Used to attribute a
+/// `ConstTainted` provenance to a specific symbol in diagnostics.
+fn first_const_ref<'a>(expr: &'a Expr, sema: &SemanticModel) -> Option<&'a str> {
+    match expr {
+        Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
+            if sema.consts.contains_key(name) {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            first_const_ref(lhs, sema).or_else(|| first_const_ref(rhs, sema))
+        }
+        Expr::Unary { expr, .. } => first_const_ref(expr, sema),
+        Expr::TypedView { expr, .. } => first_const_ref(expr, sema),
+        Expr::Index { base, index } => {
+            first_const_ref(base, sema).or_else(|| first_const_ref(index, sema))
+        }
+        Expr::MetadataQuery { expr, .. } => first_const_ref(expr, sema),
+        Expr::Number(_, _) | Expr::EvalText(_) => None,
     }
 }
 
@@ -5408,6 +5655,37 @@ fn lower_index_register(index: crate::ast::IndexRegister) -> IndexRegister {
     }
 }
 
+/// Stack-relative addressing modes (`,s` and `(byte,s),y`) take a numeric
+/// byte offset relative to the stack pointer, **not** a memory address. The
+/// usual address-vs-const rule inverts here: consts and pure-literal numbers
+/// are valid offsets; vars, labels, and functions are addresses and must be
+/// rejected.
+fn is_stack_relative_mode(mode: AddressOperandMode) -> bool {
+    matches!(
+        mode,
+        AddressOperandMode::Direct {
+            index: Some(IndexRegister::S),
+        } | AddressOperandMode::StackRelativeIndirectIndexedY
+    )
+}
+
+fn stack_offset_not_address_diag(
+    span: Span,
+    name: &str,
+    kind: &str,
+) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        format!(
+            "`{kind} {name}` is a memory address; stack-relative addressing requires a numeric offset"
+        ),
+    )
+    .with_primary_label("address used as stack offset".to_string())
+    .with_help(format!(
+        "stack-relative modes (`,s` / `(,s),y`) take a byte offset from the stack pointer; replace `{name}` with a numeric literal or a `const` (e.g. `const offset = $04`), or pick a non-stack-relative addressing mode for memory access",
+    ))
+}
+
 fn resolve_operand_ident(
     name: &str,
     scope: Option<&str>,
@@ -5417,7 +5695,13 @@ fn resolve_operand_ident(
     size_hint: AddressSizeHint,
     mode: AddressOperandMode,
 ) -> Option<OperandOp> {
+    let stack_rel = is_stack_relative_mode(mode);
+
     if name.starts_with('.') {
+        if stack_rel {
+            diagnostics.push(stack_offset_not_address_diag(span, name, "label"));
+            return None;
+        }
         let resolved = resolve_symbol(name, scope, span, diagnostics)?;
         return Some(OperandOp::Address {
             value: AddressValue::Label(resolved),
@@ -5427,6 +5711,10 @@ fn resolve_operand_ident(
     }
 
     if let Some(var) = sema.vars.get(name) {
+        if stack_rel {
+            diagnostics.push(stack_offset_not_address_diag(span, name, "var"));
+            return None;
+        }
         return Some(OperandOp::Address {
             value: AddressValue::Literal(var.address),
             size_hint,
@@ -5434,30 +5722,49 @@ fn resolve_operand_ident(
         });
     }
     if let Some(constant) = sema.consts.get(name) {
-        let value = constant_to_exact_i64(
-            name,
-            constant.value,
-            span,
-            diagnostics,
-            "address expression",
-        )?;
-        let Ok(address) = u32::try_from(value) else {
-            diagnostics.push(Diagnostic::error(
+        if stack_rel {
+            // Consts are valid stack offsets — they're compile-time numbers,
+            // which is exactly what stack-relative addressing needs.
+            let value = constant_to_exact_i64(
+                name,
+                constant.value,
                 span,
-                format!("address cannot be negative: {value} (from const '{name}')"),
-            ));
-            return None;
-        };
-        return Some(OperandOp::Address {
-            value: AddressValue::Literal(address),
-            size_hint,
-            mode,
-        });
+                diagnostics,
+                "stack-relative offset",
+            )?;
+            let Ok(address) = u32::try_from(value) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!("stack offset cannot be negative: {value} (from const '{name}')"),
+                ));
+                return None;
+            };
+            return Some(OperandOp::Address {
+                value: AddressValue::Literal(address),
+                size_hint,
+                mode,
+            });
+        }
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("`const {name}` cannot be used as an address"),
+            )
+            .with_primary_label("const used as address".to_string())
+            .with_help(format!(
+                "consts hold compile-time values, not memory locations; prefix with `#` to use as an immediate (e.g. `#{name}`), or declare a `var` for memory access (e.g. `var {name} = $80`)",
+            )),
+        );
+        return None;
     }
 
     match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
         Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { address, .. }))
         | Ok(Some(ResolvedSymbolicSubscriptName::Field { address, .. })) => {
+            if stack_rel {
+                diagnostics.push(stack_offset_not_address_diag(span, name, "symbol"));
+                return None;
+            }
             return Some(OperandOp::Address {
                 value: AddressValue::Literal(address),
                 size_hint,
@@ -5469,6 +5776,10 @@ fn resolve_operand_ident(
     }
 
     if sema.functions.contains_key(name) {
+        if stack_rel {
+            diagnostics.push(stack_offset_not_address_diag(span, name, "func"));
+            return None;
+        }
         return Some(OperandOp::Address {
             value: AddressValue::Label(name.to_string()),
             size_hint,
@@ -5476,6 +5787,10 @@ fn resolve_operand_ident(
         });
     }
 
+    if stack_rel {
+        diagnostics.push(stack_offset_not_address_diag(span, name, "label"));
+        return None;
+    }
     Some(OperandOp::Address {
         value: AddressValue::Label(name.to_string()),
         size_hint,
@@ -5816,25 +6131,31 @@ mod tests {
     }
 
     #[test]
-    fn resolves_bare_const_operand_to_immediate_value() {
+    fn rejects_bare_const_operand_as_address() {
+        // A bare `const` reference in instruction-operand position (no `#`)
+        // is address-mode syntax. Since a const is a compile-time value with
+        // no memory location, it must be rejected with a diagnostic that
+        // points the user at `#LIMIT` (immediate) or a `var` (memory access).
         let source = "const LIMIT = 0x34\nfunc main {\n  lda LIMIT\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs, None).expect("lower");
-
-        let operand = program
-            .ops
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
+        let diag = errors
             .iter()
-            .find_map(|op| match &op.node {
-                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
-                    instruction.operand.as_ref()
-                }
-                _ => None,
+            .find(|e| {
+                e.message.contains("`const LIMIT`")
+                    && e.message.contains("cannot be used as an address")
             })
-            .expect("lda operand");
-
-        assert!(matches!(operand, OperandOp::Immediate(0x34)));
+            .expect("expected const-as-address diagnostic");
+        assert!(
+            diag.supplements.iter().any(|s| matches!(
+                s,
+                crate::diag::Supplemental::Help(text) if text.contains("#LIMIT") && text.contains("`var`")
+            )),
+            "expected help suggesting `#LIMIT` and `var`, got {:?}",
+            diag.supplements
+        );
     }
 
     #[test]
@@ -5860,25 +6181,21 @@ mod tests {
     }
 
     #[test]
-    fn resolves_bare_top_level_evaluator_constant_to_immediate_value() {
+    fn rejects_bare_top_level_evaluator_constant_as_address() {
+        // Top-level evaluator constants (`[ NAME = ... ]`) share the same
+        // semantic class as `const NAME = ...`: both populate `sema.consts`
+        // and are immediate-only. Bare references in address position must
+        // be rejected just like regular consts.
         let source = "[ LIMIT = 0x34 ]\nfunc main {\n  lda LIMIT\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
-        let program = lower(&file, &sema, &fs, None).expect("lower");
-
-        let operand = program
-            .ops
-            .iter()
-            .find_map(|op| match &op.node {
-                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
-                    instruction.operand.as_ref()
-                }
-                _ => None,
-            })
-            .expect("lda operand");
-
-        assert!(matches!(operand, OperandOp::Immediate(0x34)));
+        let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
+        assert!(
+            errors.iter().any(|e| e.message.contains("`const LIMIT`")
+                && e.message.contains("cannot be used as an address")),
+            "expected const-as-address diagnostic, got {errors:?}"
+        );
     }
 
     #[test]

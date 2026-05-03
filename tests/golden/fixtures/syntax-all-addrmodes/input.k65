@@ -49,8 +49,8 @@ start:
     bpl start
     // 3.5.22 Stack-s
     pha
-    // 3.5.23 Stack Relative-d,s
-    lda x0,s
+    // 3.5.23 Stack Relative-d,s — operand is a numeric SP offset, not an address.
+    lda 0,s
     // 3.5.24 Stack Relative Indirect Indexed-(d,s),y
-    lda (x0,s),y
+    lda (0,s),y
 }

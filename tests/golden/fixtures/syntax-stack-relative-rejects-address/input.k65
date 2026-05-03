@@ -1,0 +1,5 @@
+var ptr = $80
+
+func main {
+    lda ptr,s
+}

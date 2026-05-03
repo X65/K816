@@ -1,0 +1,9 @@
+Error: `var ptr` is a memory address; stack-relative addressing requires a numeric offset
+   ╭─[ tests/golden/fixtures/syntax-stack-relative-rejects-address/input.k65:4:5 ]
+   │
+ 4 │     lda ptr,s
+   │     ────┬────  
+   │         ╰────── address used as stack offset
+   │ 
+   │ Help: stack-relative modes (`,s` / `(,s),y`) take a byte offset from the stack pointer; replace `ptr` with a numeric literal or a `const` (e.g. `const offset = $04`), or pick a non-stack-relative addressing mode for memory access
+───╯

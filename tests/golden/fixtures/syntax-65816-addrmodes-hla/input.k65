@@ -2,12 +2,15 @@
 // express. Long-indirect `[expr]` is NOT exposed via HLA because the
 // preprocessor coalesces `[...]` into an evaluator fragment — use raw
 // mnemonics (see syntax-indirect-long fixture) for those forms.
-var ptr = 0x20
+// `off` is a `const` (numeric stack-frame offset), not a `var`. Stack-relative
+// addressing takes a byte offset from SP, not a memory address — only consts
+// and numeric literals are valid here.
+const off = 0x20
 
 func main {
     a = 4,s                 // LDA 4,S         -- stack-relative load
     4,s = a                 // STA 4,S         -- stack-relative store
-    a = (ptr,s),y           // LDA (ptr,S),Y   -- stack-relative indirect Y load
-    (ptr,s),y = a           // STA (ptr,S),Y   -- stack-relative indirect Y store
+    a = (off,s),y           // LDA (off,S),Y   -- stack-relative indirect Y load
+    (off,s),y = a           // STA (off,S),Y   -- stack-relative indirect Y store
     return
 }

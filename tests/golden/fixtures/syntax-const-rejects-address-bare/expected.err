@@ -1,0 +1,9 @@
+Error: `const FOO` cannot be used as an address
+   ╭─[ tests/golden/fixtures/syntax-const-rejects-address-bare/input.k65:4:5 ]
+   │
+ 4 │     lda FOO
+   │     ───┬───  
+   │        ╰───── const used as address
+   │ 
+   │ Help: consts hold compile-time values, not memory locations; prefix with `#` to use as an immediate (e.g. `#FOO`), or declare a `var` for memory access (e.g. `var FOO = $80`)
+───╯

@@ -23,6 +23,7 @@ Repository Layout:
 - `vendor/` contains the source code of a reference K65 compiler written in C. It is kept for reference purposes only and has no bearing on the Rust implementation.
 - `crates/` contains the Rust workspace crates listed above.
 - `docs/` contains documentation for k816's syntax and linker configuration.
+- `docs/misc/w65c816s.md` is the WDC W65C816S datasheet — the canonical reference for CPU behavior (instruction semantics, addressing modes, status flags, cycle counts, native/emulation mode, MX/E flag effects). Consult this file when researching 65816 processor behavior or verifying ISA details before changing instruction encoding, mode handling, or hover metadata.
 - `examples/` contains example K65 programs.
 - `tests/golden/` contains golden test fixtures for regression testing.
 

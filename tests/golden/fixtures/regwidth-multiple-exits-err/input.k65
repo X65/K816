@@ -1,0 +1,18 @@
+// multiple exits of the same function are supported, but must maintain contract
+
+func test_a @a16 @i16 {
+    lda #1234
+    != {
+        ldx #1234
+        return
+    }
+
+@a8
+    lda #0
+    return
+}
+
+func main {
+    lda #0
+    test_a
+}

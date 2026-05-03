@@ -1,0 +1,17 @@
+[default]
+000000: A9 D2 04 F0 04 A2 D2 04 60 A9 00 00 60 A9 00 C2
+000010: 30 4C 00 00
+
+
+[disasm obj#0 default::test_a]
+000000: A9 D2 04    lda #$04D2
+000003: F0 04       beq $000009
+000005: A2 D2 04    ldx #$04D2
+000008: 60          rts
+000009: A9 00 00    lda #$0000
+00000C: 60          rts
+
+[disasm obj#0 default::main]
+00000D: A9 00       lda #$00
+00000F: C2 30       rep #$30
+000011: 4C 00 00    jmp $0000

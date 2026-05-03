@@ -1,9 +1,9 @@
-Error: Cannot directly load/store :far value 'ptr'.
+Error: 'ptr' is a 3-byte :far value; no register can hold it directly.
    ╭─[ tests/golden/fixtures/syntax-store-from-a-far-store/input.k65:4:5 ]
    │
  4 │     ptr = a = 1
    │     ───┬───  
    │        ╰───── here
    │ 
-   │ Help: use explicit :byte or :word view, e.g. ptr:word for low 16 bits, (ptr+2):byte for bank byte
+   │ Help: use a partial view (e.g. ptr:word for the low 16 bits, (ptr+2):byte for the bank byte) or indirect-long ([ptr])
 ───╯

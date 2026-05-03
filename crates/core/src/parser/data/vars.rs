@@ -1,5 +1,6 @@
 use crate::ast::{
-    AddressHint, DataWidth, Expr, HlaBranchForm, IndexRegister, SymbolicSubscriptFieldDecl, VarDecl,
+    DataWidth, Expr, ForceAddrMode, HlaBranchForm, IndexRegister, SymbolicSubscriptFieldDecl,
+    VarDecl,
 };
 use crate::lexer::TokenKind;
 use crate::span::{SourceId, Spanned};
@@ -12,7 +13,7 @@ use chumsky::{
 };
 
 use super::super::{ParseExtra, expr_parser, ident_parser, spanned, zero_number_token};
-use super::{address_hint_parser, data_width_parser};
+use super::data_width_parser;
 
 #[derive(Debug, Clone)]
 pub(in super::super) enum CommaTrailer {
@@ -26,12 +27,6 @@ enum VarBracketPayload {
     SymbolicSubscriptFields(Vec<SymbolicSubscriptFieldDecl>),
 }
 
-#[derive(Debug, Clone, Copy)]
-enum VarDeclSuffix {
-    DataWidth(DataWidth),
-    AddressHint(AddressHint),
-}
-
 pub(in super::super) fn var_decl_parser<'src, I>(
     source_id: SourceId,
 ) -> impl chumsky::Parser<'src, I, VarDecl, ParseExtra<'src>> + Clone
@@ -39,7 +34,8 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     just(TokenKind::Var)
-        .ignore_then(ident_parser())
+        .ignore_then(var_addr_mode_prefix_parser().or_not())
+        .then(ident_parser())
         .then(var_decl_suffix_parser())
         .then(bracket_payload_parser(source_id))
         .then(just(TokenKind::Star).ignore_then(expr_parser()).or_not())
@@ -50,7 +46,7 @@ where
         )
         .map(
             |(
-                (((name, (data_width, addr_hint)), bracket_payload), alloc_count),
+                ((((addr_mode_default, name), data_width), bracket_payload), alloc_count),
                 initializer_with_span,
             )| {
                 let (array_len, symbolic_subscript_fields) = match bracket_payload {
@@ -68,7 +64,7 @@ where
                 VarDecl {
                     name,
                     data_width,
-                    addr_hint,
+                    addr_mode_default,
                     array_len,
                     symbolic_subscript_fields,
                     alloc_count,
@@ -80,42 +76,44 @@ where
         .boxed()
 }
 
+/// Optional `dp`/`abs`/`far` prefix between `var` and the variable name.
+/// Parallels the operand-position prefix parser in `parser/stmt.rs`. The
+/// `dp`/`abs` keywords are contextual identifiers — the prefix only fires when
+/// followed by another Ident (the variable name), so `var abs = $12` (var named
+/// `abs`) still parses cleanly as a non-prefixed declaration.
+fn var_addr_mode_prefix_parser<'src, I>()
+-> impl chumsky::Parser<'src, I, ForceAddrMode, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let abs_dp_kw = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("abs") => ForceAddrMode::Absolute,
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("dp") => ForceAddrMode::DirectPage,
+    };
+    let ident_lookahead = chumsky::select! { TokenKind::Ident(_) => () }.rewind();
+    let abs_dp_prefix = abs_dp_kw.then_ignore(ident_lookahead);
+    just(TokenKind::Far)
+        .to(ForceAddrMode::AbsoluteLong)
+        .or(abs_dp_prefix)
+        .boxed()
+}
+
 fn var_decl_suffix_parser<'src, I>()
--> impl chumsky::Parser<'src, I, (Option<DataWidth>, Option<AddressHint>), ParseExtra<'src>> + Clone
+-> impl chumsky::Parser<'src, I, Option<DataWidth>, ParseExtra<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     data_width_parser()
-        .map(VarDeclSuffix::DataWidth)
-        .or(address_hint_parser().map(VarDeclSuffix::AddressHint))
         .repeated()
         .collect::<Vec<_>>()
-        .try_map(|suffixes, span| {
+        .try_map(|widths, span| {
             let mut data_width = None;
-            let mut addr_hint = None;
-
-            for suffix in suffixes {
-                match suffix {
-                    VarDeclSuffix::DataWidth(width) => {
-                        if addr_hint.is_some() {
-                            return Err(Rich::custom(
-                                span,
-                                "':abs' must appear after any data width suffix",
-                            ));
-                        }
-                        if data_width.replace(width).is_some() {
-                            return Err(Rich::custom(span, "duplicate data width suffix"));
-                        }
-                    }
-                    VarDeclSuffix::AddressHint(hint) => {
-                        if addr_hint.replace(hint).is_some() {
-                            return Err(Rich::custom(span, "duplicate ':abs' suffix"));
-                        }
-                    }
+            for width in widths {
+                if data_width.replace(width).is_some() {
+                    return Err(Rich::custom(span, "duplicate data width suffix"));
                 }
             }
-
-            Ok((data_width, addr_hint))
+            Ok(data_width)
         })
         .boxed()
 }

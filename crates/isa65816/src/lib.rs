@@ -46,6 +46,7 @@ pub enum OperandShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressSizeHint {
     Auto,
+    ForceDirectPage,
     ForceAbsolute16,
     ForceAbsoluteLong,
 }
@@ -86,6 +87,10 @@ pub enum EncodeError {
     NoLongForm { mnemonic: String },
     #[error("This operand does not support forced absolute addressing")]
     NoAbsolute16Form,
+    #[error("This operand does not support forced direct-page addressing")]
+    NoDirectPageForm,
+    #[error("forced direct-page operand value out of range (must fit in 0x00..=0xFF)")]
+    DirectPageOutOfRange,
     #[error("immediate value out of range for the selected operand width")]
     ImmediateOutOfRange,
 }
@@ -678,6 +683,10 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
         } => {
             let wants_long = size_hint == AddressSizeHint::ForceAbsoluteLong
                 || literal.is_some_and(|value| value > 0xFFFF);
+            let wants_dp = size_hint == AddressSizeHint::ForceDirectPage;
+            if wants_dp && literal.is_some_and(|value| value > 0xFF) {
+                return Err(EncodeError::DirectPageOutOfRange);
+            }
             match mode {
                 AddressOperandMode::Direct { index } => {
                     if index.is_none() {
@@ -725,6 +734,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                 });
                             }
 
+                            if wants_dp {
+                                if let Some(opcode) =
+                                    find_opcode(&lower, AddressingMode::DirectPageX)
+                                {
+                                    return Ok(Encoding {
+                                        opcode,
+                                        mode: AddressingMode::DirectPageX,
+                                    });
+                                }
+                                return Err(EncodeError::NoDirectPageForm);
+                            }
+
                             if size_hint == AddressSizeHint::Auto
                                 && literal.is_some_and(|value| value <= 0xFF)
                                 && let Some(opcode) =
@@ -762,7 +783,10 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                             }
                         }
                         Some(IndexRegister::S) => {
-                            if wants_long || size_hint == AddressSizeHint::ForceAbsolute16 {
+                            if wants_long
+                                || wants_dp
+                                || size_hint == AddressSizeHint::ForceAbsolute16
+                            {
                                 return Err(EncodeError::InvalidOperand {
                                     mnemonic: mnemonic.to_string(),
                                 });
@@ -780,6 +804,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                 return Err(EncodeError::NoLongForm {
                                     mnemonic: mnemonic.to_string(),
                                 });
+                            }
+
+                            if wants_dp {
+                                if let Some(opcode) =
+                                    find_opcode(&lower, AddressingMode::DirectPageY)
+                                {
+                                    return Ok(Encoding {
+                                        opcode,
+                                        mode: AddressingMode::DirectPageY,
+                                    });
+                                }
+                                return Err(EncodeError::NoDirectPageForm);
                             }
 
                             if size_hint == AddressSizeHint::Auto
@@ -826,6 +862,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                                 });
                             }
 
+                            if wants_dp {
+                                if let Some(opcode) =
+                                    find_opcode(&lower, AddressingMode::DirectPage)
+                                {
+                                    return Ok(Encoding {
+                                        opcode,
+                                        mode: AddressingMode::DirectPage,
+                                    });
+                                }
+                                return Err(EncodeError::NoDirectPageForm);
+                            }
+
                             if size_hint == AddressSizeHint::Auto
                                 && literal.is_some_and(|value| value <= 0xFF)
                                 && let Some(opcode) =
@@ -863,6 +911,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                         return Err(EncodeError::InvalidOperand {
                             mnemonic: mnemonic.to_string(),
                         });
+                    }
+
+                    if wants_dp {
+                        if let Some(opcode) =
+                            find_opcode(&lower, AddressingMode::DirectPageIndirect)
+                        {
+                            return Ok(Encoding {
+                                opcode,
+                                mode: AddressingMode::DirectPageIndirect,
+                            });
+                        }
+                        return Err(EncodeError::NoDirectPageForm);
                     }
 
                     if size_hint == AddressSizeHint::Auto
@@ -903,6 +963,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                         });
                     }
 
+                    if wants_dp {
+                        if let Some(opcode) =
+                            find_opcode(&lower, AddressingMode::DirectPageIndexedIndirectX)
+                        {
+                            return Ok(Encoding {
+                                opcode,
+                                mode: AddressingMode::DirectPageIndexedIndirectX,
+                            });
+                        }
+                        return Err(EncodeError::NoDirectPageForm);
+                    }
+
                     if size_hint == AddressSizeHint::Auto
                         && literal.is_some_and(|value| value <= 0xFF)
                         && let Some(opcode) =
@@ -926,6 +998,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                     }
                 }
                 AddressOperandMode::IndirectIndexedY => {
+                    // (zp),y is inherently DP-only. wants_dp is permitted; wants_long is rejected.
                     if wants_long || literal.is_none() || literal.is_some_and(|value| value > 0xFF)
                     {
                         return Err(EncodeError::InvalidOperand {
@@ -943,6 +1016,18 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                     }
                 }
                 AddressOperandMode::IndirectLong => {
+                    if wants_dp {
+                        if let Some(opcode) =
+                            find_opcode(&lower, AddressingMode::DirectPageIndirectLong)
+                        {
+                            return Ok(Encoding {
+                                opcode,
+                                mode: AddressingMode::DirectPageIndirectLong,
+                            });
+                        }
+                        return Err(EncodeError::NoDirectPageForm);
+                    }
+
                     if size_hint == AddressSizeHint::Auto
                         && literal.is_some_and(|value| value <= 0xFF)
                         && let Some(opcode) =
@@ -962,10 +1047,15 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                     }
                 }
                 AddressOperandMode::IndirectLongIndexedY => {
+                    // [zp],y is inherently DP-only.
                     if size_hint != AddressSizeHint::Auto
-                        || literal.is_none()
-                        || literal.is_some_and(|value| value > 0xFF)
+                        && size_hint != AddressSizeHint::ForceDirectPage
                     {
+                        return Err(EncodeError::InvalidOperand {
+                            mnemonic: mnemonic.to_string(),
+                        });
+                    }
+                    if literal.is_none() || literal.is_some_and(|value| value > 0xFF) {
                         return Err(EncodeError::InvalidOperand {
                             mnemonic: mnemonic.to_string(),
                         });
@@ -981,6 +1071,7 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                 }
                 AddressOperandMode::StackRelativeIndirectIndexedY => {
                     if wants_long
+                        || wants_dp
                         || size_hint == AddressSizeHint::ForceAbsolute16
                         || literal.is_none()
                         || literal.is_some_and(|value| value > 0xFF)
@@ -1004,6 +1095,8 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                 Err(EncodeError::NoLongForm {
                     mnemonic: mnemonic.to_string(),
                 })
+            } else if size_hint == AddressSizeHint::ForceDirectPage {
+                Err(EncodeError::NoDirectPageForm)
             } else if size_hint == AddressSizeHint::ForceAbsolute16 {
                 Err(EncodeError::NoAbsolute16Form)
             } else {

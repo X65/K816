@@ -1,0 +1,7 @@
+Error: This operand does not support forced direct-page addressing
+   ╭─[ tests/golden/fixtures/prefix-dp-no-dp-form/input.k65:4:5 ]
+   │
+ 4 │     jsr dp main
+   │     ─────┬─────  
+   │          ╰─────── here
+───╯

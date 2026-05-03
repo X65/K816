@@ -215,9 +215,7 @@ pub(super) fn resolve_field_from_ast(
             Expr::Binary { lhs, rhs, .. } => {
                 check_expr(lhs, offset).or_else(|| check_expr(rhs, offset))
             }
-            Expr::Unary { expr, .. }
-            | Expr::TypedView { expr, .. }
-            | Expr::AddressHint { expr, .. } => check_expr(expr, offset),
+            Expr::Unary { expr, .. } | Expr::TypedView { expr, .. } => check_expr(expr, offset),
             _ => None,
         }
     }

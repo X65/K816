@@ -3,10 +3,9 @@ use chumsky::{error::Rich, extra};
 
 #[cfg(test)]
 use crate::ast::{
-    AddressHint, CallArg, ContractParam, DataArg, DataEntry, DataWidth, Expr, ExprBinaryOp,
-    ExprUnaryOp, HlaBranchForm, HlaCpuRegister, HlaRegister, HlaStackTarget, HlaStmt,
-    ImmediateParam, ImmediateParamType, IndexRegister, Item, NumFmt, OperandAddrMode, RegName,
-    RegWidth, Stmt,
+    CallArg, ContractParam, DataArg, DataEntry, DataWidth, Expr, ExprBinaryOp, ExprUnaryOp,
+    HlaBranchForm, HlaCpuRegister, HlaRegister, HlaStackTarget, HlaStmt, ImmediateParam,
+    ImmediateParamType, IndexRegister, Item, NumFmt, OperandAddrMode, RegName, RegWidth, Stmt,
 };
 #[cfg(test)]
 use crate::lexer::lex;
@@ -48,8 +47,8 @@ use self::common::{
 #[cfg(test)]
 use self::control::invalid_flag_goto_stmt_parser;
 use self::data::{
-    address_hint_parser, const_decl_item_parser, data_block_parser, data_width_parser,
-    metadata_query_parser, var_decl_parser,
+    const_decl_item_parser, data_block_parser, data_width_parser, metadata_query_parser,
+    var_decl_parser,
 };
 use self::diagnostics::rich_error_to_diagnostic;
 use self::expr::{

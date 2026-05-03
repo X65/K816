@@ -1,0 +1,11 @@
+// `abs` operand prefix forces 16-bit absolute addressing for one operand,
+// even when the operand value would otherwise auto-shrink to direct-page.
+var dp_addr = $0012
+var abs_addr = $1234
+
+func main {
+    lda abs dp_addr
+    sta abs dp_addr
+    lda abs abs_addr
+    lda abs dp_addr,x
+}

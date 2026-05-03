@@ -1,0 +1,8 @@
+// Operand prefix and data-width suffix compose orthogonally.
+// `far x:byte` = AbsoluteLong load + 1-byte data view, valid in @a8.
+var x = $1234
+
+func main @a8 @i8 {
+    lda far x:byte
+    sta far x:byte,x
+}

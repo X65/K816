@@ -11,7 +11,7 @@
 // reset the compiler's register-width tracker: PLP (0x28) and RTI (0x40).
 //
 // `x0` is a variable at address 0; references use direct-page encoding,
-// with `x0:abs` forcing 16-bit absolute and `far x0` forcing 24-bit long.
+// with `abs x0` forcing 16-bit absolute and `far x0` forcing 24-bit long.
 // Bare literal `0` can't stand in for a direct-page address because
 // memory access is only allowed through var aliases.
 //
@@ -34,9 +34,9 @@ naked part_00 @a16 @i16 {
     ora #0
     asl
     phd
-    tsb x0:abs
-    ora x0:abs
-    asl x0:abs
+    tsb abs x0
+    ora abs x0
+    asl abs x0
     ora far x0
 
     // 0x10 .. 0x1F
@@ -50,12 +50,12 @@ naked part_00 @a16 @i16 {
     asl x0,x
     ora [0],y
     clc
-    ora x0:abs,y
+    ora abs x0,y
     inc
     tcs
-    trb x0:abs
-    ora x0:abs,x
-    asl x0:abs,x
+    trb abs x0
+    ora abs x0,x
+    asl abs x0,x
     ora far x0,x
 
     // 0x20 .. 0x28 (last op is plp, which resets width tracking)
@@ -75,9 +75,9 @@ naked part_29 @a16 @i16 {
     and #0
     rol
     pld
-    bit x0:abs
-    and x0:abs
-    rol x0:abs
+    bit abs x0
+    and abs x0
+    rol abs x0
     and far x0
 
     // 0x30 .. 0x3F
@@ -91,12 +91,12 @@ naked part_29 @a16 @i16 {
     rol x0,x
     and [0],y
     sec
-    and x0:abs,y
+    and abs x0,y
     dec
     tsc
-    bit x0:abs,x
-    and x0:abs,x
-    rol x0:abs,x
+    bit abs x0,x
+    and abs x0,x
+    rol abs x0,x
     and far x0,x
 }
 
@@ -119,8 +119,8 @@ naked part_41 @a16 @i16 {
     lsr
     phk
     jmp x0
-    eor x0:abs
-    lsr x0:abs
+    eor abs x0
+    lsr abs x0
     eor far x0
 
     // 0x50 .. 0x5F
@@ -134,12 +134,12 @@ naked part_41 @a16 @i16 {
     lsr x0,x
     eor [0],y
     cli
-    eor x0:abs,y
+    eor abs x0,y
     phy
     tcd
     jml x0
-    eor x0:abs,x
-    lsr x0:abs,x
+    eor abs x0,x
+    lsr abs x0,x
     eor far x0,x
 
     // 0x60 .. 0x6F
@@ -157,8 +157,8 @@ naked part_41 @a16 @i16 {
     ror
     rtl
     jmp (0)
-    adc x0:abs
-    ror x0:abs
+    adc abs x0
+    ror abs x0
     adc far x0
 
     // 0x70 .. 0x7F
@@ -172,12 +172,12 @@ naked part_41 @a16 @i16 {
     ror x0,x
     adc [0],y
     sei
-    adc x0:abs,y
+    adc abs x0,y
     ply
     tdc
     jmp (0,x)
-    adc x0:abs,x
-    ror x0:abs,x
+    adc abs x0,x
+    ror abs x0,x
     adc far x0,x
 
     // 0x80 .. 0x8F
@@ -195,9 +195,9 @@ naked part_41 @a16 @i16 {
     bit #0
     txa
     phb
-    sty x0:abs
-    sta x0:abs
-    stx x0:abs
+    sty abs x0
+    sta abs x0
+    stx abs x0
     sta far x0
 
     // 0x90 .. 0x9F
@@ -211,12 +211,12 @@ naked part_41 @a16 @i16 {
     stx x0,y
     sta [0],y
     tya
-    sta x0:abs,y
+    sta abs x0,y
     txs
     txy
-    stz x0:abs
-    sta x0:abs,x
-    stz x0:abs,x
+    stz abs x0
+    sta abs x0,x
+    stz abs x0,x
     sta far x0,x
 
     // 0xA0 .. 0xAF
@@ -232,9 +232,9 @@ naked part_41 @a16 @i16 {
     lda #0
     tax
     plb
-    ldy x0:abs
-    lda x0:abs
-    ldx x0:abs
+    ldy abs x0
+    lda abs x0
+    ldx abs x0
     lda far x0
 
     // 0xB0 .. 0xBF
@@ -248,16 +248,16 @@ naked part_41 @a16 @i16 {
     ldx x0,y
     lda [0],y
     clv
-    lda x0:abs,y
+    lda abs x0,y
     tsx
     // empty label between two adjacent register-only writes to X
     // prevents the peephole optimizer from folding `tsx` away. A
     // label emits no bytes, preserving the exhaustive opcode order.
     .between_tsx_tyx:
     tyx
-    ldy x0:abs,x
-    lda x0:abs,x
-    ldx x0:abs,y
+    ldy abs x0,x
+    lda abs x0,x
+    ldx abs x0,y
     lda far x0,x
 
     // 0xC0 .. 0xCF
@@ -273,9 +273,9 @@ naked part_41 @a16 @i16 {
     cmp #0
     dex
     wai
-    cpy x0:abs
-    cmp x0:abs
-    dec x0:abs
+    cpy abs x0
+    cmp abs x0
+    dec abs x0
     cmp far x0
 
     // 0xD0 .. 0xDF
@@ -289,12 +289,12 @@ naked part_41 @a16 @i16 {
     dec x0,x
     cmp [0],y
     cld
-    cmp x0:abs,y
+    cmp abs x0,y
     phx
     stp
     jmp [0]
-    cmp x0:abs,x
-    dec x0:abs,x
+    cmp abs x0,x
+    dec abs x0,x
     cmp far x0,x
 
     // 0xE0 .. 0xEF
@@ -310,9 +310,9 @@ naked part_41 @a16 @i16 {
     sbc #0
     nop
     xba
-    cpx x0:abs
-    sbc x0:abs
-    inc x0:abs
+    cpx abs x0
+    sbc abs x0
+    inc abs x0
     sbc far x0
 
     // 0xF0 .. 0xFF
@@ -326,11 +326,11 @@ naked part_41 @a16 @i16 {
     inc x0,x
     sbc [0],y
     sed
-    sbc x0:abs,y
+    sbc abs x0,y
     plx
     xce
     jsr (0,x)
-    sbc x0:abs,x
-    inc x0:abs,x
+    sbc abs x0,x
+    inc abs x0,x
     sbc far x0,x
 }

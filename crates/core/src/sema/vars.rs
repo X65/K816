@@ -44,7 +44,7 @@ pub(super) fn collect_var(
             size: layout.size,
             element_size: layout.element_size,
             data_width: var.data_width,
-            addr_hint: var.addr_hint,
+            addr_mode_default: var.addr_mode_default,
             symbolic_subscript: layout.symbolic_subscript,
         },
     );

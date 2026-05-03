@@ -1,0 +1,8 @@
+// `far` operand prefix forces 24-bit AbsoluteLong addressing for one operand.
+// (Regression coverage for the prefix-family redesign — `far` semantics unchanged.)
+var addr = $1234
+
+func main {
+    lda far addr
+    lda far addr,x
+}

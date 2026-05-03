@@ -99,6 +99,7 @@ pub enum AddressOperandMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressSizeHint {
     Auto,
+    ForceDirectPage,
     ForceAbsolute16,
     ForceAbsoluteLong,
 }

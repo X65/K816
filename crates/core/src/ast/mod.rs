@@ -22,9 +22,13 @@ pub enum DataWidth {
     Far,
 }
 
+/// Forced address-encoding for one operand. Set by the operand prefix
+/// `dp <expr>`, `abs <expr>`, or `far <expr>`. Independent of `DataWidth`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddressHint {
-    ForceAbsolute16,
+pub enum ForceAddrMode {
+    DirectPage,
+    Absolute,
+    AbsoluteLong,
 }
 
 /// Compile-time metadata query on a variable or symbolic subscript field.
@@ -120,7 +124,10 @@ pub struct EvaluatorBlock {
 pub struct VarDecl {
     pub name: String,
     pub data_width: Option<DataWidth>,
-    pub addr_hint: Option<AddressHint>,
+    /// Default address-encoding for plain references to this symbol. Set by the
+    /// `dp`/`abs`/`far` prefix on a `var` declaration. Operand-level prefixes
+    /// still override this per call site.
+    pub addr_mode_default: Option<ForceAddrMode>,
     pub array_len: Option<Expr>,
     pub symbolic_subscript_fields: Option<Vec<SymbolicSubscriptFieldDecl>>,
     pub alloc_count: Option<Expr>,
@@ -218,7 +225,7 @@ pub enum Operand {
     },
     Value {
         expr: Expr,
-        force_far: bool,
+        addr_mode_override: Option<ForceAddrMode>,
         index: Option<IndexRegister>,
         addr_mode: OperandAddrMode,
     },
@@ -452,7 +459,10 @@ pub enum HlaStmt {
     NeverBlock {
         body: Vec<Spanned<Stmt>>,
     },
-    RepeatInstruction { mnemonic: String, count: Expr },
+    RepeatInstruction {
+        mnemonic: String,
+        count: Expr,
+    },
     PrefixConditional {
         skip_mnemonic: String,
         form: HlaBranchForm,
@@ -503,10 +513,6 @@ pub enum Expr {
     TypedView {
         expr: Box<Expr>,
         width: DataWidth,
-    },
-    AddressHint {
-        expr: Box<Expr>,
-        hint: AddressHint,
     },
     MetadataQuery {
         expr: Box<Expr>,

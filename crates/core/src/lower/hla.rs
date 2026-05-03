@@ -5,8 +5,8 @@
 //! and `crate::ast`/`crate::hir`/`crate::sema`/`crate::span`.
 
 use crate::ast::{
-    Expr, HlaAluOp, HlaCompareOp, HlaCondition, HlaCpuRegister, HlaFlag, HlaIncDecOp,
-    HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget,
+    Expr, ForceAddrMode, HlaAluOp, HlaCompareOp, HlaCondition, HlaCpuRegister, HlaFlag,
+    HlaIncDecOp, HlaIncDecTarget, HlaOperandExpr, HlaRegister, HlaRhs, HlaShiftOp, HlaShiftTarget,
     HlaStackTarget, HlaStmt, NumFmt, Operand, OperandAddrMode,
 };
 use crate::diag::Diagnostic;
@@ -66,7 +66,7 @@ pub(super) fn lower_hla_stmt(
                 mnemonic,
                 Some(Operand::Value {
                     expr: dest.expr.clone(),
-                    force_far: false,
+                    addr_mode_override: None,
                     index: dest.index,
                     addr_mode: dest.addr_mode,
                 }),
@@ -86,7 +86,7 @@ pub(super) fn lower_hla_stmt(
                 "stz",
                 Some(Operand::Value {
                     expr: dest.expr.clone(),
-                    force_far: false,
+                    addr_mode_override: None,
                     index: dest.index,
                     addr_mode: dest.addr_mode,
                 }),
@@ -176,7 +176,7 @@ pub(super) fn lower_hla_stmt(
                         mnemonic,
                         Some(Operand::Value {
                             expr: address.expr.clone(),
-                            force_far: false,
+                            addr_mode_override: None,
                             index: address.index,
                             addr_mode: address.addr_mode,
                         }),
@@ -198,7 +198,7 @@ pub(super) fn lower_hla_stmt(
                     mnemonic,
                     Some(Operand::Value {
                         expr: address.expr.clone(),
-                        force_far: false,
+                        addr_mode_override: None,
                         index: address.index,
                         addr_mode: address.addr_mode,
                     }),
@@ -254,7 +254,11 @@ pub(super) fn lower_hla_stmt(
                 if *far { "jml" } else { "jmp" },
                 Some(Operand::Value {
                     expr: target.clone(),
-                    force_far: *far,
+                    addr_mode_override: if *far {
+                        Some(ForceAddrMode::AbsoluteLong)
+                    } else {
+                        None
+                    },
                     index: None,
                     addr_mode: if *indirect {
                         OperandAddrMode::Indirect
@@ -272,7 +276,7 @@ pub(super) fn lower_hla_stmt(
                 mnemonic,
                 Some(Operand::Value {
                     expr: target.clone(),
-                    force_far: false,
+                    addr_mode_override: None,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),
@@ -354,7 +358,7 @@ pub(super) fn lower_hla_stmt(
                     "sta",
                     Some(Operand::Value {
                         expr: Expr::Ident(dest.clone()),
-                        force_far: false,
+                        addr_mode_override: None,
                         index: None,
                         addr_mode: OperandAddrMode::Direct,
                     }),
@@ -380,7 +384,7 @@ pub(super) fn lower_hla_stmt(
                 "bit",
                 Some(Operand::Value {
                     expr: Expr::Ident(symbol.clone()),
-                    force_far: false,
+                    addr_mode_override: None,
                     index: None,
                     addr_mode: OperandAddrMode::Direct,
                 }),

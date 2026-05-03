@@ -347,9 +347,7 @@ fn eval_const_expr(
                     .ok_or(ConstExprError::Overflow),
             }
         }
-        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
-            eval_const_expr(expr, consts)
-        }
+        Expr::TypedView { expr, .. } => eval_const_expr(expr, consts),
         Expr::MetadataQuery { expr, .. } => {
             // :sizeof / :offsetof require VarMeta which is not available during
             // const propagation.  Extract the identifier name from the inner

@@ -70,21 +70,12 @@ fn parses_expression_fragment_with_newline_padding() {
 }
 
 #[test]
-fn parses_expression_fragment_with_address_hint_suffix() {
-    let expr = parse_expression_fragment(SourceId(0), "foo:byte:abs").expect("parse");
-    assert!(matches!(
-        expr.node,
-        Expr::AddressHint {
-            expr,
-            hint: AddressHint::ForceAbsolute16,
-        } if matches!(
-            expr.as_ref(),
-            Expr::TypedView {
-                expr,
-                width: DataWidth::Byte,
-            } if is_ident_named(expr.as_ref(), "foo")
-        )
-    ));
+fn rejects_expression_fragment_with_removed_abs_suffix() {
+    let result = parse_expression_fragment(SourceId(0), "foo:byte:abs");
+    assert!(
+        result.is_err(),
+        "expected parse error after :abs suffix removal"
+    );
 }
 
 #[test]

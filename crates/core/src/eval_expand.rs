@@ -471,7 +471,7 @@ fn expand_var(
     VarDecl {
         name: var.name.clone(),
         data_width: var.data_width,
-        addr_hint: var.addr_hint,
+        addr_mode_default: var.addr_mode_default,
         array_len: var
             .array_len
             .as_ref()
@@ -512,12 +512,12 @@ fn expand_instruction(
         },
         Operand::Value {
             expr,
-            force_far,
+            addr_mode_override,
             index,
             addr_mode,
         } => Operand::Value {
             expr: expand_expr(expr, span, source_id, diagnostics),
-            force_far: *force_far,
+            addr_mode_override: *addr_mode_override,
             index: *index,
             addr_mode: *addr_mode,
         },
@@ -599,10 +599,6 @@ fn expand_expr(
         Expr::TypedView { expr, width } => Expr::TypedView {
             expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
             width: *width,
-        },
-        Expr::AddressHint { expr, hint } => Expr::AddressHint {
-            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
-            hint: *hint,
         },
         Expr::MetadataQuery { expr, query } => Expr::MetadataQuery {
             expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),

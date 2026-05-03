@@ -111,6 +111,7 @@ fn to_isa_address_mode(mode: AddressOperandMode) -> IsaAddressOperandMode {
 fn to_isa_address_size_hint(size_hint: AddressSizeHint) -> IsaAddressSizeHint {
     match size_hint {
         AddressSizeHint::Auto => IsaAddressSizeHint::Auto,
+        AddressSizeHint::ForceDirectPage => IsaAddressSizeHint::ForceDirectPage,
         AddressSizeHint::ForceAbsolute16 => IsaAddressSizeHint::ForceAbsolute16,
         AddressSizeHint::ForceAbsoluteLong => IsaAddressSizeHint::ForceAbsoluteLong,
     }

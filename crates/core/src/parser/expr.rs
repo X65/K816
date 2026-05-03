@@ -1,4 +1,4 @@
-use crate::ast::{AddressHint, Expr, ExprBinaryOp, ExprUnaryOp, NumFmt};
+use crate::ast::{Expr, ExprBinaryOp, ExprUnaryOp, NumFmt};
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::SourceId;
 use chumsky::{
@@ -10,15 +10,9 @@ use chumsky::{
 };
 
 use super::{
-    ParseExtra, address_hint_parser, data_width_parser, line_sep_parser, metadata_query_parser,
+    ParseExtra, data_width_parser, line_sep_parser, metadata_query_parser,
     parse_expression_fragment, spanned,
 };
-
-#[derive(Debug, Clone, Copy)]
-enum ExprSuffix {
-    TypedView(crate::ast::DataWidth),
-    AddressHint(AddressHint),
-}
 
 pub(super) fn expr_parser<'src, I>() -> impl chumsky::Parser<'src, I, Expr, ParseExtra<'src>> + Clone
 where
@@ -189,42 +183,20 @@ where
                     rhs: Box::new(rhs),
                 })
             })
-            .then(
-                data_width_parser()
-                    .map(ExprSuffix::TypedView)
-                    .or(address_hint_parser().map(ExprSuffix::AddressHint))
-                    .repeated()
-                    .collect::<Vec<_>>(),
-            )
-            .try_map(|(expr, suffixes), span| {
+            .then(data_width_parser().repeated().collect::<Vec<_>>())
+            .try_map(|(expr, widths), span| {
                 let mut expr = expr;
-                let mut seen_address_hint = false;
+                let mut seen_width = false;
 
-                for suffix in suffixes {
-                    match suffix {
-                        ExprSuffix::TypedView(width) => {
-                            if seen_address_hint {
-                                return Err(Rich::custom(
-                                    span,
-                                    "':abs' must appear after any typed view suffix",
-                                ));
-                            }
-                            expr = Expr::TypedView {
-                                expr: Box::new(expr),
-                                width,
-                            };
-                        }
-                        ExprSuffix::AddressHint(hint) => {
-                            if seen_address_hint {
-                                return Err(Rich::custom(span, "duplicate ':abs' suffix"));
-                            }
-                            seen_address_hint = true;
-                            expr = Expr::AddressHint {
-                                expr: Box::new(expr),
-                                hint,
-                            };
-                        }
+                for width in widths {
+                    if seen_width {
+                        return Err(Rich::custom(span, "duplicate data width suffix"));
                     }
+                    seen_width = true;
+                    expr = Expr::TypedView {
+                        expr: Box::new(expr),
+                        width,
+                    };
                 }
 
                 Ok(expr)
@@ -387,7 +359,7 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprUnaryOp::Negate => value.checked_neg(),
             }
         }
-        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => eval_static_expr(expr),
+        Expr::TypedView { expr, .. } => eval_static_expr(expr),
         // Metadata queries require the semantic model; cannot resolve statically.
         Expr::MetadataQuery { .. } => None,
     }

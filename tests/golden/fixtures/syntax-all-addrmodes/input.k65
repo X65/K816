@@ -1,19 +1,20 @@
 // One raw-mnemonic example for each W65C816S manual section 3.5 addressing mode.
-// `x0` lives in direct page; `:abs` and `far` force the wider address forms.
+// `x0` lives in direct page; `abs` and `far` operand prefixes force the wider
+// address forms.
 var x0 = 0
 
 naked main @a8 @i8 {
 start:
     // 3.5.1 Absolute-a
-    lda x0:abs
+    lda abs x0
     // 3.5.2 Absolute Indexed Indirect-(a,x)
-    jmp (x0:abs,x)
+    jmp (abs x0,x)
     // 3.5.3 Absolute Indexed with X-a,x
-    lda x0:abs,x
+    lda abs x0,x
     // 3.5.4 Absolute Indexed with Y-a,y
-    lda x0:abs,y
+    lda abs x0,y
     // 3.5.5 Absolute Indirect-(a)
-    jmp (x0:abs)
+    jmp (abs x0)
     // 3.5.6 Absolute Long Indexed With X-al,x
     lda far x0,x
     // 3.5.7 Absolute Long-al

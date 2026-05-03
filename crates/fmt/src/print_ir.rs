@@ -109,14 +109,12 @@ pub fn format_ir(program: &Program) -> String {
                                     }
                                 }
                             };
-                            if *size_hint == AddressSizeHint::ForceAbsoluteLong {
-                                out.push_str("far ");
+                            match *size_hint {
+                                AddressSizeHint::ForceDirectPage => out.push_str("dp "),
+                                AddressSizeHint::ForceAbsolute16 => out.push_str("abs "),
+                                AddressSizeHint::ForceAbsoluteLong => out.push_str("far "),
+                                AddressSizeHint::Auto => {}
                             }
-                            let base = if *size_hint == AddressSizeHint::ForceAbsolute16 {
-                                format!("{base}:abs")
-                            } else {
-                                base
-                            };
                             let rendered = match mode {
                                 AddressOperandMode::Direct {
                                     index: Some(IndexRegister::X),

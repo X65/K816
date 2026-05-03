@@ -128,7 +128,7 @@ where
             Item::Var(VarDecl {
                 name,
                 data_width: None,
-                addr_hint: None,
+                addr_mode_default: None,
                 array_len: None,
                 symbolic_subscript_fields: None,
                 alloc_count: None,

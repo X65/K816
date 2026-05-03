@@ -6,8 +6,8 @@ use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
 use crate::ast::{
-    AddressHint, CallArg, CallStmt, CodeBlock, ContractParam, DataArg, DataBlock, DataEntry,
-    DataWidth, Expr, ExprBinaryOp, ExprUnaryOp, File, HlaCondition, HlaCpuRegister, HlaOperandExpr,
+    CallArg, CallStmt, CodeBlock, ContractParam, DataArg, DataBlock, DataEntry, DataWidth, Expr,
+    ExprBinaryOp, ExprUnaryOp, File, ForceAddrMode, HlaCondition, HlaCpuRegister, HlaOperandExpr,
     HlaRhs, HlaStackTarget, HlaStmt, ImmediateParamType, Instruction, Item, MetadataQuery,
     ModeContract, NumFmt, Operand, OperandAddrMode, RegName, RegWidth, Stmt,
 };
@@ -634,10 +634,6 @@ fn substitute_inline_expr(expr: &Expr, bindings: &InlineBindings) -> Expr {
             expr: Box::new(substitute_inline_expr(expr, bindings)),
             width: *width,
         },
-        Expr::AddressHint { expr, hint } => Expr::AddressHint {
-            expr: Box::new(substitute_inline_expr(expr, bindings)),
-            hint: *hint,
-        },
         Expr::MetadataQuery { expr, query } => Expr::MetadataQuery {
             expr: Box::new(substitute_inline_expr(expr, bindings)),
             query: *query,
@@ -693,12 +689,12 @@ fn substitute_inline_stmt(stmt: &Stmt, bindings: &InlineBindings) -> Stmt {
                 },
                 Operand::Value {
                     expr,
-                    force_far,
+                    addr_mode_override,
                     index,
                     addr_mode,
                 } => Operand::Value {
                     expr: substitute_inline_expr(expr, bindings),
-                    force_far: *force_far,
+                    addr_mode_override: *addr_mode_override,
                     index: *index,
                     addr_mode: *addr_mode,
                 },
@@ -3371,10 +3367,10 @@ fn validate_instruction_width_rules(
         Operand::Auto { expr } => is_immediate_expression(expr, sema),
         Operand::Value {
             expr,
-            force_far,
+            addr_mode_override,
             index,
             addr_mode,
-        } => value_operand_uses_immediate(*force_far, *index, *addr_mode, expr, sema),
+        } => value_operand_uses_immediate(*addr_mode_override, *index, *addr_mode, expr, sema),
         Operand::BlockMove { .. } => false,
     };
 
@@ -3418,16 +3414,16 @@ fn validate_instruction_width_rules(
     let Some(required_width) = data_width_to_reg_width(data_width) else {
         let var_name = base_ident(expr);
         let msg = if let Some(name) = var_name {
-            format!("Cannot directly load/store :far value '{name}'.")
+            format!("'{name}' is a 3-byte :far value; no register can hold it directly.")
         } else {
-            "Cannot directly load/store :far value.".to_string()
+            "3-byte :far value cannot be loaded into a register directly.".to_string()
         };
         let help = if let Some(name) = var_name {
             format!(
-                "use explicit :byte or :word view, e.g. {name}:word for low 16 bits, ({name}+2):byte for bank byte"
+                "use a partial view (e.g. {name}:word for the low 16 bits, ({name}+2):byte for the bank byte) or indirect-long ([{name}])"
             )
         } else {
-            "use explicit :byte or :word view, e.g. name:word for low 16 bits, (name+2):byte for bank byte".to_string()
+            "use a partial view (e.g. name:word for the low 16 bits, (name+2):byte for the bank byte) or indirect-long ([name])".to_string()
         };
         diagnostics.push(Diagnostic::error(span, msg).with_help(help));
         return;
@@ -3532,7 +3528,6 @@ fn validate_mode_for_typed_access(
 fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
     match expr {
         Expr::TypedView { width, .. } => Some(*width),
-        Expr::AddressHint { expr, .. } => expr_data_width(expr, sema),
         Expr::Ident(name) => sema
             .vars
             .get(name)
@@ -3554,7 +3549,6 @@ fn base_ident(expr: &Expr) -> Option<&str> {
         Expr::IdentSpanned { name, .. } => Some(name.as_str()),
         Expr::Index { base, .. } => base_ident(base),
         Expr::TypedView { expr, .. } => base_ident(expr),
-        Expr::AddressHint { expr, .. } => base_ident(expr),
         _ => None,
     }
 }
@@ -3574,34 +3568,33 @@ fn expr_ident_span(expr: &Expr, fallback: Span) -> Option<Span> {
     }
 }
 
-fn expr_address_hint(expr: &Expr) -> Option<AddressHint> {
-    match expr {
-        Expr::AddressHint { expr: inner, hint } => expr_address_hint(inner).or(Some(*hint)),
-        Expr::TypedView { expr, .. } => expr_address_hint(expr),
-        _ => None,
+fn force_addr_mode_to_size_hint(force: ForceAddrMode) -> AddressSizeHint {
+    match force {
+        ForceAddrMode::DirectPage => AddressSizeHint::ForceDirectPage,
+        ForceAddrMode::Absolute => AddressSizeHint::ForceAbsolute16,
+        ForceAddrMode::AbsoluteLong => AddressSizeHint::ForceAbsoluteLong,
     }
 }
 
-fn effective_address_hint(expr: &Expr, sema: &SemanticModel) -> Option<AddressHint> {
-    expr_address_hint(expr).or_else(|| {
-        base_ident(expr)
-            .and_then(|name| sema.vars.get(name))
-            .and_then(|var| var.addr_hint)
-    })
-}
-
-fn address_size_hint_for_expr(
+/// Resolves the effective addressing-mode hint for an operand. Operand-level
+/// `dp`/`abs`/`far` prefixes win; otherwise a `var` declaration's
+/// `addr_mode_default` (set by the same prefix family on the declaration) is
+/// applied for plain references to that symbol.
+fn address_size_hint_for_operand(
+    addr_mode_override: Option<ForceAddrMode>,
     expr: &Expr,
     sema: &SemanticModel,
-    force_far: bool,
 ) -> AddressSizeHint {
-    if force_far {
-        AddressSizeHint::ForceAbsoluteLong
-    } else if effective_address_hint(expr, sema).is_some() {
-        AddressSizeHint::ForceAbsolute16
-    } else {
-        AddressSizeHint::Auto
+    if let Some(force) = addr_mode_override {
+        return force_addr_mode_to_size_hint(force);
     }
+    if let Some(force) = base_ident(expr)
+        .and_then(|name| sema.vars.get(name))
+        .and_then(|var| var.addr_mode_default)
+    {
+        return force_addr_mode_to_size_hint(force);
+    }
+    AddressSizeHint::Auto
 }
 
 fn symbolic_subscript_field_width(name: &str, sema: &SemanticModel) -> Option<DataWidth> {
@@ -3678,7 +3671,7 @@ fn lower_hla_operand_to_operand(parsed: &HlaOperandExpr) -> Operand {
     if parsed.addr_mode != OperandAddrMode::Direct || parsed.index.is_some() {
         return Operand::Value {
             expr: parsed.expr.clone(),
-            force_far: false,
+            addr_mode_override: None,
             index: parsed.index,
             addr_mode: parsed.addr_mode,
         };
@@ -3686,7 +3679,7 @@ fn lower_hla_operand_to_operand(parsed: &HlaOperandExpr) -> Operand {
     match &parsed.expr {
         Expr::Index { .. } => Operand::Value {
             expr: parsed.expr.clone(),
-            force_far: false,
+            addr_mode_override: None,
             index: None,
             addr_mode: OperandAddrMode::Direct,
         },
@@ -3892,7 +3885,7 @@ fn emit_branch_to_label(
         mnemonic,
         Some(Operand::Value {
             expr: Expr::Ident(target.to_string()),
-            force_far: false,
+            addr_mode_override: None,
             index: None,
             addr_mode: OperandAddrMode::Direct,
         }),
@@ -4239,9 +4232,7 @@ fn eval_to_number_strict(
                 }),
             }
         }
-        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
-            eval_to_number_strict(expr, sema, span, diagnostics)
-        }
+        Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
         Expr::MetadataQuery { expr, query } => {
             resolve_metadata_query(expr, *query, sema, span, diagnostics)
         }
@@ -4435,16 +4426,13 @@ fn resolve_symbolic_byte_relocation(
 }
 
 fn value_operand_uses_immediate(
-    force_far: bool,
+    addr_mode_override: Option<ForceAddrMode>,
     index: Option<crate::ast::IndexRegister>,
     addr_mode: OperandAddrMode,
     expr: &Expr,
     sema: &SemanticModel,
 ) -> bool {
-    if force_far || index.is_some() || addr_mode != OperandAddrMode::Direct {
-        return false;
-    }
-    if effective_address_hint(expr, sema).is_some() {
+    if addr_mode_override.is_some() || index.is_some() || addr_mode != OperandAddrMode::Direct {
         return false;
     }
     is_immediate_expression(expr, sema)
@@ -4462,9 +4450,7 @@ fn is_immediate_expression(expr: &Expr, sema: &SemanticModel) -> bool {
         }
         Expr::Unary { .. } => true,
         Expr::Index { .. } | Expr::EvalText(_) => false,
-        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
-            is_immediate_expression(expr, sema)
-        }
+        Expr::TypedView { expr, .. } => is_immediate_expression(expr, sema),
         Expr::MetadataQuery { .. } => true,
     }
 }
@@ -4762,26 +4748,26 @@ fn lower_instruction(
         }
         Some(Operand::Value {
             expr,
-            force_far,
+            addr_mode_override,
             index,
             addr_mode,
         }) => {
-            if value_operand_uses_immediate(*force_far, *index, *addr_mode, expr, sema) {
+            if value_operand_uses_immediate(*addr_mode_override, *index, *addr_mode, expr, sema) {
                 let eval_span = immediate_expr_span(expr, span, false);
                 lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
             } else {
                 let mode = lower_operand_mode(*addr_mode, *index);
-                let size_hint = address_size_hint_for_expr(expr, sema, *force_far);
+                let size_hint = address_size_hint_for_operand(*addr_mode_override, expr, sema);
                 lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
             }
         }
         Some(Operand::Auto { expr }) => {
-            if effective_address_hint(expr, sema).is_none() && is_immediate_expression(expr, sema) {
+            if is_immediate_expression(expr, sema) {
                 let eval_span = immediate_expr_span(expr, span, false);
                 lower_immediate_operand(expr, scope, sema, eval_span, diagnostics)
             } else {
                 let mode = lower_operand_mode(OperandAddrMode::Direct, None);
-                let size_hint = address_size_hint_for_expr(expr, sema, false);
+                let size_hint = address_size_hint_for_operand(None, expr, sema);
                 lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
             }
         }
@@ -5132,9 +5118,6 @@ fn lower_address_operand(
         Expr::IdentSpanned { name, .. } => {
             resolve_operand_ident(name, scope, sema, span, diagnostics, size_hint, mode)
         }
-        Expr::AddressHint { expr, .. } => {
-            lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
-        }
         // Typed views should preserve unresolved labels for relocation-aware object flows.
         Expr::TypedView { expr, .. } => {
             lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
@@ -5255,9 +5238,7 @@ fn eval_to_number(
                 }),
             }
         }
-        Expr::TypedView { expr, .. } | Expr::AddressHint { expr, .. } => {
-            eval_to_number(expr, scope, sema, span, diagnostics)
-        }
+        Expr::TypedView { expr, .. } => eval_to_number(expr, scope, sema, span, diagnostics),
         Expr::MetadataQuery { expr, query } => {
             resolve_metadata_query(expr, *query, sema, span, diagnostics)
         }
@@ -5577,8 +5558,8 @@ mod tests {
     }
 
     #[test]
-    fn inherits_var_absolute16_hint_for_address_operands() {
-        let source = "var target:abs = 0x0012\nfunc main {\n  lda target\n}\n";
+    fn abs_prefix_forces_absolute16_for_address_operands() {
+        let source = "var target = 0x0012\nfunc main {\n  lda abs target\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -5606,8 +5587,8 @@ mod tests {
     }
 
     #[test]
-    fn var_absolute16_hint_prevents_hla_immediate_classification() {
-        let source = "var target:abs = 0x0012\nfunc main {\n  a = target\n}\n";
+    fn var_abs_prefix_propagates_default_to_plain_references() {
+        let source = "var abs target = 0x0012\nfunc main {\n  lda target\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;
@@ -5629,6 +5610,64 @@ mod tests {
             OperandOp::Address {
                 value: AddressValue::Literal(0x12),
                 size_hint: AddressSizeHint::ForceAbsolute16,
+                mode: AddressOperandMode::Direct { index: None },
+            }
+        ));
+    }
+
+    #[test]
+    fn operand_prefix_overrides_var_default() {
+        let source = "var abs target = 0x0012\nfunc main {\n  lda dp target\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs, None).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::Literal(0x12),
+                size_hint: AddressSizeHint::ForceDirectPage,
+                mode: AddressOperandMode::Direct { index: None },
+            }
+        ));
+    }
+
+    #[test]
+    fn dp_prefix_forces_direct_page_for_high_address_value() {
+        let source = "var target = 0x0080\nfunc main {\n  lda dp target\n}\n";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs, None).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::Literal(0x80),
+                size_hint: AddressSizeHint::ForceDirectPage,
                 mode: AddressOperandMode::Direct { index: None },
             }
         ));

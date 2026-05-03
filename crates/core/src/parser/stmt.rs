@@ -1,6 +1,6 @@
 use crate::ast::{
-    CallArg, CallStmt, Expr, HlaStmt, Instruction, LabelDecl, ModeContract, NumFmt, Operand,
-    OperandAddrMode, RegName, RegWidth, SegmentDecl, Stmt,
+    CallArg, CallStmt, Expr, ForceAddrMode, HlaStmt, Instruction, LabelDecl, ModeContract, NumFmt,
+    Operand, OperandAddrMode, RegName, RegWidth, SegmentDecl, Stmt,
 };
 use crate::lexer::{NumLit, TokenKind};
 use crate::span::{SourceId, Spanned};
@@ -244,11 +244,38 @@ where
         .ignore_then(ident_parser())
         .try_map(|name, span| parse_index_register(Some(name), span).map(|reg| reg.unwrap()));
 
+    // Operand prefixes: `dp`, `abs`, `far` force the address-encoding width
+    // (DirectPage, Absolute 16-bit, AbsoluteLong 24-bit) for one operand.
+    // `far` is a keyword token; `dp` and `abs` are contextual identifiers
+    // that only act as prefixes when followed by an expression-starting token,
+    // so they remain available as operand symbol names.
+    let expr_starter = chumsky::select! {
+        TokenKind::Number(_) => (),
+        TokenKind::Ident(_) => (),
+        TokenKind::Eval(_) => (),
+        TokenKind::LParen => (),
+        TokenKind::Amp => (),
+        TokenKind::Minus => (),
+    };
+
+    let abs_dp_kw = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("abs") => ForceAddrMode::Absolute,
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("dp") => ForceAddrMode::DirectPage,
+    };
+
+    let abs_dp_prefix = abs_dp_kw.then_ignore(expr_starter.rewind());
+
+    let addr_mode_prefix = just(TokenKind::Far)
+        .to(ForceAddrMode::AbsoluteLong)
+        .or(abs_dp_prefix)
+        .boxed();
+
     let long_indirect_operand = just(TokenKind::LBracket)
-        .ignore_then(expr_parser())
+        .ignore_then(addr_mode_prefix.clone().or_not())
+        .then(expr_parser())
         .then_ignore(just(TokenKind::RBracket))
         .then(operand_index_trailer.clone().or_not())
-        .try_map(|(expr, outer_index), span| {
+        .try_map(|((addr_mode_override, expr), outer_index), span| {
             let addr_mode = match outer_index {
                 None => OperandAddrMode::IndirectLong,
                 Some(crate::ast::IndexRegister::Y) => OperandAddrMode::IndirectLongIndexedY,
@@ -261,7 +288,7 @@ where
             };
             Ok(Some(Operand::Value {
                 expr,
-                force_far: false,
+                addr_mode_override,
                 index: None,
                 addr_mode,
             }))
@@ -269,34 +296,41 @@ where
         .boxed();
 
     let parenthesized_operand = just(TokenKind::LParen)
-        .ignore_then(expr_parser().then(operand_index_trailer.clone().or_not()))
+        .ignore_then(
+            addr_mode_prefix
+                .clone()
+                .or_not()
+                .then(expr_parser().then(operand_index_trailer.clone().or_not())),
+        )
         .then_ignore(just(TokenKind::RParen))
         .then(operand_index_trailer.clone().or_not())
-        .try_map(|((expr, inner_index), outer_index), span| {
-            let addr_mode = match (inner_index, outer_index) {
-                (None, None) => OperandAddrMode::Indirect,
-                (Some(crate::ast::IndexRegister::X), None) => OperandAddrMode::IndexedIndirectX,
-                (None, Some(crate::ast::IndexRegister::Y)) => OperandAddrMode::IndirectIndexedY,
-                (Some(crate::ast::IndexRegister::S), Some(crate::ast::IndexRegister::Y)) => {
-                    OperandAddrMode::StackRelativeIndirectIndexedY
-                }
-                _ => {
-                    return Err(Rich::custom(
-                        span,
-                        "invalid indirect operand: choose '(expr)', '(expr,x)', '(expr),y', or '(expr,s),y'",
-                    ));
-                }
-            };
-            Ok(Some(Operand::Value {
-                expr,
-                force_far: false,
-                index: None,
-                addr_mode,
-            }))
-        })
+        .try_map(
+            |((addr_mode_override, (expr, inner_index)), outer_index), span| {
+                let addr_mode = match (inner_index, outer_index) {
+                    (None, None) => OperandAddrMode::Indirect,
+                    (Some(crate::ast::IndexRegister::X), None) => OperandAddrMode::IndexedIndirectX,
+                    (None, Some(crate::ast::IndexRegister::Y)) => OperandAddrMode::IndirectIndexedY,
+                    (Some(crate::ast::IndexRegister::S), Some(crate::ast::IndexRegister::Y)) => {
+                        OperandAddrMode::StackRelativeIndirectIndexedY
+                    }
+                    _ => {
+                        return Err(Rich::custom(
+                            span,
+                            "invalid indirect operand: choose '(expr)', '(expr,x)', '(expr),y', or '(expr,s),y'",
+                        ));
+                    }
+                };
+                Ok(Some(Operand::Value {
+                    expr,
+                    addr_mode_override,
+                    index: None,
+                    addr_mode,
+                }))
+            },
+        )
         .boxed();
 
-    let direct_operand = just(TokenKind::Far)
+    let direct_operand = addr_mode_prefix
         .or_not()
         .then(
             expr_parser().then(
@@ -314,17 +348,17 @@ where
                     .or_not(),
             ),
         )
-        .map(|(force_far, (expr, trailer))| match trailer {
+        .map(|(addr_mode_override, (expr, trailer))| match trailer {
             Some(CommaTrailer::Index(index)) => Some(Operand::Value {
                 expr,
-                force_far: force_far.is_some(),
+                addr_mode_override,
                 index: Some(index),
                 addr_mode: OperandAddrMode::Direct,
             }),
             Some(CommaTrailer::BlockMoveDst(dst)) => Some(Operand::BlockMove { src: expr, dst }),
             None => Some(Operand::Value {
                 expr,
-                force_far: force_far.is_some(),
+                addr_mode_override,
                 index: None,
                 addr_mode: OperandAddrMode::Direct,
             }),

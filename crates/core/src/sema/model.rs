@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{AddressHint, ContractParam, RegName};
+use crate::ast::{ContractParam, ForceAddrMode, RegName};
 
 #[derive(Debug, Clone)]
 pub struct FunctionMeta {
@@ -95,7 +95,10 @@ pub struct VarMeta {
     /// Base element size before `* count` multiplication.
     pub element_size: u32,
     pub data_width: Option<DataWidth>,
-    pub addr_hint: Option<AddressHint>,
+    /// Default address-encoding for plain references to this var. Set by the
+    /// `dp`/`abs`/`far` prefix on the `var` declaration. Operand-level prefixes
+    /// override this per call site.
+    pub addr_mode_default: Option<ForceAddrMode>,
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 

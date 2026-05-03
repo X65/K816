@@ -1,0 +1,8 @@
+// `dp` operand prefix forces direct-page addressing for one operand.
+var addr = $80
+
+func main {
+    lda dp addr
+    ldx dp addr
+    sta dp addr,x
+}

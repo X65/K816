@@ -55,45 +55,77 @@ var after_sprites               // auto-placed at $0228
 
 `count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries - it only scales the total allocation for address advancement.
 
-### Typed Width
+### Two orthogonal axes: data width vs. address encoding
 
-Variables can have a typed width annotation (`:byte`, `:word`, or `:far`) that controls element size and enables register width checking:
+K65 separates two unrelated concerns into different syntax slots:
+
+- **Data width / register-width validation** — controlled by suffixes `:byte`, `:word`, `:far`. Belongs to the *value*: how many bytes a variable occupies, what register width is required to load or store it.
+- **Address-encoding** — controlled by operand prefixes `dp`, `abs`, `far`. Belongs to the *operand*: which addressing form the assembler emits (DirectPage / Absolute 16-bit / AbsoluteLong 24-bit).
+
+The two axes compose freely: `lda far x:byte` forces AbsoluteLong addressing **and** treats the loaded value as a single byte (valid in `@a8`).
+
+### Typed Width (suffixes)
+
+Variables can have a typed width annotation (`:byte`, `:word`, or `:far`) that controls element size and drives register-width validation:
 
 ```k65
 var w:word = 0x2000    // 2-byte variable — requires @a16 for load/store
-var ptr:far = 0x3000   // 3-byte variable (24-bit far address)
-                       // direct lda/sta is an error — use ptr:word or (ptr+2):byte
+var ptr:far = 0x3000   // 3-byte variable at $3000
+                       // direct lda/sta is an error — no register holds 3 bytes
 ```
 
-The `:far` width is for 24-bit cross-bank addresses on the 65c816. Since the CPU has no 24-bit register mode, direct register access of `:far` variables is an error — use explicit `:byte` or `:word` views for partial access.
+The `:far` width marks a 24-bit / 3-byte memory slot. Direct register access of a `:far` variable always errors (no register can hold 3 bytes); use partial views (`ptr:word`, `(ptr+2):byte`) or indirect-long (`[ptr]`) instead.
 
-Variables can also carry an address encoding preference with `:abs`. This is separate from typed width and only affects how direct address operands are encoded:
+Use-site typed views apply the same widths to one expression:
 
 ```k65
-var dp = 0x0012
-var dp_full:abs = 0x0012
-var table:word:abs = 0x2000
+lda far x:byte    // AbsoluteLong load + 1-byte data view (valid in @a8)
+lda far x:word    // AbsoluteLong load + 2-byte data view (valid in @a16)
+lda far x:far     // error: 3-byte data does not fit any register
 ```
 
-- Plain direct operands that resolve to page 0 (`0x0000..0x00FF`) now auto-shrink to direct-page encoding when the instruction supports it.
-- `var name:abs = ...` makes plain references to that symbol default to 16-bit absolute encoding instead of direct-page shrink.
-- `:abs` does not change the variable's data width or element size.
-- Symbolic subscript field declarations currently support only `:byte`, `:word`, and `:far`; declaration-level `:abs` is not supported on `.field` entries yet.
+### Address-encoding (prefixes)
 
-Use-site `:abs` can also be applied to an expression to force 16-bit absolute-family encoding for that operand:
+The same `dp` / `abs` / `far` keywords appear as **operand prefixes** at use sites and as **declaration prefixes** on `var`. Both forms force the same addressing-mode family:
+
+| Prefix | Forces | Bytes in operand | Notes |
+|---|---|---|---|
+| `dp` | DirectPage | 1 | Errors if the instruction has no DP form, or if the value does not fit `0x00..=0xFF`. |
+| `abs` | Absolute | 2 | Errors if the instruction has no Absolute form. |
+| `far` | AbsoluteLong | 3 | Errors if the instruction has no AbsoluteLong form. Also keeps its existing role as the function/data declaration prefix and the data-emission keyword. |
+
+Operand-position prefix:
 
 ```k65
-lda dp          // may use direct-page encoding
-lda dp:abs      // force 16-bit absolute encoding
-lda dp_full     // force 16-bit absolute by declaration default
-a = dp:abs      // HLA load also stays address-based and does not become an immediate
+var addr = 0x0080
+
+func main {
+    lda addr        // auto: page-0 → DirectPage
+    lda dp addr     // force DirectPage explicitly
+    lda abs addr    // force 16-bit Absolute (emits the high zero byte)
+    lda far addr    // force 24-bit AbsoluteLong (emits the bank zero byte)
+}
 ```
 
-When combined with typed views, `:abs` must come last:
+Declaration-position prefix on `var` sets the **default** addressing-mode for plain references to that symbol; per-call-site operand prefixes still override it:
 
 ```k65
-lda regs.status:byte:abs
+var dp = 0x12              // 1-byte slot at $12, no default
+var abs dpa = 0x0012       // dpa: plain refs default to 16-bit Absolute
+var far handler = 0x030000 // handler: plain refs default to AbsoluteLong
+
+func main {
+    lda dp        // direct page (auto from value range)
+    lda dpa       // 16-bit Absolute (var default)
+    lda abs dp    // 16-bit Absolute (operand prefix overrides auto)
+    lda dp dpa    // direct page (operand prefix overrides var default)
+    lda handler   // AbsoluteLong (var default)
+}
 ```
+
+Auto-shrink behavior remains for unprefixed declarations: when no override is in effect, an operand that fits in page 0 picks DirectPage encoding if the instruction supports it; otherwise Absolute, with AbsoluteLong reserved for cross-bank values.
+
+`dp` and `abs` are recognized **only in the prefix slot** (immediately before an operand expression, or between `var` and the variable name), so they remain available as variable, label, and evaluator-function names (e.g. `var dp = 0` and the `abs(x)` evaluator function still work).
 
 ### Metadata Query Suffixes
 
@@ -905,11 +937,11 @@ In addition to the classical 6502 modes, the K65 operand grammar exposes these 6
 
 - `expr,S` — stack-relative (e.g. `lda 4,s`). Written the same for raw mnemonics and HLA forms.
 - `(expr,S),Y` — stack-relative indirect, Y-indexed (e.g. `lda (4,s),y`). Usable in both raw-mnemonic and HLA contexts.
-- `far expr` — forces 24-bit `AbsoluteLong` encoding of an operand; `far expr,x` is the X-indexed long form.
+- `dp expr` / `abs expr` / `far expr` — operand prefixes that force the address-encoding width to DirectPage / Absolute (16-bit) / AbsoluteLong (24-bit). Composable with the index trailers (`abs expr,x`, `far expr,x`, etc.) and with the parenthesized indirect forms (`jmp (abs expr,x)`, `jmp (abs expr)`, `lda [dp expr]`, `lda [dp expr],y`).
 - `[expr]` — indirect-long. The emitted opcode depends on the mnemonic: `lda [zp]` picks `DirectPageIndirectLong`; `jmp [abs]` picks `AbsoluteIndirectLong`. The `[...]` operand form is currently recognised only when it directly follows a raw mnemonic (e.g. `lda [ptr]`, `jmp [vec]`); inside an HLA assignment like `a = [ptr]` the brackets are captured by the compile-time evaluator instead — use the raw form or declare a `:far` typed variable to get long-indirect semantics through HLA.
 - `[expr],Y` — indirect-long, Y-indexed. Raw-mnemonic only for the same reason.
 
-Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-index position is treated as an **immediate** operand, not a direct-page address. So `lda 0` and `inc 0` fail with *"does not accept #immediate operand"* for instructions without an immediate form. To target zero-page or absolute memory via a raw mnemonic, reference a symbolic name (declare `var addr = 0` and write `lda addr`), or attach an explicit address hint (`lda 0:abs` forces 16-bit absolute encoding). HLA assignment forms (`a = mem`, `mem = a`) look up the symbol in the semantic model and don't have this ambiguity.
+Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-index position is treated as an **immediate** operand, not a direct-page address. So `lda 0` and `inc 0` fail with *"does not accept #immediate operand"* for instructions without an immediate form. To target zero-page or absolute memory via a raw mnemonic, reference a symbolic name (declare `var addr = 0` and write `lda addr`), or attach an explicit address-encoding prefix (`lda dp 0`, `lda abs 0`, `lda far 0`). HLA assignment forms (`a = mem`, `mem = a`) look up the symbol in the semantic model and don't have this ambiguity.
 
 ### Registers
 

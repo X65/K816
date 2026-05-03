@@ -7,9 +7,7 @@ use chumsky::{
     prelude::{SimpleSpan, choice, just},
 };
 
-use super::{
-    ParseExtra, expr_parser, ident_parser, line_tail_parser, zero_number_token,
-};
+use super::{ParseExtra, expr_parser, ident_parser, line_tail_parser, zero_number_token};
 
 pub(super) fn flow_stmt_parser<'src, I>()
 -> impl chumsky::Parser<'src, I, Stmt, ParseExtra<'src>> + Clone

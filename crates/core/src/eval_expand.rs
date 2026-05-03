@@ -528,6 +528,10 @@ fn expand_instruction(
             src: expand_expr(src, span, source_id, diagnostics),
             dst: expand_expr(dst, span, source_id, diagnostics),
         },
+        Operand::Register { reg, span } => Operand::Register {
+            reg: *reg,
+            span: *span,
+        },
     });
 
     Instruction {

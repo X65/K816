@@ -228,6 +228,7 @@ pub(super) fn resolve_field_from_ast(
             Operand::BlockMove { src, dst } => {
                 check_expr(src, offset).or_else(|| check_expr(dst, offset))
             }
+            Operand::Register { .. } => None,
         }
     }
 
@@ -287,6 +288,56 @@ pub(super) fn resolve_field_from_ast(
             Item::Statement(stmt) => check_stmt(stmt, offset),
             Item::Const(cs) => cs.iter().find_map(|c| check_expr(&c.initializer, offset)),
             Item::Var(v) => v.initializer.as_ref().and_then(|e| check_expr(e, offset)),
+            _ => None,
+        };
+        if result.is_some() {
+            return result;
+        }
+    }
+
+    None
+}
+
+/// Walk the parsed AST to find an `Operand::Register` whose token span
+/// contains `offset`. Used by hover/semantic-tokens to treat bare register
+/// references in instruction-operand position as registers (not symbols).
+pub(super) fn resolve_register_operand_at(
+    ast: &k816_core::ast::File,
+    offset: usize,
+) -> Option<k816_core::ast::HlaCpuRegister> {
+    use k816_core::ast::*;
+    use k816_core::span::Spanned;
+
+    fn check_operand(op: &Operand, offset: usize) -> Option<HlaCpuRegister> {
+        match op {
+            Operand::Register { reg, span }
+                if span.start <= offset && offset <= span.end =>
+            {
+                Some(*reg)
+            }
+            _ => None,
+        }
+    }
+
+    fn check_stmt(stmt: &Stmt, offset: usize) -> Option<HlaCpuRegister> {
+        match stmt {
+            Stmt::Instruction(instr) => instr
+                .operand
+                .as_ref()
+                .and_then(|o| check_operand(o, offset)),
+            Stmt::ModeScopedBlock { body, .. } => check_stmts(body, offset),
+            _ => None,
+        }
+    }
+
+    fn check_stmts(stmts: &[Spanned<Stmt>], offset: usize) -> Option<HlaCpuRegister> {
+        stmts.iter().find_map(|s| check_stmt(&s.node, offset))
+    }
+
+    for item in &ast.items {
+        let result = match &item.node {
+            Item::CodeBlock(block) => check_stmts(&block.body, offset),
+            Item::Statement(stmt) => check_stmt(stmt, offset),
             _ => None,
         };
         if result.is_some() {

@@ -1,0 +1,12 @@
+[default]
+000000: 0A 0A 2A 1A 3A 4A 6A
+
+
+[disasm obj#0 default::main]
+000000: 0A          asl A
+000001: 0A          asl A
+000002: 2A          rol A
+000003: 1A          inc A
+000004: 3A          dec A
+000005: 4A          lsr A
+000006: 6A          ror A

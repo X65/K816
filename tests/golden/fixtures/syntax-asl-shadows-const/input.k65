@@ -1,0 +1,20 @@
+// `A` and `X` are register names. Even when the user defines constants
+// with these names, register operands in instruction position must always
+// resolve to the registers — never the constants. The shift-rotate family
+// (asl, lsr, rol, ror, inc, dec) accepts the accumulator addressing mode
+// (`A`); other registers used as operands must be rejected at lowering.
+//
+// This fixture proves the parser-level gate: with `const A = $FF` in scope,
+// `asl A` still encodes as Accumulator-mode (`0A`), not as
+// `asl $FF` (which would be `06 FF`).
+const A = $FF
+
+naked main @a8 @i8 {
+    asl A
+    asl a
+    rol A
+    inc A
+    dec A
+    lsr A
+    ror A
+}

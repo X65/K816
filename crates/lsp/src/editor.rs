@@ -10,12 +10,13 @@ use lsp_types::{
 use super::hover::{
     builtin_hover_text, directive_keywords, evaluator_signature, format_address,
     format_address_range, hover_contents_for_numeric_literal, hover_contents_for_subscript_field,
-    hover_contents_for_symbol, is_register_name, opcode_keywords, register_keywords,
+    hover_contents_for_symbol, is_register_name, opcode_keywords, register_hover_text,
+    register_keywords,
 };
 use super::text::{
     QualifiedSegment, colon_keyword_at_offset, cumulative_field_key, evaluator_call_at_offset,
     in_symbol_completion_context, is_ident_byte, numeric_literal_at_offset, resolve_field_from_ast,
-    resolve_qualified_segment, token_at_offset, token_prefix_at_offset,
+    resolve_qualified_segment, resolve_register_operand_at, token_at_offset, token_prefix_at_offset,
 };
 use super::{
     ByteRange, INSTRUCTION_DESCRIPTIONS, ServerState, SymbolCategory, byte_range_to_lsp,
@@ -30,6 +31,19 @@ fn split_var_field(qualified: &str) -> (&str, Option<&str>) {
     match qualified.find('.') {
         Some(pos) => (&qualified[..pos], Some(&qualified[pos + 1..])),
         None => (qualified, None),
+    }
+}
+
+fn hla_cpu_register_letter(reg: k816_core::ast::HlaCpuRegister) -> &'static str {
+    use k816_core::ast::HlaCpuRegister;
+    match reg {
+        HlaCpuRegister::A => "a",
+        HlaCpuRegister::B => "b",
+        HlaCpuRegister::C => "c",
+        HlaCpuRegister::D => "d",
+        HlaCpuRegister::S => "s",
+        HlaCpuRegister::X => "x",
+        HlaCpuRegister::Y => "y",
     }
 }
 
@@ -56,6 +70,25 @@ impl ServerState {
                 &doc.line_index,
                 &doc.text,
             );
+
+            // Register operand position wins over any same-named user symbol.
+            // Resolves via AST so the answer doesn't depend on whether some
+            // workspace document has shadowed the register name.
+            if let Some(reg) = doc
+                .analysis
+                .ast
+                .as_ref()
+                .and_then(|ast| resolve_register_operand_at(ast, offset))
+                && let Some(text) = register_hover_text(hla_cpu_register_letter(reg))
+            {
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: text,
+                    }),
+                    range: Some(token_range),
+                });
+            }
 
             let scope = doc.analysis.scope_at_offset(offset);
             let canonical = canonical_symbol(&token.text, scope);

@@ -1,0 +1,9 @@
+// Registers other than `A` cannot appear as instruction operands.
+// `lda` does not have an Accumulator addressing mode, so even `lda A`
+// is invalid. Both should produce a register-specific diagnostic, not
+// "undefined symbol 'A'".
+
+naked main @a8 @i8 {
+    lda A
+    ora X
+}

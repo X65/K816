@@ -1,0 +1,15 @@
+Error: instruction `lda` does not accept the accumulator (`A`) as an operand
+   ╭─[ tests/golden/fixtures/syntax-err-register-as-operand/input.k65:7:9 ]
+   │
+ 7 │     lda A
+   │         ┬  
+   │         ╰── here
+───╯
+
+Error: register `x` cannot be used as an operand of `ora`
+   ╭─[ tests/golden/fixtures/syntax-err-register-as-operand/input.k65:8:9 ]
+   │
+ 8 │     ora X
+   │         ┬  
+   │         ╰── here
+───╯

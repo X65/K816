@@ -284,7 +284,18 @@ pub(super) fn register_keywords() -> &'static [(&'static str, &'static str)] {
 }
 
 pub(super) fn is_register_name(name: &str) -> bool {
-    register_keywords().iter().any(|(entry, _)| *entry == name)
+    let lower = name.to_ascii_lowercase();
+    register_keywords()
+        .iter()
+        .any(|(entry, _)| *entry == lower.as_str())
+}
+
+pub(super) fn register_hover_text(name: &str) -> Option<String> {
+    let lower = name.to_ascii_lowercase();
+    register_keywords()
+        .iter()
+        .find(|(entry, _)| *entry == lower.as_str())
+        .map(|(entry, doc)| format!("**register** `{entry}`\n\n{doc}"))
 }
 
 pub(super) fn directive_keywords() -> &'static [&'static str] {

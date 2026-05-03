@@ -1,7 +1,10 @@
 use indexmap::IndexMap;
 use k816_assets::AssetFS;
 use k816_eval::{EvalContext, EvalError as EvaluatorError, Number};
-use k816_isa65816::{RegEffects, RegSet, mnemonic_effects, mnemonic_width_sensitivity};
+use k816_isa65816::{
+    AddressingMode, RegEffects, RegSet, mnemonic_effects, mnemonic_width_sensitivity,
+    supported_modes,
+};
 use rustc_hash::FxHashMap;
 use std::collections::HashSet;
 
@@ -198,6 +201,7 @@ fn operand_index_reads(operand: Option<&Operand>) -> RegSet {
         Some(Operand::Auto { .. })
         | Some(Operand::Immediate { .. })
         | Some(Operand::BlockMove { .. })
+        | Some(Operand::Register { .. })
         | Some(Operand::Value { index: None, .. })
         | None => RegSet::NONE,
     }
@@ -236,8 +240,22 @@ fn hla_rhs_reads(rhs: &HlaRhs) -> RegSet {
     }
 }
 
+fn instruction_targets_accumulator(instruction: &Instruction) -> bool {
+    instruction.operand.is_none()
+        || matches!(
+            instruction.operand,
+            Some(Operand::Register {
+                reg: HlaCpuRegister::A,
+                ..
+            })
+        )
+}
+
 fn instruction_effects(instruction: &Instruction) -> RegEffects {
-    let base = mnemonic_effects(&instruction.mnemonic, instruction.operand.is_none());
+    let base = mnemonic_effects(
+        &instruction.mnemonic,
+        instruction_targets_accumulator(instruction),
+    );
     RegEffects {
         reads: base.reads | operand_index_reads(instruction.operand.as_ref()),
         modifies: base.modifies,
@@ -246,7 +264,7 @@ fn instruction_effects(instruction: &Instruction) -> RegEffects {
 
 fn instruction_accumulator_load_wins(instruction: &Instruction, mode: ModeState) -> bool {
     let lower = instruction.mnemonic.to_ascii_lowercase();
-    let effects = mnemonic_effects(&lower, instruction.operand.is_none());
+    let effects = mnemonic_effects(&lower, instruction_targets_accumulator(instruction));
     let kills_a = effects.modifies.contains(RegSet::A) && !effects.reads.contains(RegSet::A);
     // `xba` reads+writes A (byte-swap), so it doesn't fall under `kills_a`,
     // but in 8-bit accumulator mode the visible A is replaced by the prior
@@ -704,6 +722,10 @@ fn substitute_inline_stmt(stmt: &Stmt, bindings: &InlineBindings) -> Stmt {
                 Operand::BlockMove { src, dst } => Operand::BlockMove {
                     src: substitute_inline_expr(src, bindings),
                     dst: substitute_inline_expr(dst, bindings),
+                },
+                Operand::Register { reg, span } => Operand::Register {
+                    reg: *reg,
+                    span: *span,
                 },
             }),
         }),
@@ -3255,7 +3277,9 @@ fn instruction_jump_target_label(
             expr
         }
         Operand::Auto { expr } => expr,
-        Operand::Immediate { .. } | Operand::BlockMove { .. } => return None,
+        Operand::Immediate { .. }
+        | Operand::BlockMove { .. }
+        | Operand::Register { .. } => return None,
     };
 
     let name = expr_ident_name(expr)?;
@@ -3371,7 +3395,7 @@ fn validate_instruction_width_rules(
             index,
             addr_mode,
         } => value_operand_uses_immediate(*addr_mode_override, *index, *addr_mode, expr, sema),
-        Operand::BlockMove { .. } => false,
+        Operand::BlockMove { .. } | Operand::Register { .. } => false,
     };
 
     let imm_expr = match operand {
@@ -4769,6 +4793,38 @@ fn lower_instruction(
                 let mode = lower_operand_mode(OperandAddrMode::Direct, None);
                 let size_hint = address_size_hint_for_operand(None, expr, sema);
                 lower_address_operand(expr, scope, sema, span, diagnostics, size_hint, mode)
+            }
+        }
+        Some(Operand::Register {
+            reg,
+            span: reg_span,
+        }) => {
+            let reg_name = format_hla_cpu_register(*reg);
+            match reg {
+                HlaCpuRegister::A => {
+                    let mnemonic_lower = instruction.mnemonic.to_ascii_lowercase();
+                    if !supported_modes(&mnemonic_lower).contains(&AddressingMode::Accumulator) {
+                        diagnostics.push(Diagnostic::error(
+                            *reg_span,
+                            format!(
+                                "instruction `{}` does not accept the accumulator (`A`) as an operand",
+                                instruction.mnemonic
+                            ),
+                        ));
+                        return None;
+                    }
+                    None
+                }
+                _ => {
+                    diagnostics.push(Diagnostic::error(
+                        *reg_span,
+                        format!(
+                            "register `{reg_name}` cannot be used as an operand of `{}`",
+                            instruction.mnemonic
+                        ),
+                    ));
+                    return None;
+                }
             }
         }
         Some(Operand::BlockMove { src, dst }) => {

@@ -687,6 +687,45 @@ fn const_hover_formats_negative_integer_as_signed_magnitude_hex() {
 }
 
 #[test]
+fn hover_on_register_operand_returns_register_doc_even_when_const_shadows() {
+    // Two open documents in the workspace: one defines `const A = -1`, the
+    // other uses `asl A`. The workspace's shared `WorkspaceExternals` would
+    // otherwise leak the constant into the second document and make hover
+    // resolve `A` as the constant — the AST-side gate must prevent that.
+    let const_uri = Uri::from_str("file:///project/src/consts.k65").expect("uri");
+    let asl_uri = Uri::from_str("file:///project/src/asl.k65").expect("uri");
+
+    let const_text = "const A = 0 - 1\n".to_string();
+    let asl_text = "naked main @a8 @i8 {\n    asl A\n}\n".to_string();
+
+    let mut state = ServerState::new(PathBuf::from("/project"));
+    state
+        .upsert_document(const_uri, const_text, 1, true)
+        .expect("const doc");
+    state
+        .upsert_document(asl_uri.clone(), asl_text.clone(), 1, true)
+        .expect("asl doc");
+
+    let doc = state.documents.get(&asl_uri).expect("asl doc");
+    let offset = asl_text.find("asl A").expect("asl A line") + "asl ".len();
+    let position = doc.line_index.to_position(&doc.text, offset);
+    let hover = state.hover(&asl_uri, position).expect("hover");
+    let HoverContents::Markup(markup) = hover.contents else {
+        panic!("expected markdown hover");
+    };
+    assert!(
+        markup.value.contains("Accumulator register"),
+        "expected register hover, got: {}",
+        markup.value
+    );
+    assert!(
+        !markup.value.contains("constant"),
+        "constant hover leaked through: {}",
+        markup.value
+    );
+}
+
+#[test]
 fn query_memory_map_reports_unavailable_when_no_link_layout() {
     let state = ServerState::new(PathBuf::from("/project"));
     let result = state.query_memory_map(&QueryMemoryMapParams::default());

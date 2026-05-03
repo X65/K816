@@ -3,7 +3,7 @@ use crate::lexer::TokenKind;
 use chumsky::{error::Rich, prelude::SimpleSpan};
 
 pub(super) fn parse_cpu_register(value: &str) -> Option<HlaCpuRegister> {
-    match value {
+    match value.to_ascii_lowercase().as_str() {
         "a" => Some(HlaCpuRegister::A),
         "b" => Some(HlaCpuRegister::B),
         "c" => Some(HlaCpuRegister::C),
@@ -63,7 +63,7 @@ pub(super) fn parse_index_register<'src>(
 }
 
 pub(super) fn is_register_name(value: &str) -> bool {
-    parse_cpu_register(&value.to_ascii_lowercase()).is_some()
+    parse_cpu_register(value).is_some()
 }
 
 pub(super) fn parse_contract_register(value: &str) -> Option<RegName> {

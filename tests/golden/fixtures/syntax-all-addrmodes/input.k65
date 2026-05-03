@@ -20,7 +20,7 @@ start:
     // 3.5.7 Absolute Long-al
     lda far x0
     // 3.5.8 Accumulator-A
-    asl
+    asl A
     // 3.5.9 Block Move-xyc
     mvn 0,0
     // 3.5.10 Direct Indexed Indirect-(d,x)

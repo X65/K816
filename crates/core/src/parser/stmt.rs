@@ -3,7 +3,7 @@ use crate::ast::{
     Operand, OperandAddrMode, RegName, RegWidth, SegmentDecl, Stmt,
 };
 use crate::lexer::{NumLit, TokenKind};
-use crate::span::{SourceId, Spanned};
+use crate::span::{SourceId, Span, Spanned};
 use chumsky::{
     IterParser, Parser as _,
     error::Rich,
@@ -33,7 +33,7 @@ use super::operations::{
     hla_x_increment_stmt_parser, incdec_stmt_parser, shift_stmt_parser, stack_stmt_parser,
     store_stmt_parser,
 };
-use super::registers::{parse_contract_register, parse_index_register};
+use super::registers::{parse_contract_register, parse_cpu_register, parse_index_register};
 
 pub(super) fn zero_number_token<'src, I>()
 -> impl chumsky::Parser<'src, I, (), ParseExtra<'src>> + Clone
@@ -373,8 +373,33 @@ where
             })
         })
         .boxed();
+
+    // Bare register name as the entire operand (e.g. `asl A`). Registers
+    // always win over user-defined symbols in instruction-operand position;
+    // `direct_operand` would otherwise resolve `A` as an identifier and let
+    // a same-named const/var/label shadow the accumulator. Only matches when
+    // the register token is followed by an operand boundary (newline / `}` /
+    // EOF) so trailing forms like `lda x0,X` still flow to `direct_operand`.
+    let register_operand = ident_parser()
+        .map_with(|name, extra| (name, extra.span()))
+        .try_map(move |(name, simple_span): (String, SimpleSpan), _: SimpleSpan| {
+            match parse_cpu_register(&name) {
+                Some(reg) => {
+                    let range = simple_span.into_range();
+                    Ok(Some(Operand::Register {
+                        reg,
+                        span: Span::new(source_id, range.start, range.end),
+                    }))
+                }
+                None => Err(Rich::custom(simple_span, "not a register name")),
+            }
+        })
+        .then_ignore(operand_boundary.clone())
+        .boxed();
+
     let operand = choice((
         operand_boundary.to(None),
+        register_operand,
         immediate_operand,
         long_indirect_operand,
         parenthesized_operand,

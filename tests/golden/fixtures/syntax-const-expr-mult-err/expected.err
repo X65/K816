@@ -12,7 +12,6 @@ Error: duplicate global symbol 'BAR'
    │          ╰─────────── first defined here
 ───╯
 
-
 Error: duplicate global symbol 'BAZ'
    ╭─[ tests/golden/fixtures/syntax-const-expr-mult-err/input.20-const.k65:2:1 ]
    │

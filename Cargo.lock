@@ -665,6 +665,7 @@ dependencies = [
  "k816-assets",
  "k816-eval",
  "k816-isa65816",
+ "k816-link",
  "k816-o65",
  "logos",
  "rustc-hash",

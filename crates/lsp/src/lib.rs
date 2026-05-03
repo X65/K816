@@ -28,6 +28,8 @@ use self::types::{
 };
 
 #[cfg(test)]
+use self::project::partition_workspace_into_units;
+#[cfg(test)]
 use self::protocol::{
     QueryMemoryMapDetail, QueryMemoryMapParams, QueryMemoryMapStatus, ResolveInlineSymbolsParams,
 };

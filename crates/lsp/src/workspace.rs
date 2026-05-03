@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use lsp_types::{Diagnostic, Uri};
 
-use super::project::{discover_workspace_sources, uri_from_file_path, uri_to_file_path};
+use super::project::{
+    CompilationUnit, discover_workspace_sources, partition_workspace_into_units, uri_from_file_path,
+    uri_to_file_path,
+};
 use super::protocol::{
     QueryMemoryMapDetail, QueryMemoryMapMemory, QueryMemoryMapParams, QueryMemoryMapResult,
     QueryMemoryMapRun, QueryMemoryMapStatus, memory_kind_label,
@@ -95,6 +98,8 @@ impl ServerState {
                 object: None,
                 addressable_sites: Vec::new(),
                 resolved_sites: Vec::new(),
+                source_id_uris: Vec::new(),
+                unit_id: None,
             },
         );
         Ok(())
@@ -131,6 +136,11 @@ impl ServerState {
             .as_ref()
             .map(|doc| doc.addressable_sites.clone())
             .unwrap_or_default();
+        let source_id_uris = prev
+            .as_ref()
+            .map(|doc| doc.source_id_uris.clone())
+            .unwrap_or_default();
+        let unit_id = prev.as_ref().and_then(|doc| doc.unit_id);
         let resolved_sites = prev.map(|doc| doc.resolved_sites).unwrap_or_default();
 
         self.documents.insert(
@@ -147,13 +157,86 @@ impl ServerState {
                 object,
                 addressable_sites,
                 resolved_sites,
+                source_id_uris,
+                unit_id,
             },
         );
     }
 
     pub(super) fn analyze_all_documents(&mut self) {
-        // Collect all sources for multi-source compilation (same path as CLI compiler).
-        let doc_uris: Vec<Uri> = self.documents.keys().cloned().collect();
+        self.recompute_compilation_units();
+
+        let total_sources: usize = self
+            .compilation_units
+            .iter()
+            .map(|unit| unit.uris.len())
+            .sum();
+        eprintln!(
+            "k816-lsp: compiling {} source(s) across {} unit(s)",
+            total_sources,
+            self.compilation_units.len(),
+        );
+
+        let units: Vec<CompilationUnit> = self.compilation_units.clone();
+        for (unit_id, unit) in units.iter().enumerate() {
+            self.analyze_unit(unit_id, unit);
+        }
+
+        self.rebuild_symbol_index();
+    }
+
+    /// Rebuild `compilation_units` from the current document set. Called from
+    /// `analyze_all_documents` so a doc open/close/reload reshapes units before
+    /// we recompile. A document the partition logic doesn't recognize (e.g. an
+    /// open ad-hoc file outside `src/` or `tests/`) becomes its own singleton
+    /// unit so it still gets analyzed.
+    fn recompute_compilation_units(&mut self) {
+        let manifest_path = self.workspace_root.join(PROJECT_MANIFEST);
+        let has_manifest = manifest_path.is_file();
+
+        let mut paths: Vec<PathBuf> = self
+            .documents
+            .values()
+            .filter_map(|doc| doc.path.clone())
+            .collect();
+        paths.sort();
+        paths.dedup();
+
+        let mut units = partition_workspace_into_units(&self.workspace_root, has_manifest, &paths);
+
+        // Any document whose path didn't make it into a unit (e.g. pathless
+        // virtual URI, or a manifest project's `tests/` file the user opened
+        // directly) gets a singleton unit so analysis still runs against it.
+        let mut covered: std::collections::HashSet<Uri> = std::collections::HashSet::new();
+        for unit in &units {
+            for uri in &unit.uris {
+                covered.insert(uri.clone());
+            }
+        }
+        for uri in self.documents.keys() {
+            if !covered.contains(uri) {
+                units.push(CompilationUnit {
+                    uris: vec![uri.clone()],
+                });
+            }
+        }
+
+        self.compilation_units = units;
+    }
+
+    /// Compile and analyze every document in a single compilation unit. Each
+    /// unit is its own externals scope so unrelated programs (e.g. sibling
+    /// fixture trees) cannot collide into ambiguous-symbol drops.
+    fn analyze_unit(&mut self, unit_id: usize, unit: &CompilationUnit) {
+        let doc_uris: Vec<Uri> = unit
+            .uris
+            .iter()
+            .filter(|uri| self.documents.contains_key(uri))
+            .cloned()
+            .collect();
+        if doc_uris.is_empty() {
+            return;
+        }
         let source_names: Vec<String> = doc_uris
             .iter()
             .map(|uri| {
@@ -171,19 +254,12 @@ impl ServerState {
                 .map(|(uri, name)| (name.as_str(), self.documents[uri].text.as_str())),
         );
 
-        eprintln!("k816-lsp: compiling {} source(s)", sources.len());
-
         let externals = k816_core::collect_workspace_externals(&sources);
         let compile_results = k816_core::compile_sources_with_externals(
             &sources,
             &externals,
             k816_core::CompileRenderOptions::plain(),
         );
-
-        // Record the per-source ordering used by `compile_sources` so foreign
-        // `Span`s on diagnostic supplements (`InlineOrigin`) can be resolved
-        // back to their owning document URI when rendering for the LSP.
-        self.source_id_uris = doc_uris.clone();
 
         for (i, uri) in doc_uris.iter().enumerate() {
             let doc = self.documents.get_mut(uri).unwrap();
@@ -202,9 +278,9 @@ impl ServerState {
             doc.analysis = new_analysis;
             doc.object = object;
             doc.addressable_sites = addressable_sites;
+            doc.source_id_uris = doc_uris.clone();
+            doc.unit_id = Some(unit_id);
         }
-
-        self.rebuild_symbol_index();
     }
 
     /// Apply a batch of external filesystem events. Returns the URIs of open
@@ -273,6 +349,8 @@ impl ServerState {
                     object: None,
                     addressable_sites: Vec::new(),
                     resolved_sites: Vec::new(),
+                    source_id_uris: Vec::new(),
+                    unit_id: None,
                 },
             );
             self.analyze_all_documents();
@@ -352,32 +430,48 @@ impl ServerState {
     }
 
     pub(super) fn try_link_workspace(&mut self) {
-        let doc_entries: Vec<(Uri, k816_o65::O65Object)> = self
-            .documents
+        // Reset per-doc resolved sites; per-unit linking re-populates them.
+        for doc in self.documents.values_mut() {
+            doc.resolved_sites.clear();
+        }
+        self.last_link_layout = None;
+        self.last_link_diagnostics_per_unit.clear();
+
+        let units = self.compilation_units.clone();
+        for (unit_id, unit) in units.iter().enumerate() {
+            self.try_link_unit(unit_id, unit);
+        }
+    }
+
+    fn try_link_unit(&mut self, unit_id: usize, unit: &CompilationUnit) {
+        // Walk URIs in unit order so the (obj_idx → URI) mapping the linker
+        // returns can be inverted via the same vector.
+        let doc_entries: Vec<(Uri, k816_o65::O65Object)> = unit
+            .uris
             .iter()
-            .filter_map(|(uri, doc)| doc.object.as_ref().map(|obj| (uri.clone(), obj.clone())))
+            .filter_map(|uri| {
+                self.documents
+                    .get(uri)
+                    .and_then(|doc| doc.object.as_ref().map(|obj| (uri.clone(), obj.clone())))
+            })
             .collect();
 
         if doc_entries.is_empty() {
-            for doc in self.documents.values_mut() {
-                doc.resolved_sites.clear();
-            }
-            self.last_link_layout = None;
-            self.last_link_error = Some("no compiled objects are available to link".to_string());
             return;
         }
 
         let objects: Vec<k816_o65::O65Object> =
             doc_entries.iter().map(|(_, obj)| obj.clone()).collect();
 
-        match k816_link::link_objects_with_options(
-            &objects,
-            &self.linker_config,
-            k816_link::LinkRenderOptions::plain(),
-        ) {
+        match k816_link::link_objects_diagnostics(&objects, &self.linker_config) {
             Ok(output) => {
-                self.last_link_layout = Some(output.clone());
-                self.last_link_error = None;
+                // The first successful unit's layout backs `query_memory_map`.
+                // A future plan iteration can return per-unit results once a
+                // user-facing way to identify the unit lands; today the LSP
+                // exposes a single layout, so we keep the first-wins policy.
+                if self.last_link_layout.is_none() {
+                    self.last_link_layout = Some(output.clone());
+                }
                 for (obj_idx, (uri, _)) in doc_entries.iter().enumerate() {
                     if let Some(doc) = self.documents.get_mut(uri) {
                         let mut sites = Vec::new();
@@ -395,13 +489,130 @@ impl ServerState {
                     }
                 }
             }
-            Err(error) => {
-                self.last_link_layout = None;
-                self.last_link_error = Some(error.to_string());
-                for doc in self.documents.values_mut() {
-                    doc.resolved_sites.clear();
+            Err(k816_link::LinkErrors(link_diags)) => {
+                // Build a (path → URI) lookup so `LinkDiagnostic.anchor.file`
+                // (the `source_name` the per-doc compile used, i.e. the file
+                // path) maps back to its document for diagnostic placement.
+                let path_to_uri: std::collections::HashMap<String, Uri> = unit
+                    .uris
+                    .iter()
+                    .filter_map(|uri| {
+                        self.documents.get(uri).map(|doc| {
+                            let name = doc
+                                .path
+                                .as_ref()
+                                .map(|path| path.display().to_string())
+                                .unwrap_or_else(|| doc.uri.to_string());
+                            (name, uri.clone())
+                        })
+                    })
+                    .collect();
+
+                for link_diag in &link_diags {
+                    let Some(anchor) = link_diag.anchor.as_ref() else {
+                        eprintln!(
+                            "k816-lsp: dropping anchorless link diagnostic: {}",
+                            link_diag.message
+                        );
+                        continue;
+                    };
+                    let Some(target_uri) = path_to_uri.get(&anchor.file) else {
+                        eprintln!(
+                            "k816-lsp: link diagnostic anchored at unknown file '{}'",
+                            anchor.file
+                        );
+                        continue;
+                    };
+                    let Some(target_doc) = self.documents.get_mut(target_uri) else {
+                        continue;
+                    };
+
+                    // Build a one-shot SourceMap over the target document so
+                    // `link_diagnostic_to_diagnostic` can convert (line,col)
+                    // into byte offsets on the LIVE in-memory text.
+                    let mut local_map = k816_core::span::SourceMap::default();
+                    let local_id = local_map.add_source(anchor.file.clone(), &target_doc.text);
+                    let resolve = |path: &str| -> Option<k816_core::span::SourceId> {
+                        if path == anchor.file { Some(local_id) } else { None }
+                    };
+                    if let Some(diag) = k816_core::link_diagnostic_to_diagnostic(
+                        link_diag,
+                        &local_map,
+                        &resolve,
+                    ) {
+                        // Re-anchor to source_id 0 so it composes with the
+                        // doc's own diagnostics (which use the per-doc map
+                        // built inside `analyze_document`).
+                        let primary = k816_core::span::Span::new(
+                            k816_core::span::SourceId(0),
+                            diag.primary.start,
+                            diag.primary.end,
+                        );
+                        let mut rebound =
+                            k816_core::diag::Diagnostic::error(primary, diag.message)
+                                .with_primary_label(diag.primary_label);
+                        for label in diag.labels {
+                            let span = k816_core::span::Span::new(
+                                k816_core::span::SourceId(0),
+                                label.span.start,
+                                label.span.end,
+                            );
+                            rebound = rebound.with_label(span, label.message);
+                        }
+                        for supp in diag.supplements {
+                            match supp {
+                                k816_core::diag::Supplemental::Help(help) => {
+                                    rebound = rebound.with_help(help);
+                                }
+                                k816_core::diag::Supplemental::Note(note) => {
+                                    rebound = rebound.with_note(note);
+                                }
+                                k816_core::diag::Supplemental::InlineOrigin { span, label } => {
+                                    let span = k816_core::span::Span::new(
+                                        k816_core::span::SourceId(0),
+                                        span.start,
+                                        span.end,
+                                    );
+                                    rebound = rebound.with_inline_origin(span, label);
+                                }
+                            }
+                        }
+                        target_doc.analysis.diagnostics.push(rebound);
+                    }
                 }
+
+                self.last_link_diagnostics_per_unit
+                    .insert(unit_id, link_diags);
             }
+        }
+    }
+
+    /// Build a one-line reason string for `query_memory_map` when no link
+    /// layout is available — points the caller at why the memory map is
+    /// missing without forcing them to render the structured diagnostics.
+    fn summarize_link_failure(&self) -> String {
+        let total: usize = self
+            .last_link_diagnostics_per_unit
+            .values()
+            .map(|diags| diags.len())
+            .sum();
+        if total == 0 {
+            return "memory map is unavailable".to_string();
+        }
+        let first = self
+            .last_link_diagnostics_per_unit
+            .values()
+            .flat_map(|diags| diags.iter())
+            .next();
+        match first {
+            Some(diag) if total == 1 => {
+                format!("link errors prevent memory map: {}", diag.message)
+            }
+            Some(diag) => format!(
+                "link errors prevent memory map ({total} total): {}",
+                diag.message
+            ),
+            None => "memory map is unavailable".to_string(),
         }
     }
 
@@ -409,10 +620,7 @@ impl ServerState {
         let Some(layout) = self.last_link_layout.as_ref() else {
             return QueryMemoryMapResult {
                 status: QueryMemoryMapStatus::Unavailable,
-                reason: self
-                    .last_link_error
-                    .clone()
-                    .or_else(|| Some("memory map is unavailable".to_string())),
+                reason: Some(self.summarize_link_failure()),
                 memories: Vec::new(),
                 runs: Vec::new(),
             };
@@ -481,7 +689,7 @@ impl ServerState {
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
         };
-        let foreign_sources: Vec<Option<ForeignSource<'_>>> = self
+        let foreign_sources: Vec<Option<ForeignSource<'_>>> = doc
             .source_id_uris
             .iter()
             .map(|src_uri| {

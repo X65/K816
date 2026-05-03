@@ -92,6 +92,26 @@ impl SourceFile {
         (line, col)
     }
 
+    /// Reverse of `line_col`: convert a 1-based `(line, column)` pair into a
+    /// byte offset clamped to the file's bounds. Out-of-range lines or columns
+    /// return `None` rather than silently truncating, so callers can distinguish
+    /// "anchor doesn't fit this source" from "anchor pointed at the file end".
+    pub fn line_col_to_offset(&self, line: usize, column: usize) -> Option<usize> {
+        if line == 0 {
+            return None;
+        }
+        let line_idx = line.checked_sub(1)?;
+        let line_start = *self.line_starts.get(line_idx)?;
+        let line_end = self
+            .line_starts
+            .get(line_idx + 1)
+            .copied()
+            .unwrap_or(self.text.len());
+        let col_idx = column.saturating_sub(1);
+        let offset = line_start.saturating_add(col_idx);
+        Some(offset.min(line_end))
+    }
+
     pub fn slice(&self, span: Span) -> &str {
         &self.text[span.start..span.end]
     }

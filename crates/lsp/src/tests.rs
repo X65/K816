@@ -1838,3 +1838,231 @@ func main @a8 {
         ":abs hover should contain suffix heading, got:\n{abs_hover}"
     );
 }
+
+#[test]
+fn partition_groups_by_parent_directory() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let alpha = root.path().join("alpha");
+    let beta = root.path().join("beta");
+    std::fs::create_dir_all(&alpha).expect("alpha dir");
+    std::fs::create_dir_all(&beta).expect("beta dir");
+    let a = alpha.join("a.k65");
+    let b = alpha.join("b.k65");
+    let c = beta.join("c.k65");
+    for path in [&a, &b, &c] {
+        std::fs::write(path, "").expect("write");
+    }
+
+    let units = partition_workspace_into_units(root.path(), false, &[a.clone(), b.clone(), c]);
+    assert_eq!(units.len(), 2, "expected one unit per directory: {units:?}");
+    let alpha_unit = units
+        .iter()
+        .find(|unit| unit.uris.len() == 2)
+        .expect("alpha unit");
+    assert_eq!(alpha_unit.uris.len(), 2);
+}
+
+#[test]
+fn partition_honors_manifest_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let src = root.path().join("src");
+    let tests_dir = root.path().join("tests");
+    std::fs::create_dir_all(&src).expect("src");
+    std::fs::create_dir_all(&tests_dir).expect("tests");
+    let main = src.join("main.k65");
+    let helper = src.join("helper.k65");
+    let stray = tests_dir.join("stray.k65");
+    for path in [&main, &helper, &stray] {
+        std::fs::write(path, "").expect("write");
+    }
+
+    // With manifest, only `src/` files should be in the unit (caller passes the
+    // manifest-filtered discovery list — partition still merges them into one).
+    let units = partition_workspace_into_units(root.path(), true, &[main, helper]);
+    assert_eq!(units.len(), 1, "manifest produces one unit");
+    assert_eq!(units[0].uris.len(), 2);
+}
+
+#[test]
+fn cross_file_const_visible_within_unit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let unit_dir = dir.path().join("link-multi-const");
+    std::fs::create_dir_all(&unit_dir).expect("unit dir");
+    let main_path = unit_dir.join("input.10-main.k65");
+    let const_path = unit_dir.join("input.20-const.k65");
+    let main_text = "const FOO = 42\n\nfunc main @a16 {\n  lda #FOO\n  pha\n  lda #BAR\n}\n";
+    let const_text = "const BAR = 1337\n";
+    std::fs::write(&main_path, main_text).expect("write main");
+    std::fs::write(&const_path, const_text).expect("write const");
+
+    let main_uri =
+        Uri::from_str(url::Url::from_file_path(&main_path).unwrap().as_str()).expect("uri");
+    let const_uri =
+        Uri::from_str(url::Url::from_file_path(&const_path).unwrap().as_str()).expect("uri");
+
+    let mut state = ServerState::new(dir.path().to_path_buf());
+    state
+        .upsert_document(const_uri, const_text.to_string(), 1, false)
+        .expect("const doc");
+    state
+        .upsert_document(main_uri.clone(), main_text.to_string(), 1, true)
+        .expect("main doc");
+
+    let diagnostics = state.lsp_diagnostics(&main_uri);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("unknown identifier 'BAR'")),
+        "BAR should resolve via the same-directory unit; got: {diagnostics:?}",
+    );
+}
+
+#[test]
+fn link_undefined_symbol_appears_as_diagnostic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let unit_dir = dir.path().join("missing-symbol");
+    std::fs::create_dir_all(&unit_dir).expect("unit dir");
+    let main_path = unit_dir.join("main.k65");
+    let main_text = "func main @a16 {\n  call missing\n}\n";
+    std::fs::write(&main_path, main_text).expect("write");
+
+    let main_uri =
+        Uri::from_str(url::Url::from_file_path(&main_path).unwrap().as_str()).expect("uri");
+
+    let mut state = ServerState::new(dir.path().to_path_buf());
+    state
+        .upsert_document(main_uri.clone(), main_text.to_string(), 1, true)
+        .expect("doc");
+
+    let diagnostics = state.lsp_diagnostics(&main_uri);
+    let undefined = diagnostics
+        .iter()
+        .find(|diag| {
+            diag.severity == Some(DiagnosticSeverity::ERROR)
+                && diag.message.contains("undefined symbol 'missing'")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an undefined-symbol diagnostic for 'missing'; got: {diagnostics:?}",
+            )
+        });
+
+    let missing_offset = main_text.find("missing").expect("missing token");
+    let missing_end = missing_offset + "missing".len();
+    let doc = state.documents.get(&main_uri).expect("doc");
+    let expected_start = doc.line_index.to_position(&doc.text, missing_offset);
+    let expected_end = doc.line_index.to_position(&doc.text, missing_end);
+    assert_eq!(
+        undefined.range.start, expected_start,
+        "diagnostic range must start at 'missing' token: {undefined:?}",
+    );
+    assert_eq!(
+        undefined.range.end, expected_end,
+        "diagnostic range must cover the 'missing' token: {undefined:?}",
+    );
+}
+
+#[test]
+fn cross_file_link_diagnostic_invalidates_when_other_file_changes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let unit_dir = dir.path().join("link-cross");
+    std::fs::create_dir_all(&unit_dir).expect("unit dir");
+
+    let main_path = unit_dir.join("main.k65");
+    let extra_path = unit_dir.join("extra.k65");
+    let main_text = "func main @a16 @i16 {\n  call app_init\n}\n";
+    let extra_text = "func app_init @a16 @i16 {\n  rts\n}\n";
+    std::fs::write(&main_path, main_text).expect("main");
+    std::fs::write(&extra_path, extra_text).expect("extra");
+
+    let main_uri =
+        Uri::from_str(url::Url::from_file_path(&main_path).unwrap().as_str()).expect("uri");
+    let extra_uri =
+        Uri::from_str(url::Url::from_file_path(&extra_path).unwrap().as_str()).expect("uri");
+
+    let mut state = ServerState::new(dir.path().to_path_buf());
+    state
+        .upsert_document(extra_uri.clone(), extra_text.to_string(), 1, true)
+        .expect("extra doc");
+    state
+        .upsert_document(main_uri.clone(), main_text.to_string(), 1, true)
+        .expect("main doc");
+
+    let initial = state.lsp_diagnostics(&main_uri);
+    assert!(
+        !initial
+            .iter()
+            .any(|diag| diag.message.contains("undefined symbol 'app_init'")),
+        "no undefined-symbol diagnostic expected with both files open: {initial:?}",
+    );
+
+    // Close the defining file. With it removed from the unit, the linker
+    // should report `app_init` as undefined in main.k65.
+    state.documents.remove(&extra_uri);
+    state.analyze_all_documents();
+
+    let after_close = state.lsp_diagnostics(&main_uri);
+    assert!(
+        after_close
+            .iter()
+            .any(|diag| diag.message.contains("undefined symbol 'app_init'")),
+        "expected undefined-symbol diagnostic after extra.k65 removed: {after_close:?}",
+    );
+
+    // Reopen the defining file. The diagnostic must disappear.
+    state
+        .upsert_document(extra_uri, extra_text.to_string(), 2, true)
+        .expect("extra doc reopen");
+
+    let after_reopen = state.lsp_diagnostics(&main_uri);
+    assert!(
+        !after_reopen
+            .iter()
+            .any(|diag| diag.message.contains("undefined symbol 'app_init'")),
+        "diagnostic must clear after extra.k65 is restored: {after_reopen:?}",
+    );
+}
+
+#[test]
+fn cross_file_const_invisible_across_units() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let alpha = dir.path().join("link-multi-const");
+    let beta = dir.path().join("link-multi-const-err");
+    std::fs::create_dir_all(&alpha).expect("alpha dir");
+    std::fs::create_dir_all(&beta).expect("beta dir");
+
+    let main_path = alpha.join("input.10-main.k65");
+    let main_text = "const FOO = 42\n\nfunc main @a16 {\n  lda #FOO\n  pha\n  lda #BAR\n}\n";
+    let unrelated_const_path = beta.join("input.20-const.k65");
+    let unrelated_const_text = "const BAR = 84\n";
+    std::fs::write(&main_path, main_text).expect("write main");
+    std::fs::write(&unrelated_const_path, unrelated_const_text).expect("write unrelated");
+
+    let main_uri =
+        Uri::from_str(url::Url::from_file_path(&main_path).unwrap().as_str()).expect("uri");
+    let unrelated_uri = Uri::from_str(
+        url::Url::from_file_path(&unrelated_const_path)
+            .unwrap()
+            .as_str(),
+    )
+    .expect("uri");
+
+    let mut state = ServerState::new(dir.path().to_path_buf());
+    state
+        .upsert_document(unrelated_uri, unrelated_const_text.to_string(), 1, false)
+        .expect("unrelated const doc");
+    state
+        .upsert_document(main_uri.clone(), main_text.to_string(), 1, true)
+        .expect("main doc");
+
+    let diagnostics = state.lsp_diagnostics(&main_uri);
+    // The unrelated `BAR` in a sibling fixture must NOT silently satisfy this
+    // one's reference — partitioning makes them independent units, so the
+    // diagnostic should appear on the `BAR` reference.
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("unknown identifier 'BAR'")),
+        "BAR from a different unit must not resolve; got: {diagnostics:?}",
+    );
+}

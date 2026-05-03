@@ -139,13 +139,11 @@ impl Server {
     }
 
     fn handle_filesystem_events(&mut self, events: Vec<WorkspaceFsEvent>) -> Result<()> {
-        let to_publish = self.state.apply_fs_events(events);
-        for uri in to_publish {
-            let version = self.state.documents.get(&uri).map(|doc| doc.version);
-            let diagnostics = self.state.lsp_diagnostics(&uri);
-            self.publish_diagnostics(uri, version, diagnostics)?;
-        }
-        Ok(())
+        let _ = self.state.apply_fs_events(events);
+        // FS-event scope under-reports cross-file impacts: a removed file may
+        // have been satisfying an undefined-symbol relocation in an open file
+        // we'd never publish for. Broadcast to every open editor instead.
+        self.publish_all_open_diagnostics()
     }
 
     fn handle_request(&mut self, request: Request) -> Result<()> {
@@ -186,7 +184,11 @@ impl Server {
                 self.state
                     .upsert_document(uri.clone(), text, version, true)?;
                 let diagnostics = self.state.lsp_diagnostics(&uri);
-                self.publish_diagnostics(uri, Some(version), diagnostics)
+                self.publish_diagnostics(uri.clone(), Some(version), diagnostics)?;
+                // Opening a file may shift the workspace's link result for
+                // every other open file (a previously undefined symbol may
+                // now resolve, or vice versa). Broadcast.
+                self.publish_all_open_diagnostics()
             }
             DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams =
@@ -234,8 +236,7 @@ impl Server {
                     self.state
                         .upsert_document(uri.clone(), text, version, open)?;
                 }
-                let diagnostics = self.state.lsp_diagnostics(&uri);
-                self.publish_diagnostics(uri, Some(version), diagnostics)
+                self.publish_all_open_diagnostics()
             }
             DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams =
@@ -244,7 +245,11 @@ impl Server {
                 let uri = params.text_document.uri;
                 self.pending_changes.remove(&uri);
                 self.state.close_document(&uri);
-                self.publish_diagnostics(uri, None, Vec::new())
+                // Close pushes an empty list for the closed doc, then a fresh
+                // broadcast so other open files get any link errors that were
+                // being satisfied by definitions in the now-closed buffer.
+                self.publish_diagnostics(uri, None, Vec::new())?;
+                self.publish_all_open_diagnostics()
             }
             _ => Ok(()),
         }
@@ -286,9 +291,9 @@ impl Server {
             return Ok(());
         }
         self.state.analyze_all_documents();
-        let version = self.state.documents.get(&uri).map(|doc| doc.version);
-        let diagnostics = self.state.lsp_diagnostics(&uri);
-        self.publish_diagnostics(uri, version, diagnostics)
+        // Re-analysis can flip link errors on docs other than the one that
+        // triggered the flush, so push to every open editor.
+        self.publish_all_open_diagnostics()
     }
 
     fn on_definition(&mut self, request: Request) -> Result<()> {
@@ -458,6 +463,31 @@ impl Server {
             version,
         };
         self.send_notification::<PublishDiagnostics>(params)
+    }
+
+    /// Publish current diagnostics for every open document. Closing or
+    /// changing one file can resurface link errors elsewhere (an undefined
+    /// symbol in file B that file A had been satisfying), so any flow that
+    /// re-runs analysis must broadcast to all open editors instead of just
+    /// the one the editor told us about.
+    fn publish_all_open_diagnostics(&self) -> Result<()> {
+        let entries: Vec<(Uri, Option<i32>, Vec<Diagnostic>)> = self
+            .state
+            .documents
+            .iter()
+            .filter(|(_, doc)| doc.open)
+            .map(|(uri, doc)| {
+                (
+                    uri.clone(),
+                    Some(doc.version),
+                    self.state.lsp_diagnostics(uri),
+                )
+            })
+            .collect();
+        for (uri, version, diags) in entries {
+            self.publish_diagnostics(uri, version, diags)?;
+        }
+        Ok(())
     }
 
     fn send_notification<N: LspNotification>(&self, params: N::Params) -> Result<()> {

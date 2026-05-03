@@ -415,6 +415,34 @@ fn compile_source_file(input_path: &Path) -> anyhow::Result<k816_o65::O65Object>
     Ok(output.object)
 }
 
+/// Render the linker's structured `LinkErrors` through the same machinery the
+/// compiler uses for its diagnostics. The resulting string, wrapped in
+/// `RenderedDiagnosticError`, flows through `print_error` indistinguishably
+/// from a compile failure.
+fn link_errors_to_rendered(
+    link_errors: &k816_link::LinkErrors,
+    source_map: &k816_core::span::SourceMap,
+    source_ids: &[k816_core::span::SourceId],
+    source_names: &[String],
+) -> RenderedDiagnosticError {
+    let resolve = |path: &str| -> Option<k816_core::span::SourceId> {
+        source_ids
+            .iter()
+            .zip(source_names.iter())
+            .find(|(_, name)| name.as_str() == path)
+            .map(|(id, _)| *id)
+    };
+    let rendered = k816_core::render_link_errors(
+        link_errors,
+        source_map,
+        &resolve,
+        k816_core::diag::RenderOptions {
+            color: stderr_supports_color(),
+        },
+    );
+    RenderedDiagnosticError(rendered)
+}
+
 fn stderr_supports_color() -> bool {
     if env::var_os("NO_COLOR").is_some() {
         return false;
@@ -642,7 +670,24 @@ fn single_file_build_command(
     link_options: LinkPhaseOptions,
     output: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    let object = compile_source_file(&input_path)?;
+    let source = read_source_file(&input_path)?;
+    let source_name = input_path.display().to_string();
+    let compile_inputs = k816_core::LinkCompileInput::from_pairs(std::iter::once((
+        source_name.as_str(),
+        source.as_str(),
+    )));
+    let (compile_outputs, source_map, source_ids) =
+        k816_core::compile_sources_all_or_nothing_keeping_map(&compile_inputs, auto_compile_render())
+            .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+
+    let mut objects = Vec::with_capacity(compile_outputs.len());
+    for output in compile_outputs {
+        if !output.rendered_warnings.trim().is_empty() {
+            eprintln!("{}", output.rendered_warnings.trim_end());
+        }
+        objects.push(output.object);
+    }
+
     let resolved_config_path = link_options
         .config
         .or_else(|| discover_adjacent_config_path(&input_path));
@@ -650,7 +695,14 @@ fn single_file_build_command(
     let config_output_path = ctx.config_output_path.clone();
     let output_kind =
         ctx.apply_output_kind(config_output_path.as_deref(), link_options.output_format);
-    let linked = k816_link::link_objects_with_options(&[object], &ctx.config, auto_link_render())?;
+    let linked = k816_link::link_objects_diagnostics(&objects, &ctx.config).map_err(|errors| {
+        anyhow::Error::new(link_errors_to_rendered(
+            &errors,
+            &source_map,
+            &source_ids,
+            &[source_name.clone()],
+        ))
+    })?;
     let output_path = output
         .or(config_output_path)
         .unwrap_or_else(|| default_build_output_path(&input_path, output_kind));
@@ -941,9 +993,17 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
     let compile_inputs = k816_core::LinkCompileInput::from_pairs(loaded_sources.iter().map(
         |(_object_path, source_name, source_text)| (source_name.as_str(), source_text.as_str()),
     ));
-    let compile_outputs =
-        k816_core::compile_sources_all_or_nothing(&compile_inputs, auto_compile_render())
-            .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+    let (compile_outputs, source_map, source_ids) =
+        k816_core::compile_sources_all_or_nothing_keeping_map(
+            &compile_inputs,
+            auto_compile_render(),
+        )
+        .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+
+    let source_names: Vec<String> = loaded_sources
+        .iter()
+        .map(|(_, source_name, _)| source_name.clone())
+        .collect();
 
     let mut objects = Vec::with_capacity(compile_outputs.len());
     for ((object_path, _source_name, _source_text), output) in
@@ -974,7 +1034,14 @@ fn project_build_internal(link_options: &LinkPhaseOptions) -> anyhow::Result<Pro
         display_project_path(&project_root, &artifact_path)
     );
 
-    let linked = k816_link::link_objects_with_options(&objects, &ctx.config, auto_link_render())?;
+    let linked = k816_link::link_objects_diagnostics(&objects, &ctx.config).map_err(|errors| {
+        anyhow::Error::new(link_errors_to_rendered(
+            &errors,
+            &source_map,
+            &source_ids,
+            &source_names,
+        ))
+    })?;
     let listing_path = match &manifest.link.listing {
         ListingOption::Bool(false) => None,
         ListingOption::Bool(true) => Some(artifact_path.with_extension("lst")),

@@ -205,6 +205,37 @@ pub fn compile_sources_all_or_nothing(
     compile_sources(sources, options).into_iter().collect()
 }
 
+/// Like `compile_sources` but additionally returns the `SourceMap` and the
+/// per-input `SourceId`s the compile pass used. Required by callers (CLI,
+/// golden harness, LSP) that need to render link-time diagnostics through
+/// `crate::diag::render_diagnostics_with_options`, which is `SourceMap`-driven.
+pub fn compile_sources_keeping_map(
+    sources: &[LinkCompileInput<'_>],
+    options: CompileRenderOptions,
+) -> (
+    Vec<Result<CompileObjectOutput, CompileError>>,
+    SourceMap,
+    Vec<SourceId>,
+) {
+    let (source_map, source_ids) = assign_source_ids(sources);
+    let externals = collect_workspace_externals(sources);
+    let results =
+        compile_sources_with_externals_inner(sources, &source_ids, &source_map, &externals, options);
+    (results, source_map, source_ids)
+}
+
+/// All-or-nothing variant of [`compile_sources_keeping_map`]. On the first
+/// per-file failure returns the rendered `CompileError` (the same error the
+/// CLI prints today), discarding the partial outputs.
+pub fn compile_sources_all_or_nothing_keeping_map(
+    sources: &[LinkCompileInput<'_>],
+    options: CompileRenderOptions,
+) -> Result<(Vec<CompileObjectOutput>, SourceMap, Vec<SourceId>), CompileError> {
+    let (results, source_map, source_ids) = compile_sources_keeping_map(sources, options);
+    let outputs: Result<Vec<_>, _> = results.into_iter().collect();
+    Ok((outputs?, source_map, source_ids))
+}
+
 // --- Internal implementation ---
 
 fn compile_source_inner(

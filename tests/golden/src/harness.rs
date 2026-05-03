@@ -528,11 +528,17 @@ fn compile_and_link(
             source_text: source,
         })
         .collect::<Vec<_>>();
-    let compiled_outputs = k816_core::compile_sources_all_or_nothing(
-        &compile_inputs,
-        k816_core::CompileRenderOptions::plain(),
-    )
-    .map_err(|error| anyhow!("{}", error.rendered))?;
+    let (compiled_outputs, source_map, source_ids) =
+        k816_core::compile_sources_all_or_nothing_keeping_map(
+            &compile_inputs,
+            k816_core::CompileRenderOptions::plain(),
+        )
+        .map_err(|error| anyhow!("{}", error.rendered))?;
+
+    let source_names: Vec<String> = loaded_inputs
+        .iter()
+        .map(|(input, _)| input.source_name.clone())
+        .collect();
 
     let mut objects = Vec::with_capacity(inputs.len());
     let mut warnings = String::new();
@@ -567,7 +573,22 @@ fn compile_and_link(
     if let Some(kind) = expected_output_kind {
         config.output.kind = kind;
     }
-    let linked = k816_link::link_objects(&objects, &config)?;
+    let linked = k816_link::link_objects_diagnostics(&objects, &config).map_err(|errors| {
+        let resolve = |path: &str| -> Option<k816_core::span::SourceId> {
+            source_ids
+                .iter()
+                .zip(source_names.iter())
+                .find(|(_, name)| name.as_str() == path)
+                .map(|(id, _)| *id)
+        };
+        let rendered = k816_core::render_link_errors(
+            &errors,
+            &source_map,
+            &resolve,
+            k816_core::diag::RenderOptions::plain(),
+        );
+        anyhow!("{}", rendered)
+    })?;
     Ok(PipelineOutput { linked, warnings })
 }
 

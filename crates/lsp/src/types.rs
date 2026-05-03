@@ -245,6 +245,13 @@ pub(super) struct DocumentState {
     pub(super) object: Option<k816_o65::O65Object>,
     pub(super) addressable_sites: Vec<k816_core::AddressableSite>,
     pub(super) resolved_sites: Vec<(k816_core::span::Span, u32, u32)>,
+    /// URIs indexed by `SourceId.0` from the compilation unit that produced
+    /// this document's analysis. Lets `lsp_diagnostics` map foreign
+    /// `InlineOrigin` spans back to a clickable URI within that unit.
+    pub(super) source_id_uris: Vec<Uri>,
+    /// Index into `ServerState.compilation_units` for the unit that owns
+    /// this doc. `None` means the doc has not yet been analyzed.
+    pub(super) unit_id: Option<usize>,
 }
 
 impl DocumentState {
@@ -271,11 +278,14 @@ pub(super) struct ServerState {
     pub(super) symbol_occurrences: HashMap<String, Vec<SymbolOccurrence>>,
     pub(super) linker_config: k816_link::LinkerConfig,
     pub(super) last_link_layout: Option<k816_link::LinkedLayout>,
-    pub(super) last_link_error: Option<String>,
-    /// URIs indexed by `SourceId.0`, captured during the last `compile_sources`
-    /// pass. Used to resolve a foreign-source `Span` (carried by an
-    /// `InlineOrigin` supplement) back to a clickable LSP location.
-    pub(super) source_id_uris: Vec<Uri>,
+    /// Per-unit linker diagnostics from the last attempt. Keyed by the index
+    /// of the unit within `compilation_units` at the time of capture; cleared
+    /// to `Vec::new()` when a unit links cleanly.
+    pub(super) last_link_diagnostics_per_unit: HashMap<usize, Vec<k816_link::LinkDiagnostic>>,
+    /// Discovered compilation units. `analyze_all_documents` compiles each
+    /// unit independently with its own `WorkspaceExternals` so unrelated
+    /// fixtures don't pollute each other's name resolution.
+    pub(super) compilation_units: Vec<super::project::CompilationUnit>,
 }
 
 impl ServerState {
@@ -288,8 +298,8 @@ impl ServerState {
             symbol_occurrences: HashMap::new(),
             linker_config: k816_link::default_stub_config(),
             last_link_layout: None,
-            last_link_error: None,
-            source_id_uris: Vec::new(),
+            last_link_diagnostics_per_unit: HashMap::new(),
+            compilation_units: Vec::new(),
         }
     }
 

@@ -1,0 +1,9 @@
+Error: Accumulator value is dead after switching to @a8.
+   ╭─[ tests/golden/fixtures/syntax-bit-imm-err/input.k65:6:5 ]
+   │
+ 6 │     bit #$01
+   │     ────┬───  
+   │         ╰───── here
+   │ 
+   │ Help: load A again in 8-bit mode before using it
+───╯

@@ -1,0 +1,7 @@
+var MEM = $1000
+
+func main @a16 {
+    lda MEM
+    @a8
+    bit MEM
+}

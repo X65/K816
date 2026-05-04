@@ -256,8 +256,19 @@ fn instruction_effects(instruction: &Instruction) -> RegEffects {
         &instruction.mnemonic,
         instruction_targets_accumulator(instruction),
     );
+    let mut reads = base.reads | operand_index_reads(instruction.operand.as_ref());
+    // Memory-form `BIT` derives N from operand bit 7/15 and V from operand bit
+    // 6/14 independently of A; only Z reflects `A AND M`. The immediate form
+    // (Note 2 in the W65C816 datasheet) writes only Z, so its effect *is* the
+    // AND with A. Treat memory BIT as not reading A so a stale-A after a width
+    // switch does not block N/V uses; keep immediate BIT as an A-reader.
+    if instruction.mnemonic.eq_ignore_ascii_case("bit")
+        && !matches!(instruction.operand, Some(Operand::Immediate { .. }))
+    {
+        reads = reads - RegSet::A;
+    }
     RegEffects {
-        reads: base.reads | operand_index_reads(instruction.operand.as_ref()),
+        reads,
         modifies: base.modifies,
     }
 }

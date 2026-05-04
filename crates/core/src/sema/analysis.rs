@@ -41,6 +41,19 @@ pub fn analyze_partial(
             external_names.insert(name.clone());
         }
     }
+    if let Some(ext) = externals.external_var_classes {
+        for (name, class) in ext {
+            // Skip names that are already a compile-time-resolvable var or
+            // const in this unit; those take precedence and have addresses.
+            if model.vars.contains_key(name) || model.consts.contains_key(name) {
+                continue;
+            }
+            model
+                .external_var_classes
+                .insert(name.clone(), class.clone());
+            external_names.insert(name.clone());
+        }
+    }
 
     for item in &file.items {
         match &item.node {

@@ -331,18 +331,22 @@ fn software_interrupt_note(mnemonic: &str) -> Option<&'static str> {
     }
 }
 
-/// True when `name` resolves to a function, var, const, or symbolic-subscript
-/// field defined in this translation unit. Mirrors the lookup at
-/// `lower.rs:1849`. Used to detect unresolved labels at encode-error time.
+/// True when `name` resolves to a function, var, const, symbolic-subscript
+/// field, or cross-unit external var classification visible to this
+/// translation unit. Mirrors the lookup at `lower.rs:1849`. Used to detect
+/// unresolved labels at encode-error time so help text can distinguish
+/// "symbol is genuinely unknown" from "symbol is declared somewhere in the
+/// link group but the encoding it asks for can't be satisfied".
 fn is_locally_resolvable(sema: &SemanticModel, name: &str) -> bool {
     if sema.functions.contains_key(name)
         || sema.vars.contains_key(name)
         || sema.consts.contains_key(name)
+        || sema.external_var_classes.contains_key(name)
     {
         return true;
     }
     if let Some((base, _field)) = name.split_once('.')
-        && sema.vars.contains_key(base)
+        && (sema.vars.contains_key(base) || sema.external_var_classes.contains_key(base))
     {
         return true;
     }
@@ -429,6 +433,30 @@ fn build_encode_diagnostic(
                 .with_primary_label("immediate operand")
                 .with_help(help)
                 .with_note(note);
+        }
+        EncodeError::NoAbsolute16Form => {
+            // For indirect-family operands, this fires when an `abs`-classified
+            // var (typically declared in a sibling file as `var abs X:word`)
+            // is used in a mode (`(X)`, `(X,X)`, `[X]`, …) that only has a
+            // direct-page encoding on this mnemonic. Surface the DP
+            // requirement and point at the symbol — the generic
+            // "no absolute form" message hides the actual cause.
+            if let Some(enriched) =
+                enrich_invalid_indirect(span, instruction_mnemonic, operand, sema)
+            {
+                diag = enriched;
+            } else {
+                diag = Diagnostic::error(
+                    span,
+                    format!(
+                        "`{instruction_mnemonic}` has no absolute form for this operand",
+                    ),
+                )
+                .with_primary_label("forced absolute operand".to_string())
+                .with_help(format!(
+                    "drop the `abs` prefix; `{instruction_mnemonic}` only accepts direct-page or long addressing here"
+                ));
+            }
         }
         EncodeError::DirectPageOutOfRange => {
             let value_phrase = match operand {

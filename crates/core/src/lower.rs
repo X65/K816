@@ -3745,7 +3745,11 @@ fn force_addr_mode_to_size_hint(force: ForceAddrMode) -> AddressSizeHint {
 /// Resolves the effective addressing-mode hint for an operand. Operand-level
 /// `dp`/`abs`/`far` prefixes win; otherwise a `var` declaration's
 /// `addr_mode_default` (set by the same prefix family on the declaration) is
-/// applied for plain references to that symbol.
+/// applied for plain references to that symbol. Cross-unit vars whose
+/// addresses are linker-resolved still contribute their classification via
+/// `sema.external_var_classes`, so e.g. `lda (X)` for a sibling-file
+/// `var dp X:word` picks up `ForceDirectPage` and the encoder selects the
+/// DP-indirect form.
 fn address_size_hint_for_operand(
     addr_mode_override: Option<ForceAddrMode>,
     expr: &Expr,
@@ -3754,11 +3758,17 @@ fn address_size_hint_for_operand(
     if let Some(force) = addr_mode_override {
         return force_addr_mode_to_size_hint(force);
     }
-    if let Some(force) = base_ident(expr)
-        .and_then(|name| sema.vars.get(name))
-        .and_then(|var| var.addr_mode_default)
-    {
-        return force_addr_mode_to_size_hint(force);
+    if let Some(name) = base_ident(expr) {
+        if let Some(force) = sema.vars.get(name).and_then(|var| var.addr_mode_default) {
+            return force_addr_mode_to_size_hint(force);
+        }
+        if let Some(force) = sema
+            .external_var_classes
+            .get(name)
+            .and_then(|class| class.addr_mode_default)
+        {
+            return force_addr_mode_to_size_hint(force);
+        }
     }
     AddressSizeHint::Auto
 }

@@ -102,6 +102,19 @@ pub struct VarMeta {
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
+/// Classification of a cross-unit `var` whose address is *not* known at
+/// compile time (the declaration has no explicit `= <addr>` initializer, so
+/// the address is auto-allocated within the declaring file and resolved by
+/// the linker). Carries just the addressing-mode information lowering needs
+/// to pick the right encoding at the call site — without leaking the
+/// declaring file's per-file auto-allocated address, which is meaningless
+/// across translation units.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalVarClass {
+    pub data_width: Option<DataWidth>,
+    pub addr_mode_default: Option<ForceAddrMode>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConstMeta {
     pub value: Number,
@@ -118,6 +131,11 @@ pub struct SemanticModel {
     pub vars: IndexMap<String, VarMeta>,
     pub consts: IndexMap<String, ConstMeta>,
     pub labels: IndexMap<String, LabelMeta>,
+    /// Cross-unit `var` classifications threaded in from the workspace.
+    /// Stored separately from `vars` so callers cannot accidentally read an
+    /// (absent) compile-time address from these entries — only the
+    /// addressing-mode classification is shared across files.
+    pub external_var_classes: IndexMap<String, ExternalVarClass>,
 }
 
 /// Cross-unit symbols seeded into a per-file `analyze_partial` so that the
@@ -133,4 +151,10 @@ pub struct AnalysisExternals<'a> {
     /// to such names already fall through `lower::resolve_operand_ident` to a
     /// label-relocation path.
     pub vars: Option<&'a IndexMap<String, VarMeta>>,
+    /// Cross-unit vars whose addresses are linker-resolved (no explicit
+    /// initializer). Threaded as classifications only — `data_width` and
+    /// `addr_mode_default` — so lowering can upgrade a label-relocation's
+    /// `size_hint` to match the declaring file's `dp`/`abs`/`far` prefix
+    /// without leaking the per-file auto-allocated address.
+    pub external_var_classes: Option<&'a IndexMap<String, ExternalVarClass>>,
 }

@@ -16,7 +16,8 @@ use crate::normalize_hla::normalize_file;
 use crate::parser::{parse_with_warnings_and_externals, scan_declared_function_names};
 use crate::peephole::peephole_optimize;
 use crate::sema::{
-    AnalysisExternals, ConstMeta, FunctionMeta, VarMeta, analyze_partial, analyze_with_externals,
+    AnalysisExternals, ConstMeta, ExternalVarClass, FunctionMeta, VarMeta, analyze_partial,
+    analyze_with_externals,
 };
 use crate::span::{SourceId, SourceMap};
 
@@ -97,6 +98,13 @@ pub struct WorkspaceExternals {
     /// `lower::resolve_operand_ident` to a label-relocation path the linker
     /// resolves.
     pub vars: IndexMap<String, VarMeta>,
+    /// Cross-unit `var` *classifications* for declarations whose addresses
+    /// are linker-resolved (no explicit initializer). Lowering uses these to
+    /// upgrade the `size_hint` on a label-relocation operand to match the
+    /// declaring file's `dp`/`abs`/`far` prefix — letting `lda (X)` etc.
+    /// pick a DP-indirect encoding for a cross-file `var dp X:word` even
+    /// though no compile-time address is shared.
+    pub external_var_classes: IndexMap<String, ExternalVarClass>,
     pub functions: IndexMap<String, FunctionMeta>,
     pub function_names: HashSet<String>,
     pub inline_bodies: IndexMap<String, CodeBlock>,
@@ -260,6 +268,7 @@ fn compile_source_inner(
     let analysis_externals = AnalysisExternals {
         consts: externals.map(|e| &e.consts),
         vars: externals.map(|e| &e.vars),
+        external_var_classes: externals.map(|e| &e.external_var_classes),
     };
     let mut sema = analyze_with_externals(&ast, analysis_externals)
         .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
@@ -336,11 +345,14 @@ pub fn collect_workspace_externals(sources: &[LinkCompileInput<'_>]) -> Workspac
         .collect();
     let consts = collect_external_consts_from_parsed(&parsed_sources);
     let vars = collect_external_vars_from_parsed(&parsed_sources, &consts);
+    let external_var_classes =
+        collect_external_var_classes_from_parsed(&parsed_sources, &consts, &vars);
     let functions = collect_external_functions_from_parsed(&parsed_sources);
     let inline_bodies = collect_external_inline_bodies_from_parsed(&parsed_sources);
     WorkspaceExternals {
         consts,
         vars,
+        external_var_classes,
         functions,
         function_names,
         inline_bodies,
@@ -379,6 +391,7 @@ fn collect_external_consts_from_parsed(
             let externals = AnalysisExternals {
                 consts: Some(&consts),
                 vars: None,
+                external_var_classes: None,
             };
             let (sema, _diagnostics) = analyze_partial(ast, externals);
 
@@ -480,6 +493,7 @@ fn collect_external_vars_from_parsed(
         let externals = AnalysisExternals {
             consts: Some(consts),
             vars: None,
+            external_var_classes: None,
         };
         let (sema, _) = analyze_partial(ast, externals);
         for (name, meta) in sema.vars {
@@ -490,6 +504,64 @@ fn collect_external_vars_from_parsed(
         }
     }
     vars
+}
+
+/// Collect classifications for cross-unit `var` declarations whose addresses
+/// are auto-allocated (no explicit `= <addr>` initializer). Sharing these
+/// classifications lets the consumer file's lowering pick the right
+/// addressing-mode encoding for label-resolved references — e.g. picking
+/// `DirectPageIndirect` for `lda (X)` when `X` was declared `var dp X:word`
+/// in a sibling file. The address itself is **not** shared (it remains
+/// per-file and meaningless across TUs); only `data_width` and
+/// `addr_mode_default` are.
+///
+/// Vars present in `explicit_addr_vars` are skipped — those already flow as
+/// full `VarMeta` with a compile-time address.
+///
+/// First-declaration-wins on name collisions, matching the policy for
+/// consts, functions, and inline bodies.
+fn collect_external_var_classes_from_parsed(
+    parsed_sources: &[Option<File>],
+    consts: &IndexMap<String, ConstMeta>,
+    explicit_addr_vars: &IndexMap<String, VarMeta>,
+) -> IndexMap<String, ExternalVarClass> {
+    // Names of top-level vars *without* an explicit address initializer —
+    // the inverse of the filter in `collect_external_vars_from_parsed`.
+    let mut auto_addr_names: HashSet<String> = HashSet::new();
+    for ast in parsed_sources {
+        let Some(ast) = ast else { continue };
+        for item in &ast.items {
+            match &item.node {
+                Item::Var(var) | Item::Statement(Stmt::Var(var)) => {
+                    if var.initializer.is_none() {
+                        auto_addr_names.insert(var.name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut classes: IndexMap<String, ExternalVarClass> = IndexMap::new();
+    for ast in parsed_sources {
+        let Some(ast) = ast else { continue };
+        let externals = AnalysisExternals {
+            consts: Some(consts),
+            vars: None,
+            external_var_classes: None,
+        };
+        let (sema, _) = analyze_partial(ast, externals);
+        for (name, meta) in sema.vars {
+            if !auto_addr_names.contains(&name) || explicit_addr_vars.contains_key(&name) {
+                continue;
+            }
+            classes.entry(name).or_insert(ExternalVarClass {
+                data_width: meta.data_width,
+                addr_mode_default: meta.addr_mode_default,
+            });
+        }
+    }
+    classes
 }
 
 /// Collect `CodeBlock` bodies for every `inline` function declared across the

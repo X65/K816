@@ -1,0 +1,11 @@
+Error: `lda (addr)` requires the address to lie within the direct page
+   ╭─[ tests/golden/fixtures/syntax-addrmode-indirect-multi-abs-err/input.10-main.k65:2:5 ]
+   │
+ 2 │     lda (shell_str_ptr)
+   │     ─────────┬─────────  
+   │              ╰─────────── indirect operand
+   │ 
+   │ Help: use the `dp` prefix to force direct-page indirect (write `(dp shell_str_ptr)`), or declare `shell_str_ptr` at a direct-page address
+   │ 
+   │ Note: `lda` has no `(abs)` form on the W65C816 — only `jmp`, `jsl`, and `jsr` accept absolute-indirect addressing
+───╯

@@ -79,6 +79,7 @@ pub(super) fn analyze_document(
                 let analysis_externals = k816_core::sema::AnalysisExternals {
                     consts: externals.map(|e| &e.consts),
                     vars: externals.map(|e| &e.vars),
+                    external_var_classes: externals.map(|e| &e.external_var_classes),
                 };
                 let (model, _sema_diagnostics) =
                     k816_core::sema::analyze_partial(&normalized, analysis_externals);

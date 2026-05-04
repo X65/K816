@@ -381,6 +381,7 @@ fn eval_const_expr(
                     Ok(Number::Int(value))
                 }
                 ExprUnaryOp::EvalBracketed => Ok(Number::Int(value)),
+                ExprUnaryOp::AddressPositioned => Ok(Number::Int(value)),
                 ExprUnaryOp::Negate => value
                     .checked_neg()
                     .map(Number::Int)

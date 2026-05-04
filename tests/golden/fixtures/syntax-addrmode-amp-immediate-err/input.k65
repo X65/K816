@@ -1,0 +1,5 @@
+const FIELD_HP = 2
+
+func main {
+    lda #&FIELD_HP
+}

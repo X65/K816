@@ -1,0 +1,11 @@
+Error: `&` address-positioned marker requires an X- or Y-indexed addressing mode
+   ╭─[ tests/golden/fixtures/syntax-addrmode-amp-stack-rel-err/input.k65:4:5 ]
+   │
+ 4 │     lda &FIELD_HP, s
+   │     ────────┬───────  
+   │             ╰───────── address-positioned marker on non-indexed operand
+   │ 
+   │ Help: use `&EXPR, x` or `&EXPR, y` — without an index register the operand IS the address, so a value-as-offset reading makes no sense
+   │ 
+   │ Note: The `&EXPR` marker says "let this value play the role of the operand in `dp,X` / `abs,X` (or `,Y`) addressing." That's only meaningful when an index register adds the runtime base; in plain direct/absolute the operand is already the address.
+───╯

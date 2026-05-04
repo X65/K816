@@ -4402,6 +4402,7 @@ fn eval_to_number_strict(
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
+                ExprUnaryOp::AddressPositioned => Some(value),
                 ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
@@ -4601,6 +4602,7 @@ fn resolve_symbolic_byte_relocation(
         ExprUnaryOp::WordLittleEndian
         | ExprUnaryOp::FarLittleEndian
         | ExprUnaryOp::EvalBracketed
+        | ExprUnaryOp::AddressPositioned
         | ExprUnaryOp::Negate => return None,
     };
 
@@ -5104,6 +5106,13 @@ fn lower_immediate_operand(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<OperandOp> {
+    // `&EXPR` is an address-position marker for indexed `,X`/`,Y` operands;
+    // it has no meaning inside an immediate (`#EXPR` already takes the
+    // expression's value verbatim).
+    if expression_contains_address_positioned(expr) {
+        diagnostics.push(address_positioned_in_immediate_diag(span));
+        return None;
+    }
     if let Some((kind, label)) =
         resolve_symbolic_byte_relocation(expr, scope, sema, span, diagnostics)
     {
@@ -5401,6 +5410,14 @@ fn lower_address_operand(
     size_hint: AddressSizeHint,
     mode: AddressOperandMode,
 ) -> Option<OperandOp> {
+    // `&EXPR` marker: only valid inside `,X`/`,Y` indexed direct/absolute
+    // modes. The marker upgrades inner provenance to `Address` so a const
+    // is accepted as a literal byte/word offset; we still need to enforce
+    // the addressing-mode shape here, before any value resolution.
+    if expression_contains_address_positioned(expr) && !is_indexed_xy_mode(mode) {
+        diagnostics.push(address_positioned_requires_index_diag(span));
+        return None;
+    }
     match expr {
         Expr::Number(value, _) => {
             let address = u32::try_from(*value).map_err(|_| {
@@ -5461,20 +5478,24 @@ fn lower_address_operand(
                 if !stack_rel && matches!(prov, AddressProvenance::ConstTainted) {
                     diagnostics.truncate(saved_diag_len);
                     let const_name = first_const_ref(expr, sema).unwrap_or("<const>");
-                    diagnostics.push(
-                        Diagnostic::error(
-                            span,
-                            format!(
-                                "address expression depends on `const {const_name}`, which has no memory location",
-                            ),
-                        )
-                        .with_primary_label(
-                            "expression rooted in const, not in a label or var".to_string(),
-                        )
-                        .with_help(format!(
-                            "consts contribute numeric values, not addresses; for a memory operand, root the expression in a `var` or label (e.g. `data_block + {const_name}`); for an immediate, prefix the whole expression with `#`",
-                        )),
-                    );
+                    let mut diag = Diagnostic::error(
+                        span,
+                        format!(
+                            "address expression depends on `const {const_name}`, which has no memory location",
+                        ),
+                    )
+                    .with_primary_label(
+                        "expression rooted in const, not in a label or var".to_string(),
+                    )
+                    .with_help(format!(
+                        "consts contribute numeric values, not addresses; for a memory operand, root the expression in a `var` or label (e.g. `data_block + {const_name}`); for an immediate, prefix the whole expression with `#`",
+                    ));
+                    if is_indexed_xy_mode(mode) {
+                        diag = diag.with_help(format!(
+                            "if `{const_name}` is meant as a literal byte/word field offset (struct base in X/Y), prefix the expression with `&`: `&{const_name}, x` (or `, y`)",
+                        ));
+                    }
+                    diagnostics.push(diag);
                     return None;
                 }
                 let Ok(address) = u32::try_from(value) else {
@@ -5635,12 +5656,22 @@ fn eval_address_expr(
                 ExprUnaryOp::HighByte => (value >> 8) & 0xFF,
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => value,
                 ExprUnaryOp::EvalBracketed => value,
+                ExprUnaryOp::AddressPositioned => value,
                 ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
                 })?,
             };
-            Some((new_value, prov))
+            // The `&EXPR` marker upgrades provenance to `Address` so a
+            // const-rooted offset is accepted by the caller's address-vs-
+            // const check. The mode-gate at the top of `lower_address_operand`
+            // separately rejects the marker outside `,X`/`,Y` indexed modes.
+            let new_prov = if matches!(op, ExprUnaryOp::AddressPositioned) {
+                AddressProvenance::Address
+            } else {
+                prov
+            };
+            Some((new_value, new_prov))
         }
         Expr::TypedView { expr, .. } => eval_address_expr(expr, scope, sema, span, diagnostics),
         Expr::MetadataQuery { expr, query } => {
@@ -5751,6 +5782,7 @@ fn eval_to_number(
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
+                ExprUnaryOp::AddressPositioned => Some(value),
                 ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
@@ -5902,6 +5934,72 @@ fn is_stack_relative_mode(mode: AddressOperandMode) -> bool {
     )
 }
 
+/// `,X`/`,Y` indexed direct/absolute modes: the operand is a base
+/// (or — under the `&EXPR` marker — a small literal field offset added to
+/// a struct base in X/Y). The W65C816 stuffs both readings into the same
+/// addressing mode, distinguished only by what the user puts in the index
+/// register.
+fn is_indexed_xy_mode(mode: AddressOperandMode) -> bool {
+    matches!(
+        mode,
+        AddressOperandMode::Direct {
+            index: Some(IndexRegister::X) | Some(IndexRegister::Y),
+        }
+    )
+}
+
+/// Walk `expr` looking for the `&EXPR` (`ExprUnaryOp::AddressPositioned`)
+/// marker anywhere in the tree. The marker is allowed nested under binary
+/// arithmetic (`&CONST + 1`) so the whole expression is checked, not just
+/// the outermost node.
+fn expression_contains_address_positioned(expr: &Expr) -> bool {
+    match expr {
+        Expr::Unary {
+            op: ExprUnaryOp::AddressPositioned,
+            ..
+        } => true,
+        Expr::Unary { expr: inner, .. } => expression_contains_address_positioned(inner),
+        Expr::Binary { lhs, rhs, .. } => {
+            expression_contains_address_positioned(lhs)
+                || expression_contains_address_positioned(rhs)
+        }
+        Expr::TypedView { expr: inner, .. } => expression_contains_address_positioned(inner),
+        Expr::Index { base, index } => {
+            expression_contains_address_positioned(base)
+                || expression_contains_address_positioned(index)
+        }
+        Expr::MetadataQuery { expr: inner, .. } => expression_contains_address_positioned(inner),
+        Expr::Number(_, _) | Expr::Ident(_) | Expr::IdentSpanned { .. } | Expr::EvalText(_) => {
+            false
+        }
+    }
+}
+
+fn address_positioned_requires_index_diag(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        "`&` address-positioned marker requires an X- or Y-indexed addressing mode",
+    )
+    .with_primary_label("address-positioned marker on non-indexed operand".to_string())
+    .with_help(
+        "use `&EXPR, x` or `&EXPR, y` — without an index register the operand IS the address, so a value-as-offset reading makes no sense",
+    )
+    .with_note(
+        "The `&EXPR` marker says \"let this value play the role of the operand in `dp,X` / `abs,X` (or `,Y`) addressing.\" That's only meaningful when an index register adds the runtime base; in plain direct/absolute the operand is already the address.",
+    )
+}
+
+fn address_positioned_in_immediate_diag(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        span,
+        "`&` address-positioned marker is not valid in an immediate operand",
+    )
+    .with_primary_label("address-positioned marker in immediate operand".to_string())
+    .with_help(
+        "for an immediate, write `#EXPR` directly — the `&` marker only applies in `,X` / `,Y` indexed addressing modes (e.g. `lda &CONST, x`)",
+    )
+}
+
 fn stack_offset_not_address_diag(
     span: Span,
     name: &str,
@@ -5978,16 +6076,20 @@ fn resolve_operand_ident(
                 mode,
             });
         }
-        diagnostics.push(
-            Diagnostic::error(
-                span,
-                format!("`const {name}` cannot be used as an address"),
-            )
-            .with_primary_label("const used as address".to_string())
-            .with_help(format!(
-                "consts hold compile-time values, not memory locations; prefix with `#` to use as an immediate (e.g. `#{name}`), or declare a `var` for memory access (e.g. `var {name} = $80`)",
-            )),
-        );
+        let mut diag = Diagnostic::error(
+            span,
+            format!("`const {name}` cannot be used as an address"),
+        )
+        .with_primary_label("const used as address".to_string())
+        .with_help(format!(
+            "consts hold compile-time values, not memory locations; prefix with `#` to use as an immediate (e.g. `#{name}`), or declare a `var` for memory access (e.g. `var {name} = $80`)",
+        ));
+        if is_indexed_xy_mode(mode) {
+            diag = diag.with_help(format!(
+                "if `{name}` is meant as a literal byte/word field offset (struct base in X/Y), prefix it with `&`: `&{name}, x` (or `, y`)",
+            ));
+        }
+        diagnostics.push(diag);
         return None;
     }
 

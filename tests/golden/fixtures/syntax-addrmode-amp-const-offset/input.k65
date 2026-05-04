@@ -1,0 +1,17 @@
+// `&CONST` operator: force a const into address-operand position for
+// indexed `,X`/`,Y` modes. The W65C816 idiom is to load a struct base
+// address into X (or Y) and use the operand as a small literal byte/word
+// field offset.
+const FIELD_X_LO = 0
+const FIELD_X_HI = 1
+const FIELD_HP   = 2
+
+func main {
+    ldx #FIELD_HP            // sanity: const as immediate (existing)
+    lda &FIELD_HP, x         // marker: const as dp,X offset (NEW)
+    lda &FIELD_X_LO, y       // marker: const as dp,Y offset (NEW)
+    lda abs &FIELD_X_HI, x   // marker + width hint: abs,X
+    lda &(FIELD_HP + 1), x   // marker on parenthesized expression
+    lda &FIELD_HP + 1, x     // marker on left side of binary
+    lda 2, x                 // sanity: pure literal still works (no marker)
+}

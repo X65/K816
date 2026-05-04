@@ -1,0 +1,7 @@
+// Bare const in `,X` mode (no `&` marker) should still be rejected, but
+// the rejection now suggests the `&` operator as the explicit fix.
+const FIELD_HP = 2
+
+func main {
+    lda FIELD_HP, x
+}

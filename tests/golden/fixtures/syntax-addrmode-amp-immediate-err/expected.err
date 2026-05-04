@@ -1,0 +1,9 @@
+Error: `&` address-positioned marker is not valid in an immediate operand
+   ╭─[ tests/golden/fixtures/syntax-addrmode-amp-immediate-err/input.k65:4:5 ]
+   │
+ 4 │     lda #&FIELD_HP
+   │     ───────┬──────  
+   │            ╰──────── address-positioned marker in immediate operand
+   │ 
+   │ Help: for an immediate, write `#EXPR` directly — the `&` marker only applies in `,X` / `,Y` indexed addressing modes (e.g. `lda &CONST, x`)
+───╯

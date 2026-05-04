@@ -940,6 +940,16 @@ In addition to the classical 6502 modes, the K65 operand grammar exposes these 6
 - `dp expr` / `abs expr` / `far expr` — operand prefixes that force the address-encoding width to DirectPage / Absolute (16-bit) / AbsoluteLong (24-bit). Composable with the index trailers (`abs expr,x`, `far expr,x`, etc.) and with the parenthesized indirect forms (`jmp (abs expr,x)`, `jmp (abs expr)`, `lda [dp expr]`, `lda [dp expr],y`).
 - `[expr]` — indirect-long. The emitted opcode depends on the mnemonic: `lda [zp]` picks `DirectPageIndirectLong`; `jmp [abs]` picks `AbsoluteIndirectLong`. The `[...]` operand form is currently recognised only when it directly follows a raw mnemonic (e.g. `lda [ptr]`, `jmp [vec]`); inside an HLA assignment like `a = [ptr]` the brackets are captured by the compile-time evaluator instead — use the raw form or declare a `:far` typed variable to get long-indirect semantics through HLA.
 - `[expr],Y` — indirect-long, Y-indexed. Raw-mnemonic only for the same reason.
+- `&expr` — address-positioned marker for `,X`/`,Y` indexed modes. Lets a `const` (or any const-rooted expression) serve as a small literal byte/word field offset when the struct base is in `X` or `Y`:
+
+  ```k65
+  const FIELD_HP = 2
+  ldx #&player_struct
+  lda &FIELD_HP, x       // lda $02,X — read player_struct + 2
+  lda abs &FIELD_HP, x   // forces abs,X encoding (16-bit operand)
+  ```
+
+  Without the `&` marker, a bare const in `,X`/`,Y` position is rejected (`const` names a value, not a memory address). The marker is **only** valid in `,X` or `,Y` direct/absolute indexed modes; using it in plain direct/absolute, in stack-relative (`,s`), or inside `#expr` is an error. The marker rhymes with the `&`-led address-of family — `&&label` (16-bit address as immediate), `&&&label` (24-bit), `&<expr` / `&>expr` (low/high byte) — and is the inverse direction: it lets a value play the role of an address-mode operand.
 
 Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-index position is treated as an **immediate** operand, not a direct-page address. So `lda 0` and `inc 0` fail with *"does not accept #immediate operand"* for instructions without an immediate form. To target zero-page or absolute memory via a raw mnemonic, reference a symbolic name (declare `var addr = 0` and write `lda addr`), or attach an explicit address-encoding prefix (`lda dp 0`, `lda abs 0`, `lda far 0`). HLA assignment forms (`a = mem`, `mem = a`) look up the symbol in the semantic model and don't have this ambiguity.
 

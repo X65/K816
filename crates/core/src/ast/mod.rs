@@ -540,6 +540,11 @@ pub enum ExprUnaryOp {
     FarLittleEndian,
     EvalBracketed,
     Negate,
+    /// `&EXPR` prefix: force the expression into address-operand position
+    /// for indexed `,X`/`,Y` modes. Pass-through value-wise; suppresses the
+    /// const-vs-address provenance check so a `const` may serve as a small
+    /// literal byte/word offset (struct-field idiom with the base in X/Y).
+    AddressPositioned,
 }
 
 #[derive(Debug, Clone)]

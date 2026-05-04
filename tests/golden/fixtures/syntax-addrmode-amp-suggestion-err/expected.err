@@ -1,0 +1,11 @@
+Error: `const FIELD_HP` cannot be used as an address
+   ╭─[ tests/golden/fixtures/syntax-addrmode-amp-suggestion-err/input.k65:6:5 ]
+   │
+ 6 │     lda FIELD_HP, x
+   │     ───────┬───────  
+   │            ╰───────── const used as address
+   │ 
+   │ Help 1: consts hold compile-time values, not memory locations; prefix with `#` to use as an immediate (e.g. `#FIELD_HP`), or declare a `var` for memory access (e.g. `var FIELD_HP = $80`)
+   │ 
+   │ Help 2: if `FIELD_HP` is meant as a literal byte/word field offset (struct base in X/Y), prefix it with `&`: `&FIELD_HP, x` (or `, y`)
+───╯

@@ -100,12 +100,20 @@ where
 
         // Address-of prefix operators on code expressions, mirroring the data-
         // block prefix syntax (see `parser/data.rs`):
+        //   `&expr`   → address-positioned     (NO transform; allows a const to
+        //                                       serve as a literal byte/word
+        //                                       offset in `,X`/`,Y` indexed
+        //                                       addressing — the struct-field
+        //                                       idiom with the base in X/Y)
         //   `&<expr`  → low byte of address    (1 byte, ImmediateByteRelocation)
         //   `&>expr`  → high byte of address   (1 byte, ImmediateByteRelocation)
         //   `&&expr`  → 16-bit address-of      (2 bytes, ImmediateWordRelocation)
         //   `&&&expr` → 24-bit far address-of  (3 bytes, ImmediateFarRelocation)
         // The 2- and 3-byte forms work for *any* addressable symbol — vars,
         // funcs, code labels — and are resolved at link time.
+        // The single-`&` form is a parser/lower-only marker (no relocation,
+        // no transform); the lower pass enforces that it appears only inside
+        // `,X`/`,Y` indexed operands.
         let unary = just(TokenKind::Amp)
             .ignore_then(choice((
                 just(TokenKind::Amp).ignore_then(choice((
@@ -114,6 +122,7 @@ where
                 ))),
                 just(TokenKind::Lt).to(ExprUnaryOp::LowByte),
                 just(TokenKind::Gt).to(ExprUnaryOp::HighByte),
+                empty().to(ExprUnaryOp::AddressPositioned),
             )))
             .repeated()
             .collect::<Vec<_>>()
@@ -356,6 +365,7 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprUnaryOp::HighByte => Some((value >> 8) & 0xFF),
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
+                ExprUnaryOp::AddressPositioned => Some(value),
                 ExprUnaryOp::Negate => value.checked_neg(),
             }
         }

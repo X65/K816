@@ -4,6 +4,7 @@ mod debug;
 mod document_symbols;
 mod editor;
 mod hover;
+mod logging;
 mod navigation;
 mod project;
 mod protocol;

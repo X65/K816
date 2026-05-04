@@ -35,6 +35,7 @@ use super::watcher::{FileWatcher, WorkspaceFsEvent};
 use super::{semantic_token_legend_modifiers, semantic_token_legend_types};
 
 pub fn run_stdio_server() -> Result<()> {
+    super::logging::init();
     let (connection, io_threads) = Connection::stdio();
     let capabilities = server_capabilities();
     let initialize_result = connection.initialize(serde_json::to_value(&capabilities)?)?;
@@ -45,7 +46,7 @@ pub fn run_stdio_server() -> Result<()> {
     let watcher = match FileWatcher::start(&workspace_root) {
         Ok(value) => value,
         Err(error) => {
-            eprintln!("k816-lsp: filesystem watcher disabled: {error}");
+            log::warn!("filesystem watcher disabled: {error}");
             None
         }
     };
@@ -175,8 +176,12 @@ impl Server {
     fn handle_notification(&mut self, notification: Notification) -> Result<()> {
         match notification.method.as_str() {
             DidOpenTextDocument::METHOD => {
-                let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)
-                    .context("invalid didOpen params")?;
+                let Some(params) = parse_notification_params::<DidOpenTextDocumentParams>(
+                    DidOpenTextDocument::METHOD,
+                    notification.params,
+                ) else {
+                    return Ok(());
+                };
                 let uri = params.text_document.uri;
                 let version = params.text_document.version;
                 let text = params.text_document.text;
@@ -191,9 +196,12 @@ impl Server {
                 self.publish_all_open_diagnostics()
             }
             DidChangeTextDocument::METHOD => {
-                let params: DidChangeTextDocumentParams =
-                    serde_json::from_value(notification.params)
-                        .context("invalid didChange params")?;
+                let Some(params) = parse_notification_params::<DidChangeTextDocumentParams>(
+                    DidChangeTextDocument::METHOD,
+                    notification.params,
+                ) else {
+                    return Ok(());
+                };
                 let uri = params.text_document.uri;
                 let version = params.text_document.version;
                 let Some(text) = params
@@ -211,8 +219,12 @@ impl Server {
                 Ok(())
             }
             DidSaveTextDocument::METHOD => {
-                let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)
-                    .context("invalid didSave params")?;
+                let Some(params) = parse_notification_params::<DidSaveTextDocumentParams>(
+                    DidSaveTextDocument::METHOD,
+                    notification.params,
+                ) else {
+                    return Ok(());
+                };
                 let uri = params.text_document.uri;
                 self.pending_changes.remove(&uri);
                 let version = self
@@ -239,9 +251,12 @@ impl Server {
                 self.publish_all_open_diagnostics()
             }
             DidCloseTextDocument::METHOD => {
-                let params: DidCloseTextDocumentParams =
-                    serde_json::from_value(notification.params)
-                        .context("invalid didClose params")?;
+                let Some(params) = parse_notification_params::<DidCloseTextDocumentParams>(
+                    DidCloseTextDocument::METHOD,
+                    notification.params,
+                ) else {
+                    return Ok(());
+                };
                 let uri = params.text_document.uri;
                 self.pending_changes.remove(&uri);
                 self.state.close_document(&uri);
@@ -504,6 +519,34 @@ impl Server {
 fn parse_request_params<T: DeserializeOwned>(request: &Request) -> Result<T> {
     serde_json::from_value(request.params.clone())
         .with_context(|| format!("invalid params for '{}'", request.method))
+}
+
+// When an LSP notification's params fail to deserialize, log the method, the
+// error, and the raw payload (so the offending URI is recoverable from the
+// output channel) and return None. The caller skips the notification instead
+// of letting the deserialization error propagate out of the run loop and
+// terminate the server.
+fn parse_notification_params<T: DeserializeOwned>(
+    method: &str,
+    params: serde_json::Value,
+) -> Option<T> {
+    match serde_json::from_value::<T>(params.clone()) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            let raw = serde_json::to_string(&params)
+                .unwrap_or_else(|_| "<unserializable>".to_string());
+            let snippet: String = raw.chars().take(512).collect();
+            let suffix = if raw.len() > snippet.len() {
+                "... [truncated]"
+            } else {
+                ""
+            };
+            log::warn!(
+                "dropping malformed notification '{method}': {error}; raw params: {snippet}{suffix}"
+            );
+            None
+        }
+    }
 }
 
 fn server_capabilities() -> ServerCapabilities {

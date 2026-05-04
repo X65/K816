@@ -22,19 +22,19 @@ impl ServerState {
     pub(super) fn initialize_workspace(&mut self) -> Result<()> {
         self.load_linker_config();
         let sources = discover_workspace_sources(&self.workspace_root)?;
-        eprintln!(
-            "k816-lsp: workspace '{}', discovered {} source file(s)",
+        log::info!(
+            "workspace '{}', discovered {} source file(s)",
             self.workspace_root.display(),
             sources.len(),
         );
         for path in sources {
             if let Err(error) = self.load_from_disk(path.clone()) {
-                eprintln!("k816-lsp: skipping '{}': {error}", path.display());
+                log::warn!("skipping '{}': {error}", path.display());
             }
         }
         self.analyze_all_documents();
-        eprintln!(
-            "k816-lsp: indexed {} unique symbol(s) across {} document(s)",
+        log::info!(
+            "indexed {} unique symbol(s) across {} document(s)",
             self.symbols.len(),
             self.documents.len(),
         );
@@ -53,10 +53,7 @@ impl ServerState {
                 self.workspace_root.join(script)
             };
             if let Ok(config) = k816_link::load_config(&config_path) {
-                eprintln!(
-                    "k816-lsp: loaded linker config from '{}'",
-                    config_path.display()
-                );
+                log::info!("loaded linker config from '{}'", config_path.display());
                 self.linker_config = config;
                 return;
             }
@@ -66,15 +63,12 @@ impl ServerState {
         if default_script.is_file()
             && let Ok(config) = k816_link::load_config(&default_script)
         {
-            eprintln!(
-                "k816-lsp: loaded linker config from '{}'",
-                default_script.display()
-            );
+            log::info!("loaded linker config from '{}'", default_script.display());
             self.linker_config = config;
             return;
         }
 
-        eprintln!("k816-lsp: using default stub linker config");
+        log::info!("using default stub linker config");
     }
 
     pub(super) fn load_from_disk(&mut self, path: PathBuf) -> Result<()> {
@@ -171,8 +165,8 @@ impl ServerState {
             .iter()
             .map(|unit| unit.uris.len())
             .sum();
-        eprintln!(
-            "k816-lsp: compiling {} source(s) across {} unit(s)",
+        log::info!(
+            "compiling {} source(s) across {} unit(s)",
             total_sources,
             self.compilation_units.len(),
         );
@@ -298,7 +292,7 @@ impl ServerState {
                         continue;
                     }
                     if let Err(error) = self.load_from_disk(path.clone()) {
-                        eprintln!("k816-lsp: failed to reload '{}': {error}", path.display());
+                        log::warn!("failed to reload '{}': {error}", path.display());
                         continue;
                     }
                     dirty = true;
@@ -510,15 +504,15 @@ impl ServerState {
 
                 for link_diag in &link_diags {
                     let Some(anchor) = link_diag.anchor.as_ref() else {
-                        eprintln!(
-                            "k816-lsp: dropping anchorless link diagnostic: {}",
+                        log::warn!(
+                            "dropping anchorless link diagnostic: {}",
                             link_diag.message
                         );
                         continue;
                     };
                     let Some(target_uri) = path_to_uri.get(&anchor.file) else {
-                        eprintln!(
-                            "k816-lsp: link diagnostic anchored at unknown file '{}'",
+                        log::warn!(
+                            "link diagnostic anchored at unknown file '{}'",
                             anchor.file
                         );
                         continue;

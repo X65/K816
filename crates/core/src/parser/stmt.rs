@@ -43,6 +43,13 @@ where
     chumsky::select! { TokenKind::Number(NumLit { value: 0, .. }) => () }.boxed()
 }
 
+fn is_statement_boundary(token: &TokenKind) -> bool {
+    matches!(
+        token,
+        TokenKind::Newline | TokenKind::Semi | TokenKind::RBrace
+    )
+}
+
 pub(super) fn stmt_parser<'src, I>(
     source_id: SourceId,
     known_functions: Arc<HashSet<String>>,
@@ -157,18 +164,40 @@ where
             }
         })
     };
+    // After parsing the function name and optional args/outputs, peek the next
+    // token: if it isn't a statement boundary, the user almost certainly meant
+    // an instruction-form invocation that the bare-call grammar can't accept.
+    // Fail this alternative so chumsky falls through to `instruction`, which
+    // captures the operand into the AST. The resulting "unknown mnemonic"
+    // path in `emit_object.rs::build_encode_diagnostic` then produces a
+    // signature-aware diagnostic for the call misuse.
     let bare_call_stmt = function_target
         .then(bare_call_args.or_not())
         .then(bare_call_outputs)
-        .map(|((target, args), outputs)| {
-            Stmt::Call(CallStmt {
-                target,
-                is_far: false,
-                args: args.unwrap_or_default(),
-                outputs: outputs.unwrap_or_default(),
-                is_bare: true,
-            })
-        })
+        .then(chumsky::primitive::any().rewind().or_not())
+        .try_map(
+            |(((target, args), outputs), peek), span: SimpleSpan|
+                -> Result<Stmt, Rich<'_, TokenKind>>
+            {
+                if let Some(tok) = peek
+                    && !is_statement_boundary(&tok)
+                {
+                    return Err(Rich::custom(
+                        span,
+                        format!(
+                            "function '{target}' followed by token that does not fit any call form"
+                        ),
+                    ));
+                }
+                Ok(Stmt::Call(CallStmt {
+                    target,
+                    is_far: false,
+                    args: args.unwrap_or_default(),
+                    outputs: outputs.unwrap_or_default(),
+                    is_bare: true,
+                }))
+            },
+        )
         .boxed();
 
     let hla_wait_stmt = hla_wait_loop_stmt_parser();

@@ -138,12 +138,20 @@ fn find_in_map<'a>(
         .map(|(name, meta)| (name.as_str(), meta))
 }
 
-fn function_call_help(name: &str, meta: &FunctionMeta) -> String {
-    format!(
-        "`{name}` is {kind}function; call it as `{sig}`",
-        kind = meta.kind_prefix_with_article(),
-        sig = meta.signature_call_form(name),
-    )
+/// If the operand is a bare numeric literal in `Direct` mode (no `#`, no
+/// addressing-mode override, no index register), return its formatted value.
+/// This is the shape produced by `mnemonic 3` — used to suggest the
+/// `mnemonic #3` immediate form when `mnemonic` is actually a function name
+/// expecting an immediate argument.
+fn bare_literal_operand(operand: &Option<OperandOp>) -> Option<String> {
+    match operand {
+        Some(OperandOp::Address {
+            value: AddressValue::Literal(value),
+            mode: AddressOperandMode::Direct { index: None },
+            size_hint: AddressSizeHint::Auto,
+        }) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 /// If the user gave a bare label as the operand to a strictly-immediate mnemonic
@@ -368,7 +376,30 @@ fn build_encode_diagnostic(
     match err {
         EncodeError::UnknownMnemonic { mnemonic } => {
             if let Some((name, meta)) = lookup_function(sema, external_functions, mnemonic) {
-                diag = diag.with_help(function_call_help(name, meta));
+                let kind_phrase = format!("{}function", meta.kind_prefix_with_article());
+                diag = Diagnostic::error(
+                    span,
+                    format!(
+                        "'{name}' is {kind_phrase} and cannot be invoked as a CPU instruction with this operand"
+                    ),
+                )
+                .with_primary_label("expected a call form".to_string());
+                if let Some(literal) = bare_literal_operand(operand) {
+                    diag = diag.with_help(format!(
+                        "did you mean `{name} #{literal}`? — pass {literal} as an immediate, or use the explicit call form `{sig}`",
+                        sig = meta.signature_call_form(name),
+                    ));
+                } else {
+                    diag = diag.with_help(format!(
+                        "call it as `{sig}`, or `{name} #imm[, ...]` for the instruction-style call form",
+                        sig = meta.signature_call_form(name),
+                    ));
+                }
+                diag = diag.with_note(
+                    "K65 distinguishes between CPU mnemonics and user-defined functions/inline macros. \
+                     Inline macros declared with `#name` parameters require `#` at every call site, \
+                     mirroring 65816 instruction syntax (e.g. `lda #5` vs `lda 5`).".to_string(),
+                );
             }
         }
         EncodeError::InvalidOperand { mnemonic } => {

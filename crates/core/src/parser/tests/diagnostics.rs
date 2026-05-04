@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::{Instruction, Item, Operand};
 
 #[test]
 fn rejects_modifier_without_code_block() {
@@ -39,6 +40,43 @@ fn parse_error_messages_are_human_readable() {
     assert!(message.contains("expected"));
     assert!(!message.contains("TokenKind"));
     assert!(!message.contains("ExpectedFound"));
+}
+
+#[test]
+fn function_call_followed_by_bare_number_parses_as_instruction() {
+    // `lsrx 3` (where `lsrx` is a known inline function) must parse cleanly
+    // as `Stmt::Instruction`, leaving the call-misuse diagnostic to the
+    // emit phase where the function's signature is available. Previously
+    // chumsky surfaced an opaque "expected '*', '+', '-', ':', ',', '='"
+    // recovery message; the bare-call grammar's boundary check now lets the
+    // instruction alternative win.
+    let source = "\
+inline lsrx (a, #n) -> a {
+    lsr * n
+}
+
+func test {
+    lsrx 3
+}
+";
+    let file = parse(SourceId(0), source).expect("parse should succeed");
+    let test_block = file
+        .items
+        .iter()
+        .find_map(|item| match &item.node {
+            Item::CodeBlock(block) if block.name == "test" => Some(block),
+            _ => None,
+        })
+        .expect("expected `test` code block");
+    let stmt = &test_block.body[0].node;
+    assert!(
+        matches!(
+            stmt,
+            Stmt::Instruction(Instruction { mnemonic, operand: Some(Operand::Value { .. }) })
+                if mnemonic == "lsrx"
+        ),
+        "expected `lsrx 3` to parse as Stmt::Instruction with a Value operand; got {stmt:?}"
+    );
 }
 
 #[test]

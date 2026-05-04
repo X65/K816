@@ -81,8 +81,11 @@ pub(super) fn analyze_document(
                     vars: externals.map(|e| &e.vars),
                     external_var_classes: externals.map(|e| &e.external_var_classes),
                 };
-                let (model, _sema_diagnostics) =
+                let (model, sema_diagnostics) =
                     k816_core::sema::analyze_partial(&normalized, analysis_externals);
+                if compile_failed {
+                    diagnostics.extend(sema_diagnostics);
+                }
                 for (name, meta) in model.functions {
                     semantic.functions.insert(name, meta);
                 }

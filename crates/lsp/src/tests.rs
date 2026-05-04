@@ -181,6 +181,60 @@ fn analyze_document_falls_back_to_lenient_symbols_after_compile_failure() {
 }
 
 #[test]
+fn analyze_document_surfaces_function_call_misuse_alongside_parse_error() {
+    // When the strict compile fails because of an unrelated parse error
+    // (here `TCB::fds`), the LSP must still surface the call-misuse
+    // diagnostic for `lsrx 3` from the lenient sema pipeline. Otherwise the
+    // user opens the file in the editor and sees only the `::` complaint
+    // while the bare-operand call goes silently unflagged.
+    let source = "\
+inline lsrx (a, #n) -> a {
+    lsr * n
+}
+
+func test1 @a8 @i8 {
+    lda #1
+    lsrx 3
+}
+
+func test2 @a8 @i8 {
+    lda TCB::fds
+}
+";
+    let error = k816_core::compile_source(
+        "broken.k65",
+        source,
+        k816_core::CompileRenderOptions::plain(),
+    )
+    .expect_err("compile should fail on TCB::fds");
+
+    let (analysis, _object, _sites) =
+        analyze_document("broken.k65", source, Some(Err(&error)), None);
+
+    let lsrx_diag = analysis
+        .diagnostics
+        .iter()
+        .find(|diag| diag.message.contains("'lsrx'"))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected analyze_document to surface the lsrx misuse diagnostic; got {:?}",
+                analysis.diagnostics
+            )
+        });
+    assert!(
+        lsrx_diag
+            .supplements
+            .iter()
+            .any(|supplement| matches!(
+                supplement,
+                k816_core::diag::Supplemental::Help(help) if help.contains("lsrx #3")
+            )),
+        "expected `lsrx #3` hint in supplements; got {:?}",
+        lsrx_diag.supplements
+    );
+}
+
+#[test]
 fn resolves_local_label_definition_in_scope() {
     let uri = Uri::from_str("file:///tmp/test.k65").expect("uri");
     let text = "func main {\n.loop:\n  bra .loop\n}\n".to_string();

@@ -1,41 +1,49 @@
-Error: unknown mnemonic 'pair'
+Error: 'Pair' is a function and cannot be invoked as a CPU instruction with this operand
     ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:26:5 ]
     │
  26 │     pair #5
     │     ───┬───  
-    │        ╰───── here
+    │        ╰───── expected a call form
     │ 
-    │ Help: `Pair` is a function; call it as `Pair(a, x) -> a, y`
+    │ Help: call it as `Pair(a, x) -> a, y`, or `Pair #imm[, ...]` for the instruction-style call form
+    │ 
+    │ Note: K65 distinguishes between CPU mnemonics and user-defined functions/inline macros. Inline macros declared with `#name` parameters require `#` at every call site, mirroring 65816 instruction syntax (e.g. `lda #5` vs `lda 5`).
 ────╯
 
-Error: unknown mnemonic 'dispatch'
+Error: 'Dispatch' is a naked function and cannot be invoked as a CPU instruction with this operand
     ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:27:5 ]
     │
  27 │     dispatch #0
     │     ─────┬─────  
-    │          ╰─────── here
+    │          ╰─────── expected a call form
     │ 
-    │ Help: `Dispatch` is a naked function; call it as `Dispatch`
+    │ Help: call it as `Dispatch`, or `Dispatch #imm[, ...]` for the instruction-style call form
+    │ 
+    │ Note: K65 distinguishes between CPU mnemonics and user-defined functions/inline macros. Inline macros declared with `#name` parameters require `#` at every call site, mirroring 65816 instruction syntax (e.g. `lda #5` vs `lda 5`).
 ────╯
 
-Error: unknown mnemonic 'addone'
+Error: 'AddOne' is a function and cannot be invoked as a CPU instruction with this operand
     ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:28:5 ]
     │
  28 │     addone #1
     │     ────┬────  
-    │         ╰────── here
+    │         ╰────── expected a call form
     │ 
-    │ Help: `AddOne` is a function; call it as `AddOne(a) -> a`
+    │ Help: call it as `AddOne(a) -> a`, or `AddOne #imm[, ...]` for the instruction-style call form
+    │ 
+    │ Note: K65 distinguishes between CPU mnemonics and user-defined functions/inline macros. Inline macros declared with `#name` parameters require `#` at every call site, mirroring 65816 instruction syntax (e.g. `lda #5` vs `lda 5`).
 ────╯
 
-Error: unknown mnemonic 'shift'
+Error: 'Shift' is an inline function and cannot be invoked as a CPU instruction with this operand
     ╭─[ tests/golden/fixtures/emit-err-unknown-mnemonic-function-help/input.k65:29:5 ]
     │
  29 │     shift #2
     │     ────┬───  
-    │         ╰───── here
+    │         ╰───── expected a call form
     │ 
-    │ Help: `Shift` is an inline function; call it as `Shift(a) -> a`
+    │ Help: call it as `Shift(a) -> a`, or `Shift #imm[, ...]` for the instruction-style call form
+    │ 
+    │ Note: K65 distinguishes between CPU mnemonics and user-defined functions/inline macros. Inline macros declared with `#name` parameters require `#` at every call site, mirroring 65816 instruction syntax (e.g. `lda #5` vs `lda 5`).
 ────╯
 
 Error: unknown mnemonic 'bogus'

@@ -1,0 +1,6 @@
+func main {
+    cop
+    cop $21
+    brk
+    brk 1
+}

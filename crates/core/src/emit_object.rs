@@ -195,6 +195,142 @@ fn invalid_operand_help(mnemonic: &str, operand: &Option<OperandOp>) -> Option<S
     }
 }
 
+/// Short user-facing label for the operand the user actually wrote, used as
+/// the primary span label when an `InvalidOperand` falls through to the
+/// generic enrichment path.
+fn operand_kind_label(operand: &Option<OperandOp>) -> &'static str {
+    match operand {
+        None => "missing operand",
+        Some(OperandOp::Immediate(_))
+        | Some(OperandOp::ImmediateByteRelocation { .. })
+        | Some(OperandOp::ImmediateWordRelocation { .. })
+        | Some(OperandOp::ImmediateFarRelocation { .. }) => "immediate operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::Direct { index: None },
+            ..
+        }) => "address operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::Direct { index: Some(_) },
+            ..
+        }) => "indexed address operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::Indirect,
+            ..
+        }) => "indirect operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::IndexedIndirectX,
+            ..
+        }) => "indexed-indirect operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::IndirectIndexedY,
+            ..
+        }) => "indirect-indexed operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::IndirectLong,
+            ..
+        }) => "long-indirect operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::IndirectLongIndexedY,
+            ..
+        }) => "long-indirect-indexed operand",
+        Some(OperandOp::Address {
+            mode: AddressOperandMode::StackRelativeIndirectIndexedY,
+            ..
+        }) => "stack-relative-indirect operand",
+        Some(OperandOp::BlockMove { .. }) => "block-move operand",
+    }
+}
+
+/// Render the addressing-mode set returned by `supported_modes(mnemonic)` as a
+/// short, deduplicated, user-readable list with concrete syntax examples in
+/// terms of the *actual* mnemonic. Returns `None` when the mode set is empty
+/// (which would be an internal bug, since `EncodeError::UnknownMnemonic` is
+/// reported separately).
+fn describe_supported_modes(mnemonic: &str, modes: &[AddressingMode]) -> Option<String> {
+    if modes.is_empty() {
+        return None;
+    }
+    let mut families: Vec<String> = Vec::new();
+    for m in modes {
+        let family = mode_family_description(mnemonic, *m);
+        if !families.contains(&family) {
+            families.push(family);
+        }
+    }
+    Some(match families.as_slice() {
+        [] => return None,
+        [single] => single.clone(),
+        [a, b] => format!("{a} or {b}"),
+        rest => {
+            let head = rest[..rest.len() - 1].join(", ");
+            let tail = &rest[rest.len() - 1];
+            format!("{head}, or {tail}")
+        }
+    })
+}
+
+fn mode_family_description(m: &str, mode: AddressingMode) -> String {
+    use AddressingMode::*;
+    match mode {
+        Implied => format!("no operand (implied form, just `{m}`)"),
+        Accumulator => format!("the accumulator (`{m} A`)"),
+        Immediate8 => format!("an 8-bit immediate (`{m} #$NN`)"),
+        Immediate16 => format!("a 16-bit immediate (`{m} #$NNNN`)"),
+        ImmediateM => format!(
+            "an M-width immediate (`{m} #$NN` under `@a8`, `{m} #$NNNN` under `@a16`)"
+        ),
+        ImmediateX => format!(
+            "an X-width immediate (`{m} #$NN` under `@i8`, `{m} #$NNNN` under `@i16`)"
+        ),
+        DirectPage | DirectPageX | DirectPageY => {
+            format!("a direct-page address (`{m} addr`, `{m} addr,X`, or `{m} addr,Y`)")
+        }
+        DirectPageIndirect | DirectPageIndirectLong => {
+            format!("an indirect address (`{m} (addr)` or `{m} [addr]`)")
+        }
+        DirectPageIndexedIndirectX => format!("an indexed-indirect address (`{m} (addr,X)`)"),
+        DirectPageIndirectIndexedY | DirectPageIndirectLongIndexedY => {
+            format!("an indirect-indexed address (`{m} (addr),Y` or `{m} [addr],Y`)")
+        }
+        Absolute | AbsoluteX | AbsoluteY => {
+            format!("an absolute address (`{m} addr`, `{m} addr,X`, or `{m} addr,Y`)")
+        }
+        AbsoluteLong | AbsoluteLongX => {
+            format!("an absolute-long address (`{m} addr` or `{m} addr,X`)")
+        }
+        AbsoluteIndirect | AbsoluteIndirectLong | AbsoluteIndexedIndirectX => {
+            format!(
+                "an absolute-indirect address (`{m} (addr)`, `{m} [addr]`, or `{m} (addr,X)`)"
+            )
+        }
+        StackRelative | StackRelativeIndirectIndexedY => {
+            format!("a stack-relative offset (`{m} offset,S` or `{m} (offset,S),Y`)")
+        }
+        Relative8 | Relative16 => {
+            format!("a PC-relative branch target (`{m} label`)")
+        }
+        BlockMove => format!("a block-move pair (`{m} #srcbank, #dstbank`)"),
+    }
+}
+
+/// Architectural note for the W65C816 software-interrupt mnemonics. `brk`,
+/// `cop`, and `wdm` each consume the byte after the opcode as a "signature"
+/// the trap handler can read, so the encoder always requires an `Immediate8`.
+fn software_interrupt_note(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic.to_ascii_lowercase().as_str() {
+        "brk" => Some(
+            "On the W65C816, `brk` is a software interrupt: the byte immediately after the opcode is a signature byte that the BRK vector handler reads via the pushed PC to dispatch traps. The K816 encoder always requires it (write `brk #$00` if you have nothing meaningful to put there).",
+        ),
+        "cop" => Some(
+            "On the W65C816, `cop` is the coprocessor / OS-trap software interrupt: the byte immediately after the opcode is a signature byte that the COP vector handler reads to dispatch the trap. The K816 encoder always requires it (write `cop #$00` if you have nothing meaningful to put there).",
+        ),
+        "wdm" => Some(
+            "On the W65C816, `wdm` is reserved for future expansion but is encoded today as a 2-byte sequence: opcode + a signature byte. The K816 encoder requires the signature byte even though current silicon ignores it.",
+        ),
+        _ => None,
+    }
+}
+
 /// True when `name` resolves to a function, var, const, or symbolic-subscript
 /// field defined in this translation unit. Mirrors the lookup at
 /// `lower.rs:1849`. Used to detect unresolved labels at encode-error time.
@@ -233,9 +369,31 @@ fn build_encode_diagnostic(
         }
         EncodeError::InvalidOperand { mnemonic } => {
             if let Some(help) = invalid_operand_help(mnemonic, operand) {
-                diag = diag.with_help(help);
+                diag = diag
+                    .with_primary_label(operand_kind_label(operand))
+                    .with_help(help);
+                if let Some(note) = software_interrupt_note(mnemonic) {
+                    diag = diag.with_note(note);
+                }
             } else if let Some(enriched) = enrich_invalid_indirect(span, mnemonic, operand, sema) {
                 diag = enriched;
+            } else {
+                let kind = operand_kind_label(operand);
+                let modes = supported_modes(mnemonic);
+                diag = diag.with_primary_label(kind);
+                if let Some(accepted) = describe_supported_modes(mnemonic, &modes) {
+                    let lead = if operand.is_none() {
+                        format!("`{mnemonic}` requires an operand: it accepts {accepted}")
+                    } else {
+                        format!(
+                            "`{mnemonic}` accepts {accepted}; the operand you wrote does not match any of those forms"
+                        )
+                    };
+                    diag = diag.with_help(lead);
+                }
+                if let Some(note) = software_interrupt_note(mnemonic) {
+                    diag = diag.with_note(note);
+                }
             }
         }
         EncodeError::NoDirectPageForm => {

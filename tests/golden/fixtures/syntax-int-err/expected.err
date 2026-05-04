@@ -1,0 +1,47 @@
+Error: mnemonic 'cop' does not accept this operand
+   ╭─[ tests/golden/fixtures/syntax-int-err/input.k65:2:5 ]
+   │
+ 2 │     cop
+   │     ─┬─  
+   │      ╰─── missing operand
+   │ 
+   │ Help: `cop` requires an operand: it accepts an 8-bit immediate (`cop #$NN`)
+   │ 
+   │ Note: On the W65C816, `cop` is the coprocessor / OS-trap software interrupt: the byte immediately after the opcode is a signature byte that the COP vector handler reads to dispatch the trap. The K816 encoder always requires it (write `cop #$00` if you have nothing meaningful to put there).
+───╯
+
+Error: mnemonic 'cop' does not accept this operand
+   ╭─[ tests/golden/fixtures/syntax-int-err/input.k65:3:5 ]
+   │
+ 3 │     cop $21
+   │     ───┬───  
+   │        ╰───── address operand
+   │ 
+   │ Help: `cop` accepts an 8-bit immediate (`cop #$NN`); the operand you wrote does not match any of those forms
+   │ 
+   │ Note: On the W65C816, `cop` is the coprocessor / OS-trap software interrupt: the byte immediately after the opcode is a signature byte that the COP vector handler reads to dispatch the trap. The K816 encoder always requires it (write `cop #$00` if you have nothing meaningful to put there).
+───╯
+
+Error: mnemonic 'brk' does not accept this operand
+   ╭─[ tests/golden/fixtures/syntax-int-err/input.k65:4:5 ]
+   │
+ 4 │     brk
+   │     ─┬─  
+   │      ╰─── missing operand
+   │ 
+   │ Help: `brk` requires an operand: it accepts an 8-bit immediate (`brk #$NN`)
+   │ 
+   │ Note: On the W65C816, `brk` is a software interrupt: the byte immediately after the opcode is a signature byte that the BRK vector handler reads via the pushed PC to dispatch traps. The K816 encoder always requires it (write `brk #$00` if you have nothing meaningful to put there).
+───╯
+
+Error: mnemonic 'brk' does not accept this operand
+   ╭─[ tests/golden/fixtures/syntax-int-err/input.k65:5:5 ]
+   │
+ 5 │     brk 1
+   │     ──┬──  
+   │       ╰──── address operand
+   │ 
+   │ Help: `brk` accepts an 8-bit immediate (`brk #$NN`); the operand you wrote does not match any of those forms
+   │ 
+   │ Note: On the W65C816, `brk` is a software interrupt: the byte immediately after the opcode is a signature byte that the BRK vector handler reads via the pushed PC to dispatch traps. The K816 encoder always requires it (write `brk #$00` if you have nothing meaningful to put there).
+───╯

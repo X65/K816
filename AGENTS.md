@@ -98,6 +98,7 @@ Link/render orchestration (CLI, golden harness, and project build flows using `k
 
 ## Project Conventions
 
+- **When in doubt about 65816 ISA semantics — instruction behavior, addressing modes, opcode tables, status-flag effects, cycle counts, MX/E mode interactions, reset state, or any CPU-level quirk — consult [docs/misc/w65c816s.md](docs/misc/w65c816s.md) (the bundled WDC W65C816S datasheet) before relying on memory or assumption.** Cite the relevant section or table (e.g. "Table 5-5", "Note 2", "§7.10 Switching Modes") in code comments, diagnostic notes, or PR descriptions when the datasheet's specific wording is what justifies a non-obvious choice. Do not invent CPU semantics.
 - No "compat", "legacy", or "deprecated" shims; features are first-class or removed.
 - `segment` directive only for output segments; no `bank` alias.
 - Error on unknown directives; no silent ignores.

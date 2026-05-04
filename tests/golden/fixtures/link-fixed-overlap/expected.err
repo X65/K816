@@ -4,4 +4,8 @@ Error: fixed chunk for segment 'default' at 0x100..0x102 overlaps existing place
  6 │ func fixed_b {
    │      ───┬───  
    │         ╰───── function 'fixed_b' defined here
+   │ 
+   │ Help: move the fixed placement of segment 'default' to a free range in 'MAIN', or relax the `at = ...` constraint so the linker can place it automatically around the existing chunk near 0x100
+   │ 
+   │ Note: The linker treats `at = ...` placements as immovable: when two pieces of code are pinned to overlapping addresses, neither can move out of the way, so the only fix is to change the address (or remove one pin). Relocatable placements are only laid down after every fixed range is reserved.
 ───╯

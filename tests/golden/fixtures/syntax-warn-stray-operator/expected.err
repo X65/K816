@@ -3,7 +3,11 @@ Error: invalid syntax: unexpected '>'
    │
  3 │     > 42
    │     ──┬─  
-   │       ╰─── here
+   │       ╰─── operator without left-hand side
+   │ 
+   │ Help: `>` is a binary operator — it must follow an expression; if the previous line was meant to continue, remove the line break, otherwise supply the missing left-hand operand
+   │ 
+   │ Note: K816 statements terminate at a newline unless the previous line ends mid-expression (after an open paren, a comma, etc.); a stray operator at column-0 will not be glued onto the line above.
 ───╯
 
 Error: invalid syntax: unexpected 'charset'
@@ -11,5 +15,9 @@ Error: invalid syntax: unexpected 'charset'
    │
  4 │     charset ABC
    │     ─────┬─────  
-   │          ╰─────── here
+   │          ╰─────── data-block keyword outside `data {...}`
+   │ 
+   │ Help: `charset` is a data-block directive — wrap it in a `data { ... }` block (e.g. `data tiles ImageName "file.png" { ... }`)
+   │ 
+   │ Note: Data-block directives like `charset`, `tiles`, `colormode`, `imgwave`, and `inv` only have meaning inside a `data` block where the binary asset they configure is being declared.
 ───╯

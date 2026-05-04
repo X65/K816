@@ -194,7 +194,14 @@ pub(super) fn decorate_with_anchor(
 ) -> String {
     let label_message =
         anchor.map(|anchor| format!("function '{}' defined here", anchor.symbol_name));
-    decorate_with_anchor_with_label(message, anchor, options, label_message.as_deref(), None)
+    decorate_with_anchor_with_label(
+        message,
+        anchor,
+        options,
+        label_message.as_deref(),
+        None,
+        None,
+    )
 }
 
 pub(super) fn decorate_with_anchor_with_label(
@@ -203,12 +210,17 @@ pub(super) fn decorate_with_anchor_with_label(
     options: LinkRenderOptions,
     label_message: Option<&str>,
     help: Option<&str>,
+    note: Option<&str>,
 ) -> String {
     let Some(anchor) = anchor else {
-        return match help {
-            Some(help) => format!("{message}\n\n Help: {help}"),
-            None => message.to_string(),
-        };
+        let mut out = message.to_string();
+        if let Some(help) = help {
+            out.push_str(&format!("\n\n Help: {help}"));
+        }
+        if let Some(note) = note {
+            out.push_str(&format!("\n\n Note: {note}"));
+        }
+        return out;
     };
     let label_message = label_message.unwrap_or("defined here");
 
@@ -216,7 +228,7 @@ pub(super) fn decorate_with_anchor_with_label(
         return format!("{message}\n{label_message}");
     };
 
-    let context = render_anchor_context(message, source, options, label_message, help);
+    let context = render_anchor_context(message, source, options, label_message, help, note);
     if context.is_empty() {
         format!(
             "{message}\n{label_message} at {}:{}:{}",
@@ -233,6 +245,7 @@ fn render_anchor_context(
     options: LinkRenderOptions,
     label_message: &str,
     help: Option<&str>,
+    note: Option<&str>,
 ) -> String {
     let file_id = source.file.clone();
     let line_len = source.line_text.len();
@@ -277,6 +290,9 @@ fn render_anchor_context(
     );
     if let Some(help) = help {
         report = report.with_help(help.to_string());
+    }
+    if let Some(note) = note {
+        report = report.with_note(note.to_string());
     }
     let report = report.finish();
 

@@ -62,6 +62,10 @@ pub fn link_diagnostic_to_diagnostic(
         diag = diag.with_help(help.clone());
     }
 
+    if let Some(note) = &link_diag.note {
+        diag = diag.with_note(note.clone());
+    }
+
     Some(diag)
 }
 
@@ -152,6 +156,7 @@ mod tests {
             primary_label: Some("symbol 'foo' referenced here".to_string()),
             anchor: Some(anchor),
             help: None,
+            note: None,
             related: Vec::new(),
         };
 
@@ -177,6 +182,7 @@ mod tests {
             primary_label: None,
             anchor: Some(anchor),
             help: None,
+            note: None,
             related: Vec::new(),
         };
 

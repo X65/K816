@@ -4,4 +4,8 @@ Error: fixed chunk for segment 'default' at 0x10000..0x10002 is outside memory '
  1 │ func too_far {
    │      ───┬───  
    │         ╰───── function 'too_far' defined here
+   │ 
+   │ Help: memory 'MAIN' covers 0x0..0x10000; the requested fixed placement at 0x10000..0x10002 sits outside it — relax or move the fixed `at` constraint, grow 'MAIN' in your `.ld.ron`, or place this segment in a memory area that contains the requested address
+   │ 
+   │ Note: Memory ranges in your `.ld.ron` are hard bounds: the linker never extends them, even by a single byte. Width, alignment, and any `offset = ...` add to the chunk's footprint, so a chunk that just barely fits in source can spill out after alignment.
 ───╯

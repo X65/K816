@@ -1368,16 +1368,24 @@ fn check_damage_for_sequence(
                 let collisions = live_after & (summary.clobbers - reg_names_set(&summary.outputs));
                 for reg in [RegName::A, RegName::X, RegName::Y] {
                     if collisions.contains(reg_name_set(reg)) {
+                        let reg_text = reg_name_text(reg);
+                        let call_form = meta.signature_call_form(&call.target);
                         diagnostics.push(
                             Diagnostic::error(
                                 stmt.span,
                                 format!(
-                                    "register {} is live after call to '{}' but clobbered by it",
-                                    reg_name_text(reg),
+                                    "register `{}` is live after call to `{}` but clobbered by it",
+                                    reg_text,
                                     call.target
                                 ),
                             )
-                            .with_help("save the register, consume the output immediately, or adjust the function contract"),
+                            .with_primary_label(format!("call to `{}` clobbers `{}`", call.target, reg_text))
+                            .with_help(format!(
+                                "save `{reg_text}` across the call (`{reg_text}!!` to push, `!!{reg_text}` to pop), consume `{reg_text}` before the call, or extend the contract of `{call_form}` so it preserves or returns `{reg_text}`"
+                            ))
+                            .with_note(
+                                "The W65C816 has only three general-purpose registers (`A`, `X`, `Y`); the function-contract analyzer assumes a callee may overwrite anything in its clobber set, and warns when a value the caller still needs would not survive the call.",
+                            ),
                         );
                     }
                 }
@@ -4850,29 +4858,50 @@ fn lower_instruction(
             span: reg_span,
         }) => {
             let reg_name = format_hla_cpu_register(*reg);
+            let mnemonic = &instruction.mnemonic;
             match reg {
                 HlaCpuRegister::A => {
-                    let mnemonic_lower = instruction.mnemonic.to_ascii_lowercase();
+                    let mnemonic_lower = mnemonic.to_ascii_lowercase();
                     if !supported_modes(&mnemonic_lower).contains(&AddressingMode::Accumulator) {
-                        diagnostics.push(Diagnostic::error(
-                            *reg_span,
-                            format!(
-                                "instruction `{}` does not accept the accumulator (`A`) as an operand",
-                                instruction.mnemonic
+                        diagnostics.push(
+                            Diagnostic::error(
+                                *reg_span,
+                                format!(
+                                    "instruction `{mnemonic}` does not accept the accumulator (`A`) as an operand"
+                                ),
+                            )
+                            .with_primary_label("accumulator operand")
+                            .with_help(format!(
+                                "`{mnemonic}` takes an immediate (`#value`), an address, or an HLA register transfer (e.g. `a = x`); a bare `A` is not an addressing mode here"
+                            ))
+                            .with_note(
+                                "On the W65C816, only shift/rotate-family mnemonics (`asl`, `lsr`, `rol`, `ror`, `inc`, `dec`) accept the accumulator as an implicit operand; loads, stores, and ALU ops read from memory or an immediate. Use the dedicated transfer mnemonics (`tax`, `txa`, `tya`, …) or the K65 HLA shorthand (`a = x`) to move values between registers.",
                             ),
-                        ));
+                        );
                         return None;
                     }
                     None
                 }
                 _ => {
-                    diagnostics.push(Diagnostic::error(
-                        *reg_span,
-                        format!(
-                            "register `{reg_name}` cannot be used as an operand of `{}`",
-                            instruction.mnemonic
+                    let primary_label = match reg {
+                        HlaCpuRegister::X | HlaCpuRegister::Y => "index register operand",
+                        _ => "register operand",
+                    };
+                    diagnostics.push(
+                        Diagnostic::error(
+                            *reg_span,
+                            format!(
+                                "register `{reg_name}` cannot be used as an operand of `{mnemonic}`"
+                            ),
+                        )
+                        .with_primary_label(primary_label)
+                        .with_help(format!(
+                            "`{mnemonic}` takes an immediate (`#value`) or an address; index registers `X`/`Y` only appear as the post-comma index in indexed addressing (`addr,X`, `addr,Y`) — they are not standalone operands"
+                        ))
+                        .with_note(
+                            "On the W65C816, only the accumulator-family mnemonics (`asl`, `lsr`, `rol`, `ror`, `inc`, `dec`) take a register operand directly. Move values between registers with the dedicated transfer mnemonics (`tax`, `tay`, `txa`, `tya`, `txy`, `tyx`) or the K65 HLA shorthand (`a = x`, `y = a`).",
                         ),
-                    ));
+                    );
                     return None;
                 }
             }
@@ -7188,7 +7217,7 @@ mod tests {
         assert!(errors.iter().any(|error| {
             error
                 .message
-                .contains("register x is live after call to 'touch' but clobbered by it")
+                .contains("register `x` is live after call to `touch` but clobbered by it")
         }));
     }
 
@@ -7203,7 +7232,7 @@ mod tests {
         assert!(errors.iter().any(|error| {
             error
                 .message
-                .contains("register x is live after call to 'touch' but clobbered by it")
+                .contains("register `x` is live after call to `touch` but clobbered by it")
         }));
     }
 

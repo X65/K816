@@ -110,7 +110,7 @@ where
             desugar_const_bindings(bindings, source_id).map_err(|error| match error {
                 ConstDesugarError::MissingInitializerForSingleDecl { span } => Rich::custom(
                     span,
-                    "const initializer can be omitted only in comma-separated groups",
+                    "const declaration is missing its initializer; label: missing initializer; hint: write `const NAME = <expr>;` for a single value, or use the comma-form `const A, B, C = 1;` where bare names borrow the last initializer; note: `const` is a compile-time *value* binding — every const must reduce to a numeric expression at compile time, so an initializer is mandatory unless the binding shares one with a later sibling in a comma group.",
                 ),
             })
         });

@@ -101,7 +101,7 @@ where
             .validate(|_, extra, emitter| {
                 emitter.emit(Rich::custom(
                     extra.span(),
-                    "[warn] preprocessor directive not processed",
+                    "[warn] preprocessor directive ignored; label: preprocessor directive; hint: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic; note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.",
                 ));
                 Item::Statement(Stmt::Empty)
             });

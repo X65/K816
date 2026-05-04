@@ -280,7 +280,7 @@ where
             .validate(|_, extra, emitter| {
                 emitter.emit(Rich::custom(
                     extra.span(),
-                    "[warn] preprocessor directive not processed",
+                    "[warn] preprocessor directive ignored; label: preprocessor directive; hint: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic; note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.",
                 ));
                 Stmt::Empty
             });
@@ -305,7 +305,12 @@ where
     }
     .then(line_tail_parser())
     .validate(|(token, _), extra, emitter| {
-        emitter.emit(Rich::custom(extra.span(), format!("unexpected '{token}'")));
+        emitter.emit(Rich::custom(
+            extra.span(),
+            format!(
+                "unexpected '{token}'; label: data-block keyword outside `data {{...}}`; hint: `{token}` is a data-block directive — wrap it in a `data {{ ... }}` block (e.g. `data tiles ImageName \"file.png\" {{ ... }}`); note: Data-block directives like `charset`, `tiles`, `colormode`, `imgwave`, and `inv` only have meaning inside a `data` block where the binary asset they configure is being declared."
+            ),
+        ));
         Stmt::Empty
     });
 
@@ -314,7 +319,12 @@ where
         .or(just(TokenKind::Question).to("?".to_string()))
         .then(line_tail_parser())
         .validate(|(token, _), extra, emitter| {
-            emitter.emit(Rich::custom(extra.span(), format!("unexpected '{token}'")));
+            emitter.emit(Rich::custom(
+                extra.span(),
+                format!(
+                    "unexpected '{token}'; label: operator without left-hand side; hint: `{token}` is a binary operator — it must follow an expression; if the previous line was meant to continue, remove the line break, otherwise supply the missing left-hand operand; note: K816 statements terminate at a newline unless the previous line ends mid-expression (after an open paren, a comma, etc.); a stray operator at column-0 will not be glued onto the line above."
+                ),
+            ));
             Stmt::Empty
         });
 

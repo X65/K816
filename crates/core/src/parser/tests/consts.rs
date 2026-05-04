@@ -167,7 +167,7 @@ fn rejects_const_without_initializer() {
     assert!(
         diagnostics.iter().any(|diag| diag
             .message
-            .contains("const initializer can be omitted only in comma-separated groups")),
+            .contains("const declaration is missing its initializer")),
         "unexpected diagnostics: {diagnostics:#?}"
     );
     assert!(

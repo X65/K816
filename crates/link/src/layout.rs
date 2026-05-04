@@ -434,6 +434,7 @@ fn render_link_diagnostic_legacy(diag: &LinkDiagnostic, options: LinkRenderOptio
         options,
         diag.primary_label.as_deref(),
         diag.help.as_deref(),
+        diag.note.as_deref(),
     )
 }
 
@@ -447,6 +448,7 @@ fn anchorless_error(message: impl Into<String>) -> LinkDiagnostic {
         primary_label: None,
         anchor: None,
         help: None,
+        note: None,
         related: Vec::new(),
     }
 }
@@ -457,12 +459,23 @@ fn anchored_error(
     anchor: Option<SourceLocation>,
     help: Option<String>,
 ) -> LinkDiagnostic {
+    anchored_error_rich(message, label, anchor, help, None)
+}
+
+fn anchored_error_rich(
+    message: String,
+    label: Option<String>,
+    anchor: Option<SourceLocation>,
+    help: Option<String>,
+    note: Option<String>,
+) -> LinkDiagnostic {
     LinkDiagnostic {
         severity: LinkSeverity::Error,
         message,
         primary_label: label,
         anchor,
         help,
+        note,
         related: Vec::new(),
     }
 }
@@ -478,6 +491,7 @@ fn duplicate_symbol_diagnostic(
         primary_label: Some("duplicate definition".to_string()),
         anchor: second.cloned(),
         help: None,
+        note: None,
         related: Vec::new(),
     };
     if let Some(first) = first {
@@ -803,13 +817,19 @@ fn choose_reloc_base(
             "no free range found for relocatable chunk in segment '{}' (len={:#X})",
             chunk.segment, chunk.len
         );
-        anchored_error(
+        let help = format!(
+            "memory '{}' has no contiguous {:#X}-byte gap above {:#X} that satisfies alignment {:#X}; reduce the segment, raise the size of '{}' in your `.ld.ron`, or move existing fixed (`at = ...`) placements out of the way",
+            mem.spec.name, chunk.len, base, chunk.align.max(1), mem.spec.name
+        );
+        let note = "The linker scans `MEMORY` regions for a free, aligned span large enough to hold the chunk. Fixed placements (`at = ...`) reserve their range up front, so adding or growing them shrinks the relocatable budget for everything else placed in the same memory.".to_string();
+        anchored_error_rich(
             detail,
             anchor
                 .as_ref()
                 .map(|a| format!("function '{}' defined here", a.symbol_name)),
             anchor.and_then(|a| a.source),
-            None,
+            Some(help),
+            Some(note),
         )
     })
 }
@@ -900,13 +920,26 @@ fn place_chunk(
             "{kind} chunk for segment '{}' at {:#X}..{:#X} is outside memory '{}' ({:#X}..{:#X})",
             chunk.segment, base, end, mem.spec.name, mem.spec.start, mem_end
         );
-        return Err(anchored_error(
+        let help = if fixed {
+            format!(
+                "memory '{}' covers {:#X}..{:#X}; the requested fixed placement at {:#X}..{:#X} sits outside it — relax or move the fixed `at` constraint, grow '{}' in your `.ld.ron`, or place this segment in a memory area that contains the requested address",
+                mem.spec.name, mem.spec.start, mem_end, base, end, mem.spec.name
+            )
+        } else {
+            format!(
+                "memory '{}' covers {:#X}..{:#X}; the relocatable placement at {:#X}..{:#X} would extend past the end — grow '{}' in your `.ld.ron`, shrink the segment, or assign it to a larger memory area",
+                mem.spec.name, mem.spec.start, mem_end, base, end, mem.spec.name
+            )
+        };
+        let note = "Memory ranges in your `.ld.ron` are hard bounds: the linker never extends them, even by a single byte. Width, alignment, and any `offset = ...` add to the chunk's footprint, so a chunk that just barely fits in source can spill out after alignment.".to_string();
+        return Err(anchored_error_rich(
             detail,
             anchor
                 .as_ref()
                 .map(|a| format!("function '{}' defined here", a.symbol_name)),
             anchor.and_then(|a| a.source),
-            None,
+            Some(help),
+            Some(note),
         ));
     }
 
@@ -937,13 +970,19 @@ fn place_chunk(
                 "fixed chunk for segment '{}' at {:#X}..{:#X} overlaps existing placement near {:#X} in memory '{}'",
                 chunk.segment, base, end, overlap_addr, mem.spec.name
             );
-            return Err(anchored_error(
+            let help = format!(
+                "move the fixed placement of segment '{}' to a free range in '{}', or relax the `at = ...` constraint so the linker can place it automatically around the existing chunk near {:#X}",
+                chunk.segment, mem.spec.name, overlap_addr
+            );
+            let note = "The linker treats `at = ...` placements as immovable: when two pieces of code are pinned to overlapping addresses, neither can move out of the way, so the only fix is to change the address (or remove one pin). Relocatable placements are only laid down after every fixed range is reserved.".to_string();
+            return Err(anchored_error_rich(
                 detail,
                 anchor
                     .as_ref()
                     .map(|a| format!("function '{}' defined here", a.symbol_name)),
                 anchor.and_then(|a| a.source),
-                None,
+                Some(help),
+                Some(note),
             ));
         }
 
@@ -951,13 +990,19 @@ fn place_chunk(
             "relocatable chunk for segment '{}' cannot be placed at {:#X}..{:#X}; overlap near {:#X} in memory '{}'",
             chunk.segment, base, end, overlap_addr, mem.spec.name
         );
-        return Err(anchored_error(
+        let help = format!(
+            "the linker tried to relocate segment '{}' but every candidate range it considered above {:#X} in '{}' was already taken; reduce the segment, raise the size of '{}' in your `.ld.ron`, or move blocking fixed (`at = ...`) placements out of the way",
+            chunk.segment, base, mem.spec.name, mem.spec.name
+        );
+        let note = "Relocatable chunks are placed after fixed (`at = ...`) chunks reserve their ranges. If a relocatable chunk cannot find any free aligned span large enough, the layout fails — even when the total free bytes would be sufficient if defragmented.".to_string();
+        return Err(anchored_error_rich(
             detail,
             anchor
                 .as_ref()
                 .map(|a| format!("function '{}' defined here", a.symbol_name)),
             anchor.and_then(|a| a.source),
-            None,
+            Some(help),
+            Some(note),
         ));
     }
 

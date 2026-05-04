@@ -4,4 +4,8 @@ Error: no free range found for relocatable chunk in segment 'free' (len=0x2)
  10 │ func rel {
     │      ─┬─  
     │       ╰─── function 'rel' defined here
+    │ 
+    │ Help: memory 'MAIN' has no contiguous 0x2-byte gap above 0x2 that satisfies alignment 0x1; reduce the segment, raise the size of 'MAIN' in your `.ld.ron`, or move existing fixed (`at = ...`) placements out of the way
+    │ 
+    │ Note: The linker scans `MEMORY` regions for a free, aligned span large enough to hold the chunk. Fixed placements (`at = ...`) reserve their range up front, so adding or growing them shrinks the relocatable budget for everything else placed in the same memory.
 ────╯

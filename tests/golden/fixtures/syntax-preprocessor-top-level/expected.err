@@ -1,31 +1,47 @@
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-top-level/input.k65:1:1 ]
    │
  1 │ #if 1
    │ ──┬──  
-   │   ╰──── here
+   │   ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-top-level/input.k65:3:1 ]
    │
  3 │ #elif 1
    │ ───┬───  
-   │    ╰───── here
+   │    ╰───── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-top-level/input.k65:5:1 ]
    │
  5 │ #else
    │ ──┬──  
-   │   ╰──── here
+   │   ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-top-level/input.k65:7:1 ]
    │
  7 │ #endif
    │ ───┬──  
-   │    ╰──── here
+   │    ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯

@@ -28,6 +28,7 @@ pub struct LinkDiagnostic {
     pub primary_label: Option<String>,
     pub anchor: Option<SourceLocation>,
     pub help: Option<String>,
+    pub note: Option<String>,
     pub related: Vec<LinkRelated>,
 }
 

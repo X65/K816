@@ -230,7 +230,7 @@ where
             "c" => {
                 emitter.emit(Rich::custom(
                     extra.span(),
-                    "C is the 16-bit accumulator; hint: use a=expr for loads",
+                    "C is the 16-bit accumulator; label: assignment target; hint: use `a = expr` to load the accumulator (`C` is the 16-bit form of `A`); note: When the accumulator is in 16-bit mode (`@a16`) it is referred to as `C` in the WDC documentation; the K65 HLA layer always names it `a`, and the encoder picks the 8- or 16-bit form from the active `m` flag.",
                 ));
                 return Stmt::Empty;
             }
@@ -238,7 +238,9 @@ where
                 let reg = lhs.to_ascii_uppercase();
                 emitter.emit(Rich::custom(
                     extra.span(),
-                    format!("cannot load register '{reg}' with expression"),
+                    format!(
+                        "cannot load register '{reg}' with expression; label: assignment target; hint: only `a`, `x`, and `y` accept HLA loads (`a = #imm`, `x = var`, `y = a`); note: The W65C816 has no general-purpose registers beyond `A`/`X`/`Y`; status flags, the stack pointer, and the data/program bank registers are manipulated by dedicated instructions, not by HLA assignment."
+                    ),
                 ));
                 return Stmt::Empty;
             }

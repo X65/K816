@@ -3,5 +3,9 @@ Error: invalid syntax: cannot load register 'B' with expression
    │
  2 │     b=0x1234
    │     ────┬───  
-   │         ╰───── here
+   │         ╰───── assignment target
+   │ 
+   │ Help: only `a`, `x`, and `y` accept HLA loads (`a = #imm`, `x = var`, `y = a`)
+   │ 
+   │ Note: The W65C816 has no general-purpose registers beyond `A`/`X`/`Y`; status flags, the stack pointer, and the data/program bank registers are manipulated by dedicated instructions, not by HLA assignment.
 ───╯

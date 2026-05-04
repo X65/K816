@@ -113,10 +113,22 @@ Linker uses RON format for configuration (`.ld.ron` files and project `link.ron`
 
 ## Diagnostics Style
 
-- Keep primary error messages concise and focused on what is wrong.
-- Put remediation guidance in Ariadne help text using `Diagnostic::with_help(...)`. **This is mandatory** — never fold "how to fix" wording into the primary error `message`, even in situations where it seems shorter or more convenient. The help slot exists specifically for this; the LSP layer reads `Supplemental::Help` separately, and Ariadne renders it as its own labelled line.
-- Avoid embedding "how to fix" details directly in the main error message when help text can carry that context.
-- For contract/call diagnostics, the help line should show the exact call syntax for the target function rather than vague directives ("match the declaration", "repeat the inputs"). Use `FunctionMeta::signature_call_form(name)` from `crates/core/src/sema/model.rs` to produce forms like `sub(a, #b) -> a`, `dispatch`, or `produce() -> a`.
+**Rich diagnostics are first-class output.** Diagnostic quality is part of the compiler's contract, on equal footing with generating correct assembly. A diagnostic that reports only *what* is wrong without telling the user *what to do* or *why the language behaves that way* is incomplete work — the same way a half-encoded instruction is incomplete work. Hold new code to this bar; raise existing code when you touch it. The exemplar lives in [crates/core/src/emit_object.rs](crates/core/src/emit_object.rs) (`build_encode_diagnostic`, `enrich_invalid_indirect`) and the rendered output in [tests/golden/fixtures/emit-err-indirect-out-of-range-literal/expected.err](tests/golden/fixtures/emit-err-indirect-out-of-range-literal/expected.err).
+
+Builder API in [crates/core/src/diag.rs](crates/core/src/diag.rs): `Diagnostic::error(span, msg)` then `.with_primary_label(...)`, `.with_help(...)`, `.with_note(...)`, `.with_label(other_span, ...)`, `.with_optional_help(...)`. The LSP layer reads `Supplemental::Help` separately, so any enrichment you add flows to editors as well as CLI.
+
+Concrete rules:
+
+- **Keep primary messages concise and focused on what is wrong.** Do not fold remediation into the message.
+- **Remediation goes in `with_help(...)`. This is mandatory** — never fold "how to fix" wording into the primary `message`, even when it seems shorter or more convenient. Ariadne renders the help slot as its own labelled `Help:` line; the LSP surfaces it separately.
+- **Never ship the default `"here"` primary label.** The primary label defaults to `"here"` in [crates/core/src/diag.rs](crates/core/src/diag.rs); always call `.with_primary_label(...)` with a phrase that *names what kind of thing* the span points at — `"indirect operand"`, `"forced direct-page operand"`, `"call site"`, `"missing initializer"`, `"clobbered register"`. The label should still make sense if the surrounding error text is hidden.
+- **Use `with_note(...)` for architectural / language quirks.** When the user will hit the same wall again unless they understand *why* the language behaves a certain way, add a note. Good notes explain W65C816 quirks (`lda` has no `(abs)` form), the const-vs-address split, the stack-relative inversion, MX-flag-driven encoding, etc. Bad notes restate the message.
+- **Use secondary `with_label(other_span, ...)` to point at the *other* end of a relationship.** Duplicate definitions, contract vs call site, fixed-chunk overlaps, live-after-clobber — the user should see both endpoints in one Ariadne report. The duplicate-symbol path in `link_diag` is the model.
+- **Build help text from real values, not generic phrasing.** When a value, range, or symbol is known at diagnostic time, inline it: `value $1234 exceeds the direct-page range (0x00..=0xFF)` beats `value out of range`. The `DirectPageOutOfRange` arm in [crates/core/src/emit_object.rs](crates/core/src/emit_object.rs) shows the pattern: pull the literal/symbol off the operand and embed it.
+- **For contract/call diagnostics, show the exact call form.** Use `FunctionMeta::signature_call_form(name)` from `crates/core/src/sema/model.rs` to produce forms like `sub(a, #b) -> a`, `dispatch`, or `produce() -> a` rather than vague directives ("match the declaration", "repeat the inputs").
+- **When raising existing diagnostics, refresh the golden fixture.** Run `cargo run -p k816-golden-tests --bin bless -- --err-only` to regenerate `expected.err` files, then `cargo test -p k816-golden-tests` to validate. Read each regenerated `expected.err` by eye — the diff *is* the user-visible change you are shipping; lint cannot judge whether help text is helpful.
+
+Known gap: chumsky `Rich` parser errors funneled through [crates/core/src/parser/diagnostics.rs](crates/core/src/parser/diagnostics.rs) currently lose per-error-kind enrichment in the chumsky → `Diagnostic` adapter. Threading help/notes through that adapter is a separate refactor; until it lands, parser-syntax errors of the chumsky-Rich family will be terser than the doctrine above asks for.
 
 ## Recent Implementation Notes
 

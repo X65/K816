@@ -6,28 +6,40 @@ Error: invalid syntax: expected something else, ':', '*', '+', '-', ',', or '=',
     │           ╰── here
 ────╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:2:5 ]
    │
  2 │     #if 1
    │     ──┬──  
-   │       ╰──── here
+   │       ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:4:5 ]
    │
  4 │     #else
    │     ──┬──  
-   │       ╰──── here
+   │       ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:6:5 ]
    │
  6 │     #endif
    │     ───┬──  
-   │        ╰──── here
+   │        ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
 Error: invalid syntax: unexpected '#'
@@ -38,12 +50,16 @@ Error: invalid syntax: unexpected '#'
     │         ╰── here
 ────╯
 
-Warning: invalid syntax: preprocessor directive not processed
+Warning: invalid syntax: preprocessor directive ignored
    ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:9:9 ]
    │
  9 │         #if !0
    │         ───┬──  
-   │            ╰──── here
+   │            ╰──── preprocessor directive
+   │ 
+   │ Help: K816 does not run a preprocessor — `#if`/`#elif`/`#else`/`#endif` lines are skipped verbatim and the bodies they would have gated are still parsed; remove the directive or replace conditional code with `eval`-block compile-time logic
+   │ 
+   │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
 Error: invalid syntax: expected something else, ':', '*', '+', '-', ',', or '=', found number literal

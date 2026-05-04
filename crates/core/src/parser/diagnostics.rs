@@ -16,7 +16,8 @@ pub(super) fn rich_error_to_diagnostic(
 ) -> Diagnostic {
     let range = error.span().into_range();
     let mut span = Span::new(source_id, range.start, range.end);
-    let mut primary_label = "here";
+    let mut primary_label: String = "here".to_string();
+    let mut explicit_note: Option<String> = None;
     let (is_warning, message, help) = match error.reason() {
         RichReason::Custom(custom) => {
             let custom = custom.to_string();
@@ -25,13 +26,18 @@ pub(super) fn rich_error_to_diagnostic(
             } else {
                 (false, custom)
             };
-            let (message_part, embedded_hint) = match custom.find("; hint: ") {
-                Some(idx) => (
-                    custom[..idx].to_string(),
-                    Some(custom[idx + 8..].to_string()),
-                ),
-                None => (custom.clone(), None),
-            };
+            let RichCustomParts {
+                message: message_part,
+                hint: embedded_hint,
+                label: embedded_label,
+                note: embedded_note,
+            } = parse_rich_custom(&custom);
+            if let Some(label) = embedded_label {
+                primary_label = label;
+            }
+            if let Some(note) = embedded_note {
+                explicit_note = Some(note);
+            }
             let help = embedded_hint.or_else(|| {
                 custom
                     .starts_with("unsupported flag shorthand '")
@@ -45,7 +51,7 @@ pub(super) fn rich_error_to_diagnostic(
                 .is_some_and(|token| matches!(token, TokenKind::Newline))
             {
                 span = Span::new(source_id, range.start, range.start);
-                primary_label = "expected here";
+                primary_label = "expected here".to_string();
             }
             if found
                 .as_deref()
@@ -92,16 +98,165 @@ pub(super) fn rich_error_to_diagnostic(
         }
     };
     let help = help.or_else(|| detect_var_width_after_array_hint(source_text, range.start));
+    let token_enrichment = match error.reason() {
+        RichReason::ExpectedFound { found, .. } => {
+            found.as_deref().and_then(unexpected_token_enrichment)
+        }
+        _ => None,
+    };
+    let (label, help, note) = match token_enrichment {
+        Some(enriched) => (
+            enriched.label.unwrap_or(primary_label),
+            help.or_else(|| enriched.help.map(str::to_string)),
+            explicit_note.or_else(|| enriched.note.map(str::to_string)),
+        ),
+        None => (primary_label, help, explicit_note),
+    };
     let make_diagnostic = if is_warning {
         Diagnostic::warning
     } else {
         Diagnostic::error
     };
-    let diagnostic = make_diagnostic(span, message).with_primary_label(primary_label);
-    match help {
-        Some(help) => diagnostic.with_help(help),
-        None => diagnostic,
+    let mut diagnostic = make_diagnostic(span, message).with_primary_label(label);
+    if let Some(help) = help {
+        diagnostic = diagnostic.with_help(help);
     }
+    if let Some(note) = note {
+        diagnostic = diagnostic.with_note(note);
+    }
+    diagnostic
+}
+
+struct TokenEnrichment {
+    label: Option<String>,
+    help: Option<&'static str>,
+    note: Option<&'static str>,
+}
+
+/// When the parser bails on a structurally surprising token at a recovery
+/// point — a stray closing brace, a binary operator at start-of-statement, or
+/// an unrecognized identifier-as-directive — the bare "unexpected X" message
+/// rarely tells the user what they should have written. Look up an explicit
+/// label/help/note pair so the rendered diagnostic explains the mistake the
+/// way an experienced K65 author would.
+fn unexpected_token_enrichment(token: &TokenKind) -> Option<TokenEnrichment> {
+    match token {
+        TokenKind::RBrace => Some(TokenEnrichment {
+            label: Some("stray '}'".to_string()),
+            help: Some(
+                "the parser was looking for a top-level item (`func`, `data`, `var`, `const`, `segment`, `eval`, ...) and found `}` instead — usually this means an earlier `}` already closed the enclosing block; check brace balance from the matching `{` upwards",
+            ),
+            note: Some(
+                "Top-level K816 sources contain only declarations (`func`, `data`, `var`, `const`, `segment`, `eval` blocks); a bare `}` at file scope cannot close anything because nothing is open.",
+            ),
+        }),
+        TokenKind::Gt
+        | TokenKind::Lt
+        | TokenKind::Plus
+        | TokenKind::Minus
+        | TokenKind::Star
+        | TokenKind::Percent
+        | TokenKind::Amp
+        | TokenKind::Pipe
+        | TokenKind::Caret
+        | TokenKind::EqEq
+        | TokenKind::BangEq
+        | TokenKind::LtEq
+        | TokenKind::GtEq => Some(TokenEnrichment {
+            label: Some("operator without left-hand side".to_string()),
+            help: Some(
+                "this operator must follow an expression — at start-of-statement the parser sees nothing for it to act on; if the previous line was meant to continue, remove the line break, or supply the missing left-hand operand",
+            ),
+            note: Some(
+                "K816 statements terminate at a newline unless the previous line ends mid-expression (after an operator, an open paren, etc.); a stray operator at column-0 will not be glued onto the line above.",
+            ),
+        }),
+        _ => None,
+    }
+}
+
+struct RichCustomParts {
+    message: String,
+    hint: Option<String>,
+    label: Option<String>,
+    note: Option<String>,
+}
+
+type CustomTagSetter = fn(&mut RichCustomParts, String);
+
+/// Parse a chumsky `Rich::custom` payload that may carry inline supplemental
+/// segments — `; hint: ...`, `; label: ...`, `; note: ...` — appended to the
+/// human-readable message. Order does not matter; the first occurrence of each
+/// tag wins. Tags are simple substring markers, so message text must not embed
+/// any of them literally.
+fn parse_rich_custom(raw: &str) -> RichCustomParts {
+    const TAGS: [(&str, CustomTagSetter); 3] = [
+        ("; hint: ", |parts, value| {
+            if parts.hint.is_none() {
+                parts.hint = Some(value);
+            }
+        }),
+        ("; label: ", |parts, value| {
+            if parts.label.is_none() {
+                parts.label = Some(value);
+            }
+        }),
+        ("; note: ", |parts, value| {
+            if parts.note.is_none() {
+                parts.note = Some(value);
+            }
+        }),
+    ];
+
+    let mut earliest: Option<(usize, usize, CustomTagSetter)> = None;
+    for (tag, setter) in TAGS {
+        if let Some(idx) = raw.find(tag) {
+            match earliest {
+                Some((cur_idx, _, _)) if cur_idx <= idx => {}
+                _ => earliest = Some((idx, tag.len(), setter)),
+            }
+        }
+    }
+
+    let mut parts = RichCustomParts {
+        message: raw.to_string(),
+        hint: None,
+        label: None,
+        note: None,
+    };
+
+    let Some((cut, tag_len, first_setter)) = earliest else {
+        return parts;
+    };
+
+    parts.message = raw[..cut].to_string();
+    let mut tail = &raw[cut + tag_len..];
+    let mut setter = first_setter;
+    loop {
+        let mut next_split: Option<(usize, &str, CustomTagSetter)> = None;
+        for (tag, candidate) in TAGS {
+            if let Some(idx) = tail.find(tag) {
+                match next_split {
+                    Some((cur_idx, _, _)) if cur_idx <= idx => {}
+                    _ => next_split = Some((idx, tag, candidate)),
+                }
+            }
+        }
+        match next_split {
+            Some((idx, tag, next_setter)) => {
+                let value = tail[..idx].to_string();
+                setter(&mut parts, value);
+                tail = &tail[idx + tag.len()..];
+                setter = next_setter;
+            }
+            None => {
+                setter(&mut parts, tail.to_string());
+                break;
+            }
+        }
+    }
+
+    parts
 }
 
 fn detect_invalid_flag_goto_shorthand(source_text: &str, question_offset: usize) -> Option<String> {

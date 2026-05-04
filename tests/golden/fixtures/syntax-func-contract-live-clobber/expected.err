@@ -1,9 +1,11 @@
-Error: register x is live after call to 'touch' but clobbered by it
+Error: register `x` is live after call to `touch` but clobbered by it
    ╭─[ tests/golden/fixtures/syntax-func-contract-live-clobber/input.k65:7:5 ]
    │
  7 │     touch a
    │     ───┬───  
-   │        ╰───── here
+   │        ╰───── call to `touch` clobbers `x`
    │ 
-   │ Help: save the register, consume the output immediately, or adjust the function contract
+   │ Help: save `x` across the call (`x!!` to push, `!!x` to pop), consume `x` before the call, or extend the contract of `touch(a)` so it preserves or returns `x`
+   │ 
+   │ Note: The W65C816 has only three general-purpose registers (`A`, `X`, `Y`); the function-contract analyzer assumes a callee may overwrite anything in its clobber set, and warns when a value the caller still needs would not survive the call.
 ───╯

@@ -3,7 +3,11 @@ Error: instruction `lda` does not accept the accumulator (`A`) as an operand
    │
  7 │     lda A
    │         ┬  
-   │         ╰── here
+   │         ╰── accumulator operand
+   │ 
+   │ Help: `lda` takes an immediate (`#value`), an address, or an HLA register transfer (e.g. `a = x`); a bare `A` is not an addressing mode here
+   │ 
+   │ Note: On the W65C816, only shift/rotate-family mnemonics (`asl`, `lsr`, `rol`, `ror`, `inc`, `dec`) accept the accumulator as an implicit operand; loads, stores, and ALU ops read from memory or an immediate. Use the dedicated transfer mnemonics (`tax`, `txa`, `tya`, …) or the K65 HLA shorthand (`a = x`) to move values between registers.
 ───╯
 
 Error: register `x` cannot be used as an operand of `ora`
@@ -11,5 +15,9 @@ Error: register `x` cannot be used as an operand of `ora`
    │
  8 │     ora X
    │         ┬  
-   │         ╰── here
+   │         ╰── index register operand
+   │ 
+   │ Help: `ora` takes an immediate (`#value`) or an address; index registers `X`/`Y` only appear as the post-comma index in indexed addressing (`addr,X`, `addr,Y`) — they are not standalone operands
+   │ 
+   │ Note: On the W65C816, only the accumulator-family mnemonics (`asl`, `lsr`, `rol`, `ror`, `inc`, `dec`) take a register operand directly. Move values between registers with the dedicated transfer mnemonics (`tax`, `tay`, `txa`, `tya`, `txy`, `tyx`) or the K65 HLA shorthand (`a = x`, `y = a`).
 ───╯

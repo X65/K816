@@ -3,5 +3,9 @@ Error: invalid syntax: unexpected '}'
    │
  4 │ }
    │ ┬  
-   │ ╰── here
+   │ ╰── stray '}'
+   │ 
+   │ Help: the parser was looking for a top-level item (`func`, `data`, `var`, `const`, `segment`, `eval`, ...) and found `}` instead — usually this means an earlier `}` already closed the enclosing block; check brace balance from the matching `{` upwards
+   │ 
+   │ Note: Top-level K816 sources contain only declarations (`func`, `data`, `var`, `const`, `segment`, `eval` blocks); a bare `}` at file scope cannot close anything because nothing is open.
 ───╯

@@ -186,7 +186,14 @@ where
     let hla_do_close_stmt = just(TokenKind::RBrace)
         .then(hla_do_close_suffix.clone().or_not())
         .rewind()
-        .try_map(|(_, suffix), span| suffix.ok_or_else(|| Rich::custom(span, "unexpected '}'")))
+        .try_map(|(_, suffix), span| {
+            suffix.ok_or_else(|| {
+                Rich::custom(
+                    span,
+                    "unexpected '}'; label: stray '}'; hint: the parser was looking for a top-level item (`func`, `data`, `var`, `const`, `segment`, `eval`, ...) and found `}` instead — usually this means an earlier `}` already closed the enclosing block; check brace balance from the matching `{` upwards; note: Top-level K816 sources contain only declarations (`func`, `data`, `var`, `const`, `segment`, `eval` blocks); a bare `}` at file scope cannot close anything because nothing is open.",
+                )
+            })
+        })
         .ignore_then(just(TokenKind::RBrace).ignore_then(hla_do_close_suffix))
         .boxed();
     let hla_condition_seed_stmt = hla_condition_seed_stmt_parser();

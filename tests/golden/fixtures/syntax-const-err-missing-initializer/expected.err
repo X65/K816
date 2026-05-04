@@ -1,7 +1,11 @@
-Error: invalid syntax: const initializer can be omitted only in comma-separated groups
+Error: invalid syntax: const declaration is missing its initializer
    ╭─[ tests/golden/fixtures/syntax-const-err-missing-initializer/input.k65:1:12 ]
    │
  1 │ const LIMIT
    │            │ 
-   │            ╰─ here
+   │            ╰─ missing initializer
+   │ 
+   │ Help: write `const NAME = <expr>;` for a single value, or use the comma-form `const A, B, C = 1;` where bare names borrow the last initializer
+   │ 
+   │ Note: `const` is a compile-time *value* binding — every const must reduce to a numeric expression at compile time, so an initializer is mandatory unless the binding shares one with a later sibling in a comma group.
 ───╯

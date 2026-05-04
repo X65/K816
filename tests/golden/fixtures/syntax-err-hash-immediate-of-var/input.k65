@@ -1,5 +1,5 @@
 var TASKS = $4000
 
 func main @a16 {
-    lda #TASKS          // ERR: ambiguous, use && instead
+    lda #TASKS          // ERR: var is not a numeric value, use &&TASKS instead
 }

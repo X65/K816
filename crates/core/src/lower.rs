@@ -5032,17 +5032,23 @@ fn reject_address_taking_immediate(
         "var"
     } else if sema.functions.contains_key(name) {
         "function"
+    } else if sema.labels.contains_key(name) {
+        "label"
     } else {
         "addressable symbol"
     };
     Some(
         Diagnostic::error(
             primary_span,
-            format!("ambiguous immediate `#{name}`: '{name}' is a {kind}, not a numeric value"),
+            format!("cannot use {kind} '{name}' as an immediate value"),
         )
+        .with_primary_label(format!("{kind} reference"))
         .with_help(format!(
             "use `&&{name}` to load its 16-bit address, or `&&&{name}` for the far address"
-        )),
+        ))
+        .with_note(
+            "Immediate operands (`#expr`) take a compile-time numeric value baked into the instruction byte stream. Vars, functions, and data-block labels resolve to addresses, not values — load their address with `&&NAME`, or read the byte at that address by dropping the `#`.",
+        ),
     )
 }
 
@@ -5073,7 +5079,10 @@ fn address_taking_ident_in_immediate<'a>(expr: &'a Expr, sema: &SemanticModel) -
     if sema.consts.contains_key(name) {
         return None;
     }
-    if sema.vars.contains_key(name) || sema.functions.contains_key(name) {
+    if sema.vars.contains_key(name)
+        || sema.functions.contains_key(name)
+        || sema.labels.contains_key(name)
+    {
         return Some(name);
     }
     if matches!(
@@ -5114,6 +5123,7 @@ fn resolve_symbolic_address_immediate(
     }
     let known_addressable = sema.vars.contains_key(name)
         || sema.functions.contains_key(name)
+        || sema.labels.contains_key(name)
         || resolve_symbolic_subscript_name(name, sema, span, &mut Vec::new())
             .ok()
             .flatten()
@@ -5964,6 +5974,11 @@ fn address_of_help_for_name(name: &str, sema: &SemanticModel, span: Span) -> Opt
             "'{name}' is a var — use `&&{name}` to load its 16-bit address"
         ));
     }
+    if sema.labels.contains_key(name) {
+        return Some(format!(
+            "'{name}' is a data-block label — use `&&{name}` to load its 16-bit address (or `&&&{name}` for a far address)"
+        ));
+    }
     if let Ok(Some(_)) = resolve_symbolic_subscript_name(name, sema, span, &mut Vec::new()) {
         return Some(format!(
             "'{name}' is a symbolic subscript field — use `&&{name}` to load its 16-bit address"
@@ -6409,8 +6424,8 @@ mod tests {
 
     #[test]
     fn rejects_hash_immediate_of_var_with_helpful_diagnostic() {
-        // `lda #VAR` is ambiguous-looking (vs `lda VAR`); the user must
-        // explicitly write `lda &&VAR` to take the address.
+        // `lda #VAR` is a type mismatch (var is an address, not a numeric
+        // value); the user must explicitly write `lda &&VAR` to take the address.
         let source = "var TASKS = $4000\nfunc main @a16 {\n  lda #TASKS\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
@@ -6419,8 +6434,12 @@ mod tests {
 
         let diag = errors
             .iter()
-            .find(|e| e.message.contains("ambiguous immediate") && e.message.contains("'TASKS'"))
-            .expect("expected ambiguous-immediate diagnostic");
+            .find(|e| {
+                e.message.contains("cannot use var")
+                    && e.message.contains("'TASKS'")
+                    && e.message.contains("immediate value")
+            })
+            .expect("expected immediate-value-rejection diagnostic");
         // The help line should suggest `&&TASKS`.
         assert!(
             diag.supplements.iter().any(|s| matches!(
@@ -6441,12 +6460,12 @@ mod tests {
         let errors = lower(&file, &sema, &fs, None).expect_err("must fail");
 
         assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("ambiguous immediate")
+            errors.iter().any(|e| {
+                e.message.contains("cannot use function")
                     && e.message.contains("'dbg_task'")
-                    && e.message.contains("function")),
-            "expected ambiguous-immediate diagnostic mentioning 'function', got {errors:?}"
+                    && e.message.contains("immediate value")
+            }),
+            "expected immediate-value-rejection diagnostic mentioning 'function', got {errors:?}"
         );
     }
 

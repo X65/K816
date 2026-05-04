@@ -1,0 +1,9 @@
+var foo = 0x80
+
+data foo {
+    1 2 3
+}
+
+func main {
+    nop
+}

@@ -1,9 +1,11 @@
-Error: ambiguous immediate `#TASKS`: 'TASKS' is a var, not a numeric value
+Error: cannot use var 'TASKS' as an immediate value
    ╭─[ tests/golden/fixtures/syntax-err-hash-immediate-of-var/input.k65:4:10 ]
    │
- 4 │     lda #TASKS          // ERR: ambiguous, use && instead
+ 4 │     lda #TASKS          // ERR: var is not a numeric value, use &&TASKS instead
    │          ──┬──  
-   │            ╰──── here
+   │            ╰──── var reference
    │ 
    │ Help: use `&&TASKS` to load its 16-bit address, or `&&&TASKS` for the far address
+   │ 
+   │ Note: Immediate operands (`#expr`) take a compile-time numeric value baked into the instruction byte stream. Vars, functions, and data-block labels resolve to addresses, not values — load their address with `&&NAME`, or read the byte at that address by dropping the `#`.
 ───╯

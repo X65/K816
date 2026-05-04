@@ -1,0 +1,11 @@
+Error: cannot use label 'print_str_buf' as an immediate value
+   ╭─[ tests/golden/fixtures/syntax-data-label/input.k65:6:10 ]
+   │
+ 6 │     lda #print_str_buf
+   │          ──────┬──────  
+   │                ╰──────── label reference
+   │ 
+   │ Help: use `&&print_str_buf` to load its 16-bit address, or `&&&print_str_buf` for the far address
+   │ 
+   │ Note: Immediate operands (`#expr`) take a compile-time numeric value baked into the instruction byte stream. Vars, functions, and data-block labels resolve to addresses, not values — load their address with `&&NAME`, or read the byte at that address by dropping the `#`.
+───╯

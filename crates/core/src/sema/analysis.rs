@@ -102,6 +102,13 @@ pub fn analyze_partial(
                 }
             }
             Item::DataBlock(block) => {
+                collect_data_block_labels(
+                    block,
+                    item.span,
+                    &mut model,
+                    &external_names,
+                    &mut diagnostics,
+                );
                 for entry in &block.entries {
                     if let DataEntry::Evaluator(text) = &entry.node {
                         let eval_block = EvaluatorBlock { text: text.clone() };

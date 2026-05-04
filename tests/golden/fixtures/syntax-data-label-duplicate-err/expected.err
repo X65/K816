@@ -1,0 +1,9 @@
+Error: duplicate label 'foo'
+   ╭─[ tests/golden/fixtures/syntax-data-label-duplicate-err/input.k65:3:6 ]
+   │
+ 3 │ data foo {
+   │      ─┬─  
+   │       ╰─── here
+   │ 
+   │ Help: rename one of the labels
+───╯

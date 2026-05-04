@@ -1,0 +1,11 @@
+[default]
+000000: 00 00 00 00 C2 20 A9 00 00 60
+
+
+[data obj#0 default::print_str_buf]
+000000: <4 bytes of data>
+
+[disasm obj#0 default::main]
+000004: C2 20       rep #$20
+000006: A9 00 00    lda #$0000
+000009: 60          rts

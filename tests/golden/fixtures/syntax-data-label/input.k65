@@ -1,0 +1,7 @@
+data print_str_buf {
+    repeat 4 {0}
+}
+
+func main @a16 {
+    lda #print_str_buf
+}

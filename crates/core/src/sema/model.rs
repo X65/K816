@@ -107,11 +107,17 @@ pub struct ConstMeta {
     pub value: Number,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LabelMeta {
+    pub defined_at: Span,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SemanticModel {
     pub functions: IndexMap<String, FunctionMeta>,
     pub vars: IndexMap<String, VarMeta>,
     pub consts: IndexMap<String, ConstMeta>,
+    pub labels: IndexMap<String, LabelMeta>,
 }
 
 /// Cross-unit symbols seeded into a per-file `analyze_partial` so that the

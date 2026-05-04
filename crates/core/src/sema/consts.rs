@@ -116,6 +116,46 @@ pub(super) fn collect_data_block_array(
     evaluator_context.set_array(name, values);
 }
 
+pub(super) fn collect_data_block_labels(
+    block: &DataBlock,
+    block_span: Span,
+    model: &mut SemanticModel,
+    external_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let Some(name) = &block.name {
+        let name_span = block.name_span.unwrap_or(block_span);
+        register_label(name, name_span, model, external_names, diagnostics);
+    }
+    for entry in &block.entries {
+        if let DataEntry::Label(name) = &entry.node {
+            register_label(name, entry.span, model, external_names, diagnostics);
+        }
+    }
+}
+
+fn register_label(
+    name: &str,
+    span: Span,
+    model: &mut SemanticModel,
+    external_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if model.labels.contains_key(name) {
+        return;
+    }
+    if !is_symbol_available(name, model) && !external_names.contains(name) {
+        diagnostics.push(
+            Diagnostic::error(span, format!("duplicate symbol '{}'", name))
+                .with_help("rename one of the consts/vars/functions to keep symbols unique"),
+        );
+        return;
+    }
+    model
+        .labels
+        .insert(name.to_string(), LabelMeta { defined_at: span });
+}
+
 fn try_collect_data_block_values(
     block: &DataBlock,
     consts: &IndexMap<String, ConstMeta>,
@@ -373,4 +413,5 @@ pub(super) fn is_symbol_available(symbol: &str, model: &SemanticModel) -> bool {
     !model.functions.contains_key(symbol)
         && !model.vars.contains_key(symbol)
         && !model.consts.contains_key(symbol)
+        && !model.labels.contains_key(symbol)
 }

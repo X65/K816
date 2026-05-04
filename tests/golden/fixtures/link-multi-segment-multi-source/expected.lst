@@ -1,0 +1,47 @@
+[obj#0 default]
+000200: 78 18 FB E2 10 A2 FF 9A 20 0B 02
+
+
+[obj#1 default]
+00020B: EA 4C 0F 02 EA EA 60
+
+
+[obj#2 RODATA]
+001000: 00 11 22 33 44 55 66 77
+
+
+[obj#2 BSS_LIKE]
+001008: A0 A1 A2 A3 A4 A5 A6 A7
+
+
+[obj#2 VECTORS]
+00FFE0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00FFF0: 00 00 00 00 00 00 00 00 00 00 00 00 00 02 00 00
+
+
+[data obj#2 RODATA::palette]
+001000: <8 bytes of data>
+
+[data obj#2 BSS_LIKE::screen]
+001008: <8 bytes of data>
+
+[data obj#2 VECTORS::VECTORS]
+00FFE0: <32 bytes of data>
+
+[disasm obj#0 default::boot]
+000200: 78          sei
+000201: 18          clc
+000202: FB          xce
+000203: E2 10       sep #$10
+000205: A2 FF       ldx #$FF
+000207: 9A          txs
+000208: 20 0B 02    jsr $020B
+
+[disasm obj#1 default::main]
+00020B: EA          nop
+00020C: 4C 0F 02    jmp $020F
+
+[disasm obj#1 default::helper]
+00020F: EA          nop
+000210: EA          nop
+000211: 60          rts

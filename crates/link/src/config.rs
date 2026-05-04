@@ -134,24 +134,26 @@ pub fn default_stub_config() -> LinkerConfig {
     }
 }
 
-pub(super) fn select_segment_rule<'a>(
+pub(super) fn select_segment_rule_indexed<'a>(
     config: &'a LinkerConfig,
     segment: &str,
-) -> Result<&'a SegmentRule> {
-    if let Some(rule) = config
+) -> Result<(usize, &'a SegmentRule)> {
+    if let Some(found) = config
         .segments
         .iter()
-        .find(|rule| rule.matches_named_segment(segment))
+        .enumerate()
+        .find(|(_, rule)| rule.matches_named_segment(segment))
     {
-        return Ok(rule);
+        return Ok(found);
     }
 
-    if let Some(rule) = config
+    if let Some(found) = config
         .segments
         .iter()
-        .find(|rule| rule.segment_name().is_none())
+        .enumerate()
+        .find(|(_, rule)| rule.segment_name().is_none())
     {
-        return Ok(rule);
+        return Ok(found);
     }
 
     bail!("no segment rule found for segment '{segment}'");
@@ -169,6 +171,12 @@ impl SegmentRule {
 }
 
 pub(super) fn validate_segment_rules(config: &LinkerConfig) -> Result<()> {
+    let memory_by_name: HashMap<&str, &MemoryArea> = config
+        .memory
+        .iter()
+        .map(|mem| (mem.name.as_str(), mem))
+        .collect();
+
     let mut seen_ids: HashMap<&str, usize> = HashMap::new();
     for (index, rule) in config.segments.iter().enumerate() {
         if rule.id.trim().is_empty() {
@@ -180,6 +188,60 @@ pub(super) fn validate_segment_rules(config: &LinkerConfig) -> Result<()> {
                 rule.id,
                 previous,
                 index
+            );
+        }
+
+        if let Some(align) = rule.align
+            && align == 0
+        {
+            bail!("segment rule '{}' has align=0", rule.id);
+        }
+
+        if rule.start.is_some() && rule.offset.is_some() {
+            bail!(
+                "segment rule '{}' has both 'start' and 'offset'; specify only one",
+                rule.id
+            );
+        }
+
+        let mem = memory_by_name.get(rule.load.as_str()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "segment rule '{}' references unknown memory area '{}'",
+                rule.id,
+                rule.load
+            )
+        })?;
+
+        if let Some(start) = rule.start {
+            let mem_end = mem.start.checked_add(mem.size).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "memory area '{}' overflows u32 (start={:#X}, size={:#X})",
+                    mem.name,
+                    mem.start,
+                    mem.size
+                )
+            })?;
+            if start < mem.start || start >= mem_end {
+                bail!(
+                    "segment rule '{}' start={:#X} is outside memory area '{}' [{:#X}..{:#X})",
+                    rule.id,
+                    start,
+                    mem.name,
+                    mem.start,
+                    mem_end
+                );
+            }
+        }
+
+        if let Some(offset) = rule.offset
+            && offset >= mem.size
+        {
+            bail!(
+                "segment rule '{}' offset={:#X} is outside memory area '{}' (size={:#X})",
+                rule.id,
+                offset,
+                mem.name,
+                mem.size
             );
         }
     }

@@ -1,0 +1,34 @@
+// `start: 0x12345` lies outside MAIN's [0x0000..0x10000) range. The
+// linker must reject this at config-load time with a clear diagnostic
+// instead of failing later at placement time.
+(
+  format: "o65-link",
+  target: Some("golden-anchor-out-of-range"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    (
+      id: "DEFAULT",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(0x12345),
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+  symbols: [],
+  output: (
+    kind: RawBinary,
+    file: Some("expected.bin"),
+  ),
+  entry: None,
+)

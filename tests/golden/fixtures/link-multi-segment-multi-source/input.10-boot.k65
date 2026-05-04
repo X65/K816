@@ -1,0 +1,13 @@
+// Boot stub. Lives in the `default` segment together with code from
+// other input files; this fixture verifies that multiple .k65 files
+// can contribute chunks to a pinned segment without colliding at
+// the pin address.
+naked boot {
+    sei
+    clc
+    xce
+    @a8 @i8
+    ldx #$ff
+    txs
+    call main
+}

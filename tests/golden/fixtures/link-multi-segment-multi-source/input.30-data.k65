@@ -1,0 +1,18 @@
+// Data blocks routed into three different segments to exercise all
+// three anchor modes (offset, unanchored "after previous", absolute
+// start) alongside the multi-source pinned default.
+data palette {
+    segment RODATA
+    $00 $11 $22 $33 $44 $55 $66 $77
+}
+
+data screen {
+    segment BSS_LIKE
+    $A0 $A1 $A2 $A3 $A4 $A5 $A6 $A7
+}
+
+data VECTORS {
+    segment VECTORS
+    $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 $00 $00 $00 $00
+    $00 $00 $00 $00 $00 $00 $00 $00  $00 $00 $00 $00 &<boot &>boot $00 $00
+}

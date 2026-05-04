@@ -115,12 +115,26 @@ Notes:
   load: String,            // target memory area name
   run: Option<String>,     // currently parsed but not used
   align: Option<u32>,      // default when omitted: 1
-  start: Option<u32>,      // placement base
-  offset: Option<u32>,     // added after start/cursor and alignment
+  start: Option<u32>,      // segment anchor: absolute address inside `load`
+  offset: Option<u32>,     // segment anchor: bytes from `load.start`
   optional: bool,          // currently parsed but not used
   segment: Option<String>, // segment selector
 )
 ```
+
+A segment rule describes the placement of one logical *segment* — the
+aggregate of all section chunks (potentially from multiple object files)
+that route to this rule. Exactly one of three anchor modes applies:
+
+- `start: Some(X)` — the segment is anchored at the absolute address `X`
+  within `load`.
+- `offset: Some(N)` — the segment is anchored at `load.start + N`.
+- Neither — the segment is anchored immediately after the previous rule's
+  highest placed byte in the same `load` memory, in `segments` declaration
+  order. The first unanchored rule in a memory area starts at `load.start`.
+
+`start` and `offset` are mutually exclusive; specifying both is rejected at
+config load.
 
 Segment-rule selection for an object section named `S`:
 
@@ -128,17 +142,28 @@ Segment-rule selection for an object section named `S`:
 2. Otherwise, first rule with no `segment` set (fallback/default rule).
 3. Otherwise, link fails with `no segment rule found for segment 'S'`.
 
-Validation:
+Validation (rejected at config load with a clear diagnostic):
 
 - `id` must be non-empty.
 - `id` values must be unique across `segments`.
+- `align`, when set, must be non-zero.
+- `load` must reference a defined memory area.
+- A rule must not set both `start` and `offset`.
+- `start`, when set, must lie inside `[load.start, load.start + load.size)`.
+- `offset`, when set, must be less than `load.size`.
 
 Placement behavior:
 
-- `align` of `0` is invalid.
-- Relocatable chunks are first-fit placed in `load` memory.
-- If `start` is set, the linker uses that aligned base directly (plus `offset` if present) instead of searching.
-- Source chunks with explicit fixed addresses are placed before relocatable chunks and must fit/no-overlap.
+- Relocatable chunks belonging to one rule are processed in compile order
+  (`obj_idx`, then in-section order). Each chunk is independently
+  first-fit-placed at or above the segment's anchor — i.e. the search
+  slides past existing fixed-address (`at = ...`) occupants. Smaller
+  later chunks may fall into holes that earlier larger chunks skipped.
+- Rules are processed in `segments` declaration order, so an unanchored
+  rule sees the high-water mark left by previous rules in the same `load`
+  memory.
+- Source chunks with explicit fixed addresses are placed before any
+  relocatable chunks and must fit without overlap.
 
 ### `symbols`
 

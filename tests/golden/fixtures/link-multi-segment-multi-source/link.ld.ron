@@ -1,0 +1,66 @@
+(
+  format: "o65-link",
+  target: Some("golden"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    // 1. DEFAULT pinned at 0x200 — multi-source pinned segment.
+    (
+      id: "DEFAULT",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(0x0200),
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+    // 2. RODATA anchored via `offset` from MAIN's start.
+    (
+      id: "RODATA",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: Some(0x1000),
+      optional: false,
+      segment: Some("RODATA"),
+    ),
+    // 3. BSS_LIKE unanchored — must place immediately after RODATA's
+    //    last byte, exercising "right after previous segment".
+    (
+      id: "BSS_LIKE",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: None,
+      offset: None,
+      optional: false,
+      segment: Some("BSS_LIKE"),
+    ),
+    // 4. VECTORS pinned at the standard 65816 reset vector window.
+    (
+      id: "VECTORS",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(0xFFE0),
+      offset: None,
+      optional: false,
+      segment: Some("VECTORS"),
+    ),
+  ],
+  symbols: [],
+  output: (
+    kind: Xex,
+    file: Some("expected.xex"),
+  ),
+  entry: None,
+)

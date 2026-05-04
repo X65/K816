@@ -11,7 +11,7 @@ use self::anchors::{
     find_section_anchor_context, render_duplicate_symbol_error,
 };
 use super::config::{
-    LinkerConfig, MemoryArea, SymbolValue, select_segment_rule, validate_segment_rules,
+    LinkerConfig, MemoryArea, SymbolValue, select_segment_rule_indexed, validate_segment_rules,
 };
 use super::listing::{
     format_data_symbol_listings, format_empty_listing_block, format_function_disassembly_listings,
@@ -40,8 +40,7 @@ struct PlannedChunk {
     len: u32,
     memory_name: String,
     align: u32,
-    start: Option<u32>,
-    offset: Option<u32>,
+    rule_idx: usize,
     fixed_addr: Option<u32>,
 }
 
@@ -126,33 +125,26 @@ pub fn link_objects_diagnostics(
                 .entry((obj_idx, segment.clone()))
                 .or_default();
 
-            let rule = match select_segment_rule(config, segment) {
-                Ok(rule) => rule,
+            let (rule_idx, rule) = match select_segment_rule_indexed(config, segment) {
+                Ok(found) => found,
                 Err(err) => {
                     return Err(LinkErrors(vec![anchorless_error(err.to_string())]));
                 }
             };
             let align = rule.align.unwrap_or(1);
-            if align == 0 {
-                return Err(LinkErrors(vec![anchorless_error(format!(
-                    "segment rule id '{}' has align=0",
-                    rule.id
-                ))]));
-            }
 
             for (chunk_idx, chunk) in section.chunks.iter().enumerate() {
                 if chunk.bytes.is_empty() {
                     continue;
                 }
 
-                let len = match u32::try_from(chunk.bytes.len())
-                    .context("section chunk is too large")
-                {
-                    Ok(len) => len,
-                    Err(err) => {
-                        return Err(LinkErrors(vec![anchorless_error(err.to_string())]));
-                    }
-                };
+                let len =
+                    match u32::try_from(chunk.bytes.len()).context("section chunk is too large") {
+                        Ok(len) => len,
+                        Err(err) => {
+                            return Err(LinkErrors(vec![anchorless_error(err.to_string())]));
+                        }
+                    };
                 planned.push(PlannedChunk {
                     obj_idx,
                     segment: segment.clone(),
@@ -161,8 +153,7 @@ pub fn link_objects_diagnostics(
                     len,
                     memory_name: rule.load.clone(),
                     align,
-                    start: rule.start,
-                    offset: rule.offset,
+                    rule_idx,
                     fixed_addr: chunk.address,
                 });
             }
@@ -198,26 +189,78 @@ pub fn link_objects_diagnostics(
         }
     }
 
-    // Phase 4: place relocatable chunks. Same accumulating strategy.
-    for chunk in planned.iter().filter(|chunk| chunk.fixed_addr.is_none()) {
-        let base = match choose_reloc_base(chunk, objects, &mut memory_map) {
-            Ok(base) => base,
-            Err(diag) => {
-                errors.push(diag);
-                record_unplaced_chunk(chunk, 0, &mut placed_by_section);
+    // Phase 4: place relocatable chunks. Group chunks by their owning segment
+    // rule and process the rules in `config.segments` declaration order. This
+    // gives each rule a single anchor address (from `start`, `offset`, or the
+    // memory's high-water mark) and lays its contributing chunks out
+    // independently above that anchor via first-fit. Chunks contributed by
+    // multiple object files to one rule no longer all collide at the anchor;
+    // smaller later chunks may fall into holes that earlier larger chunks
+    // skipped past (e.g. around a fixed-address `at = ...` placement).
+    let mut by_rule: Vec<Vec<usize>> = vec![Vec::new(); config.segments.len()];
+    for (idx, chunk) in planned.iter().enumerate() {
+        if chunk.fixed_addr.is_some() {
+            continue;
+        }
+        by_rule[chunk.rule_idx].push(idx);
+    }
+    for bucket in by_rule.iter_mut() {
+        bucket.sort_by_key(|&idx| {
+            let c = &planned[idx];
+            (c.obj_idx, c.section_offset, c.chunk_idx)
+        });
+    }
+
+    for (rule_idx, rule) in config.segments.iter().enumerate() {
+        let bucket = &by_rule[rule_idx];
+        if bucket.is_empty() {
+            continue;
+        }
+
+        let anchor = {
+            let Some(mem) = memory_map.get(&rule.load) else {
+                errors.push(anchorless_error(format!(
+                    "segment rule '{}' references unknown memory area '{}'",
+                    rule.id, rule.load
+                )));
+                for &chunk_idx in bucket {
+                    record_unplaced_chunk(&planned[chunk_idx], 0, &mut placed_by_section);
+                }
                 continue;
+            };
+            if let Some(start) = rule.start {
+                start
+            } else if let Some(offset) = rule.offset {
+                mem.spec.start.saturating_add(offset)
+            } else {
+                mem.cursor.max(mem.spec.start)
             }
         };
-        if let Err(diag) = place_chunk(
-            chunk,
-            base,
-            objects,
-            &mut memory_map,
-            &mut placed_by_section,
-            false,
-        ) {
-            errors.push(diag);
-            record_unplaced_chunk(chunk, base, &mut placed_by_section);
+
+        for &chunk_idx in bucket {
+            let chunk = &planned[chunk_idx];
+            let mem = memory_map
+                .get_mut(&rule.load)
+                .expect("memory presence checked above");
+            let base = match find_first_fit(mem, anchor, chunk.len, chunk.align) {
+                Some(b) => b,
+                None => {
+                    errors.push(no_fit_diagnostic(rule, chunk, anchor, objects, mem));
+                    record_unplaced_chunk(chunk, anchor, &mut placed_by_section);
+                    continue;
+                }
+            };
+            if let Err(diag) = place_chunk(
+                chunk,
+                base,
+                objects,
+                &mut memory_map,
+                &mut placed_by_section,
+                false,
+            ) {
+                errors.push(diag);
+                record_unplaced_chunk(chunk, base, &mut placed_by_section);
+            }
         }
     }
 
@@ -615,9 +658,11 @@ fn resolve_one_relocation(
     let effective_addr = (target.addr as i64 + reloc.addend as i64) as u32;
     match reloc.kind {
         RelocationKind::Absolute => {
-            if let Err(err) =
-                write_value(&mut mem.bytes[rel_idx..end_idx], effective_addr, reloc.width)
-            {
+            if let Err(err) = write_value(
+                &mut mem.bytes[rel_idx..end_idx],
+                effective_addr,
+                reloc.width,
+            ) {
                 return Err(anchored_error(
                     err.to_string(),
                     None,
@@ -813,57 +858,37 @@ fn check_width_mismatch(
     }
 }
 
-fn choose_reloc_base(
+fn no_fit_diagnostic(
+    rule: &super::config::SegmentRule,
     chunk: &PlannedChunk,
+    anchor: u32,
     objects: &[O65Object],
-    memory_map: &mut HashMap<String, MemoryState>,
-) -> std::result::Result<u32, LinkDiagnostic> {
-    let anchor = find_anchor_context(objects, chunk);
-    let mem = memory_map
-        .get_mut(&chunk.memory_name)
-        .ok_or_else(|| anchorless_error(format!("unknown memory area '{}'", chunk.memory_name)))?;
-
-    let mut base = if let Some(start) = chunk.start {
-        start
-    } else {
-        mem.cursor.max(mem.spec.start)
-    };
-
-    base = align_up(base, chunk.align);
-
-    if let Some(offset) = chunk.offset {
-        base = base.checked_add(offset).ok_or_else(|| {
-            anchorless_error(format!(
-                "segment placement overflow in memory '{}'",
-                mem.spec.name
-            ))
-        })?;
-    }
-
-    if chunk.start.is_some() {
-        return Ok(base);
-    }
-
-    find_first_fit(mem, base, chunk.len, chunk.align).ok_or_else(|| {
-        let detail = format!(
-            "no free range found for relocatable chunk in segment '{}' (len={:#X})",
-            chunk.segment, chunk.len
-        );
-        let help = format!(
-            "memory '{}' has no contiguous {:#X}-byte gap above {:#X} that satisfies alignment {:#X}; reduce the segment, raise the size of '{}' in your `.ld.ron`, or move existing fixed (`at = ...`) placements out of the way",
-            mem.spec.name, chunk.len, base, chunk.align.max(1), mem.spec.name
-        );
-        let note = "The linker scans `MEMORY` regions for a free, aligned span large enough to hold the chunk. Fixed placements (`at = ...`) reserve their range up front, so adding or growing them shrinks the relocatable budget for everything else placed in the same memory.".to_string();
-        anchored_error_rich(
-            detail,
-            anchor
-                .as_ref()
-                .map(|a| format!("function '{}' defined here", a.symbol_name)),
-            anchor.and_then(|a| a.source),
-            Some(help),
-            Some(note),
-        )
-    })
+    mem: &MemoryState,
+) -> LinkDiagnostic {
+    let anchor_ctx = find_anchor_context(objects, chunk);
+    let detail = format!(
+        "no free range found for relocatable chunk in segment '{}' (len={:#X})",
+        chunk.segment, chunk.len
+    );
+    let help = format!(
+        "memory '{}' has no contiguous {:#X}-byte gap at or above {:#X} that satisfies alignment {:#X}; reduce the segment '{}', raise the size of '{}' in your `.ld.ron`, or move existing fixed (`at = ...`) placements out of the way",
+        mem.spec.name,
+        chunk.len,
+        anchor,
+        chunk.align.max(1),
+        rule.id,
+        mem.spec.name
+    );
+    let note = "The linker scans each `MEMORY` region for a free, aligned span large enough to hold the chunk, starting at the segment's anchor (`start`, `offset`, or the high-water mark of previous segments). Fixed placements (`at = ...`) reserve their range up front, so adding or growing them shrinks the relocatable budget for everything else placed in the same memory.".to_string();
+    anchored_error_rich(
+        detail,
+        anchor_ctx
+            .as_ref()
+            .map(|a| format!("function '{}' defined here", a.symbol_name)),
+        anchor_ctx.and_then(|a| a.source),
+        Some(help),
+        Some(note),
+    )
 }
 
 fn find_first_fit(mem: &MemoryState, min_addr: u32, len: u32, align: u32) -> Option<u32> {
@@ -936,14 +961,16 @@ fn place_chunk(
         .get_mut(&chunk.memory_name)
         .ok_or_else(|| anchorless_error(format!("unknown memory area '{}'", chunk.memory_name)))?;
 
-    let mem_end = mem
-        .spec
-        .start
-        .checked_add(mem.spec.size)
-        .ok_or_else(|| anchorless_error(format!("memory '{}' range overflow", mem.spec.name)))?;
+    let mem_end =
+        mem.spec.start.checked_add(mem.spec.size).ok_or_else(|| {
+            anchorless_error(format!("memory '{}' range overflow", mem.spec.name))
+        })?;
 
     let end = base.checked_add(chunk.len).ok_or_else(|| {
-        anchorless_error(format!("placement overflow for segment '{}'", chunk.segment))
+        anchorless_error(format!(
+            "placement overflow for segment '{}'",
+            chunk.segment
+        ))
     })?;
 
     if base < mem.spec.start || end > mem_end {

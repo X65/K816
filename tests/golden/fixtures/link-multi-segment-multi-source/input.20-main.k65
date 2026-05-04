@@ -1,0 +1,11 @@
+// Main routine and a helper. Both also live in the default segment,
+// so they share the DEFAULT pinned rule with `boot` from input.10.
+func main {
+    nop
+    call helper
+}
+
+func helper {
+    nop
+    nop
+}

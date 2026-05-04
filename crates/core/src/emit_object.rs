@@ -250,6 +250,28 @@ fn build_encode_diagnostic(
                 "drop the `dp` prefix; `{instruction_mnemonic}` only accepts absolute or long addressing here"
             ));
         }
+        EncodeError::InvalidImmediateOperand { mnemonic } => {
+            let mnemonic_lower = mnemonic.to_ascii_lowercase();
+            let stores = matches!(mnemonic_lower.as_str(), "sta" | "stx" | "sty" | "stz");
+            let help = if stores {
+                format!(
+                    "`{mnemonic}` writes a register to memory; drop the `#` and pass an address (`{mnemonic} addr`), or load the value into a register first (`a = #$xx`) and then store it"
+                )
+            } else {
+                format!(
+                    "`{mnemonic}` operates on memory or an address — remove the `#` and pass an address operand instead, or pick a mnemonic that does take an immediate"
+                )
+            };
+            let note = if stores {
+                "Store mnemonics on the W65C816 (`sta`/`stx`/`sty`/`stz`) only address memory; immediates have no destination, so the assembler refuses the `#` form."
+            } else {
+                "Only a subset of W65C816 mnemonics accept the `#imm` form (notably `lda`/`ldx`/`ldy`/`cmp`/`cpx`/`cpy`/`adc`/`sbc`/`and`/`ora`/`eor`/`bit`); everything else expects an address operand."
+            };
+            diag = Diagnostic::error(span, err.to_string())
+                .with_primary_label("immediate operand")
+                .with_help(help)
+                .with_note(note);
+        }
         EncodeError::DirectPageOutOfRange => {
             let value_phrase = match operand {
                 Some(OperandOp::Address {

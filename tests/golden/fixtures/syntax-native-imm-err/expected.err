@@ -3,5 +3,9 @@ Error: mnemonic 'sta' does not accept #immediate operand
    │
  7 │         sta #$82
    │         ────┬───  
-   │             ╰───── here
+   │             ╰───── immediate operand
+   │ 
+   │ Help: `sta` writes a register to memory; drop the `#` and pass an address (`sta addr`), or load the value into a register first (`a = #$xx`) and then store it
+   │ 
+   │ Note: Store mnemonics on the W65C816 (`sta`/`stx`/`sty`/`stz`) only address memory; immediates have no destination, so the assembler refuses the `#` form.
 ───╯

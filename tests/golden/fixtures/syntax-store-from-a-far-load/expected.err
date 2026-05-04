@@ -13,5 +13,9 @@ Error: Store to var dst:byte requires @a8.
    │
  5 │     dst = a = ptr
    │     ───┬───  
-   │        ╰───── here
+   │        ╰───── store under @a16
+   │ 
+   │ Help: switch the accumulator to 8-bit with `@a8` before this store, or write a 16-bit view (e.g. declare `dst:word`) so the active `@a16` mode is allowed
+   │ 
+   │ Note: K816 enforces operand-width matching at lowering time: typed loads/stores must run under a register-width mode (`@a8`/`@a16` or `@i8`/`@i16`) that produces opcodes of the correct width. The 65816 has no "narrowing" load that drops half a 16-bit value into an 8-bit register — the encoding itself differs.
 ───╯

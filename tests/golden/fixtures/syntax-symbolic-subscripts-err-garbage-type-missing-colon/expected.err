@@ -3,5 +3,9 @@ Error: invalid syntax: expected ':', ',', newline, something else, or ']', found
    │
  2 │     .a[2]word
    │          ──┬─  
-   │            ╰─── here
+   │            ╰─── inside symbolic-subscript field list
+   │ 
+   │ Help: each entry inside `var NAME [ ... ]` is `.field` (optional `[count]`) (optional `:byte`/`:word`/`:far`); separate entries with `,` or a newline; field-list entries must lead with a dot
+   │ 
+   │ Note: Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0[count0]:type0, .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag.
 ───╯

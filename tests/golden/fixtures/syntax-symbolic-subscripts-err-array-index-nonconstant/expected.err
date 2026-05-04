@@ -3,5 +3,9 @@ Error: symbolic subscript array index must be a constant numeric expression
    │
  6 │     lda foo.string[idx]
    │     ─────────┬─────────  
-   │              ╰─────────── here
+   │              ╰─────────── non-constant index
+   │ 
+   │ Help: use a literal or `const`-rooted expression inside `foo.string[...]`; runtime indices into symbolic-subscript arrays must go through a `var` or pointer arithmetic, not the bracket form
+   │ 
+   │ Note: The bracket form on a symbolic subscript field is folded into a fixed address at compile time; that requires the index to be known before code is generated.
 ───╯

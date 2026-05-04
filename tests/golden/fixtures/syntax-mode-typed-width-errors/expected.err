@@ -3,7 +3,9 @@ Error: Store to var w:word requires @a16.
    │
  5 │     w = a
    │     ──┬──  
-   │       ╰──── here
+   │       ╰──── store under @a8
    │ 
-   │ Help: for byte stores, use explicit view (w:byte / (w+1):byte)
+   │ Help: switch the accumulator to 16-bit with `@a16` before this store, or use the explicit byte view (`w:byte` / `(w+1):byte`) so the active `@a8` mode is allowed
+   │ 
+   │ Note: K816 enforces operand-width matching at lowering time: typed loads/stores must run under a register-width mode (`@a8`/`@a16` or `@i8`/`@i16`) that produces opcodes of the correct width. The 65816 has no "narrowing" load that drops half a 16-bit value into an 8-bit register — the encoding itself differs.
 ───╯

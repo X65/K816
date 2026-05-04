@@ -3,5 +3,9 @@ Error: unknown identifier 'MISSING'
    │
  2 │     lda #MISSING
    │          ───┬───  
-   │             ╰───── here
+   │             ╰───── unresolved identifier
+   │ 
+   │ Help: no `const`, `var`, function, or label named `MISSING` is in scope; check spelling, declare it with `const MISSING = <expr>`, or import it from another file by ensuring that file is in the same compile group
+   │ 
+   │ Note: Identifiers in expressions resolve through `const`s (compile-time values), `var`s (memory addresses), functions/labels (also addresses), and symbolic-subscript fields. The lowering pass walks all of these in scope; if none match, the identifier has no source.
 ───╯

@@ -87,10 +87,19 @@ fn eval_var_address(
             }
         },
         Err(ConstExprError::Ident(name)) => {
-            diagnostics.push(Diagnostic::error(
-                initializer_span,
-                format!("var initializer '{name}' must be a constant numeric expression"),
-            ));
+            diagnostics.push(
+                Diagnostic::error(
+                    initializer_span,
+                    format!("var initializer '{name}' must be a constant numeric expression"),
+                )
+                .with_primary_label(format!("non-constant identifier `{name}`"))
+                .with_help(format!(
+                    "`var` initializers fix the variable's address at compile time, so the right-hand side must reduce to a number; replace `{name}` with a literal address, an arithmetic expression over literals, or a `const` that resolves to a number"
+                ))
+                .with_note(
+                    "K816 `var = expr` declares a memory-located variable at the address `expr` evaluates to. That address is baked into every reference at compile time — there is no runtime computation to fall back on, so identifiers without a compile-time value cannot appear here.",
+                ),
+            );
             None
         }
         Err(ConstExprError::EvalText) => {
@@ -356,10 +365,19 @@ fn eval_symbolic_subscript_fields(
         };
 
         if resolved_fields.contains_key(&qualified_name) {
-            diagnostics.push(Diagnostic::error(
-                field.span,
-                format!("duplicate symbolic subscript field '.{qualified_name}' in '{var_name}'",),
-            ));
+            diagnostics.push(
+                Diagnostic::error(
+                    field.span,
+                    format!("duplicate symbolic subscript field '.{qualified_name}' in '{var_name}'"),
+                )
+                .with_primary_label("duplicate field")
+                .with_help(format!(
+                    "rename one of the `.{qualified_name}` entries; each field name in '{var_name}' must be unique within its enclosing struct"
+                ))
+                .with_note(
+                    "Symbolic subscripts compile to a fixed offset from the var's base address; two fields with the same name would resolve to the same offset, so the parser refuses to choose between them.",
+                ),
+            );
             return None;
         }
 
@@ -426,39 +444,65 @@ fn eval_symbolic_subscript_fields(
                 Ok(value) => {
                     if value <= 0 {
                         let count_span = field.count_span.unwrap_or(field.span);
-                        diagnostics.push(Diagnostic::error(
-                            count_span,
-                            format!(
-                                "symbolic subscript field '.{}' count must be >= 1, found {value}",
+                        diagnostics.push(
+                            Diagnostic::error(
+                                count_span,
+                                format!(
+                                    "symbolic subscript field '.{}' count must be >= 1, found {value}",
+                                    field.name
+                                ),
+                            )
+                            .with_primary_label("non-positive count")
+                            .with_help(format!(
+                                "give `.{}` a count of 1 or more, or drop the `[...]` if it is a single value rather than an array",
                                 field.name
+                            ))
+                            .with_note(
+                                "A symbolic subscript field's count is the number of array elements reserved at that offset; values of 0 or below would mean no slot, which is what omitting the field already expresses.",
                             ),
-                        ));
+                        );
                         return None;
                     }
                     match u32::try_from(value) {
                         Ok(count) => count,
                         Err(_) => {
                             let count_span = field.count_span.unwrap_or(field.span);
-                            diagnostics.push(Diagnostic::error(
-                                count_span,
-                                format!(
-                                    "symbolic subscript field '.{}' count is out of range: {value}",
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    count_span,
+                                    format!(
+                                        "symbolic subscript field '.{}' count is out of range: {value}",
+                                        field.name
+                                    ),
+                                )
+                                .with_primary_label("count out of range")
+                                .with_help(format!(
+                                    "`.{}` count must fit in a 32-bit unsigned value (0..=0xFFFFFFFF); reduce the literal or split the field into smaller groups",
                                     field.name
-                                ),
-                            ));
+                                )),
+                        );
                             return None;
                         }
                     }
                 }
                 Err(ConstExprError::Ident(name)) => {
                     let count_span = field.count_span.unwrap_or(field.span);
-                    diagnostics.push(Diagnostic::error(
-                        count_span,
-                        format!(
-                            "symbolic subscript field '.{}' count expression '{name}' must be a constant numeric expression",
-                            field.name
+                    diagnostics.push(
+                        Diagnostic::error(
+                            count_span,
+                            format!(
+                                "symbolic subscript field '.{}' count expression '{name}' must be a constant numeric expression",
+                                field.name
+                            ),
+                        )
+                        .with_primary_label(format!("non-constant identifier `{name}`"))
+                        .with_help(format!(
+                            "replace `{name}` with a literal, an arithmetic expression over literals, or a `const` declaration that resolves to a number at compile time"
+                        ))
+                        .with_note(
+                            "Field counts and offsets are baked into the encoded layout; everything inside `[...]` must reduce to a number during semantic analysis, before any code runs.",
                         ),
-                    ));
+                    );
                     return None;
                 }
                 Err(ConstExprError::EvalText) => {
@@ -486,13 +530,20 @@ fn eval_symbolic_subscript_fields(
                 }
                 Err(ConstExprError::Overflow) => {
                     let count_span = field.count_span.unwrap_or(field.span);
-                    diagnostics.push(Diagnostic::error(
-                        count_span,
-                        format!(
-                            "symbolic subscript field '.{}' count expression overflows numeric literal range",
+                    diagnostics.push(
+                        Diagnostic::error(
+                            count_span,
+                            format!(
+                                "symbolic subscript field '.{}' count expression overflows numeric literal range",
+                                field.name
+                            ),
+                        )
+                        .with_primary_label("count expression overflows")
+                        .with_help(format!(
+                            "shrink the count for `.{}` to a value the evaluator can hold; the compile-time integer evaluator uses i64-range arithmetic",
                             field.name
-                        ),
-                    ));
+                        )),
+                    );
                     return None;
                 }
             },

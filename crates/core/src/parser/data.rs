@@ -24,6 +24,28 @@ mod vars;
 pub(super) use self::consts::const_decl_item_parser;
 pub(super) use self::vars::{CommaTrailer, prefix_condition_parser, var_decl_parser};
 
+/// Build the rich-channel message for an unexpected identifier inside a `data
+/// {...}` block. When the identifier is an asset-block keyword (`image`,
+/// `binary`, `tiles`, `colormode`, `imgwave`, `inv`, `charset`) the user
+/// almost certainly tried to use it as a bare directive instead of opening
+/// the dedicated asset block (`data tiles NAME "file.png" { ... }`); when it
+/// is something else, the user probably forgot a `:` to make it a label.
+fn data_block_unexpected_message(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "image" | "binary" | "tiles" | "colormode" | "imgwave" | "inv" | "charset"
+    ) {
+        format!(
+            "unexpected '{name}'; label: asset-block keyword inside `data {{...}}`; hint: `{name}` opens a dedicated asset block — write it at top level as `data {name} NAME \"file\" {{ ... }}` (or `data tiles NAME \"file\" {{ tiles ... }}` for the tile shape); inside a generic `data NAME {{...}}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted; note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block."
+        )
+    } else {
+        format!(
+            "unexpected '{name}'; label: bare identifier inside `data {{...}}`; hint: did you mean `{name}:` to declare a label, or move this line outside the `data` block? Bare identifiers are not data entries; note: A `data` block accepts entries of the form `byte ...`, `word ...`, `far ...`, `address EXPR`, `align EXPR`, `nocross [EXPR]`, `segment NAME`, or `label_name:` for an in-block label."
+        )
+    }
+}
+
 fn make_values(width: DataWidth, values: Vec<Expr>) -> DataEntry {
     DataEntry::Values { width, values }
 }
@@ -121,7 +143,10 @@ where
             if is_label {
                 DataEntry::Label(name)
             } else {
-                emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    data_block_unexpected_message(&name),
+                ));
                 make_values(DataWidth::Byte, vec![])
             }
         })
@@ -404,7 +429,10 @@ where
             if is_label {
                 DataEntry::Label(name)
             } else {
-                emitter.emit(Rich::custom(extra.span(), format!("unexpected '{name}'")));
+                emitter.emit(Rich::custom(
+                    extra.span(),
+                    data_block_unexpected_message(&name),
+                ));
                 make_values(DataWidth::Byte, vec![])
             }
         })

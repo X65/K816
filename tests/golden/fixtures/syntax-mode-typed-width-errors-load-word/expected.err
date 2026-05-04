@@ -3,5 +3,9 @@ Error: Load from word-typed value requires @a16.
    │
  7 │     lda regs.ctrl
    │     ──────┬──────  
-   │           ╰──────── here
+   │           ╰──────── load under @a8
+   │ 
+   │ Help: the load target is var `regs.ctrl`; switch the a register to @a16 before the load (active mode is @a8), or change the source's declared width if it actually holds a @a8 value
+   │ 
+   │ Note: K816 enforces operand-width matching at lowering time: typed loads/stores must run under a register-width mode (`@a8`/`@a16` or `@i8`/`@i16`) that produces opcodes of the correct width. The 65816 has no "narrowing" load that drops half a 16-bit value into an 8-bit register — the encoding itself differs.
 ───╯

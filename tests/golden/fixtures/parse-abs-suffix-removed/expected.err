@@ -3,5 +3,9 @@ Error: invalid syntax: expected something else, found identifier 'abs'
    │
  5 │     lda x:abs
    │           ─┬─  
-   │            ╰─── here
+   │            ╰─── `:abs` use-site suffix
+   │ 
+   │ Help: the use-site `:abs` suffix on plain expressions was removed; declare the var with `var name:abs = ...` to set a default, or write the prefix in operand position (`abs name`) to override per call site
+   │ 
+   │ Note: K816 separates *declaration-time* width / addressing prefixes (`var name:abs = ...`) from *use-site* prefixes (`lda abs name`, `lda far name`); the old `:abs`/`:dp`/`:far` suffix on plain identifiers was removed because it conflated the two.
 ───╯

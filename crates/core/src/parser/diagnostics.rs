@@ -104,13 +104,29 @@ pub(super) fn rich_error_to_diagnostic(
         }
         _ => None,
     };
-    let (label, help, note) = match token_enrichment {
-        Some(enriched) => (
+    let context_enrichment = detect_double_colon_typo(source_text, range.start)
+        .or_else(|| detect_abs_suffix_typo(source_text, range.start))
+        .or_else(|| detect_symbolic_subscript_context(source_text, range.start));
+    let (label, help, note) = match (token_enrichment, context_enrichment) {
+        (Some(token), Some(ctx)) => (
+            token.label.or(ctx.label).unwrap_or(primary_label),
+            help.or_else(|| token.help.map(str::to_string))
+                .or(Some(ctx.help)),
+            explicit_note
+                .or_else(|| token.note.map(str::to_string))
+                .or(Some(ctx.note)),
+        ),
+        (Some(enriched), None) => (
             enriched.label.unwrap_or(primary_label),
             help.or_else(|| enriched.help.map(str::to_string)),
             explicit_note.or_else(|| enriched.note.map(str::to_string)),
         ),
-        None => (primary_label, help, explicit_note),
+        (None, Some(ctx)) => (
+            ctx.label.unwrap_or(primary_label),
+            help.or(Some(ctx.help)),
+            explicit_note.or(Some(ctx.note)),
+        ),
+        (None, None) => (primary_label, help, explicit_note),
     };
     let make_diagnostic = if is_warning {
         Diagnostic::warning
@@ -173,6 +189,185 @@ fn unexpected_token_enrichment(token: &TokenKind) -> Option<TokenEnrichment> {
         }),
         _ => None,
     }
+}
+
+struct ContextEnrichment {
+    label: Option<String>,
+    help: String,
+    note: String,
+}
+
+/// Recognise common syntax-error situations inside a symbolic-subscript field
+/// list (the `[ .name[count]:type, ... ]` payload of `var IDENT [ ... ] = base`).
+/// All six `syntax-symbolic-subscripts-err-garbage-*` and the
+/// `unsupported-field-type` fixtures hit chumsky's generic `expected ..., found
+/// X` machinery — bare on its own, that message rarely tells the user *which*
+/// shape the field-list grammar expects. When we can recognise the situation
+/// from the source line, attach a tailored label + uniform help/note that
+/// re-states the field-entry grammar.
+fn detect_symbolic_subscript_context(
+    source_text: &str,
+    error_offset: usize,
+) -> Option<ContextEnrichment> {
+    if !cursor_inside_var_brackets(source_text, error_offset)
+        && !near_var_bracket_opening(source_text, error_offset)
+    {
+        return None;
+    }
+    Some(ContextEnrichment {
+        label: Some("inside symbolic-subscript field list".to_string()),
+        help: "each entry inside `var NAME [ ... ]` is `.field` (optional `[count]`) (optional `:byte`/`:word`/`:far`); separate entries with `,` or a newline; field-list entries must lead with a dot".to_string(),
+        note: "Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0[count0]:type0, .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag.".to_string(),
+    })
+}
+
+/// Even when a stray `]` has prematurely closed the bracket pair, the user is
+/// almost certainly trying to write a symbolic-subscript field list. Look at
+/// the previous handful of lines for a `var IDENT[` (or `var IDENT [`) opener
+/// followed by entries that begin with `.`. If we see that pattern, the
+/// diagnostic almost certainly belongs to the same broken construct.
+fn near_var_bracket_opening(source_text: &str, error_offset: usize) -> bool {
+    let cursor = error_offset.min(source_text.len());
+    let prefix = &source_text[..cursor];
+    let mut last_lines = prefix
+        .rsplit('\n')
+        .take(8)
+        .collect::<Vec<_>>();
+    last_lines.reverse();
+    let mut saw_opener = false;
+    for line in last_lines {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("var ") {
+            let mut chars = rest.chars();
+            if chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars
+                    .by_ref()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .count()
+                    > 0
+                && rest.contains('[')
+            {
+                saw_opener = true;
+            }
+        }
+        if saw_opener && (trimmed.starts_with('.') || trimmed.starts_with(']') || trimmed.is_empty())
+        {
+            continue;
+        }
+    }
+    saw_opener
+}
+
+/// Recognise a `name::other` typo (C++/Rust scoping syntax) that the K816
+/// parser rejects. K816 uses `.` for field access on symbolic subscripts and
+/// has no namespace operator; the second `:` is the unexpected token, so we
+/// look one byte back and detect the doubled colon, then point the user at
+/// `.` or the legal alternative.
+fn detect_double_colon_typo(
+    source_text: &str,
+    error_offset: usize,
+) -> Option<ContextEnrichment> {
+    let bytes = source_text.as_bytes();
+    if bytes.get(error_offset).copied()? != b':' {
+        return None;
+    }
+    if error_offset == 0 || bytes[error_offset - 1] != b':' {
+        return None;
+    }
+    Some(ContextEnrichment {
+        label: Some("`::` is not a K816 operator".to_string()),
+        help: "K816 does not have C++/Rust-style `::` scoping; use `.` for symbolic-subscript field access (`base.field`), or rename the symbol to its bare form if you intended a single identifier".to_string(),
+        note: "K816 has a flat global symbol space (`const`, `var`, function, label) plus per-var symbolic-subscript fields accessed with `.`. There is no namespace prefix, so `::` carries no meaning to the parser.".to_string(),
+    })
+}
+
+/// Recognise the removed `name:abs` suffix and steer the user to the new
+/// declaration-time syntax. The legacy `:abs` (and `:dp`/`:far`) on
+/// expressions was replaced by per-declaration prefixes (`var name:abs = ...`)
+/// and per-call-site prefixes (`abs name`/`dp name`/`far name`).
+fn detect_abs_suffix_typo(
+    source_text: &str,
+    error_offset: usize,
+) -> Option<ContextEnrichment> {
+    let cursor = error_offset.min(source_text.len());
+    let after = source_text.get(cursor..)?;
+    let trimmed = after.trim_start();
+    let suffix = trimmed.split(|c: char| !c.is_ascii_alphabetic()).next()?;
+    let suffix_lower = suffix.to_ascii_lowercase();
+    if !matches!(suffix_lower.as_str(), "abs" | "dp" | "far" | "word" | "byte") {
+        return None;
+    }
+    let prefix = &source_text[..cursor];
+    let preceding = prefix.trim_end_matches(|c: char| c.is_ascii_whitespace());
+    if !preceding.ends_with(':') {
+        return None;
+    }
+    let mode = suffix_lower;
+    let label = format!("`:{mode}` use-site suffix");
+    let help = match mode.as_str() {
+        "abs" | "dp" | "far" => format!(
+            "the use-site `:{mode}` suffix on plain expressions was removed; declare the var with `var name:{mode} = ...` to set a default, or write the prefix in operand position (`{mode} name`) to override per call site"
+        ),
+        "word" | "byte" => format!(
+            "the use-site `:{mode}` suffix on plain expressions was removed for address operands; declare width on the var (`var name:{mode}[count] = ...`) or use the explicit view form `(name:{mode})` only on expressions, not on bare identifiers"
+        ),
+        _ => format!("the use-site `:{mode}` suffix is not accepted in this position"),
+    };
+    Some(ContextEnrichment {
+        label: Some(label),
+        help,
+        note: "K816 separates *declaration-time* width / addressing prefixes (`var name:abs = ...`) from *use-site* prefixes (`lda abs name`, `lda far name`); the old `:abs`/`:dp`/`:far` suffix on plain identifiers was removed because it conflated the two.".to_string(),
+    })
+}
+
+/// Cheap heuristic: is the byte offset between an open `[` of a `var IDENT [`
+/// and its matching `]`? Scans back from the cursor, skipping any matched
+/// `[...]` pairs, and stops at the first unmatched `[`. If that `[` is
+/// preceded by an identifier (whitespace permitting), we are inside a var's
+/// bracket payload. Conservative on purpose — a false positive only adds
+/// extra help text to an unrelated diagnostic, but a false negative just
+/// reverts to the un-enriched fallback.
+fn cursor_inside_var_brackets(source_text: &str, cursor: usize) -> bool {
+    let cursor = cursor.min(source_text.len());
+    let prefix = &source_text[..cursor];
+    let bytes = prefix.as_bytes();
+    let mut depth: i32 = 0;
+    let mut idx = bytes.len();
+    while idx > 0 {
+        idx -= 1;
+        match bytes[idx] {
+            b']' => depth += 1,
+            b'[' => {
+                if depth == 0 {
+                    return preceding_token_is_identifier(bytes, idx);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Walk backwards from `bracket_idx` (position of `[`) over whitespace, then
+/// confirm at least one identifier character precedes it. Used by
+/// `cursor_inside_var_brackets` to tell `var FOO [...]` from a bare `[ ... ]`
+/// expression.
+fn preceding_token_is_identifier(bytes: &[u8], bracket_idx: usize) -> bool {
+    let mut i = bracket_idx;
+    while i > 0 {
+        let prev = bytes[i - 1];
+        if prev == b' ' || prev == b'\t' {
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+    if i == 0 {
+        return false;
+    }
+    let prev = bytes[i - 1];
+    prev.is_ascii_alphanumeric() || prev == b'_'
 }
 
 struct RichCustomParts {

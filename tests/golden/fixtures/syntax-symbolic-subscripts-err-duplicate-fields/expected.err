@@ -3,5 +3,9 @@ Error: duplicate symbolic subscript field '.orb' in 'VIA'
    │
  3 │     .orb:word
    │     ──┬─  
-   │       ╰─── here
+   │       ╰─── duplicate field
+   │ 
+   │ Help: rename one of the `.orb` entries; each field name in 'VIA' must be unique within its enclosing struct
+   │ 
+   │ Note: Symbolic subscripts compile to a fixed offset from the var's base address; two fields with the same name would resolve to the same offset, so the parser refuses to choose between them.
 ───╯

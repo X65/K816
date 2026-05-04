@@ -3,5 +3,9 @@ Error: invalid syntax: expected something else, found ':'
    │
  4 │     sta RIA::op         // HALT CPU
    │             ┬  
-   │             ╰── here
+   │             ╰── `::` is not a K816 operator
+   │ 
+   │ Help: K816 does not have C++/Rust-style `::` scoping; use `.` for symbolic-subscript field access (`base.field`), or rename the symbol to its bare form if you intended a single identifier
+   │ 
+   │ Note: K816 has a flat global symbol space (`const`, `var`, function, label) plus per-var symbolic-subscript fields accessed with `.`. There is no namespace prefix, so `::` carries no meaning to the parser.
 ───╯

@@ -3,5 +3,9 @@ Error: symbolic subscript field '.string' count expression 'count' must be a con
    │
  2 │     .string[count]:byte
    │             ──┬──  
-   │               ╰──── here
+   │               ╰──── non-constant identifier `count`
+   │ 
+   │ Help: replace `count` with a literal, an arithmetic expression over literals, or a `const` declaration that resolves to a number at compile time
+   │ 
+   │ Note: Field counts and offsets are baked into the encoded layout; everything inside `[...]` must reduce to a number during semantic analysis, before any code runs.
 ───╯

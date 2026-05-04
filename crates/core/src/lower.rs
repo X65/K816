@@ -3515,46 +3515,74 @@ fn validate_mode_for_typed_access(
         _ => "@?",
     };
 
+    let actual_tag = match (axis, actual) {
+        ("a", RegWidth::W8) => "@a8",
+        ("a", RegWidth::W16) => "@a16",
+        ("i", RegWidth::W8) => "@i8",
+        ("i", RegWidth::W16) => "@i16",
+        _ => "@?",
+    };
+    let width_word = data_width_name(data_width);
+
     let (message, help) = if action == "store" && axis == "a" && data_width == DataWidth::Word {
         if let Some(name) = var_name {
             (
                 format!("Store to var {name}:word requires @a16."),
                 Some(format!(
-                    "for byte stores, use explicit view ({name}:byte / ({name}+1):byte)"
+                    "switch the accumulator to 16-bit with `@a16` before this store, or use the explicit byte view (`{name}:byte` / `({name}+1):byte`) so the active `@a8` mode is allowed"
                 )),
             )
         } else {
             (
                 "Store to word-typed value requires @a16.".to_string(),
-                Some("for byte stores, use an explicit :byte view".to_string()),
+                Some(
+                    "switch the accumulator to 16-bit with `@a16` before this store, or use an explicit `:byte` view so the active `@a8` mode is allowed".to_string(),
+                ),
             )
         }
     } else if action == "store" && axis == "a" && data_width == DataWidth::Byte {
         if let Some(name) = var_name {
-            (format!("Store to var {name}:byte requires @a8."), None)
+            (
+                format!("Store to var {name}:byte requires @a8."),
+                Some(format!(
+                    "switch the accumulator to 8-bit with `@a8` before this store, or write a 16-bit view (e.g. declare `{name}:word`) so the active `@a16` mode is allowed"
+                )),
+            )
         } else {
-            ("Store to byte-typed value requires @a8.".to_string(), None)
+            (
+                "Store to byte-typed value requires @a8.".to_string(),
+                Some("switch the accumulator to 8-bit with `@a8` before this store, or use a wider view to match the active `@a16` mode".to_string()),
+            )
         }
     } else if action == "load" {
+        let target = var_name
+            .map(|n| format!("var `{n}`"))
+            .unwrap_or_else(|| format!("{width_word}-typed value"));
         (
-            format!(
-                "Load from {}-typed value requires {required_tag}.",
-                data_width_name(data_width)
-            ),
-            None,
+            format!("Load from {width_word}-typed value requires {required_tag}."),
+            Some(format!(
+                "the load target is {target}; switch the {axis} register to {required_tag} before the load (active mode is {actual_tag}), or change the source's declared width if it actually holds a {actual_tag} value"
+            )),
         )
     } else {
         (
             format!(
-                "{} to {}-typed value requires {required_tag}.",
+                "{} to {width_word}-typed value requires {required_tag}.",
                 capitalize(action),
-                data_width_name(data_width)
             ),
-            None,
+            Some(format!(
+                "switch the {axis} register to {required_tag} (active mode is {actual_tag}) so the encoded operand width matches the declared data width"
+            )),
         )
     };
 
-    diagnostics.push(Diagnostic::error(span, message).with_optional_help(help));
+    let note = "K816 enforces operand-width matching at lowering time: typed loads/stores must run under a register-width mode (`@a8`/`@a16` or `@i8`/`@i16`) that produces opcodes of the correct width. The 65816 has no \"narrowing\" load that drops half a 16-bit value into an 8-bit register — the encoding itself differs.";
+
+    let diag = Diagnostic::error(span, message)
+        .with_primary_label(format!("{action} under {actual_tag}"))
+        .with_optional_help(help)
+        .with_note(note);
+    diagnostics.push(diag);
 }
 
 fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
@@ -4377,22 +4405,39 @@ fn eval_index_expr_strict(
                 count,
             } => {
                 if count <= 1 {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!(
-                            "symbolic subscript field '{}.{}' is not an array",
-                            base, field
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "symbolic subscript field '{base}.{field}' is not an array"
+                            ),
+                        )
+                        .with_primary_label("indexed access on non-array field")
+                        .with_help(format!(
+                            "drop the `[...]` and write `{base}.{field}` to read the single value, or change the field's declaration to `.{field}[N]:...` if you need an array slot"
+                        ))
+                        .with_note(
+                            "Symbolic subscript fields without a `[count]` declare a single named slot; only fields with `[count >= 2]` produce array semantics that an `[index]` can dereference.",
                         ),
-                    ));
+                    );
                     return None;
                 }
 
                 let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
                 else {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        "symbolic subscript array index must be a constant numeric expression",
-                    ));
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            "symbolic subscript array index must be a constant numeric expression",
+                        )
+                        .with_primary_label("non-constant index")
+                        .with_help(format!(
+                            "use a literal or `const`-rooted expression inside `{base}.{field}[...]`; runtime indices into symbolic-subscript arrays must go through a `var` or pointer arithmetic, not the bracket form"
+                        ))
+                        .with_note(
+                            "The bracket form on a symbolic subscript field is folded into a fixed address at compile time; that requires the index to be known before code is generated.",
+                        ),
+                    );
                     return None;
                 };
                 if index_value < 0 {
@@ -5414,10 +5459,18 @@ fn eval_address_expr(
             }
 
             resolve_symbol(name, scope, ident_span, diagnostics)?;
-            let mut diag = Diagnostic::error(ident_span, format!("unknown identifier '{name}'"));
-            if let Some(help) = address_of_help_for_name(name, sema, ident_span) {
-                diag = diag.with_help(help);
-            }
+            let mut diag = Diagnostic::error(ident_span, format!("unknown identifier '{name}'"))
+                .with_primary_label("unresolved identifier");
+            diag = if let Some(help) = address_of_help_for_name(name, sema, ident_span) {
+                diag.with_help(help)
+            } else {
+                diag.with_help(format!(
+                    "no `const`, `var`, function, or label named `{name}` is in scope; check spelling, declare it with `const {name} = <expr>`, or import it from another file by ensuring that file is in the same compile group"
+                ))
+            };
+            diag = diag.with_note(
+                "Identifiers in expressions resolve through `const`s (compile-time values), `var`s (memory addresses), functions/labels (also addresses), and symbolic-subscript fields. The lowering pass walks all of these in scope; if none match, the identifier has no source.",
+            );
             diagnostics.push(diag);
             None
         }
@@ -5529,10 +5582,18 @@ fn eval_to_number(
             }
 
             resolve_symbol(name, scope, ident_span, diagnostics)?;
-            let mut diag = Diagnostic::error(ident_span, format!("unknown identifier '{name}'"));
-            if let Some(help) = address_of_help_for_name(name, sema, ident_span) {
-                diag = diag.with_help(help);
-            }
+            let mut diag = Diagnostic::error(ident_span, format!("unknown identifier '{name}'"))
+                .with_primary_label("unresolved identifier");
+            diag = if let Some(help) = address_of_help_for_name(name, sema, ident_span) {
+                diag.with_help(help)
+            } else {
+                diag.with_help(format!(
+                    "no `const`, `var`, function, or label named `{name}` is in scope; check spelling, declare it with `const {name} = <expr>`, or import it from another file by ensuring that file is in the same compile group"
+                ))
+            };
+            diag = diag.with_note(
+                "Identifiers in expressions resolve through `const`s (compile-time values), `var`s (memory addresses), functions/labels (also addresses), and symbolic-subscript fields. The lowering pass walks all of these in scope; if none match, the identifier has no source.",
+            );
             diagnostics.push(diag);
             None
         }
@@ -5602,22 +5663,39 @@ fn eval_index_expr(
                 count,
             })) => {
                 if count <= 1 {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        format!(
-                            "symbolic subscript field '{}.{}' is not an array",
-                            base, field
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "symbolic subscript field '{base}.{field}' is not an array"
+                            ),
+                        )
+                        .with_primary_label("indexed access on non-array field")
+                        .with_help(format!(
+                            "drop the `[...]` and write `{base}.{field}` to read the single value, or change the field's declaration to `.{field}[N]:...` if you need an array slot"
+                        ))
+                        .with_note(
+                            "Symbolic subscript fields without a `[count]` declare a single named slot; only fields with `[count >= 2]` produce array semantics that an `[index]` can dereference.",
                         ),
-                    ));
+                    );
                     return None;
                 }
 
                 let Some(index_value) = eval_to_number_strict(index, sema, span, diagnostics)
                 else {
-                    diagnostics.push(Diagnostic::error(
-                        span,
-                        "symbolic subscript array index must be a constant numeric expression",
-                    ));
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            "symbolic subscript array index must be a constant numeric expression",
+                        )
+                        .with_primary_label("non-constant index")
+                        .with_help(format!(
+                            "use a literal or `const`-rooted expression inside `{base}.{field}[...]`; runtime indices into symbolic-subscript arrays must go through a `var` or pointer arithmetic, not the bracket form"
+                        ))
+                        .with_note(
+                            "The bracket form on a symbolic subscript field is folded into a fixed address at compile time; that requires the index to be known before code is generated.",
+                        ),
+                    );
                     return None;
                 };
                 if index_value < 0 {

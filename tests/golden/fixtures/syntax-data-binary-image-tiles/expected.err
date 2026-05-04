@@ -3,7 +3,11 @@ Error: invalid syntax: unexpected 'image'
    │
  2 │     image sprites 0 0 8> 16v
    │     ────────────┬───────────  
-   │                 ╰───────────── here
+   │                 ╰───────────── asset-block keyword inside `data {...}`
+   │ 
+   │ Help: `image` opens a dedicated asset block — write it at top level as `data image NAME "file" { ... }` (or `data tiles NAME "file" { tiles ... }` for the tile shape); inside a generic `data NAME {...}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted
+   │ 
+   │ Note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block.
 ───╯
 
 Error: invalid syntax: unexpected 'image'
@@ -11,7 +15,11 @@ Error: invalid syntax: unexpected 'image'
    │
  3 │     image "sprites_alt" 8 0 8> 8v inv
    │     ────────────────┬────────────────  
-   │                     ╰────────────────── here
+   │                     ╰────────────────── asset-block keyword inside `data {...}`
+   │ 
+   │ Help: `image` opens a dedicated asset block — write it at top level as `data image NAME "file" { ... }` (or `data tiles NAME "file" { tiles ... }` for the tile shape); inside a generic `data NAME {...}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted
+   │ 
+   │ Note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block.
 ───╯
 
 Error: invalid syntax: unexpected 'tiles'
@@ -19,7 +27,11 @@ Error: invalid syntax: unexpected 'tiles'
    │
  4 │     tiles 8 0 4
    │     ─────┬─────  
-   │          ╰─────── here
+   │          ╰─────── asset-block keyword inside `data {...}`
+   │ 
+   │ Help: `tiles` opens a dedicated asset block — write it at top level as `data tiles NAME "file" { ... }` (or `data tiles NAME "file" { tiles ... }` for the tile shape); inside a generic `data NAME {...}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted
+   │ 
+   │ Note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block.
 ───╯
 
 Error: invalid syntax: unexpected 'colormode'
@@ -27,7 +39,11 @@ Error: invalid syntax: unexpected 'colormode'
    │
  5 │     colormode 1
    │     ─────┬─────  
-   │          ╰─────── here
+   │          ╰─────── asset-block keyword inside `data {...}`
+   │ 
+   │ Help: `colormode` opens a dedicated asset block — write it at top level as `data colormode NAME "file" { ... }` (or `data tiles NAME "file" { tiles ... }` for the tile shape); inside a generic `data NAME {...}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted
+   │ 
+   │ Note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block.
 ───╯
 
 Error: invalid syntax: unexpected 'imgwave'
@@ -35,7 +51,11 @@ Error: invalid syntax: unexpected 'imgwave'
    │
  6 │     imgwave 1 2 "3" 4
    │     ────────┬────────  
-   │             ╰────────── here
+   │             ╰────────── asset-block keyword inside `data {...}`
+   │ 
+   │ Help: `imgwave` opens a dedicated asset block — write it at top level as `data imgwave NAME "file" { ... }` (or `data tiles NAME "file" { tiles ... }` for the tile shape); inside a generic `data NAME {...}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted
+   │ 
+   │ Note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block.
 ───╯
 
 Error: invalid syntax: unexpected 'binary'
@@ -43,5 +63,9 @@ Error: invalid syntax: unexpected 'binary'
     │
  10 │     binary "table.bin"
     │     ─────────┬────────  
-    │              ╰────────── here
+    │              ╰────────── asset-block keyword inside `data {...}`
+    │ 
+    │ Help: `binary` opens a dedicated asset block — write it at top level as `data binary NAME "file" { ... }` (or `data tiles NAME "file" { tiles ... }` for the tile shape); inside a generic `data NAME {...}` block only data entries (`byte`, `word`, `far`, `address`, `align`, `nocross`, labels, segments) are accepted
+    │ 
+    │ Note: K816 distinguishes generic data blocks (raw byte/word/far/address payloads) from asset blocks (image/binary/tiles), which open a typed sub-grammar; mixing them silently would obscure encoding errors, so the parser refuses asset keywords in the generic block.
 ────╯

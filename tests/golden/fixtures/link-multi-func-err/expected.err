@@ -4,6 +4,10 @@ Error: accumulator width mismatch calling 'app_init': caller is 8-bit, callee ex
  7 │     call app_init
    │          ────┬───  
    │              ╰───── caller A=8-bit, callee 'app_init' expects A=16-bit
+   │ 
+   │ Help: switch the accumulator to @a16 (matching 'app_init's declared width) before this call, or change the callee's `@a8`/`@a16` annotation if it should be the other width
+   │ 
+   │ Note: The W65C816's `m` flag picks 8- vs 16-bit accumulator opcodes; the linker reads each function's declared `@a8`/`@a16` and rejects calls where the caller's runtime mode would silently encode against the wrong width.
 ───╯
 
 Error: index register width mismatch calling 'app_init': caller is 8-bit, callee expects 16-bit
@@ -12,4 +16,8 @@ Error: index register width mismatch calling 'app_init': caller is 8-bit, callee
  7 │     call app_init
    │          ────┬───  
    │              ╰───── caller I=8-bit, callee 'app_init' expects I=16-bit
+   │ 
+   │ Help: switch the index registers to @i16 (matching 'app_init's declared width) before this call, or change the callee's `@i8`/`@i16` annotation if it should be the other width
+   │ 
+   │ Note: The W65C816's `x` flag picks 8- vs 16-bit X/Y opcodes; the linker reads each function's declared `@i8`/`@i16` and rejects calls where the caller's runtime mode would silently encode against the wrong width.
 ───╯

@@ -3,5 +3,9 @@ Error: invalid syntax: expected name after 'image'/'binary'
    │
  1 │ image
    │ ──┬──  
-   │   ╰──── here
+   │   ╰──── missing asset name
+   │ 
+   │ Help: write `image NAME` (or `image NAME "file.png"`) and `binary NAME "file.bin"` so the asset has a symbol the rest of the program can reference
+   │ 
+   │ Note: K816 binds every image/binary asset to a top-level identifier — that name becomes the address symbol used by `lda NAME`, `&&NAME`, etc. Without it, the asset cannot be referenced and the parser refuses to silently emit it.
 ───╯

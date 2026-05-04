@@ -490,8 +490,12 @@ fn duplicate_symbol_diagnostic(
         message: format!("duplicate global symbol '{name}'"),
         primary_label: Some("duplicate definition".to_string()),
         anchor: second.cloned(),
-        help: None,
-        note: None,
+        help: Some(format!(
+            "rename one of the `{name}` definitions, gate it behind a different file so only one is in the link group, or move it into a `func` body to make it function-local"
+        )),
+        note: Some(
+            "All top-level `const`, `var`, function, and label definitions live in one flat global namespace shared by every linked object; the linker rejects duplicates instead of silently picking one, since either resolution would change generated code.".to_string(),
+        ),
         related: Vec::new(),
     };
     if let Some(first) = first {
@@ -560,11 +564,17 @@ fn resolve_one_relocation(
             find_section_anchor_context(objects, obj_idx, &reloc.section, reloc.offset)
                 .and_then(|ctx| ctx.source)
         });
-        anchored_error(
+        anchored_error_rich(
             format!("undefined symbol '{}'", reloc.symbol),
             Some(format!("symbol '{}' referenced here", reloc.symbol)),
             anchor,
-            None,
+            Some(format!(
+                "no `func`, `var`, `const`, or top-level label named '{}' is exported by any of the linked objects; check the spelling, declare/define the symbol in one of the source files, or add the missing source to the project so the linker sees it",
+                reloc.symbol
+            )),
+            Some(
+                "Symbol resolution happens at link time across every `.o65` in the project. Missing-symbol errors usually mean a source file was not compiled into the link group, or an `inline` import / cross-unit reference was renamed.".to_string(),
+            ),
         )
     })?;
 
@@ -759,7 +769,18 @@ fn check_width_mismatch(
             symbol,
             width_name(callee_a),
         );
-        errors.push(anchored_error(detail, Some(label), anchor.cloned(), None));
+        let mode_tag = if callee_a { "@a16" } else { "@a8" };
+        let help = format!(
+            "switch the accumulator to {mode_tag} (matching '{symbol}'s declared width) before this call, or change the callee's `@a8`/`@a16` annotation if it should be the other width"
+        );
+        let note = "The W65C816's `m` flag picks 8- vs 16-bit accumulator opcodes; the linker reads each function's declared `@a8`/`@a16` and rejects calls where the caller's runtime mode would silently encode against the wrong width.".to_string();
+        errors.push(anchored_error_rich(
+            detail,
+            Some(label),
+            anchor.cloned(),
+            Some(help),
+            Some(note),
+        ));
     }
 
     if let (Some(caller_i), Some(callee_i)) = (call_meta.caller_i_width, func_meta.i_width)
@@ -777,7 +798,18 @@ fn check_width_mismatch(
             symbol,
             width_name(callee_i),
         );
-        errors.push(anchored_error(detail, Some(label), anchor.cloned(), None));
+        let mode_tag = if callee_i { "@i16" } else { "@i8" };
+        let help = format!(
+            "switch the index registers to {mode_tag} (matching '{symbol}'s declared width) before this call, or change the callee's `@i8`/`@i16` annotation if it should be the other width"
+        );
+        let note = "The W65C816's `x` flag picks 8- vs 16-bit X/Y opcodes; the linker reads each function's declared `@i8`/`@i16` and rejects calls where the caller's runtime mode would silently encode against the wrong width.".to_string();
+        errors.push(anchored_error_rich(
+            detail,
+            Some(label),
+            anchor.cloned(),
+            Some(help),
+            Some(note),
+        ));
     }
 }
 

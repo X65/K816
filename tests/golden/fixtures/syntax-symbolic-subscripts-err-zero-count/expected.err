@@ -3,5 +3,9 @@ Error: symbolic subscript field '.string' count must be >= 1, found 0
    │
  2 │     .string[0]:byte
    │             ┬  
-   │             ╰── here
+   │             ╰── non-positive count
+   │ 
+   │ Help: give `.string` a count of 1 or more, or drop the `[...]` if it is a single value rather than an array
+   │ 
+   │ Note: A symbolic subscript field's count is the number of array elements reserved at that offset; values of 0 or below would mean no slot, which is what omitting the field already expresses.
 ───╯

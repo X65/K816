@@ -10,6 +10,10 @@ Error: duplicate global symbol 'BAR'
  2 │ const BAR = FOO * 2
    │ ─────────┬─────────  
    │          ╰─────────── first defined here
+   │ 
+   │ Help: rename one of the `BAR` definitions, gate it behind a different file so only one is in the link group, or move it into a `func` body to make it function-local
+   │ 
+   │ Note: All top-level `const`, `var`, function, and label definitions live in one flat global namespace shared by every linked object; the linker rejects duplicates instead of silently picking one, since either resolution would change generated code.
 ───╯
 
 Error: duplicate global symbol 'BAZ'
@@ -24,4 +28,8 @@ Error: duplicate global symbol 'BAZ'
  3 │ const BAZ = 100
    │ ───────┬───────  
    │        ╰───────── first defined here
+   │ 
+   │ Help: rename one of the `BAZ` definitions, gate it behind a different file so only one is in the link group, or move it into a `func` body to make it function-local
+   │ 
+   │ Note: All top-level `const`, `var`, function, and label definitions live in one flat global namespace shared by every linked object; the linker rejects duplicates instead of silently picking one, since either resolution would change generated code.
 ───╯

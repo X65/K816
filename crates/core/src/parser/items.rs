@@ -138,7 +138,7 @@ where
         } else {
             emitter.emit(Rich::custom(
                 extra.span(),
-                "expected name after 'image'/'binary'",
+                "expected name after 'image'/'binary'; label: missing asset name; hint: write `image NAME` (or `image NAME \"file.png\"`) and `binary NAME \"file.bin\"` so the asset has a symbol the rest of the program can reference; note: K816 binds every image/binary asset to a top-level identifier — that name becomes the address symbol used by `lda NAME`, `&&NAME`, etc. Without it, the asset cannot be referenced and the parser refuses to silently emit it.",
             ));
             Item::Statement(Stmt::Empty)
         }

@@ -3,7 +3,9 @@ Error: invalid syntax: unexpected ':'
    │
  1 │ var bar[20]:word = 0x2000
    │            ┬  
-   │            ╰── here
+   │            ╰── inside symbolic-subscript field list
    │ 
    │ Help: for typed arrays, place the type before the array length (e.g. `var bar:word[20]`)
+   │ 
+   │ Note: Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0[count0]:type0, .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag.
 ───╯

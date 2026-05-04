@@ -3,5 +3,9 @@ Error: var initializer 'base_addr' must be a constant numeric expression
    │
  3 │ ] = base_addr
    │     ────┬────  
-   │         ╰────── here
+   │         ╰────── non-constant identifier `base_addr`
+   │ 
+   │ Help: `var` initializers fix the variable's address at compile time, so the right-hand side must reduce to a number; replace `base_addr` with a literal address, an arithmetic expression over literals, or a `const` that resolves to a number
+   │ 
+   │ Note: K816 `var = expr` declares a memory-located variable at the address `expr` evaluates to. That address is baked into every reference at compile time — there is no runtime computation to fall back on, so identifiers without a compile-time value cannot appear here.
 ───╯

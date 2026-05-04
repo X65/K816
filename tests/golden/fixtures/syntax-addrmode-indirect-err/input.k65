@@ -1,0 +1,3 @@
+func main @a16 @i8 {
+    lda (shell_str_ptr)
+}

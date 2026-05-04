@@ -1,0 +1,35 @@
+Error: `lda (addr)` requires the indirect pointer to be `:word`; var `str_ptr_b` is declared `:byte`
+   ╭─[ tests/golden/fixtures/syntax-addrmode-indirect-err-ptr/input.k65:6:5 ]
+   │
+ 6 │     lda (str_ptr_b)
+   │     ───────┬───────  
+   │            ╰───────── indirect pointer operand
+   │ 
+   │ Help: declare the pointer as `var str_ptr_b:word = ...` so it can hold a 16-bit zero-page address, or use `[str_ptr_b]` long-indirect if `str_ptr_b` actually holds a 24-bit pointer
+   │ 
+   │ Note: Direct-page indirect addressing on the W65C816 reads a 16-bit pointer from zero page; the loaded data width is determined by the M flag (the active `@a8`/`@a16` mode), not by the pointer's declared width.
+───╯
+
+Error: `lda (addr)` requires the indirect pointer to be `:word`; var `str_ptr_f` is declared `:far`
+   ╭─[ tests/golden/fixtures/syntax-addrmode-indirect-err-ptr/input.k65:7:5 ]
+   │
+ 7 │     lda (str_ptr_f)
+   │     ───────┬───────  
+   │            ╰───────── indirect pointer operand
+   │ 
+   │ Help: declare the pointer as `var str_ptr_f:word = ...` so it can hold a 16-bit zero-page address, or use `[str_ptr_f]` long-indirect if `str_ptr_f` actually holds a 24-bit pointer
+   │ 
+   │ Note: Direct-page indirect addressing on the W65C816 reads a 16-bit pointer from zero page; the loaded data width is determined by the M flag (the active `@a8`/`@a16` mode), not by the pointer's declared width.
+───╯
+
+Error: `lda [addr]` requires the indirect pointer to be `:far`; var `str_ptr_w` is declared `:word`
+   ╭─[ tests/golden/fixtures/syntax-addrmode-indirect-err-ptr/input.k65:8:5 ]
+   │
+ 8 │     lda [str_ptr_w]
+   │     ───────┬───────  
+   │            ╰───────── long-indirect pointer operand
+   │ 
+   │ Help: declare the pointer as `var str_ptr_w:far = ...` so it can hold a 24-bit pointer, or use `(str_ptr_w)` direct-page indirect if `str_ptr_w` actually holds a 16-bit pointer
+   │ 
+   │ Note: Long-indirect addressing on the W65C816 reads a 24-bit pointer (low/high/bank) from zero page; the loaded data width is determined by the M flag (the active `@a8`/`@a16` mode), not by the pointer's declared width.
+───╯

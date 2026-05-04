@@ -1,13 +1,7 @@
-func shell_tokenize_buffer @a16 @i8 {
-    sta shell_str_ptr
-    ldx #0                  // token index
-    ldy #0                  // in-token flag
+var dp str_ptr:word
 
-    @a8
-shell_tokenize_loop:
-    @a16 {
-        inc shell_str_ptr       // move to next character
-    }
-    lda (shell_str_ptr)
-    == goto shell_tokenize_exit // found nul-terminator - exit
+func main @a8 @i16 {
+    y = 0
+    lda (str_ptr)
+    lda (str_ptr),y
 }

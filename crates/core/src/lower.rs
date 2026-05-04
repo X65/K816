@@ -3431,14 +3431,32 @@ fn validate_instruction_width_rules(
         }
     }
 
-    let addr_expr = match operand {
-        Operand::Value { expr, .. } if !is_immediate => Some(expr),
-        Operand::Auto { expr } if !is_immediate => Some(expr),
+    let addr_info = match operand {
+        Operand::Value {
+            expr, addr_mode, ..
+        } if !is_immediate => Some((expr, *addr_mode)),
+        Operand::Auto { expr } if !is_immediate => Some((expr, OperandAddrMode::Direct)),
         _ => None,
     };
-    let Some(expr) = addr_expr else {
+    let Some((expr, addr_mode)) = addr_info else {
         return;
     };
+
+    if let Some(expected_ptr_width) = pointer_required_width(addr_mode) {
+        if let Some(declared) = expr_data_width(expr, sema)
+            && declared != expected_ptr_width
+        {
+            diagnostics.push(indirect_pointer_width_error(
+                span,
+                addr_mode,
+                base_ident(expr),
+                declared,
+                expected_ptr_width,
+                &mnemonic,
+            ));
+        }
+        return;
+    }
 
     let Some(data_width) = expr_data_width(expr, sema) else {
         return;
@@ -3583,6 +3601,94 @@ fn validate_mode_for_typed_access(
         .with_optional_help(help)
         .with_note(note);
     diagnostics.push(diag);
+}
+
+/// Pointer container width required by an indirect addressing mode. For
+/// `(addr)` / `(addr,X)` / `(addr),Y` the W65C816 fetches a 16-bit pointer
+/// from zero page, so the variable must be `:word`. For `[addr]` / `[addr],Y`
+/// it fetches a 24-bit pointer (low/high/bank), so the variable must be
+/// `:far`. Returns `None` for direct addressing and for `(byte,s),y` where
+/// the operand is a stack offset rather than a pointer.
+fn pointer_required_width(mode: OperandAddrMode) -> Option<DataWidth> {
+    match mode {
+        OperandAddrMode::Indirect
+        | OperandAddrMode::IndexedIndirectX
+        | OperandAddrMode::IndirectIndexedY => Some(DataWidth::Word),
+        OperandAddrMode::IndirectLong | OperandAddrMode::IndirectLongIndexedY => {
+            Some(DataWidth::Far)
+        }
+        OperandAddrMode::Direct | OperandAddrMode::StackRelativeIndirectIndexedY => None,
+    }
+}
+
+fn indirect_mode_syntax(mode: OperandAddrMode) -> &'static str {
+    match mode {
+        OperandAddrMode::Indirect => "(addr)",
+        OperandAddrMode::IndexedIndirectX => "(addr,X)",
+        OperandAddrMode::IndirectIndexedY => "(addr),Y",
+        OperandAddrMode::IndirectLong => "[addr]",
+        OperandAddrMode::IndirectLongIndexedY => "[addr],Y",
+        OperandAddrMode::Direct | OperandAddrMode::StackRelativeIndirectIndexedY => "",
+    }
+}
+
+fn indirect_pointer_width_error(
+    span: Span,
+    mode: OperandAddrMode,
+    var_name: Option<&str>,
+    declared: DataWidth,
+    expected: DataWidth,
+    mnemonic: &str,
+) -> Diagnostic {
+    let mode_syntax = indirect_mode_syntax(mode);
+    let declared_name = data_width_name(declared);
+    let expected_name = data_width_name(expected);
+    let is_long = matches!(
+        mode,
+        OperandAddrMode::IndirectLong | OperandAddrMode::IndirectLongIndexedY
+    );
+    let label_phrase = if is_long {
+        "long-indirect pointer operand"
+    } else {
+        "indirect pointer operand"
+    };
+
+    let primary = match var_name {
+        Some(name) => format!(
+            "`{mnemonic} {mode_syntax}` requires the indirect pointer to be `:{expected_name}`; var `{name}` is declared `:{declared_name}`",
+        ),
+        None => format!(
+            "`{mnemonic} {mode_syntax}` requires the indirect pointer to be `:{expected_name}`; operand is declared `:{declared_name}`",
+        ),
+    };
+
+    let help = match (var_name, expected) {
+        (Some(name), DataWidth::Word) => format!(
+            "declare the pointer as `var {name}:word = ...` so it can hold a 16-bit zero-page address, or use `[{name}]` long-indirect if `{name}` actually holds a 24-bit pointer"
+        ),
+        (Some(name), DataWidth::Far) => format!(
+            "declare the pointer as `var {name}:far = ...` so it can hold a 24-bit pointer, or use `({name})` direct-page indirect if `{name}` actually holds a 16-bit pointer"
+        ),
+        (None, DataWidth::Word) => {
+            "declare the pointer as `var <name>:word = ...` so it can hold a 16-bit zero-page address".to_string()
+        }
+        (None, DataWidth::Far) => {
+            "declare the pointer as `var <name>:far = ...` so it can hold a 24-bit pointer".to_string()
+        }
+        _ => String::new(),
+    };
+
+    let note = if is_long {
+        "Long-indirect addressing on the W65C816 reads a 24-bit pointer (low/high/bank) from zero page; the loaded data width is determined by the M flag (the active `@a8`/`@a16` mode), not by the pointer's declared width."
+    } else {
+        "Direct-page indirect addressing on the W65C816 reads a 16-bit pointer from zero page; the loaded data width is determined by the M flag (the active `@a8`/`@a16` mode), not by the pointer's declared width."
+    };
+
+    let mut diag = Diagnostic::error(span, primary).with_primary_label(label_phrase.to_string());
+    if !help.is_empty() {
+        diag = diag.with_help(help);
+    }
+    diag.with_note(note.to_string())
 }
 
 fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {

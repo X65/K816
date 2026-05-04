@@ -1,0 +1,9 @@
+var dp str_ptr_b:byte
+var dp str_ptr_w:word
+var dp str_ptr_f:far
+
+func main @a16 @i16 {
+    lda (str_ptr_b)
+    lda (str_ptr_f)
+    lda [str_ptr_w]
+}

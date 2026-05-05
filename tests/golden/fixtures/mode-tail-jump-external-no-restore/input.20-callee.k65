@@ -1,0 +1,6 @@
+// Cross-unit callee with a declared @a16 @i16 entry mode. Naked so its body
+// is exactly the rts; the entry-mode contract is what the test exercises.
+
+naked ext_callee @a16 @i16 {
+    rts
+}

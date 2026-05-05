@@ -1,0 +1,17 @@
+Error: incoming edges enter `target` with mismatched MX mode
+    ╭─[ tests/golden/fixtures/syntax-mode-label-mismatch/input.k65:14:5 ]
+    │
+ 14 │     jmp target
+    │     ─────┬────  
+    │          ╰────── this edge enters with a8/i16
+    │
+    ├─[ tests/golden/fixtures/syntax-mode-label-mismatch/input.k65:14:5 ]
+    │
+ 11 │     jmp target
+    │     ─────┬────  
+    │          ╰────── earlier incoming edge entered with a16/i16
+    │ 
+    │ Help: reconcile the two paths by adjusting `@a*/@i*` directives so both edges enter `target` in the same mode
+    │ 
+    │ Note: k816 statically tracks the W65C816 m/x flags through control flow; every edge into a label must agree on @a*/@i* state because the assembler picks 8- vs 16-bit operand widths against that tracked mode. Mixed entry modes would silently encode operands against the wrong width.
+────╯

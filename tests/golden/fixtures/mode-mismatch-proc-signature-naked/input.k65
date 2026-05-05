@@ -1,0 +1,17 @@
+// Mirrors os-816's `naked sys_error @a16 @i16` shape: a naked entry whose
+// `@a*/@i*` clause lives in the procedure header. The two `jmp sys_error`
+// edges from `cio_open` enter in different MX modes, so the diagnostic must
+// surface the procedure-signature span (not just a body label) as the
+// declared annotation, and offer remediation that names the contract.
+naked sys_error @a16 @i16 {
+    rti
+}
+
+func cio_open @a16 @i16 {
+    cmp #1
+    bne .skip
+    jmp sys_error
+    .skip:
+    @a8
+    jmp sys_error
+}

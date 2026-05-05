@@ -1,0 +1,3 @@
+naked ext_callee @a16 @i16 {
+    rts
+}

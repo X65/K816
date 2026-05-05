@@ -1,0 +1,23 @@
+Error: incoming edges enter `target` with mismatched MX mode
+    ╭─[ tests/golden/fixtures/mode-mismatch-with-declared-signature/input.k65:15:5 ]
+    │
+ 15 │     jmp target
+    │     ─────┬────  
+    │          ╰────── this edge enters with a8/i16
+    │
+    ├─[ tests/golden/fixtures/mode-mismatch-with-declared-signature/input.k65:15:5 ]
+    │
+ 12 │     jmp target
+    │     ─────┬────  
+    │          ╰────── earlier incoming edge entered with a16/i16
+    │
+    ├─[ tests/golden/fixtures/mode-mismatch-with-declared-signature/input.k65:15:5 ]
+    │
+  5 │ func target @a16 @i16 {
+    │      ───┬──  
+    │         ╰──── label declared with entry mode a16/i16
+    │ 
+    │ Help: switch the offending edge to a16/i16 (matching `target`'s declared entry mode) before the branch, or change `target`'s `@a*/@i*` annotation if the signature is wrong
+    │ 
+    │ Note: k816 statically tracks the W65C816 m/x flags through control flow; every edge into a label must agree on @a*/@i* state because the assembler picks 8- vs 16-bit operand widths against that tracked mode. Mixed entry modes would silently encode operands against the wrong width.
+────╯

@@ -564,11 +564,13 @@ fn collect_external_var_classes_from_parsed(
     classes
 }
 
-/// Collect `CodeBlock` bodies for every `inline` function declared across the
-/// link sources. Enables cross-TU inline resolution: the lowerer's
-/// `inline_bodies` map is extended with these entries so a call to an inline
-/// function declared in another file expands at the call site like a local
-/// inline.
+/// Collect `CodeBlock` bodies for every function declared across the link
+/// sources. Inline bodies enable cross-TU inline resolution at call sites
+/// (the lowerer's `inline_bodies` map filters for `meta.is_inline` before
+/// substitution). Non-inline bodies are kept here so the lowerer can surface
+/// their `@a*/@i*` mode contracts in cross-source mismatch diagnostics — the
+/// inline-substitution code path is gated by `meta.is_inline`, so the extra
+/// entries are inert for that flow.
 ///
 /// First-declaration-wins on name collisions, matching the policy for consts
 /// and function metadata.
@@ -580,7 +582,6 @@ fn collect_external_inline_bodies_from_parsed(
         let Some(ast) = ast else { continue };
         for item in &ast.items {
             if let Item::CodeBlock(block) = &item.node
-                && block.is_inline
                 && !bodies.contains_key(&block.name)
             {
                 bodies.insert(block.name.clone(), block.clone());

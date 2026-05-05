@@ -1,0 +1,22 @@
+// The fix to suppress frame-restore on cross-unit tail jumps must NOT silence
+// real mode-mismatch diagnostics. Two edges enter `ext_callee` from `main`:
+//
+//   edge 1: inside `@a16 { ... }` — recorded with @a16/@i16 (post-fix; the old
+//           lowering would have spuriously SEP'd this back to @a8/@i8 here)
+//   edge 2: in plain @a8/@i8         — recorded with @a8/@i8
+//
+// The two recorded edge modes disagree, so the existing mode-mismatch
+// diagnostic fires (and the secondary span on `ext_callee`'s declared `@a16
+// @i16` makes the callee's contract visible).
+
+naked main @a8 @i8 {
+    lda #$00
+    bne .other
+    @a16 {
+        lda #$0001
+        jmp ext_callee
+    }
+.other:
+    lda #$10
+    jmp ext_callee
+}

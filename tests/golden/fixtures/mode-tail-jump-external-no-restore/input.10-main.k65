@@ -1,0 +1,15 @@
+// A terminal `jmp` to a label in another compilation unit must not emit a
+// frame-restore SEP/REP between the body and the jmp instruction. The callee
+// `ext_callee` declares `@a16 @i16` as its entry mode, and the caller enters
+// that mode via `@a16 { ... }` immediately before the jmp. The lowering
+// previously emitted a SEP #$20 here to "restore" the surrounding @a8 mode at
+// the closing `}`, which broke the callee's declared contract. With the fix,
+// no SEP is emitted, and execution transfers to ext_callee in the @a16/@i16
+// mode the callee expects.
+
+naked main @a8 @i8 {
+    @a16 {
+        lda #$0001
+        jmp ext_callee
+    }
+}

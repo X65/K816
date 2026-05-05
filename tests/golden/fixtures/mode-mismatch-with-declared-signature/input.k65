@@ -1,0 +1,16 @@
+// `target` has a full `@a16 @i16` signature. Two `jmp target` edges from
+// `caller` arrive in different MX modes, so the diagnostic uses the
+// with-declared-signature form: it points at both edges, the contract
+// annotation, and offers remediation that names the declared mode.
+func target @a16 @i16 {
+    rts
+}
+
+func caller @a16 @i16 {
+    cmp #1
+    bne .skip
+    jmp target
+    .skip:
+    @a8
+    jmp target
+}

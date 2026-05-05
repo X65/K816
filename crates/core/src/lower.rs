@@ -87,6 +87,24 @@ struct RegHazardState {
     y_truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LabelEntryRecord {
+    mode: ModeState,
+    first_edge_span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LabelDeclaredRecord {
+    mode: ModeState,
+    decl_span: Span,
+    /// `true` for cross-function function-entry signatures: the contract is
+    /// known but it does not auto-bridge incoming modes via mask/fixed_mask
+    /// (the bridge would belong in another function's lowering, where this
+    /// `ctx` cannot reach). Advisory records are still passed to mismatch
+    /// diagnostics so the user sees the declared signature.
+    is_advisory: bool,
+}
+
 #[derive(Debug)]
 struct LowerContext {
     next_label: usize,
@@ -94,8 +112,8 @@ struct LowerContext {
     break_targets: Vec<String>,
     mode: ModeState,
     mode_frames: Vec<ModeFrame>,
-    label_entry_modes: FxHashMap<String, ModeState>,
-    label_declared_modes: FxHashMap<String, ModeState>,
+    label_entry_modes: FxHashMap<String, LabelEntryRecord>,
+    label_declared_modes: FxHashMap<String, LabelDeclaredRecord>,
     label_fixed_masks: FxHashMap<String, u8>,
     label_depths: FxHashMap<String, usize>,
     return_modes: Vec<ModeState>,
@@ -141,6 +159,27 @@ impl Default for LowerContext {
             label_entry_hazards: FxHashMap::default(),
         }
     }
+}
+
+fn insert_function_entry_signature(
+    out: &mut FxHashMap<String, LabelDeclaredRecord>,
+    name: &str,
+    mode_contract: ModeContract,
+    decl_span: Span,
+) {
+    let mode = ModeState {
+        a_width: mode_contract.a_width,
+        i_width: mode_contract.i_width,
+    };
+    if mode.a_width.is_none() && mode.i_width.is_none() {
+        return;
+    }
+    out.entry(name.to_string())
+        .or_insert(LabelDeclaredRecord {
+            mode,
+            decl_span,
+            is_advisory: true,
+        });
 }
 
 fn initial_mode_for_block(is_entry: bool, mode_contract: crate::ast::ModeContract) -> ModeState {
@@ -1123,13 +1162,15 @@ fn join_synthetic_label_state(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    if let Some(incoming_mode) = ctx.label_entry_modes.get(label).copied() {
-        if ctx.reachable && ctx.mode != incoming_mode {
+    if let Some(existing) = ctx.label_entry_modes.get(label).copied() {
+        if ctx.reachable && ctx.mode != existing.mode {
             diagnostics.push(mode_mismatch_diagnostic(
-                span,
                 label,
-                ctx.mode,
-                incoming_mode,
+                ModeMismatchEdges {
+                    current: (span, ctx.mode),
+                    earlier: Some((existing.first_edge_span, existing.mode)),
+                    declared: None,
+                },
             ));
         }
         let merged_hazards =
@@ -1142,11 +1183,17 @@ fn join_synthetic_label_state(
             } else {
                 ctx.hazards
             };
-        ctx.mode = incoming_mode;
+        ctx.mode = existing.mode;
         ctx.hazards = merged_hazards;
         ctx.reachable = true;
     } else if ctx.reachable {
-        ctx.label_entry_modes.insert(label.to_string(), ctx.mode);
+        ctx.label_entry_modes.insert(
+            label.to_string(),
+            LabelEntryRecord {
+                mode: ctx.mode,
+                first_edge_span: span,
+            },
+        );
         ctx.label_entry_hazards
             .insert(label.to_string(), ctx.hazards);
     }
@@ -1607,6 +1654,56 @@ pub(crate) fn lower_with_warnings(
             _ => None,
         })
         .collect();
+    // Build advisory function-entry signatures so cross-function jumps can
+    // surface the target function's `@a*/@i*` annotation in mismatch diagnostics
+    // even though the declared mode lives in a different `block_ctx`. Advisory
+    // records are NOT used to mask incoming modes (the bridging rep/sep would
+    // need to be emitted in the target function's lowering, which this context
+    // cannot reach), so masking is intentionally skipped for them.
+    //
+    // External code blocks (cross-source) are merged in with local-wins
+    // semantics so a `jmp foo` in this source can name the contract span from
+    // another source's `func foo @a16 @i16 { ... }` declaration.
+    let mut function_entry_signatures: FxHashMap<String, LabelDeclaredRecord> =
+        FxHashMap::default();
+    for item in &file.items {
+        if let Item::CodeBlock(block) = &item.node
+            && !block.is_inline
+        {
+            let contract = sema
+                .functions
+                .get(&block.name)
+                .map(|meta| meta.mode_contract)
+                .unwrap_or(block.mode_contract);
+            let decl_span = block.name_span.unwrap_or(item.span);
+            insert_function_entry_signature(
+                &mut function_entry_signatures,
+                &block.name,
+                contract,
+                decl_span,
+            );
+        }
+    }
+    if let Some(external) = external_inline_bodies {
+        for (name, block) in external {
+            if block.is_inline {
+                continue;
+            }
+            let decl_span = block.name_span.unwrap_or_else(|| {
+                block
+                    .body
+                    .first()
+                    .map(|stmt| stmt.span)
+                    .unwrap_or(Span::new(SourceId(0), 0, 0))
+            });
+            insert_function_entry_signature(
+                &mut function_entry_signatures,
+                name,
+                block.mode_contract,
+                decl_span,
+            );
+        }
+    }
     let exit_summaries = build_exit_mode_summaries(file, sema, fs, &mut diagnostics);
     let mut call_summaries = build_call_contract_summaries(file, sema);
 
@@ -1684,6 +1781,12 @@ pub(crate) fn lower_with_warnings(
                     initial_mode,
                     &mut diagnostics,
                 );
+                for (name, record) in &function_entry_signatures {
+                    block_ctx
+                        .label_declared_modes
+                        .entry(name.clone())
+                        .or_insert(*record);
+                }
 
                 ops.push(Spanned::new(
                     Op::FunctionStart {
@@ -1910,7 +2013,7 @@ fn collect_label_declared_modes(
     scope: Option<&str>,
     initial_mode: ModeState,
     diagnostics: &mut Vec<Diagnostic>,
-) -> FxHashMap<String, ModeState> {
+) -> FxHashMap<String, LabelDeclaredRecord> {
     let mut out = FxHashMap::default();
     let mut mode = initial_mode;
     collect_label_declared_modes_into(stmts, scope, &mut mode, diagnostics, &mut out);
@@ -1955,13 +2058,17 @@ fn collect_label_declared_modes_into(
     scope: Option<&str>,
     mode: &mut ModeState,
     diagnostics: &mut Vec<Diagnostic>,
-    out: &mut FxHashMap<String, ModeState>,
+    out: &mut FxHashMap<String, LabelDeclaredRecord>,
 ) {
     for stmt in stmts {
         match &stmt.node {
             Stmt::Label(label) => {
                 if let Some(name) = resolve_symbol(&label.name, scope, stmt.span, diagnostics) {
-                    out.entry(name).or_insert(*mode);
+                    out.entry(name).or_insert(LabelDeclaredRecord {
+                        mode: *mode,
+                        decl_span: stmt.span,
+                        is_advisory: false,
+                    });
                 }
             }
             Stmt::ModeSet { a_width, i_width } => {
@@ -2388,7 +2495,9 @@ fn lower_stmt(
         }
         Stmt::Label(label) => {
             if let Some(resolved) = resolve_symbol(&label.name, scope, span, diagnostics) {
-                let declared_mode = ctx.label_declared_modes.get(&resolved).copied();
+                let declared_record = ctx.label_declared_modes.get(&resolved).copied();
+                let masking_record = declared_record.filter(|d| !d.is_advisory);
+                let declared_mode = masking_record.map(|d| d.mode);
                 let mut fixed_mask = ctx.label_fixed_masks.get(&resolved).copied().unwrap_or(0);
                 if let Some(declared) = declared_mode
                     && ctx.reachable
@@ -2405,14 +2514,16 @@ fn lower_stmt(
                     }
                 }
 
-                if let Some(incoming_mode) = ctx.label_entry_modes.get(&resolved).copied() {
-                    let incoming_mode = apply_declared_label_mode(incoming_mode, declared_mode);
+                if let Some(existing) = ctx.label_entry_modes.get(&resolved).copied() {
+                    let incoming_mode = apply_declared_label_mode(existing.mode, declared_mode);
                     if ctx.reachable && ctx.mode != incoming_mode {
                         diagnostics.push(mode_mismatch_diagnostic(
-                            span,
                             &resolved,
-                            ctx.mode,
-                            incoming_mode,
+                            ModeMismatchEdges {
+                                current: (span, ctx.mode),
+                                earlier: Some((existing.first_edge_span, incoming_mode)),
+                                declared: declared_record.map(|d| (d.decl_span, d.mode)),
+                            },
                         ));
                     }
                     if let Some(incoming_hazards) = ctx.label_entry_hazards.get(&resolved).copied()
@@ -2427,7 +2538,13 @@ fn lower_stmt(
                     ctx.reachable = true;
                 } else if ctx.reachable {
                     ctx.mode = apply_declared_label_mode(ctx.mode, declared_mode);
-                    ctx.label_entry_modes.insert(resolved.clone(), ctx.mode);
+                    ctx.label_entry_modes.insert(
+                        resolved.clone(),
+                        LabelEntryRecord {
+                            mode: ctx.mode,
+                            first_edge_span: span,
+                        },
+                    );
                     ctx.label_entry_hazards
                         .insert(resolved.clone(), ctx.hazards);
                 }
@@ -3279,7 +3396,14 @@ fn lower_instruction_stmt(
                     0
                 }
                 Some(target_depth) => ctx.frame_depth().saturating_sub(target_depth),
-                None => ctx.frame_depth(),
+                // Cross-unit / external target: tail jump, do not restore frames.
+                // The callee has its own mode contract (declared via @a*/@i* on its
+                // entry); restoring to the surrounding function's outer mode would
+                // emit a SEP/REP that flips the M/X flags right before the jmp,
+                // breaking the callee's declared entry mode. The mismatch
+                // diagnostic in record_jump_target_mode still fires correctly when
+                // ctx.mode at the source disagrees with the callee's declaration.
+                None => 0,
             }
         } else {
             ctx.frame_depth()
@@ -3374,14 +3498,28 @@ fn record_label_entry_mode(
     label: &str,
     mode: ModeState,
     span: Span,
+    declared: Option<LabelDeclaredRecord>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if let Some(existing) = ctx.label_entry_modes.get(label).copied() {
-        if existing != mode {
-            diagnostics.push(mode_mismatch_diagnostic(span, label, existing, mode));
+        if existing.mode != mode {
+            diagnostics.push(mode_mismatch_diagnostic(
+                label,
+                ModeMismatchEdges {
+                    current: (span, mode),
+                    earlier: Some((existing.first_edge_span, existing.mode)),
+                    declared: declared.map(|d| (d.decl_span, d.mode)),
+                },
+            ));
         }
     } else {
-        ctx.label_entry_modes.insert(label.to_string(), mode);
+        ctx.label_entry_modes.insert(
+            label.to_string(),
+            LabelEntryRecord {
+                mode,
+                first_edge_span: span,
+            },
+        );
     }
 }
 
@@ -3407,17 +3545,19 @@ fn record_jump_target_mode(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let declared = ctx.label_declared_modes.get(label).copied();
-    let mut effective_mode = apply_declared_label_mode(incoming_mode, declared);
+    let masking_declared = declared.filter(|d| !d.is_advisory);
+    let mut effective_mode =
+        apply_declared_label_mode(incoming_mode, masking_declared.map(|d| d.mode));
 
-    if let Some(declared) = declared {
+    if let Some(declared) = masking_declared {
         let mut fixed_mask = ctx.label_fixed_masks.get(label).copied().unwrap_or(0);
-        if let Some(a) = declared.a_width {
+        if let Some(a) = declared.mode.a_width {
             if incoming_mode.a_width != Some(a) {
                 fixed_mask |= 0x20;
             }
             effective_mode.a_width = Some(a);
         }
-        if let Some(i) = declared.i_width {
+        if let Some(i) = declared.mode.i_width {
             if incoming_mode.i_width != Some(i) {
                 fixed_mask |= 0x10;
             }
@@ -3428,19 +3568,60 @@ fn record_jump_target_mode(
         }
     }
 
-    record_label_entry_mode(ctx, label, effective_mode, span, diagnostics);
+    record_label_entry_mode(ctx, label, effective_mode, span, declared, diagnostics);
 }
 
-fn mode_mismatch_diagnostic(span: Span, label: &str, lhs: ModeState, rhs: ModeState) -> Diagnostic {
-    Diagnostic::error(
-        span,
-        format!(
-            "mode mismatch at label {label}: incoming edges have different modes ({} vs {})",
-            format_mode_state(lhs),
-            format_mode_state(rhs),
-        ),
+struct ModeMismatchEdges {
+    current: (Span, ModeState),
+    earlier: Option<(Span, ModeState)>,
+    declared: Option<(Span, ModeState)>,
+}
+
+fn mode_mismatch_diagnostic(label: &str, edges: ModeMismatchEdges) -> Diagnostic {
+    let (cur_span, cur_mode) = edges.current;
+    let mut diag = Diagnostic::error(
+        cur_span,
+        format!("incoming edges enter `{label}` with mismatched MX mode"),
     )
-    .with_help("ensure all incoming paths use the same @a*/@i* mode state")
+    .with_primary_label(format!(
+        "this edge enters with {}",
+        format_mode_state(cur_mode)
+    ));
+
+    if let Some((earlier_span, earlier_mode)) = edges.earlier {
+        diag = diag.with_label(
+            earlier_span,
+            format!(
+                "earlier incoming edge entered with {}",
+                format_mode_state(earlier_mode)
+            ),
+        );
+    }
+
+    diag = match edges.declared {
+        Some((decl_span, decl_mode)) => diag
+            .with_label(
+                decl_span,
+                format!(
+                    "label declared with entry mode {}",
+                    format_mode_state(decl_mode)
+                ),
+            )
+            .with_help(format!(
+                "switch the offending edge to {} (matching `{label}`'s declared entry mode) before the branch, or change `{label}`'s `@a*/@i*` annotation if the signature is wrong",
+                format_mode_state(decl_mode)
+            )),
+        None => diag.with_help(format!(
+            "reconcile the two paths by adjusting `@a*/@i*` directives so both edges enter `{label}` in the same mode"
+        )),
+    };
+
+    diag.with_note(
+        "k816 statically tracks the W65C816 m/x flags through control flow; every edge into a label \
+         must agree on @a*/@i* state because the assembler picks 8- vs 16-bit operand widths against \
+         that tracked mode. Mixed entry modes would silently encode operands against the wrong width."
+            .to_string(),
+    )
 }
 
 fn format_mode_state(mode: ModeState) -> String {

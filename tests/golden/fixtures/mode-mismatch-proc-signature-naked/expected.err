@@ -1,0 +1,23 @@
+Error: incoming edges enter `sys_error` with mismatched MX mode
+    ╭─[ tests/golden/fixtures/mode-mismatch-proc-signature-naked/input.k65:16:5 ]
+    │
+ 16 │     jmp sys_error
+    │     ──────┬──────  
+    │           ╰──────── this edge enters with a8/i16
+    │
+    ├─[ tests/golden/fixtures/mode-mismatch-proc-signature-naked/input.k65:16:5 ]
+    │
+ 13 │     jmp sys_error
+    │     ──────┬──────  
+    │           ╰──────── earlier incoming edge entered with a16/i16
+    │
+    ├─[ tests/golden/fixtures/mode-mismatch-proc-signature-naked/input.k65:16:5 ]
+    │
+  6 │ naked sys_error @a16 @i16 {
+    │       ────┬────  
+    │           ╰────── label declared with entry mode a16/i16
+    │ 
+    │ Help: switch the offending edge to a16/i16 (matching `sys_error`'s declared entry mode) before the branch, or change `sys_error`'s `@a*/@i*` annotation if the signature is wrong
+    │ 
+    │ Note: k816 statically tracks the W65C816 m/x flags through control flow; every edge into a label must agree on @a*/@i* state because the assembler picks 8- vs 16-bit operand widths against that tracked mode. Mixed entry modes would silently encode operands against the wrong width.
+────╯

@@ -1,0 +1,11 @@
+// `zzz_undefined` is not declared anywhere. The bare-instruction inline path
+// retargets the body's spans to the call site without running substitution,
+// so before the fix `Expr::IdentSpanned` retained its byte offsets from this
+// source — the resulting diagnostic was anchored at the *byte offset in the
+// caller's source* corresponding to those offsets, which lands on unrelated
+// code. After the fix the retargeting strips those offsets, anchoring the
+// diagnostic at the call site instead.
+
+inline broken {
+    lda zzz_undefined
+}

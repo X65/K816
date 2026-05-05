@@ -1,0 +1,10 @@
+[default]
+000000: A9 F0 4A 4A 4A 60
+
+
+[disasm obj#0 default::main]
+000000: A9 F0       lda #$F0
+000002: 4A          lsr A
+000003: 4A          lsr A
+000004: 4A          lsr A
+000005: 60          rts

@@ -1,0 +1,3 @@
+inline lsrx (a, #n) -> a {
+    lsr * n
+}

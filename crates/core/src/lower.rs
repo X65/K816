@@ -918,7 +918,30 @@ fn substitute_inline_stmt(stmt: &Stmt, bindings: &InlineBindings) -> Stmt {
                     .as_ref()
                     .map(|body| substitute_inline_body(body, bindings)),
             },
-            _ => hla.clone(),
+            HlaStmt::MemStoreZero { dest } => HlaStmt::MemStoreZero {
+                dest: substitute_inline_operand_expr(dest, bindings),
+            },
+            HlaStmt::RepeatInstruction { mnemonic, count } => HlaStmt::RepeatInstruction {
+                mnemonic: mnemonic.clone(),
+                count: substitute_inline_expr(count, bindings),
+            },
+            // Payload-free variants: nothing to substitute. Listed explicitly so
+            // adding a new HlaStmt variant fails to compile here instead of
+            // silently skipping inline substitution (the bug that produced the
+            // misleading "unknown identifier 'n'" diagnostic in `lsr * n`).
+            HlaStmt::FlagSet { .. }
+            | HlaStmt::StackOp { .. }
+            | HlaStmt::Return { .. }
+            | HlaStmt::XIncrement
+            | HlaStmt::DoOpen
+            | HlaStmt::DoCloseNFlagClear
+            | HlaStmt::DoCloseNFlagSet
+            | HlaStmt::DoCloseWithOp { .. }
+            | HlaStmt::DoCloseAlways
+            | HlaStmt::DoCloseNever
+            | HlaStmt::DoCloseBranch { .. }
+            | HlaStmt::LoopBreak { .. }
+            | HlaStmt::LoopRepeat { .. } => hla.clone(),
         }),
         Stmt::ModeScopedBlock {
             a_width,
@@ -965,6 +988,14 @@ fn retargeted_body_if_foreign(
 /// pointing at byte offsets in a source file the caller's `SourceMap` does not
 /// know about. The pre-retarget span is preserved on `Spanned::origin` so a
 /// downstream emit-time helper can attach an "(Inlined from …)" annotation.
+///
+/// Note: lowering-time diagnostics emitted during expansion (e.g. unresolved
+/// identifiers from `eval_to_number`) currently anchor at the retargeted
+/// zero-width call-site span but do **not** carry an `InlineOrigin`
+/// supplement back to the foreign body. Emit-time diagnostics already do via
+/// `attach_inline_origin` in `emit_object.rs`. Threading `&SourceMap` through
+/// `lower_stmt` and `lower_inline_call` to close that gap is left as
+/// follow-up work.
 fn retarget_spans(body: &mut [Spanned<Stmt>], target: Span) {
     let zero = Span {
         source_id: target.source_id,
@@ -981,6 +1012,12 @@ fn retarget_spans(body: &mut [Spanned<Stmt>], target: Span) {
 }
 
 fn retarget_stmt_spans(stmt: &mut Stmt, target: Span) {
+    // Walk into every expression so any `Expr::IdentSpanned { start, end, … }`
+    // (whose byte offsets refer to the inline body's *original* SourceId) gets
+    // collapsed to `Expr::Ident(name)`. Without this, `expr_ident_span` later
+    // builds a frankenspan: target's `source_id` paired with the foreign body's
+    // byte offsets. That frankenspan is what made "unknown identifier 'n'"
+    // anchor inside an unrelated `var` declaration in the caller's source.
     match stmt {
         Stmt::ModeScopedBlock { body, .. } => {
             retarget_spans(body, target);
@@ -996,7 +1033,129 @@ fn retarget_stmt_spans(stmt: &mut Stmt, target: Span) {
                 retarget_spans(else_body, target);
             }
         }
+        Stmt::Instruction(instruction) => {
+            if let Some(operand) = instruction.operand.as_mut() {
+                retarget_operand_spans(operand);
+            }
+        }
+        Stmt::Call(call) => {
+            for arg in call.args.iter_mut() {
+                if let CallArg::Immediate(expr) = arg {
+                    retarget_expr_spans(expr);
+                }
+            }
+        }
+        Stmt::Hla(hla) => retarget_hla_spans(hla, target),
         _ => {}
+    }
+}
+
+fn retarget_expr_spans(expr: &mut Expr) {
+    match expr {
+        Expr::IdentSpanned { name, .. } => {
+            *expr = Expr::Ident(std::mem::take(name));
+        }
+        Expr::Index { base, index } => {
+            retarget_expr_spans(base);
+            retarget_expr_spans(index);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            retarget_expr_spans(lhs);
+            retarget_expr_spans(rhs);
+        }
+        Expr::Unary { expr, .. } => {
+            retarget_expr_spans(expr);
+        }
+        Expr::TypedView { expr, .. } => {
+            retarget_expr_spans(expr);
+        }
+        Expr::MetadataQuery { expr, .. } => {
+            retarget_expr_spans(expr);
+        }
+        Expr::Number(..) | Expr::Ident(..) | Expr::EvalText(..) => {}
+    }
+}
+
+fn retarget_operand_expr_spans(operand: &mut HlaOperandExpr) {
+    retarget_expr_spans(&mut operand.expr);
+}
+
+fn retarget_operand_spans(operand: &mut Operand) {
+    match operand {
+        Operand::Immediate { expr, .. }
+        | Operand::Value { expr, .. }
+        | Operand::Auto { expr } => retarget_expr_spans(expr),
+        Operand::BlockMove { src, dst } => {
+            retarget_expr_spans(src);
+            retarget_expr_spans(dst);
+        }
+        Operand::Register { .. } => {}
+    }
+}
+
+fn retarget_hla_spans(hla: &mut HlaStmt, target: Span) {
+    match hla {
+        HlaStmt::RegisterAssign { rhs, .. }
+        | HlaStmt::AccumulatorAlu { rhs, .. }
+        | HlaStmt::AccumulatorBitTest { rhs, .. }
+        | HlaStmt::IndexCompare { rhs, .. }
+        | HlaStmt::ConditionSeed { rhs, .. } => retarget_operand_expr_spans(rhs),
+        HlaStmt::RegisterStore { dest, .. } | HlaStmt::MemStoreZero { dest } => {
+            retarget_operand_expr_spans(dest);
+        }
+        HlaStmt::AssignmentChain { tail_expr, .. } => {
+            if let Some(tail) = tail_expr.as_mut() {
+                retarget_operand_expr_spans(tail);
+            }
+        }
+        HlaStmt::IncDec { target: tgt, .. } => {
+            if let crate::ast::HlaIncDecTarget::Address(operand) = tgt {
+                retarget_operand_expr_spans(operand);
+            }
+        }
+        HlaStmt::ShiftRotate { target: tgt, .. } => {
+            if let crate::ast::HlaShiftTarget::Address(operand) = tgt {
+                retarget_operand_expr_spans(operand);
+            }
+        }
+        HlaStmt::Goto { target, .. } | HlaStmt::BranchGoto { target, .. } => {
+            retarget_expr_spans(target);
+        }
+        HlaStmt::XAssignImmediate { rhs } => retarget_expr_spans(rhs),
+        HlaStmt::StoreFromA { rhs, .. } => match rhs {
+            HlaRhs::Immediate(expr) => retarget_expr_spans(expr),
+            HlaRhs::Value { expr, .. } => retarget_expr_spans(expr),
+        },
+        HlaStmt::DoClose { condition } => {
+            if let Some(rhs) = condition.rhs.as_mut() {
+                retarget_expr_spans(rhs);
+            }
+        }
+        HlaStmt::RepeatInstruction { count, .. } => retarget_expr_spans(count),
+        HlaStmt::NeverBlock { body } => retarget_spans(body, target),
+        HlaStmt::PrefixConditional {
+            body, else_body, ..
+        } => {
+            retarget_spans(body, target);
+            if let Some(else_body) = else_body {
+                retarget_spans(else_body, target);
+            }
+        }
+        HlaStmt::RegisterTransfer { .. }
+        | HlaStmt::FlagSet { .. }
+        | HlaStmt::StackOp { .. }
+        | HlaStmt::Return { .. }
+        | HlaStmt::XIncrement
+        | HlaStmt::WaitLoopWhileNFlagClear { .. }
+        | HlaStmt::DoOpen
+        | HlaStmt::DoCloseNFlagClear
+        | HlaStmt::DoCloseNFlagSet
+        | HlaStmt::DoCloseWithOp { .. }
+        | HlaStmt::DoCloseAlways
+        | HlaStmt::DoCloseNever
+        | HlaStmt::DoCloseBranch { .. }
+        | HlaStmt::LoopBreak { .. }
+        | HlaStmt::LoopRepeat { .. } => {}
     }
 }
 

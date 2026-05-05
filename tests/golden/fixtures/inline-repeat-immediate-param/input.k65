@@ -1,0 +1,14 @@
+// Regression: an inline-immediate parameter used as the count of a repeat
+// instruction (`lsr * n`) must be substituted at expansion time. Before the
+// fix, the bare `n` reference was missed by `substitute_inline_stmt` (the
+// catch-all skipped `RepeatInstruction`), and lowering reported "unknown
+// identifier 'n'" pointing at random source.
+
+inline lsrx (a, #n) -> a {
+    lsr * n
+}
+
+func main @a8 {
+    lda #$f0
+    lsrx(a, #3) -> a
+}

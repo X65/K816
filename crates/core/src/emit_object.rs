@@ -593,7 +593,7 @@ fn enrich_invalid_indirect(
 /// to `diag` so renderers can show "(Inlined from …)" pointing to the original
 /// (foreign-source) location of an inlined op. Idempotent: skips if `diag`
 /// already carries an `InlineOrigin` supplement.
-fn attach_inline_origin(diag: &mut Diagnostic, origin: Span, source_map: &SourceMap) {
+pub(crate) fn attach_inline_origin(diag: &mut Diagnostic, origin: Span, source_map: &SourceMap) {
     use crate::diag::Supplemental;
     if diag
         .supplements

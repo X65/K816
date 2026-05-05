@@ -1,0 +1,9 @@
+// Cross-TU regression: an inline body declared in another source file
+// references a `#n` parameter as the count of `lsr * n`. Before the fix, the
+// retargeted body kept its foreign byte offsets on `Expr::IdentSpanned`, so
+// the diagnostic frankenspan landed at an unrelated location in this file.
+
+func main @a8 {
+    lda #$0f
+    lsrx(a, #2) -> a
+}

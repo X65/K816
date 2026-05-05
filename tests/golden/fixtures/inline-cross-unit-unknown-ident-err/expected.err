@@ -1,0 +1,11 @@
+Error: undefined symbol 'zzz_undefined'
+   ╭─[ tests/golden/fixtures/inline-cross-unit-unknown-ident-err/input.20-main.k65:2:5 ]
+   │
+ 2 │     broken
+   │     ┬  
+   │     ╰── symbol 'zzz_undefined' referenced here
+   │ 
+   │ Help: no `func`, `var`, `const`, or top-level label named 'zzz_undefined' is exported by any of the linked objects; check the spelling, declare/define the symbol in one of the source files, or add the missing source to the project so the linker sees it
+   │ 
+   │ Note: Symbol resolution happens at link time across every `.o65` in the project. Missing-symbol errors usually mean a source file was not compiled into the link group, or an `inline` import / cross-unit reference was renamed.
+───╯

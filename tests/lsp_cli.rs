@@ -1145,3 +1145,132 @@ fn lsp_picks_up_per_dir_link_ld_ron() {
     lsp.shutdown();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn lsp_request_with_invalid_uri_returns_error_and_keeps_alive() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should move forward")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("k816-lsp-it-bad-uri-{unique}"));
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).expect("failed to create src dir");
+    std::fs::write(
+        root.join("k816.toml"),
+        "[package]\nname = \"lsp-it-bad-uri\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("failed to write manifest");
+
+    let source = "func main {\nstart:\n  bra start\n}\n";
+    let source_path = src_dir.join("main.k65");
+    std::fs::write(&source_path, source).expect("failed to write source");
+
+    let root_uri = url::Url::from_file_path(&root)
+        .expect("root URI")
+        .to_string();
+    let file_uri = url::Url::from_file_path(&source_path)
+        .expect("file URI")
+        .to_string();
+
+    let mut lsp = LspProcess::spawn();
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 30,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": root_uri,
+            "capabilities": {}
+        }
+    }));
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(30))
+    });
+
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    }));
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "k65",
+                "version": 1,
+                "text": source
+            }
+        }
+    }));
+
+    let _ = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+            && message.get("params").and_then(|params| params.get("uri")) == Some(&json!(file_uri))
+    });
+
+    // VS Code's diff viewer opens documents under non-RFC-3986 schemes such as
+    // `_claude_vscode_fs_right:` (leading underscore is illegal per RFC 3986
+    // §3.1). The LSP must answer with an InvalidParams error rather than
+    // crashing the process.
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 31,
+        "method": "textDocument/documentSymbol",
+        "params": {
+            "textDocument": { "uri": "_claude_vscode_fs_right:/tmp/label_test.k65" }
+        }
+    }));
+    let bad_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(31))
+    });
+    assert!(
+        bad_response
+            .get("result")
+            .map(Value::is_null)
+            .unwrap_or(true),
+        "expected no result for malformed URI request, got: {bad_response}"
+    );
+    let error = bad_response
+        .get("error")
+        .expect("expected error response for malformed URI request");
+    assert_eq!(
+        error["code"].as_i64(),
+        Some(-32602),
+        "expected InvalidParams (-32602), got: {error}"
+    );
+    let error_message = error["message"].as_str().unwrap_or("");
+    assert!(
+        error_message.contains("documentSymbol"),
+        "expected error message to mention the failing method, got: {error_message}"
+    );
+
+    // Follow-up valid request must still get a normal response — proves the
+    // server stayed alive after the malformed URI.
+    lsp.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 32,
+        "method": "textDocument/documentSymbol",
+        "params": {
+            "textDocument": { "uri": file_uri }
+        }
+    }));
+    let good_response = lsp.recv_until(Duration::from_secs(5), |message| {
+        message.get("id") == Some(&json!(32))
+    });
+    let symbols = good_response["result"]
+        .as_array()
+        .expect("document symbols after recovery");
+    assert!(
+        symbols
+            .iter()
+            .any(|symbol| symbol["name"].as_str() == Some("main")),
+        "expected function symbol after recovery, got: {symbols:?}"
+    );
+
+    // Shutdown asserts process exited successfully — guards against the
+    // original "Server process exited with code 1" regression.
+    lsp.shutdown();
+    let _ = std::fs::remove_dir_all(&root);
+}

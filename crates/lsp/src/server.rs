@@ -312,7 +312,10 @@ impl Server {
     }
 
     fn on_definition(&mut self, request: Request) -> Result<()> {
-        let params: GotoDefinitionParams = parse_request_params(&request)?;
+        let Some(params): Option<GotoDefinitionParams> = self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         self.ensure_document_fresh(&uri)?;
@@ -321,7 +324,9 @@ impl Server {
     }
 
     fn on_references(&mut self, request: Request) -> Result<()> {
-        let params: ReferenceParams = parse_request_params(&request)?;
+        let Some(params): Option<ReferenceParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         self.flush_all_pending_changes()?;
@@ -330,7 +335,9 @@ impl Server {
     }
 
     fn on_hover(&mut self, request: Request) -> Result<()> {
-        let params: HoverParams = parse_request_params(&request)?;
+        let Some(params): Option<HoverParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         self.ensure_document_fresh(&uri)?;
@@ -339,7 +346,9 @@ impl Server {
     }
 
     fn on_completion(&mut self, request: Request) -> Result<()> {
-        let params: CompletionParams = parse_request_params(&request)?;
+        let Some(params): Option<CompletionParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         self.ensure_document_fresh(&uri)?;
@@ -348,14 +357,20 @@ impl Server {
     }
 
     fn on_document_symbol(&mut self, request: Request) -> Result<()> {
-        let params: DocumentSymbolParams = parse_request_params(&request)?;
+        let Some(params): Option<DocumentSymbolParams> = self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         self.ensure_document_fresh(&params.text_document.uri)?;
         let result = self.state.document_symbols(&params.text_document.uri);
         self.send_result(request.id, &result)
     }
 
     fn on_semantic_tokens_full(&mut self, request: Request) -> Result<()> {
-        let params: SemanticTokensParams = parse_request_params(&request)?;
+        let Some(params): Option<SemanticTokensParams> = self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         let uri = params.text_document.uri;
         self.flush_all_pending_changes()?;
         let result = self.state.semantic_tokens(&uri);
@@ -363,7 +378,9 @@ impl Server {
     }
 
     fn on_inlay_hints(&mut self, request: Request) -> Result<()> {
-        let params: InlayHintParams = parse_request_params(&request)?;
+        let Some(params): Option<InlayHintParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document.uri;
         self.flush_all_pending_changes()?;
         let result = self.state.inlay_hints(&uri, params.range);
@@ -371,7 +388,9 @@ impl Server {
     }
 
     fn on_rename(&mut self, request: Request) -> Result<()> {
-        let params: RenameParams = parse_request_params(&request)?;
+        let Some(params): Option<RenameParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         self.flush_all_pending_changes()?;
@@ -380,7 +399,11 @@ impl Server {
     }
 
     fn on_prepare_rename(&mut self, request: Request) -> Result<()> {
-        let params: lsp_types::TextDocumentPositionParams = parse_request_params(&request)?;
+        let Some(params): Option<lsp_types::TextDocumentPositionParams> =
+            self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         let uri = params.text_document.uri;
         let position = params.position;
         self.flush_all_pending_changes()?;
@@ -389,7 +412,9 @@ impl Server {
     }
 
     fn on_code_lens(&mut self, request: Request) -> Result<()> {
-        let params: CodeLensParams = parse_request_params(&request)?;
+        let Some(params): Option<CodeLensParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document.uri;
         self.flush_all_pending_changes()?;
         let result = self.state.code_lenses(&uri);
@@ -397,7 +422,9 @@ impl Server {
     }
 
     fn on_folding_ranges(&mut self, request: Request) -> Result<()> {
-        let params: FoldingRangeParams = parse_request_params(&request)?;
+        let Some(params): Option<FoldingRangeParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document.uri;
         self.ensure_document_fresh(&uri)?;
         let result = self.state.folding_ranges(&uri);
@@ -405,7 +432,9 @@ impl Server {
     }
 
     fn on_signature_help(&mut self, request: Request) -> Result<()> {
-        let params: SignatureHelpParams = parse_request_params(&request)?;
+        let Some(params): Option<SignatureHelpParams> = self.parse_request_params(&request)? else {
+            return Ok(());
+        };
         let uri = params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         self.ensure_document_fresh(&uri)?;
@@ -414,14 +443,20 @@ impl Server {
     }
 
     fn on_formatting(&mut self, request: Request) -> Result<()> {
-        let params: DocumentFormattingParams = parse_request_params(&request)?;
+        let Some(params): Option<DocumentFormattingParams> = self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         self.ensure_document_fresh(&params.text_document.uri)?;
         let edits = self.state.formatting(&params.text_document.uri);
         self.send_result(request.id, &edits)
     }
 
     fn on_resolve_addresses(&mut self, request: Request) -> Result<()> {
-        let params: ResolveAddressesParams = serde_json::from_value(request.params)?;
+        let Some(params): Option<ResolveAddressesParams> = self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         let uri = Uri::from_str(&params.uri)?;
         self.ensure_document_fresh(&uri)?;
         let result = self.state.resolve_addresses_for_lines(&uri, &params.lines);
@@ -429,7 +464,11 @@ impl Server {
     }
 
     fn on_resolve_inline_symbols(&mut self, request: Request) -> Result<()> {
-        let params: ResolveInlineSymbolsParams = parse_request_params(&request)?;
+        let Some(params): Option<ResolveInlineSymbolsParams> =
+            self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         let uri = Uri::from_str(&params.uri)?;
         self.ensure_document_fresh(&uri)?;
         let result = self.state.resolve_inline_symbols(&uri, &params);
@@ -437,7 +476,10 @@ impl Server {
     }
 
     fn on_query_memory_map(&mut self, request: Request) -> Result<()> {
-        let params: QueryMemoryMapParams = parse_request_params(&request)?;
+        let Some(params): Option<QueryMemoryMapParams> = self.parse_request_params(&request)?
+        else {
+            return Ok(());
+        };
         self.flush_all_pending_changes()?;
         let result = self.state.query_memory_map(&params);
         self.send_result(request.id, &result)
@@ -464,6 +506,39 @@ impl Server {
                 }),
             }))
             .context("failed to send error response")
+    }
+
+    // When an LSP request's params fail to deserialize (e.g. a malformed URI
+    // like VS Code's diff-view `_claude_vscode_fs_*` schemes), respond with
+    // JSON-RPC InvalidParams (-32602) and return None so the handler skips
+    // the request instead of crashing the server. Mirrors the soft-drop
+    // behavior of `parse_notification_params` while keeping the LSP contract
+    // that every request id receives a response.
+    fn parse_request_params<T: DeserializeOwned>(&self, request: &Request) -> Result<Option<T>> {
+        match serde_json::from_value::<T>(request.params.clone()) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => {
+                let raw = serde_json::to_string(&request.params)
+                    .unwrap_or_else(|_| "<unserializable>".to_string());
+                let snippet: String = raw.chars().take(512).collect();
+                let suffix = if raw.len() > snippet.len() {
+                    "... [truncated]"
+                } else {
+                    ""
+                };
+                log::warn!(
+                    "rejecting malformed request '{}' (id {:?}): {error}; raw params: {snippet}{suffix}",
+                    request.method,
+                    request.id,
+                );
+                self.send_error(
+                    request.id.clone(),
+                    -32602,
+                    format!("invalid params for '{}': {error}", request.method),
+                )?;
+                Ok(None)
+            }
+        }
     }
 
     fn publish_diagnostics(
@@ -516,11 +591,6 @@ impl Server {
     }
 }
 
-fn parse_request_params<T: DeserializeOwned>(request: &Request) -> Result<T> {
-    serde_json::from_value(request.params.clone())
-        .with_context(|| format!("invalid params for '{}'", request.method))
-}
-
 // When an LSP notification's params fail to deserialize, log the method, the
 // error, and the raw payload (so the offending URI is recoverable from the
 // output channel) and return None. The caller skips the notification instead
@@ -533,8 +603,8 @@ fn parse_notification_params<T: DeserializeOwned>(
     match serde_json::from_value::<T>(params.clone()) {
         Ok(value) => Some(value),
         Err(error) => {
-            let raw = serde_json::to_string(&params)
-                .unwrap_or_else(|_| "<unserializable>".to_string());
+            let raw =
+                serde_json::to_string(&params).unwrap_or_else(|_| "<unserializable>".to_string());
             let snippet: String = raw.chars().take(512).collect();
             let suffix = if raw.len() > snippet.len() {
                 "... [truncated]"

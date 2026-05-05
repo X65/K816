@@ -1,12 +1,12 @@
 [obj#0 default]
-000000: C2 20 B2 00 60
+000000: C2 20 B2 05 60
 
 
 [obj#1 default]
-(empty)
+000005: 00 00
 
 
 [disasm obj#0 default::main]
 000000: C2 20       rep #$20
-000002: B2 00       lda ($00)
+000002: B2 05       lda ($05)
 000004: 60          rts

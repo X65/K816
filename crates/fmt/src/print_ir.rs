@@ -27,6 +27,9 @@ pub fn format_ir(program: &Program) -> String {
             Op::DefineAbsoluteSymbol { name, address } => {
                 out.push_str(&format!("abs_symbol {name} {address:#X}\n"));
             }
+            Op::DefineSectionSymbol { name } => {
+                out.push_str(&format!("section_symbol {name}\n"));
+            }
             Op::SetMode(_) => {
                 out.push_str("set_mode\n");
             }

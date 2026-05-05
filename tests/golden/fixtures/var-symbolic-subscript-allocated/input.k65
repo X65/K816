@@ -1,0 +1,19 @@
+// Symbolic-subscript var without an explicit base address.
+// The linker assigns its placement from the .ld.ron config — same as for any
+// other initializer-less var. Field references resolve through per-field
+// section symbols emitted by the lowerer.
+var sprite[
+    .xpos:word,
+    .ypos:word,
+    .color:byte,
+]
+
+func main @a16 {
+    lda #1234
+    sta sprite.xpos
+    lda #5678
+    sta sprite.ypos
+    @a8
+    lda #$0F
+    sta sprite.color
+}

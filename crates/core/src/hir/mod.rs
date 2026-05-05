@@ -52,6 +52,15 @@ pub enum Op {
         name: String,
         address: u32,
     },
+    /// Defines a section-relative symbol at the current segment's current
+    /// emit offset. Used for `var` declarations whose address the linker
+    /// assigns from segment placement (no compile-time initializer). The op
+    /// behaves like `Op::Label` for symbol registration but is kept distinct
+    /// so peephole/format passes can tell var symbols apart from code
+    /// labels.
+    DefineSectionSymbol {
+        name: String,
+    },
     /// Sets the register width state for the emitter without emitting any bytes.
     /// Used by code blocks inside data sections where 8-bit mode is implied.
     SetMode(ModeContract),

@@ -87,9 +87,35 @@ pub struct SymbolicSubscriptMeta {
     pub total_size: u32,
 }
 
+/// Where a `var` lives in memory.
+///
+/// `Fixed` means the declaration carried an explicit constant initializer
+/// (`var X = $1234`) — the address is baked at compile time and every
+/// reference uses it directly.
+///
+/// `Allocated` means the declaration had no initializer; sema only knows the
+/// var's offset within a chosen output segment, and the linker assigns the
+/// final address using the segment's placement rule from the `.ld.ron` config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VarPlacement {
+    Fixed { address: u32 },
+    Allocated { segment: String, offset: u32 },
+}
+
+impl VarPlacement {
+    /// Returns the var's compile-time address, or `None` for linker-allocated
+    /// vars whose address is only known after layout.
+    pub fn compile_time_address(&self) -> Option<u32> {
+        match self {
+            VarPlacement::Fixed { address } => Some(*address),
+            VarPlacement::Allocated { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VarMeta {
-    pub address: u32,
+    pub placement: VarPlacement,
     /// Total allocation size in bytes (element_size × alloc_count).
     pub size: u32,
     /// Base element size before `* count` multiplication.
@@ -100,6 +126,14 @@ pub struct VarMeta {
     /// override this per call site.
     pub addr_mode_default: Option<ForceAddrMode>,
     pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
+}
+
+impl VarMeta {
+    /// Convenience accessor — returns the compile-time address when the var
+    /// is `Fixed`, `None` when it's `Allocated`.
+    pub fn compile_time_address(&self) -> Option<u32> {
+        self.placement.compile_time_address()
+    }
 }
 
 /// Classification of a cross-unit `var` whose address is *not* known at

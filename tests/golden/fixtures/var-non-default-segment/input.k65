@@ -1,0 +1,19 @@
+// Linker-allocated vars follow the lexically most recent `segment` directive.
+// Here `slot_a`/`slot_b` land in `fixed_lo` (anchored at $0010 by the stub
+// link config) while `default_slot` falls back to the default segment.
+
+segment fixed_lo
+var slot_a:word
+var slot_b:byte
+
+segment default
+var default_slot:byte
+
+func main @a16 {
+    lda slot_a
+    sta slot_a
+    @a8
+    lda slot_b
+    sta slot_b
+    sta default_slot
+}

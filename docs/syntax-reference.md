@@ -23,25 +23,40 @@ Within evaluator expressions, floating-point literals are also supported (e.g. `
 
 ## Variable Declaration
 
-Variables in K65 are names given to chosen memory addresses.
+Variables in K65 are named storage slots. Their final address is decided at one of two points:
+
+- `var foo = $80` — **fixed at compile time**. The right-hand side must reduce to a constant numeric expression; the assembler bakes the address into every reference. Use this for hardware-mapped I/O (`var VIA = $6000`) or any slot whose location is dictated externally.
+- `var foo` — **assigned by the linker** at link time. The variable lands inside the *current segment* (the lexically most recent `segment` directive, defaulting to `default`), and the linker maps the segment to a memory region according to the `.ld.ron` config — same machinery code/data chunks already use.
 
 ```k65
-var foo=0x80            // declares 'foo' at address 0x80
-var foo2                // declares 'foo2' at address 0x81 (next after previous var)
-var foo3, foo4          // multiple declarations per line allowed
-var bar[10], bar2[10]   // [] specifies variable size in bytes (address increment for next var)
-var bar3 ?              // adding '?' at the end makes the compiler print var addresses
+var foo = $80           // Fixed: 'foo' lives at $0080
+var bar                 // Allocated: linker places it in the default segment
+var bar2                // Allocated: next slot in the default segment
+var arr[10]             // Allocated: 10-byte slot in the current segment
 ```
 
-When no address is specified, the variable is placed at the next address following the previous variable. The `[N]` suffix reserves N bytes starting at the variable address, and advances the auto-address counter accordingly.
+The `[N]` suffix reserves N bytes for the slot. For Allocated vars, the per-segment offset advances by N; for Fixed vars, the slot occupies N bytes starting at the explicit address but does not perturb any auto-allocator.
+
+A `segment NAME` directive selects which segment subsequent Allocated vars land in:
+
+```k65
+segment fixed_lo
+var slot_a:word          // Allocated in fixed_lo, offset 0
+var slot_b:byte          // Allocated in fixed_lo, offset 2
+
+segment default
+var scratch              // Allocated in default
+```
+
+Allocated vars default to **16-bit absolute** address encoding because the encoder cannot prove the final address fits direct-page until the linker places the segment. To get DP encoding, declare the var with the `dp` prefix (`var dp counter:byte`); the assembler emits a DP-width relocation that the linker rejects if the resolved address overflows `$00..$FF`.
 
 ### Allocation Count
 
-A `* count` suffix can appear after the variable type/size specification and before the `= address` assignment. It multiplies the computed variable size by `count`, so the next auto-allocated variable is offset by `count × element_size` bytes:
+A `* count` suffix can appear after the variable type/size specification and before the `= address` assignment. It multiplies the computed variable size by `count`. For Allocated vars this advances the per-segment cursor by `count × element_size` bytes; for Fixed vars it just sets the reserved slot size at the explicit address.
 
 ```k65
-var simple :byte * 32 = $1000   // allocates 32 × 1 = 32 bytes starting at $1000
-var next_var                    // auto-placed at $1020
+var simple :byte * 32           // Allocated: 32 × 1 = 32 bytes in the default segment
+var next_var                    // Allocated: next slot, after `simple`
 
 const NUM_SPRITES = 8
 
@@ -49,11 +64,11 @@ var sprites[
     .x    :word
     .y    :word
     .tile :byte
-] * NUM_SPRITES = $0200         // allocates 8 × (2+2+1) = 40 bytes starting at $0200
-var after_sprites               // auto-placed at $0228
+] * NUM_SPRITES                 // Allocated: 8 × (2+2+1) = 40 bytes in the current segment
+var after_sprites               // Allocated: next slot, after the 40-byte sprite block
 ```
 
-`count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries - it only scales the total allocation for address advancement.
+`count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries — it only scales the total allocation.
 
 ### Two orthogonal axes: data width vs. address encoding
 
@@ -123,7 +138,9 @@ func main {
 }
 ```
 
-Auto-shrink behavior remains for unprefixed declarations: when no override is in effect, an operand that fits in page 0 picks DirectPage encoding if the instruction supports it; otherwise Absolute, with AbsoluteLong reserved for cross-bank values.
+Auto-shrink behavior applies only when the address is known at compile time — numeric literals (`lda $80`) and Fixed vars (`var addr = $0080`). For unprefixed operands in that category, an address that fits in page 0 picks DirectPage encoding if the instruction supports it; otherwise Absolute, with AbsoluteLong reserved for cross-bank values.
+
+Allocated vars (those without an `= addr` initializer) are excluded from auto-shrink: the linker assigns the final address at link time, so the assembler cannot prove DP fit during encoding and defaults to 16-bit Absolute. To put an Allocated var in direct page, opt in with the declaration-position `dp` prefix (`var dp counter:byte`) — the assembler emits a 1-byte DP-width relocation, and the linker rejects it if the resolved address overflows `$00..$FF`. The same applies in reverse: declaration-level `:abs` / `:far` continue to bias plain references toward Absolute / AbsoluteLong on Fixed vars.
 
 `dp` and `abs` are recognized **only in the prefix slot** (immediately before an operand expression, or between `var` and the variable name), so they remain available as variable, label, and evaluator-function names (e.g. `var dp = 0` and the `abs(x)` evaluator function still work).
 

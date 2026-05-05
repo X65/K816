@@ -598,7 +598,8 @@ impl ServerState {
                         if !seen.insert(label.clone()) {
                             continue;
                         }
-                        let abs_addr = var_meta.address + field_meta.offset;
+                        let abs_addr = var_meta.compile_time_address().unwrap_or(0)
+                            + field_meta.offset;
                         let type_summary = Self::field_type_summary(field_meta);
                         items.push(CompletionItem {
                             label: label.clone(),
@@ -651,7 +652,8 @@ impl ServerState {
                         if !seen.insert((var_name.clone(), field_key.clone())) {
                             continue;
                         }
-                        let abs_addr = var_meta.address + field_meta.offset;
+                        let abs_addr = var_meta.compile_time_address().unwrap_or(0)
+                            + field_meta.offset;
                         let type_summary = Self::field_type_summary(field_meta);
                         items.push(CompletionItem {
                             label: label.clone(),

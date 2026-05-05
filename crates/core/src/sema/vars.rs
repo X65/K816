@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 
 pub(super) fn collect_var(
     var: &VarDecl,
     span: Span,
-    next_auto_addr: &mut u32,
+    cursors: &mut HashMap<String, u32>,
+    current_segment: &str,
     model: &mut SemanticModel,
     external_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -18,29 +19,27 @@ pub(super) fn collect_var(
         return;
     }
 
-    let Some(address) = eval_var_address(var, *next_auto_addr, span, &model.consts, diagnostics)
-    else {
-        return;
-    };
     let Some(layout) = eval_var_layout(var, span, &model.consts, diagnostics) else {
         return;
     };
-    let Some(next_addr) = address.checked_add(layout.size) else {
-        diagnostics.push(Diagnostic::error(
-            span,
-            format!(
-                "var allocation for '{}' overflows address space (start={address:#X}, size={})",
-                var.name, layout.size
-            ),
-        ));
-        return;
+
+    let placement = match eval_var_placement(
+        var,
+        current_segment,
+        cursors,
+        layout.size,
+        span,
+        &model.consts,
+        diagnostics,
+    ) {
+        Some(p) => p,
+        None => return,
     };
 
-    *next_auto_addr = next_addr;
     model.vars.insert(
         var.name.clone(),
         VarMeta {
-            address,
+            placement,
             size: layout.size,
             element_size: layout.element_size,
             data_width: var.data_width,
@@ -50,29 +49,47 @@ pub(super) fn collect_var(
     );
 }
 
-fn eval_var_address(
+fn eval_var_placement(
     var: &VarDecl,
-    next_auto_addr: u32,
+    current_segment: &str,
+    cursors: &mut HashMap<String, u32>,
+    size: u32,
+    span: Span,
+    consts: &IndexMap<String, ConstMeta>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<VarPlacement> {
+    if let Some(initializer) = &var.initializer {
+        let address = eval_var_fixed_address(var, initializer, span, consts, diagnostics)?;
+        return Some(VarPlacement::Fixed { address });
+    }
+
+    // No initializer — the linker assigns the final address; sema tracks an
+    // offset within the current segment via per-segment cursors.
+    let offset = *cursors.get(current_segment).unwrap_or(&0);
+    let Some(next_offset) = offset.checked_add(size) else {
+        diagnostics.push(Diagnostic::error(
+            span,
+            format!(
+                "var allocation for '{}' overflows segment '{current_segment}' (start_offset={offset:#X}, size={size})",
+                var.name
+            ),
+        ));
+        return None;
+    };
+    cursors.insert(current_segment.to_string(), next_offset);
+    Some(VarPlacement::Allocated {
+        segment: current_segment.to_string(),
+        offset,
+    })
+}
+
+fn eval_var_fixed_address(
+    var: &VarDecl,
+    initializer: &Expr,
     span: Span,
     consts: &IndexMap<String, ConstMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
-    let Some(initializer) = &var.initializer else {
-        if var.symbolic_subscript_fields.is_some() {
-            diagnostics.push(
-                Diagnostic::error(
-                    span,
-                    format!(
-                        "symbolic subscript array '{}' is missing a base address assignment",
-                        var.name
-                    ),
-                )
-                .with_help("append '= <constant numeric expression>' after the field list (for example: '] = $6000')"),
-            );
-            return None;
-        }
-        return Some(next_auto_addr);
-    };
     let initializer_span = var.initializer_span.unwrap_or(span);
 
     match eval_const_expr_to_int(initializer, consts) {

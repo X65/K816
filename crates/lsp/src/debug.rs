@@ -126,12 +126,14 @@ impl ServerState {
     ) -> Option<(u32, Option<u32>)> {
         let doc = self.documents.get(&symbol.uri)?;
 
-        if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
+        if let Some(meta) = doc.analysis.semantic.vars.get(canonical)
+            && let Some(addr) = meta.compile_time_address()
+        {
             let read_size_hint = match meta.size {
                 1 | 2 => Some(meta.size),
                 _ => None,
             };
-            return Some((meta.address, read_size_hint));
+            return Some((addr, read_size_hint));
         }
 
         if let Some((addr, _)) = doc.address_at_offset(symbol.selection.start) {

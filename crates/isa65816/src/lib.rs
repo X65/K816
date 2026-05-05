@@ -999,7 +999,12 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                 }
                 AddressOperandMode::IndirectIndexedY => {
                     // (zp),y is inherently DP-only. wants_dp is permitted; wants_long is rejected.
-                    if wants_long || literal.is_none() || literal.is_some_and(|value| value > 0xFF)
+                    // Label operands (literal == None) are accepted when the user has explicitly
+                    // pinned the address to direct page via the `dp` prefix; the linker enforces
+                    // the DP range when it resolves the relocation.
+                    if wants_long
+                        || literal.is_some_and(|value| value > 0xFF)
+                        || (literal.is_none() && !wants_dp)
                     {
                         return Err(EncodeError::InvalidOperand {
                             mnemonic: mnemonic.to_string(),
@@ -1055,7 +1060,10 @@ pub fn select_encoding(mnemonic: &str, operand: OperandShape) -> Result<Encoding
                             mnemonic: mnemonic.to_string(),
                         });
                     }
-                    if literal.is_none() || literal.is_some_and(|value| value > 0xFF) {
+                    let wants_dp_long = size_hint == AddressSizeHint::ForceDirectPage;
+                    if literal.is_some_and(|value| value > 0xFF)
+                        || (literal.is_none() && !wants_dp_long)
+                    {
                         return Err(EncodeError::InvalidOperand {
                             mnemonic: mnemonic.to_string(),
                         });

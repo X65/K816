@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::ast::{HlaStmt, Instruction, NumFmt, Operand, OperandAddrMode};
@@ -25,7 +25,11 @@ pub fn analyze_partial(
 ) -> (SemanticModel, Vec<Diagnostic>) {
     let mut model = SemanticModel::default();
     let mut diagnostics = Vec::new();
-    let mut next_auto_addr = 0_u32;
+    // Per-segment bump cursors. Each segment starts at offset 0 and advances
+    // as vars are collected within it. The lexically most recent
+    // `Item::Segment` / `Stmt::Segment` directive sets `current_segment`.
+    let mut cursors: HashMap<String, u32> = HashMap::new();
+    let mut current_segment = crate::DEFAULT_SEGMENT.to_string();
     let mut evaluator_context = EvalContext::default();
 
     let mut external_names = HashSet::new();
@@ -81,7 +85,8 @@ pub fn analyze_partial(
             Item::Statement(Stmt::Var(var)) => collect_var(
                 var,
                 item.span,
-                &mut next_auto_addr,
+                &mut cursors,
+                &current_segment,
                 &mut model,
                 &external_names,
                 &mut diagnostics,
@@ -89,11 +94,18 @@ pub fn analyze_partial(
             Item::Var(var) => collect_var(
                 var,
                 item.span,
-                &mut next_auto_addr,
+                &mut cursors,
+                &current_segment,
                 &mut model,
                 &external_names,
                 &mut diagnostics,
             ),
+            Item::Segment(decl) => {
+                current_segment = decl.name.clone();
+            }
+            Item::Statement(Stmt::Segment(decl)) => {
+                current_segment = decl.name.clone();
+            }
             Item::CodeBlock(block) => {
                 collect_function(
                     block,
@@ -102,16 +114,28 @@ pub fn analyze_partial(
                     &mut model,
                     &mut diagnostics,
                 );
+                // Track segment shifts inside the function body so any nested
+                // `var` declarations land in the right segment cursor. The
+                // outer `current_segment` is not perturbed — function-body
+                // segment directives are scoped to the body for var emission.
+                let mut body_segment = current_segment.clone();
                 for stmt in &block.body {
-                    if let Stmt::Var(var) = &stmt.node {
-                        collect_var(
-                            var,
-                            stmt.span,
-                            &mut next_auto_addr,
-                            &mut model,
-                            &external_names,
-                            &mut diagnostics,
-                        );
+                    match &stmt.node {
+                        Stmt::Segment(decl) => {
+                            body_segment = decl.name.clone();
+                        }
+                        Stmt::Var(var) => {
+                            collect_var(
+                                var,
+                                stmt.span,
+                                &mut cursors,
+                                &body_segment,
+                                &mut model,
+                                &external_names,
+                                &mut diagnostics,
+                            );
+                        }
+                        _ => {}
                     }
                 }
             }

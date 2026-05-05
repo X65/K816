@@ -19,7 +19,7 @@ use crate::hir::{
     AddressOperandMode, AddressSizeHint, AddressValue, ByteRelocation, ByteRelocationKind,
     IndexRegister, InstructionOp, Op, OperandOp, Program,
 };
-use crate::sema::SemanticModel;
+use crate::sema::{SemanticModel, VarPlacement};
 use crate::span::{SourceId, Span, Spanned};
 
 mod exit_mode;
@@ -1788,7 +1788,14 @@ pub(crate) fn lower_with_warnings(
                 }
             }
             Item::Var(var) => {
-                emit_var_absolute_symbols(var, item.span, sema, &mut diagnostics, &mut ops);
+                emit_var_absolute_symbols(
+                    var,
+                    item.span,
+                    sema,
+                    &mut current_segment,
+                    &mut diagnostics,
+                    &mut ops,
+                );
             }
         }
     }
@@ -2798,7 +2805,7 @@ fn lower_stmt(
             lower_instruction_stmt(&instruction, scope, sema, span, ctx, diagnostics, ops);
         }
         Stmt::Var(var) => {
-            emit_var_absolute_symbols(var, span, sema, diagnostics, ops);
+            emit_var_absolute_symbols(var, span, sema, current_segment, diagnostics, ops);
         }
         Stmt::Empty => {}
     }
@@ -2808,6 +2815,7 @@ fn emit_var_absolute_symbols(
     var: &crate::ast::VarDecl,
     span: Span,
     sema: &SemanticModel,
+    current_segment: &mut String,
     diagnostics: &mut Vec<Diagnostic>,
     ops: &mut Vec<Spanned<Op>>,
 ) {
@@ -2815,36 +2823,92 @@ fn emit_var_absolute_symbols(
         return;
     };
 
-    ops.push(Spanned::new(
-        Op::DefineAbsoluteSymbol {
-            name: var.name.clone(),
-            address: meta.address,
-        },
-        span,
-    ));
-
-    let Some(symbolic_subscript) = meta.symbolic_subscript.as_ref() else {
-        return;
-    };
-
-    for (field_name, field_meta) in &symbolic_subscript.fields {
-        let Some(address) = meta.address.checked_add(field_meta.offset) else {
-            diagnostics.push(Diagnostic::error(
+    match &meta.placement {
+        VarPlacement::Fixed { address } => {
+            let base_address = *address;
+            ops.push(Spanned::new(
+                Op::DefineAbsoluteSymbol {
+                    name: var.name.clone(),
+                    address: base_address,
+                },
                 span,
-                format!(
-                    "symbolic subscript field '{}.{}' address overflows address space",
-                    var.name, field_name
-                ),
             ));
-            continue;
-        };
-        ops.push(Spanned::new(
-            Op::DefineAbsoluteSymbol {
-                name: format!("{}.{}", var.name, field_name),
-                address,
-            },
-            span,
-        ));
+
+            let Some(symbolic_subscript) = meta.symbolic_subscript.as_ref() else {
+                return;
+            };
+
+            for (field_name, field_meta) in &symbolic_subscript.fields {
+                let Some(address) = base_address.checked_add(field_meta.offset) else {
+                    diagnostics.push(Diagnostic::error(
+                        span,
+                        format!(
+                            "symbolic subscript field '{}.{}' address overflows address space",
+                            var.name, field_name
+                        ),
+                    ));
+                    continue;
+                };
+                ops.push(Spanned::new(
+                    Op::DefineAbsoluteSymbol {
+                        name: format!("{}.{}", var.name, field_name),
+                        address,
+                    },
+                    span,
+                ));
+            }
+        }
+        VarPlacement::Allocated { segment, .. } => {
+            // Linker-allocated var: switch to the var's segment, emit the
+            // symbol(s) at the current offset, reserve `meta.size` zero
+            // bytes for the data, then restore the surrounding segment so
+            // following code/data emission lands where the source said it
+            // would. Symbolic-subscript fields become individual section
+            // symbols at their layout-relative offsets.
+            let prev_segment = current_segment.clone();
+            let switching = *segment != prev_segment;
+            if switching {
+                ops.push(Spanned::new(Op::SelectSegment(segment.clone()), span));
+                *current_segment = segment.clone();
+            }
+            ops.push(Spanned::new(
+                Op::DefineSectionSymbol {
+                    name: var.name.clone(),
+                },
+                span,
+            ));
+            let total_size = meta.size;
+            if let Some(symbolic_subscript) = meta.symbolic_subscript.as_ref() {
+                let mut emitted = 0_u32;
+                for (field_name, field_meta) in &symbolic_subscript.fields {
+                    let field_offset = field_meta.offset;
+                    if field_offset > emitted {
+                        let gap = (field_offset - emitted) as usize;
+                        ops.push(Spanned::new(Op::EmitBytes(vec![0; gap]), span));
+                        emitted = field_offset;
+                    }
+                    ops.push(Spanned::new(
+                        Op::DefineSectionSymbol {
+                            name: format!("{}.{}", var.name, field_name),
+                        },
+                        span,
+                    ));
+                }
+                if total_size > emitted {
+                    let tail = (total_size - emitted) as usize;
+                    ops.push(Spanned::new(Op::EmitBytes(vec![0; tail]), span));
+                }
+            } else if total_size > 0 {
+                ops.push(Spanned::new(
+                    Op::EmitBytes(vec![0; total_size as usize]),
+                    span,
+                ));
+            }
+            if switching {
+                ops.push(Spanned::new(Op::SelectSegment(prev_segment.clone()), span));
+                *current_segment = prev_segment;
+            }
+        }
     }
 }
 
@@ -4365,8 +4429,10 @@ fn eval_to_number_strict(
         Expr::Number(value, _) => Some(*value),
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
-            if let Some(var) = sema.vars.get(name) {
-                return Some(i64::from(var.address));
+            if let Some(var) = sema.vars.get(name)
+                && let Some(addr) = var.compile_time_address()
+            {
+                return Some(i64::from(addr));
             }
             if let Some(constant) = sema.consts.get(name) {
                 return constant_to_exact_i64(
@@ -4847,9 +4913,14 @@ fn resolve_symbolic_subscript_name(
 ) -> Result<Option<ResolvedSymbolicSubscriptName>, ()> {
     if let Some(var) = sema.vars.get(name) {
         if var.symbolic_subscript.is_some() {
+            // Step 3 will extend this to carry a Label/addend pair for
+            // Allocated bases; today sema only produces Fixed placements.
+            let Some(address) = var.compile_time_address() else {
+                return Ok(None);
+            };
             return Ok(Some(ResolvedSymbolicSubscriptName::Aggregate {
                 base: name.to_string(),
-                address: var.address,
+                address,
             }));
         }
         return Ok(None);
@@ -4878,7 +4949,11 @@ fn resolve_symbolic_subscript_name(
         return Err(());
     };
 
-    let Some(address) = base_var.address.checked_add(field_meta.offset) else {
+    let Some(base_address) = base_var.compile_time_address() else {
+        // Step 3 will return a Label/addend variant for Allocated bases.
+        return Ok(None);
+    };
+    let Some(address) = base_address.checked_add(field_meta.offset) else {
         diagnostics.push(Diagnostic::error(
             span,
             format!("symbolic subscript field '{name}' address overflows address space"),
@@ -5595,7 +5670,17 @@ fn eval_address_expr(
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
             if let Some(var) = sema.vars.get(name) {
-                return Some((i64::from(var.address), AddressProvenance::Address));
+                match var.compile_time_address() {
+                    Some(addr) => {
+                        return Some((i64::from(addr), AddressProvenance::Address));
+                    }
+                    None => {
+                        // Allocated var — no compile-time numeric value. Signal
+                        // failure without a diagnostic so the caller can fall
+                        // back to label-offset relocation.
+                        return None;
+                    }
+                }
             }
             if let Some(constant) = sema.consts.get(name) {
                 let value = constant_to_exact_i64(
@@ -5614,6 +5699,17 @@ fn eval_address_expr(
                 }
                 Err(()) => return None,
                 Ok(None) => {}
+            }
+            // A dotted name whose base is an Allocated symbolic-subscript var
+            // — `resolve_symbolic_subscript_name` returns Ok(None) for those.
+            // Signal failure silently so the binary-expression caller can fall
+            // through to label-offset relocation against `X.field`.
+            if let Some((base_name, _)) = name.split_once('.')
+                && let Some(base_var) = sema.vars.get(base_name)
+                && base_var.symbolic_subscript.is_some()
+                && base_var.compile_time_address().is_none()
+            {
+                return None;
             }
 
             resolve_symbol(name, scope, ident_span, diagnostics)?;
@@ -5728,8 +5824,10 @@ fn eval_to_number(
         Expr::Number(value, _) => Some(*value),
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
-            if let Some(var) = sema.vars.get(name) {
-                return Some(i64::from(var.address));
+            if let Some(var) = sema.vars.get(name)
+                && let Some(addr) = var.compile_time_address()
+            {
+                return Some(i64::from(addr));
             }
             if let Some(constant) = sema.consts.get(name) {
                 return constant_to_exact_i64(
@@ -6057,11 +6155,22 @@ fn resolve_operand_ident(
             diagnostics.push(stack_offset_not_address_diag(span, name, "var"));
             return None;
         }
-        return Some(OperandOp::Address {
-            value: AddressValue::Literal(var.address),
-            size_hint,
-            mode,
-        });
+        match &var.placement {
+            VarPlacement::Fixed { address } => {
+                return Some(OperandOp::Address {
+                    value: AddressValue::Literal(*address),
+                    size_hint,
+                    mode,
+                });
+            }
+            VarPlacement::Allocated { .. } => {
+                return Some(OperandOp::Address {
+                    value: AddressValue::Label(name.to_string()),
+                    size_hint,
+                    mode,
+                });
+            }
+        }
     }
     if let Some(constant) = sema.consts.get(name) {
         if stack_rel {
@@ -6172,9 +6281,25 @@ fn try_label_offset_operand(
         }
         _ => return None,
     };
-    // If the name resolves at compile time (var, const, symbolic subscript), this
-    // function should not handle it — eval_to_number should have succeeded.
-    if sema.vars.contains_key(name) || sema.consts.contains_key(name) {
+    // If the name resolves at compile time (Fixed var, const), this function
+    // should not handle it — eval_to_number should have succeeded. Allocated
+    // vars are linker-resolved, so they belong here as label-offset targets.
+    if sema.consts.contains_key(name) {
+        return None;
+    }
+    if let Some(var) = sema.vars.get(name)
+        && var.compile_time_address().is_some()
+    {
+        return None;
+    }
+    // Dotted names referring to fields of Allocated symbolic-subscript vars
+    // are also linker-resolved; only reject when the field resolves through a
+    // Fixed base (i.e. has a compile-time address).
+    if let Some((base_name, _field_name)) = name.split_once('.')
+        && let Some(base_var) = sema.vars.get(base_name)
+        && base_var.compile_time_address().is_some()
+        && base_var.symbolic_subscript.is_some()
+    {
         return None;
     }
     // Resolve the symbol name (handles local label scoping).

@@ -6,10 +6,15 @@ Symbolic subscript arrays are inspired by the Pawn language's named-field array 
 
 ## Overview
 
-A symbolic subscript array declaration binds a symbol to a base address and defines a field layout on top of that address.
+A symbolic subscript array declaration binds a symbol to a base location and defines a field layout on top of it. As with any other `var`, the base may be either:
 
-- No bytes are emitted by `var` declarations.
-- `data { ... }` remains the mechanism for emitting bytes.
+- **Fixed** — `var foo[...] = $6000` pins the layout to a compile-time constant address. Use this for hardware register blocks (RIA, CGIA) where the base is dictated by the silicon.
+- **Allocated** — `var foo[...]` (no `= ...`) leaves the base to the linker. The struct lands inside the current segment and the linker assigns its final address per the `.ld.ron` config, the same way it places code/data chunks. Field references resolve through per-field section symbols emitted by the lowerer (`foo.field_w`, `foo.idx`, …) so each name is independently relocatable.
+
+Both forms produce identical field layouts.
+
+- No fixed-address bytes are emitted by `var = $addr` declarations; Allocated subscript vars emit zero-filled bytes in their segment so the linker reserves the slot.
+- `data { ... }` remains the mechanism for emitting initialized bytes.
 - Field layouts are packed (no padding).
 
 ## Declaration Syntax
@@ -84,14 +89,13 @@ For each field access, lowering computes:
 - field base = `symbolic_subscript_base + field_offset`
 - indexed field element address = `field_base + index * element_width`
 
-`= <address>` on a symbolic subscript array var must be a constant numeric expression.
+When an `= <address>` initializer is present (Fixed form), it must be a constant numeric expression — the assembler bakes the base into every reference, so the right-hand side has to reduce to a number at semantic-analysis time. The Allocated form (no `= ...`) has no such requirement: the linker assigns the base later, the same way it assigns addresses to code labels.
 
 ## Diagnostics
 
 The implementation reports hard errors for:
 
-- missing `= <addr>` in symbolic subscript array declarations
-- non-constant symbolic subscript base expressions
+- non-constant base expressions in the Fixed form (`var foo[...] = expr` where `expr` is not a compile-time number)
 - duplicate field names in one symbolic subscript array
 - invalid field counts (`<= 0` or out of range)
 - unknown field access (with nearest-name suggestion)

@@ -490,6 +490,7 @@ fn is_basic_block_barrier(op: &Op) -> bool {
         | Op::Rep { .. }
         | Op::Sep { .. }
         | Op::DefineAbsoluteSymbol { .. }
+        | Op::DefineSectionSymbol { .. }
         | Op::SetMode(_) => true,
         Op::Instruction(inst) => {
             let m = canonical_mnemonic(&inst.mnemonic);
@@ -511,6 +512,7 @@ fn starts_reachable_region(op: &Op) -> bool {
             | Op::Rep { .. }
             | Op::Sep { .. }
             | Op::DefineAbsoluteSymbol { .. }
+            | Op::DefineSectionSymbol { .. }
             | Op::SetMode(_)
     )
 }

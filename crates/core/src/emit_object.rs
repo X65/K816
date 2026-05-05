@@ -746,6 +746,30 @@ pub fn emit_object(
                     );
                 }
             }
+            Op::DefineSectionSymbol { name } => {
+                let segment = segments
+                    .get(&current_segment)
+                    .expect("current segment must exist during emit");
+                addressable_sites.push(AddressableSite {
+                    segment: current_segment.clone(),
+                    offset: segment.section_offset,
+                    size: 0,
+                    span: op.span,
+                });
+                if labels
+                    .insert(
+                        name.clone(),
+                        (current_segment.clone(), segment.section_offset, op.span),
+                    )
+                    .is_some()
+                    || absolute_symbols.contains_key(name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(op.span, format!("duplicate symbol '{name}'"))
+                            .with_help("rename one of the symbols"),
+                    );
+                }
+            }
             Op::SetMode(mode_contract) => {
                 m_wide = mode_contract
                     .a_width

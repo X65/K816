@@ -35,9 +35,13 @@ pub(super) fn hover_contents_for_symbol(
             return hover_contents_for_constant(symbol.name.as_str(), *meta);
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
+            let address_line = match meta.compile_time_address() {
+                Some(addr) => format!("- address: `{}`", format_address(addr)),
+                None => "- address: `<linker-allocated>`".to_string(),
+            };
             let mut lines = vec![
                 format!("**variable** `{}`", symbol.name),
-                format!("- address: `{}`", format_address(meta.address)),
+                address_line,
                 format!("- size: `{}`", meta.size),
             ];
             if let Some(ss) = &meta.symbolic_subscript {
@@ -158,7 +162,10 @@ pub(super) fn hover_contents_for_subscript_field(
     field_key: &str,
     ss: &k816_core::sema::SymbolicSubscriptMeta,
 ) -> String {
-    let abs_addr = var_meta.address + field_meta.offset;
+    // Fixed vars: absolute address. Allocated (linker-placed) vars have no
+    // compile-time address; fall back to 0 here — step 3 will replace this
+    // with proper "allocated in segment +offset" rendering.
+    let abs_addr = var_meta.compile_time_address().unwrap_or(0) + field_meta.offset;
     let count_suffix = if field_meta.count > 1 {
         format!(" ×{}", field_meta.count)
     } else {

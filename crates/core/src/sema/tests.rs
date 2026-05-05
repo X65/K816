@@ -2,31 +2,57 @@ use super::*;
 use crate::parser::parse;
 use crate::span::SourceId;
 
+/// Test helper: returns the offset of an Allocated var in the default segment,
+/// or panics if the placement is not what tests expect. Most pre-Allocated-era
+/// tests asserted compile-time addresses for initializer-less vars; under the
+/// new model those become `Allocated { segment: "default", offset }` and the
+/// offset value matches the previous "address" value byte-for-byte (because
+/// the default-segment cursor starts at 0 just like the old global counter).
+fn allocated_default_offset(meta: &VarMeta) -> u32 {
+    match &meta.placement {
+        VarPlacement::Allocated { segment, offset } => {
+            assert_eq!(segment, "default", "expected default segment");
+            *offset
+        }
+        VarPlacement::Fixed { address } => {
+            panic!("expected Allocated placement, got Fixed at {address:#X}")
+        }
+    }
+}
+
 #[test]
 fn allocates_vars_monotonically_in_source_order() {
     let source = "var top\nfunc f {\n  var in_a\n  var in_b\n}\nvar tail\n";
     let file = parse(SourceId(0), source).expect("parse");
     let sema = analyze(&file).expect("analyze");
 
-    assert_eq!(sema.vars.get("top").expect("top").address, 0);
+    assert_eq!(allocated_default_offset(sema.vars.get("top").expect("top")), 0);
     assert_eq!(sema.vars.get("top").expect("top").size, 1);
-    assert_eq!(sema.vars.get("in_a").expect("in_a").address, 1);
+    assert_eq!(allocated_default_offset(sema.vars.get("in_a").expect("in_a")), 1);
     assert_eq!(sema.vars.get("in_a").expect("in_a").size, 1);
-    assert_eq!(sema.vars.get("in_b").expect("in_b").address, 2);
+    assert_eq!(allocated_default_offset(sema.vars.get("in_b").expect("in_b")), 2);
     assert_eq!(sema.vars.get("in_b").expect("in_b").size, 1);
-    assert_eq!(sema.vars.get("tail").expect("tail").address, 3);
+    assert_eq!(allocated_default_offset(sema.vars.get("tail").expect("tail")), 3);
     assert_eq!(sema.vars.get("tail").expect("tail").size, 1);
 }
 
 #[test]
-fn explicit_var_address_resets_auto_allocator() {
+fn explicit_var_address_does_not_disturb_segment_cursor() {
     let source = "var first\nvar reset = 0x100\nvar next\n";
     let file = parse(SourceId(0), source).expect("parse");
     let sema = analyze(&file).expect("analyze");
 
-    assert_eq!(sema.vars.get("first").expect("first").address, 0);
-    assert_eq!(sema.vars.get("reset").expect("reset").address, 0x100);
-    assert_eq!(sema.vars.get("next").expect("next").address, 0x101);
+    // `first` and `next` are linker-allocated in the default segment; their
+    // offsets advance by var size. `reset` is Fixed (explicit init), and the
+    // explicit address has no effect on the per-segment cursor under the new
+    // placement model — the linker, not sema, owns final addresses for
+    // Allocated vars.
+    assert_eq!(allocated_default_offset(sema.vars.get("first").expect("first")), 0);
+    assert_eq!(
+        sema.vars.get("reset").expect("reset").compile_time_address().expect("Fixed placement"),
+        0x100,
+    );
+    assert_eq!(allocated_default_offset(sema.vars.get("next").expect("next")), 1);
 }
 
 #[test]
@@ -43,8 +69,11 @@ fn consts_are_collected_and_used_in_var_initializers() {
         sema.consts.get("NEXT").expect("NEXT").value,
         Number::Int(0x103)
     );
-    assert_eq!(sema.vars.get("ptr").expect("ptr").address, 0x103);
-    assert_eq!(sema.vars.get("tail").expect("tail").address, 0x104);
+    assert_eq!(
+        sema.vars.get("ptr").expect("ptr").compile_time_address().expect("Fixed placement"),
+        0x103,
+    );
+    assert_eq!(allocated_default_offset(sema.vars.get("tail").expect("tail")), 0);
 }
 
 #[test]
@@ -56,7 +85,7 @@ fn const_sequence_implicit_initializers_are_resolved() {
     assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(0));
     assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(1));
     assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(2));
-    assert_eq!(sema.vars.get("ptr").expect("ptr").address, 2);
+    assert_eq!(sema.vars.get("ptr").expect("ptr").compile_time_address().expect("Fixed placement"), 2);
 }
 
 #[test]
@@ -83,7 +112,7 @@ fn const_sequence_explicit_initializer_resets_increment_chain() {
     assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(1));
     assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(10));
     assert_eq!(sema.consts.get("D").expect("D").value, Number::Int(11));
-    assert_eq!(sema.vars.get("ptr").expect("ptr").address, 11);
+    assert_eq!(sema.vars.get("ptr").expect("ptr").compile_time_address().expect("Fixed placement"), 11);
 }
 
 #[test]
@@ -99,7 +128,7 @@ fn const_sequence_accepts_resolvable_identifier_seed() {
     assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(10));
     assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(11));
     assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(12));
-    assert_eq!(sema.vars.get("ptr").expect("ptr").address, 12);
+    assert_eq!(sema.vars.get("ptr").expect("ptr").compile_time_address().expect("Fixed placement"), 12);
 }
 
 #[test]
@@ -111,7 +140,7 @@ fn top_level_evaluator_constants_are_available_in_source_order() {
     assert_eq!(sema.consts.get("A").expect("A").value, Number::Int(1));
     assert_eq!(sema.consts.get("B").expect("B").value, Number::Int(3));
     assert_eq!(sema.consts.get("C").expect("C").value, Number::Int(6));
-    assert_eq!(sema.vars.get("ptr").expect("ptr").address, 6);
+    assert_eq!(sema.vars.get("ptr").expect("ptr").compile_time_address().expect("Fixed placement"), 6);
 }
 
 #[test]
@@ -205,8 +234,8 @@ fn const_declarations_do_not_advance_var_allocator() {
     let file = parse(SourceId(0), source).expect("parse");
     let sema = analyze(&file).expect("analyze");
 
-    assert_eq!(sema.vars.get("first").expect("first").address, 0);
-    assert_eq!(sema.vars.get("second").expect("second").address, 1);
+    assert_eq!(allocated_default_offset(sema.vars.get("first").expect("first")), 0);
+    assert_eq!(allocated_default_offset(sema.vars.get("second").expect("second")), 1);
 }
 
 #[test]
@@ -241,22 +270,29 @@ fn array_length_advances_allocator() {
     let file = parse(SourceId(0), source).expect("parse");
     let sema = analyze(&file).expect("analyze");
 
-    assert_eq!(sema.vars.get("header").expect("header").address, 0);
+    assert_eq!(allocated_default_offset(sema.vars.get("header").expect("header")), 0);
     assert_eq!(sema.vars.get("header").expect("header").size, 4);
-    assert_eq!(sema.vars.get("next").expect("next").address, 4);
+    assert_eq!(allocated_default_offset(sema.vars.get("next").expect("next")), 4);
     assert_eq!(sema.vars.get("next").expect("next").size, 1);
 }
 
 #[test]
-fn explicit_array_address_sets_next_auto_address_after_full_size() {
+fn explicit_array_address_does_not_disturb_segment_cursor() {
     let source = "var first\nvar tiles[3] = 0x100\nvar tail\n";
     let file = parse(SourceId(0), source).expect("parse");
     let sema = analyze(&file).expect("analyze");
 
-    assert_eq!(sema.vars.get("first").expect("first").address, 0);
-    assert_eq!(sema.vars.get("tiles").expect("tiles").address, 0x100);
+    // `first` and `tail` are linker-allocated in the default segment; only
+    // `tiles` is Fixed (explicit init at $0100). Under the new placement
+    // model the explicit address does not perturb the per-segment cursor —
+    // `tail` is allocated at offset 1 (right after `first`), not at $0103.
+    assert_eq!(allocated_default_offset(sema.vars.get("first").expect("first")), 0);
+    assert_eq!(
+        sema.vars.get("tiles").expect("tiles").compile_time_address().expect("Fixed placement"),
+        0x100,
+    );
     assert_eq!(sema.vars.get("tiles").expect("tiles").size, 3);
-    assert_eq!(sema.vars.get("tail").expect("tail").address, 0x103);
+    assert_eq!(allocated_default_offset(sema.vars.get("tail").expect("tail")), 1);
 }
 
 #[test]
@@ -367,7 +403,10 @@ fn computes_symbolic_subscript_field_offsets_and_total_size() {
     let sema = analyze(&file).expect("analyze");
 
     let foo = sema.vars.get("foo").expect("foo");
-    assert_eq!(foo.address, 0x1234);
+    assert_eq!(
+        foo.compile_time_address().expect("Fixed placement"),
+        0x1234
+    );
     assert_eq!(foo.size, 9);
     let symbolic_subscript = foo.symbolic_subscript.as_ref().expect("symbolic subscript");
     let field_w = symbolic_subscript.fields.get("field_w").expect("field_w");
@@ -381,15 +420,19 @@ fn computes_symbolic_subscript_field_offsets_and_total_size() {
 }
 
 #[test]
-fn symbolic_subscript_array_requires_explicit_base_address() {
+fn symbolic_subscript_array_without_initializer_is_linker_allocated() {
+    // Pre-refactor this required an explicit base address. Now an
+    // initializer-less symbolic-subscript var is allocated by the linker in
+    // its surrounding segment, the same as any other initializer-less var.
     let source = "var VIA[\n  .orb:byte\n  .ora:byte\n]\n";
     let file = parse(SourceId(0), source).expect("parse");
-    let errors = analyze(&file).expect_err("must fail");
-    assert!(errors.iter().any(|error| {
-        error
-            .message
-            .contains("is missing a base address assignment")
-    }));
+    let sema = analyze(&file).expect("analyze succeeds without explicit base");
+    let via = sema.vars.get("VIA").expect("VIA");
+    assert_eq!(allocated_default_offset(via), 0);
+    assert_eq!(via.size, 2);
+    let ss = via.symbolic_subscript.as_ref().expect("subscript meta");
+    assert_eq!(ss.fields.get("orb").expect("orb").offset, 0);
+    assert_eq!(ss.fields.get("ora").expect("ora").offset, 1);
 }
 
 #[test]

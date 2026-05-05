@@ -27,6 +27,6 @@ use self::consts::{
 use self::functions::collect_function;
 pub use self::model::{
     AnalysisExternals, ConstMeta, ExternalVarClass, FunctionMeta, LabelMeta, SemanticModel,
-    SymbolicSubscriptFieldMeta, SymbolicSubscriptMeta, VarMeta,
+    SymbolicSubscriptFieldMeta, SymbolicSubscriptMeta, VarMeta, VarPlacement,
 };
 use self::vars::collect_var;

@@ -1,0 +1,14 @@
+// Unknown-field on an allocated-base var — the layout-only resolver should
+// still emit the rich "unknown field" diagnostic with a Levenshtein
+// suggestion. Previously this was masked because the address-gating
+// check returned `Ok(None)` first, falling through to a generic message.
+var DEV_HANDLER[
+    .open    :word
+    .close   :word
+    .read    :word
+    .write   :word
+]
+
+func main @a8 @i8 {
+    lda #DEV_HANDLER.opn:offsetof
+}

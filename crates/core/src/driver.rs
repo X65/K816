@@ -558,6 +558,8 @@ fn collect_external_var_classes_from_parsed(
             classes.entry(name).or_insert(ExternalVarClass {
                 data_width: meta.data_width,
                 addr_mode_default: meta.addr_mode_default,
+                element_size: meta.element_size,
+                symbolic_subscript: meta.symbolic_subscript.clone(),
             });
         }
     }

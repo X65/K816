@@ -1,0 +1,17 @@
+// Cross-unit consumer: DEV_HANDLER is defined in 10-defs.k65 without an
+// explicit address, so this unit only sees it via `external_var_classes`.
+// `:offsetof` / `:sizeof` must still resolve from the propagated layout.
+
+func main @a8 @i8 {
+    lda #DEV_HANDLER:sizeof          // 18 = 8 words + 2 reserved bytes
+    pha
+    lda #DEV_HANDLER.open:offsetof   // 0
+    pha
+    lda #DEV_HANDLER.init:offsetof   // 12
+    pha
+    lda #DEV_HANDLER.init:sizeof     // 2
+    pha
+    lda #DEV_HANDLER.stop:offsetof   // 14
+    pha
+    lda #DEV_HANDLER._res:offsetof   // 16
+}

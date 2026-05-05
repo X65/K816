@@ -146,14 +146,21 @@ impl VarMeta {
 /// Classification of a cross-unit `var` whose address is *not* known at
 /// compile time (the declaration has no explicit `= <addr>` initializer, so
 /// the address is auto-allocated within the declaring file and resolved by
-/// the linker). Carries just the addressing-mode information lowering needs
-/// to pick the right encoding at the call site — without leaking the
-/// declaring file's per-file auto-allocated address, which is meaningless
-/// across translation units.
+/// the linker). Carries the addressing-mode information lowering needs to
+/// pick the right encoding at the call site, plus the layout-only metadata
+/// needed by `:sizeof` / `:offsetof` queries — but not the declaring file's
+/// per-file auto-allocated address, which is meaningless across units.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalVarClass {
     pub data_width: Option<DataWidth>,
     pub addr_mode_default: Option<ForceAddrMode>,
+    /// Base element size in bytes (before any `* count` multiplier). Used by
+    /// `:sizeof` on a bare cross-unit var name.
+    pub element_size: u32,
+    /// Field layout when the cross-unit var is a symbolic-subscript struct.
+    /// Populated for `var X[ .a:byte .b:word ... ]` style declarations and
+    /// consumed by `:offsetof` / `:sizeof` on dotted field paths.
+    pub symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

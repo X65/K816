@@ -5270,13 +5270,20 @@ fn resolve_sizeof(
     if let Some(var) = sema.vars.get(name) {
         return Some(i64::from(var.element_size));
     }
-    // Try as a symbolic subscript field path (e.g. TASKS.state)
-    match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
-        Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
+    // Cross-unit `var` declared elsewhere in the link group; layout is
+    // independent of placement, so use the propagated element_size.
+    if let Some(class) = sema.external_var_classes.get(name) {
+        return Some(i64::from(class.element_size));
+    }
+    // Try as a symbolic subscript field path (e.g. TASKS.state).
+    // Layout-only path: independent of whether the base var has a fixed
+    // address or is linker-allocated.
+    match resolve_symbolic_subscript_layout(name, sema, span, diagnostics) {
+        Ok(Some(ResolvedSymbolicSubscriptLayout::Aggregate { base, .. })) => {
             let var = &sema.vars[&base];
             Some(i64::from(var.element_size))
         }
-        Ok(Some(ResolvedSymbolicSubscriptName::Field { size, .. })) => Some(i64::from(size)),
+        Ok(Some(ResolvedSymbolicSubscriptLayout::Field { size, .. })) => Some(i64::from(size)),
         Ok(None) => {
             diagnostics.push(Diagnostic::error(
                 span,
@@ -5294,8 +5301,16 @@ fn resolve_offsetof(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    // Plain var — offsetof makes no sense
-    if sema.vars.contains_key(name) {
+    // Plain var — offsetof makes no sense (in-unit or cross-unit non-struct)
+    let is_plain_var = sema
+        .vars
+        .get(name)
+        .is_some_and(|v| v.symbolic_subscript.is_none())
+        || sema
+            .external_var_classes
+            .get(name)
+            .is_some_and(|c| c.symbolic_subscript.is_none());
+    if is_plain_var {
         diagnostics.push(
             Diagnostic::error(
                 span,
@@ -5305,9 +5320,11 @@ fn resolve_offsetof(
         );
         return None;
     }
-    // Try as a symbolic subscript field path (e.g. TASKS.state)
-    match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
-        Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base, .. })) => {
+    // Try as a symbolic subscript field path (e.g. TASKS.state).
+    // Layout-only path: independent of whether the base var has a fixed
+    // address or is linker-allocated.
+    match resolve_symbolic_subscript_layout(name, sema, span, diagnostics) {
+        Ok(Some(ResolvedSymbolicSubscriptLayout::Aggregate { base, .. })) => {
             diagnostics.push(
                 Diagnostic::error(
                     span,
@@ -5317,13 +5334,7 @@ fn resolve_offsetof(
             );
             None
         }
-        Ok(Some(ResolvedSymbolicSubscriptName::Field { base, field, .. })) => {
-            // Look up the field's offset from the base var's symbolic subscript
-            let var = &sema.vars[&base];
-            let ss = var.symbolic_subscript.as_ref().unwrap();
-            let field_meta = &ss.fields[&field];
-            Some(i64::from(field_meta.offset))
-        }
+        Ok(Some(ResolvedSymbolicSubscriptLayout::Field { offset, .. })) => Some(i64::from(offset)),
         Ok(None) => {
             diagnostics.push(Diagnostic::error(
                 span,
@@ -5340,6 +5351,88 @@ fn metadata_query_name(query: MetadataQuery) -> &'static str {
         MetadataQuery::SizeOf => "sizeof",
         MetadataQuery::OffsetOf => "offsetof",
     }
+}
+
+/// Layout-only sibling of `resolve_symbolic_subscript_name` used by the
+/// `:sizeof` / `:offsetof` metadata queries. Returns the field's offset/size
+/// from the declaration's layout map without computing an absolute address,
+/// so it works for both `Fixed` and `Allocated` placements.
+#[derive(Debug, Clone)]
+enum ResolvedSymbolicSubscriptLayout {
+    Aggregate {
+        base: String,
+        #[allow(dead_code)]
+        total_size: u32,
+    },
+    Field {
+        #[allow(dead_code)]
+        base: String,
+        #[allow(dead_code)]
+        field: String,
+        offset: u32,
+        size: u32,
+    },
+}
+
+fn resolve_symbolic_subscript_layout(
+    name: &str,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Option<ResolvedSymbolicSubscriptLayout>, ()> {
+    if let Some(symbolic_subscript) = lookup_layout(name, sema) {
+        return Ok(Some(ResolvedSymbolicSubscriptLayout::Aggregate {
+            base: name.to_string(),
+            total_size: symbolic_subscript.total_size,
+        }));
+    }
+    // A name that's a known plain var/external var (no struct layout) is not
+    // a layout query target — fall through.
+    if sema.vars.contains_key(name) || sema.external_var_classes.contains_key(name) {
+        return Ok(None);
+    }
+
+    let Some((base_name, field_name)) = name.split_once('.') else {
+        return Ok(None);
+    };
+
+    let Some(symbolic_subscript) = lookup_layout(base_name, sema) else {
+        return Ok(None);
+    };
+
+    let Some(field_meta) = symbolic_subscript.fields.get(field_name) else {
+        let mut diagnostic = Diagnostic::error(
+            span,
+            format!("unknown symbolic subscript field '.{field_name}' on '{base_name}'"),
+        );
+        if let Some(suggestion) = suggest_symbolic_subscript_field(field_name, symbolic_subscript) {
+            diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
+        }
+        diagnostics.push(diagnostic);
+        return Err(());
+    };
+
+    Ok(Some(ResolvedSymbolicSubscriptLayout::Field {
+        base: base_name.to_string(),
+        field: field_name.to_string(),
+        offset: field_meta.offset,
+        size: field_meta.size,
+    }))
+}
+
+/// Layout-only lookup: prefer the in-unit `var` definition, fall back to a
+/// cross-unit `external_var_classes` entry. Both carry `symbolic_subscript`
+/// independent of placement.
+fn lookup_layout<'a>(
+    name: &str,
+    sema: &'a SemanticModel,
+) -> Option<&'a crate::sema::SymbolicSubscriptMeta> {
+    if let Some(var) = sema.vars.get(name) {
+        return var.symbolic_subscript.as_ref();
+    }
+    sema.external_var_classes
+        .get(name)
+        .and_then(|class| class.symbolic_subscript.as_ref())
 }
 
 fn resolve_symbolic_subscript_name(

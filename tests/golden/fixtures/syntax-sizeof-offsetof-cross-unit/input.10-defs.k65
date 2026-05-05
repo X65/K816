@@ -1,0 +1,15 @@
+// Layout-only struct declared without a fixed address. The address is
+// linker-allocated; the field layout, however, is known at compile time
+// and must be visible to other translation units' `:offsetof` / `:sizeof`
+// queries.
+var DEV_HANDLER[
+    .open    :word
+    .close   :word
+    .read    :word
+    .write   :word
+    .seek    :word
+    .ctrl    :word
+    .init    :word
+    .stop    :word
+    ._res[2] :byte
+]

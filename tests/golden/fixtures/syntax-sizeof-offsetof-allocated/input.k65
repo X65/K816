@@ -1,0 +1,66 @@
+// `:sizeof` and `:offsetof` are layout-only queries — they must resolve
+// against the field map alone, regardless of whether the base var has a
+// fixed address or is linker-allocated.
+
+// `var X[...]` — no count, no `= ADDR`.
+// Placement is `AllocatedAbs` (segment cursor); layout is fully known.
+var DEV_HANDLER[
+    .open    :word
+    .close   :word
+    .read    :word
+    .write   :word
+    .seek    :word
+    .ctrl    :word
+    .init    :word
+    .stop    :word
+    ._res[2] :byte
+]
+
+// `var X[...] * N` — allocated count, no `= ADDR`. Mix of widths plus a
+// composite field exercises offsetof/sizeof on nested layouts.
+var POOL[
+    .id      :byte
+    .next    :word
+    .target  :far
+    .header[
+        .a   :byte
+        .b   :byte
+    ]
+] * 4
+
+func main @a8 @i8 {
+    // aggregate :sizeof on layout-only var (no fixed address)
+    lda #DEV_HANDLER:sizeof          // 18 = 8*2 + 2
+    pha
+
+    // field :sizeof on allocated-base var
+    lda #DEV_HANDLER.init:sizeof     // 2 (word)
+    pha
+
+    // field :offsetof — the originally-rejected case
+    lda #DEV_HANDLER.open:offsetof   // 0
+    pha
+    lda #DEV_HANDLER.init:offsetof   // 12 (six words before)
+    pha
+    lda #DEV_HANDLER.stop:offsetof   // 14
+    pha
+    lda #DEV_HANDLER._res:offsetof   // 16
+    pha
+
+    // aggregate :sizeof on `* N` allocated var — element_size, not total
+    lda #POOL:sizeof                 // 8 (1 + 2 + 3 + 2)
+    pha
+
+    // field :offsetof on allocated-count var
+    lda #POOL.target:offsetof        // 3
+    pha
+    lda #POOL.header:offsetof        // 6
+    pha
+    lda #POOL.header.b:offsetof      // 7 (nested composite)
+    pha
+    lda #POOL.header:sizeof          // 2 (composite size)
+    pha
+
+    // metadata query inside a constant arithmetic expression
+    lda #DEV_HANDLER:sizeof + 2      // 20
+}

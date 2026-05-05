@@ -1,0 +1,19 @@
+Error: unknown symbolic subscript field '.opn' on 'DEV_HANDLER'
+    ╭─[ tests/golden/fixtures/syntax-sizeof-offsetof-allocated-unknown-field-err/input.k65:13:5 ]
+    │
+ 13 │     lda #DEV_HANDLER.opn:offsetof
+    │     ──────────────┬──────────────  
+    │                   ╰──────────────── here
+    │ 
+    │ Help: did you mean '.open'?
+────╯
+
+Error: unknown symbolic subscript field '.opn' on 'DEV_HANDLER'
+    ╭─[ tests/golden/fixtures/syntax-sizeof-offsetof-allocated-unknown-field-err/input.k65:13:5 ]
+    │
+ 13 │     lda #DEV_HANDLER.opn:offsetof
+    │     ──────────────┬──────────────  
+    │                   ╰──────────────── here
+    │ 
+    │ Help: did you mean '.open'?
+────╯

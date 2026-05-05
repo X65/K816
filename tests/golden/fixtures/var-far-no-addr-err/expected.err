@@ -1,0 +1,11 @@
+Error: FAR variable 'missing_addr' must have an explicit address
+   ╭─[ tests/golden/fixtures/var-far-no-addr-err/input.k65:1:1 ]
+   │
+ 1 │ var far missing_addr
+   │ ──────────┬─────────  
+   │           ╰─────────── missing address for far variable
+   │ 
+   │ Help: give 'missing_addr' an address (e.g. `var far missing_addr = $7E0000`); the assembler does not auto-allocate FAR storage because it has no notion of which 64K bank to place it in
+   │ 
+   │ Note: FAR variables live in the 24-bit address space and are addressed with long-form opcodes. Auto-allocation is only available for DP (256-byte logical pool) and ABS (per-segment cursor) storage classes; banked FAR placement is the user's responsibility.
+───╯

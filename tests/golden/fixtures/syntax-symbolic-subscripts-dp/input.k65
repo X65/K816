@@ -1,0 +1,15 @@
+// DP-storage symbolic subscript: parent gets a 256-byte-pool slot from the
+// linker, fields resolve to (parent_dp_offset + field_offset) — a 1-byte DP
+// address regardless of where DEFAULT lives in memory.
+var dp gpio[
+    .ddr:byte,
+    .data:byte,
+    .latch:word,
+]
+
+func main @a8 @i8 {
+    lda gpio.ddr
+    sta gpio.data
+    @a16
+    lda gpio.latch
+}

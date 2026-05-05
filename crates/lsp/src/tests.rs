@@ -2205,19 +2205,21 @@ fn partition_no_manifest_falls_back_to_workspace_when_no_subtree_config() {
 #[test]
 fn apply_fs_events_invalidates_linker_config_cache_on_change() {
     // After a `link.ld.ron` rewrite, `apply_fs_events` must invalidate the
-    // cached entry so the next link picks up the new memory map. Starts in
-    // an overflowing layout (`start: 0x0200`), then rewrites to a benign one
-    // (`start: 0x0000`) and asserts the relocation diagnostics clear.
+    // cached entry so the next link picks up the new memory map. Starts in a
+    // memory layout that's too small to hold the function body (4 bytes),
+    // then rewrites to a roomy one and asserts the no-fit diagnostics clear.
+    // The DP-pool decoupling work moved `var dp` placements off the segment
+    // cursor entirely, so a `var dp` overflow can no longer be the canary.
     let dir = tempfile::tempdir().expect("tempdir");
-    let unit_dir = dir.path().join("link-dp-reload");
+    let unit_dir = dir.path().join("link-cfg-reload");
     std::fs::create_dir_all(&unit_dir).expect("unit dir");
 
     let main_path = unit_dir.join("input.k65");
-    let main_text = "var dp kstrncpy_src:far\nvar dp kstrncpy_dst:far\n\nfunc main @a16 @i16 {\n    ldy #0\n    lda [kstrncpy_src],y\n    sta [kstrncpy_dst],y\n}\n";
+    let main_text = "func main @a8 @i8 {\n    nop\n    nop\n    nop\n    nop\n    nop\n    nop\n}\n";
     std::fs::write(&main_path, main_text).expect("main");
 
     let cfg_path = unit_dir.join("link.ld.ron");
-    let bad_cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0200), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
+    let bad_cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 4, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0000), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
     std::fs::write(&cfg_path, bad_cfg).expect("link.ld.ron");
 
     let main_uri =
@@ -2229,36 +2231,37 @@ fn apply_fs_events_invalidates_linker_config_cache_on_change() {
         .expect("doc");
 
     let initial = state.lsp_diagnostics(&main_uri);
-    let initial_overflows = initial
+    let initial_no_fit = initial
         .iter()
-        .filter(|d| d.message.contains("absolute relocation does not fit in 8 bits"))
+        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         .count();
-    assert_eq!(
-        initial_overflows, 2,
-        "expected two overflow diagnostics from the bad config; got: {initial:?}"
+    assert!(
+        initial_no_fit > 0,
+        "expected at least one error diagnostic from the undersized memory; got: {initial:?}"
     );
 
-    // Rewrite to a layout where direct-page placements fit, then notify the
-    // workspace via the fs-event channel exactly as the watcher would.
+    // Rewrite to a layout where the function body fits.
     let good_cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0000), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
     std::fs::write(&cfg_path, good_cfg).expect("rewrite cfg");
     state.apply_fs_events(vec![WorkspaceFsEvent::Changed(cfg_path.clone())]);
 
     let after = state.lsp_diagnostics(&main_uri);
     assert!(
-        !after.iter().any(|d| d.message.contains("absolute relocation does not fit in 8 bits")),
-        "overflow diagnostics should clear after the cfg rewrite; got: {after:?}",
+        !after
+            .iter()
+            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+        "error diagnostics should clear after the cfg rewrite; got: {after:?}",
     );
 }
 
 #[test]
-fn link_dp_fixture_under_lsp_yields_relocation_diagnostic() {
-    // Reproduces tests/golden/fixtures/link-dp/ inside an LSP workspace:
-    // a `link.ld.ron` with `start: 0x0200` pushes the `var dp` placements
-    // out of the direct-page range, so the indirect-DP relocations on
-    // lines 6 and 7 must overflow at link time. Before the per-source
-    // config resolver landed, the LSP used its default stub config and
-    // never reported these errors.
+fn link_dp_fixture_under_lsp_no_longer_overflows() {
+    // Regression coverage for the DP-pool decoupling: the link-dp fixture
+    // (`var dp NAME:far`) used to overflow at link time when the DEFAULT
+    // segment did not cover bytes $00..$FF, because sema put DP vars in the
+    // segment cursor. The fix routes DP vars through a 256-byte logical pool
+    // independent of any memory area, so the same fixture now links cleanly
+    // regardless of segment placement.
     let dir = tempfile::tempdir().expect("tempdir");
     let unit_dir = dir.path().join("link-dp");
     std::fs::create_dir_all(&unit_dir).expect("unit dir");
@@ -2279,16 +2282,13 @@ fn link_dp_fixture_under_lsp_yields_relocation_diagnostic() {
         .expect("doc");
 
     let diagnostics = state.lsp_diagnostics(&main_uri);
-    let overflow_count = diagnostics
+    let errors: Vec<_> = diagnostics
         .iter()
-        .filter(|diag| {
-            diag.severity == Some(DiagnosticSeverity::ERROR)
-                && diag.message.contains("absolute relocation does not fit in 8 bits")
-        })
-        .count();
-    assert_eq!(
-        overflow_count, 2,
-        "expected two relocation-overflow diagnostics from the indirect-DP \
-         fixture; got: {diagnostics:?}",
+        .filter(|diag| diag.severity == Some(DiagnosticSeverity::ERROR))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors from the indirect-DP fixture after the DP-pool \
+         decoupling; got: {errors:?}",
     );
 }

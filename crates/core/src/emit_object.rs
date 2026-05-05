@@ -623,6 +623,9 @@ pub fn emit_object(
     let mut segments: IndexMap<String, SegmentState> = IndexMap::new();
     let mut labels: FxHashMap<String, (String, u32, Span)> = FxHashMap::default();
     let mut absolute_symbols: FxHashMap<String, (u32, Span)> = FxHashMap::default();
+    let mut dp_fixed_symbols: FxHashMap<String, (u8, Span)> = FxHashMap::default();
+    let mut dp_alloc_symbols: Vec<(String, u8, Span)> = Vec::new();
+    let mut dp_alloc_aliases: Vec<(String, String, u8, Span)> = Vec::new();
     let mut fixups = Vec::new();
     let mut current_segment = crate::DEFAULT_SEGMENT.to_string();
     let mut current_function: Option<String> = None;
@@ -768,6 +771,58 @@ pub fn emit_object(
                         Diagnostic::error(op.span, format!("duplicate symbol '{name}'"))
                             .with_help("rename one of the symbols"),
                     );
+                }
+            }
+            Op::DefineDpFixedSymbol { name, offset } => {
+                // DP-pinned vars may share offsets intentionally — only the
+                // *name* must be unique. Sema/lower already enforce that the
+                // pinned offset fits in u8.
+                if labels.contains_key(name)
+                    || absolute_symbols.contains_key(name)
+                    || dp_fixed_symbols
+                        .insert(name.clone(), (*offset, op.span))
+                        .is_some()
+                    || dp_alloc_symbols.iter().any(|(n, _, _)| n == name)
+                    || dp_alloc_aliases.iter().any(|(n, _, _, _)| n == name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(op.span, format!("duplicate symbol '{name}'"))
+                            .with_help("rename one of the symbols"),
+                    );
+                }
+            }
+            Op::DefineDpAllocSymbol { name, size } => {
+                if labels.contains_key(name)
+                    || absolute_symbols.contains_key(name)
+                    || dp_fixed_symbols.contains_key(name)
+                    || dp_alloc_symbols.iter().any(|(n, _, _)| n == name)
+                    || dp_alloc_aliases.iter().any(|(n, _, _, _)| n == name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(op.span, format!("duplicate symbol '{name}'"))
+                            .with_help("rename one of the symbols"),
+                    );
+                } else {
+                    dp_alloc_symbols.push((name.clone(), *size, op.span));
+                }
+            }
+            Op::DefineDpAllocAlias {
+                name,
+                parent,
+                field_offset,
+            } => {
+                if labels.contains_key(name)
+                    || absolute_symbols.contains_key(name)
+                    || dp_fixed_symbols.contains_key(name)
+                    || dp_alloc_symbols.iter().any(|(n, _, _)| n == name)
+                    || dp_alloc_aliases.iter().any(|(n, _, _, _)| n == name)
+                {
+                    diagnostics.push(
+                        Diagnostic::error(op.span, format!("duplicate symbol '{name}'"))
+                            .with_help("rename one of the symbols"),
+                    );
+                } else {
+                    dp_alloc_aliases.push((name.clone(), parent.clone(), *field_offset, op.span));
                 }
             }
             Op::SetMode(mode_contract) => {
@@ -1389,6 +1444,40 @@ pub fn emit_object(
             global: true,
             definition: Some(SymbolDefinition::Absolute {
                 address: *address,
+                source: source_location_for_span(source_map, *span),
+            }),
+            function_metadata: None,
+        });
+    }
+    for (name, (offset, span)) in &dp_fixed_symbols {
+        symbols.push(Symbol {
+            name: name.clone(),
+            global: true,
+            definition: Some(SymbolDefinition::DirectPageFixed {
+                offset: *offset,
+                source: source_location_for_span(source_map, *span),
+            }),
+            function_metadata: None,
+        });
+    }
+    for (name, size, span) in &dp_alloc_symbols {
+        symbols.push(Symbol {
+            name: name.clone(),
+            global: true,
+            definition: Some(SymbolDefinition::DirectPageAlloc {
+                size: *size,
+                source: source_location_for_span(source_map, *span),
+            }),
+            function_metadata: None,
+        });
+    }
+    for (name, parent, field_offset, span) in &dp_alloc_aliases {
+        symbols.push(Symbol {
+            name: name.clone(),
+            global: true,
+            definition: Some(SymbolDefinition::DirectPageAllocAlias {
+                parent: parent.clone(),
+                field_offset: *field_offset,
                 source: source_location_for_span(source_map, *span),
             }),
             function_metadata: None,

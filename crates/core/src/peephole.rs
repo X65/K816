@@ -491,6 +491,9 @@ fn is_basic_block_barrier(op: &Op) -> bool {
         | Op::Sep { .. }
         | Op::DefineAbsoluteSymbol { .. }
         | Op::DefineSectionSymbol { .. }
+        | Op::DefineDpFixedSymbol { .. }
+        | Op::DefineDpAllocSymbol { .. }
+        | Op::DefineDpAllocAlias { .. }
         | Op::SetMode(_) => true,
         Op::Instruction(inst) => {
             let m = canonical_mnemonic(&inst.mnemonic);

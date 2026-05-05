@@ -1,0 +1,7 @@
+var dp ptr_b:far
+
+func main @a16 @i16 {
+    lda (scratch_a)
+    sta (scratch_b)
+    lda [ptr_b]
+}

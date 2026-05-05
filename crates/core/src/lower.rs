@@ -2943,6 +2943,45 @@ fn emit_var_absolute_symbols(
     match &meta.placement {
         VarPlacement::Fixed { address } => {
             let base_address = *address;
+            let is_dp = matches!(
+                meta.addr_mode_default,
+                Some(crate::ast::ForceAddrMode::DirectPage)
+            );
+
+            if is_dp {
+                let offset = base_address as u8;
+                ops.push(Spanned::new(
+                    Op::DefineDpFixedSymbol {
+                        name: var.name.clone(),
+                        offset,
+                    },
+                    span,
+                ));
+                if let Some(symbolic_subscript) = meta.symbolic_subscript.as_ref() {
+                    for (field_name, field_meta) in &symbolic_subscript.fields {
+                        let field_offset = base_address.saturating_add(field_meta.offset);
+                        if field_offset > 0xFF {
+                            diagnostics.push(Diagnostic::error(
+                                span,
+                                format!(
+                                    "symbolic subscript field '{}.{}' offset {field_offset:#06X} exceeds direct page (0x00..=0xFF)",
+                                    var.name, field_name
+                                ),
+                            ));
+                            continue;
+                        }
+                        ops.push(Spanned::new(
+                            Op::DefineDpFixedSymbol {
+                                name: format!("{}.{}", var.name, field_name),
+                                offset: field_offset as u8,
+                            },
+                            span,
+                        ));
+                    }
+                }
+                return;
+            }
+
             ops.push(Spanned::new(
                 Op::DefineAbsoluteSymbol {
                     name: var.name.clone(),
@@ -2975,7 +3014,45 @@ fn emit_var_absolute_symbols(
                 ));
             }
         }
-        VarPlacement::Allocated { segment, .. } => {
+        VarPlacement::AllocatedDp => {
+            // Auto-allocated DP var: emit a request that the linker resolves
+            // to a final 8-bit DP offset by first-fit. Symbolic-subscript
+            // fields become aliases anchored to the parent's slot.
+            let total_size = meta.size as u8;
+            ops.push(Spanned::new(
+                Op::DefineDpAllocSymbol {
+                    name: var.name.clone(),
+                    size: total_size,
+                },
+                span,
+            ));
+            if let Some(symbolic_subscript) = meta.symbolic_subscript.as_ref() {
+                for (field_name, field_meta) in &symbolic_subscript.fields {
+                    let qualified = format!("{}.{}", var.name, field_name);
+                    if field_meta.offset > 0xFF {
+                        diagnostics.push(Diagnostic::error(
+                            span,
+                            format!(
+                                "symbolic subscript field '{}' offset {:#06X} exceeds direct page (0x00..=0xFF)",
+                                qualified, field_meta.offset
+                            ),
+                        ));
+                        continue;
+                    }
+                    // Encode the field as a sized request linked to the parent
+                    // by name so the linker can compute parent_offset + field_offset.
+                    ops.push(Spanned::new(
+                        Op::DefineDpAllocAlias {
+                            name: qualified,
+                            parent: var.name.clone(),
+                            field_offset: field_meta.offset as u8,
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+        VarPlacement::AllocatedAbs { segment, .. } => {
             // Linker-allocated var: switch to the var's segment, emit the
             // symbol(s) at the current offset, reserve `meta.size` zero
             // bytes for the data, then restore the surrounding segment so
@@ -4024,6 +4101,26 @@ fn address_size_hint_for_operand(
             .and_then(|class| class.addr_mode_default)
         {
             return force_addr_mode_to_size_hint(force);
+        }
+        // Dotted symbolic-subscript field reference (`gpio.ddr`): inherit the
+        // parent var's storage class so DP-class parents keep DP encoding for
+        // their fields. Without this, `lda gpio.ddr` would emit a 16-bit
+        // absolute even though the field lives in the 1-byte DP slot.
+        if let Some((base_name, _)) = name.split_once('.') {
+            if let Some(force) = sema
+                .vars
+                .get(base_name)
+                .and_then(|var| var.addr_mode_default)
+            {
+                return force_addr_mode_to_size_hint(force);
+            }
+            if let Some(force) = sema
+                .external_var_classes
+                .get(base_name)
+                .and_then(|class| class.addr_mode_default)
+            {
+                return force_addr_mode_to_size_hint(force);
+            }
         }
     }
     AddressSizeHint::Auto
@@ -6344,7 +6441,7 @@ fn resolve_operand_ident(
                     mode,
                 });
             }
-            VarPlacement::Allocated { .. } => {
+            VarPlacement::AllocatedAbs { .. } | VarPlacement::AllocatedDp => {
                 return Some(OperandOp::Address {
                     value: AddressValue::Label(name.to_string()),
                     size_hint,

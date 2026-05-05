@@ -61,6 +61,31 @@ pub enum Op {
     DefineSectionSymbol {
         name: String,
     },
+    /// Pins a `var dp` to a specific 8-bit DP offset. Emitted from a
+    /// declaration with explicit initializer (`var dp foo = $42`). The linker
+    /// records the slot as occupied so auto-allocated DP vars skip it;
+    /// multiple DP vars may share the same offset by design (intentional
+    /// aliasing).
+    DefineDpFixedSymbol {
+        name: String,
+        offset: u8,
+    },
+    /// Requests an auto-allocated DP slot of `size` bytes. The linker assigns
+    /// a final 8-bit offset by first-fit across all input objects in
+    /// link-input order, after honoring all `DefineDpFixedSymbol` pins.
+    /// `size` is bounded by 256 — sema rejects anything larger.
+    DefineDpAllocSymbol {
+        name: String,
+        size: u8,
+    },
+    /// Aliases a symbolic-subscript field name to `parent`'s DP slot plus
+    /// `field_offset`. Resolved at link time after `parent` receives its
+    /// auto-allocated DP offset; the alias inherits `parent_offset + field_offset`.
+    DefineDpAllocAlias {
+        name: String,
+        parent: String,
+        field_offset: u8,
+    },
     /// Sets the register width state for the emitter without emitting any bytes.
     /// Used by code blocks inside data sections where 8-bit mode is implied.
     SetMode(ModeContract),

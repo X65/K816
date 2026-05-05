@@ -1,12 +1,16 @@
+[DP]
+    $00..$01: shell_str_ptr
+
+
 [obj#0 default]
-000000: C2 20 B2 05 60
+000000: C2 20 B2 00 60
 
 
 [obj#1 default]
-000005: 00 00
+(empty)
 
 
 [disasm obj#0 default::main]
 000000: C2 20       rep #$20
-000002: B2 05       lda ($05)
+000002: B2 00       lda ($00)
 000004: 60          rts

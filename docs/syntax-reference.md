@@ -23,32 +23,62 @@ Within evaluator expressions, floating-point literals are also supported (e.g. `
 
 ## Variable Declaration
 
-Variables in K65 are named storage slots. Their final address is decided at one of two points:
+Variables in K65 are named storage slots. Each declaration belongs to **one of three orthogonal storage classes** that determine where the variable lives and how plain references encode:
 
-- `var foo = $80` — **fixed at compile time**. The right-hand side must reduce to a constant numeric expression; the assembler bakes the address into every reference. Use this for hardware-mapped I/O (`var VIA = $6000`) or any slot whose location is dictated externally.
-- `var foo` — **assigned by the linker** at link time. The variable lands inside the *current segment* (the lexically most recent `segment` directive, defaulting to `default`), and the linker maps the segment to a memory region according to the `.ld.ron` config — same machinery code/data chunks already use.
+| Class              | Syntax                              | Address width | Auto-allocator                              | Initializer required? |
+| ------------------ | ----------------------------------- | ------------- | ------------------------------------------- | --------------------- |
+| Direct page        | `var dp NAME[:w]`                   | 1 byte        | global 256-byte logical pool, **link-time** | no                    |
+| Absolute (default) | `var NAME[:w]` or `var abs NAME[:w]`| 2 bytes       | per-segment cursor                          | no                    |
+| Far                | `var far NAME[:w]`                  | 3 bytes       | **none — must have an explicit address**    | yes                   |
+
+Storage class is set by the `dp` / `abs` / `far` prefix before the name. It is **independent** of the data-width suffix (`:byte`, `:word`, `:far`) — `var dp ptr:far` means a 3-byte FAR pointer **stored** in a 1-byte DP slot, addressable through `[ptr]`-style indirect-long forms. See the "two orthogonal axes" section below.
+
+The final address of a variable is decided at one of two points:
+
+- `var dp foo = $80` / `var foo = $80` / `var far foo = $7E0000` — **fixed at compile time**. The right-hand side must reduce to a constant numeric expression; the assembler bakes the address into every reference. Use this for hardware-mapped I/O (`var VIA = $6000`), pinned DP slots, or any FAR symbol whose bank you control externally.
+- `var foo` / `var dp foo` — **assigned by the linker** at link time. ABS-class vars land in the *current segment* (the lexically most recent `segment` directive, defaulting to `default`); DP-class vars share a single 256-byte logical pool that the linker manages **independently of any segment or memory region**.
 
 ```k65
-var foo = $80           // Fixed: 'foo' lives at $0080
-var bar                 // Allocated: linker places it in the default segment
-var bar2                // Allocated: next slot in the default segment
-var arr[10]             // Allocated: 10-byte slot in the current segment
+var foo = $80           // Fixed ABS: 'foo' lives at $0080
+var bar                 // Allocated ABS: linker places it in the default segment
+var dp counter          // Allocated DP: linker assigns a slot in the 256-byte DP pool
+var dp meter = $42      // Pinned DP: 'meter' lives at DP $42
+var far rom_table = $C00000   // Fixed FAR: 24-bit address, no auto-allocation
+var arr[10]             // Allocated ABS: 10-byte slot in the current segment
 ```
 
-The `[N]` suffix reserves N bytes for the slot. For Allocated vars, the per-segment offset advances by N; for Fixed vars, the slot occupies N bytes starting at the explicit address but does not perturb any auto-allocator.
+The `[N]` suffix reserves N bytes for the slot. For Allocated vars, the per-segment cursor (ABS) or the DP pool cursor (DP) advances by N; for Fixed vars, the slot occupies N bytes starting at the explicit address but does not perturb either auto-allocator.
 
-A `segment NAME` directive selects which segment subsequent Allocated vars land in:
+A `segment NAME` directive selects which segment subsequent Allocated **ABS** vars land in (DP is segment-orthogonal — `segment` does not affect DP placement):
 
 ```k65
 segment fixed_lo
-var slot_a:word          // Allocated in fixed_lo, offset 0
-var slot_b:byte          // Allocated in fixed_lo, offset 2
+var slot_a:word          // Allocated ABS in fixed_lo, offset 0
+var slot_b:byte          // Allocated ABS in fixed_lo, offset 2
+var dp scratch_a         // Allocated DP, slot 0 in the DP pool — `segment` directive ignored
 
 segment default
-var scratch              // Allocated in default
+var scratch              // Allocated ABS in default
+var dp scratch_b         // Allocated DP, next slot in the DP pool
 ```
 
-Allocated vars default to **16-bit absolute** address encoding because the encoder cannot prove the final address fits direct-page until the linker places the segment. To get DP encoding, declare the var with the `dp` prefix (`var dp counter:byte`); the assembler emits a DP-width relocation that the linker rejects if the resolved address overflows `$00..$FF`.
+### Direct-page storage (`var dp`)
+
+The 65816 direct page is a **runtime-relocatable** 256-byte window addressed with 1-byte offsets relative to the D register (`tcd`/`pld`). It is logically distinct from the program-bank and data-bank address spaces and is not a fixed memory region the assembler can write to. K65 models DP as a **global 256-byte logical pool**, not as bytes inside a segment:
+
+- `var dp NAME` requests a slot of `sizeof(NAME)` bytes from the pool. The linker assigns the final 8-bit DP offset by **first-fit** in declaration order within each compilation unit, and in **link-input order** between units. The assembler does not emit any bytes for DP allocations — runtime is responsible for setting D and providing backing RAM.
+- `var dp NAME = $X` pins NAME to a specific DP offset (`$X` must be `≤ $FF`). Pinned slots reserve their byte range so the auto-allocator skips them. **Multiple pinned DP vars at the same offset are allowed by design** — useful for typed views over the same DP slot.
+- DP pool overflow (>256 bytes total across all linked units) produces a rich diagnostic at link time pointing at the failing declaration.
+- DP storage is independent of `segment` directives and the linker's `memory` / `segments` config. There is no `MemoryKind::DirectPage` and no DP-section concept; the linker only tracks symbol-name → 8-bit DP offset.
+
+### Far storage (`var far`)
+
+`var far` declares a 24-bit-addressable variable. Because the assembler has no notion of which 64K bank should hold an unaddressed FAR symbol, **FAR auto-allocation is rejected** — the user must supply an explicit address:
+
+```k65
+var far rom_table = $C00000  // OK: bank $C0, offset $0000
+var far missing_addr         // ERROR: FAR variable must have an explicit address
+```
 
 ### Allocation Count
 

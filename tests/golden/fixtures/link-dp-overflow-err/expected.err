@@ -1,0 +1,23 @@
+Error: DP pool exhausted while allocating 'bulk_b' (100 bytes requested, 56 bytes free out of 256)
+   ╭─[ tests/golden/fixtures/link-dp-overflow-err/input.20-bulk_b.k65:1:1 ]
+   │
+ 1 │ var dp bulk_b[100]
+   │ ─────────┬────────  
+   │          ╰────────── no DP slot available
+   │ 
+   │ Help: consolidate DP usage by moving non-hot vars to absolute storage (`var bulk_b` instead of `var dp bulk_b`), or pin selected DP vars to specific offsets to free contiguous runs
+   │ 
+   │ Note: DP is a 256-byte logical pool. The runtime decides where it physically lives via `tcd`/`pld`; the assembler only tracks 8-bit offsets within the page, so total DP allocation cannot exceed 256 bytes per link group.
+───╯
+
+Error: undefined symbol 'bulk_b'
+   ╭─[ tests/golden/fixtures/link-dp-overflow-err/input.20-bulk_b.k65:5:9 ]
+   │
+ 5 │     lda bulk_b
+   │         ───┬──  
+   │            ╰──── symbol 'bulk_b' referenced here
+   │ 
+   │ Help: no `func`, `var`, `const`, or top-level label named 'bulk_b' is exported by any of the linked objects; check the spelling, declare/define the symbol in one of the source files, or add the missing source to the project so the linker sees it
+   │ 
+   │ Note: Symbol resolution happens at link time across every `.o65` in the project. Missing-symbol errors usually mean a source file was not compiled into the link group, or an `inline` import / cross-unit reference was renamed.
+───╯

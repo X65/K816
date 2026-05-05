@@ -1,0 +1,15 @@
+var dp pinned_lo = $00
+var dp pinned_aliased = $00
+var dp pinned_mid = $10
+var dp auto_a
+var dp auto_b
+var dp auto_c
+
+func main @a8 @i8 {
+    lda pinned_lo
+    lda pinned_aliased
+    lda pinned_mid
+    lda auto_a
+    lda auto_b
+    lda auto_c
+}

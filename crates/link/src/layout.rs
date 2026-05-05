@@ -1,4 +1,5 @@
 mod anchors;
+mod dp;
 
 use anyhow::{Context, Result};
 use k816_o65::{
@@ -58,6 +59,7 @@ pub(super) struct AnchorContext {
 }
 
 const ABSOLUTE_SYMBOL_SEGMENT: &str = "__absolute__";
+pub(crate) const DP_SYMBOL_SEGMENT: &str = "__dp__";
 
 pub fn link_objects(objects: &[O65Object], config: &LinkerConfig) -> Result<LinkedLayout> {
     link_objects_with_options(objects, config, LinkRenderOptions::plain())
@@ -268,7 +270,13 @@ pub fn link_objects_diagnostics(
         chunks.sort_by_key(|chunk| chunk.section_offset);
     }
 
-    // Phase 5: build the symbol table. Duplicates are accumulated, not fatal —
+    // Phase 5a: allocate the DP pool. DP is segment-orthogonal — see
+    // `crates/link/src/layout/dp.rs`. Failures still return the partial
+    // allocation map so symbols that *did* fit resolve cleanly downstream.
+    let (dp_alloc, dp_errors) = dp::allocate(objects);
+    errors.extend(dp_errors);
+
+    // Phase 5b: build the symbol table. Duplicates are accumulated, not fatal —
     // the first definition wins and processing continues so that downstream
     // relocation errors still surface.
     let mut symbols: HashMap<String, ResolvedSymbol> = HashMap::new();
@@ -310,12 +318,33 @@ pub fn link_objects_diagnostics(
                     segment: ABSOLUTE_SYMBOL_SEGMENT.to_string(),
                     source: source.clone(),
                 },
+                SymbolDefinition::DirectPageFixed { offset, source } => ResolvedSymbol {
+                    addr: *offset as u32,
+                    segment: DP_SYMBOL_SEGMENT.to_string(),
+                    source: source.clone(),
+                },
+                SymbolDefinition::DirectPageAlloc { source, .. }
+                | SymbolDefinition::DirectPageAllocAlias { source, .. } => {
+                    let Some(resolved) = dp_alloc.symbols.get(&symbol.name) else {
+                        // Allocator failed for this symbol (overflow). Diagnostic
+                        // already pushed; skip to avoid cascading errors.
+                        continue;
+                    };
+                    ResolvedSymbol {
+                        addr: resolved.offset as u32,
+                        segment: DP_SYMBOL_SEGMENT.to_string(),
+                        source: source.clone(),
+                    }
+                }
             };
 
             if let Some(existing) = symbols.get(&symbol.name) {
                 let new_source = match def {
                     SymbolDefinition::Section { source, .. }
-                    | SymbolDefinition::Absolute { source, .. } => source.as_ref(),
+                    | SymbolDefinition::Absolute { source, .. }
+                    | SymbolDefinition::DirectPageFixed { source, .. }
+                    | SymbolDefinition::DirectPageAlloc { source, .. }
+                    | SymbolDefinition::DirectPageAllocAlias { source, .. } => source.as_ref(),
                 };
                 errors.push(duplicate_symbol_diagnostic(
                     &symbol.name,
@@ -396,6 +425,14 @@ pub fn link_objects_diagnostics(
 
     let mut listing_blocks = Vec::new();
     let include_object_index = objects.len() > 1;
+
+    // DP block: render the auto-allocated DP layout if any DP vars exist.
+    // Pinned DP vars are listed in encounter order from the DP allocator
+    // (which records them as it processes objects).
+    if !dp_alloc.symbols.is_empty() {
+        listing_blocks.push(format_dp_listing(&dp_alloc, objects));
+    }
+
     for key in &section_order {
         let object_index = key.0;
         let segment_name = &key.1;
@@ -484,6 +521,51 @@ fn render_link_diagnostic_legacy(diag: &LinkDiagnostic, options: LinkRenderOptio
 /// Build an anchorless error diagnostic — used for internal/structural
 /// failures (config validation, memory overflows) where there is no source
 /// position to attribute to the user's code.
+/// Renders a `[DP]` block summarising direct-page slot assignments for both
+/// pinned (`var dp NAME = $X`) and auto-allocated (`var dp NAME`) symbols.
+/// Listed in DP-offset order so the page layout reads top-to-bottom; intra-row
+/// rendering keeps fields together with their parent.
+fn format_dp_listing(dp_alloc: &dp::DpAllocations, objects: &[O65Object]) -> String {
+    let mut entries: Vec<(u8, &str, Option<u8>)> = Vec::new();
+    for object in objects {
+        for symbol in &object.symbols {
+            match &symbol.definition {
+                Some(SymbolDefinition::DirectPageFixed { offset, .. }) => {
+                    entries.push((*offset, symbol.name.as_str(), Some(1)));
+                }
+                Some(SymbolDefinition::DirectPageAlloc { size, .. }) => {
+                    if let Some(resolved) = dp_alloc.symbols.get(&symbol.name) {
+                        entries.push((resolved.offset, symbol.name.as_str(), Some(*size)));
+                    }
+                }
+                Some(SymbolDefinition::DirectPageAllocAlias { .. }) => {
+                    if let Some(resolved) = dp_alloc.symbols.get(&symbol.name) {
+                        // Aliases have no independent size; render them as zero-width.
+                        entries.push((resolved.offset, symbol.name.as_str(), None));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    let mut out = String::from("[DP]\n");
+    for (offset, name, size) in entries {
+        match size {
+            Some(size) if size > 1 => {
+                out.push_str(&format!("    ${offset:02X}..${:02X}: {name}\n", offset.saturating_add(size).saturating_sub(1)));
+            }
+            Some(_) => {
+                out.push_str(&format!("    ${offset:02X}: {name}\n"));
+            }
+            None => {
+                out.push_str(&format!("    ${offset:02X}: {name} (alias)\n"));
+            }
+        }
+    }
+    out
+}
+
 fn anchorless_error(message: impl Into<String>) -> LinkDiagnostic {
     LinkDiagnostic {
         severity: LinkSeverity::Error,

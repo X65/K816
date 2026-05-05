@@ -1,0 +1,17 @@
+[DP]
+    $00..$03: gpio
+    $00: gpio.ddr (alias)
+    $01: gpio.data (alias)
+    $02: gpio.latch (alias)
+
+
+[default]
+000200: A5 00 85 01 C2 20 A5 02 60
+
+
+[disasm obj#0 default::main]
+000200: A5 00       lda $00
+000202: 85 01       sta $01
+000204: C2 20       rep #$20
+000206: A5 02       lda $02
+000208: 60          rts

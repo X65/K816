@@ -1,0 +1,31 @@
+(
+  format: "o65-link",
+  target: Some("golden-syntax-symbolic-subscripts-dp"),
+  memory: [
+    (
+      name: "MAIN",
+      start: 0,
+      size: 65536,
+      kind: ReadWrite,
+      fill: Some(0),
+    ),
+  ],
+  segments: [
+    (
+      id: "DEFAULT",
+      load: "MAIN",
+      run: None,
+      align: Some(1),
+      start: Some(0x0200),
+      offset: None,
+      optional: false,
+      segment: None,
+    ),
+  ],
+  symbols: [],
+  output: (
+    kind: RawBinary,
+    file: Some("expected.bin"),
+  ),
+  entry: None,
+)

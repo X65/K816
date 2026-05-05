@@ -1,0 +1,2 @@
+var dp scratch_a:word
+var dp scratch_b:word

@@ -30,6 +30,21 @@ pub fn format_ir(program: &Program) -> String {
             Op::DefineSectionSymbol { name } => {
                 out.push_str(&format!("section_symbol {name}\n"));
             }
+            Op::DefineDpFixedSymbol { name, offset } => {
+                out.push_str(&format!("dp_symbol {name} {offset:#X}\n"));
+            }
+            Op::DefineDpAllocSymbol { name, size } => {
+                out.push_str(&format!("dp_alloc {name} size={size}\n"));
+            }
+            Op::DefineDpAllocAlias {
+                name,
+                parent,
+                field_offset,
+            } => {
+                out.push_str(&format!(
+                    "dp_alias {name} parent={parent} +{field_offset}\n"
+                ));
+            }
             Op::SetMode(_) => {
                 out.push_str("set_mode\n");
             }

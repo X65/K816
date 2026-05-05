@@ -1,0 +1,6 @@
+var dp bulk_b[100]
+
+func main @a8 @i8 {
+    lda bulk_a
+    lda bulk_b
+}

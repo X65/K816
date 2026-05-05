@@ -35,13 +35,31 @@ pub(super) fn hover_contents_for_symbol(
             return hover_contents_for_constant(symbol.name.as_str(), *meta);
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
-            let address_line = match meta.compile_time_address() {
-                Some(addr) => format!("- address: `{}`", format_address(addr)),
-                None => "- address: `<linker-allocated>`".to_string(),
+            let address_line = match (&meta.placement, meta.compile_time_address()) {
+                (_, Some(addr)) => match meta.addr_mode_default {
+                    Some(k816_core::ast::ForceAddrMode::DirectPage) => {
+                        format!("- address: `dp +{:#04X}`", addr & 0xFF)
+                    }
+                    _ => format!("- address: `{}`", format_address(addr)),
+                },
+                (k816_core::sema::VarPlacement::AllocatedDp, _) => {
+                    "- address: `<DP-pool>`".to_string()
+                }
+                (k816_core::sema::VarPlacement::AllocatedAbs { .. }, _) => {
+                    "- address: `<linker-allocated>`".to_string()
+                }
+                (k816_core::sema::VarPlacement::Fixed { .. }, _) => unreachable!(),
+            };
+            let storage_line = match meta.addr_mode_default {
+                Some(k816_core::ast::ForceAddrMode::DirectPage) => "- storage: `dp`",
+                Some(k816_core::ast::ForceAddrMode::Absolute) => "- storage: `abs`",
+                Some(k816_core::ast::ForceAddrMode::AbsoluteLong) => "- storage: `far`",
+                None => "- storage: `abs` (default)",
             };
             let mut lines = vec![
                 format!("**variable** `{}`", symbol.name),
                 address_line,
+                storage_line.to_string(),
                 format!("- size: `{}`", meta.size),
             ];
             if let Some(ss) = &meta.symbolic_subscript {

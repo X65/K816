@@ -1,5 +1,10 @@
 pub(crate) const DEFAULT_SEGMENT: &str = "default";
 
+/// Magic key in the per-unit cursor map used to track auto-allocated direct-page
+/// usage. DP is segment-orthogonal, so it cannot share keys with real segment
+/// names; the leading `__` keeps it distinct from any user-declared segment id.
+pub(crate) const DP_CURSOR_KEY: &str = "__dp_pool__";
+
 pub mod ast;
 pub mod diag;
 pub mod driver;

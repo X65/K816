@@ -1,0 +1,21 @@
+[DP]
+    $00: pinned_aliased
+    $00: pinned_lo
+    $01: auto_a
+    $02: auto_b
+    $03: auto_c
+    $10: pinned_mid
+
+
+[default]
+000200: A5 00 A5 00 A5 10 A5 01 A5 02 A5 03 60
+
+
+[disasm obj#0 default::main]
+000200: A5 00       lda $00
+000202: A5 00       lda $00
+000204: A5 10       lda $10
+000206: A5 01       lda $01
+000208: A5 02       lda $02
+00020A: A5 03       lda $03
+00020C: 60          rts

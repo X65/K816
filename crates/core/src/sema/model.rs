@@ -89,17 +89,24 @@ pub struct SymbolicSubscriptMeta {
 
 /// Where a `var` lives in memory.
 ///
-/// `Fixed` means the declaration carried an explicit constant initializer
-/// (`var X = $1234`) — the address is baked at compile time and every
-/// reference uses it directly.
+/// The variant tracks both the storage class (DP / ABS / FAR) and whether the
+/// address is compile-time-known.
 ///
-/// `Allocated` means the declaration had no initializer; sema only knows the
-/// var's offset within a chosen output segment, and the linker assigns the
-/// final address using the segment's placement rule from the `.ld.ron` config.
+/// - `Fixed` covers any var with an explicit initializer (`var X = $1234`).
+///   The storage class still matters for slot-pinning in the DP allocator and
+///   is recovered from `VarMeta.addr_mode_default`.
+/// - `AllocatedAbs` is an ABS-class var with no initializer. Sema picks an
+///   offset within the var's segment via a per-segment cursor; the linker
+///   resolves the segment's base.
+/// - `AllocatedDp` is a DP-class var with no initializer. The linker picks
+///   the final 8-bit DP offset by first-fit allocation across all input
+///   objects in link-input order; sema only carries `VarMeta.size` for the
+///   request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarPlacement {
     Fixed { address: u32 },
-    Allocated { segment: String, offset: u32 },
+    AllocatedAbs { segment: String, offset: u32 },
+    AllocatedDp,
 }
 
 impl VarPlacement {
@@ -108,7 +115,7 @@ impl VarPlacement {
     pub fn compile_time_address(&self) -> Option<u32> {
         match self {
             VarPlacement::Fixed { address } => Some(*address),
-            VarPlacement::Allocated { .. } => None,
+            VarPlacement::AllocatedAbs { .. } | VarPlacement::AllocatedDp => None,
         }
     }
 }

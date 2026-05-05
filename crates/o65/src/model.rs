@@ -68,6 +68,29 @@ pub enum SymbolDefinition {
         address: u32,
         source: Option<SourceLocation>,
     },
+    /// `var dp NAME = $X` — pinned DP slot. Reserves the byte at `offset` in
+    /// the global 256-byte DP usage map so auto-allocator skips it. Multiple
+    /// `DirectPageFixed` symbols may share an offset (intentional aliasing).
+    DirectPageFixed {
+        offset: u8,
+        source: Option<SourceLocation>,
+    },
+    /// `var dp NAME` (no initializer) — auto-allocation request for `size`
+    /// bytes in the DP pool. Final 8-bit offset is assigned by the linker
+    /// using first-fit across all input objects in link-input order.
+    DirectPageAlloc {
+        size: u8,
+        source: Option<SourceLocation>,
+    },
+    /// Symbolic-subscript field on an auto-allocated DP parent: resolves to
+    /// `parent`'s assigned DP offset plus `field_offset`. Used so field
+    /// aliases ride along with their parent without needing a second
+    /// allocation request.
+    DirectPageAllocAlias {
+        parent: String,
+        field_offset: u8,
+        source: Option<SourceLocation>,
+    },
 }
 
 #[derive(Debug, Clone)]

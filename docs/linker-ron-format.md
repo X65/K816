@@ -217,6 +217,35 @@ Semantics:
 - Type: `Option<String>`
 - Notes: currently parsed as metadata.
 
+## Direct-page (DP) variables — invisible to RON
+
+DP-class variables (`var dp NAME` / `var dp NAME = $X`) are deliberately **not**
+configurable through `.ld.ron`. The 65816 direct page is runtime-relocatable
+(any 16-bit base via `tcd`/`pld`) and lives in an addressing space disjoint
+from the program-bank and data-bank spaces, so the linker treats DP as a
+**256-byte logical pool** rather than a memory region:
+
+- There is no `MemoryKind::DirectPage`, no DP segment rule, no `__dp__`
+  section. Adding entries to `memory:` or `segments:` for DP has no effect.
+- DP allocations emit zero bytes into the output binary. The user is
+  responsible for setting the `D` register at runtime and ensuring whatever
+  bytes back the DP window are actually present in RAM.
+- Auto-allocation is by **first-fit** in declaration order within each
+  compilation unit, then in **link-input order** between units. Pinned
+  slots (`var dp NAME = $X`) reserve their byte range so the auto-allocator
+  skips it. Multiple pinned vars at the same offset are allowed by design
+  (intentional aliasing).
+- Total DP usage across all linked objects must fit in 256 bytes. Overflow
+  produces a rich diagnostic at link time pointing at the failing
+  declaration.
+- The linker emits a `[DP]` block at the top of the listing showing every
+  resolved DP slot (pinned + auto + symbolic-subscript-field aliases).
+
+`var far NAME` is the other special case: FAR vars must always carry an
+explicit `= <addr>` initializer because the assembler has no notion of
+which 64K bank to place an unaddressed FAR symbol in. FAR placement
+therefore needs no linker-config help either.
+
 ## CLI Output Path Resolution
 
 `k816` also supports an explicit format override:

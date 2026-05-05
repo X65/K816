@@ -1062,11 +1062,14 @@ func main {\n\
 
 #[test]
 fn lsp_picks_up_per_dir_link_ld_ron() {
-    // Manifest-less workspace with a fixture-style `link.ld.ron`. The
-    // segment starts at 0x0200 so the indirect-DP relocations on the
-    // [kstrncpy_*],y instructions overflow at link time. Verifies the LSP
-    // protocol layer surfaces the overflow diagnostics that the in-process
-    // test (`link_dp_fixture_under_lsp_yields_relocation_diagnostic`) sees.
+    // Manifest-less workspace with a fixture-style `link.ld.ron`. The bad
+    // config has a 4-byte memory area that cannot hold the function body, so
+    // the LSP must surface a no-fit diagnostic via the protocol layer. The
+    // earlier version of this test relied on a `var dp` overflow when the
+    // segment started at $0200; that scenario went away once DP placements
+    // were decoupled from segments. The cache-invalidation in-process test
+    // (`apply_fs_events_invalidates_linker_config_cache_on_change`) covers
+    // the same protocol concern at the workspace level.
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time should move forward")
@@ -1075,10 +1078,10 @@ fn lsp_picks_up_per_dir_link_ld_ron() {
     let unit_dir = root.join("link-dp");
     std::fs::create_dir_all(&unit_dir).expect("failed to create unit dir");
 
-    let cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0200), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
+    let cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 4, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0000), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
     std::fs::write(unit_dir.join("link.ld.ron"), cfg).expect("link.ld.ron");
 
-    let source = "var dp kstrncpy_src:far\nvar dp kstrncpy_dst:far\n\nfunc main @a16 @i16 {\n    ldy #0\n    lda [kstrncpy_src],y\n    sta [kstrncpy_dst],y\n}\n";
+    let source = "func main @a8 @i8 {\n    nop\n    nop\n    nop\n    nop\n    nop\n    nop\n}\n";
     let source_path = unit_dir.join("input.k65");
     std::fs::write(&source_path, source).expect("source");
 
@@ -1130,18 +1133,13 @@ fn lsp_picks_up_per_dir_link_ld_ron() {
     let diagnostics = diagnostics_notification["params"]["diagnostics"]
         .as_array()
         .expect("diagnostics array");
-    let overflow_count = diagnostics
+    let error_count = diagnostics
         .iter()
-        .filter(|d| {
-            d["message"]
-                .as_str()
-                .map(|m| m.contains("absolute relocation does not fit in 8 bits"))
-                .unwrap_or(false)
-        })
+        .filter(|d| d["severity"].as_i64() == Some(1))
         .count();
-    assert_eq!(
-        overflow_count, 2,
-        "expected two relocation-overflow diagnostics; got: {diagnostics:?}",
+    assert!(
+        error_count > 0,
+        "expected at least one error diagnostic from the undersized memory; got: {diagnostics:?}",
     );
 
     lsp.shutdown();

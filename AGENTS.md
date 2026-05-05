@@ -238,3 +238,25 @@ Token-kind-specific enrichment for unexpected tokens (e.g. stray `}`, operator a
   - Scope intentionally excludes feature 21 (conditional breakpoints) and 22 (data breakpoints/watchpoints).
   - Inline symbol memory reads are limited to `read_size_hint` 1 or 2; larger symbols currently render address-only inline text.
   - Inline values depend on a stopped `k816` debug session and current LSP symbol/address state.
+
+- DP / ABS / FAR variable address spaces were decoupled.
+- Implementation path:
+  - Sema placement split: `crates/core/src/sema/model.rs` (`VarPlacement::{Fixed, AllocatedAbs, AllocatedDp}`), `crates/core/src/sema/vars.rs` (DP cursor, FAR-no-addr rejection, fixed-DP range check)
+  - HIR ops: `crates/core/src/hir/mod.rs` adds `DefineDpFixedSymbol`, `DefineDpAllocSymbol`, `DefineDpAllocAlias`
+  - Lowering: `crates/core/src/lower.rs` (`emit_var_absolute_symbols`, dotted-name DP hint inheritance in `address_size_hint_for_operand`)
+  - Object format: `crates/o65/src/model.rs` adds `SymbolDefinition::{DirectPageFixed, DirectPageAlloc, DirectPageAllocAlias}` (payload version 9); `crates/o65/src/codec.rs` round-trips them
+  - Linker DP allocator: `crates/link/src/layout/dp.rs` (first-fit 256-byte bitmap, pin + allocate + alias passes), wired into `crates/link/src/layout.rs`
+  - Listing: `[DP]` block in `crates/link/src/layout.rs` (`format_dp_listing`)
+  - LSP hover: `crates/lsp/src/hover.rs` surfaces DP storage class and offset
+  - Docs: `docs/syntax-reference.md` (storage classes), `docs/linker-ron-format.md` (DP is invisible to RON)
+  - Coverage: `tests/golden/fixtures/link-dp/` (the bug fixture), `link-dp-mixed/` (multi-unit), `link-dp-fixed-and-auto/` (pinned + auto, intentional aliasing), `link-dp-overflow-err/` (>256 bytes), `link-dp-fixed-out-of-range-err/` (`var dp = $0100`), `var-far-no-addr-err/`, `syntax-symbolic-subscripts-dp/`
+- Semantics:
+  - DP-class vars (`var dp NAME`) live in a 256-byte logical pool managed at link time, fully decoupled from segments and `MemoryKind`. Auto-allocation is first-fit in declaration order within a unit, link-input order between units.
+  - FAR-class vars (`var far NAME`) require an explicit `= <addr>` initializer; the assembler does not auto-allocate banks.
+  - ABS-class vars (`var NAME` / `var abs NAME`) keep the existing per-segment cursor behaviour.
+  - Fixed-DP collisions (`var dp foo = $42` and `var dp bar = $42`) are intentionally allowed for typed-view aliasing.
+  - Symbolic-subscript fields on a DP parent inherit the DP encoding hint via dotted-name lookup in `address_size_hint_for_operand` and resolve to `parent_dp_offset + field_offset`.
+- Constraints:
+  - DP pool overflow (>256 bytes total across all linked objects) is rejected with a rich link-time diagnostic.
+  - DP fixed offsets must be `≤ $FF` — pinned offsets that don't fit in a byte are rejected at sema.
+  - DP is invisible to RON: there is no `MemoryKind::DirectPage`, no DP segment rule, no `__dp__` section.

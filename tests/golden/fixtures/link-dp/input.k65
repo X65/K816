@@ -1,0 +1,8 @@
+var dp kstrncpy_src:far
+var dp kstrncpy_dst:far
+
+func main @a16 @i16 {
+    ldy #0
+    lda [kstrncpy_src],y
+    sta [kstrncpy_dst],y
+}

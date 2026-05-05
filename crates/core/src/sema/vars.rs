@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::ast::ForceAddrMode;
+
 use super::*;
 
 pub(super) fn collect_var(
@@ -60,27 +62,130 @@ fn eval_var_placement(
 ) -> Option<VarPlacement> {
     if let Some(initializer) = &var.initializer {
         let address = eval_var_fixed_address(var, initializer, span, consts, diagnostics)?;
+        if matches!(var.addr_mode_default, Some(ForceAddrMode::DirectPage)) && address > 0xFF {
+            diagnostics.push(
+                Diagnostic::error(
+                    var.initializer_span.unwrap_or(span),
+                    format!(
+                        "DP variable '{}' fixed offset {:#06X} exceeds the direct page (0x00..=0xFF)",
+                        var.name, address
+                    ),
+                )
+                .with_primary_label("DP offset out of range")
+                .with_help(format!(
+                    "use an offset in the range 0x00..=0xFF, or remove the `dp` prefix to declare '{}' as an absolute (16-bit) variable",
+                    var.name
+                ))
+                .with_note(
+                    "`var dp NAME = $X` pins the variable to a slot inside the 256-byte direct page. The slot is 1 byte wide because DP-mode addressing always uses a u8 offset relative to the runtime D register; 16-bit values cannot encode there.",
+                ),
+            );
+            return None;
+        }
         return Some(VarPlacement::Fixed { address });
     }
 
-    // No initializer — the linker assigns the final address; sema tracks an
-    // offset within the current segment via per-segment cursors.
-    let offset = *cursors.get(current_segment).unwrap_or(&0);
-    let Some(next_offset) = offset.checked_add(size) else {
-        diagnostics.push(Diagnostic::error(
-            span,
-            format!(
-                "var allocation for '{}' overflows segment '{current_segment}' (start_offset={offset:#X}, size={size})",
-                var.name
-            ),
-        ));
-        return None;
-    };
-    cursors.insert(current_segment.to_string(), next_offset);
-    Some(VarPlacement::Allocated {
-        segment: current_segment.to_string(),
-        offset,
-    })
+    // No initializer — the linker assigns the final address.
+    match var.addr_mode_default {
+        Some(ForceAddrMode::AbsoluteLong) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!(
+                        "FAR variable '{}' must have an explicit address",
+                        var.name
+                    ),
+                )
+                .with_primary_label("missing address for far variable")
+                .with_help(format!(
+                    "give '{}' an address (e.g. `var far {} = $7E0000`); the assembler does not auto-allocate FAR storage because it has no notion of which 64K bank to place it in",
+                    var.name, var.name
+                ))
+                .with_note(
+                    "FAR variables live in the 24-bit address space and are addressed with long-form opcodes. Auto-allocation is only available for DP (256-byte logical pool) and ABS (per-segment cursor) storage classes; banked FAR placement is the user's responsibility.",
+                ),
+            );
+            None
+        }
+        Some(ForceAddrMode::DirectPage) => {
+            if size > 256 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "DP variable '{}' size {} bytes exceeds the 256-byte direct page",
+                            var.name, size
+                        ),
+                    )
+                    .with_primary_label("oversized DP variable")
+                    .with_help(format!(
+                        "shrink '{}' or move it out of DP — declare it as `var {}` (absolute) so it lives in the segment instead",
+                        var.name, var.name
+                    ))
+                    .with_note(
+                        "The direct page is a single 256-byte window; a single variable cannot exceed that bound.",
+                    ),
+                );
+                return None;
+            }
+            // Track unit-local DP usage with a synthetic cursor key so the
+            // existing per-segment cursor map can host it without leaking the
+            // name into segment-rule selection.
+            let used = *cursors.get(crate::DP_CURSOR_KEY).unwrap_or(&0);
+            let Some(next_used) = used.checked_add(size) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!(
+                        "DP variable '{}' allocation overflows: per-unit DP usage already at {:#X} bytes",
+                        var.name, used
+                    ),
+                ));
+                return None;
+            };
+            if next_used > 256 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "DP variable '{}' would push per-unit DP usage to {} bytes (limit: 256)",
+                            var.name, next_used
+                        ),
+                    )
+                    .with_primary_label("DP pool exhausted")
+                    .with_help(format!(
+                        "consolidate DP usage by moving non-hot vars to absolute storage (`var {}` instead of `var dp {}`), or pin selected DP vars to specific offsets to free contiguous runs",
+                        var.name, var.name
+                    ))
+                    .with_note(
+                        "DP is a 256-byte logical pool. The runtime decides where it physically lives via `tcd`/`pld`; the assembler only tracks 8-bit offsets within the page, so total DP allocation cannot exceed 256 bytes per compilation unit.",
+                    ),
+                );
+                return None;
+            }
+            cursors.insert(crate::DP_CURSOR_KEY.to_string(), next_used);
+            Some(VarPlacement::AllocatedDp)
+        }
+        _ => {
+            // Absolute (default and `abs`-prefixed) — keep the existing
+            // per-segment cursor.
+            let offset = *cursors.get(current_segment).unwrap_or(&0);
+            let Some(next_offset) = offset.checked_add(size) else {
+                diagnostics.push(Diagnostic::error(
+                    span,
+                    format!(
+                        "var allocation for '{}' overflows segment '{current_segment}' (start_offset={offset:#X}, size={size})",
+                        var.name
+                    ),
+                ));
+                return None;
+            };
+            cursors.insert(current_segment.to_string(), next_offset);
+            Some(VarPlacement::AllocatedAbs {
+                segment: current_segment.to_string(),
+                offset,
+            })
+        }
+    }
 }
 
 fn eval_var_fixed_address(

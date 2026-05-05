@@ -3,7 +3,7 @@ use super::*;
 pub(super) const O65_MAGIC: &[u8; 5] = b"\x01\x00o65";
 pub(super) const O65_VERSION: u8 = 0;
 const O65_MODE_RELOCATABLE: u16 = 0x0000;
-const PAYLOAD_VERSION: u16 = 8;
+const PAYLOAD_VERSION: u16 = 9;
 
 pub fn encode_object(object: &O65Object) -> Result<Vec<u8>> {
     validate_object(object)?;
@@ -92,6 +92,59 @@ fn encode_payload(object: &O65Object) -> Result<Vec<u8>> {
                 out.push(1);
                 out.push(1);
                 write_u32(&mut out, *address);
+                match source {
+                    Some(source) => {
+                        out.push(1);
+                        write_string(&mut out, &source.file)?;
+                        write_u32(&mut out, source.line);
+                        write_u32(&mut out, source.column);
+                        write_u32(&mut out, source.column_end);
+                        write_string(&mut out, &source.line_text)?;
+                    }
+                    None => out.push(0),
+                }
+            }
+            Some(SymbolDefinition::DirectPageFixed { offset, source }) => {
+                out.push(1);
+                out.push(2);
+                out.push(*offset);
+                match source {
+                    Some(source) => {
+                        out.push(1);
+                        write_string(&mut out, &source.file)?;
+                        write_u32(&mut out, source.line);
+                        write_u32(&mut out, source.column);
+                        write_u32(&mut out, source.column_end);
+                        write_string(&mut out, &source.line_text)?;
+                    }
+                    None => out.push(0),
+                }
+            }
+            Some(SymbolDefinition::DirectPageAlloc { size, source }) => {
+                out.push(1);
+                out.push(3);
+                out.push(*size);
+                match source {
+                    Some(source) => {
+                        out.push(1);
+                        write_string(&mut out, &source.file)?;
+                        write_u32(&mut out, source.line);
+                        write_u32(&mut out, source.column);
+                        write_u32(&mut out, source.column_end);
+                        write_string(&mut out, &source.line_text)?;
+                    }
+                    None => out.push(0),
+                }
+            }
+            Some(SymbolDefinition::DirectPageAllocAlias {
+                parent,
+                field_offset,
+                source,
+            }) => {
+                out.push(1);
+                out.push(4);
+                write_string(&mut out, parent)?;
+                out.push(*field_offset);
                 match source {
                     Some(source) => {
                         out.push(1);
@@ -289,6 +342,19 @@ fn decode_payload(payload: &[u8]) -> Result<O65Object> {
                     }),
                     1 => Some(SymbolDefinition::Absolute {
                         address: rd.read_u32()?,
+                        source: source(&mut rd)?,
+                    }),
+                    2 if version >= 9 => Some(SymbolDefinition::DirectPageFixed {
+                        offset: rd.read_u8()?,
+                        source: source(&mut rd)?,
+                    }),
+                    3 if version >= 9 => Some(SymbolDefinition::DirectPageAlloc {
+                        size: rd.read_u8()?,
+                        source: source(&mut rd)?,
+                    }),
+                    4 if version >= 9 => Some(SymbolDefinition::DirectPageAllocAlias {
+                        parent: rd.read_string()?,
+                        field_offset: rd.read_u8()?,
                         source: source(&mut rd)?,
                     }),
                     other => bail!("invalid symbol definition kind: {other}"),

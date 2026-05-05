@@ -237,9 +237,11 @@ fn data_symbol_byte_count(object: &O65Object, symbol: &k816_o65::Symbol) -> Resu
 
 fn symbol_source_location(definition: &SymbolDefinition) -> Option<&SourceLocation> {
     match definition {
-        SymbolDefinition::Section { source, .. } | SymbolDefinition::Absolute { source, .. } => {
-            source.as_ref()
-        }
+        SymbolDefinition::Section { source, .. }
+        | SymbolDefinition::Absolute { source, .. }
+        | SymbolDefinition::DirectPageFixed { source, .. }
+        | SymbolDefinition::DirectPageAlloc { source, .. }
+        | SymbolDefinition::DirectPageAllocAlias { source, .. } => source.as_ref(),
     }
 }
 

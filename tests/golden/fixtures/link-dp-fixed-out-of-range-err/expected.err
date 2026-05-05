@@ -1,0 +1,11 @@
+Error: DP variable 'too_high' fixed offset 0x0100 exceeds the direct page (0x00..=0xFF)
+   ╭─[ tests/golden/fixtures/link-dp-fixed-out-of-range-err/input.k65:1:19 ]
+   │
+ 1 │ var dp too_high = $0100
+   │                   ──┬──  
+   │                     ╰──── DP offset out of range
+   │ 
+   │ Help: use an offset in the range 0x00..=0xFF, or remove the `dp` prefix to declare 'too_high' as an absolute (16-bit) variable
+   │ 
+   │ Note: `var dp NAME = $X` pins the variable to a slot inside the 256-byte direct page. The slot is 1 byte wide because DP-mode addressing always uses a u8 offset relative to the runtime D register; 16-bit values cannot encode there.
+───╯

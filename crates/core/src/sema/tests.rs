@@ -3,19 +3,16 @@ use crate::parser::parse;
 use crate::span::SourceId;
 
 /// Test helper: returns the offset of an Allocated var in the default segment,
-/// or panics if the placement is not what tests expect. Most pre-Allocated-era
-/// tests asserted compile-time addresses for initializer-less vars; under the
-/// new model those become `Allocated { segment: "default", offset }` and the
-/// offset value matches the previous "address" value byte-for-byte (because
-/// the default-segment cursor starts at 0 just like the old global counter).
+/// or panics if the placement is not what tests expect.
 fn allocated_default_offset(meta: &VarMeta) -> u32 {
     match &meta.placement {
-        VarPlacement::Allocated { segment, offset } => {
+        VarPlacement::AllocatedAbs { segment, offset } => {
             assert_eq!(segment, "default", "expected default segment");
             *offset
         }
+        VarPlacement::AllocatedDp => panic!("expected AllocatedAbs placement, got AllocatedDp"),
         VarPlacement::Fixed { address } => {
-            panic!("expected Allocated placement, got Fixed at {address:#X}")
+            panic!("expected AllocatedAbs placement, got Fixed at {address:#X}")
         }
     }
 }

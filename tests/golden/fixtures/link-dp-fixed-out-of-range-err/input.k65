@@ -1,0 +1,5 @@
+var dp too_high = $0100
+
+func main {
+    lda too_high
+}

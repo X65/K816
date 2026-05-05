@@ -5,15 +5,20 @@ use std::str::FromStr;
 use anyhow::Result;
 use lsp_types::Uri;
 
+use super::linker_config::{LinkerConfigKey, key_for_source};
 use super::{PROJECT_SRC_DIR, PROJECT_TESTS_DIR};
 
 /// A group of source URIs the LSP should compile and link together. Mirrors
 /// what the actual compiler/linker would consider one program; partitioning
 /// keeps unrelated fixtures from being glued into a single ill-formed pseudo-
 /// program (which silently dropped cross-file consts as ambiguous).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(super) struct CompilationUnit {
     pub(super) uris: Vec<Uri>,
+    /// Which linker config this unit links against. Manifest-mode workspaces
+    /// always use `LinkerConfigKey::Workspace`; manifest-less workspaces
+    /// resolve per source via [`key_for_source`].
+    pub(super) config_key: LinkerConfigKey,
 }
 
 pub(super) fn discover_workspace_sources(root: &Path) -> Result<Vec<PathBuf>> {
@@ -31,6 +36,14 @@ pub(super) fn discover_workspace_sources(root: &Path) -> Result<Vec<PathBuf>> {
 /// Partition the discovered source files into compilation units the LSP can
 /// compile + link together as a coherent program. Manifest-first, directory
 /// bucket fallback. Pure and deterministic so it's straightforward to test.
+///
+/// Manifest workspaces always produce a single unit bound to the workspace
+/// linker config — per-subtree `link.ld.ron` files are deliberately ignored
+/// inside a manifest project (a project asserts "this is one program"). In
+/// manifest-less workspaces, files are bucketed by `(nearest config, parent
+/// directory)` so a fixture tree carrying its own `link.ld.ron` (e.g.
+/// `tests/golden/fixtures/link-dp/`) links under the right config and a
+/// stray `link.ld.ron` doesn't merge unrelated dirs.
 pub(super) fn partition_workspace_into_units(
     root: &Path,
     has_manifest: bool,
@@ -50,37 +63,49 @@ pub(super) fn partition_workspace_into_units(
         if uris.is_empty() {
             return Vec::new();
         }
-        return vec![CompilationUnit { uris }];
+        return vec![CompilationUnit {
+            uris,
+            config_key: LinkerConfigKey::Workspace,
+        }];
     }
 
-    // BTreeMap keyed by parent directory keeps unit ordering deterministic
-    // (lexicographic by path) without an extra sort pass.
-    let mut by_parent: BTreeMap<PathBuf, Vec<Uri>> = BTreeMap::new();
+    // BTreeMap keyed by (config_key, parent dir) keeps unit ordering
+    // deterministic. Two adjacent dirs sharing the same nearest config still
+    // form separate units (current behaviour) — only `.ld.ron`-bearing dirs
+    // introduce new boundaries, never merge old ones.
+    let mut by_bucket: BTreeMap<(LinkerConfigKey, PathBuf), Vec<Uri>> = BTreeMap::new();
     let mut adhoc_units: Vec<CompilationUnit> = Vec::new();
 
     for path in discovered {
         let Ok(uri) = uri_from_file_path(path) else {
             continue;
         };
+        let key = key_for_source(root, path);
         let parent = path.parent().map(Path::to_path_buf);
         match parent {
             Some(parent) if parent == root => {
                 // Files directly at the workspace root form their own
                 // singleton units — no obvious sibling to group with.
-                adhoc_units.push(CompilationUnit { uris: vec![uri] });
+                adhoc_units.push(CompilationUnit {
+                    uris: vec![uri],
+                    config_key: key,
+                });
             }
             Some(parent) => {
-                by_parent.entry(parent).or_default().push(uri);
+                by_bucket.entry((key, parent)).or_default().push(uri);
             }
             None => {
-                adhoc_units.push(CompilationUnit { uris: vec![uri] });
+                adhoc_units.push(CompilationUnit {
+                    uris: vec![uri],
+                    config_key: key,
+                });
             }
         }
     }
 
-    let mut units: Vec<CompilationUnit> = by_parent
-        .into_values()
-        .map(|uris| CompilationUnit { uris })
+    let mut units: Vec<CompilationUnit> = by_bucket
+        .into_iter()
+        .map(|((config_key, _parent), uris)| CompilationUnit { uris, config_key })
         .collect();
     units.extend(adhoc_units);
     units

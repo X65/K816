@@ -2120,3 +2120,175 @@ fn cross_file_const_invisible_across_units() {
         "BAR from a different unit must not resolve; got: {diagnostics:?}",
     );
 }
+
+#[test]
+fn partition_splits_units_by_nearest_link_ld_ron() {
+    use super::linker_config::LinkerConfigKey;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let alpha = root.path().join("alpha");
+    let beta = root.path().join("beta");
+    std::fs::create_dir_all(&alpha).expect("alpha dir");
+    std::fs::create_dir_all(&beta).expect("beta dir");
+    let alpha_cfg = alpha.join("link.ld.ron");
+    let beta_cfg = beta.join("link.ld.ron");
+    std::fs::write(&alpha_cfg, "()").expect("alpha cfg");
+    std::fs::write(&beta_cfg, "()").expect("beta cfg");
+    let a = alpha.join("a.k65");
+    let b = beta.join("b.k65");
+    std::fs::write(&a, "").expect("a");
+    std::fs::write(&b, "").expect("b");
+
+    let units = partition_workspace_into_units(root.path(), false, &[a, b]);
+    assert_eq!(
+        units.len(),
+        2,
+        "two configs should produce two units: {units:?}"
+    );
+    assert!(
+        units.iter().all(|u| matches!(u.config_key, LinkerConfigKey::Path(_))),
+        "every unit should bind to a path-keyed config: {units:?}",
+    );
+}
+
+#[test]
+fn partition_manifest_ignores_subtree_link_ld_ron() {
+    use super::linker_config::LinkerConfigKey;
+
+    // Manifest mode: even a subtree-level link.ld.ron under src/ must NOT
+    // split or override the workspace config. The user-decided rule is
+    // "manifest wins everywhere".
+    let root = tempfile::tempdir().expect("tempdir");
+    let src = root.path().join("src");
+    let feature = src.join("feature");
+    std::fs::create_dir_all(&feature).expect("feature dir");
+    let stray_cfg = feature.join("link.ld.ron");
+    std::fs::write(&stray_cfg, "()").expect("stray cfg");
+    let main = src.join("main.k65");
+    let helper = feature.join("helper.k65");
+    std::fs::write(&main, "").expect("main");
+    std::fs::write(&helper, "").expect("helper");
+
+    let units = partition_workspace_into_units(root.path(), true, &[main, helper]);
+    assert_eq!(units.len(), 1, "manifest must keep one unit: {units:?}");
+    assert_eq!(units[0].config_key, LinkerConfigKey::Workspace);
+    assert_eq!(units[0].uris.len(), 2);
+}
+
+#[test]
+fn partition_no_manifest_falls_back_to_workspace_when_no_subtree_config() {
+    use super::linker_config::LinkerConfigKey;
+
+    // Manifest-less workspace with no `.ld.ron` files anywhere: every unit
+    // resolves to the workspace fallback so behaviour mirrors the previous
+    // single-config world.
+    let root = tempfile::tempdir().expect("tempdir");
+    let alpha = root.path().join("alpha");
+    let beta = root.path().join("beta");
+    std::fs::create_dir_all(&alpha).expect("alpha dir");
+    std::fs::create_dir_all(&beta).expect("beta dir");
+    let a = alpha.join("a.k65");
+    let b = beta.join("b.k65");
+    std::fs::write(&a, "").expect("a");
+    std::fs::write(&b, "").expect("b");
+
+    let units = partition_workspace_into_units(root.path(), false, &[a, b]);
+    assert_eq!(units.len(), 2, "directory-based split preserved: {units:?}");
+    assert!(
+        units
+            .iter()
+            .all(|u| u.config_key == LinkerConfigKey::Workspace),
+        "every unit must use the workspace fallback: {units:?}",
+    );
+}
+
+#[test]
+fn apply_fs_events_invalidates_linker_config_cache_on_change() {
+    // After a `link.ld.ron` rewrite, `apply_fs_events` must invalidate the
+    // cached entry so the next link picks up the new memory map. Starts in
+    // an overflowing layout (`start: 0x0200`), then rewrites to a benign one
+    // (`start: 0x0000`) and asserts the relocation diagnostics clear.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let unit_dir = dir.path().join("link-dp-reload");
+    std::fs::create_dir_all(&unit_dir).expect("unit dir");
+
+    let main_path = unit_dir.join("input.k65");
+    let main_text = "var dp kstrncpy_src:far\nvar dp kstrncpy_dst:far\n\nfunc main @a16 @i16 {\n    ldy #0\n    lda [kstrncpy_src],y\n    sta [kstrncpy_dst],y\n}\n";
+    std::fs::write(&main_path, main_text).expect("main");
+
+    let cfg_path = unit_dir.join("link.ld.ron");
+    let bad_cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0200), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
+    std::fs::write(&cfg_path, bad_cfg).expect("link.ld.ron");
+
+    let main_uri =
+        Uri::from_str(url::Url::from_file_path(&main_path).unwrap().as_str()).expect("uri");
+
+    let mut state = ServerState::new(dir.path().to_path_buf());
+    state
+        .upsert_document(main_uri.clone(), main_text.to_string(), 1, true)
+        .expect("doc");
+
+    let initial = state.lsp_diagnostics(&main_uri);
+    let initial_overflows = initial
+        .iter()
+        .filter(|d| d.message.contains("absolute relocation does not fit in 8 bits"))
+        .count();
+    assert_eq!(
+        initial_overflows, 2,
+        "expected two overflow diagnostics from the bad config; got: {initial:?}"
+    );
+
+    // Rewrite to a layout where direct-page placements fit, then notify the
+    // workspace via the fs-event channel exactly as the watcher would.
+    let good_cfg = "(\n  format: \"o65-link\",\n  memory: [\n    (name: \"MAIN\", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0000), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
+    std::fs::write(&cfg_path, good_cfg).expect("rewrite cfg");
+    state.apply_fs_events(vec![WorkspaceFsEvent::Changed(cfg_path.clone())]);
+
+    let after = state.lsp_diagnostics(&main_uri);
+    assert!(
+        !after.iter().any(|d| d.message.contains("absolute relocation does not fit in 8 bits")),
+        "overflow diagnostics should clear after the cfg rewrite; got: {after:?}",
+    );
+}
+
+#[test]
+fn link_dp_fixture_under_lsp_yields_relocation_diagnostic() {
+    // Reproduces tests/golden/fixtures/link-dp/ inside an LSP workspace:
+    // a `link.ld.ron` with `start: 0x0200` pushes the `var dp` placements
+    // out of the direct-page range, so the indirect-DP relocations on
+    // lines 6 and 7 must overflow at link time. Before the per-source
+    // config resolver landed, the LSP used its default stub config and
+    // never reported these errors.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let unit_dir = dir.path().join("link-dp");
+    std::fs::create_dir_all(&unit_dir).expect("unit dir");
+
+    let cfg_text = "(\n  format: \"o65-link\",\n  target: Some(\"lsp-link-dp\"),\n  memory: [\n    (name: \"MAIN\", start: 0, size: 65536, kind: ReadWrite, fill: Some(0)),\n  ],\n  segments: [\n    (id: \"DEFAULT\", load: \"MAIN\", run: None, align: Some(1), start: Some(0x0200), offset: None, optional: false, segment: None),\n  ],\n  symbols: [],\n  output: (kind: RawBinary, file: Some(\"out.bin\")),\n  entry: None,\n)\n";
+    std::fs::write(unit_dir.join("link.ld.ron"), cfg_text).expect("link.ld.ron");
+
+    let main_path = unit_dir.join("input.k65");
+    let main_text = "var dp kstrncpy_src:far\nvar dp kstrncpy_dst:far\n\nfunc main @a16 @i16 {\n    ldy #0\n    lda [kstrncpy_src],y\n    sta [kstrncpy_dst],y\n}\n";
+    std::fs::write(&main_path, main_text).expect("main");
+
+    let main_uri =
+        Uri::from_str(url::Url::from_file_path(&main_path).unwrap().as_str()).expect("uri");
+
+    let mut state = ServerState::new(dir.path().to_path_buf());
+    state
+        .upsert_document(main_uri.clone(), main_text.to_string(), 1, true)
+        .expect("doc");
+
+    let diagnostics = state.lsp_diagnostics(&main_uri);
+    let overflow_count = diagnostics
+        .iter()
+        .filter(|diag| {
+            diag.severity == Some(DiagnosticSeverity::ERROR)
+                && diag.message.contains("absolute relocation does not fit in 8 bits")
+        })
+        .count();
+    assert_eq!(
+        overflow_count, 2,
+        "expected two relocation-overflow diagnostics from the indirect-DP \
+         fixture; got: {diagnostics:?}",
+    );
+}

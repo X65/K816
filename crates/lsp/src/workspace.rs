@@ -20,7 +20,7 @@ use super::{
 
 impl ServerState {
     pub(super) fn initialize_workspace(&mut self) -> Result<()> {
-        self.load_linker_config();
+        self.load_workspace_linker_config();
         let sources = discover_workspace_sources(&self.workspace_root)?;
         log::info!(
             "workspace '{}', discovered {} source file(s)",
@@ -41,34 +41,10 @@ impl ServerState {
         Ok(())
     }
 
-    pub(super) fn load_linker_config(&mut self) {
-        let manifest_path = self.workspace_root.join(PROJECT_MANIFEST);
-        if manifest_path.is_file()
-            && let Ok(manifest) = k816_project::load_project_manifest(&self.workspace_root)
-            && let Some(script) = manifest.link.script
-        {
-            let config_path = if script.is_absolute() {
-                script
-            } else {
-                self.workspace_root.join(script)
-            };
-            if let Ok(config) = k816_link::load_config(&config_path) {
-                log::info!("loaded linker config from '{}'", config_path.display());
-                self.linker_config = config;
-                return;
-            }
-        }
-
-        let default_script = self.workspace_root.join("link.ron");
-        if default_script.is_file()
-            && let Ok(config) = k816_link::load_config(&default_script)
-        {
-            log::info!("loaded linker config from '{}'", default_script.display());
-            self.linker_config = config;
-            return;
-        }
-
-        log::info!("using default stub linker config");
+    pub(super) fn load_workspace_linker_config(&mut self) {
+        let config = resolve_workspace_linker_config(&self.workspace_root);
+        self.linker_configs.set_workspace(config.clone());
+        self.workspace_linker_config = config;
     }
 
     pub(super) fn load_from_disk(&mut self, path: PathBuf) -> Result<()> {
@@ -209,8 +185,17 @@ impl ServerState {
         }
         for uri in self.documents.keys() {
             if !covered.contains(uri) {
+                let config_key = self
+                    .documents
+                    .get(uri)
+                    .and_then(|doc| doc.path.as_ref())
+                    .map(|path| {
+                        super::linker_config::key_for_source(&self.workspace_root, path)
+                    })
+                    .unwrap_or(super::linker_config::LinkerConfigKey::Workspace);
                 units.push(CompilationUnit {
                     uris: vec![uri.clone()],
+                    config_key,
                 });
             }
         }
@@ -283,31 +268,45 @@ impl ServerState {
     pub(super) fn apply_fs_events(&mut self, events: Vec<WorkspaceFsEvent>) -> Vec<Uri> {
         let mut dirty = false;
         for event in events {
-            match event {
-                WorkspaceFsEvent::Changed(path) => {
+            let (path, removed) = match event {
+                WorkspaceFsEvent::Changed(path) => (path, false),
+                WorkspaceFsEvent::Removed(path) => (path, true),
+            };
+
+            match classify_fs_event_path(&path) {
+                FsEventKind::Source => {
                     let Ok(uri) = uri_from_file_path(&path) else {
                         continue;
                     };
                     if self.documents.get(&uri).is_some_and(|doc| doc.open) {
                         continue;
                     }
-                    if let Err(error) = self.load_from_disk(path.clone()) {
-                        log::warn!("failed to reload '{}': {error}", path.display());
-                        continue;
-                    }
-                    dirty = true;
-                }
-                WorkspaceFsEvent::Removed(path) => {
-                    let Ok(uri) = uri_from_file_path(&path) else {
-                        continue;
-                    };
-                    if self.documents.get(&uri).is_some_and(|doc| doc.open) {
-                        continue;
-                    }
-                    if self.documents.remove(&uri).is_some() {
+                    if removed {
+                        if self.documents.remove(&uri).is_some() {
+                            dirty = true;
+                        }
+                    } else {
+                        if let Err(error) = self.load_from_disk(path.clone()) {
+                            log::warn!("failed to reload '{}': {error}", path.display());
+                            continue;
+                        }
                         dirty = true;
                     }
                 }
+                FsEventKind::LinkerConfig => {
+                    let canonical =
+                        std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    self.linker_configs
+                        .invalidate(&super::linker_config::LinkerConfigKey::Path(canonical));
+                    dirty = true;
+                }
+                FsEventKind::Manifest => {
+                    self.linker_configs
+                        .invalidate(&super::linker_config::LinkerConfigKey::Workspace);
+                    self.load_workspace_linker_config();
+                    dirty = true;
+                }
+                FsEventKind::Ignored => {}
             }
         }
 
@@ -429,6 +428,7 @@ impl ServerState {
             doc.resolved_sites.clear();
         }
         self.last_link_layout = None;
+        self.last_link_layout_unit_id = None;
         self.last_link_diagnostics_per_unit.clear();
 
         let units = self.compilation_units.clone();
@@ -457,7 +457,8 @@ impl ServerState {
         let objects: Vec<k816_o65::O65Object> =
             doc_entries.iter().map(|(_, obj)| obj.clone()).collect();
 
-        match k816_link::link_objects_diagnostics(&objects, &self.linker_config) {
+        let config = self.linker_configs.resolve(&unit.config_key);
+        match k816_link::link_objects_diagnostics(&objects, &config) {
             Ok(output) => {
                 // The first successful unit's layout backs `query_memory_map`.
                 // A future plan iteration can return per-unit results once a
@@ -465,6 +466,7 @@ impl ServerState {
                 // exposes a single layout, so we keep the first-wins policy.
                 if self.last_link_layout.is_none() {
                     self.last_link_layout = Some(output.clone());
+                    self.last_link_layout_unit_id = Some(unit_id);
                 }
                 for (obj_idx, (uri, _)) in doc_entries.iter().enumerate() {
                     if let Some(doc) = self.documents.get_mut(uri) {
@@ -621,8 +623,17 @@ impl ServerState {
         };
 
         let include_runs = params.detail == QueryMemoryMapDetail::Runs;
+        // Resolve the config that produced this layout so memory-area metadata
+        // (start / size / kind) lines up with placements. Multiple units may
+        // link under different configs; we capture the unit id alongside the
+        // layout in `try_link_unit` so the right config is recoverable here.
+        let config = self
+            .last_link_layout_unit_id
+            .and_then(|unit_id| self.compilation_units.get(unit_id))
+            .and_then(|unit| self.linker_configs.get(&unit.config_key))
+            .unwrap_or(&self.workspace_linker_config);
         let usage = match k816_link::memory_usage(
-            &self.linker_config,
+            config,
             layout,
             params.memory_name.as_deref(),
             include_runs,
@@ -702,4 +713,59 @@ impl ServerState {
             })
             .collect()
     }
+}
+
+enum FsEventKind {
+    Source,
+    LinkerConfig,
+    Manifest,
+    Ignored,
+}
+
+fn classify_fs_event_path(path: &std::path::Path) -> FsEventKind {
+    if k816_project::is_k65_source_path(path) {
+        return FsEventKind::Source;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return FsEventKind::Ignored;
+    };
+    if super::linker_config::is_linker_config_filename(name) {
+        return FsEventKind::LinkerConfig;
+    }
+    if name == PROJECT_MANIFEST {
+        return FsEventKind::Manifest;
+    }
+    FsEventKind::Ignored
+}
+
+/// Resolve the workspace fallback linker config: manifest script →
+/// `<root>/link.ron` → stub. Pure (no `&mut self`) so it can be invoked from
+/// `apply_fs_events` when reacting to a `k816.toml` change.
+pub(super) fn resolve_workspace_linker_config(root: &std::path::Path) -> k816_link::LinkerConfig {
+    let manifest_path = root.join(PROJECT_MANIFEST);
+    if manifest_path.is_file()
+        && let Ok(manifest) = k816_project::load_project_manifest(root)
+        && let Some(script) = manifest.link.script
+    {
+        let config_path = if script.is_absolute() {
+            script
+        } else {
+            root.join(script)
+        };
+        if let Ok(config) = k816_link::load_config(&config_path) {
+            log::info!("loaded linker config from '{}'", config_path.display());
+            return config;
+        }
+    }
+
+    let default_script = root.join("link.ron");
+    if default_script.is_file()
+        && let Ok(config) = k816_link::load_config(&default_script)
+    {
+        log::info!("loaded linker config from '{}'", default_script.display());
+        return config;
+    }
+
+    log::info!("using default stub linker config");
+    k816_link::default_stub_config()
 }

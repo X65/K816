@@ -276,8 +276,21 @@ pub(super) struct ServerState {
     pub(super) documents: HashMap<Uri, DocumentState>,
     pub(super) symbols: HashMap<String, Vec<SymbolLocation>>,
     pub(super) symbol_occurrences: HashMap<String, Vec<SymbolOccurrence>>,
-    pub(super) linker_config: k816_link::LinkerConfig,
+    /// Workspace-fallback linker config: resolved from manifest script,
+    /// `<root>/link.ron`, or stub. Manifest workspaces always link against
+    /// this. Manifest-less workspaces fall back to it for sources that don't
+    /// have a nearer `link.ld.ron` / `link.ron`.
+    pub(super) workspace_linker_config: k816_link::LinkerConfig,
+    /// Per-key cache of linker configs (workspace fallback + path-keyed
+    /// `link.ld.ron` / `link.ron` files). Populated lazily during linking
+    /// and invalidated by the file watcher.
+    pub(super) linker_configs: super::linker_config::LinkerConfigCache,
     pub(super) last_link_layout: Option<k816_link::LinkedLayout>,
+    /// Index into `compilation_units` of the unit whose layout is captured
+    /// in `last_link_layout`. Used by `query_memory_map` to recover the
+    /// linker config that produced the layout (so memory-area metadata
+    /// matches placements).
+    pub(super) last_link_layout_unit_id: Option<usize>,
     /// Per-unit linker diagnostics from the last attempt. Keyed by the index
     /// of the unit within `compilation_units` at the time of capture; cleared
     /// to `Vec::new()` when a unit links cleanly.
@@ -296,8 +309,10 @@ impl ServerState {
             documents: HashMap::new(),
             symbols: HashMap::new(),
             symbol_occurrences: HashMap::new(),
-            linker_config: k816_link::default_stub_config(),
+            workspace_linker_config: k816_link::default_stub_config(),
+            linker_configs: super::linker_config::LinkerConfigCache::new(),
             last_link_layout: None,
+            last_link_layout_unit_id: None,
             last_link_diagnostics_per_unit: HashMap::new(),
             compilation_units: Vec::new(),
         }

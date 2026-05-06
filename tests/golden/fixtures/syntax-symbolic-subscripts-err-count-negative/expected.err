@@ -1,9 +1,9 @@
 Error: symbolic subscript field '.string' count must be >= 1, found -1
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-negative/input.k65:2:13 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-negative/input.k65:2:18 ]
    │
- 2 │     .string[0-1]:byte
-   │             ─┬─  
-   │              ╰─── non-positive count
+ 2 │     .string:byte[0-1]
+   │                  ─┬─  
+   │                   ╰─── non-positive count
    │ 
    │ Help: give `.string` a count of 1 or more, or drop the `[...]` if it is a single value rather than an array
    │ 

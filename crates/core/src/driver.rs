@@ -765,7 +765,7 @@ mod tests {
             },
             LinkCompileInput {
                 source_name: "task.k65",
-                source_text: "var TASKS [\n  .name [4]:byte\n  .state :byte\n] = $4000\n",
+                source_text: "var TASKS [\n  .name :byte [4]\n  .state :byte\n] = $4000\n",
             },
         ];
 
@@ -803,7 +803,7 @@ mod tests {
             },
             LinkCompileInput {
                 source_name: "layout.k65",
-                source_text: "var COMP[\n  .one:byte\n  .two:word\n  .str[5]:byte\n] * 4\n",
+                source_text: "var COMP[\n  .one:byte\n  .two:word\n  .str:byte[5]\n] * 4\n",
             },
         ];
 

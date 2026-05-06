@@ -1,0 +1,11 @@
+Error: invalid syntax: expected something else, ':', '*', '+', '-', ',', newline, or ']', found '['
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-old-field-count-order/input.k65:2:12 ]
+   │
+ 2 │     .string[20]:byte
+   │            ┬  
+   │            ╰── old field-count/type order
+   │ 
+   │ Help: write `.string:byte[20]`, or `.string[20]` when the compound default width is intended
+   │ 
+   │ Note: Field count syntax follows top-level var array syntax: put the type before `[count]`, as in `var NAME:type[count]` and `.field:type[count]`.
+───╯

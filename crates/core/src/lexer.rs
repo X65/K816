@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn lexes_nested_brackets() {
-        let tokens = lex(SourceId(0), "var mmio[.data[4]:byte] = 0x4000").expect("lex");
+        let tokens = lex(SourceId(0), "var mmio[.data:byte[4]] = 0x4000").expect("lex");
         let bracket_count = tokens
             .iter()
             .filter(|token| matches!(token.kind, TokenKind::LBracket))

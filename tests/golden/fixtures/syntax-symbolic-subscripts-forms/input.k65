@@ -1,7 +1,7 @@
 var foo[
     .field_w:word,
     .idx:byte,
-    .string[4]:byte,
+    .string:byte[4],
 ] = 0x2000
 
 func main @a8 {

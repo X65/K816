@@ -13,7 +13,7 @@ var DEV_HANDLER[
     .ctrl    :word
     .init    :word
     .stop    :word
-    ._res[2] :byte
+    ._res :byte [2]
 ]
 
 // `var X[...] * N` — allocated count, no `= ADDR`. Mix of widths plus a

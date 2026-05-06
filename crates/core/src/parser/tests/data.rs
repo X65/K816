@@ -37,7 +37,7 @@ fn rejects_var_data_width_with_abs_suffix() {
 
 #[test]
 fn parses_symbolic_subscript_field_list_with_commas_and_trailing_separator() {
-    let source = "var foo[\n  .field_w:word,\n  .idx:byte,\n  .string[20]:byte,\n] = 0x1234\n";
+    let source = "var foo[\n  .field_w:word,\n  .idx:byte,\n  .string :byte [20],\n  .words:word[4],\n  .ptrs:far[2],\n  .scratch[3],\n] = 0x1234\n";
     let file = parse(SourceId(0), source).expect("parse");
     assert_eq!(file.items.len(), 1);
 
@@ -50,13 +50,23 @@ fn parses_symbolic_subscript_field_list_with_commas_and_trailing_separator() {
         .symbolic_subscript_fields
         .as_ref()
         .expect("symbolic subscript field list");
-    assert_eq!(fields.len(), 3);
+    assert_eq!(fields.len(), 6);
     assert_eq!(fields[0].name, "field_w");
     assert_eq!(fields[1].name, "idx");
     assert_eq!(fields[2].name, "string");
+    assert_eq!(fields[3].name, "words");
+    assert_eq!(fields[4].name, "ptrs");
+    assert_eq!(fields[5].name, "scratch");
     assert!(matches!(fields[0].data_width, Some(DataWidth::Word)));
     assert!(matches!(fields[1].data_width, Some(DataWidth::Byte)));
+    assert!(matches!(fields[2].data_width, Some(DataWidth::Byte)));
     assert!(matches!(fields[2].count, Some(Expr::Number(20, _))));
+    assert!(matches!(fields[3].data_width, Some(DataWidth::Word)));
+    assert!(matches!(fields[3].count, Some(Expr::Number(4, _))));
+    assert!(matches!(fields[4].data_width, Some(DataWidth::Far)));
+    assert!(matches!(fields[4].count, Some(Expr::Number(2, _))));
+    assert!(fields[5].data_width.is_none());
+    assert!(matches!(fields[5].count, Some(Expr::Number(3, _))));
 }
 
 #[test]
@@ -154,13 +164,36 @@ fn rejects_unsupported_symbolic_subscript_field_type_in_var_brackets() {
 
 #[test]
 fn rejects_empty_symbolic_subscript_array_count_at_field_slice() {
-    let source = "var foo[\n  .a[]:byte\n] = 0x1234\n";
+    let source = "var foo[\n  .a:byte[]\n] = 0x1234\n";
     let errors = parse(SourceId(0), source).expect_err("must fail");
 
     assert!(
         !errors.is_empty(),
         "expected parse errors for empty array count"
     );
+}
+
+#[test]
+fn rejects_old_typed_symbolic_subscript_count_order() {
+    for source in [
+        "var foo[\n  .string[20]:byte\n] = 0x1234\n",
+        "var foo[\n  .string[20] :byte\n] = 0x1234\n",
+    ] {
+        let errors = parse(SourceId(0), source).expect_err("must fail");
+        assert!(
+            errors.iter().any(|diag| {
+                diag.primary_label == "old field-count/type order"
+                    && diag.supplements.iter().any(|supplement| {
+                        matches!(
+                            supplement,
+                            crate::diag::Supplemental::Help(help)
+                                if help.contains("`.string:byte[20]`")
+                        )
+                    })
+            }),
+            "unexpected diagnostics: {errors:#?}"
+        );
+    }
 }
 
 #[test]

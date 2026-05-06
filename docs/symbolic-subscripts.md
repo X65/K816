@@ -28,7 +28,7 @@ var foo[
   .field_w   :word
   .field_w2  :word
   .idx       :byte
-  .string[20]:byte
+  .string    :byte [20]
 ] = 0x1234
 ```
 
@@ -60,11 +60,16 @@ var baz:byte[
 - `.name :byte`
 - `.name :word`
 - `.name :far`
-- `.name[count] :byte`
-- `.name[count] :word`
-- `.name[count] :far`
+- `.name :byte [count]`
+- `.name:word[count]`
+- `.name:far[count]`
+- `.name[count]` (shorthand using the var's default field width, or `:byte` when no default is declared)
 - `.name[ ...nested fields... ]`
 - `.name` (defaults to `:byte` when omitted)
+
+Explicit typed counts put the type before `[count]`, matching top-level
+`var NAME:type[count]`. The old `.name[count]:type` order is rejected; write
+`.name:type[count]`, or `.name[count]` when the default field width is intended.
 
 Separators inside the field list:
 
@@ -94,7 +99,7 @@ Repeat element form for declarations with `* count`:
 ```k65
 var foo[
   .field_w   :word
-  .string[20]:byte
+  .string    :byte [20]
 ] * 8 = $4000
 
 lda &&foo[2]               // &&foo + 2*foo:sizeof
@@ -147,7 +152,7 @@ using a dedicated lexer mode.
 - `VarDecl` stores symbolic-subscript layouts in `symbolic_subscript_fields`.
 - `SymbolicSubscriptFieldDecl` supports:
   - optional width (`:byte`, `:word`, `:far`)
-  - optional element count (`.name[count]`)
+  - optional element count (`.name:type[count]` or default-width `.name[count]`)
   - optional nested field lists (`.name[ ... ]`)
 - `Expr::Index { base, index }` is used for array-style field indexing such as
   `foo.field[i]` and for repeat element roots such as `foo[i]`.

@@ -108,7 +108,7 @@ Vars declared with `* count` can be indexed with constant element indices:
 var COMP[
     .one :byte
     .two :word
-    .str[5] :byte
+    .str :byte [5]
 ] * 10 = $1000
 
 lda &&COMP[1]              // same address as `&&COMP + COMP:sizeof`
@@ -117,6 +117,12 @@ lda COMP[2].two            // COMP + 2*COMP:sizeof + COMP.two:offsetof
 lda COMP[2][.two]          // equivalent field-selection spelling
 lda COMP[2].str[3]         // repeated element + field offset + byte element 3
 ```
+
+Inside a symbolic field list, explicit typed counts use the same order as
+top-level typed arrays: `.field :byte [count]` or compact `.field:byte[count]`.
+The shorthand `.field[count]` is still valid and uses the var's default field
+width, or `:byte` when no default is declared. The old `.field[count]:type`
+order is rejected.
 
 `NAME[i]` is compile-time address arithmetic: the index must be a constant numeric expression and must satisfy `0 <= i < repeat_count`. Runtime-variable indices are out of scope for this bracket form; use CPU indexed addressing or explicit pointer arithmetic for those.
 

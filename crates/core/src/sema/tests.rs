@@ -475,7 +475,7 @@ fn duplicate_symbols_between_var_and_function_are_rejected() {
 #[test]
 fn computes_symbolic_subscript_field_offsets_and_total_size() {
     let source =
-        "var foo[\n  .field_w:word\n  .field_w2:word\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\n";
+        "var foo[\n  .field_w:word\n  .field_w2:word\n  .idx:byte\n  .string:byte[4]\n] = 0x1234\n";
     let file = parse(SourceId(0), source).expect("parse");
     let sema = analyze(&file).expect("analyze");
 

@@ -1,5 +1,5 @@
 var COMP[
     .one :byte
     .two :word
-    .str[5] :byte
+    .str :byte [5]
 ] * 4

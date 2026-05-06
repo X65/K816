@@ -11,5 +11,5 @@ var DEV_HANDLER[
     .ctrl    :word
     .init    :word
     .stop    :word
-    ._res[2] :byte
+    ._res :byte [2]
 ]

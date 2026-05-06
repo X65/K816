@@ -1,9 +1,9 @@
 Error: symbolic subscript field '.string' count expression 'count' must be a constant numeric expression
-   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-nonconstant/input.k65:2:13 ]
+   ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-count-nonconstant/input.k65:2:18 ]
    │
- 2 │     .string[count]:byte
-   │             ──┬──  
-   │               ╰──── non-constant identifier `count`
+ 2 │     .string:byte[count]
+   │                  ──┬──  
+   │                    ╰──── non-constant identifier `count`
    │ 
    │ Help: replace `count` with a literal, an arithmetic expression over literals, or a `const` declaration that resolves to a number at compile time
    │ 

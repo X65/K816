@@ -7,5 +7,5 @@ Error: invalid syntax: unexpected ':'
    │ 
    │ Help: for typed arrays, place the type before the array length (e.g. `var bar:word[20]`)
    │ 
-   │ Note: Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0[count0]:type0, .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag.
+   │ Note: Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0:type0[count0], .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag, and explicit typed counts put the type before `[count]`.
 ───╯

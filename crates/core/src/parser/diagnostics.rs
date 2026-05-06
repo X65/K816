@@ -106,6 +106,7 @@ pub(super) fn rich_error_to_diagnostic(
     };
     let context_enrichment = detect_double_colon_typo(source_text, range.start)
         .or_else(|| detect_abs_suffix_typo(source_text, range.start))
+        .or_else(|| detect_old_symbolic_field_count_order(source_text, range.start))
         .or_else(|| detect_symbolic_subscript_context(source_text, range.start));
     let (label, help, note) = match (token_enrichment, context_enrichment) {
         (Some(token), Some(ctx)) => (
@@ -198,7 +199,7 @@ struct ContextEnrichment {
 }
 
 /// Recognise common syntax-error situations inside a symbolic-subscript field
-/// list (the `[ .name[count]:type, ... ]` payload of `var IDENT [ ... ] = base`).
+/// list (the `[ .name:type[count], ... ]` payload of `var IDENT [ ... ] = base`).
 /// All six `syntax-symbolic-subscripts-err-garbage-*` and the
 /// `unsupported-field-type` fixtures hit chumsky's generic `expected ..., found
 /// X` machinery — bare on its own, that message rarely tells the user *which*
@@ -216,8 +217,61 @@ fn detect_symbolic_subscript_context(
     }
     Some(ContextEnrichment {
         label: Some("inside symbolic-subscript field list".to_string()),
-        help: "each entry inside `var NAME [ ... ]` is `.field` (optional `[count]`) (optional `:byte`/`:word`/`:far`); separate entries with `,` or a newline; field-list entries must lead with a dot".to_string(),
-        note: "Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0[count0]:type0, .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag.".to_string(),
+        help: "each entry inside `var NAME [ ... ]` is `.field` (optional `:byte`/`:word`/`:far`) (optional `[count]`); separate entries with `,` or a newline; field-list entries must lead with a dot".to_string(),
+        note: "Symbolic-subscript field lists declare named offsets inside a var's address window. The grammar is: `[ .field0:type0[count0], .field1:type1, ... ]`. Only `byte`, `word`, and `far` are accepted as the type tag, and explicit typed counts put the type before `[count]`.".to_string(),
+    })
+}
+
+fn detect_old_symbolic_field_count_order(
+    source_text: &str,
+    error_offset: usize,
+) -> Option<ContextEnrichment> {
+    if source_text.as_bytes().get(error_offset).copied()? != b'[' {
+        return None;
+    }
+    if !cursor_inside_var_brackets(source_text, error_offset)
+        && !near_var_bracket_opening(source_text, error_offset)
+    {
+        return None;
+    }
+
+    let line_start = source_text[..error_offset]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let line_end = source_text[error_offset..]
+        .find('\n')
+        .map_or(source_text.len(), |index| error_offset + index);
+    let line = source_text.get(line_start..line_end)?;
+    let local_offset = error_offset.checked_sub(line_start)?;
+    let before = line.get(..local_offset)?.trim_end();
+    let dot = before.rfind('.')?;
+    let name = before.get(dot + 1..)?.trim();
+    if !is_ident_text(name) {
+        return None;
+    }
+
+    let after = line.get(local_offset..)?;
+    let close = after.find(']')?;
+    let count = after.get(1..close)?.trim();
+    if count.is_empty() {
+        return None;
+    }
+    let suffix = after.get(close + 1..)?.trim_start();
+    if !suffix.starts_with(':') {
+        return None;
+    }
+    let width = suffix
+        .trim_start_matches(':')
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == ',' || ch == ']')
+        .next()
+        .filter(|w| matches!(w.to_ascii_lowercase().as_str(), "byte" | "word" | "far"))?;
+
+    Some(ContextEnrichment {
+        label: Some("old field-count/type order".to_string()),
+        help: format!(
+            "write `.{name}:{width}[{count}]`, or `.{name}[{count}]` when the compound default width is intended"
+        ),
+        note: "Field count syntax follows top-level var array syntax: put the type before `[count]`, as in `var NAME:type[count]` and `.field:type[count]`.".to_string(),
     })
 }
 

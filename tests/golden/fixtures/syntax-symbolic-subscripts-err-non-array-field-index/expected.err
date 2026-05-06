@@ -5,7 +5,7 @@ Error: symbolic subscript field 'foo.idx' is not an array
    │     ───────┬──────  
    │            ╰──────── indexed access on non-array field
    │ 
-   │ Help: drop the `[...]` and write `foo.idx` to read the single value, or change the field's declaration to `.idx[N]:...` if you need an array slot
+   │ Help: drop the `[...]` and write `foo.idx` to read the single value, or change the field's declaration to `.idx:type[N]` if you need an explicitly typed array slot
    │ 
    │ Note: Symbolic subscript fields without a `[count]` declare a single named slot; only fields with `[count >= 2]` produce array semantics that an `[index]` can dereference.
 ───╯

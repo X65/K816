@@ -1,0 +1,3 @@
+var foo[
+    .string[20]:byte
+] = $1234

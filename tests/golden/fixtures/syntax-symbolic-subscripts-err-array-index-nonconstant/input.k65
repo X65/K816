@@ -1,5 +1,5 @@
 var foo[
-    .string[4]:byte
+    .string:byte[4]
 ] = 0x1234
 
 func main @a8 @i8 {

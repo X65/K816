@@ -6,7 +6,7 @@ abstract var DEV_HANDLER[
     .status  :word
     .special :word
     .init    :word
-    ._res[2] :byte
+    ._res :byte [2]
 ]
 
 abstract var PACKET[

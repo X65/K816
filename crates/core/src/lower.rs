@@ -5135,7 +5135,7 @@ fn eval_index_expr_strict(
                         )
                         .with_primary_label("indexed access on non-array field")
                         .with_help(format!(
-                            "drop the `[...]` and write `{base}.{field}` to read the single value, or change the field's declaration to `.{field}[N]:...` if you need an array slot"
+                            "drop the `[...]` and write `{base}.{field}` to read the single value, or change the field's declaration to `.{field}:type[N]` if you need an explicitly typed array slot"
                         ))
                         .with_note(
                             "Symbolic subscript fields without a `[count]` declare a single named slot; only fields with `[count >= 2]` produce array semantics that an `[index]` can dereference.",
@@ -6628,7 +6628,7 @@ fn symbolic_field_array_address_reference(
             )
             .with_primary_label("indexed access on non-array field")
             .with_help(format!(
-                "drop the `[...]` and write `{base_name}.{field_name}` to read the single value, or change the field's declaration to `.{field_name}[N]:...` if you need an array slot"
+                "drop the `[...]` and write `{base_name}.{field_name}` to read the single value, or change the field's declaration to `.{field_name}:type[N]` if you need an explicitly typed array slot"
             )),
         );
         return None;
@@ -7211,7 +7211,7 @@ fn eval_index_expr(
                         )
                         .with_primary_label("indexed access on non-array field")
                         .with_help(format!(
-                            "drop the `[...]` and write `{base}.{field}` to read the single value, or change the field's declaration to `.{field}[N]:...` if you need an array slot"
+                            "drop the `[...]` and write `{base}.{field}` to read the single value, or change the field's declaration to `.{field}:type[N]` if you need an explicitly typed array slot"
                         ))
                         .with_note(
                             "Symbolic subscript fields without a `[count]` declare a single named slot; only fields with `[count >= 2]` produce array semantics that an `[index]` can dereference.",
@@ -8068,7 +8068,7 @@ mod tests {
 var COMP[
   .one:byte
   .two:word
-  .str[5]:byte
+  .str:byte[5]
 ] * 10 = $1000
 var WORDS:word * 4 = $3000
 func main @a16 {
@@ -8133,7 +8133,7 @@ func main @a16 {
 var COMP[
   .one:byte
   .two:word
-  .str[5]:byte
+  .str:byte[5]
 ] * 3
 func main @a16 {
   lda COMP[2].two
@@ -8430,7 +8430,7 @@ func main @a16 {
 
     #[test]
     fn resolves_symbolic_subscript_field_accesses_to_literal_addresses() {
-        let source = "var foo[\n  .field_w:byte\n  .idx:byte\n  .string[4]:byte\n] = 0x1234\nfunc main {\n  lda foo.field_w\n  sta foo[.idx]\n  lda foo.string[2]\n}\n";
+        let source = "var foo[\n  .field_w:byte\n  .idx:byte\n  .string:byte[4]\n] = 0x1234\nfunc main {\n  lda foo.field_w\n  sta foo[.idx]\n  lda foo.string[2]\n}\n";
         let file = parse(SourceId(0), source).expect("parse");
         let sema = analyze(&file).expect("analyze");
         let fs = StdAssetFS;

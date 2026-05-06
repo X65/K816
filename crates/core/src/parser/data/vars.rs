@@ -163,31 +163,67 @@ where
             .then_ignore(just(TokenKind::RBracket))
             .or_not();
 
+        let post_type_count = just(TokenKind::LBracket)
+            .ignore_then(spanned(expr_parser(), source_id))
+            .then_ignore(just(TokenKind::RBracket));
+
+        let typed_suffix = spanned(data_width_parser(), source_id)
+            .then(post_type_count.or_not())
+            .or_not();
+
         spanned(
             chumsky::select! { TokenKind::Ident(name) if name.starts_with('.') => name },
             source_id,
         )
         .then(bracket_content)
-        .then(data_width_parser().or_not())
-        .map(|((name_spanned, bracket), data_width)| {
+        .then(typed_suffix)
+        .try_map(|((name_spanned, bracket), typed_suffix), span| {
             let name = name_spanned
                 .node
                 .strip_prefix('.')
                 .unwrap_or(&name_spanned.node)
                 .to_string();
-            let (count, count_span, nested_fields) = match bracket {
-                Some(FieldBracketContent::Count(c)) => (Some(c.node), Some(c.span), None),
-                Some(FieldBracketContent::NestedFields(fields)) => (None, None, Some(fields)),
-                None => (None, None, None),
+            let (data_width, typed_count) = match typed_suffix {
+                Some((width, count)) => (Some(width.node), count),
+                None => (None, None),
             };
-            SymbolicSubscriptFieldDecl {
+            let (count, count_span, nested_fields) = match bracket {
+                Some(FieldBracketContent::Count(_)) if data_width.is_some() => {
+                    let data_width = data_width.expect("checked by match guard");
+                    return Err(Rich::custom(
+                        span,
+                        format!(
+                            "symbolic subscript field array type must appear before the count; label: old field-count/type order; hint: write `.{name}:{}[count]` for an explicitly typed field array, or `.{name}[count]` to use the compound default width; note: Field count syntax follows top-level var array syntax: put the type before `[count]`, as in `var NAME:type[count]` and `.field:type[count]`.",
+                            data_width_syntax(data_width)
+                        ),
+                    ));
+                }
+                Some(FieldBracketContent::Count(count)) => {
+                    (Some(count.node), Some(count.span), None)
+                }
+                Some(FieldBracketContent::NestedFields(_)) if data_width.is_some() => {
+                    return Err(Rich::custom(
+                        span,
+                        format!(
+                            "nested symbolic subscript field '.{name}' cannot also have a type suffix; label: typed nested field list; hint: remove the type from `.{name}[...]` and put widths on the nested fields; note: A bracket after an untyped symbolic-subscript field declares either nested fields or a shorthand count. Types belong to scalar field entries, not to the parent field list."
+                        ),
+                    ));
+                }
+                Some(FieldBracketContent::NestedFields(fields)) => {
+                    (None, None, Some(fields))
+                }
+                None => typed_count.map_or((None, None, None), |count| {
+                    (Some(count.node), Some(count.span), None)
+                }),
+            };
+            Ok(SymbolicSubscriptFieldDecl {
                 name,
                 data_width,
                 count,
                 count_span,
                 nested_fields,
                 span: name_spanned.span,
-            }
+            })
         })
         .boxed()
     });
@@ -221,6 +257,14 @@ where
 enum FieldBracketContent {
     Count(Spanned<Expr>),
     NestedFields(Vec<SymbolicSubscriptFieldDecl>),
+}
+
+fn data_width_syntax(width: DataWidth) -> &'static str {
+    match width {
+        DataWidth::Byte => "byte",
+        DataWidth::Word => "word",
+        DataWidth::Far => "far",
+    }
 }
 
 pub(in super::super) fn prefix_condition_parser<'src, I>()

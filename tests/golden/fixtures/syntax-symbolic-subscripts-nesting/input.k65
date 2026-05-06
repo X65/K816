@@ -10,9 +10,9 @@ var TASKS[
         .type   :byte           // Message Type
         .data   :far            // Message Data (immediate or address)
     ]
-    ._res[23]   :byte           // Reserved
-    .name[12]   :byte           // Task name
-    .fds[16]    :byte           // Open file descriptors
+    ._res       :byte [23]      // Reserved
+    .name       :byte [12]      // Task name
+    .fds        :byte [16]      // Open file descriptors
 ] = $4000
 
 func main @a8 @i16 {

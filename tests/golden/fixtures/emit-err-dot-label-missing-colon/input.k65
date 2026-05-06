@@ -5,7 +5,7 @@
 // `build_encode_diagnostic` recognises the dot prefix and tells the user
 // they likely forgot the colon.
 
-func main {
+func main @a8 @i8 {
     nop
 .exit
     nop

@@ -1,4 +1,4 @@
-func main {
+func main @a8 @i8 {
     >={ a=1 }
     <{ a=2 }
     =={ a=3 }

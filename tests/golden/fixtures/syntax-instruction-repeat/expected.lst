@@ -1,16 +1,17 @@
 [default]
-000000: E8 E8 E8 48 48 EA EA EA EA EA 60
+000000: E2 30 E8 E8 E8 48 48 EA EA EA EA EA 60
 
 
 [disasm obj#0 default::main]
-000000: E8          inx
-000001: E8          inx
+000000: E2 30       sep #$30
 000002: E8          inx
-000003: 48          pha
-000004: 48          pha
-000005: EA          nop
-000006: EA          nop
+000003: E8          inx
+000004: E8          inx
+000005: 48          pha
+000006: 48          pha
 000007: EA          nop
 000008: EA          nop
 000009: EA          nop
-00000A: 60          rts
+00000A: EA          nop
+00000B: EA          nop
+00000C: 60          rts

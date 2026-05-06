@@ -4,6 +4,6 @@ inline jump_to (target) {
     goto target
 }
 
-func main {
+func main @a8 @i8 {
     jump_to DEST
 }

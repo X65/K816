@@ -1,0 +1,9 @@
+Error: `lda` uses a width-dependent immediate but accumulator width is unknown
+   ╭─[ tests/golden/fixtures/entry-no-contract-width-op-err/input.k65:2:5 ]
+   │
+ 2 │     lda #$05
+   │     ────┬───  
+   │         ╰───── here
+   │ 
+   │ Help: add @a8 or @a16 to the enclosing function
+───╯

@@ -685,21 +685,20 @@ pub fn emit_object(
             Op::FunctionStart {
                 name,
                 mode_contract,
-                is_entry,
                 is_far,
+                ..
             } => {
                 current_function = Some(name.clone());
-                // Entry point (main) defaults to 8-bit (emulation mode).
-                // Functions require explicit mode contract for width-dependent ops.
-                let default = if *is_entry { Some(false) } else { None };
+                // The runtime tracker reflects only what the user declared.
+                // No implicit reset-state assumption for entry points: the
+                // prologue REP/SEP emitted by lowering for an explicit
+                // `@a*`/`@i*` contract is what establishes runtime mode.
                 m_wide = mode_contract
                     .a_width
-                    .map(|w| w == crate::ast::RegWidth::W16)
-                    .or(default);
+                    .map(|w| w == crate::ast::RegWidth::W16);
                 x_wide = mode_contract
                     .i_width
-                    .map(|w| w == crate::ast::RegWidth::W16)
-                    .or(default);
+                    .map(|w| w == crate::ast::RegWidth::W16);
                 m_wide_contract = m_wide;
                 x_wide_contract = x_wide;
                 m_unknown_cause = None;
@@ -1927,7 +1926,10 @@ mod tests {
             ops: vec![
                 op(Op::FunctionStart {
                     name: "main".to_string(),
-                    mode_contract: ModeContract::default(),
+                    mode_contract: ModeContract {
+                        a_width: Some(crate::ast::RegWidth::W8),
+                        i_width: None,
+                    },
                     is_entry: true,
                     is_far: false,
                 }),
@@ -1957,7 +1959,10 @@ mod tests {
             ops: vec![
                 op(Op::FunctionStart {
                     name: "main".to_string(),
-                    mode_contract: ModeContract::default(),
+                    mode_contract: ModeContract {
+                        a_width: Some(crate::ast::RegWidth::W8),
+                        i_width: None,
+                    },
                     is_entry: true,
                     is_far: false,
                 }),

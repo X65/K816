@@ -1,5 +1,5 @@
 [default]
-000000: E8 E0 0A D0 FB 4C 00 00 60 4C 00 00
+000000: E8 E0 0A D0 FB 4C 00 00 60 E2 30 4C 00 00
 
 
 [disasm obj#0 default::labels]
@@ -10,4 +10,5 @@
 000008: 60          rts
 
 [disasm obj#0 default::main]
-000009: 4C 00 00    jmp $0000
+000009: E2 30       sep #$30
+00000B: 4C 00 00    jmp $0000

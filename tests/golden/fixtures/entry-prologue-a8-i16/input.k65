@@ -1,0 +1,3 @@
+func main @a8 @i16 {
+    lda #$05
+}

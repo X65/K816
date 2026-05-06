@@ -2,7 +2,7 @@ var dst1 = 0x10
 var dst2 = 0x11
 var dst3 = 0x12
 
-func main {
+func main @a8 @i8 {
     // A is killed by the following load, so the zero load is dead and the
     // store run can become STZ.
     dst1 = dst2 = a = 0

@@ -1958,26 +1958,44 @@ pub(crate) fn lower_with_warnings(
                 ));
                 ops.push(Spanned::new(Op::Label(scope.clone()), label_span));
                 // For entry points, emit mode setup at function entry since
-                // there is no call site to bridge from. The CPU defaults to
-                // 8-bit mode, so only emit Rep for 16-bit contracts.
+                // there is no call site to bridge from. The runtime tracker
+                // reflects only the declared contract, so emit REP for W16
+                // and SEP for W8 — both bring the CPU into agreement with
+                // the contract regardless of the prior runtime state.
                 if is_entry {
-                    if effective_contract.a_width == Some(RegWidth::W16) {
-                        ops.push(Spanned::new(
+                    match effective_contract.a_width {
+                        Some(RegWidth::W16) => ops.push(Spanned::new(
                             Op::Rep {
                                 mask: 0x20,
                                 fixed: false,
                             },
                             label_span,
-                        ));
+                        )),
+                        Some(RegWidth::W8) => ops.push(Spanned::new(
+                            Op::Sep {
+                                mask: 0x20,
+                                fixed: false,
+                            },
+                            label_span,
+                        )),
+                        None => {}
                     }
-                    if effective_contract.i_width == Some(RegWidth::W16) {
-                        ops.push(Spanned::new(
+                    match effective_contract.i_width {
+                        Some(RegWidth::W16) => ops.push(Spanned::new(
                             Op::Rep {
                                 mask: 0x10,
                                 fixed: false,
                             },
                             label_span,
-                        ));
+                        )),
+                        Some(RegWidth::W8) => ops.push(Spanned::new(
+                            Op::Sep {
+                                mask: 0x10,
+                                fixed: false,
+                            },
+                            label_span,
+                        )),
+                        None => {}
                     }
                 }
                 for stmt in block.body.iter().skip(body_start) {

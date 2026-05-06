@@ -1,6 +1,6 @@
 // Forced direct-page operand whose address does not fit page 0 is rejected.
 var hi = $1234
 
-func main {
+func main @a8 @i8 {
     lda dp hi
 }

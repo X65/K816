@@ -4,7 +4,7 @@ var COLPF2 = 0xD018
 var VCOUNT = 0xD40B
 var WSYNC = 0xD40A
 
-func main {
+func main @a8 @i8 {
     {
         COLPF2=a=VCOUNT
         WSYNC=a

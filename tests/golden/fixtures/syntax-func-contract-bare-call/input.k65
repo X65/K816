@@ -24,7 +24,7 @@ func ping @a8 () {
     nop
 }
 
-func main {
+func main @a8 @i8 {
     @a16 @i16 {
         lda #$1000
         ldx #$2000

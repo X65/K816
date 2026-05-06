@@ -1,4 +1,4 @@
-func main {
+func main @a8 @i8 {
     @i16
     ldx #$1234
     ldy #$5678

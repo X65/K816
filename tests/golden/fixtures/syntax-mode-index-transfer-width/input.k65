@@ -1,6 +1,6 @@
 // TSX/TXS/TXY/TYX are index-width sensitive (X flag).
 
-func main {
+func main @a8 @i8 {
     @i16
     tsx
     txs

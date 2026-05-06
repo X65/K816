@@ -6,6 +6,6 @@ func choose @a8 () -> a {
     return
 }
 
-func main {
+func main @a8 @i8 {
     choose -> a
 }

@@ -1,5 +1,5 @@
 var READY = $1234
 
-func main {
+func main @a8 @i8 {
     { a&?READY } n-?
 }

@@ -1,9 +1,10 @@
 [default]
-000000: EA EB EA 60
+000000: E2 30 EA EB EA 60
 
 
 [disasm obj#0 default::main]
-000000: EA          nop
-000001: EB          xba
+000000: E2 30       sep #$30
 000002: EA          nop
-000003: 60          rts
+000003: EB          xba
+000004: EA          nop
+000005: 60          rts

@@ -14,7 +14,7 @@ func narrow_user @a8 {
     lda #$42
 }
 
-func main {
+func main @a8 @i8 {
     trampoline a
     wide_user
     narrow_user

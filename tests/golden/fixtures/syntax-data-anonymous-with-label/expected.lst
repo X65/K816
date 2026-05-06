@@ -1,14 +1,15 @@
 [default]
 000000: 01 02 03 04 05 06 07 08 0B 0C 0D 0E 0F 10 11 12
-000010: AD 00 00 AD 08 00 AD 05 00 AD 0D 00 60
+000010: E2 30 AD 00 00 AD 08 00 AD 05 00 AD 0D 00 60
 
 
 [data obj#0 default::named_form]
 000000: <16 bytes of data>
 
 [disasm obj#0 default::main]
-000010: AD 00 00    lda $0000
-000013: AD 08 00    lda $0008
-000016: AD 05 00    lda $0005
-000019: AD 0D 00    lda $000D
-00001C: 60          rts
+000010: E2 30       sep #$30
+000012: AD 00 00    lda $0000
+000015: AD 08 00    lda $0008
+000018: AD 05 00    lda $0005
+00001B: AD 0D 00    lda $000D
+00001E: 60          rts

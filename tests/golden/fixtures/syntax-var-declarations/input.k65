@@ -5,7 +5,7 @@ var arr[4], arr2[2]
 var with_addr[3] = 0x300
 var verbose ?
 
-func main {
+func main @a8 @i8 {
     a=base
     a=next
     a=arr

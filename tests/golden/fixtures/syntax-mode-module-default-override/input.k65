@@ -6,7 +6,7 @@
 @a16
 @i16
 
-func main {
+func main @a8 @i8 {
     lda #1
     ldx #1
 }

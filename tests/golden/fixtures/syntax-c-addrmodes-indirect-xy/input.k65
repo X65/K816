@@ -4,7 +4,7 @@
 // - AM_IND_Y "(v),Y"
 var ptr = 0x20
 
-func main {
+func main @a8 @i8 {
     a=(ptr)
     a=(ptr,x)
     a=(ptr),y

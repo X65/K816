@@ -3,7 +3,7 @@
 
 var zp = 0x20
 
-func main {
+func main @a8 @i8 {
     @a16
     stz zp
     lda #$1234

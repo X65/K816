@@ -1,7 +1,7 @@
 var zp = 0x20
 var abs = 0x1234
 
-func main {
+func main @a8 @i8 {
     // load/store/transfer
     a=1
     a=zp

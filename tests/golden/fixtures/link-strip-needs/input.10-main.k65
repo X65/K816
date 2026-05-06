@@ -1,0 +1,5 @@
+func main @a16 @i16 {
+kernel_start:
+    call task_init
+    call sched_init
+}

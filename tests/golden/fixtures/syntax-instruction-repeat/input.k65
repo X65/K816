@@ -1,6 +1,6 @@
 const COUNT = 4
 
-func main {
+func main @a8 @i8 {
     inx * 3         // literal repeat count
     pha * 2         // pha is non-idempotent so peephole can't fold
     nop * COUNT     // const repeat count resolved at lowering

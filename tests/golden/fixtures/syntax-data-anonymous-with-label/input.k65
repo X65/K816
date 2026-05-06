@@ -13,7 +13,7 @@ data {
     extra2: 16 17 18
 }
 
-func main {
+func main @a8 @i8 {
     a=named_form
     a=anon_form
     a=extra

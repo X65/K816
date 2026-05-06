@@ -6,6 +6,6 @@ var never_used = 0x11
 var also_never = 0x12
 #endif
 
-func main {
+func main @a8 @i8 {
     a=enabled
 }

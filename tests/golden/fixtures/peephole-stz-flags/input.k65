@@ -2,7 +2,7 @@ var flag_dst = $10
 var opt_dst1 = $11
 var opt_dst2 = $12
 
-func main {
+func main @a8 @i8 {
     // The zero flag from `lda #0` is used by the following branch shorthand,
     // so this must remain `lda #0; sta`.
     flag_dst = a = 0

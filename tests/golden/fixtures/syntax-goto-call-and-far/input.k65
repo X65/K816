@@ -8,7 +8,7 @@ func far_target {
     nop
 }
 
-func main {
+func main @a8 @i8 {
     goto near_target
     < goto near_target
     goto (vec)

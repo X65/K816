@@ -25,7 +25,7 @@ naked dli @a8 {
     return_i
 }
 
-func main {
+func main @a8 @i8 {
     SDLST=a=&<displist
     a=&>displist
     SDLST+1=a

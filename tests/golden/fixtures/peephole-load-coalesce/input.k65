@@ -3,7 +3,7 @@ var dst2 = 0x11
 var zero1 = 0x12
 var zero2 = 0x13
 
-func main {
+func main @a8 @i8 {
     // The second identical load is redundant because only stores sit between
     // the two loads, and stores do not change A or N/Z.
     lda #7

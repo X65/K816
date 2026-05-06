@@ -1,7 +1,7 @@
 var mmio_like = 0x20
 var sink = 0x21
 
-func main {
+func main @a8 @i8 {
     // Exact duplicate flag writes collapse, but opposite flag writes remain.
     clc
     clc

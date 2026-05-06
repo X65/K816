@@ -1,4 +1,4 @@
-func main {
+func main @a8 @i8 {
     A=0
     X=A
     Y=x

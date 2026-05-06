@@ -1,15 +1,16 @@
 [obj#0 default]
-000000: C2 20 A9 01 00 4C 08 00
+000000: C2 20 E2 10 A9 01 00 4C 0A 00
 
 
 [obj#1 default]
-000008: 60
+00000A: 60
 
 
 [disasm obj#0 default::main]
 000000: C2 20       rep #$20
-000002: A9 01 00    lda #$0001
-000005: 4C 08 00    jmp $0008
+000002: E2 10       sep #$10
+000004: A9 01 00    lda #$0001
+000007: 4C 0A 00    jmp $000A
 
 [disasm obj#1 default::ext_callee]
-000008: 60          rts
+00000A: 60          rts

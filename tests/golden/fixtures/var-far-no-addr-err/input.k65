@@ -1,5 +1,5 @@
 var far missing_addr
 
-func main {
+func main @a8 @i8 {
     nop
 }

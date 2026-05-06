@@ -1,0 +1,20 @@
+[obj#0 default]
+000000: C2 30 20 08 00 4C 0C 00
+
+
+[obj#1 default]
+000008: A2 00 00 60 A2 00 00 60
+
+
+[disasm obj#0 default::main]
+000000: C2 30       rep #$30
+000002: 20 08 00    jsr $0008
+000005: 4C 0C 00    jmp $000C
+
+[disasm obj#1 default::task_init]
+000008: A2 00 00    ldx #$0000
+00000B: 60          rts
+
+[disasm obj#1 default::sched_init]
+00000C: A2 00 00    ldx #$0000
+00000F: 60          rts

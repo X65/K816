@@ -5,7 +5,7 @@
 
 @a16
 
-func main {
+func main @a8 @i8 {
     lda #1
 }
 

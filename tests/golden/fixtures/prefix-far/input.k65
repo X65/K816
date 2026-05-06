@@ -2,7 +2,7 @@
 // (Regression coverage for the prefix-family redesign — `far` semantics unchanged.)
 var addr = $1234
 
-func main {
+func main @a8 @i8 {
     lda far addr
     lda far addr,x
 }

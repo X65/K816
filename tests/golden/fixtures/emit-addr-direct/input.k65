@@ -2,7 +2,7 @@ var dp = $12
 var abs dpa = $0012
 var other = $1234
 
-func main {
+func main @a8 @i8 {
     lda dp
     lda dpa
     lda abs dp

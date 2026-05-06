@@ -6,7 +6,7 @@ const FIELD_X_LO = 0
 const FIELD_X_HI = 1
 const FIELD_HP   = 2
 
-func main {
+func main @a8 @i8 {
     ldx #FIELD_HP            // sanity: const as immediate (existing)
     lda &FIELD_HP, x         // marker: const as dp,X offset (NEW)
     lda &FIELD_X_LO, y       // marker: const as dp,Y offset (NEW)

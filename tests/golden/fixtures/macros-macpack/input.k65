@@ -14,7 +14,7 @@ inline save (x, some_memory) {
 
 var variable
 
-func main {
+func main @a8 @i8 {
     a = 0
     add a, #$10 -> a
     sub a, #10 -> a

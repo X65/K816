@@ -1,13 +1,15 @@
 [default]
+000112: E2 30
 000111: 60
 
 
 [fixed_hi]
-000020: 11 01
+000020: 12 01
 
 
 [data obj#0 fixed_hi::vectors]
 000020: <2 bytes of data>
 
 [disasm obj#0 default::main]
+000112: E2 30       sep #$30
 000111: 60          rts

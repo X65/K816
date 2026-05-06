@@ -1,5 +1,5 @@
 const FIELD_HP = 2
 
-func main {
+func main @a8 @i8 {
     lda &FIELD_HP, s
 }

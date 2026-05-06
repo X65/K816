@@ -9,7 +9,7 @@ var ptr_b = Z
 var ptr_c = R
 var ptr_d = P2
 
-func main {
+func main @a8 @i8 {
     // `pha` between immediates keeps each load observable so the
     // optimizer cannot fold them, preserving this fixture's
     // verification of every constant value in the sequence.

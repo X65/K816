@@ -10,7 +10,7 @@ func two {
     != goto .loop
 }
 
-func main {
+func main @a8 @i8 {
     one
     two
 }

@@ -3,7 +3,7 @@ var tail
 var tiles[3] = 0x100
 var after
 
-func main {
+func main @a8 @i8 {
     lda header
     lda tail
     lda tiles

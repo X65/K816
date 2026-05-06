@@ -17,7 +17,7 @@ inline alias_load @a8 (ptr) -> a {
     lda ptr
 }
 
-func main {
+func main @a8 @i8 {
     imm_byte #$7f -> a
     @a16 {
         imm_word #$1234 -> a

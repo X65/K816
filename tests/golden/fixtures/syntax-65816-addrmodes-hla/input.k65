@@ -7,7 +7,7 @@
 // and numeric literals are valid here.
 const off = 0x20
 
-func main {
+func main @a8 @i8 {
     a = 4,s                 // LDA 4,S         -- stack-relative load
     4,s = a                 // STA 4,S         -- stack-relative store
     a = (off,s),y           // LDA (off,S),Y   -- stack-relative indirect Y load

@@ -3,7 +3,7 @@
 var dp_addr = $0012
 var abs_addr = $1234
 
-func main {
+func main @a8 @i8 {
     lda abs dp_addr
     sta abs dp_addr
     lda abs abs_addr

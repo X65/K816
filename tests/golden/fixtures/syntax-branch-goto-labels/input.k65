@@ -6,7 +6,7 @@
 // BNE: != goto label
 var mem = 0x40
 
-func main {
+func main @a8 @i8 {
     a?mem
     < goto .done
     a?mem

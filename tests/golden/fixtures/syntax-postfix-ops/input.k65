@@ -1,6 +1,6 @@
 var mem = 0x40
 
-func main {
+func main @a8 @i8 {
     a<<
     a>>
     a<<<

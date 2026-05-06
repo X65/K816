@@ -1,11 +1,14 @@
 [default]
-000000: EA 4C 04 00 EA 60
+000000: EA C2 30 20 09 00 E2 30 60 EA 60
 
 
 [disasm obj#0 default::main]
 000000: EA          nop
-000001: 4C 04 00    jmp $0004
+000001: C2 30       rep #$30
+000003: 20 09 00    jsr $0009
+000006: E2 30       sep #$30
+000008: 60          rts
 
 [disasm obj#0 default::helper]
-000004: EA          nop
-000005: 60          rts
+000009: EA          nop
+00000A: 60          rts

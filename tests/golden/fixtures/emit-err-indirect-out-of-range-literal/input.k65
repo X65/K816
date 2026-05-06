@@ -2,6 +2,6 @@
 // $1234 exceeds zero-page range and `lda` has no `(abs)` indirect form,
 // so the encoder must reject this operand with a clear range diagnostic.
 
-func main {
+func main @a8 @i8 {
     lda ($1234)
 }

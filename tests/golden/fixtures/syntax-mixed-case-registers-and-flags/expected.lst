@@ -1,17 +1,18 @@
 [default]
-000000: A9 00 AA 9B 1B 5B 38 18 F8 D8 78 B8 60
+000000: E2 30 A9 00 AA 9B 1B 5B 38 18 F8 D8 78 B8 60
 
 
 [disasm obj#0 default::main]
-000000: A9 00       lda #$00
-000002: AA          tax
-000003: 9B          txy
-000004: 1B          tcs
-000005: 5B          tcd
-000006: 38          sec
-000007: 18          clc
-000008: F8          sed
-000009: D8          cld
-00000A: 78          sei
-00000B: B8          clv
-00000C: 60          rts
+000000: E2 30       sep #$30
+000002: A9 00       lda #$00
+000004: AA          tax
+000005: 9B          txy
+000006: 1B          tcs
+000007: 5B          tcd
+000008: 38          sec
+000009: 18          clc
+00000A: F8          sed
+00000B: D8          cld
+00000C: 78          sei
+00000D: B8          clv
+00000E: 60          rts

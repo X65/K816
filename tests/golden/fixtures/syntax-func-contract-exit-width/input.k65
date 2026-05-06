@@ -11,7 +11,7 @@ func wide_user @a16 {
     lda #$1234
 }
 
-func main {
+func main @a8 @i8 {
     widen
     wide_user
     call widen

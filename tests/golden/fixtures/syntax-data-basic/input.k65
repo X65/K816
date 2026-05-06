@@ -8,6 +8,6 @@ data bytes {
     0
 }
 
-func main {
+func main @a8 @i8 {
     a=bytes
 }

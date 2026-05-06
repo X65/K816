@@ -1,12 +1,13 @@
 [default]
-000000: 0A 14 1E A9 03 A2 14 A0 1E 60
+000000: 0A 14 1E E2 30 A9 03 A2 14 A0 1E 60
 
 
 [data obj#0 default::arr]
 000000: <3 bytes of data>
 
 [disasm obj#0 default::main]
-000003: A9 03       lda #$03
-000005: A2 14       ldx #$14
-000007: A0 1E       ldy #$1E
-000009: 60          rts
+000003: E2 30       sep #$30
+000005: A9 03       lda #$03
+000007: A2 14       ldx #$14
+000009: A0 1E       ldy #$1E
+00000B: 60          rts

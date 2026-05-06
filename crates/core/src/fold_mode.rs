@@ -1,6 +1,5 @@
 use rustc_hash::FxHashMap;
 
-use crate::ast::ModeContract;
 use crate::hir::{AddressValue, InstructionOp, Op, OperandOp, Program};
 use crate::span::Spanned;
 
@@ -40,10 +39,19 @@ fn compute_effective_needs(program: &Program) -> FxHashMap<String, (bool, bool)>
 
     for op in &program.ops {
         match &op.node {
-            Op::FunctionStart { name, .. } => {
+            Op::FunctionStart {
+                name,
+                mode_contract,
+                ..
+            } => {
                 current_function = Some(name.clone());
-                cur_m = false;
-                cur_x = false;
+                // A declared `@a*`/`@i*` contract IS a need: the function's
+                // ABI says callers must establish that width, and the entry
+                // prologue (for entry points) or callers (for non-entry)
+                // must keep that REP/SEP alive. Seeding from the contract
+                // here also lets propagation lift transitive callers.
+                cur_m = mode_contract.a_width.is_some();
+                cur_x = mode_contract.i_width.is_some();
             }
             Op::FunctionEnd => {
                 if let Some(name) = current_function.take() {
@@ -146,6 +154,20 @@ fn process_function(
 ) -> Vec<Spanned<Op>> {
     let mut need_m = false;
     let mut need_x = false;
+    // Entry-point functions establish their declared mode in the prologue
+    // REP/SEP emitted by lowering. Seeding the backward scan from the
+    // declared contract keeps that prologue from being stripped just because
+    // the body delegates all width-sensitive work to (possibly extern)
+    // callees the local scan cannot see into.
+    if let Some(Op::FunctionStart {
+        mode_contract,
+        is_entry: true,
+        ..
+    }) = ops.first().map(|op| &op.node)
+    {
+        need_m = mode_contract.a_width.is_some();
+        need_x = mode_contract.i_width.is_some();
+    }
     let mut keep = vec![true; ops.len()];
     // Adjusted masks for Rep/Sep (may have bits stripped).
     let mut masks: Vec<u8> = ops
@@ -218,37 +240,11 @@ fn process_function(
             continue;
         }
         match &op.node {
-            Op::FunctionStart {
-                name,
-                mode_contract,
-                is_entry,
-                is_far,
-            } => {
-                let (fn_needs_m, fn_needs_x) = effective_needs
-                    .get(name.as_str())
-                    .copied()
-                    .unwrap_or((false, false));
-                let new_contract = ModeContract {
-                    a_width: if fn_needs_m {
-                        mode_contract.a_width
-                    } else {
-                        None
-                    },
-                    i_width: if fn_needs_x {
-                        mode_contract.i_width
-                    } else {
-                        None
-                    },
-                };
-                result.push(Spanned::new(
-                    Op::FunctionStart {
-                        name: name.clone(),
-                        mode_contract: new_contract,
-                        is_entry: *is_entry,
-                        is_far: *is_far,
-                    },
-                    op.span,
-                ));
+            Op::FunctionStart { .. } => {
+                // The declared contract is the function's published ABI; the
+                // optimizer must not rewrite it. Pass through verbatim so the
+                // linker sees the user's `@a*`/`@i*` declaration intact.
+                result.push(op.clone());
             }
             Op::Rep { fixed: false, .. } => {
                 result.push(Spanned::new(
@@ -542,6 +538,149 @@ mod tests {
                 .ops
                 .iter()
                 .any(|op| matches!(op.node, Op::Sep { mask: 0x20, .. }))
+        );
+    }
+
+    fn function_start_with_contract(
+        name: &str,
+        contract: ModeContract,
+        is_entry: bool,
+    ) -> Spanned<Op> {
+        Spanned::new(
+            Op::FunctionStart {
+                name: name.to_string(),
+                mode_contract: contract,
+                is_entry,
+                is_far: false,
+            },
+            test_span(),
+        )
+    }
+
+    fn jsr_to(target: &str) -> Spanned<Op> {
+        Spanned::new(
+            Op::Instruction(InstructionOp {
+                mnemonic: "jsr".to_string(),
+                operand: Some(OperandOp::Address {
+                    value: AddressValue::Label(target.to_string()),
+                    size_hint: AddressSizeHint::Auto,
+                    mode: AddressOperandMode::Direct { index: None },
+                }),
+            }),
+            test_span(),
+        )
+    }
+
+    /// Locks in Change 2: the strip pass must never rewrite the user's
+    /// declared `mode_contract`. The contract is the function's published
+    /// ABI, used by the linker to validate every cross-unit caller.
+    #[test]
+    fn preserves_declared_contract_through_strip_pass() {
+        use crate::ast::RegWidth;
+        let contract = ModeContract {
+            a_width: Some(RegWidth::W16),
+            i_width: Some(RegWidth::W16),
+        };
+        let program = Program {
+            ops: vec![
+                function_start_with_contract("main", contract, false),
+                nop_op(),
+                Spanned::new(Op::FunctionEnd, test_span()),
+            ],
+        };
+
+        let pruned = eliminate_dead_mode_ops(&program);
+        let start = pruned
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::FunctionStart { mode_contract, .. } => Some(mode_contract.clone()),
+                _ => None,
+            })
+            .expect("FunctionStart in result");
+        assert_eq!(start.a_width, Some(RegWidth::W16));
+        assert_eq!(start.i_width, Some(RegWidth::W16));
+    }
+
+    /// Locks in Change 3: an entry-point function with a declared
+    /// `@a16 @i16` contract whose body has no width-sensitive opcodes
+    /// (because all width-sensitive work is delegated to extern callees)
+    /// must keep its prologue REP/SEP. Otherwise the runtime tracker
+    /// stays at the contract's initial state with no instruction to bring
+    /// the CPU into agreement.
+    #[test]
+    fn keeps_entry_prologue_rep_for_declared_contract_with_empty_body() {
+        use crate::ast::RegWidth;
+        let contract = ModeContract {
+            a_width: Some(RegWidth::W16),
+            i_width: Some(RegWidth::W16),
+        };
+        let program = Program {
+            ops: vec![
+                function_start_with_contract("main", contract, true),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x20,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
+                Spanned::new(
+                    Op::Rep {
+                        mask: 0x10,
+                        fixed: false,
+                    },
+                    test_span(),
+                ),
+                jsr_to("extern_callee"),
+                Spanned::new(Op::FunctionEnd, test_span()),
+            ],
+        };
+
+        let pruned = eliminate_dead_mode_ops(&program);
+        let kept_m = pruned
+            .ops
+            .iter()
+            .any(|op| matches!(&op.node, Op::Rep { mask: 0x20, .. }));
+        let kept_x = pruned
+            .ops
+            .iter()
+            .any(|op| matches!(&op.node, Op::Rep { mask: 0x10, .. }));
+        assert!(kept_m, "M-axis prologue REP must survive");
+        assert!(kept_x, "X-axis prologue REP must survive");
+    }
+
+    /// Locks in Change 1: a function declaring `@i16` propagates that need
+    /// to its callers via `compute_effective_needs`, even if the callee's
+    /// body has no X-sensitive opcode. Without this, leaf-shaped
+    /// dispatchers calling such a callee would see `(false, false)` and
+    /// strip prologue REPs / corrupt their own contract.
+    #[test]
+    fn propagates_declared_contract_through_compute_effective_needs() {
+        use crate::ast::RegWidth;
+        let caller_contract = ModeContract::default();
+        let callee_contract = ModeContract {
+            a_width: None,
+            i_width: Some(RegWidth::W16),
+        };
+        let program = Program {
+            ops: vec![
+                function_start_with_contract("caller", caller_contract, false),
+                jsr_to("callee"),
+                Spanned::new(Op::FunctionEnd, test_span()),
+                function_start_with_contract("callee", callee_contract, false),
+                nop_op(),
+                Spanned::new(Op::FunctionEnd, test_span()),
+            ],
+        };
+
+        let needs = compute_effective_needs(&program);
+        let caller_needs = needs.get("caller").copied().unwrap_or((false, false));
+        let callee_needs = needs.get("callee").copied().unwrap_or((false, false));
+        assert!(callee_needs.1, "callee must need X (declared @i16)");
+        assert!(
+            caller_needs.1,
+            "caller must inherit X-need by propagation through JSR callee",
         );
     }
 }

@@ -5,7 +5,7 @@
 // raw mnemonics.
 var ptr = 0x20
 
-func main {
+func main @a8 @i8 {
     lda (ptr)           // B2 20     -- DP indirect
     lda (ptr,x)         // A1 20     -- DP indexed indirect X
     lda (ptr),y         // B1 20     -- DP indirect indexed Y

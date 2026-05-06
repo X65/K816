@@ -10,6 +10,6 @@ func bad @a8 @i16 {
     tax
 }
 
-func main {
+func main @a8 @i8 {
     nop
 }

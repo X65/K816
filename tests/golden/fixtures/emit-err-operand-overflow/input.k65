@@ -2,7 +2,7 @@ const TOO_BIG = $10000
 const BIG = $F000
 const SMALL = $F0
 
-func main {
+func main @a8 @i8 {
 
     lda #SMALL      // OK
 

@@ -3,7 +3,7 @@
 
 
 [obj#1 default]
-00020B: EA 4C 0F 02 EA EA 60
+00020B: E2 30 EA 4C 11 02 EA EA 60
 
 
 [obj#2 RODATA]
@@ -38,10 +38,11 @@
 000208: 20 0B 02    jsr $020B
 
 [disasm obj#1 default::main]
-00020B: EA          nop
-00020C: 4C 0F 02    jmp $020F
+00020B: E2 30       sep #$30
+00020D: EA          nop
+00020E: 4C 11 02    jmp $0211
 
 [disasm obj#1 default::helper]
-00020F: EA          nop
-000210: EA          nop
-000211: 60          rts
+000211: EA          nop
+000212: EA          nop
+000213: 60          rts

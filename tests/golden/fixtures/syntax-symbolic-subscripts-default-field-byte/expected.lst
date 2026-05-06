@@ -1,7 +1,8 @@
 [default]
-000000: AD 34 12 60
+000000: E2 20 AD 34 12 60
 
 
 [disasm obj#0 default::main]
-000000: AD 34 12    lda $1234
-000003: 60          rts
+000000: E2 20       sep #$20
+000002: AD 34 12    lda $1234
+000005: 60          rts

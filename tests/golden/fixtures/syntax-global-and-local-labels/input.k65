@@ -7,6 +7,6 @@ func labels @i8 {
     goto start
 }
 
-func main {
+func main @a8 @i8 {
     labels
 }

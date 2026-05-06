@@ -1,5 +1,5 @@
 // Forced direct-page prefix on an instruction with no DP form is rejected.
 // `jsr` only supports Absolute and AbsoluteLong, never DirectPage.
-func main {
+func main @a8 @i8 {
     jsr dp main
 }

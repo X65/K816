@@ -5,7 +5,7 @@ func target {
     nop
 }
 
-func main {
+func main @a8 @i8 {
     lda zp0
     lda abs
     lda target

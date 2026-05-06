@@ -5,7 +5,7 @@
 // PHA/PLA depend on accumulator width (M flag).
 // PHX/PLX/PHY/PLY depend on index width (X flag).
 
-func main {
+func main @a8 @i8 {
     // --- Accumulator push/pull: 16-bit mode ---
     @a16
     pla

@@ -8,7 +8,7 @@ data task_status_symbol {
     '1'     // TASK_SINGLE
 }
 
-func main {
+func main @a8 @i8 {
     lda task_status_symbol
     lda task_status_symbol + 1
     lda task_status_symbol,x

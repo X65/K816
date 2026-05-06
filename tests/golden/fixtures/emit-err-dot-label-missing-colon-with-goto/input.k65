@@ -4,7 +4,7 @@
 // at the goto site. With the enrichment, the typo is also reported at the
 // declaration site so the user can fix the actual mistake.
 
-func main {
+func main @a8 @i8 {
     nop
     goto .exit
     nop

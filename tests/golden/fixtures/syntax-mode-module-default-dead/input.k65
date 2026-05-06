@@ -7,7 +7,7 @@
 @a16
 @i16
 
-func main {
+func main @a8 @i8 {
     nop
     call helper
 }

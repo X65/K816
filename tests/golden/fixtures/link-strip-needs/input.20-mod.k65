@@ -1,0 +1,7 @@
+func task_init @a16 @i16 {
+    ldx #0
+}
+
+func sched_init @a16 @i16 {
+    ldx #0
+}

@@ -7,7 +7,7 @@
 
 
 [obj#2 default]
-00000D: 4C 00 00
+00000D: C2 20 4C 00 00
 
 
 [disasm obj#1 default::test]
@@ -20,4 +20,5 @@
 00000C: 60          rts
 
 [disasm obj#2 default::main]
-00000D: 4C 00 00    jmp $0000
+00000D: C2 20       rep #$20
+00000F: 4C 00 00    jmp $0000

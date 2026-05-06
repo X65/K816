@@ -8,7 +8,7 @@ func func_b {
     nop
 }
 
-func main {
+func main @a8 @i8 {
     call func_a
     call func_b
 }

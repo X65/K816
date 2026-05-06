@@ -1,5 +1,5 @@
 var ptr = $80
 
-func main {
+func main @a8 @i8 {
     lda ptr,s
 }

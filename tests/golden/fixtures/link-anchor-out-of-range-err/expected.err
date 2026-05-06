@@ -1,7 +1,7 @@
 Error: segment rule 'DEFAULT' start=0x12345 is outside memory area 'MAIN' [0x0..0x10000)
    ╭─[ tests/golden/fixtures/link-anchor-out-of-range-err/input.k65:1:1 ]
    │
- 1 │ func main {
+ 1 │ func main @a8 @i8 {
    │ │ 
    │ ╰─ 
 ───╯

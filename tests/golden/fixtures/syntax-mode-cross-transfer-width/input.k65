@@ -1,7 +1,7 @@
 // TAX/TAY/TXA/TYA depend on BOTH accumulator and index width.
 // Both mode ops must be preserved.
 
-func main {
+func main @a8 @i8 {
     @a16 @i16
     lda #$1234
     tax

@@ -23,7 +23,7 @@ func plain {
     nop
 }
 
-func main {
+func main @a8 @i8 {
     // Colored calls: emit mode bridge before JSR
     call wide_a
     call narrow_all

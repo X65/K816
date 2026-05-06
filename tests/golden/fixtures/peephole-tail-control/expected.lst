@@ -1,5 +1,6 @@
 [default]
-000000: A9 55 60 EA 6B 4C 00 00 5C 03 00 00 A9 01 60
+000000: A9 55 60 EA 6B 4C 00 00 5C 03 00 00 E2 20 A9 01
+000010: 60
 
 
 [disasm obj#0 default::tail_target]
@@ -17,5 +18,6 @@
 000008: 5C 03 00 00 jml $000003
 
 [disasm obj#0 default::main]
-00000C: A9 01       lda #$01
-00000E: 60          rts
+00000C: E2 20       sep #$20
+00000E: A9 01       lda #$01
+000010: 60          rts

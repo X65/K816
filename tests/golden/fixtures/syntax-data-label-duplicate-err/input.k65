@@ -4,6 +4,6 @@ data foo {
     1 2 3
 }
 
-func main {
+func main @a8 @i8 {
     nop
 }

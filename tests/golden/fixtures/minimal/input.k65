@@ -8,7 +8,7 @@ func near_target {
     nop
 }
 
-func main {
+func main @a8 @i8 {
     call far_target
     call near_target
     lda #[1 + 2]

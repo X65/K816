@@ -12,6 +12,6 @@ data generated {
     ?
 }
 
-func main {
+func main @a8 @i8 {
     a=generated
 }

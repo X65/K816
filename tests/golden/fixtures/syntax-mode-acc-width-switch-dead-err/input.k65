@@ -1,6 +1,6 @@
 var dst = $2000
 
-func main {
+func main @a8 @i8 {
     @a16
     lda #$1234
     @a8

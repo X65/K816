@@ -2,6 +2,6 @@ var foo[
     .idx:byte
 ] = 0x1234
 
-func main {
+func main @a8 @i8 {
     lda foo.idx[1]
 }

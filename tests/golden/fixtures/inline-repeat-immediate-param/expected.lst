@@ -1,10 +1,11 @@
 [default]
-000000: A9 F0 4A 4A 4A 60
+000000: E2 20 A9 F0 4A 4A 4A 60
 
 
 [disasm obj#0 default::main]
-000000: A9 F0       lda #$F0
-000002: 4A          lsr A
-000003: 4A          lsr A
+000000: E2 20       sep #$20
+000002: A9 F0       lda #$F0
 000004: 4A          lsr A
-000005: 60          rts
+000005: 4A          lsr A
+000006: 4A          lsr A
+000007: 60          rts

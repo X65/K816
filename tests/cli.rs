@@ -75,7 +75,7 @@ fn compile_subcommand_allows_unresolved_symbols_for_later_linking() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "func main {\n  lda missing\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main @a8 {\n  lda missing\n}\n").expect("failed to write input");
     let object_file = root.join("demo.o65");
 
     let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
@@ -99,7 +99,7 @@ fn shortcut_build_reports_undefined_symbol_diagnostics() {
     std::fs::create_dir_all(&root).expect("failed to create temp root");
 
     let input = root.join("demo.k65");
-    std::fs::write(&input, "func main {\n  lda missing\n}\n").expect("failed to write input");
+    std::fs::write(&input, "func main @a8 {\n  lda missing\n}\n").expect("failed to write input");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_k816"));
     cmd.arg(&input)

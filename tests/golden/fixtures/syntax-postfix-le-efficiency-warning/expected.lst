@@ -1,9 +1,10 @@
 [default]
-000000: E8 90 FD F0 FB 60
+000000: E2 30 E8 90 FD F0 FB 60
 
 
 [disasm obj#0 default::main]
-000000: E8          inx
-000001: 90 FD       bcc $000000
-000003: F0 FB       beq $000000
-000005: 60          rts
+000000: E2 30       sep #$30
+000002: E8          inx
+000003: 90 FD       bcc $000002
+000005: F0 FB       beq $000002
+000007: 60          rts

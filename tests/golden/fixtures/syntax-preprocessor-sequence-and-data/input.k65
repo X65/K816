@@ -1,4 +1,4 @@
-func main {
+func main @a8 @i8 {
     #if 1
     a=1
     #else

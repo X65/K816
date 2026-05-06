@@ -1,5 +1,5 @@
 [default]
-000000: 01 02 03 41 42 43 40 00 00 AD 00 00 60
+000000: 01 02 03 41 42 43 40 00 00 E2 30 AD 00 00 60
 
 
 [data obj#0 default::bytes]
@@ -8,5 +8,6 @@
 000006: <3 bytes of data>
 
 [disasm obj#0 default::main]
-000009: AD 00 00    lda $0000
-00000C: 60          rts
+000009: E2 30       sep #$30
+00000B: AD 00 00    lda $0000
+00000E: 60          rts

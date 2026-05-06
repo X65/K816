@@ -2,6 +2,6 @@
 // the rejection now suggests the `&` operator as the explicit fix.
 const FIELD_HP = 2
 
-func main {
+func main @a8 @i8 {
     lda FIELD_HP, x
 }

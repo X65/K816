@@ -2,7 +2,7 @@ func touch @a8 (a) {
     c-?{ inx }
 }
 
-func main {
+func main @a8 @i8 {
     ldx #1
     touch a
     txa

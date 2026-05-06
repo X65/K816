@@ -1,5 +1,5 @@
 const FOO = 42
 
-func main {
+func main @a8 @i8 {
     lda FOO
 }

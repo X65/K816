@@ -1,7 +1,7 @@
 // DEX/DEY/INX/INY are index-width sensitive (X flag).
 // Mode ops must NOT be eliminated before them.
 
-func main {
+func main @a8 @i8 {
     @i16
     inx
     dex

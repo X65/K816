@@ -1,6 +1,6 @@
 // `:abs` suffix is removed; use the `abs` operand prefix instead.
 var x = $0012
 
-func main {
+func main @a8 @i8 {
     lda x:abs
 }

@@ -11,7 +11,7 @@ var simple :byte * 32 = $1000
 
 var guard2
 
-func main {
+func main @a8 @i8 {
     lda COMPOUND    // $4000
     lda guard1      // $4000 +  4 * 6 = $4018
 

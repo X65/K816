@@ -2,7 +2,7 @@
 
 var zp = 0x20
 
-func main {
+func main @a8 @i8 {
     @i16
     stx zp
     sty zp

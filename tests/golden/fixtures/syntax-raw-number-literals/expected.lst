@@ -1,13 +1,14 @@
 [default]
-000000: A9 7B 48 A9 1F 48 A9 AA 48 A9 02 60
+000000: E2 30 A9 7B 48 A9 1F 48 A9 AA 48 A9 02 60
 
 
 [disasm obj#0 default::main]
-000000: A9 7B       lda #$7B
-000002: 48          pha
-000003: A9 1F       lda #$1F
-000005: 48          pha
-000006: A9 AA       lda #$AA
-000008: 48          pha
-000009: A9 02       lda #$02
-00000B: 60          rts
+000000: E2 30       sep #$30
+000002: A9 7B       lda #$7B
+000004: 48          pha
+000005: A9 1F       lda #$1F
+000007: 48          pha
+000008: A9 AA       lda #$AA
+00000A: 48          pha
+00000B: A9 02       lda #$02
+00000D: 60          rts

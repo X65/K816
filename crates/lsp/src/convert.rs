@@ -56,6 +56,14 @@ pub(super) fn diagnostic_to_lsp(
     }
 
     let mut message = diagnostic.message.clone();
+    // Surface the primary-label text — Ariadne renders this inline under the
+    // span underline; the LSP has no equivalent rendering, so fold it into the
+    // message. CLAUDE.md mandates non-default primary labels project-wide, but
+    // skip the legacy "here" sentinel as a safety net.
+    if diagnostic.primary_label != "here" {
+        message.push('\n');
+        message.push_str(&diagnostic.primary_label);
+    }
     // Inline-origin annotations come first so they read like a continuation of
     // the message body, before help/note prefixes. Foreign-source spans get
     // turned into related-information entries so editors can navigate to the

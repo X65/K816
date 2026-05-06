@@ -40,12 +40,24 @@ fn converts_diagnostics_with_related_info() {
     let primary = k816_core::span::Span::new(source_id, 2, 6);
     let related = k816_core::span::Span::new(source_id, 9, 12);
     let diagnostic = k816_core::diag::Diagnostic::error(primary, "oops")
+        .with_primary_label("primary annotation")
         .with_label(related, "related")
         .with_help("fix it");
 
     let converted = diagnostic_to_lsp(&diagnostic, &uri, &index, text, &[]);
     assert_eq!(converted.severity, Some(DiagnosticSeverity::ERROR));
+    assert!(converted.message.contains("primary annotation"));
     assert!(converted.message.contains("help: fix it"));
+    let label_pos = converted
+        .message
+        .find("primary annotation")
+        .expect("primary label present");
+    let help_pos = converted.message.find("help: ").expect("help present");
+    assert!(
+        label_pos < help_pos,
+        "primary label should precede help: {:?}",
+        converted.message,
+    );
     assert_eq!(
         converted
             .related_information
@@ -54,6 +66,57 @@ fn converts_diagnostics_with_related_info() {
             .len(),
         1
     );
+}
+
+/// A diagnostic that never calls `with_primary_label(...)` retains the
+/// internal `"here"` sentinel. The LSP conversion must suppress it so editors
+/// don't surface `"here"` as a stray bullet in hovers.
+#[test]
+fn omits_default_here_primary_label() {
+    let uri = Uri::from_str("file:///tmp/test.k65").expect("uri");
+    let text = "func main {\n  nop\n}\n";
+    let index = LineIndex::new(text);
+    let source_id = k816_core::span::SourceId(0);
+    let primary = k816_core::span::Span::new(source_id, 2, 6);
+    let diagnostic = k816_core::diag::Diagnostic::error(primary, "oops");
+
+    let converted = diagnostic_to_lsp(&diagnostic, &uri, &index, text, &[]);
+    assert!(
+        !converted.message.contains("\nhere"),
+        "default \"here\" sentinel must not appear in LSP message: {:?}",
+        converted.message,
+    );
+}
+
+/// Full ordering check: when a diagnostic has a primary label, help, and note,
+/// the LSP message renders them in the same reading order Ariadne uses on the
+/// CLI (message → primary label → help → note).
+#[test]
+fn surfaces_primary_label_with_help_and_note() {
+    let uri = Uri::from_str("file:///tmp/test.k65").expect("uri");
+    let text = "func main {\n  nop\n}\n";
+    let index = LineIndex::new(text);
+    let source_id = k816_core::span::SourceId(0);
+    let primary = k816_core::span::Span::new(source_id, 2, 6);
+    let diagnostic = k816_core::diag::Diagnostic::error(primary, "headline")
+        .with_primary_label("annotation phrase")
+        .with_help("how to fix")
+        .with_note("why this exists");
+
+    let converted = diagnostic_to_lsp(&diagnostic, &uri, &index, text, &[]);
+    let head_pos = converted.message.find("headline").expect("message");
+    let label_pos = converted
+        .message
+        .find("annotation phrase")
+        .expect("primary label");
+    let help_pos = converted.message.find("help: how to fix").expect("help");
+    let note_pos = converted
+        .message
+        .find("note: why this exists")
+        .expect("note");
+    assert!(head_pos < label_pos, "{:?}", converted.message);
+    assert!(label_pos < help_pos, "{:?}", converted.message);
+    assert!(help_pos < note_pos, "{:?}", converted.message);
 }
 
 /// An `InlineOrigin` supplement on a diagnostic must be rendered both as a
@@ -83,6 +146,7 @@ fn renders_inline_origin_supplement_with_foreign_related_info() {
         primary,
         "`adc` uses a width-dependent immediate but accumulator width is unknown",
     )
+    .with_primary_label("call site")
     .with_help("add @a8 or @a16 to the enclosing function")
     .with_inline_origin(origin, "Inlined from helpers.k65:3");
 
@@ -107,13 +171,23 @@ fn renders_inline_origin_supplement_with_foreign_related_info() {
         &foreign_sources,
     );
 
-    // Message must show the inline-origin annotation before the help line, and
-    // it should not bleed into the help text itself.
+    // Message must show the primary label before the inline-origin annotation,
+    // and the inline-origin annotation before the help line; none of them should
+    // bleed into adjacent sections.
+    let label_pos = converted
+        .message
+        .find("call site")
+        .expect("primary label present");
     let inline_pos = converted
         .message
         .find("(Inlined from helpers.k65:3)")
         .expect("inline-origin line present");
     let help_pos = converted.message.find("help: ").expect("help line present");
+    assert!(
+        label_pos < inline_pos,
+        "primary label should precede inline-origin: {:?}",
+        converted.message,
+    );
     assert!(
         inline_pos < help_pos,
         "inline-origin line should precede help: {:?}",

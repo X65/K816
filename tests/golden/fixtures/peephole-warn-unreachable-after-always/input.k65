@@ -1,0 +1,14 @@
+// `} always` lowers to an unconditional `bra` back to the loop's synthetic
+// label. Anything between that branch and the next reachable boundary
+// (label, segment switch, function end, etc.) is dead and is removed by
+// `prune_unreachable_instructions` before encoding. The peephole pass now
+// emits a per-instruction warning so users see the drop instead of having
+// the bytes silently disappear from the listing.
+
+func test @a8 @i8 {
+    {
+        lda #1
+    } always
+    lda #99
+    sta $10
+}

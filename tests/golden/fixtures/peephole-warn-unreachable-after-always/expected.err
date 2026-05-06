@@ -1,0 +1,23 @@
+Warning: unreachable instruction dropped after unconditional branch
+    ╭─[ tests/golden/fixtures/peephole-warn-unreachable-after-always/input.k65:12:5 ]
+    │
+ 12 │     lda #99
+    │     ───┬───  
+    │        ╰───── unreachable instruction
+    │ 
+    │ Help: remove this instruction or move it before the preceding `bra`/`jmp`/`brl`/`jml` — the branch jumps unconditionally to a compiler-generated label, so control never falls through to here
+    │ 
+    │ Note: Constructs like `} always`, `break`, and unconditional `goto` lower to a synthetic `bra .__k816_…` whose successor block is reachable only via the branch target. Anything sitting between the branch and the next label (or segment / function boundary) is dead and is removed before encoding.
+────╯
+
+Warning: unreachable instruction dropped after unconditional branch
+    ╭─[ tests/golden/fixtures/peephole-warn-unreachable-after-always/input.k65:13:5 ]
+    │
+ 13 │     sta $10
+    │     ───┬───  
+    │        ╰───── unreachable instruction
+    │ 
+    │ Help: remove this instruction or move it before the preceding `bra`/`jmp`/`brl`/`jml` — the branch jumps unconditionally to a compiler-generated label, so control never falls through to here
+    │ 
+    │ Note: Constructs like `} always`, `break`, and unconditional `goto` lower to a synthetic `bra .__k816_…` whose successor block is reachable only via the branch target. Anything sitting between the branch and the next label (or segment / function boundary) is dead and is removed before encoding.
+────╯

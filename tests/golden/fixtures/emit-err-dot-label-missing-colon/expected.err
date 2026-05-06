@@ -1,0 +1,11 @@
+Error: missing ':' after label '.exit'
+    ╭─[ tests/golden/fixtures/emit-err-dot-label-missing-colon/input.k65:10:1 ]
+    │
+ 10 │ .exit
+    │ ──┬──  
+    │   ╰──── label declaration
+    │ 
+    │ Help: dot-prefixed names declare local labels; add the trailing ':' (e.g. `.exit:`)
+    │ 
+    │ Note: K65 local labels start with '.' and end with ':'. Without the ':' the parser treats the dot-prefixed identifier as an instruction mnemonic, which is then reported here. References like `goto .label` will fail separately as undefined symbols until the label is declared correctly.
+────╯

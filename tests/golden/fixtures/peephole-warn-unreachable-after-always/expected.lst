@@ -1,0 +1,7 @@
+[default]
+000000: A9 01 80 FC
+
+
+[disasm obj#0 default::test]
+000000: A9 01       lda #$01
+000002: 80 FC       bra $000000

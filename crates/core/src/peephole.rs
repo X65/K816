@@ -1,5 +1,6 @@
 use k816_isa65816::{RegSet, mnemonic_effects};
 
+use crate::diag::Diagnostic;
 use crate::hir::{
     AddressOperandMode, AddressSizeHint, AddressValue, IndexRegister, InstructionOp, Op, OperandOp,
     Program,
@@ -67,6 +68,14 @@ fn return_mnemonic(m: &str) -> Option<&'static str> {
     }
 }
 
+/// Output of the peephole pass: the rewritten program plus any warnings
+/// emitted by passes that drop user-visible code (currently only
+/// `prune_unreachable_instructions`).
+pub struct PeepholeOutput {
+    pub program: Program,
+    pub warnings: Vec<Diagnostic>,
+}
+
 /// Peephole optimization pass.
 ///
 /// Runs the collected peephole rewrites over the whole program in order:
@@ -82,21 +91,26 @@ fn return_mnemonic(m: &str) -> Option<&'static str> {
 /// 6. `prune_unreachable_instructions` — drops plain instructions after an
 ///    unconditional branch/jump until the next reachable boundary. Runs
 ///    before `remove_branch_to_next_label` so branches separated from their
-///    target only by other unreachable branches still collapse.
+///    target only by other unreachable branches still collapse. This is
+///    the only pass that emits warnings, since dropped instructions came
+///    from user source and the user should know they are not encoded.
 /// 7. `remove_branch_to_next_label` — removes branches/jumps to the next
 ///    label.
 /// 8. `collapse_duplicate_returns` — drops an adjacent `rts`/`rtl`/`rti`
 ///    that is preceded by an identical return.
-pub fn peephole_optimize(program: &Program) -> Program {
+pub fn peephole_optimize(program: &Program) -> PeepholeOutput {
     let ops = coalesce_repeated_immediate_loads(&program.ops);
     let ops = remove_dead_adjacent_register_writes(&ops);
     let ops = stz_rewrite(&ops);
     let ops = collapse_duplicate_flag_ops(&ops);
     let ops = rewrite_tail_calls(&ops);
-    let ops = prune_unreachable_instructions(&ops);
+    let (ops, warnings) = prune_unreachable_instructions(&ops);
     let ops = remove_branch_to_next_label(&ops);
     let ops = collapse_duplicate_returns(&ops);
-    Program { ops }
+    PeepholeOutput {
+        program: Program { ops },
+        warnings,
+    }
 }
 
 fn coalesce_repeated_immediate_loads(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
@@ -218,15 +232,19 @@ fn remove_branch_to_next_label(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
     out
 }
 
-fn prune_unreachable_instructions(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
+fn prune_unreachable_instructions(ops: &[Spanned<Op>]) -> (Vec<Spanned<Op>>, Vec<Diagnostic>) {
     let mut out: Vec<Spanned<Op>> = Vec::with_capacity(ops.len());
+    let mut warnings: Vec<Diagnostic> = Vec::new();
     let mut unreachable = false;
 
-    for op in ops {
+    for (idx, op) in ops.iter().enumerate() {
         if unreachable {
             if starts_reachable_region(&op.node) {
                 unreachable = false;
-            } else if matches!(op.node, Op::Instruction(_)) {
+            } else if let Op::Instruction(inst) = &op.node {
+                if !is_synthesized_function_epilogue(ops, idx, op.span, inst) {
+                    warnings.push(unreachable_instruction_diagnostic(op.span, inst));
+                }
                 continue;
             }
         }
@@ -238,7 +256,68 @@ fn prune_unreachable_instructions(ops: &[Spanned<Op>]) -> Vec<Spanned<Op>> {
         }
     }
 
-    out
+    (out, warnings)
+}
+
+/// True when the op at `idx` is the compiler-emitted `rts`/`rtl` epilogue
+/// — recognised by being an operandless return immediately followed by an
+/// `Op::FunctionEnd` at the same span (the lowering pass at `lower.rs:2006`
+/// uses `item.span` for both). User-written returns sit on a narrower span
+/// and have additional ops between them and `FunctionEnd`, so they still
+/// produce warnings when unreachable.
+fn is_synthesized_function_epilogue(
+    ops: &[Spanned<Op>],
+    idx: usize,
+    span: crate::span::Span,
+    inst: &InstructionOp,
+) -> bool {
+    if inst.operand.is_some() {
+        return false;
+    }
+    if !matches!(canonical_mnemonic(&inst.mnemonic).as_str(), "rts" | "rtl") {
+        return false;
+    }
+    let Some(next) = ops.get(idx + 1) else {
+        return false;
+    };
+    matches!(next.node, Op::FunctionEnd) && next.span == span
+}
+
+/// Build the warning emitted when `prune_unreachable_instructions` drops
+/// an `Op::Instruction`. Two flavours:
+///   * dot-prefixed mnemonic with no operand → almost certainly a label
+///     declaration missing its trailing ':'; show the same advice as the
+///     `EncodeError::UnknownMnemonic` enrichment in `emit_object`.
+///   * everything else → generic "unreachable instruction" warning.
+fn unreachable_instruction_diagnostic(span: crate::span::Span, inst: &InstructionOp) -> Diagnostic {
+    let mnemonic = inst.mnemonic.as_str();
+    if mnemonic.starts_with('.') && inst.operand.is_none() {
+        Diagnostic::warning(
+            span,
+            format!(
+                "unreachable instruction dropped after unconditional branch; '{mnemonic}' looks like a label declaration that is missing ':'"
+            ),
+        )
+        .with_primary_label("label declaration".to_string())
+        .with_help(format!(
+            "dot-prefixed names declare local labels; add the trailing ':' (e.g. `{mnemonic}:`). Without the ':' the parser treats it as an instruction mnemonic, peephole sees it as unreachable code after the synthetic branch, and silently drops it."
+        ))
+        .with_note(
+            "K65 local labels start with '.' and end with ':'. After constructs like `} always` the peephole pass prunes anything before the next reachable boundary, so the missing colon never reaches the encoder where the normal 'unknown mnemonic' enrichment would fire.".to_string(),
+        )
+    } else {
+        Diagnostic::warning(
+            span,
+            "unreachable instruction dropped after unconditional branch".to_string(),
+        )
+        .with_primary_label("unreachable instruction".to_string())
+        .with_help(
+            "remove this instruction or move it before the preceding `bra`/`jmp`/`brl`/`jml` — the branch jumps unconditionally to a compiler-generated label, so control never falls through to here".to_string(),
+        )
+        .with_note(
+            "Constructs like `} always`, `break`, and unconditional `goto` lower to a synthetic `bra .__k816_…` whose successor block is reachable only via the branch target. Anything sitting between the branch and the next label (or segment / function boundary) is dead and is removed before encoding.".to_string(),
+        )
+    }
 }
 
 fn immediate_register_load(inst: &InstructionOp) -> Option<(CpuReg, i64)> {
@@ -845,7 +924,7 @@ mod tests {
                 instr("tdc", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["stz", "tdc"]);
     }
 
@@ -859,7 +938,7 @@ mod tests {
                 instr("bne", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["stz", "tdc", "bne"]);
     }
 
@@ -874,7 +953,7 @@ mod tests {
                 instr("xba", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["lda", "sta", "xba"]);
     }
 
@@ -887,7 +966,7 @@ mod tests {
                 instr("beq", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["lda", "sta", "beq"]);
     }
 
@@ -907,7 +986,7 @@ mod tests {
                 instr("LDA", Some(OperandOp::Immediate(1))),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["stz", "LDA"]);
     }
 
@@ -920,7 +999,7 @@ mod tests {
                 instr("lda", Some(OperandOp::Immediate(1))),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["lda", "sta", "lda"]);
     }
 
@@ -938,7 +1017,7 @@ mod tests {
                 instr("RTI", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["rts", "rtl", "rti"]);
     }
 
@@ -953,7 +1032,7 @@ mod tests {
                 instr("rti", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["rts", "rtl", "rti"]);
     }
 
@@ -968,7 +1047,7 @@ mod tests {
                 instr("lda", Some(OperandOp::Immediate(1))),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["lda", "sta", "sta", "lda"]);
     }
 
@@ -983,7 +1062,7 @@ mod tests {
                 instr("lda", Some(OperandOp::Immediate(1))),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["stz", "stz", "lda"]);
     }
 
@@ -1018,7 +1097,7 @@ mod tests {
                 sta_dp(0x17),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(
             mnemonics(&out),
             vec![
@@ -1040,7 +1119,7 @@ mod tests {
                 instr("ldx", Some(OperandOp::Immediate(5))),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["lda", "ldx", "ldx"]);
     }
 
@@ -1060,7 +1139,7 @@ mod tests {
             ));
         }
         let program = Program { ops };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["ldy"]);
         let Op::Instruction(only) = &out.ops[0].node else {
             panic!("expected single ldy");
@@ -1080,7 +1159,7 @@ mod tests {
                 instr("lda", Some(OperandOp::Immediate(4))),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(
             mnemonics(&out),
             vec!["lda", "lda", "pla", "lda", "sta", "lda"]
@@ -1109,7 +1188,7 @@ mod tests {
                 instr("sec", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(
             mnemonics(&out),
             vec![
@@ -1132,7 +1211,7 @@ mod tests {
                 instr("rtl", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["jmp", "jml", "jsr", "rtl"]);
         let Op::Instruction(first) = &out.ops[0].node else {
             panic!("expected first op to be rewritten tail call");
@@ -1158,7 +1237,7 @@ mod tests {
                 instr("nop", None),
             ],
         };
-        let out = peephole_optimize(&program);
+        let out = peephole_optimize(&program).program;
         assert_eq!(mnemonics(&out), vec!["bne", "nop"]);
     }
 
@@ -1177,9 +1256,23 @@ mod tests {
                 instr("nop", None),
             ],
         };
-        let out = peephole_optimize(&program);
-        assert_eq!(mnemonics(&out), vec!["nop"]);
-        assert!(matches!(out.ops[0].node, Op::Label(ref l) if l == "main::.__k816_break_0"));
+        let output = peephole_optimize(&program);
+        assert_eq!(mnemonics(&output.program), vec!["nop"]);
+        assert!(
+            matches!(output.program.ops[0].node, Op::Label(ref l) if l == "main::.__k816_break_0")
+        );
+        assert_eq!(
+            output.warnings.len(),
+            1,
+            "exactly one pruned `bra` should produce one warning"
+        );
+        assert!(
+            output.warnings[0]
+                .message
+                .contains("unreachable instruction dropped after unconditional branch"),
+            "expected generic warning, got: {:?}",
+            output.warnings[0].message
+        );
     }
 
     #[test]
@@ -1194,8 +1287,39 @@ mod tests {
                 instr("lda", Some(OperandOp::Immediate(2))),
             ],
         };
-        let out = peephole_optimize(&program);
-        assert_eq!(mnemonics(&out), vec!["jmp", "lda"]);
-        assert!(matches!(out.ops[1].node, Op::EmitBytes(_)));
+        let output = peephole_optimize(&program);
+        assert_eq!(mnemonics(&output.program), vec!["jmp", "lda"]);
+        assert!(matches!(output.program.ops[1].node, Op::EmitBytes(_)));
+        assert_eq!(
+            output.warnings.len(),
+            2,
+            "two pruned instructions (`lda #1`, `sta`) should produce two warnings"
+        );
+        for warning in &output.warnings {
+            assert_eq!(warning.primary_label, "unreachable instruction");
+        }
+    }
+
+    #[test]
+    fn warns_with_label_typo_help_when_dotted_mnemonic_pruned() {
+        // Reproduces the typical typo: `.exit` (no trailing ':') after `} always`
+        // becomes `Op::Instruction { mnemonic: ".exit", operand: None }` and is
+        // pruned. The warning must use the label-declaration flavour so users
+        // see the same advice as the encoder's UnknownMnemonic enrichment.
+        let program = Program {
+            ops: vec![
+                instr("bra", Some(branch_target("main::.__k816_loop_0"))),
+                instr(".exit", None),
+            ],
+        };
+        let output = peephole_optimize(&program);
+        assert_eq!(output.warnings.len(), 1);
+        let warning = &output.warnings[0];
+        assert!(
+            warning.message.contains("missing ':'"),
+            "expected label-declaration help in message, got: {:?}",
+            warning.message
+        );
+        assert_eq!(warning.primary_label, "label declaration");
     }
 }

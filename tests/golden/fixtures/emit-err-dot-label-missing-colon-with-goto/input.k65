@@ -1,0 +1,13 @@
+// Real-world scenario from the bug report: `.exit` is missing its trailing
+// ':' on line 7, while line 5 has `goto .exit`. Before the diagnostic
+// enrichment, the user only saw a confusing `undefined symbol 'main::.exit'`
+// at the goto site. With the enrichment, the typo is also reported at the
+// declaration site so the user can fix the actual mistake.
+
+func main {
+    nop
+    goto .exit
+    nop
+.exit
+    rts
+}

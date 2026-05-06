@@ -1,0 +1,12 @@
+// A dot-prefixed identifier without a trailing ':' is mistakenly treated as
+// an instruction mnemonic by the parser, since dot-prefix is part of the
+// identifier and the strict label parser requires the ':'. The encoder
+// surfaces this as an UnknownMnemonic, and the diagnostic enrichment in
+// `build_encode_diagnostic` recognises the dot prefix and tells the user
+// they likely forgot the colon.
+
+func main {
+    nop
+.exit
+    nop
+}

@@ -286,6 +286,12 @@ fn compile_source_inner(
         lower_with_warnings(&ast, &sema, fs, inline_bodies, workspace_addressable)
             .map_err(|diagnostics| fail_with_rendered(source_map, diagnostics, options))?;
     warnings.extend(lower_output.warnings);
+    let hir = lower_output.program;
+    let hir = eliminate_dead_mode_ops(&hir);
+    let hir = fold_mode_ops(&hir);
+    let peephole_output = peephole_optimize(&hir);
+    warnings.extend(peephole_output.warnings);
+    let hir = peephole_output.program;
     let rendered_warnings = render_diagnostics_with_options(
         source_map,
         &warnings,
@@ -293,10 +299,6 @@ fn compile_source_inner(
             color: options.color,
         },
     );
-    let hir = lower_output.program;
-    let hir = eliminate_dead_mode_ops(&hir);
-    let hir = fold_mode_ops(&hir);
-    let hir = peephole_optimize(&hir);
 
     let external_functions = externals.map(|e| &e.functions);
     let emit_output = emit_object(&hir, source_map, &sema, external_functions)

@@ -375,7 +375,22 @@ fn build_encode_diagnostic(
     let mut diag = Diagnostic::error(span, err.to_string());
     match err {
         EncodeError::UnknownMnemonic { mnemonic } => {
-            if let Some((name, meta)) = lookup_function(sema, external_functions, mnemonic) {
+            if mnemonic.starts_with('.') && operand.is_none() {
+                diag = Diagnostic::error(
+                    span,
+                    format!("missing ':' after label '{mnemonic}'"),
+                )
+                .with_primary_label("label declaration".to_string())
+                .with_help(format!(
+                    "dot-prefixed names declare local labels; add the trailing ':' (e.g. `{mnemonic}:`)"
+                ))
+                .with_note(
+                    "K65 local labels start with '.' and end with ':'. Without the ':' the parser \
+                     treats the dot-prefixed identifier as an instruction mnemonic, which is then \
+                     reported here. References like `goto .label` will fail separately as undefined \
+                     symbols until the label is declared correctly.".to_string(),
+                );
+            } else if let Some((name, meta)) = lookup_function(sema, external_functions, mnemonic) {
                 let kind_phrase = format!("{}function", meta.kind_prefix_with_article());
                 diag = Diagnostic::error(
                     span,

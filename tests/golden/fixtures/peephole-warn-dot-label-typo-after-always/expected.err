@@ -1,0 +1,23 @@
+Warning: unreachable instruction dropped after unconditional branch; '.exit' looks like a label declaration that is missing ':'
+    ╭─[ tests/golden/fixtures/peephole-warn-dot-label-typo-after-always/input.k65:14:1 ]
+    │
+ 14 │ .exit
+    │ ──┬──  
+    │   ╰──── label declaration
+    │ 
+    │ Help: dot-prefixed names declare local labels; add the trailing ':' (e.g. `.exit:`). Without the ':' the parser treats it as an instruction mnemonic, peephole sees it as unreachable code after the synthetic branch, and silently drops it.
+    │ 
+    │ Note: K65 local labels start with '.' and end with ':'. After constructs like `} always` the peephole pass prunes anything before the next reachable boundary, so the missing colon never reaches the encoder where the normal 'unknown mnemonic' enrichment would fire.
+────╯
+
+Warning: unreachable instruction dropped after unconditional branch
+    ╭─[ tests/golden/fixtures/peephole-warn-dot-label-typo-after-always/input.k65:15:5 ]
+    │
+ 15 │     nop
+    │     ─┬─  
+    │      ╰─── unreachable instruction
+    │ 
+    │ Help: remove this instruction or move it before the preceding `bra`/`jmp`/`brl`/`jml` — the branch jumps unconditionally to a compiler-generated label, so control never falls through to here
+    │ 
+    │ Note: Constructs like `} always`, `break`, and unconditional `goto` lower to a synthetic `bra .__k816_…` whose successor block is reachable only via the branch target. Anything sitting between the branch and the next label (or segment / function boundary) is dead and is removed before encoding.
+────╯

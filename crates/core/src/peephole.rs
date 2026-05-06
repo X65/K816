@@ -521,8 +521,30 @@ fn is_call_mnemonic(mnemonic: &str) -> bool {
     matches!(mnemonic, "jsr" | "jsl")
 }
 
+/// Synthetic labels are emitted by `lower::fresh_local_label` as
+/// `.__k816_<family>_<id>` and become `<scope>::.__k816_<family>_<id>` after
+/// scope resolution. This recognizer matches that exact shape, anchored to
+/// either start-of-string or immediately after `::` — a substring match would
+/// classify an unrelated user label like `mod.x.__k816_foo` as synthetic and
+/// silently rewrite branches around it.
 fn is_synthetic_label(label: &str) -> bool {
-    label.contains(".__k816_")
+    let body = match label.rsplit_once("::") {
+        Some((_, after)) => after,
+        None => label,
+    };
+    let Some(rest) = body.strip_prefix(".__k816_") else {
+        return false;
+    };
+    let Some((family, id)) = rest.rsplit_once('_') else {
+        return false;
+    };
+    if family.is_empty() || id.is_empty() {
+        return false;
+    }
+    family
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && id.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn is_unconditional_control_transfer(op: &Op) -> bool {
@@ -1298,6 +1320,28 @@ mod tests {
         for warning in &output.warnings {
             assert_eq!(warning.primary_label, "unreachable instruction");
         }
+    }
+
+    #[test]
+    fn synthetic_label_match_is_anchored() {
+        // Real synthetic labels: anchored at start-of-string or after `::`.
+        assert!(is_synthetic_label("main::.__k816_break_0"));
+        assert!(is_synthetic_label("scope::sub::.__k816_loop_42"));
+        assert!(is_synthetic_label(".__k816_postfix_gt_skip_3"));
+
+        // User labels that *contain* the fragment as a substring must NOT match —
+        // a substring check would falsely classify these as compiler-emitted and
+        // prune branches around them.
+        assert!(!is_synthetic_label("user.__k816_label"));
+        assert!(!is_synthetic_label("scope::user.__k816_label_0"));
+        assert!(!is_synthetic_label("mod..__k816_other"));
+
+        // Malformed shapes (missing id, non-numeric id, missing family) must not
+        // match either.
+        assert!(!is_synthetic_label("main::.__k816_"));
+        assert!(!is_synthetic_label("main::.__k816_break"));
+        assert!(!is_synthetic_label("main::.__k816_break_x"));
+        assert!(!is_synthetic_label(""));
     }
 
     #[test]

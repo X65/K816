@@ -113,9 +113,13 @@ pub enum VarPlacement {
 }
 
 impl VarPlacement {
-    /// Returns the var's compile-time address, or `None` for linker-allocated
-    /// vars whose address is only known after layout.
-    pub fn compile_time_address(&self) -> Option<u32> {
+    /// Returns the var's compile-time-known location value (an absolute address
+    /// for ABS/FAR vars, a DP slot offset for DP vars), or `None` for
+    /// linker-allocated vars. The caller is responsible for knowing which
+    /// space the value lives in — most callers should prefer
+    /// `VarMeta::compile_time_address` (returns `None` for DP) or
+    /// `VarMeta::compile_time_dp_offset` (returns `Some` only for DP).
+    pub fn compile_time_value(&self) -> Option<u32> {
         match self {
             VarPlacement::Fixed { address } => Some(*address),
             VarPlacement::AllocatedAbs { .. }
@@ -143,14 +147,47 @@ pub struct VarMeta {
 }
 
 impl VarMeta {
-    /// Convenience accessor — returns the compile-time address when the var
-    /// is `Fixed`, `None` when it's `Allocated`.
+    /// Returns the compile-time *absolute* address of the var, or `None` if
+    /// the var has no fixed absolute address. Importantly, DP-class fixed vars
+    /// (`var dp foo = $42`) return `None` here even though the placement
+    /// carries a value — that value is a 1-byte DP slot offset, not a 16/24-bit
+    /// address, and treating it as one would silently bake in a `D=0`
+    /// assumption at the call site. Use `compile_time_dp_offset` for DP slots
+    /// or `compile_time_numeric_value` for routing decisions that need any
+    /// compile-time-known number.
     pub fn compile_time_address(&self) -> Option<u32> {
-        self.placement.compile_time_address()
+        if self.is_direct_page() {
+            return None;
+        }
+        self.placement.compile_time_value()
+    }
+
+    /// Returns the compile-time DP slot offset for `var dp foo = $NN`-style
+    /// declarations. `None` for non-DP vars and for DP vars whose offset is
+    /// chosen by the linker's DP allocator.
+    pub fn compile_time_dp_offset(&self) -> Option<u8> {
+        if !self.is_direct_page() {
+            return None;
+        }
+        let value = self.placement.compile_time_value()?;
+        u8::try_from(value & 0xFF).ok()
+    }
+
+    /// Returns whichever compile-time-known number the placement carries —
+    /// either an absolute address (ABS/FAR) or a DP slot offset (DP). Use this
+    /// when routing between literal-bake and label-relocation paths in
+    /// lowering, where both DP offsets and absolute addresses are valid
+    /// numeric immediates and the encoder/linker handles either.
+    pub fn compile_time_numeric_value(&self) -> Option<u32> {
+        self.placement.compile_time_value()
     }
 
     pub fn is_abstract(&self) -> bool {
         matches!(self.placement, VarPlacement::Abstract)
+    }
+
+    pub fn is_direct_page(&self) -> bool {
+        matches!(self.addr_mode_default, Some(ForceAddrMode::DirectPage))
     }
 }
 

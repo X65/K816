@@ -494,6 +494,50 @@ fn computes_symbolic_subscript_field_offsets_and_total_size() {
 }
 
 #[test]
+fn dp_fixed_var_does_not_expose_compile_time_address() {
+    // `var dp foo = $42` pins foo to DP slot $42 — that's a 1-byte offset
+    // relative to the runtime D register, not a 16/24-bit address. Returning
+    // it from `compile_time_address` would silently bake in a `D=0` assumption
+    // wherever the value is consumed as an address (immediate-of-symbol,
+    // hover, etc.). Callers that need the slot should ask for it explicitly
+    // via `compile_time_dp_offset`; callers that need any compile-time number
+    // (the lowering's literal-vs-relocation router) should use
+    // `compile_time_numeric_value`.
+    let source = "var dp foo = $42\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let sema = analyze(&file).expect("analyze");
+
+    let foo = sema.vars.get("foo").expect("foo");
+    assert!(
+        foo.compile_time_address().is_none(),
+        "DP-class fixed vars must not surface as absolute addresses",
+    );
+    assert_eq!(
+        foo.compile_time_dp_offset().expect("DP offset"),
+        0x42,
+    );
+    assert_eq!(
+        foo.compile_time_numeric_value().expect("numeric value"),
+        0x42,
+    );
+    assert!(foo.is_direct_page());
+}
+
+#[test]
+fn abs_fixed_var_still_exposes_compile_time_address() {
+    // Sanity check: the DP carve-out doesn't affect ABS-class fixed vars,
+    // which continue to surface as real absolute addresses everywhere.
+    let source = "var bar = $1234\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let sema = analyze(&file).expect("analyze");
+
+    let bar = sema.vars.get("bar").expect("bar");
+    assert_eq!(bar.compile_time_address().expect("ABS address"), 0x1234);
+    assert!(bar.compile_time_dp_offset().is_none());
+    assert!(!bar.is_direct_page());
+}
+
+#[test]
 fn symbolic_subscript_array_without_initializer_is_linker_allocated() {
     // Pre-refactor this required an explicit base address. Now an
     // initializer-less symbolic-subscript var is allocated by the linker in

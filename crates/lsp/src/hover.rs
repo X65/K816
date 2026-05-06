@@ -35,23 +35,23 @@ pub(super) fn hover_contents_for_symbol(
             return hover_contents_for_constant(symbol.name.as_str(), *meta);
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
-            let address_line = match (&meta.placement, meta.compile_time_address()) {
-                (k816_core::sema::VarPlacement::Abstract, _) => {
-                    "- address: `<abstract layout>`".to_string()
-                }
-                (_, Some(addr)) => match meta.addr_mode_default {
-                    Some(k816_core::ast::ForceAddrMode::DirectPage) => {
-                        format!("- address: `dp +{:#04X}`", addr & 0xFF)
+            let address_line = if meta.is_abstract() {
+                "- address: `<abstract layout>`".to_string()
+            } else if let Some(offset) = meta.compile_time_dp_offset() {
+                format!("- address: `dp +{:#04X}`", offset)
+            } else if let Some(addr) = meta.compile_time_address() {
+                format!("- address: `{}`", format_address(addr))
+            } else {
+                match &meta.placement {
+                    k816_core::sema::VarPlacement::AllocatedDp => {
+                        "- address: `<DP-pool>`".to_string()
                     }
-                    _ => format!("- address: `{}`", format_address(addr)),
-                },
-                (k816_core::sema::VarPlacement::AllocatedDp, _) => {
-                    "- address: `<DP-pool>`".to_string()
+                    k816_core::sema::VarPlacement::AllocatedAbs { .. } => {
+                        "- address: `<linker-allocated>`".to_string()
+                    }
+                    k816_core::sema::VarPlacement::Fixed { .. }
+                    | k816_core::sema::VarPlacement::Abstract => unreachable!(),
                 }
-                (k816_core::sema::VarPlacement::AllocatedAbs { .. }, _) => {
-                    "- address: `<linker-allocated>`".to_string()
-                }
-                (k816_core::sema::VarPlacement::Fixed { .. }, _) => unreachable!(),
             };
             let storage_line = match meta.addr_mode_default {
                 _ if meta.is_abstract() => "- storage: `<none>`",
@@ -184,10 +184,16 @@ pub(super) fn hover_contents_for_subscript_field(
     field_key: &str,
     ss: &k816_core::sema::SymbolicSubscriptMeta,
 ) -> String {
-    // Fixed vars: absolute address. Allocated (linker-placed) vars have no
-    // compile-time address; fall back to 0 here — step 3 will replace this
-    // with proper "allocated in segment +offset" rendering.
-    let abs_addr = var_meta.compile_time_address().unwrap_or(0) + field_meta.offset;
+    // ABS/FAR fixed vars: full address. DP fixed vars: 1-byte slot offset
+    // rendered as `dp +0xNN`, never as `$00NN` (which would imply a bank-0
+    // absolute address — only correct when D=0 at runtime). Allocated vars
+    // have no compile-time address; fall back to 0 here.
+    let address_text = if let Some(parent_offset) = var_meta.compile_time_dp_offset() {
+        format!("dp +{:#04X}", (parent_offset as u32).wrapping_add(field_meta.offset) & 0xFF)
+    } else {
+        let abs_addr = var_meta.compile_time_address().unwrap_or(0) + field_meta.offset;
+        format_address(abs_addr)
+    };
     let count_suffix = if field_meta.count > 1 {
         format!(" ×{}", field_meta.count)
     } else {
@@ -205,17 +211,15 @@ pub(super) fn hover_contents_for_subscript_field(
             }
         }
         return format!(
-            "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{}`\n- size: `{}`{count_suffix}\n\nFields:\n{sub_fields}",
+            "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{address_text}`\n- size: `{}`{count_suffix}\n\nFields:\n{sub_fields}",
             format_address(field_meta.offset),
-            format_address(abs_addr),
             field_meta.size,
         );
     }
 
     format!(
-        "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{}`\n- size: `{}`\n- type: `{}`{count_suffix}",
+        "**subscript field** `{token}`\n- var: `{var_name}`\n- offset: `+{}`\n- address: `{address_text}`\n- size: `{}`\n- type: `{}`{count_suffix}",
         format_address(field_meta.offset),
-        format_address(abs_addr),
         field_meta.size,
         data_width_label(field_meta.data_width, field_meta.size),
     )

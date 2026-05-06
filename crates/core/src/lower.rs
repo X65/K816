@@ -3133,12 +3133,8 @@ fn emit_var_absolute_symbols(
     match &meta.placement {
         VarPlacement::Fixed { address } => {
             let base_address = *address;
-            let is_dp = matches!(
-                meta.addr_mode_default,
-                Some(crate::ast::ForceAddrMode::DirectPage)
-            );
 
-            if is_dp {
+            if meta.is_direct_page() {
                 let offset = base_address as u8;
                 ops.push(Spanned::new(
                     Op::DefineDpFixedSymbol {
@@ -4936,8 +4932,8 @@ fn eval_to_number_strict(
                     diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
                     return None;
                 }
-                if let Some(addr) = var.compile_time_address() {
-                    return Some(i64::from(addr));
+                if let Some(value) = var.compile_time_numeric_value() {
+                    return Some(i64::from(value));
                 }
             }
             if is_abstract_layout_name(name, sema) {
@@ -5803,12 +5799,15 @@ fn repeat_access_compile_time_value(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    let base_address = sema.vars.get(&access.root)?.compile_time_address()?;
+    let base_value = sema
+        .vars
+        .get(&access.root)?
+        .compile_time_numeric_value()?;
     let addend = access.total_addend().or_else(|| {
         diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
         None
     })?;
-    i64::from(base_address).checked_add(addend).or_else(|| {
+    i64::from(base_value).checked_add(addend).or_else(|| {
         diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
         None
     })
@@ -5826,12 +5825,12 @@ fn repeat_access_address_operand(
         diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
         None
     })?;
-    if let Some(base_address) = sema
+    if let Some(base_value) = sema
         .vars
         .get(&access.root)
-        .and_then(|var| var.compile_time_address())
+        .and_then(|var| var.compile_time_numeric_value())
     {
-        let value = i64::from(base_address).checked_add(addend).or_else(|| {
+        let value = i64::from(base_value).checked_add(addend).or_else(|| {
             diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
             None
         })?;
@@ -5931,14 +5930,16 @@ fn resolve_symbolic_subscript_name(
                 diagnostics.push(abstract_var_address_diagnostic(span, name));
                 return Err(());
             }
-            // Step 3 will extend this to carry a Label/addend pair for
-            // Allocated bases; today sema only produces Fixed placements.
-            let Some(address) = var.compile_time_address() else {
+            // For DP-class fixed vars the value is a 1-byte slot offset, not
+            // a 16/24-bit address; the encoder treats it as a literal because
+            // the operand carries a DP size hint that pins the encoding. ABS
+            // fixed vars carry a real address.
+            let Some(value) = var.compile_time_numeric_value() else {
                 return Ok(None);
             };
             return Ok(Some(ResolvedSymbolicSubscriptName::Aggregate {
                 base: name.to_string(),
-                address,
+                address: value,
             }));
         }
         return Ok(None);
@@ -5972,11 +5973,11 @@ fn resolve_symbolic_subscript_name(
         return Err(());
     }
 
-    let Some(base_address) = base_var.compile_time_address() else {
+    let Some(base_value) = base_var.compile_time_numeric_value() else {
         // Step 3 will return a Label/addend variant for Allocated bases.
         return Ok(None);
     };
-    let Some(address) = base_address.checked_add(field_meta.offset) else {
+    let Some(address) = base_value.checked_add(field_meta.offset) else {
         diagnostics.push(Diagnostic::error(
             span,
             format!("symbolic subscript field '{name}' address overflows address space"),
@@ -6904,9 +6905,9 @@ fn eval_address_expr(
                     diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
                     return None;
                 }
-                match var.compile_time_address() {
-                    Some(addr) => {
-                        return Some((i64::from(addr), AddressProvenance::Address));
+                match var.compile_time_numeric_value() {
+                    Some(value) => {
+                        return Some((i64::from(value), AddressProvenance::Address));
                     }
                     None => {
                         // Allocated var — no compile-time numeric value. Signal
@@ -6945,7 +6946,7 @@ fn eval_address_expr(
             if let Some((base_name, _)) = name.split_once('.')
                 && let Some(base_var) = sema.vars.get(base_name)
                 && base_var.symbolic_subscript.is_some()
-                && base_var.compile_time_address().is_none()
+                && base_var.compile_time_numeric_value().is_none()
             {
                 return None;
             }
@@ -7076,8 +7077,8 @@ fn eval_to_number(
                     diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
                     return None;
                 }
-                if let Some(addr) = var.compile_time_address() {
-                    return Some(i64::from(addr));
+                if let Some(value) = var.compile_time_numeric_value() {
+                    return Some(i64::from(value));
                 }
             }
             if is_abstract_layout_name(name, sema) {
@@ -7569,16 +7570,16 @@ fn try_label_offset_operand(
         return None;
     }
     if let Some(var) = sema.vars.get(name)
-        && var.compile_time_address().is_some()
+        && var.compile_time_numeric_value().is_some()
     {
         return None;
     }
     // Dotted names referring to fields of Allocated symbolic-subscript vars
     // are also linker-resolved; only reject when the field resolves through a
-    // Fixed base (i.e. has a compile-time address).
+    // Fixed base (i.e. has a compile-time numeric value, including DP slots).
     if let Some((base_name, _field_name)) = name.split_once('.')
         && let Some(base_var) = sema.vars.get(base_name)
-        && base_var.compile_time_address().is_some()
+        && base_var.compile_time_numeric_value().is_some()
         && base_var.symbolic_subscript.is_some()
     {
         return None;

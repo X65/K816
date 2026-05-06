@@ -24,6 +24,26 @@ use super::{
     semantic_token_type_for_category, semantic_token_type_index,
 };
 
+/// Returns `(detail, doc)` strings describing a field's effective location.
+/// DP-class fixed parents render as `dp +0xNN`; other parents render as a
+/// hex absolute address (or `$0000` when allocator-resolved). Both forms go
+/// to LSP completion items as plain text — they should never imply that a
+/// DP slot is reachable as a 16-bit absolute address.
+fn field_completion_address_text(
+    var_meta: &k816_core::sema::VarMeta,
+    field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
+) -> (String, String) {
+    if let Some(parent_offset) = var_meta.compile_time_dp_offset() {
+        let resolved =
+            (parent_offset as u32).wrapping_add(field_meta.offset) & 0xFF;
+        let text = format!("dp +{:#04X}", resolved);
+        return (text.clone(), text);
+    }
+    let abs_addr = var_meta.compile_time_address().unwrap_or(0) + field_meta.offset;
+    let text = format!("${:04X}", abs_addr);
+    (text.clone(), text)
+}
+
 /// Split a qualified token like `"TASKS.state"` into `("TASKS", Some("state"))`,
 /// or `"TASKS.message.data"` into `("TASKS", Some("message.data"))`.
 /// Plain `"TASKS"` returns `("TASKS", None)`.
@@ -598,17 +618,13 @@ impl ServerState {
                         if !seen.insert(label.clone()) {
                             continue;
                         }
-                        let abs_addr = var_meta.compile_time_address().unwrap_or(0)
-                            + field_meta.offset;
                         let type_summary = Self::field_type_summary(field_meta);
+                        let (detail_addr, doc_addr) =
+                            field_completion_address_text(var_meta, field_meta);
                         items.push(CompletionItem {
                             label: label.clone(),
                             kind: Some(CompletionItemKind::FIELD),
-                            detail: Some(format!(
-                                "${:04X} {}",
-                                abs_addr,
-                                type_summary,
-                            )),
+                            detail: Some(format!("{detail_addr} {type_summary}")),
                             filter_text: Some(label.clone()),
                             text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
                                 range: replace_range,
@@ -619,7 +635,7 @@ impl ServerState {
                                 MarkupContent {
                                     kind: MarkupKind::Markdown,
                                     value: format!(
-                                        "`{var_name}` + `{}` = `${abs_addr:04X}`, size {}, `{type_summary}`",
+                                        "`{var_name}` + `{}` = `{doc_addr}`, size {}, `{type_summary}`",
                                         format_address(field_meta.offset),
                                         field_meta.size,
                                     ),
@@ -652,14 +668,14 @@ impl ServerState {
                         if !seen.insert((var_name.clone(), field_key.clone())) {
                             continue;
                         }
-                        let abs_addr = var_meta.compile_time_address().unwrap_or(0)
-                            + field_meta.offset;
                         let type_summary = Self::field_type_summary(field_meta);
+                        let (detail_addr, doc_addr) =
+                            field_completion_address_text(var_meta, field_meta);
                         items.push(CompletionItem {
                             label: label.clone(),
                             kind: Some(CompletionItemKind::FIELD),
                             detail: Some(format!(
-                                "{var_name} ${abs_addr:04X} {type_summary}",
+                                "{var_name} {detail_addr} {type_summary}",
                             )),
                             filter_text: Some(label.clone()),
                             text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
@@ -671,7 +687,7 @@ impl ServerState {
                                 MarkupContent {
                                     kind: MarkupKind::Markdown,
                                     value: format!(
-                                        "`{var_name}.{field_key}`: `{var_name}` + `{}` = `${abs_addr:04X}`, size {}, `{type_summary}`",
+                                        "`{var_name}.{field_key}`: `{var_name}` + `{}` = `{doc_addr}`, size {}, `{type_summary}`",
                                         format_address(field_meta.offset),
                                         field_meta.size,
                                     ),

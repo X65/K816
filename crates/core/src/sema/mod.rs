@@ -21,8 +21,9 @@ mod vars;
 pub(crate) use self::analysis::analyze_with_externals;
 pub use self::analysis::{analyze, analyze_partial};
 use self::consts::{
-    ConstExprError, collect_const, collect_data_block_array, collect_data_block_labels,
-    collect_evaluator_block, eval_const_expr_to_int, is_symbol_available,
+    ConstEvalCtx, ConstExprError, addr_of_nonfoldable_diagnostic, collect_const,
+    collect_data_block_array, collect_data_block_labels, collect_evaluator_block,
+    eval_const_expr_to_int, is_symbol_available,
 };
 use self::functions::collect_function;
 pub use self::model::{

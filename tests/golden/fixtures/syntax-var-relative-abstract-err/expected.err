@@ -1,0 +1,11 @@
+Error: address-of of 'FOO' cannot be folded at compile time
+   ╭─[ tests/golden/fixtures/syntax-var-relative-abstract-err/input.k65:2:11 ]
+   │
+ 2 │ var bar = &&FOO + 0x100
+   │           ──────┬──────  
+   │                 ╰──────── non-foldable address-of
+   │ 
+   │ Help: 'FOO' is an abstract layout-only var with no storage; use `:sizeof` / `:offsetof` for metadata, or declare a real var to take its address
+   │ 
+   │ Note: `abstract var` declares packed field offsets only. It emits no bytes and has no address.
+───╯

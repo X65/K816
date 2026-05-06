@@ -1,0 +1,11 @@
+Error: address-of of 'base' cannot be folded at compile time
+   ╭─[ tests/golden/fixtures/syntax-var-relative-auto-allocated-err/input.k65:2:12 ]
+   │
+ 2 │ var next = &&base + 0x100
+   │            ───────┬──────  
+   │                   ╰──────── non-foldable address-of
+   │ 
+   │ Help: 'base' is auto-allocated; declare it with an explicit address (e.g. `var base = $XXXX`) so its address is known at compile time
+   │ 
+   │ Note: Auto-allocated vars get their addresses from the linker, so `&&NAME` cannot fold to a literal here.
+───╯

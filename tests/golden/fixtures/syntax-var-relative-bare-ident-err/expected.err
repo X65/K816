@@ -1,0 +1,13 @@
+Error: var initializer 'base' must be a constant numeric expression
+   ╭─[ tests/golden/fixtures/syntax-var-relative-bare-ident-err/input.k65:2:12 ]
+   │
+ 2 │ var next = base + 0x100
+   │            ──────┬─────  
+   │                  ╰─────── non-constant identifier `base`
+   │ 
+   │ Help 1: `var` initializers fix the variable's address at compile time, so the right-hand side must reduce to a number; replace `base` with a literal address, an arithmetic expression over literals, or a `const` that resolves to a number
+   │ 
+   │ Help 2: 'base' is a fixed-address var; if you meant its address, write `&&base` (e.g. `&&base + offset`)
+   │ 
+   │ Note: K816 `var = expr` declares a memory-located variable at the address `expr` evaluates to. That address is baked into every reference at compile time — there is no runtime computation to fall back on, so identifiers without a compile-time value cannot appear here.
+───╯

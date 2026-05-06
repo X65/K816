@@ -19,7 +19,8 @@ pub(super) fn collect_const(
     }
 
     let initializer_span = const_decl.initializer_span.unwrap_or(span);
-    match eval_const_expr(&const_decl.initializer, &model.consts) {
+    let ctx = ConstEvalCtx::new(&model.consts, &model.vars);
+    match eval_const_expr(&const_decl.initializer, &ctx) {
         Ok(value) => {
             model
                 .consts
@@ -27,9 +28,18 @@ pub(super) fn collect_const(
             evaluator_context.set(const_decl.name.clone(), value);
         }
         Err(ConstExprError::Ident(name)) => {
-            diagnostics.push(Diagnostic::error(
+            diagnostics.push(bare_ident_diagnostic(
                 initializer_span,
-                format!("const initializer '{name}' must be a constant numeric expression"),
+                "const initializer",
+                &name,
+                &ctx,
+            ));
+        }
+        Err(ConstExprError::AddrOfNonFoldable { name, kind }) => {
+            diagnostics.push(addr_of_nonfoldable_diagnostic(
+                initializer_span,
+                &name,
+                kind,
             ));
         }
         Err(ConstExprError::NonInteger) => {
@@ -104,13 +114,13 @@ pub(super) fn collect_evaluator_block(
 
 pub(super) fn collect_data_block_array(
     block: &DataBlock,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     evaluator_context: &mut EvalContext,
 ) {
     let Some(name) = block.name.clone() else {
         return;
     };
-    let Some(values) = try_collect_data_block_values(block, consts, evaluator_context) else {
+    let Some(values) = try_collect_data_block_values(block, ctx, evaluator_context) else {
         return;
     };
     evaluator_context.set_array(name, values);
@@ -158,7 +168,7 @@ fn register_label(
 
 fn try_collect_data_block_values(
     block: &DataBlock,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     evaluator_context: &EvalContext,
 ) -> Option<Vec<Number>> {
     let mut out = Vec::new();
@@ -174,7 +184,7 @@ fn try_collect_data_block_values(
             }
             DataEntry::Values { width, values } => {
                 for expr in values {
-                    let value = eval_const_expr_to_int(expr, consts).ok()?;
+                    let value = eval_const_expr_to_int(expr, ctx).ok()?;
                     let normalized = match width {
                         DataWidth::Byte => i64::from(u8::try_from(value).ok()?),
                         DataWidth::Word => i64::from(u16::try_from(value).ok()?),
@@ -191,7 +201,7 @@ fn try_collect_data_block_values(
             DataEntry::ForEvalRange(range) => {
                 out.extend(try_collect_data_range_values(
                     range,
-                    consts,
+                    ctx,
                     evaluator_context,
                 )?);
             }
@@ -201,8 +211,7 @@ fn try_collect_data_block_values(
                     name_span: None,
                     entries: body.clone(),
                 };
-                let inner_values =
-                    try_collect_data_block_values(&inner, consts, evaluator_context)?;
+                let inner_values = try_collect_data_block_values(&inner, ctx, evaluator_context)?;
                 for _ in 0..*count {
                     out.extend(inner_values.iter().cloned());
                 }
@@ -221,11 +230,11 @@ fn try_collect_data_block_values(
 
 fn try_collect_data_range_values(
     range: &DataForEvalRange,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     evaluator_context: &EvalContext,
 ) -> Option<Vec<Number>> {
-    let start = eval_const_expr_to_int(&range.start, consts).ok()?;
-    let end = eval_const_expr_to_int(&range.end, consts).ok()?;
+    let start = eval_const_expr_to_int(&range.start, ctx).ok()?;
+    let end = eval_const_expr_to_int(&range.end, ctx).ok()?;
 
     let mut context = evaluator_context.clone();
     let mut out = Vec::new();
@@ -325,39 +334,106 @@ fn evaluator_column_span(block_span: Span, column: usize) -> Span {
     evaluator_relative_span(block_span, start, start.saturating_add(1))
 }
 
+pub(super) struct ConstEvalCtx<'a> {
+    pub consts: &'a IndexMap<String, ConstMeta>,
+    pub vars: &'a IndexMap<String, VarMeta>,
+}
+
+impl<'a> ConstEvalCtx<'a> {
+    pub fn new(
+        consts: &'a IndexMap<String, ConstMeta>,
+        vars: &'a IndexMap<String, VarMeta>,
+    ) -> Self {
+        Self { consts, vars }
+    }
+}
+
 pub(super) enum ConstExprError {
     Ident(String),
     EvalText,
     NonInteger,
     Overflow,
+    AddrOfNonFoldable {
+        name: String,
+        kind: NonFoldableVarKind,
+    },
 }
 
-fn eval_const_expr(
-    expr: &Expr,
-    consts: &IndexMap<String, ConstMeta>,
-) -> Result<Number, ConstExprError> {
+#[derive(Debug, Clone, Copy)]
+pub(super) enum NonFoldableVarKind {
+    AutoAbs,
+    AutoDp,
+    FixedDp,
+    Abstract,
+}
+
+/// Peel `Expr::Ident` / `Expr::IdentSpanned` (optionally wrapped in a single
+/// `Expr::TypedView`, e.g. `&&(NAME:abs)`) and return the inner identifier.
+fn address_of_target_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::IdentSpanned { name, .. } => Some(name.as_str()),
+        Expr::TypedView { expr, .. } => match expr.as_ref() {
+            Expr::Ident(name) => Some(name.as_str()),
+            Expr::IdentSpanned { name, .. } => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+enum AddrOfFold {
+    Folded(u32),
+    NonFoldable(NonFoldableVarKind),
+    Unknown,
+}
+
+fn try_fold_address_of(name: &str, ctx: &ConstEvalCtx<'_>) -> AddrOfFold {
+    let Some(var) = ctx.vars.get(name) else {
+        return AddrOfFold::Unknown;
+    };
+    if var.is_abstract() {
+        return AddrOfFold::NonFoldable(NonFoldableVarKind::Abstract);
+    }
+    if let Some(addr) = var.compile_time_address() {
+        return AddrOfFold::Folded(addr);
+    }
+    // No 16-bit absolute address. Classify why.
+    let kind = match (&var.placement, var.is_direct_page()) {
+        (VarPlacement::Fixed { .. }, true) => NonFoldableVarKind::FixedDp,
+        (VarPlacement::AllocatedAbs { .. }, _) => NonFoldableVarKind::AutoAbs,
+        (VarPlacement::AllocatedDp, _) => NonFoldableVarKind::AutoDp,
+        // Defensive: covers any future variant. `Abstract` was handled above.
+        _ => NonFoldableVarKind::AutoAbs,
+    };
+    AddrOfFold::NonFoldable(kind)
+}
+
+fn eval_const_expr(expr: &Expr, ctx: &ConstEvalCtx<'_>) -> Result<Number, ConstExprError> {
     match expr {
         Expr::Number(value, _) => Ok(Number::Int(*value)),
-        Expr::Ident(name) => consts
+        Expr::Ident(name) => ctx
+            .consts
             .get(name)
             .map(|constant| constant.value)
             .ok_or_else(|| ConstExprError::Ident(name.clone())),
-        Expr::IdentSpanned { name, .. } => consts
+        Expr::IdentSpanned { name, .. } => ctx
+            .consts
             .get(name)
             .map(|constant| constant.value)
             .ok_or_else(|| ConstExprError::Ident(name.clone())),
         Expr::EvalText(_) => Err(ConstExprError::EvalText),
         Expr::Index { base, index } => {
-            let base = eval_const_expr_to_int(base, consts)?;
-            let index = eval_const_expr_to_int(index, consts)?;
+            let base = eval_const_expr_to_int(base, ctx)?;
+            let index = eval_const_expr_to_int(index, ctx)?;
             base.checked_add(index)
                 .map(Number::Int)
                 .ok_or(ConstExprError::Overflow)
         }
         Expr::Member { field, .. } => Err(ConstExprError::Ident(field.clone())),
         Expr::Binary { op, lhs, rhs } => {
-            let lhs = eval_const_expr(lhs, consts)?;
-            let rhs = eval_const_expr(rhs, consts)?;
+            let lhs = eval_const_expr(lhs, ctx)?;
+            let rhs = eval_const_expr(rhs, ctx)?;
             match op {
                 ExprBinaryOp::Add => lhs.checked_add(rhs).map_err(|error| match error {
                     EvaluatorError::Overflow => ConstExprError::Overflow,
@@ -374,7 +450,28 @@ fn eval_const_expr(
             }
         }
         Expr::Unary { op, expr } => {
-            let value = eval_const_expr_to_int(expr, consts)?;
+            // Address-of fold: `&&NAME` / `&&&NAME` resolves to a literal
+            // when NAME is a fixed-absolute-address var. DP-fixed,
+            // auto-allocated, and abstract vars produce a precise error.
+            // Names that don't resolve as a var fall through to const
+            // lookup, preserving `&&LITERAL_CONST_NAME` and `&&123`.
+            if matches!(
+                op,
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian
+            ) && let Some(name) = address_of_target_name(expr)
+            {
+                match try_fold_address_of(name, ctx) {
+                    AddrOfFold::Folded(addr) => return Ok(Number::Int(i64::from(addr))),
+                    AddrOfFold::NonFoldable(kind) => {
+                        return Err(ConstExprError::AddrOfNonFoldable {
+                            name: name.to_string(),
+                            kind,
+                        });
+                    }
+                    AddrOfFold::Unknown => {}
+                }
+            }
+            let value = eval_const_expr_to_int(expr, ctx)?;
             match op {
                 ExprUnaryOp::LowByte => Ok(Number::Int(value & 0xFF)),
                 ExprUnaryOp::HighByte => Ok(Number::Int((value >> 8) & 0xFF)),
@@ -389,7 +486,7 @@ fn eval_const_expr(
                     .ok_or(ConstExprError::Overflow),
             }
         }
-        Expr::TypedView { expr, .. } => eval_const_expr(expr, consts),
+        Expr::TypedView { expr, .. } => eval_const_expr(expr, ctx),
         Expr::MetadataQuery { expr, .. } => {
             // :sizeof / :offsetof require VarMeta which is not available during
             // const propagation.  Extract the identifier name from the inner
@@ -405,10 +502,78 @@ fn eval_const_expr(
 
 pub(super) fn eval_const_expr_to_int(
     expr: &Expr,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
 ) -> Result<i64, ConstExprError> {
-    let value = eval_const_expr(expr, consts)?;
+    let value = eval_const_expr(expr, ctx)?;
     value.to_i64_exact().ok_or(ConstExprError::NonInteger)
+}
+
+/// Diagnostic for `&&NAME` where NAME is a known var but not a fixed-absolute
+/// address. Shared by every site that calls into the const-eval helpers.
+pub(super) fn addr_of_nonfoldable_diagnostic(
+    span: Span,
+    name: &str,
+    kind: NonFoldableVarKind,
+) -> Diagnostic {
+    let (help, note) = match kind {
+        NonFoldableVarKind::AutoAbs => (
+            format!(
+                "'{name}' is auto-allocated; declare it with an explicit address (e.g. `var {name} = $XXXX`) so its address is known at compile time"
+            ),
+            "Auto-allocated vars get their addresses from the linker, so `&&NAME` cannot fold to a literal here.",
+        ),
+        NonFoldableVarKind::AutoDp => (
+            format!(
+                "'{name}' is a direct-page var with a linker-assigned slot; its 16-bit address depends on the runtime D register and is not statically known"
+            ),
+            "DP-allocated vars carry a 1-byte slot offset; the absolute address depends on the runtime D register, so `&&NAME` cannot fold to a literal.",
+        ),
+        NonFoldableVarKind::FixedDp => (
+            format!(
+                "'{name}' is a direct-page var; `&&` produces a 16-bit absolute address, which is not statically known for DP vars (the runtime D register supplies the high byte). Declare '{name}' as a non-DP fixed var, or compute the address from D at runtime."
+            ),
+            "DP-fixed vars carry a 1-byte slot offset, not a 16-bit address. The runtime `tcd`/`pld` value supplies the high byte at execution time.",
+        ),
+        NonFoldableVarKind::Abstract => (
+            format!(
+                "'{name}' is an abstract layout-only var with no storage; use `:sizeof` / `:offsetof` for metadata, or declare a real var to take its address"
+            ),
+            "`abstract var` declares packed field offsets only. It emits no bytes and has no address.",
+        ),
+    };
+    Diagnostic::error(
+        span,
+        format!("address-of of '{name}' cannot be folded at compile time"),
+    )
+    .with_primary_label("non-foldable address-of")
+    .with_help(help)
+    .with_note(note)
+}
+
+/// Build the bare-ident "must be a constant numeric expression" diagnostic with
+/// an extra `&&NAME` hint when NAME refers to a fixed-absolute-address var.
+/// `context_label` is e.g. "const initializer" or "var initializer".
+pub(super) fn bare_ident_diagnostic(
+    span: Span,
+    context_label: &str,
+    name: &str,
+    ctx: &ConstEvalCtx<'_>,
+) -> Diagnostic {
+    let mut diag = Diagnostic::error(
+        span,
+        format!("{context_label} '{name}' must be a constant numeric expression"),
+    );
+    if ctx
+        .vars
+        .get(name)
+        .and_then(|var| var.compile_time_address())
+        .is_some()
+    {
+        diag = diag.with_help(format!(
+            "'{name}' is a fixed-address var; if you meant its address, write `&&{name}` (e.g. `&&{name} + offset`)"
+        ));
+    }
+    diag
 }
 
 pub(super) fn is_symbol_available(symbol: &str, model: &SemanticModel) -> bool {

@@ -1,0 +1,11 @@
+Error: address-of of 'foo' cannot be folded at compile time
+   ╭─[ tests/golden/fixtures/syntax-var-relative-dp-err/input.k65:2:11 ]
+   │
+ 2 │ var bar = &&foo + 0x100
+   │           ──────┬──────  
+   │                 ╰──────── non-foldable address-of
+   │ 
+   │ Help: 'foo' is a direct-page var; `&&` produces a 16-bit absolute address, which is not statically known for DP vars (the runtime D register supplies the high byte). Declare 'foo' as a non-DP fixed var, or compute the address from D at runtime.
+   │ 
+   │ Note: DP-fixed vars carry a 1-byte slot offset, not a 16-bit address. The runtime `tcd`/`pld` value supplies the high byte at execution time.
+───╯

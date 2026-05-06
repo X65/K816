@@ -1,0 +1,7 @@
+var next = &&base + 0x100
+
+func main @a16 {
+    a=base
+    pha
+    a=next
+}

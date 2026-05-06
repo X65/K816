@@ -1,0 +1,2 @@
+var base
+var next = &&base + 0x100

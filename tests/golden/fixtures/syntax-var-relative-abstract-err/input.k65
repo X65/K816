@@ -1,0 +1,2 @@
+abstract var FOO[ .a:byte .b:word ]
+var bar = &&FOO + 0x100

@@ -1,0 +1,10 @@
+[default]
+000000: C2 20 AF 00 02 7E AF 00 03 7E AF 00 14 7E 60
+
+
+[disasm obj#0 default::main]
+000000: C2 20       rep #$20
+000002: AF 00 02 7E lda $7E0200
+000006: AF 00 03 7E lda $7E0300
+00000A: AF 00 14 7E lda $7E1400
+00000E: 60          rts

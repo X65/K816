@@ -1,0 +1,2 @@
+var dp foo = 0x42
+var bar = &&foo + 0x100

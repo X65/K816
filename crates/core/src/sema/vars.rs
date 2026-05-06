@@ -25,7 +25,11 @@ pub(super) fn collect_var(
         if !validate_abstract_var(var, span, diagnostics) {
             return;
         }
-        let Some(layout) = eval_var_layout(var, span, &model.consts, diagnostics) else {
+        let layout = {
+            let ctx = ConstEvalCtx::new(&model.consts, &model.vars);
+            eval_var_layout(var, span, &ctx, diagnostics)
+        };
+        let Some(layout) = layout else {
             return;
         };
         model.vars.insert(
@@ -43,21 +47,28 @@ pub(super) fn collect_var(
         return;
     }
 
-    let Some(layout) = eval_var_layout(var, span, &model.consts, diagnostics) else {
+    let layout = {
+        let ctx = ConstEvalCtx::new(&model.consts, &model.vars);
+        eval_var_layout(var, span, &ctx, diagnostics)
+    };
+    let Some(layout) = layout else {
         return;
     };
 
-    let placement = match eval_var_placement(
-        var,
-        current_segment,
-        cursors,
-        layout.size,
-        span,
-        &model.consts,
-        diagnostics,
-    ) {
-        Some(p) => p,
-        None => return,
+    let placement = {
+        let ctx = ConstEvalCtx::new(&model.consts, &model.vars);
+        match eval_var_placement(
+            var,
+            current_segment,
+            cursors,
+            layout.size,
+            span,
+            &ctx,
+            diagnostics,
+        ) {
+            Some(p) => p,
+            None => return,
+        }
     };
 
     model.vars.insert(
@@ -176,11 +187,11 @@ fn eval_var_placement(
     cursors: &mut HashMap<String, u32>,
     size: u32,
     span: Span,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<VarPlacement> {
     if let Some(initializer) = &var.initializer {
-        let address = eval_var_fixed_address(var, initializer, span, consts, diagnostics)?;
+        let address = eval_var_fixed_address(var, initializer, span, ctx, diagnostics)?;
         if matches!(var.addr_mode_default, Some(ForceAddrMode::DirectPage)) && address > 0xFF {
             diagnostics.push(
                 Diagnostic::error(
@@ -311,12 +322,12 @@ fn eval_var_fixed_address(
     var: &VarDecl,
     initializer: &Expr,
     span: Span,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
     let initializer_span = var.initializer_span.unwrap_or(span);
 
-    match eval_const_expr_to_int(initializer, consts) {
+    match eval_const_expr_to_int(initializer, ctx) {
         Ok(value) => match u32::try_from(value) {
             Ok(address) => Some(address),
             Err(_) => {
@@ -328,19 +339,36 @@ fn eval_var_fixed_address(
             }
         },
         Err(ConstExprError::Ident(name)) => {
-            diagnostics.push(
-                Diagnostic::error(
-                    initializer_span,
-                    format!("var initializer '{name}' must be a constant numeric expression"),
-                )
-                .with_primary_label(format!("non-constant identifier `{name}`"))
-                .with_help(format!(
-                    "`var` initializers fix the variable's address at compile time, so the right-hand side must reduce to a number; replace `{name}` with a literal address, an arithmetic expression over literals, or a `const` that resolves to a number"
-                ))
-                .with_note(
-                    "K816 `var = expr` declares a memory-located variable at the address `expr` evaluates to. That address is baked into every reference at compile time — there is no runtime computation to fall back on, so identifiers without a compile-time value cannot appear here.",
-                ),
+            let mut diag = Diagnostic::error(
+                initializer_span,
+                format!("var initializer '{name}' must be a constant numeric expression"),
+            )
+            .with_primary_label(format!("non-constant identifier `{name}`"))
+            .with_help(format!(
+                "`var` initializers fix the variable's address at compile time, so the right-hand side must reduce to a number; replace `{name}` with a literal address, an arithmetic expression over literals, or a `const` that resolves to a number"
+            ));
+            if ctx
+                .vars
+                .get(&name)
+                .and_then(|var| var.compile_time_address())
+                .is_some()
+            {
+                diag = diag.with_help(format!(
+                    "'{name}' is a fixed-address var; if you meant its address, write `&&{name}` (e.g. `&&{name} + offset`)"
+                ));
+            }
+            diag = diag.with_note(
+                "K816 `var = expr` declares a memory-located variable at the address `expr` evaluates to. That address is baked into every reference at compile time — there is no runtime computation to fall back on, so identifiers without a compile-time value cannot appear here.",
             );
+            diagnostics.push(diag);
+            None
+        }
+        Err(ConstExprError::AddrOfNonFoldable { name, kind }) => {
+            diagnostics.push(addr_of_nonfoldable_diagnostic(
+                initializer_span,
+                &name,
+                kind,
+            ));
             None
         }
         Err(ConstExprError::EvalText) => {
@@ -380,13 +408,13 @@ struct VarLayout {
 fn eval_var_layout(
     var: &VarDecl,
     span: Span,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<VarLayout> {
-    let mut layout = eval_var_base_layout(var, span, consts, diagnostics)?;
+    let mut layout = eval_var_base_layout(var, span, ctx, diagnostics)?;
 
     if let Some(alloc_count_expr) = &var.alloc_count {
-        match eval_const_expr_to_int(alloc_count_expr, consts) {
+        match eval_const_expr_to_int(alloc_count_expr, ctx) {
             Ok(value) => {
                 if value <= 0 {
                     diagnostics.push(Diagnostic::error(
@@ -426,6 +454,10 @@ fn eval_var_layout(
                 ));
                 return None;
             }
+            Err(ConstExprError::AddrOfNonFoldable { name, kind }) => {
+                diagnostics.push(addr_of_nonfoldable_diagnostic(span, &name, kind));
+                return None;
+            }
             Err(ConstExprError::EvalText) => {
                 diagnostics.push(Diagnostic::error(
                     span,
@@ -458,7 +490,7 @@ fn eval_var_layout(
 fn eval_var_base_layout(
     var: &VarDecl,
     span: Span,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<VarLayout> {
     if let Some(symbolic_subscript_fields) = &var.symbolic_subscript_fields {
@@ -473,13 +505,8 @@ fn eval_var_base_layout(
             return None;
         }
 
-        let symbolic_subscript = eval_symbolic_subscript_layout(
-            var,
-            symbolic_subscript_fields,
-            span,
-            consts,
-            diagnostics,
-        )?;
+        let symbolic_subscript =
+            eval_symbolic_subscript_layout(var, symbolic_subscript_fields, span, ctx, diagnostics)?;
         return Some(VarLayout {
             size: symbolic_subscript.total_size,
             element_size: symbolic_subscript.total_size,
@@ -503,7 +530,7 @@ fn eval_var_base_layout(
         });
     };
 
-    match eval_const_expr_to_int(array_len, consts) {
+    match eval_const_expr_to_int(array_len, ctx) {
         Ok(value) => {
             if value <= 0 {
                 diagnostics.push(Diagnostic::error(
@@ -538,6 +565,10 @@ fn eval_var_base_layout(
             ));
             None
         }
+        Err(ConstExprError::AddrOfNonFoldable { name, kind }) => {
+            diagnostics.push(addr_of_nonfoldable_diagnostic(span, &name, kind));
+            None
+        }
         Err(ConstExprError::EvalText) => {
             diagnostics.push(Diagnostic::error(
                 span,
@@ -568,7 +599,7 @@ fn eval_symbolic_subscript_layout(
     var: &VarDecl,
     fields: &[SymbolicSubscriptFieldDecl],
     span: Span,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<SymbolicSubscriptMeta> {
     let mut resolved_fields = IndexMap::new();
@@ -578,7 +609,7 @@ fn eval_symbolic_subscript_layout(
         fields,
         "",
         span,
-        consts,
+        ctx,
         &mut resolved_fields,
         diagnostics,
     )?;
@@ -597,7 +628,7 @@ fn eval_symbolic_subscript_fields(
     fields: &[SymbolicSubscriptFieldDecl],
     prefix: &str,
     span: Span,
-    consts: &IndexMap<String, ConstMeta>,
+    ctx: &ConstEvalCtx<'_>,
     resolved_fields: &mut IndexMap<String, SymbolicSubscriptFieldMeta>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<u32> {
@@ -648,7 +679,7 @@ fn eval_symbolic_subscript_fields(
                 nested,
                 &qualified_name,
                 span,
-                consts,
+                ctx,
                 resolved_fields,
                 diagnostics,
             )?;
@@ -686,7 +717,7 @@ fn eval_symbolic_subscript_fields(
             .unwrap_or(DataWidth::Byte);
 
         let count = match &field.count {
-            Some(count_expr) => match eval_const_expr_to_int(count_expr, consts) {
+            Some(count_expr) => match eval_const_expr_to_int(count_expr, ctx) {
                 Ok(value) => {
                     if value <= 0 {
                         let count_span = field.count_span.unwrap_or(field.span);
@@ -749,6 +780,11 @@ fn eval_symbolic_subscript_fields(
                             "Field counts and offsets are baked into the encoded layout; everything inside `[...]` must reduce to a number during semantic analysis, before any code runs.",
                         ),
                     );
+                    return None;
+                }
+                Err(ConstExprError::AddrOfNonFoldable { name, kind }) => {
+                    let count_span = field.count_span.unwrap_or(field.span);
+                    diagnostics.push(addr_of_nonfoldable_diagnostic(count_span, &name, kind));
                     return None;
                 }
                 Err(ConstExprError::EvalText) => {

@@ -160,7 +160,8 @@ pub fn analyze_partial(
                         );
                     }
                 }
-                collect_data_block_array(block, &model.consts, &mut evaluator_context)
+                let ctx = ConstEvalCtx::new(&model.consts, &model.vars);
+                collect_data_block_array(block, &ctx, &mut evaluator_context)
             }
             _ => {}
         }

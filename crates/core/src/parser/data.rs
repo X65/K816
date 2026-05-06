@@ -251,6 +251,25 @@ where
     })
     .boxed();
 
+    let byte_value = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr.clone(),
+        undef_byte.clone(),
+        ident_parser().map(|name| vec![Expr::Ident(name)]),
+    ));
+
+    let byte_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => ()
+    }
+    .ignore_then(byte_value.repeated().at_least(1).collect::<Vec<_>>())
+    .map(|chunks| {
+        make_values(
+            DataWidth::Byte,
+            chunks.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    })
+    .boxed();
+
     let bytes_entry = choice((
         number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
         address_byte_expr,
@@ -403,6 +422,7 @@ where
         charset_entry,
         far_entry,
         word_entry,
+        byte_entry,
         convert_entry,
         bytes_entry,
         eval_bytes_entry,
@@ -537,6 +557,25 @@ where
     })
     .boxed();
 
+    let byte_value = choice((
+        number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
+        address_byte_expr.clone(),
+        undef_byte.clone(),
+        ident_parser().map(|name| vec![Expr::Ident(name)]),
+    ));
+
+    let byte_entry = chumsky::select! {
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("byte") => ()
+    }
+    .ignore_then(byte_value.repeated().at_least(1).collect::<Vec<_>>())
+    .map(|chunks| {
+        make_values(
+            DataWidth::Byte,
+            chunks.into_iter().flatten().collect::<Vec<_>>(),
+        )
+    })
+    .boxed();
+
     let bytes_entry = choice((
         number_parser().map(|NumLit { value, fmt }| vec![Expr::Number(value, fmt)]),
         address_byte_expr,
@@ -591,6 +630,7 @@ where
         charset_entry,
         far_entry,
         word_entry,
+        byte_entry,
         convert_entry,
         bytes_entry,
         eval_bytes_entry,

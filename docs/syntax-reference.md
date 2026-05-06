@@ -669,6 +669,44 @@ a=&<addr               // LDA #<addr (low byte)
 a=&>addr               // LDA #>addr (high byte)
 ```
 
+### `?` (Undefined Byte Placeholder)
+
+A bare `?` inside a data entry reserves a slot whose value is intentionally unspecified — "fill later" / "value doesn't matter". It is accepted in the same value alphabet as numeric literals, both in the implicit-default (bare-numeric) form and inside `byte` / `word` / `far` entries. (This is distinct from a `?` placed at the very end of a data block, which is a verbose-output flag — see the `?` (Verbose Flag) section later in the data-block documentation.)
+
+```k65
+data record {
+  byte $7F ? ?           // 1 known byte, 2 placeholder bytes
+  word VECTOR ?          // 2 bytes for VECTOR, 2 placeholder bytes
+  far ?                  // 3 placeholder bytes (one far slot)
+}
+```
+
+On the wire, each `?` emits as zero of the surrounding entry's width — `byte ?` is one zero byte, `word ?` is two zero bytes, `far ?` is three (the same widths a literal `0` would produce in the same positions). Pick `?` over an explicit `0` to signal intent: `?` tells a reader "this slot is reserved / will be filled later / the value is irrelevant", a meaning a literal `0` cannot carry. Useful for fields a runtime overwrites in place (cartridge headers, save-state buffers, scratch areas a self-modifying routine populates) and for partially-populated tables where the reader needs to see at a glance which slots are placeholders (`word ? ? ? main_vector ? ? ? ?`).
+
+There is no semantic difference at the binary level — `byte ?` and `byte 0` produce identical bytes. `?` is a source-level affordance only.
+
+### `byte` (8-bit Byte Entries)
+
+The `byte` prefix emits each value as a single 8-bit byte. It is the explicit form of the implicit byte default — `byte 1 2 3` and `1 2 3` produce identical output. Use `byte` when the value list contains an identifier (const or label reference), since bare identifiers are rejected as ambiguous in the implicit-default form (they could be a missing-colon label).
+
+```k65
+const FRAME_BYTES = $20
+
+data palette {
+  byte FRAME_BYTES         // resolves to $20
+  byte FRAME_BYTES 0 1 ?   // mix const, literals, and undef bytes
+}
+```
+
+Each value on a `byte` line emits 1 byte. Values can be:
+
+- **Numeric literals** (validated to fit in 8 bits): `byte 0 $7F 255`
+- **Symbol references** to consts and labels: `byte FRAME_BYTES handler_low`
+- **Address byte operators**: `byte &<ptr &>ptr`
+- **Undef bytes** (`?`) for placeholder slots: `byte 1 ? 3`
+
+The `byte` keyword is useful both for clarity (signaling intent at the line level) and to lift the bare-identifier restriction. For literal-only byte sequences, the implicit form (no keyword) remains idiomatic.
+
 ### `word` (16-bit Word Entries)
 
 The `word` prefix emits each value as a 16-bit little-endian word (2 bytes). This is particularly useful for interrupt vector tables and address lookup tables where every entry is a 16-bit address.

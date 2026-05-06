@@ -1,0 +1,10 @@
+[default]
+000000: 01 02 03 04 00 05 00 06 00 2A 00 2A 2A 03 01 02
+000010: 00 2A 00 00 00 00 00 7B 00 7B 00 7B 00 2A 2A 60
+
+
+[data obj#0 default::SOME]
+000000: <31 bytes of data>
+
+[disasm obj#0 default::main]
+00001F: 60          rts

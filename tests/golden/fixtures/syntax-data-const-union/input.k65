@@ -1,0 +1,25 @@
+const FOO = 42
+const BAR = 3
+
+data SOME {
+    1 2 3
+    word 4 5 6
+    word FOO
+    byte FOO
+    byte FOO BAR 1 2 ?
+    [FOO]
+    [FOO + BAR]
+    [FOO|BAR]
+    repeat 3 {
+        [FOO - BAR]
+    }
+    repeat 3 {
+        word 123
+    }
+    repeat 2 {
+        byte FOO
+    }
+}
+
+func main {
+}

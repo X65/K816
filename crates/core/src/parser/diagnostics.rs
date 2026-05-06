@@ -645,7 +645,7 @@ fn token_kind_label(token: &TokenKind) -> &'static str {
         TokenKind::ModeA16 => "'@a16'",
         TokenKind::ModeI8 => "'@i8'",
         TokenKind::ModeI16 => "'@i16'",
-        TokenKind::SwapOp => "'><'",
+        TokenKind::SwapOp => "'~'",
         TokenKind::LineComment(_) => "line comment",
         TokenKind::BlockComment(_) => "block comment",
     }

@@ -70,6 +70,6 @@ func load_swap_ab {
     @a16
     lda #$1234
     @a8
-    b><a
+    b~a
     sta dst7
 }

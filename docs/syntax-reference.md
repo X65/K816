@@ -1003,7 +1003,7 @@ Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-in
 ### Registers
 
 - `A` accumulator (8/16 bit)
-- `B` high byte of 16bit accumulator (8 bit, can be swapped with A via `b><a`)
+- `B` high byte of 16bit accumulator (8 bit, can be swapped with A via `b~a`)
 - `C` full 16-bit accumulator (16bit, available only to register transfer instructions)
 - `X` index register X (8/16 bit)
 - `Y` index register Y (8/16 bit)
@@ -1014,7 +1014,7 @@ Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-in
 - `PBR` program bank register
 - `P` processor status register **NVMXDIZC** (8 bit)
 
-In K65 HLA syntax, single-letter register names (A, B, X, Y, D, S) are native symbols used in assignment and transfer expressions. The `b><a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
+In K65 HLA syntax, single-letter register names (A, B, X, Y, D, S) are native symbols used in assignment and transfer expressions. The `b~a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
 
 ### SR Flags NVMXDIZC
 
@@ -2360,7 +2360,7 @@ TYX  Transfer Index Register Y to Index Register X
 
 Acc|Implied
 :---:|:---:
-|`b><a` or `a><b`
+|`b~a` or `a~b`
 
 ```none
 XBA  Exchange B and A Accumulators
@@ -2379,8 +2379,8 @@ XBA  Exchange B and A Accumulators
 
 Source \ Dest|A|B|C|D|X|Y|S
 :---|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-A|-|`b><a`|-|`x=a` TAX|`y=a` TAY|-
-B|`b><a`|-|-|-|-|-|-
+A|-|`b~a`|-|`x=a` TAX|`y=a` TAY|-
+B|`b~a`|-|-|-|-|-|-
 C|-|-|-|`d=c` TCD|-|-|`s=c` TCS
 D|-|-|`c=d` TDC|-|-|-|-
 X|`a=x` TXA|-|-|-|-|`y=x` TXY|`s=x` TXS
@@ -3172,7 +3172,7 @@ Register names (A, B, C, D, X, Y, S) and flag names (C, D, I, V, N, Z) are case-
 A=0 X=A Y=x            // uppercase and lowercase registers
 d=c s=x                // 65816 register transfers
 C+ D- I+ V-            // flag operations (set/clear)
-a><b                   // swap A and B accumulators (XBA)
+a~b                    // swap A and B accumulators (XBA)
 ```
 
 ### Variable+Offset Addressing

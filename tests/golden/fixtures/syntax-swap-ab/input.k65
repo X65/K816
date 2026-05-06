@@ -1,7 +1,7 @@
-// Test b><a swap operator emits XBA instruction
+// Test b~a swap operator emits XBA instruction
 
 func main {
     nop
-    b><a
+    b~a
     nop
 }

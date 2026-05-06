@@ -107,7 +107,7 @@ pub(super) fn invalid_transfer_hint(dest: &str, src: &str) -> Option<&'static st
         ("y", "s") => Some("use y=x=s"),
         ("y", "d") => Some("use c=d then y=a"),
         ("x", "d") => Some("use c=d then x=a"),
-        ("b", _) | (_, "b") => Some("use b><a to swap A and B"),
+        ("b", _) | (_, "b") => Some("use b~a to swap A and B"),
         ("c", _) | (_, "c") => {
             Some("C is the 16-bit accumulator; only d=c, s=c, c=d, c=s are valid")
         }

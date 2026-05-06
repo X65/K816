@@ -52,7 +52,7 @@ pub enum TokenKind {
     #[token("@i16")]
     ModeI16,
 
-    #[token("><")]
+    #[token("~")]
     SwapOp,
 
     #[token("{")]

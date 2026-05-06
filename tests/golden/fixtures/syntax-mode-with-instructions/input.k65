@@ -9,10 +9,10 @@ func main {
     nop
     lda #$12
     @i16
-    b><a
+    b~a
     @i8
     nop
     @a8
-    b><a
+    b~a
     nop
 }

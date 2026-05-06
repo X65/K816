@@ -4456,7 +4456,7 @@ fn invalid_transfer_hint(dest: HlaCpuRegister, src: HlaCpuRegister) -> Option<&'
         (HlaCpuRegister::Y, HlaCpuRegister::S) => Some("use y=x=s"),
         (HlaCpuRegister::Y, HlaCpuRegister::D) => Some("use c=d then y=a"),
         (HlaCpuRegister::X, HlaCpuRegister::D) => Some("use c=d then x=a"),
-        (HlaCpuRegister::B, _) | (_, HlaCpuRegister::B) => Some("use b><a to swap A and B"),
+        (HlaCpuRegister::B, _) | (_, HlaCpuRegister::B) => Some("use b~a to swap A and B"),
         (HlaCpuRegister::C, _) | (_, HlaCpuRegister::C) => {
             Some("C is the 16-bit accumulator; only d=c, s=c, c=d, c=s are valid")
         }

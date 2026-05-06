@@ -1,0 +1,8 @@
+abstract var COMP[
+    .one :byte
+    .two :word
+]
+
+func main @a16 {
+    lda COMP[0].two
+}

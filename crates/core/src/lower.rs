@@ -174,12 +174,11 @@ fn insert_function_entry_signature(
     if mode.a_width.is_none() && mode.i_width.is_none() {
         return;
     }
-    out.entry(name.to_string())
-        .or_insert(LabelDeclaredRecord {
-            mode,
-            decl_span,
-            is_advisory: true,
-        });
+    out.entry(name.to_string()).or_insert(LabelDeclaredRecord {
+        mode,
+        decl_span,
+        is_advisory: true,
+    });
 }
 
 fn initial_mode_for_block(is_entry: bool, mode_contract: crate::ast::ModeContract) -> ModeState {
@@ -689,6 +688,17 @@ fn substitute_inline_expr(expr: &Expr, bindings: &InlineBindings) -> Expr {
             base: Box::new(substitute_inline_expr(base, bindings)),
             index: Box::new(substitute_inline_expr(index, bindings)),
         },
+        Expr::Member {
+            base,
+            field,
+            start,
+            end,
+        } => Expr::Member {
+            base: Box::new(substitute_inline_expr(base, bindings)),
+            field: field.clone(),
+            start: *start,
+            end: *end,
+        },
         Expr::Binary { op, lhs, rhs } => Expr::Binary {
             op: *op,
             lhs: Box::new(substitute_inline_expr(lhs, bindings)),
@@ -1059,6 +1069,9 @@ fn retarget_expr_spans(expr: &mut Expr) {
             retarget_expr_spans(base);
             retarget_expr_spans(index);
         }
+        Expr::Member { base, .. } => {
+            retarget_expr_spans(base);
+        }
         Expr::Binary { lhs, rhs, .. } => {
             retarget_expr_spans(lhs);
             retarget_expr_spans(rhs);
@@ -1082,9 +1095,9 @@ fn retarget_operand_expr_spans(operand: &mut HlaOperandExpr) {
 
 fn retarget_operand_spans(operand: &mut Operand) {
     match operand {
-        Operand::Immediate { expr, .. }
-        | Operand::Value { expr, .. }
-        | Operand::Auto { expr } => retarget_expr_spans(expr),
+        Operand::Immediate { expr, .. } | Operand::Value { expr, .. } | Operand::Auto { expr } => {
+            retarget_expr_spans(expr)
+        }
         Operand::BlockMove { src, dst } => {
             retarget_expr_spans(src);
             retarget_expr_spans(dst);
@@ -3739,9 +3752,9 @@ fn instruction_jump_target_label(
             expr
         }
         Operand::Auto { expr } => expr,
-        Operand::Immediate { .. }
-        | Operand::BlockMove { .. }
-        | Operand::Register { .. } => return None,
+        Operand::Immediate { .. } | Operand::BlockMove { .. } | Operand::Register { .. } => {
+            return None;
+        }
     };
 
     let name = expr_ident_name(expr)?;
@@ -4219,6 +4232,7 @@ fn expr_data_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
             .and_then(|var| var.data_width)
             .or_else(|| symbolic_subscript_field_width(name, sema)),
         Expr::Index { base, .. } => expr_data_width(base, sema),
+        Expr::Member { .. } => repeat_member_field_width(expr, sema),
         _ => None,
     }
 }
@@ -4228,6 +4242,7 @@ fn base_ident(expr: &Expr) -> Option<&str> {
         Expr::Ident(name) => Some(name.as_str()),
         Expr::IdentSpanned { name, .. } => Some(name.as_str()),
         Expr::Index { base, .. } => base_ident(base),
+        Expr::Member { base, .. } => base_ident(base),
         Expr::TypedView { expr, .. } => base_ident(expr),
         _ => None,
     }
@@ -4309,12 +4324,40 @@ fn address_size_hint_for_operand(
 
 fn symbolic_subscript_field_width(name: &str, sema: &SemanticModel) -> Option<DataWidth> {
     let (base_name, field_name) = name.split_once('.')?;
-    let base = sema.vars.get(base_name)?;
-    let symbolic_subscript = base.symbolic_subscript.as_ref()?;
+    let symbolic_subscript = lookup_layout(base_name, sema)?;
     symbolic_subscript
         .fields
         .get(field_name)
         .and_then(|field| field.data_width)
+}
+
+fn repeat_member_field_width(expr: &Expr, sema: &SemanticModel) -> Option<DataWidth> {
+    let (base_name, field_key) = repeated_member_field_path(expr)?;
+    lookup_layout(base_name, sema)?
+        .fields
+        .get(field_key.as_str())
+        .and_then(|field| field.data_width)
+}
+
+fn repeated_member_field_path(expr: &Expr) -> Option<(&str, String)> {
+    match expr {
+        Expr::Member { base, field, .. } => {
+            if let Some((base_name, parent_key)) = repeated_member_field_path(base) {
+                return Some((base_name, format!("{parent_key}.{field}")));
+            }
+            let base_name = repeated_element_root(base)?;
+            Some((base_name, field.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn repeated_element_root(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Index { base, .. } => base_ident(base),
+        Expr::TypedView { expr, .. } => repeated_element_root(expr),
+        _ => None,
+    }
 }
 
 fn data_width_to_reg_width(width: DataWidth) -> Option<RegWidth> {
@@ -4926,6 +4969,11 @@ fn eval_to_number_strict(
             None
         }
         Expr::Index { base, index } => eval_index_expr_strict(base, index, sema, span, diagnostics),
+        Expr::Member { .. } => match resolve_repeat_access_expr(expr, sema, span, diagnostics) {
+            Ok(Some(access)) => repeat_access_compile_time_value(&access, sema, span, diagnostics),
+            Ok(None) => None,
+            Err(()) => None,
+        },
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_to_number_strict(lhs, sema, span, diagnostics)?;
             let rhs = eval_to_number_strict(rhs, sema, span, diagnostics)?;
@@ -5040,6 +5088,18 @@ fn eval_index_expr_strict(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
+    let indexed = Expr::Index {
+        base: Box::new(base.clone()),
+        index: Box::new(index.clone()),
+    };
+    match resolve_repeat_access_expr(&indexed, sema, span, diagnostics) {
+        Ok(Some(access)) => {
+            return repeat_access_compile_time_value(&access, sema, span, diagnostics);
+        }
+        Err(()) => return None,
+        Ok(None) => {}
+    }
+
     let symbolic_subscript_base_name = if let Some(name) = base_ident(base) {
         match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
             Ok(found) => found,
@@ -5188,41 +5248,15 @@ fn value_operand_uses_immediate(
 /// handle as a relocation. Mirrors `peel_address_of`'s shape detection without
 /// extracting the name/addend.
 fn is_address_of_expr(expr: &Expr) -> bool {
-    fn is_address_of_unary(op: &ExprUnaryOp, inner: &Expr) -> bool {
-        matches!(
-            op,
-            ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian
-        ) && matches!(inner, Expr::Ident(_) | Expr::IdentSpanned { .. })
-    }
     match expr {
-        Expr::Unary { op, expr: inner } => is_address_of_unary(op, inner.as_ref()),
-        Expr::Binary { op, lhs, rhs } => match (op, lhs.as_ref(), rhs.as_ref()) {
-            (
-                ExprBinaryOp::Add,
-                Expr::Unary {
-                    op: u_op,
-                    expr: u_inner,
-                },
-                Expr::Number(_, _),
+        Expr::Unary { op, .. } => {
+            matches!(
+                op,
+                ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian
             )
-            | (
-                ExprBinaryOp::Add,
-                Expr::Number(_, _),
-                Expr::Unary {
-                    op: u_op,
-                    expr: u_inner,
-                },
-            )
-            | (
-                ExprBinaryOp::Sub,
-                Expr::Unary {
-                    op: u_op,
-                    expr: u_inner,
-                },
-                Expr::Number(_, _),
-            ) => is_address_of_unary(u_op, u_inner.as_ref()),
-            _ => false,
-        },
+        }
+        Expr::Binary { lhs, rhs, .. } => is_address_of_expr(lhs) || is_address_of_expr(rhs),
+        Expr::TypedView { expr, .. } => is_address_of_expr(expr),
         _ => false,
     }
 }
@@ -5238,7 +5272,7 @@ fn is_immediate_expression(expr: &Expr, sema: &SemanticModel) -> bool {
             is_immediate_expression(lhs, sema) && is_immediate_expression(rhs, sema)
         }
         Expr::Unary { .. } => true,
-        Expr::Index { .. } | Expr::EvalText(_) => false,
+        Expr::Index { .. } | Expr::Member { .. } | Expr::EvalText(_) => false,
         Expr::TypedView { expr, .. } => is_immediate_expression(expr, sema),
         Expr::MetadataQuery { .. } => true,
     }
@@ -5465,6 +5499,366 @@ fn lookup_layout<'a>(
         .and_then(|class| class.symbolic_subscript.as_ref())
 }
 
+#[derive(Clone, Copy)]
+struct VarAccessMeta<'a> {
+    is_abstract: bool,
+    element_size: u32,
+    repeat_count: u32,
+    data_width: Option<DataWidth>,
+    symbolic_subscript: Option<&'a crate::sema::SymbolicSubscriptMeta>,
+}
+
+fn lookup_var_access_meta<'a>(name: &str, sema: &'a SemanticModel) -> Option<VarAccessMeta<'a>> {
+    if let Some(var) = sema.vars.get(name) {
+        return Some(VarAccessMeta {
+            is_abstract: var.is_abstract(),
+            element_size: var.element_size,
+            repeat_count: var.repeat_count,
+            data_width: var.data_width,
+            symbolic_subscript: var.symbolic_subscript.as_ref(),
+        });
+    }
+    sema.external_var_classes
+        .get(name)
+        .map(|class| VarAccessMeta {
+            is_abstract: class.is_abstract,
+            element_size: class.element_size,
+            repeat_count: class.repeat_count,
+            data_width: class.data_width,
+            symbolic_subscript: class.symbolic_subscript.as_ref(),
+        })
+}
+
+#[derive(Debug, Clone)]
+struct RepeatAccess {
+    root: String,
+    element_offset: i64,
+    field_key: Option<String>,
+    field_offset: u32,
+    tail_offset: i64,
+    data_width: Option<DataWidth>,
+}
+
+impl RepeatAccess {
+    fn total_addend(&self) -> Option<i64> {
+        i64::from(self.field_offset)
+            .checked_add(self.element_offset)?
+            .checked_add(self.tail_offset)
+    }
+}
+
+fn eval_repeat_index(
+    index: &Expr,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    target: &str,
+    upper_bound: Option<u32>,
+) -> Option<i64> {
+    let saved_len = diagnostics.len();
+    let Some((value, provenance)) = eval_address_expr(index, None, sema, span, diagnostics) else {
+        if diagnostics.len() == saved_len {
+            diagnostics.push(
+                Diagnostic::error(
+                    span,
+                    format!("{target} index must be a constant numeric expression"),
+                )
+                .with_primary_label("non-constant index")
+                .with_help(format!(
+                    "use a literal, `const`, or metadata expression inside `{target}[...]`; runtime indices must use indexed addressing or explicit pointer arithmetic"
+                ))
+                .with_note(
+                    "Bracket element access is folded into a fixed byte offset before code generation, so the index has to be known at compile time.",
+                ),
+            );
+        }
+        return None;
+    };
+    if matches!(provenance, AddressProvenance::Address) {
+        diagnostics.truncate(saved_len);
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("{target} index must be a constant numeric expression"),
+            )
+            .with_primary_label("address used as index")
+            .with_help(
+                "use a literal, `const`, or metadata expression for the bracket index; labels and vars are memory addresses, not repeat indices",
+            )
+            .with_note(
+                "Runtime indexing is still possible with CPU indexed addressing or pointer arithmetic, but the bracket accessor itself is compile-time address arithmetic.",
+            ),
+        );
+        return None;
+    }
+    if value < 0 {
+        diagnostics.push(
+            Diagnostic::error(span, format!("index must be non-negative, found {value}"))
+                .with_primary_label("negative index")
+                .with_help("use an index in the declared repeat range"),
+        );
+        return None;
+    }
+    if let Some(upper_bound) = upper_bound
+        && value >= i64::from(upper_bound)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!(
+                    "index {value} is out of range for {target}; repeat count is {upper_bound}"
+                ),
+            )
+            .with_primary_label("index outside repeat range")
+            .with_help(format!(
+                "use an index in `0..{upper_bound}` or increase the declaration's `* count`"
+            )),
+        );
+        return None;
+    }
+    Some(value)
+}
+
+fn checked_i64_to_i32_addend(
+    value: i64,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i32> {
+    i32::try_from(value)
+        .map_err(|_| {
+            diagnostics.push(
+                Diagnostic::error(span, format!("address addend {value} is out of range"))
+                    .with_primary_label("addend out of range")
+                    .with_help(
+                        "keep address arithmetic within the signed 32-bit relocation addend range",
+                    ),
+            );
+        })
+        .ok()
+}
+
+fn resolve_repeat_access_expr(
+    expr: &Expr,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Result<Option<RepeatAccess>, ()> {
+    match expr {
+        Expr::TypedView { expr, .. } => resolve_repeat_access_expr(expr, sema, span, diagnostics),
+        Expr::Member { base, field, .. } => {
+            let Some(mut access) = resolve_repeat_access_expr(base, sema, span, diagnostics)?
+            else {
+                return Ok(None);
+            };
+            let Some(meta) = lookup_var_access_meta(&access.root, sema) else {
+                return Ok(None);
+            };
+            let Some(symbolic_subscript) = meta.symbolic_subscript else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        span,
+                        format!(
+                            "field '.{field}' cannot be selected from scalar repeat var '{}'",
+                            access.root
+                        ),
+                    )
+                    .with_primary_label("field access on scalar repeat element")
+                    .with_help(format!(
+                        "`{}[...]` selects a scalar element because '{}' has no symbolic field layout; remove '.{field}' or declare '{}' with a symbolic field list",
+                        access.root, access.root, access.root
+                    )),
+                );
+                return Err(());
+            };
+            let field_key = match &access.field_key {
+                Some(parent) => format!("{parent}.{field}"),
+                None => field.clone(),
+            };
+            let Some(field_meta) = symbolic_subscript.fields.get(&field_key) else {
+                let mut diagnostic = Diagnostic::error(
+                    span,
+                    format!(
+                        "unknown symbolic subscript field '.{field_key}' on '{}'",
+                        access.root
+                    ),
+                )
+                .with_primary_label("unknown field after element index");
+                if let Some(suggestion) =
+                    suggest_symbolic_subscript_field(field, symbolic_subscript)
+                {
+                    diagnostic = diagnostic.with_help(format!("did you mean '.{suggestion}'?"));
+                } else {
+                    diagnostic = diagnostic.with_help(format!(
+                        "choose one of the fields declared under '{}[...]'",
+                        access.root
+                    ));
+                }
+                diagnostics.push(diagnostic);
+                return Err(());
+            };
+            access.field_key = Some(field_key);
+            access.field_offset = field_meta.offset;
+            access.tail_offset = 0;
+            access.data_width = field_meta.data_width;
+            Ok(Some(access))
+        }
+        Expr::Index { base, index } => {
+            if let Some(mut access) = resolve_repeat_access_expr(base, sema, span, diagnostics)? {
+                let Some(field_key) = access.field_key.as_deref() else {
+                    return Ok(None);
+                };
+                let Some(symbolic_subscript) = lookup_var_access_meta(&access.root, sema)
+                    .and_then(|meta| meta.symbolic_subscript)
+                else {
+                    return Ok(None);
+                };
+                let Some(field_meta) = symbolic_subscript.fields.get(field_key) else {
+                    return Ok(None);
+                };
+                if field_meta.count <= 1 {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "symbolic subscript field '{}.{field_key}' is not an array",
+                                access.root
+                            ),
+                        )
+                        .with_primary_label("indexed access on non-array field")
+                        .with_help(format!(
+                            "drop the trailing `[...]` and write `{}[...].{field_key}` to read the single value, or change the field declaration to an array",
+                            access.root
+                        ))
+                        .with_note(
+                            "Only fields declared with `[count >= 2]` produce array semantics that a bracket index can dereference.",
+                        ),
+                    );
+                    return Err(());
+                }
+                let Some(index_value) = eval_repeat_index(
+                    index,
+                    sema,
+                    span,
+                    diagnostics,
+                    &format!("{}.{field_key}", access.root),
+                    None,
+                ) else {
+                    return Err(());
+                };
+                let scale = i64::from(field_meta.size / field_meta.count);
+                access.tail_offset = index_value.checked_mul(scale).ok_or_else(|| {
+                    diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                })?;
+                Ok(Some(access))
+            } else if let Some(name) = base_ident(base)
+                && let Some(meta) = lookup_var_access_meta(name, sema)
+            {
+                if meta.is_abstract {
+                    diagnostics.push(abstract_var_address_diagnostic(span, name));
+                    return Err(());
+                }
+                if meta.repeat_count > 1 {
+                    let Some(index_value) = eval_repeat_index(
+                        index,
+                        sema,
+                        span,
+                        diagnostics,
+                        name,
+                        Some(meta.repeat_count),
+                    ) else {
+                        return Err(());
+                    };
+                    let element_offset = index_value
+                        .checked_mul(i64::from(meta.element_size))
+                        .ok_or_else(|| {
+                            diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                        })?;
+                    Ok(Some(RepeatAccess {
+                        root: name.to_string(),
+                        element_offset,
+                        field_key: None,
+                        field_offset: 0,
+                        tail_offset: 0,
+                        data_width: meta.data_width,
+                    }))
+                } else if meta.symbolic_subscript.is_some() {
+                    diagnostics.push(invalid_symbolic_subscript_aggregate_index_diagnostic(
+                        name, base, index, sema, span,
+                    ));
+                    Err(())
+                } else {
+                    Ok(None)
+                }
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn repeat_access_compile_time_value(
+    access: &RepeatAccess,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i64> {
+    let base_address = sema.vars.get(&access.root)?.compile_time_address()?;
+    let addend = access.total_addend().or_else(|| {
+        diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+        None
+    })?;
+    i64::from(base_address).checked_add(addend).or_else(|| {
+        diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+        None
+    })
+}
+
+fn repeat_access_address_operand(
+    access: &RepeatAccess,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    size_hint: AddressSizeHint,
+    mode: AddressOperandMode,
+) -> Option<OperandOp> {
+    let addend = access.total_addend().or_else(|| {
+        diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+        None
+    })?;
+    if let Some(base_address) = sema
+        .vars
+        .get(&access.root)
+        .and_then(|var| var.compile_time_address())
+    {
+        let value = i64::from(base_address).checked_add(addend).or_else(|| {
+            diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+            None
+        })?;
+        let Ok(value) = u32::try_from(value) else {
+            diagnostics.push(Diagnostic::error(
+                span,
+                format!("address cannot be negative: {value}"),
+            ));
+            return None;
+        };
+        return Some(OperandOp::Address {
+            value: AddressValue::Literal(value),
+            size_hint,
+            mode,
+        });
+    }
+    let addend = checked_i64_to_i32_addend(addend, span, diagnostics)?;
+    Some(OperandOp::Address {
+        value: AddressValue::LabelOffset {
+            label: access.root.clone(),
+            addend,
+        },
+        size_hint,
+        mode,
+    })
+}
+
 fn is_abstract_layout_name(name: &str, sema: &SemanticModel) -> bool {
     if sema.vars.get(name).is_some_and(|var| var.is_abstract())
         || sema
@@ -5502,6 +5896,7 @@ fn abstract_layout_ref_in_expr<'a>(expr: &'a Expr, sema: &SemanticModel) -> Opti
         | Expr::MetadataQuery { expr, .. } => abstract_layout_ref_in_expr(expr, sema),
         Expr::Index { base, index } => abstract_layout_ref_in_expr(base, sema)
             .or_else(|| abstract_layout_ref_in_expr(index, sema)),
+        Expr::Member { base, .. } => abstract_layout_ref_in_expr(base, sema),
         Expr::Number(_, _) | Expr::EvalText(_) => None,
     }
 }
@@ -5627,13 +6022,11 @@ fn invalid_symbolic_subscript_aggregate_index_diagnostic(
     let mut diagnostic = Diagnostic::error(
         label_span,
         format!("invalid index on symbolic subscript array '{base}'"),
-    );
+    )
+    .with_primary_label("aggregate index without repeat count");
 
     if let Some(requested) = expr_ident_name(index)
-        && let Some(symbolic_subscript) = sema
-            .vars
-            .get(base)
-            .and_then(|var| var.symbolic_subscript.as_ref())
+        && let Some(symbolic_subscript) = lookup_layout(base, sema)
         && let Some(suggestion) = suggest_symbolic_subscript_field(requested, symbolic_subscript)
     {
         diagnostic = diagnostic.with_help(format!(
@@ -5642,7 +6035,13 @@ fn invalid_symbolic_subscript_aggregate_index_diagnostic(
         return diagnostic;
     }
 
-    diagnostic.with_help("use '.field' or '[.field]' for named field access")
+    diagnostic
+        .with_help(format!(
+            "`{base}[index]` selects a repeated element only when `{base}` is declared with `* count`; add `* N` to the declaration for element access, or use '.field' or '[.field]' for named field access"
+        ))
+        .with_note(
+            "The `[ ... ]` after a symbolic-subscript var has two meanings: `.field` selects a named field, while numeric indices select repeat elements from `var NAME[...] * N`.",
+        )
 }
 
 fn levenshtein(lhs: &str, rhs: &str) -> usize {
@@ -5832,17 +6231,12 @@ fn lower_immediate_operand(
     {
         return Some(OperandOp::ImmediateByteRelocation { kind, label });
     }
-    if let Some((_is_far, name, _addend, label_span)) = peel_address_of(expr, span)
-        && is_abstract_layout_name(name, sema)
-    {
-        diagnostics.push(abstract_var_address_diagnostic(
-            label_span.unwrap_or(span),
-            name,
-        ));
-        return None;
-    }
+    let saved_diag_len = diagnostics.len();
     if let Some(op) = resolve_symbolic_address_immediate(expr, scope, sema, span, diagnostics) {
         return Some(op);
+    }
+    if diagnostics.len() > saved_diag_len {
+        return None;
     }
     if let Some(diag) = reject_address_taking_immediate(expr, sema, span) {
         diagnostics.push(diag);
@@ -5974,13 +6368,224 @@ fn resolve_symbolic_address_immediate(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<OperandOp> {
-    let (is_far, name, addend, label_span) = peel_address_of(expr, span)?;
-    // Compile-time-known names (consts) flow through `eval_to_number` so the
-    // result is an `Immediate(N)`. Only emit a relocation when the name is a
-    // real address-bearing symbol — vars, functions, symbolic-subscript
-    // fields, or fully-unresolved labels (cross-unit auto-addr vars and code
-    // labels).
+    let (is_far, reference) = peel_address_of(expr, scope, sema, span, diagnostics)?;
+    Some(if is_far {
+        OperandOp::ImmediateFarRelocation {
+            label: reference.label,
+            addend: reference.addend,
+            label_span: reference.label_span,
+        }
+    } else {
+        OperandOp::ImmediateWordRelocation {
+            label: reference.label,
+            addend: reference.addend,
+            label_span: reference.label_span,
+        }
+    })
+}
+
+#[derive(Debug, Clone)]
+struct AddressReference {
+    label: String,
+    addend: i32,
+    label_span: Option<Span>,
+}
+
+/// Decompose `&&LABEL` / `&&&LABEL` (optionally `± constant_expr`) into an
+/// address relocation target. The target may be a repeated element accessor,
+/// e.g. `&&COMP[2].field`, which lowers to `COMP + addend`.
+fn peel_address_of(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    instruction_span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(bool, AddressReference)> {
+    fn address_of_unary(expr: &Expr) -> Option<(bool, &Expr)> {
+        let Expr::Unary { op, expr: inner } = expr else {
+            return None;
+        };
+        let is_far = match op {
+            ExprUnaryOp::WordLittleEndian => false,
+            ExprUnaryOp::FarLittleEndian => true,
+            _ => return None,
+        };
+        Some((is_far, inner.as_ref()))
+    }
+
+    if let Some((is_far, inner)) = address_of_unary(expr) {
+        let reference =
+            address_reference_for_expr(inner, scope, sema, instruction_span, diagnostics)?;
+        return Some((is_far, reference));
+    }
+    if let Expr::Binary { op, lhs, rhs } = expr {
+        match (op, lhs.as_ref(), rhs.as_ref()) {
+            (ExprBinaryOp::Add, lhs, rhs) => {
+                let (is_far, inner, addend_expr) =
+                    if let Some((is_far, inner)) = address_of_unary(lhs) {
+                        (is_far, inner, rhs)
+                    } else if let Some((is_far, inner)) = address_of_unary(rhs) {
+                        (is_far, inner, lhs)
+                    } else {
+                        return None;
+                    };
+                let mut reference =
+                    address_reference_for_expr(inner, scope, sema, instruction_span, diagnostics)?;
+                let addend = eval_address_of_addend(
+                    addend_expr,
+                    scope,
+                    sema,
+                    instruction_span,
+                    diagnostics,
+                )?;
+                reference.addend = reference.addend.checked_add(addend).or_else(|| {
+                    diagnostics.push(Diagnostic::error(instruction_span, "arithmetic overflow"));
+                    None
+                })?;
+                return Some((is_far, reference));
+            }
+            (ExprBinaryOp::Sub, lhs, rhs) => {
+                let (is_far, inner) = address_of_unary(lhs)?;
+                let mut reference =
+                    address_reference_for_expr(inner, scope, sema, instruction_span, diagnostics)?;
+                let addend =
+                    eval_address_of_addend(rhs, scope, sema, instruction_span, diagnostics)?;
+                reference.addend = reference.addend.checked_sub(addend).or_else(|| {
+                    diagnostics.push(Diagnostic::error(instruction_span, "arithmetic overflow"));
+                    None
+                })?;
+                return Some((is_far, reference));
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn address_reference_for_expr(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<AddressReference> {
+    if let Ok(Some(access)) = resolve_repeat_access_expr(expr, sema, span, diagnostics) {
+        let addend = access.total_addend()?;
+        return Some(AddressReference {
+            label: access.root,
+            addend: checked_i64_to_i32_addend(addend, span, diagnostics)?,
+            label_span: None,
+        });
+    }
+    if let Some(reference) =
+        symbolic_field_array_address_reference(expr, scope, sema, span, diagnostics)
+    {
+        return Some(reference);
+    }
+
+    let ident_span = |start: usize, end: usize| Span::new(span.source_id, start, end);
+    match expr {
+        Expr::Ident(name) => {
+            address_reference_for_ident(name, scope, sema, span, diagnostics, None)
+        }
+        Expr::IdentSpanned { name, start, end } => address_reference_for_ident(
+            name,
+            scope,
+            sema,
+            span,
+            diagnostics,
+            Some(ident_span(*start, *end)),
+        ),
+        Expr::Binary { op, lhs, rhs } => {
+            let reference = match (op, lhs.as_ref(), rhs.as_ref()) {
+                (ExprBinaryOp::Add, Expr::IdentSpanned { name, start, end }, other) => {
+                    let mut reference = address_reference_for_ident(
+                        name,
+                        scope,
+                        sema,
+                        span,
+                        diagnostics,
+                        Some(ident_span(*start, *end)),
+                    )?;
+                    let addend = eval_address_of_addend(other, scope, sema, span, diagnostics)?;
+                    reference.addend = reference.addend.checked_add(addend)?;
+                    reference
+                }
+                (ExprBinaryOp::Add, other, Expr::IdentSpanned { name, start, end }) => {
+                    let mut reference = address_reference_for_ident(
+                        name,
+                        scope,
+                        sema,
+                        span,
+                        diagnostics,
+                        Some(ident_span(*start, *end)),
+                    )?;
+                    let addend = eval_address_of_addend(other, scope, sema, span, diagnostics)?;
+                    reference.addend = reference.addend.checked_add(addend)?;
+                    reference
+                }
+                (ExprBinaryOp::Sub, Expr::IdentSpanned { name, start, end }, other) => {
+                    let mut reference = address_reference_for_ident(
+                        name,
+                        scope,
+                        sema,
+                        span,
+                        diagnostics,
+                        Some(ident_span(*start, *end)),
+                    )?;
+                    let addend = eval_address_of_addend(other, scope, sema, span, diagnostics)?;
+                    reference.addend = reference.addend.checked_sub(addend)?;
+                    reference
+                }
+                (ExprBinaryOp::Add, Expr::Ident(name), other) => {
+                    let mut reference =
+                        address_reference_for_ident(name, scope, sema, span, diagnostics, None)?;
+                    let addend = eval_address_of_addend(other, scope, sema, span, diagnostics)?;
+                    reference.addend = reference.addend.checked_add(addend)?;
+                    reference
+                }
+                (ExprBinaryOp::Add, other, Expr::Ident(name)) => {
+                    let mut reference =
+                        address_reference_for_ident(name, scope, sema, span, diagnostics, None)?;
+                    let addend = eval_address_of_addend(other, scope, sema, span, diagnostics)?;
+                    reference.addend = reference.addend.checked_add(addend)?;
+                    reference
+                }
+                (ExprBinaryOp::Sub, Expr::Ident(name), other) => {
+                    let mut reference =
+                        address_reference_for_ident(name, scope, sema, span, diagnostics, None)?;
+                    let addend = eval_address_of_addend(other, scope, sema, span, diagnostics)?;
+                    reference.addend = reference.addend.checked_sub(addend)?;
+                    reference
+                }
+                _ => return None,
+            };
+            if reference.addend == i32::MIN && matches!(op, ExprBinaryOp::Add | ExprBinaryOp::Sub) {
+                diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+                return None;
+            }
+            Some(reference)
+        }
+        _ => None,
+    }
+}
+
+fn address_reference_for_ident(
+    name: &str,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+    label_span: Option<Span>,
+) -> Option<AddressReference> {
     if sema.consts.contains_key(name) {
+        return None;
+    }
+    if is_abstract_layout_name(name, sema) {
+        diagnostics.push(abstract_var_address_diagnostic(
+            label_span.unwrap_or(span),
+            name,
+        ));
         return None;
     }
     let known_addressable = sema.vars.contains_key(name)
@@ -5994,114 +6599,74 @@ fn resolve_symbolic_address_immediate(
         return None;
     }
     let label = resolve_symbol(name, scope, span, diagnostics)?;
-    Some(if is_far {
-        OperandOp::ImmediateFarRelocation {
-            label,
-            addend,
-            label_span,
-        }
-    } else {
-        OperandOp::ImmediateWordRelocation {
-            label,
-            addend,
-            label_span,
-        }
+    Some(AddressReference {
+        label,
+        addend: 0,
+        label_span,
     })
 }
 
-/// Decompose `&&LABEL` / `&&&LABEL` (optionally `± N`) into
-/// `(is_far, name, addend, label_span)`. `label_span` covers just the symbol
-/// name in source if it was an `IdentSpanned`, so diagnostics can underline
-/// only `shell_main` rather than `lda &&shell_main`.
-fn peel_address_of(expr: &Expr, instruction_span: Span) -> Option<(bool, &str, i32, Option<Span>)> {
-    if let Expr::Unary { op, expr: inner } = expr {
-        let is_far = match op {
-            ExprUnaryOp::WordLittleEndian => false,
-            ExprUnaryOp::FarLittleEndian => true,
-            _ => return None,
-        };
-        let (name, addend, label_span) = label_with_addend(inner.as_ref(), instruction_span)?;
-        return Some((is_far, name, addend, label_span));
-    }
-    if let Expr::Binary { op, lhs, rhs } = expr {
-        match (op, lhs.as_ref(), rhs.as_ref()) {
-            (
-                ExprBinaryOp::Add,
-                Expr::Unary {
-                    op: u_op,
-                    expr: u_inner,
-                },
-                Expr::Number(n, _),
+fn symbolic_field_array_address_reference(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<AddressReference> {
+    let Expr::Index { base, index } = expr else {
+        return None;
+    };
+    let name = base_ident(base)?;
+    let (base_name, field_name) = name.split_once('.')?;
+    let symbolic_subscript = lookup_layout(base_name, sema)?;
+    let field_meta = symbolic_subscript.fields.get(field_name)?;
+    if field_meta.count <= 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("symbolic subscript field '{base_name}.{field_name}' is not an array"),
             )
-            | (
-                ExprBinaryOp::Add,
-                Expr::Number(n, _),
-                Expr::Unary {
-                    op: u_op,
-                    expr: u_inner,
-                },
-            ) => {
-                let is_far = match u_op {
-                    ExprUnaryOp::WordLittleEndian => false,
-                    ExprUnaryOp::FarLittleEndian => true,
-                    _ => return None,
-                };
-                let (name, base_addend, label_span) =
-                    label_with_addend(u_inner.as_ref(), instruction_span)?;
-                return Some((is_far, name, base_addend + *n as i32, label_span));
-            }
-            (
-                ExprBinaryOp::Sub,
-                Expr::Unary {
-                    op: u_op,
-                    expr: u_inner,
-                },
-                Expr::Number(n, _),
-            ) => {
-                let is_far = match u_op {
-                    ExprUnaryOp::WordLittleEndian => false,
-                    ExprUnaryOp::FarLittleEndian => true,
-                    _ => return None,
-                };
-                let (name, base_addend, label_span) =
-                    label_with_addend(u_inner.as_ref(), instruction_span)?;
-                return Some((is_far, name, base_addend - *n as i32, label_span));
-            }
-            _ => {}
-        }
+            .with_primary_label("indexed access on non-array field")
+            .with_help(format!(
+                "drop the `[...]` and write `{base_name}.{field_name}` to read the single value, or change the field's declaration to `.{field_name}[N]:...` if you need an array slot"
+            )),
+        );
+        return None;
     }
-    None
+    let index_value = eval_repeat_index(index, sema, span, diagnostics, name, None)?;
+    let scale = i64::from(field_meta.size / field_meta.count);
+    let addend = index_value.checked_mul(scale).or_else(|| {
+        diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
+        None
+    })?;
+    Some(AddressReference {
+        label: resolve_symbol(name, scope, span, diagnostics)?,
+        addend: checked_i64_to_i32_addend(addend, span, diagnostics)?,
+        label_span: expr_ident_span(base, span),
+    })
 }
 
-/// Match `Ident(name)` or `Ident(name) + N` / `N + Ident(name)` / `Ident(name) - N`,
-/// returning the label name, signed addend, and (when available) the source
-/// span of just the identifier.
-fn label_with_addend(expr: &Expr, instruction_span: Span) -> Option<(&str, i32, Option<Span>)> {
-    let ident_span = |start: usize, end: usize| Span::new(instruction_span.source_id, start, end);
-    match expr {
-        Expr::Ident(name) => Some((name.as_str(), 0, None)),
-        Expr::IdentSpanned { name, start, end } => {
-            Some((name.as_str(), 0, Some(ident_span(*start, *end))))
-        }
-        Expr::Binary { op, lhs, rhs } => match (op, lhs.as_ref(), rhs.as_ref()) {
-            (ExprBinaryOp::Add, Expr::IdentSpanned { name, start, end }, Expr::Number(n, _))
-            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::IdentSpanned { name, start, end }) => {
-                Some((name.as_str(), *n as i32, Some(ident_span(*start, *end))))
-            }
-            (ExprBinaryOp::Sub, Expr::IdentSpanned { name, start, end }, Expr::Number(n, _)) => {
-                Some((name.as_str(), -(*n as i32), Some(ident_span(*start, *end))))
-            }
-            (ExprBinaryOp::Add, Expr::Ident(name), Expr::Number(n, _))
-            | (ExprBinaryOp::Add, Expr::Number(n, _), Expr::Ident(name)) => {
-                Some((name.as_str(), *n as i32, None))
-            }
-            (ExprBinaryOp::Sub, Expr::Ident(name), Expr::Number(n, _)) => {
-                Some((name.as_str(), -(*n as i32), None))
-            }
-            _ => None,
-        },
-        _ => None,
+fn eval_address_of_addend(
+    expr: &Expr,
+    scope: Option<&str>,
+    sema: &SemanticModel,
+    span: Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<i32> {
+    let saved_len = diagnostics.len();
+    let (value, provenance) = eval_address_expr(expr, scope, sema, span, diagnostics)?;
+    if matches!(provenance, AddressProvenance::Address) {
+        diagnostics.truncate(saved_len);
+        diagnostics.push(
+            Diagnostic::error(span, "address-of addend must be a compile-time numeric offset")
+                .with_primary_label("address used as addend")
+                .with_help(
+                    "use a literal, `const`, or metadata expression such as `NAME:sizeof`; labels and vars are addresses, not numeric offsets",
+                ),
+        );
+        return None;
     }
+    checked_i64_to_i32_addend(value, span, diagnostics)
 }
 
 fn immediate_expr_span(expr: &Expr, instruction_span: Span, explicit_hash: bool) -> Span {
@@ -6187,7 +6752,21 @@ fn lower_address_operand(
             let value = resolve_metadata_query(expr, *query, sema, span, diagnostics)?;
             Some(OperandOp::Immediate(value))
         }
-        Expr::Index { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
+        Expr::Index { .. } | Expr::Member { .. } | Expr::Binary { .. } | Expr::Unary { .. } => {
+            match resolve_repeat_access_expr(expr, sema, span, diagnostics) {
+                Ok(Some(access)) => {
+                    return repeat_access_address_operand(
+                        &access,
+                        sema,
+                        span,
+                        diagnostics,
+                        size_hint,
+                        mode,
+                    );
+                }
+                Err(()) => return None,
+                Ok(None) => {}
+            }
             // Try compile-time evaluation first (works for vars, consts, symbolic subscripts).
             // Tracks provenance so a `const`-only expression in address position is rejected
             // rather than silently materialized as a literal address. Stack-relative modes
@@ -6401,6 +6980,14 @@ fn eval_address_expr(
             let value = eval_index_expr(base, index, scope, sema, span, diagnostics)?;
             Some((value, AddressProvenance::Address))
         }
+        Expr::Member { .. } => match resolve_repeat_access_expr(expr, sema, span, diagnostics) {
+            Ok(Some(access)) => {
+                let value = repeat_access_compile_time_value(&access, sema, span, diagnostics)?;
+                Some((value, AddressProvenance::Address))
+            }
+            Ok(None) => None,
+            Err(()) => None,
+        },
         Expr::Binary { op, lhs, rhs } => {
             let (lhs_val, lhs_prov) = eval_address_expr(lhs, scope, sema, span, diagnostics)?;
             let (rhs_val, rhs_prov) = eval_address_expr(rhs, scope, sema, span, diagnostics)?;
@@ -6464,6 +7051,7 @@ fn first_const_ref<'a>(expr: &'a Expr, sema: &SemanticModel) -> Option<&'a str> 
         }
         Expr::Unary { expr, .. } => first_const_ref(expr, sema),
         Expr::TypedView { expr, .. } => first_const_ref(expr, sema),
+        Expr::Member { base, .. } => first_const_ref(base, sema),
         Expr::Index { base, index } => {
             first_const_ref(base, sema).or_else(|| first_const_ref(index, sema))
         }
@@ -6538,6 +7126,11 @@ fn eval_to_number(
             None
         }
         Expr::Index { base, index } => eval_index_expr(base, index, scope, sema, span, diagnostics),
+        Expr::Member { .. } => match resolve_repeat_access_expr(expr, sema, span, diagnostics) {
+            Ok(Some(access)) => repeat_access_compile_time_value(&access, sema, span, diagnostics),
+            Ok(None) => None,
+            Err(()) => None,
+        },
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_to_number(lhs, scope, sema, span, diagnostics)?;
             let rhs = eval_to_number(rhs, scope, sema, span, diagnostics)?;
@@ -6580,6 +7173,18 @@ fn eval_index_expr(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
+    let indexed = Expr::Index {
+        base: Box::new(base.clone()),
+        index: Box::new(index.clone()),
+    };
+    match resolve_repeat_access_expr(&indexed, sema, span, diagnostics) {
+        Ok(Some(access)) => {
+            return repeat_access_compile_time_value(&access, sema, span, diagnostics);
+        }
+        Err(()) => return None,
+        Ok(None) => {}
+    }
+
     if let Some(name) = base_ident(base) {
         match resolve_symbolic_subscript_name(name, sema, span, diagnostics) {
             Ok(Some(ResolvedSymbolicSubscriptName::Aggregate { base: agg_base, .. })) => {
@@ -6744,6 +7349,7 @@ fn expression_contains_address_positioned(expr: &Expr) -> bool {
             expression_contains_address_positioned(base)
                 || expression_contains_address_positioned(index)
         }
+        Expr::Member { base, .. } => expression_contains_address_positioned(base),
         Expr::MetadataQuery { expr: inner, .. } => expression_contains_address_positioned(inner),
         Expr::Number(_, _) | Expr::Ident(_) | Expr::IdentSpanned { .. } | Expr::EvalText(_) => {
             false
@@ -6776,11 +7382,7 @@ fn address_positioned_in_immediate_diag(span: Span) -> Diagnostic {
     )
 }
 
-fn stack_offset_not_address_diag(
-    span: Span,
-    name: &str,
-    kind: &str,
-) -> Diagnostic {
+fn stack_offset_not_address_diag(span: Span, name: &str, kind: &str) -> Diagnostic {
     Diagnostic::error(
         span,
         format!(
@@ -7457,6 +8059,165 @@ mod tests {
         assert!(matches!(
             operand,
             OperandOp::ImmediateWordRelocation { label, addend: 2, .. } if label == "TASKS"
+        ));
+    }
+
+    #[test]
+    fn resolves_fixed_repeat_element_accessors_to_addresses_and_address_of_addends() {
+        let source = "\
+var COMP[
+  .one:byte
+  .two:word
+  .str[5]:byte
+] * 10 = $1000
+var WORDS:word * 4 = $3000
+func main @a16 {
+  lda COMP[2].two
+  lda &&COMP[2].two
+  lda WORDS[2]
+  @a8
+  lda COMP[2].str[3]
+}
+";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs, None).expect("lower");
+
+        let operands = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(operands.len(), 4);
+
+        assert!(matches!(
+            operands[0],
+            OperandOp::Address {
+                value: AddressValue::Literal(0x1011),
+                ..
+            }
+        ));
+        assert!(matches!(
+            operands[1],
+            OperandOp::ImmediateWordRelocation {
+                label,
+                addend: 17,
+                ..
+            } if label == "COMP"
+        ));
+        assert!(matches!(
+            operands[2],
+            OperandOp::Address {
+                value: AddressValue::Literal(0x3004),
+                ..
+            }
+        ));
+        assert!(matches!(
+            operands[3],
+            OperandOp::Address {
+                value: AddressValue::Literal(0x1016),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn uses_label_offsets_for_allocated_repeat_element_accessors() {
+        let source = "\
+var COMP[
+  .one:byte
+  .two:word
+  .str[5]:byte
+] * 3
+func main @a16 {
+  lda COMP[2].two
+  lda &&COMP + 2*COMP:sizeof
+  lda &&COMP[2].two
+}
+";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs, None).expect("lower");
+
+        let operands = program
+            .ops
+            .iter()
+            .filter_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(operands.len(), 3);
+
+        assert!(matches!(
+            operands[0],
+            OperandOp::Address {
+                value: AddressValue::LabelOffset { label, addend: 17 },
+                size_hint: AddressSizeHint::Auto,
+                ..
+            } if label == "COMP"
+        ));
+        assert!(matches!(
+            operands[1],
+            OperandOp::ImmediateWordRelocation {
+                label,
+                addend: 16,
+                ..
+            } if label == "COMP"
+        ));
+        assert!(matches!(
+            operands[2],
+            OperandOp::ImmediateWordRelocation {
+                label,
+                addend: 17,
+                ..
+            } if label == "COMP"
+        ));
+    }
+
+    #[test]
+    fn dp_repeat_element_accessors_keep_direct_page_hint() {
+        let source = "\
+var dp COMP[
+  .one:byte
+  .two:word
+] * 3
+func main @a16 {
+  lda COMP[2].two
+}
+";
+        let file = parse(SourceId(0), source).expect("parse");
+        let sema = analyze(&file).expect("analyze");
+        let fs = StdAssetFS;
+        let program = lower(&file, &sema, &fs, None).expect("lower");
+
+        let operand = program
+            .ops
+            .iter()
+            .find_map(|op| match &op.node {
+                Op::Instruction(instruction) if instruction.mnemonic == "lda" => {
+                    instruction.operand.as_ref()
+                }
+                _ => None,
+            })
+            .expect("lda operand");
+
+        assert!(matches!(
+            operand,
+            OperandOp::Address {
+                value: AddressValue::LabelOffset { label, addend: 7 },
+                size_hint: AddressSizeHint::ForceDirectPage,
+                ..
+            } if label == "COMP"
         ));
     }
 

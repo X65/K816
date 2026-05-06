@@ -592,6 +592,17 @@ fn expand_expr(
             base: Box::new(expand_expr(base, _span, source_id, _diagnostics)),
             index: Box::new(expand_expr(index, _span, source_id, _diagnostics)),
         },
+        Expr::Member {
+            base,
+            field,
+            start,
+            end,
+        } => Expr::Member {
+            base: Box::new(expand_expr(base, _span, source_id, _diagnostics)),
+            field: field.clone(),
+            start: *start,
+            end: *end,
+        },
         Expr::Binary { op, lhs, rhs } => Expr::Binary {
             op: *op,
             lhs: Box::new(expand_expr(lhs, _span, source_id, _diagnostics)),

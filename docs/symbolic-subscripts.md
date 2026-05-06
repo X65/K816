@@ -17,6 +17,7 @@ Both forms produce identical field layouts.
 - No fixed-address bytes are emitted by `var = $addr` declarations; Allocated subscript vars emit zero-filled bytes in their segment so the linker reserves the slot.
 - `data { ... }` remains the mechanism for emitting initialized bytes.
 - Field layouts are packed (no padding).
+- A `* count` suffix repeats the whole layout and makes elements addressable as `foo[i]`. Declaration `[N]` reserves a raw span; it does not create repeated aggregate elements.
 
 ## Declaration Syntax
 
@@ -88,6 +89,20 @@ foo[.field_w] = a = 0xBEEF
 foo[.string][i] = a = 'A'
 ```
 
+Repeat element form for declarations with `* count`:
+
+```k65
+var foo[
+  .field_w   :word
+  .string[20]:byte
+] * 8 = $4000
+
+lda &&foo[2]               // &&foo + 2*foo:sizeof
+lda foo[2].field_w         // element 2, .field_w offset
+lda foo[2][.field_w]       // equivalent spelling
+lda foo[2].string[3]       // element 2, .string offset, byte 3
+```
+
 ## Semantics
 
 Layout is packed and sequential:
@@ -101,8 +116,12 @@ For each field access, lowering computes:
 
 - field base = `symbolic_subscript_base + field_offset`
 - indexed field element address = `field_base + index * element_width`
+- repeated aggregate element base = `symbolic_subscript_base + index * symbolic_subscript_base:sizeof`
+- repeated field access = `element base + field_offset`
 
 When an `= <address>` initializer is present (Fixed form), it must be a constant numeric expression — the assembler bakes the base into every reference, so the right-hand side has to reduce to a number at semantic-analysis time. The Allocated form (no `= ...`) has no such requirement: the linker assigns the base later, the same way it assigns addresses to code labels.
+
+Repeat indices must be compile-time numeric constants and are bounds checked with `0 <= index < repeat_count`. Runtime indexing should use the CPU's indexed addressing modes or explicit pointer arithmetic instead. `foo:sizeof` is the size of one repeated element, not the total allocation, so `&&foo[i]` is equivalent to `&&foo + i*foo:sizeof`.
 
 ## Diagnostics
 
@@ -113,7 +132,10 @@ The implementation reports hard errors for:
 - invalid field counts (`<= 0` or out of range)
 - unknown field access (with nearest-name suggestion)
 - invalid indexing on symbolic subscript arrays (`foo[1]`, `foo[i]`)
+- non-constant, negative, or out-of-range repeat element indices
 - indexing a non-array field
+- field access on scalar repeat elements (`str[1].field`)
+- abstract layout address/index use (`abstract var foo[...]`, then `foo[0]`)
 
 ## Implementation Notes
 
@@ -128,7 +150,10 @@ using a dedicated lexer mode.
   - optional element count (`.name[count]`)
   - optional nested field lists (`.name[ ... ]`)
 - `Expr::Index { base, index }` is used for array-style field indexing such as
-  `foo.field[i]`.
+  `foo.field[i]` and for repeat element roots such as `foo[i]`.
+- `Expr::Member { base, field, .. }` represents field selection after a non-ident
+  expression, such as `foo[2].field_w` and `foo[2][.field_w]`. Plain
+  `foo.field_w` and `foo[.field_w]` still flatten to the dotted identifier.
 - Declaration parsing lives in [crates/core/src/parser/data/vars.rs](../crates/core/src/parser/data/vars.rs).
 - Expression suffix handling for `foo[.field]` and `foo.field[i]` lives in
   [crates/core/src/parser/expr.rs](../crates/core/src/parser/expr.rs).
@@ -152,6 +177,7 @@ using a dedicated lexer mode.
   - direct field addresses (`foo.field`)
   - symbolic field form (`foo[.field]`)
   - indexed field elements (`foo.field[i]`, `foo[.field][i]`)
+  - repeated elements and fields (`foo[i]`, `foo[i].field`, `foo[i].field[j]`)
 - The formatter prints symbolic-subscript declarations and indexed expressions in
   [crates/fmt/src/print_ast.rs](../crates/fmt/src/print_ast.rs).
 

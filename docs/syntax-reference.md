@@ -47,7 +47,7 @@ var far rom_table = $C00000   // Fixed FAR: 24-bit address, no auto-allocation
 var arr[10]             // Allocated ABS: 10-byte slot in the current segment
 ```
 
-The `[N]` suffix reserves N bytes for the slot. For Allocated vars, the per-segment cursor (ABS) or the DP pool cursor (DP) advances by N; for Fixed vars, the slot occupies N bytes starting at the explicit address but does not perturb either auto-allocator.
+The declaration `[N]` suffix reserves a raw storage span: N elements of the declared width, or N bytes when no width is written. It does not create repeat-element metadata and `NAME[i]` on that kind of aggregate remains ordinary byte-offset arithmetic rather than bounds-checked element access. Use the separate `* N` allocation count when you want repeated elements addressable as `NAME[i]`.
 
 A `segment NAME` directive selects which segment subsequent Allocated **ABS** vars land in (DP is segment-orthogonal — `segment` does not affect DP placement):
 
@@ -82,7 +82,7 @@ var far missing_addr         // ERROR: FAR variable must have an explicit addres
 
 ### Allocation Count
 
-A `* count` suffix can appear after the variable type/size specification and before the `= address` assignment. It multiplies the computed variable size by `count`. For Allocated vars this advances the per-segment cursor by `count × element_size` bytes; for Fixed vars it just sets the reserved slot size at the explicit address.
+A `* count` suffix can appear after the variable type/size specification and before the `= address` assignment. It repeats the computed element layout `count` times. For Allocated vars this advances the per-segment cursor by `count × element_size` bytes; for Fixed vars it just sets the reserved slot size at the explicit address.
 
 ```k65
 var simple :byte * 32           // Allocated: 32 × 1 = 32 bytes in the default segment
@@ -98,7 +98,33 @@ var sprites[
 var after_sprites               // Allocated: next slot, after the 40-byte sprite block
 ```
 
-`count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries — it only scales the total allocation.
+`count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries; it records a repeat count for bounds-checked element access and scales the total allocation.
+
+### Repeat element accessors
+
+Vars declared with `* count` can be indexed with constant element indices:
+
+```k65
+var COMP[
+    .one :byte
+    .two :word
+    .str[5] :byte
+] * 10 = $1000
+
+lda &&COMP[1]              // same address as `&&COMP + COMP:sizeof`
+lda &&COMP[2]              // same address as `&&COMP + 2*COMP:sizeof`
+lda COMP[2].two            // COMP + 2*COMP:sizeof + COMP.two:offsetof
+lda COMP[2][.two]          // equivalent field-selection spelling
+lda COMP[2].str[3]         // repeated element + field offset + byte element 3
+```
+
+`NAME[i]` is compile-time address arithmetic: the index must be a constant numeric expression and must satisfy `0 <= i < repeat_count`. Runtime-variable indices are out of scope for this bracket form; use CPU indexed addressing or explicit pointer arithmetic for those.
+
+`NAME:sizeof` returns the element size, not `element_size * repeat_count`. That keeps the address identity stable:
+
+```k65
+&&COMP[i] == &&COMP + i*COMP:sizeof
+```
 
 ### Abstract symbolic layouts
 
@@ -197,7 +223,7 @@ Allocated vars (those without an `= addr` initializer) are excluded from auto-sh
 
 The `:sizeof` and `:offsetof` expression suffixes return compile-time metadata about variables and symbolic subscript fields. They produce integer constants that can be used in any expression context (immediates, evaluator arithmetic, etc.).
 
-**`:sizeof`** — returns the total byte size of a variable or field:
+**`:sizeof`** — returns the byte size of a variable element or field:
 
 ```k65
 var TASKS[
@@ -206,7 +232,7 @@ var TASKS[
     .signals :byte
 ] = $4000
 
-lda #TASKS:sizeof           // 4 (total: 2+1+1)
+lda #TASKS:sizeof           // 4 (element layout: 2+1+1)
 lda #TASKS.sp:sizeof        // 2 (word)
 lda #TASKS.state:sizeof     // 1 (byte)
 ```
@@ -216,9 +242,13 @@ Works on plain variables too:
 ```k65
 var counter:word = $80
 var buffer[32] = $0100
+var tasks[
+    .state :byte
+] * 8
 
 lda #counter:sizeof         // 2
 lda #buffer:sizeof          // 32
+lda #tasks:sizeof           // 1, not 8; `* 8` repeats the 1-byte element
 ```
 
 **`:offsetof`** — returns the byte offset of a field within its parent variable:

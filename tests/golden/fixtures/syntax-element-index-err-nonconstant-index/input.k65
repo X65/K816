@@ -1,0 +1,6 @@
+var COMP :byte * 4 = $1000
+var idx :byte = $20
+
+func main @a8 {
+    lda COMP[idx]
+}

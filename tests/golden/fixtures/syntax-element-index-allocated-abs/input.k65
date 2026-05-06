@@ -1,0 +1,17 @@
+var COMP[
+    .one :byte
+    .two :word
+    .str[5] :byte
+] * 4
+
+var WORDS :word * 4
+
+func main @a16 {
+    lda COMP[2].two
+    lda &&COMP + 2*COMP:sizeof
+    lda &&COMP[2].two
+    lda WORDS[3]
+
+    @a8
+    lda COMP[1].str[4]
+}

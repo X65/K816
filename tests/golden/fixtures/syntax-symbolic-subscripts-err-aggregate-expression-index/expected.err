@@ -3,7 +3,7 @@ Error: invalid index on symbolic subscript array 'foo'
    │
  6 │     lda foo[idx]
    │            ──┬──  
-   │              ╰──── here
+   │              ╰──── aggregate index without repeat count
    │ 
    │ Help: use '.field' or '[.field]' — did you mean '.idx'?
 ───╯

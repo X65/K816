@@ -1,0 +1,20 @@
+[DP]
+    $00..$0B: COMP
+    $00: COMP.lo (alias)
+    $01: COMP.hi (alias)
+    $02: COMP.word (alias)
+    $0C..$0F: STR
+
+
+[default]
+000200: E2 20 A5 09 A5 0F C2 20 A5 06 A9 0A 00 60
+
+
+[disasm obj#0 default::main]
+000200: E2 20       sep #$20
+000202: A5 09       lda $09
+000204: A5 0F       lda $0F
+000206: C2 20       rep #$20
+000208: A5 06       lda $06
+00020A: A9 0A 00    lda #$000A
+00020D: 60          rts

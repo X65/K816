@@ -1,0 +1,11 @@
+Error: COMP index must be a constant numeric expression
+   ╭─[ tests/golden/fixtures/syntax-element-index-err-nonconstant-index/input.k65:5:5 ]
+   │
+ 5 │     lda COMP[idx]
+   │     ──────┬──────  
+   │           ╰──────── address used as index
+   │ 
+   │ Help: use a literal, `const`, or metadata expression for the bracket index; labels and vars are memory addresses, not repeat indices
+   │ 
+   │ Note: Runtime indexing is still possible with CPU indexed addressing or pointer arithmetic, but the bracket accessor itself is compile-time address arithmetic.
+───╯

@@ -507,6 +507,12 @@ pub enum Expr {
         base: Box<Expr>,
         index: Box<Expr>,
     },
+    Member {
+        base: Box<Expr>,
+        field: String,
+        start: usize,
+        end: usize,
+    },
     Binary {
         op: ExprBinaryOp,
         lhs: Box<Expr>,

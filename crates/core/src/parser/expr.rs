@@ -62,10 +62,12 @@ where
         // Collect sequences of [.field] eval suffixes interleaved with trailing .ident tokens.
         // This handles forms like TASKS[.message].from where `.from` is a separate Ident token
         // following the bracket suffix.
-        let eval_or_dot_ident_suffix =
+        let eval_or_dot_ident_suffix = spanned(
             chumsky::select! { TokenKind::Eval(value) => value }.or(chumsky::select! {
                 TokenKind::Ident(value) if value.starts_with('.') => value
-            });
+            }),
+            SourceId(0),
+        );
 
         let atom = base_atom
             .then(eval_or_dot_ident_suffix.repeated().collect::<Vec<_>>())
@@ -214,22 +216,27 @@ where
     .boxed()
 }
 
-pub(super) fn apply_eval_suffixes(mut base: Expr, suffixes: Vec<String>) -> Result<Expr, String> {
+pub(super) fn apply_eval_suffixes(
+    mut base: Expr,
+    suffixes: Vec<crate::span::Spanned<String>>,
+) -> Result<Expr, String> {
     for suffix in suffixes {
-        let trimmed = suffix.trim();
+        let trimmed = suffix.node.trim();
         if trimmed.is_empty() {
             return Err("index expression cannot be empty".to_string());
         }
 
         if let Some(field_name) = parse_symbolic_field_subscript(trimmed) {
-            let base_name = match base {
-                Expr::Ident(base_name) => base_name,
-                Expr::IdentSpanned { name, .. } => name,
-                _ => {
-                    return Err("symbolic field indexing requires an identifier base".to_string());
-                }
+            base = match base {
+                Expr::Ident(base_name) => Expr::Ident(format!("{base_name}.{field_name}")),
+                Expr::IdentSpanned { name, .. } => Expr::Ident(format!("{name}.{field_name}")),
+                other => Expr::Member {
+                    base: Box::new(other),
+                    field: field_name.to_string(),
+                    start: suffix.span.start,
+                    end: suffix.span.end,
+                },
             };
-            base = Expr::Ident(format!("{base_name}.{field_name}"));
             continue;
         }
 
@@ -349,6 +356,7 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
             let index = eval_static_expr(index)?;
             base.checked_add(index)
         }
+        Expr::Member { .. } => None,
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_static_expr(lhs)?;
             let rhs = eval_static_expr(rhs)?;

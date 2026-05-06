@@ -194,6 +194,34 @@ pub(super) fn resolve_field_from_ast(
     use k816_core::ast::*;
     use k816_core::span::Spanned;
 
+    fn base_ident(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Ident(name) => Some(name.as_str()),
+            Expr::IdentSpanned { name, .. } => Some(name.as_str()),
+            Expr::Index { base, .. } | Expr::TypedView { expr: base, .. } => base_ident(base),
+            Expr::Member { base, .. } => base_ident(base),
+            _ => None,
+        }
+    }
+
+    fn member_field_ref(expr: &Expr) -> Option<ResolvedFieldRef> {
+        match expr {
+            Expr::Member { base, field, .. } => {
+                if let Some(mut resolved) = member_field_ref(base) {
+                    resolved.field_key.push('.');
+                    resolved.field_key.push_str(field);
+                    return Some(resolved);
+                }
+                let var_name = base_ident(base)?;
+                Some(ResolvedFieldRef {
+                    var_name: var_name.to_string(),
+                    field_key: field.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn check_expr(expr: &Expr, offset: usize) -> Option<ResolvedFieldRef> {
         match expr {
             Expr::IdentSpanned {
@@ -211,6 +239,15 @@ pub(super) fn resolve_field_from_ast(
             }
             Expr::Index { base, index } => {
                 check_expr(base, offset).or_else(|| check_expr(index, offset))
+            }
+            Expr::Member {
+                base, start, end, ..
+            } => {
+                if *start <= offset && offset <= *end {
+                    member_field_ref(expr)
+                } else {
+                    check_expr(base, offset)
+                }
             }
             Expr::Binary { lhs, rhs, .. } => {
                 check_expr(lhs, offset).or_else(|| check_expr(rhs, offset))

@@ -1,0 +1,9 @@
+Error: index 4 is out of range for COMP; repeat count is 4
+   ╭─[ tests/golden/fixtures/syntax-element-index-err-out-of-range-index/input.k65:4:5 ]
+   │
+ 4 │     lda COMP[4]
+   │     ─────┬─────  
+   │          ╰─────── index outside repeat range
+   │ 
+   │ Help: use an index in `0..4` or increase the declaration's `* count`
+───╯

@@ -1,0 +1,35 @@
+var COMP[
+    .one :byte
+    .two :word
+    .str[5] :byte
+] * 10 = $1000
+
+var STR :byte * 10 = $2000
+var WORDS :word * 4 = $3000
+
+func main @a16 {
+    lda &&COMP
+
+    lda &&COMP + COMP:sizeof
+    lda &&COMP + 2*COMP:sizeof
+    lda &&COMP[1]
+    lda &&COMP[2]
+
+    lda COMP
+    lda COMP[1]
+    lda COMP[2].two
+    lda &&COMP[2].two
+    lda &&COMP.str
+    lda &&COMP.str[2]
+    lda &&STR
+    lda &&STR[2]
+    lda WORDS[2]
+    lda &&WORDS[2]
+
+    @a8
+    lda COMP[2].str[3]
+    lda COMP.str
+    lda COMP.str[2]
+    lda STR
+    lda STR[2]
+}

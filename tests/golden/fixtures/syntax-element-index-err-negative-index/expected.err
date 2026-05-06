@@ -1,0 +1,9 @@
+Error: index must be non-negative, found -1
+   ╭─[ tests/golden/fixtures/syntax-element-index-err-negative-index/input.k65:4:5 ]
+   │
+ 4 │     lda COMP[-1]
+   │     ──────┬─────  
+   │           ╰─────── negative index
+   │ 
+   │ Help: use an index in the declared repeat range
+───╯

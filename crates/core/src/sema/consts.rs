@@ -354,6 +354,7 @@ fn eval_const_expr(
                 .map(Number::Int)
                 .ok_or(ConstExprError::Overflow)
         }
+        Expr::Member { field, .. } => Err(ConstExprError::Ident(field.clone())),
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_const_expr(lhs, consts)?;
             let rhs = eval_const_expr(rhs, consts)?;

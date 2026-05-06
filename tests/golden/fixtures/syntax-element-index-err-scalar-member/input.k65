@@ -1,0 +1,5 @@
+var STR :byte * 4 = $2000
+
+func main @a8 {
+    lda STR[1].field
+}

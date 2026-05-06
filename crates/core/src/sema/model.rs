@@ -132,6 +132,8 @@ pub struct VarMeta {
     pub size: u32,
     /// Base element size before `* count` multiplication.
     pub element_size: u32,
+    /// Number of repeated elements requested by `* count`. Defaults to 1.
+    pub repeat_count: u32,
     pub data_width: Option<DataWidth>,
     /// Default address-encoding for plain references to this var. Set by the
     /// `dp`/`abs`/`far` prefix on the `var` declaration. Operand-level prefixes
@@ -167,6 +169,8 @@ pub struct ExternalVarClass {
     /// Base element size in bytes (before any `* count` multiplier). Used by
     /// `:sizeof` on a bare cross-unit var name.
     pub element_size: u32,
+    /// Number of repeated elements requested by `* count`. Defaults to 1.
+    pub repeat_count: u32,
     /// Field layout when the cross-unit var is a symbolic-subscript struct.
     /// Populated for `var X[ .a:byte .b:word ... ]` style declarations and
     /// consumed by `:offsetof` / `:sizeof` on dotted field paths.

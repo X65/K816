@@ -1,0 +1,7 @@
+func main @a16 {
+    lda COMP[2].two
+    lda &&COMP[2].two
+
+    @a8
+    lda COMP[1].str[4]
+}

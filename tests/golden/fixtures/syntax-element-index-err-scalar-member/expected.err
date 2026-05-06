@@ -1,0 +1,9 @@
+Error: field '.field' cannot be selected from scalar repeat var 'STR'
+   ╭─[ tests/golden/fixtures/syntax-element-index-err-scalar-member/input.k65:4:5 ]
+   │
+ 4 │     lda STR[1].field
+   │     ────────┬───────  
+   │             ╰───────── field access on scalar repeat element
+   │ 
+   │ Help: `STR[...]` selects a scalar element because 'STR' has no symbolic field layout; remove '.field' or declare 'STR' with a symbolic field list
+───╯

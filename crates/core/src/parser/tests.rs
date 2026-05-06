@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::Operand;
 
 fn is_ident_named(expr: &Expr, expected: &str) -> bool {
     match expr {
@@ -29,6 +30,27 @@ fn assert_negate_of(expr: &Expr, expected_inner: i64) {
         matches!(inner.as_ref(), Expr::Number(n, _) if *n == expected_inner),
         "expected Negate of Number({expected_inner}), got Negate of {inner:?}",
     );
+}
+
+fn instruction_operand_exprs(body: &str) -> Vec<Expr> {
+    let source = format!("func main @a16 {{\n{body}\n}}\n");
+    let file = parse(SourceId(0), &source).expect("parse");
+    let Item::CodeBlock(block) = &file.items[0].node else {
+        panic!("expected code block");
+    };
+    block
+        .body
+        .iter()
+        .filter_map(|stmt| {
+            let Stmt::Instruction(instr) = &stmt.node else {
+                return None;
+            };
+            match instr.operand.as_ref()? {
+                Operand::Immediate { expr, .. } | Operand::Value { expr, .. } => Some(expr.clone()),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 #[test]
@@ -148,6 +170,99 @@ func test @a16 {
             "stmt {i}: expected Ident(\"TASKS.message.from\"), got {expr:?}",
         );
     }
+}
+
+#[test]
+fn parses_repeat_element_and_member_expression_forms() {
+    let exprs = instruction_operand_exprs(
+        "\
+  lda COMP[2]
+  lda COMP[2].two
+  lda COMP[2][.two]
+  lda COMP[2].str[3]
+  lda &&COMP[2]
+",
+    );
+    assert_eq!(exprs.len(), 5);
+
+    let expr = &exprs[0];
+    assert!(matches!(
+        expr,
+        Expr::Index { base, index }
+            if is_ident_named(base.as_ref(), "COMP")
+                && matches!(index.as_ref(), Expr::Number(2, NumFmt::Dec))
+    ));
+
+    for expr in [&exprs[1], &exprs[2]] {
+        assert!(matches!(
+            expr,
+            Expr::Member { base, field, .. }
+                if field == "two"
+                    && matches!(
+                        base.as_ref(),
+                        Expr::Index { base, index }
+                            if is_ident_named(base.as_ref(), "COMP")
+                                && matches!(index.as_ref(), Expr::Number(2, NumFmt::Dec))
+                    )
+        ));
+    }
+
+    let expr = &exprs[3];
+    assert!(matches!(
+        expr,
+        Expr::Index { base, index }
+            if matches!(
+                base.as_ref(),
+                Expr::Member { base, field, .. }
+                    if field == "str"
+                        && matches!(
+                            base.as_ref(),
+                            Expr::Index { base, index }
+                                if is_ident_named(base.as_ref(), "COMP")
+                                    && matches!(index.as_ref(), Expr::Number(2, NumFmt::Dec))
+                        )
+            )
+            && matches!(index.as_ref(), Expr::Number(3, NumFmt::Dec))
+    ));
+
+    let expr = &exprs[4];
+    assert!(matches!(
+        expr,
+        Expr::Unary { op: ExprUnaryOp::WordLittleEndian, expr }
+            if matches!(
+                expr.as_ref(),
+                Expr::Index { base, index }
+                    if is_ident_named(base.as_ref(), "COMP")
+                        && matches!(index.as_ref(), Expr::Number(2, NumFmt::Dec))
+            )
+    ));
+}
+
+#[test]
+fn keeps_existing_symbolic_subscript_expression_shapes() {
+    let exprs = instruction_operand_exprs(
+        "\
+  lda COMP.two
+  lda COMP[.two]
+  lda COMP.str[2]
+",
+    );
+    assert_eq!(exprs.len(), 3);
+
+    for expr in [&exprs[0], &exprs[1]] {
+        assert!(
+            is_ident_named(expr, "COMP.two"),
+            "expected flattened COMP.two ident, got {expr:?}",
+        );
+    }
+
+    let expr = &exprs[2];
+    assert!(matches!(
+        expr,
+        Expr::Index { base, index }
+            if is_ident_named(base.as_ref(), "COMP.str")
+                && matches!(index.as_ref(), Expr::Number(2, NumFmt::Dec))
+    ));
 }
 
 mod consts;

@@ -1,0 +1,16 @@
+var dp COMP[
+    .lo   :byte
+    .hi   :byte
+    .word :word
+] * 3
+
+var dp STR :byte * 4
+
+func main @a8 {
+    lda COMP[2].hi
+    lda STR[3]
+
+    @a16
+    lda COMP[1].word
+    lda &&COMP[2].word
+}

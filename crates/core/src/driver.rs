@@ -562,6 +562,7 @@ fn collect_external_var_classes_from_parsed(
                 data_width: meta.data_width,
                 addr_mode_default: meta.addr_mode_default,
                 element_size: meta.element_size,
+                repeat_count: meta.repeat_count,
                 symbolic_subscript: meta.symbolic_subscript.clone(),
             });
         }
@@ -790,6 +791,37 @@ mod tests {
         assert!(
             bytes.windows(3).any(|window| window == [0x99, 0x01, 0x40]),
             "expected `sta $4001, y` bytes in {bytes:02X?}"
+        );
+    }
+
+    #[test]
+    fn multi_source_cross_unit_repeat_var_field_accessor_uses_external_layout() {
+        let sources = [
+            LinkCompileInput {
+                source_name: "main.k65",
+                source_text: "func main @a16 {\n  lda COMP[2].two\n  lda &&COMP[2].two\n}\n",
+            },
+            LinkCompileInput {
+                source_name: "layout.k65",
+                source_text: "var COMP[\n  .one:byte\n  .two:word\n  .str[5]:byte\n] * 4\n",
+            },
+        ];
+
+        let outputs = compile_sources_all_or_nothing(&sources, CompileRenderOptions::plain())
+            .expect("compile");
+        let main_object = &outputs[0].object;
+        let relocations = main_object
+            .relocations
+            .iter()
+            .filter(|relocation| relocation.symbol == "COMP")
+            .collect::<Vec<_>>();
+
+        assert_eq!(relocations.len(), 2);
+        assert!(
+            relocations
+                .iter()
+                .all(|relocation| relocation.addend == 17 && relocation.width == 2),
+            "expected two COMP+17 word relocations, got {relocations:#?}"
         );
     }
 

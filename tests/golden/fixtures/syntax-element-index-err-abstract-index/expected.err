@@ -1,0 +1,11 @@
+Error: abstract var layout 'COMP' has no address
+   ╭─[ tests/golden/fixtures/syntax-element-index-err-abstract-index/input.k65:7:5 ]
+   │
+ 7 │     lda COMP[0].two
+   │     ───────┬───────  
+   │            ╰───────── layout-only symbol
+   │ 
+   │ Help: use `COMP:sizeof` or `COMP.field:offsetof` for layout metadata, or declare a real `var`/`data` symbol when storage is needed
+   │ 
+   │ Note: `abstract var` declares packed field offsets only. It emits no bytes, no linker symbol, and cannot be used as an instruction operand or address-of target.
+───╯

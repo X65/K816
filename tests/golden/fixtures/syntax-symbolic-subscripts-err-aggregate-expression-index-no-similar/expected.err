@@ -3,7 +3,9 @@ Error: invalid index on symbolic subscript array 'foo'
    │
  7 │     lda foo[buffer]
    │            ────┬───  
-   │                ╰───── here
+   │                ╰───── aggregate index without repeat count
    │ 
-   │ Help: use '.field' or '[.field]' for named field access
+   │ Help: `foo[index]` selects a repeated element only when `foo` is declared with `* count`; add `* N` to the declaration for element access, or use '.field' or '[.field]' for named field access
+   │ 
+   │ Note: The `[ ... ]` after a symbolic-subscript var has two meanings: `.field` selects a named field, while numeric indices select repeat elements from `var NAME[...] * N`.
 ───╯

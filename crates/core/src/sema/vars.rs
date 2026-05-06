@@ -34,6 +34,7 @@ pub(super) fn collect_var(
                 placement: VarPlacement::Abstract,
                 size: layout.size,
                 element_size: layout.element_size,
+                repeat_count: layout.repeat_count,
                 data_width: var.data_width,
                 addr_mode_default: None,
                 symbolic_subscript: layout.symbolic_subscript,
@@ -65,6 +66,7 @@ pub(super) fn collect_var(
             placement,
             size: layout.size,
             element_size: layout.element_size,
+            repeat_count: layout.repeat_count,
             data_width: var.data_width,
             addr_mode_default: var.addr_mode_default,
             symbolic_subscript: layout.symbolic_subscript,
@@ -371,6 +373,7 @@ fn eval_var_fixed_address(
 struct VarLayout {
     size: u32,
     element_size: u32,
+    repeat_count: u32,
     symbolic_subscript: Option<SymbolicSubscriptMeta>,
 }
 
@@ -405,6 +408,7 @@ fn eval_var_layout(
                             return None;
                         };
                         layout.size = new_size;
+                        layout.repeat_count = count;
                     }
                     Err(_) => {
                         diagnostics.push(Diagnostic::error(
@@ -479,6 +483,7 @@ fn eval_var_base_layout(
         return Some(VarLayout {
             size: symbolic_subscript.total_size,
             element_size: symbolic_subscript.total_size,
+            repeat_count: 1,
             symbolic_subscript: Some(symbolic_subscript),
         });
     }
@@ -493,6 +498,7 @@ fn eval_var_base_layout(
         return Some(VarLayout {
             size: element_size,
             element_size,
+            repeat_count: 1,
             symbolic_subscript: None,
         });
     };
@@ -512,6 +518,7 @@ fn eval_var_base_layout(
                     Some(VarLayout {
                         size,
                         element_size: size,
+                        repeat_count: 1,
                         symbolic_subscript: None,
                     })
                 }

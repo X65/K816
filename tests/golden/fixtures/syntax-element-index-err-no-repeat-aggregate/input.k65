@@ -1,0 +1,8 @@
+var COMP[
+    .one :byte
+    .two :word
+] = $1000
+
+func main @a16 {
+    lda COMP[1]
+}

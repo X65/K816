@@ -1,0 +1,9 @@
+Error: unknown symbolic subscript field '.tow' on 'COMP'
+   ╭─[ tests/golden/fixtures/syntax-element-index-err-unknown-field/input.k65:7:5 ]
+   │
+ 7 │     lda COMP[1].tow
+   │     ───────┬───────  
+   │            ╰───────── unknown field after element index
+   │ 
+   │ Help: did you mean '.two'?
+───╯

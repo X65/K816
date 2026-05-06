@@ -1,0 +1,13 @@
+Error: abstract var 'SHAPE' cannot use an allocation count
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-count/input.k65:1:1 ]
+   │
+ 1 │ ╭─▶ abstract var SHAPE[
+   ┆ ┆   
+ 3 │ ├─▶ ] * 4
+   │ │           
+   │ ╰─────────── allocation count on abstract var
+   │     
+   │     Help: remove `* count` from 'SHAPE'; use `SHAPE:sizeof * count` in expressions when you need scaled layout math
+   │     
+   │     Note: `* count` reserves repeated storage for real vars. Abstract vars reserve no storage, so repetition belongs at the use site as arithmetic.
+───╯

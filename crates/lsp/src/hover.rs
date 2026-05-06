@@ -36,6 +36,9 @@ pub(super) fn hover_contents_for_symbol(
         }
         if let Some(meta) = doc.analysis.semantic.vars.get(canonical) {
             let address_line = match (&meta.placement, meta.compile_time_address()) {
+                (k816_core::sema::VarPlacement::Abstract, _) => {
+                    "- address: `<abstract layout>`".to_string()
+                }
                 (_, Some(addr)) => match meta.addr_mode_default {
                     Some(k816_core::ast::ForceAddrMode::DirectPage) => {
                         format!("- address: `dp +{:#04X}`", addr & 0xFF)
@@ -51,6 +54,7 @@ pub(super) fn hover_contents_for_symbol(
                 (k816_core::sema::VarPlacement::Fixed { .. }, _) => unreachable!(),
             };
             let storage_line = match meta.addr_mode_default {
+                _ if meta.is_abstract() => "- storage: `<none>`",
                 Some(k816_core::ast::ForceAddrMode::DirectPage) => "- storage: `dp`",
                 Some(k816_core::ast::ForceAddrMode::Absolute) => "- storage: `abs`",
                 Some(k816_core::ast::ForceAddrMode::AbsoluteLong) => "- storage: `far`",

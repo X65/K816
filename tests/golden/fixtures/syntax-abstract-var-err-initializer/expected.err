@@ -1,0 +1,11 @@
+Error: abstract var 'SHAPE' cannot have an address initializer
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-initializer/input.k65:3:5 ]
+   │
+ 3 │ ] = $4000
+   │     ──┬──  
+   │       ╰──── initializer on abstract var
+   │ 
+   │ Help: remove `= ...` from 'SHAPE', or remove `abstract` if this should name a real memory location
+   │ 
+   │ Note: `var NAME[...] = EXPR` pins a concrete memory location. `abstract var` intentionally has no concrete location.
+───╯

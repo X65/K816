@@ -1,0 +1,35 @@
+Error: abstract var layout 'DEV_HANDLER' has no address
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-cross-unit-address-use/input.20-use.k65:2:5 ]
+   │
+ 2 │     lda DEV_HANDLER
+   │     ───────┬───────  
+   │            ╰───────── layout-only symbol
+   │ 
+   │ Help: use `DEV_HANDLER:sizeof` or `DEV_HANDLER.field:offsetof` for layout metadata, or declare a real `var`/`data` symbol when storage is needed
+   │ 
+   │ Note: `abstract var` declares packed field offsets only. It emits no bytes, no linker symbol, and cannot be used as an instruction operand or address-of target.
+───╯
+
+Error: abstract var layout 'DEV_HANDLER.open' has no address
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-cross-unit-address-use/input.20-use.k65:3:5 ]
+   │
+ 3 │     lda DEV_HANDLER.open
+   │     ──────────┬─────────  
+   │               ╰─────────── layout-only symbol
+   │ 
+   │ Help: use `DEV_HANDLER.open:offsetof` for the field offset or `DEV_HANDLER.open:sizeof` for the field size, or declare a real `var`/`data` symbol when storage is needed
+   │ 
+   │ Note: `abstract var` declares packed field offsets only. It emits no bytes, no linker symbol, and cannot be used as an instruction operand or address-of target.
+───╯
+
+Error: abstract var layout 'DEV_HANDLER' has no address
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-cross-unit-address-use/input.20-use.k65:4:11 ]
+   │
+ 4 │     ldx &&DEV_HANDLER
+   │           ─────┬─────  
+   │                ╰─────── layout-only symbol
+   │ 
+   │ Help: use `DEV_HANDLER:sizeof` or `DEV_HANDLER.field:offsetof` for layout metadata, or declare a real `var`/`data` symbol when storage is needed
+   │ 
+   │ Note: `abstract var` declares packed field offsets only. It emits no bytes, no linker symbol, and cannot be used as an instruction operand or address-of target.
+───╯

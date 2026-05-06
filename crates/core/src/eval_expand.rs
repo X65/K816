@@ -470,6 +470,7 @@ fn expand_var(
 ) -> VarDecl {
     VarDecl {
         name: var.name.clone(),
+        is_abstract: var.is_abstract,
         data_width: var.data_width,
         addr_mode_default: var.addr_mode_default,
         array_len: var

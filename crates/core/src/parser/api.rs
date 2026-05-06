@@ -54,6 +54,10 @@ fn collect_declared_addressable_names(tokens: &[Token]) -> HashSet<String> {
         match &tokens[i].kind {
             // `var NAME`, `var NAME, NAME2, ...`. Multiple names per line allowed.
             TokenKind::Var => {
+                if is_abstract_var_token(tokens, i) {
+                    i += 1;
+                    continue;
+                }
                 let mut j = i + 1;
                 loop {
                     if let Some(Token {
@@ -116,6 +120,16 @@ fn collect_declared_addressable_names(tokens: &[Token]) -> HashSet<String> {
         }
     }
     names
+}
+
+fn is_abstract_var_token(tokens: &[Token], var_idx: usize) -> bool {
+    let Some(prev_idx) = var_idx.checked_sub(1) else {
+        return false;
+    };
+    matches!(
+        &tokens[prev_idx].kind,
+        TokenKind::Ident(value) if value.eq_ignore_ascii_case("abstract")
+    )
 }
 
 fn merge_known_functions(

@@ -10,6 +10,7 @@ A symbolic subscript array declaration binds a symbol to a base location and def
 
 - **Fixed** — `var foo[...] = $6000` pins the layout to a compile-time constant address. Use this for hardware register blocks (RIA, CGIA) where the base is dictated by the silicon.
 - **Allocated** — `var foo[...]` (no `= ...`) leaves the base to the linker. The struct lands inside the current segment and the linker assigns its final address per the `.ld.ron` config, the same way it places code/data chunks. Field references resolve through per-field section symbols emitted by the lowerer (`foo.field_w`, `foo.idx`, …) so each name is independently relocatable.
+- **Abstract** — `abstract var foo[...]` declares the same packed field layout but no storage. It is valid only for metadata queries such as `foo:sizeof` and `foo.field:offsetof`; it emits no bytes or linker symbol.
 
 Both forms produce identical field layouts.
 
@@ -29,6 +30,18 @@ var foo[
   .string[20]:byte
 ] = 0x1234
 ```
+
+### Abstract layout-only form
+
+```k65
+abstract var handler[
+  .open  :word
+  .close :word
+  .init  :word
+]
+```
+
+`abstract var` reuses the same field item grammar, including nested fields and default field width on the declaration (`abstract var point:byte[...]`). It cannot use an address initializer, storage prefix, allocation count, or array-only bracket form.
 
 ### Default field width on the symbol
 

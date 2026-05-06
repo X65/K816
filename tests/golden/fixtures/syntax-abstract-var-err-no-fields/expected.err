@@ -1,0 +1,11 @@
+Error: abstract var 'plain' must declare a symbolic field layout
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-no-fields/input.k65:1:1 ]
+   │
+ 1 │ abstract var plain:word
+   │ ───────────┬───────────  
+   │            ╰───────────── abstract var without fields
+   │ 
+   │ Help: write `abstract var plain[ .field:byte ]` for layout metadata, or remove `abstract` to declare real storage
+   │ 
+   │ Note: `abstract var` carries only `:sizeof` and `:offsetof` metadata. Without a symbolic field list there is no layout to describe, and no storage is allocated.
+───╯

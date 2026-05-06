@@ -1,0 +1,9 @@
+func main @a8 @i8 {
+    lda #DEV_HANDLER:sizeof
+    pha
+    lda #DEV_HANDLER.open:offsetof
+    pha
+    lda #DEV_HANDLER.init:offsetof
+    pha
+    lda #DEV_HANDLER._res:sizeof
+}

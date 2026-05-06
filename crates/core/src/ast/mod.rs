@@ -123,6 +123,7 @@ pub struct EvaluatorBlock {
 #[derive(Debug, Clone)]
 pub struct VarDecl {
     pub name: String,
+    pub is_abstract: bool,
     pub data_width: Option<DataWidth>,
     /// Default address-encoding for plain references to this symbol. Set by the
     /// `dp`/`abs`/`far` prefix on a `var` declaration. Operand-level prefixes

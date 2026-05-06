@@ -1,0 +1,11 @@
+Error: abstract var 'buf' cannot use an array length
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-array/input.k65:1:1 ]
+   │
+ 1 │ abstract var buf[16]
+   │ ──────────┬─────────  
+   │           ╰─────────── array length on abstract var
+   │ 
+   │ Help: use a symbolic field list such as `abstract var buf[ .item:byte ]`, or remove `abstract` to allocate an array
+   │ 
+   │ Note: `abstract var` is for named field offsets only. Array-only declarations like `abstract var buf[16]` would define size without any field names to query.
+───╯

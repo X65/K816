@@ -1,0 +1,15 @@
+abstract var dp DP_SHAPE[
+    .field :byte
+]
+
+abstract var abs ABS_SHAPE[
+    .field :byte
+]
+
+abstract var far FAR_SHAPE[
+    .field :byte
+]
+
+func main @a8 @i8 {
+    lda #0
+}

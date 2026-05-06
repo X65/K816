@@ -63,6 +63,7 @@ where
 
                 VarDecl {
                     name,
+                    is_abstract: false,
                     data_width,
                     addr_mode_default,
                     array_len,
@@ -73,6 +74,21 @@ where
                 }
             },
         )
+        .boxed()
+}
+
+pub(in super::super) fn abstract_var_decl_parser<'src, I>(
+    source_id: SourceId,
+) -> impl chumsky::Parser<'src, I, VarDecl, ParseExtra<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("abstract") => () }
+        .ignore_then(var_decl_parser(source_id))
+        .map(|mut var| {
+            var.is_abstract = true;
+            var
+        })
         .boxed()
 }
 

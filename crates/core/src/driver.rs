@@ -477,7 +477,7 @@ fn collect_external_vars_from_parsed(
         for item in &ast.items {
             match &item.node {
                 Item::Var(var) | Item::Statement(Stmt::Var(var)) => {
-                    if var.initializer.is_some() {
+                    if var.initializer.is_some() && !var.is_abstract {
                         explicit_addr_names.insert(var.name.clone());
                     }
                 }
@@ -558,6 +558,7 @@ fn collect_external_var_classes_from_parsed(
                 continue;
             }
             classes.entry(name).or_insert(ExternalVarClass {
+                is_abstract: meta.is_abstract(),
                 data_width: meta.data_width,
                 addr_mode_default: meta.addr_mode_default,
                 element_size: meta.element_size,

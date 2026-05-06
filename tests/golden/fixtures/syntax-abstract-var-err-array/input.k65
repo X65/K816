@@ -1,0 +1,5 @@
+abstract var buf[16]
+
+func main @a8 @i8 {
+    lda #0
+}

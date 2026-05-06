@@ -11,6 +11,7 @@ fn allocated_default_offset(meta: &VarMeta) -> u32 {
             *offset
         }
         VarPlacement::AllocatedDp => panic!("expected AllocatedAbs placement, got AllocatedDp"),
+        VarPlacement::Abstract => panic!("expected AllocatedAbs placement, got Abstract"),
         VarPlacement::Fixed { address } => {
             panic!("expected AllocatedAbs placement, got Fixed at {address:#X}")
         }
@@ -430,6 +431,19 @@ fn symbolic_subscript_array_without_initializer_is_linker_allocated() {
     let ss = via.symbolic_subscript.as_ref().expect("subscript meta");
     assert_eq!(ss.fields.get("orb").expect("orb").offset, 0);
     assert_eq!(ss.fields.get("ora").expect("ora").offset, 1);
+}
+
+#[test]
+fn abstract_var_layout_has_no_storage_placement() {
+    let source = "abstract var VIA[\n  .orb:byte\n  .ora:byte\n]\nvar tail\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let sema = analyze(&file).expect("analyze");
+    let via = sema.vars.get("VIA").expect("VIA");
+    assert!(matches!(via.placement, VarPlacement::Abstract));
+    assert_eq!(via.size, 2);
+    assert_eq!(via.element_size, 2);
+    let tail = sema.vars.get("tail").expect("tail");
+    assert_eq!(allocated_default_offset(tail), 0);
 }
 
 #[test]

@@ -123,6 +123,25 @@ fn parses_symbolic_subscript_fields_with_default_var_width() {
 }
 
 #[test]
+fn parses_top_level_abstract_var_layout() {
+    let source = "abstract var SHAPE:byte[\n  .x\n  .y:word\n]\n";
+    let file = parse(SourceId(0), source).expect("parse");
+    let Item::Var(var) = &file.items[0].node else {
+        panic!("expected var item");
+    };
+    assert!(var.is_abstract);
+    assert!(matches!(var.data_width, Some(DataWidth::Byte)));
+    assert!(var.initializer.is_none());
+    assert_eq!(
+        var.symbolic_subscript_fields
+            .as_ref()
+            .expect("fields")
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn rejects_unsupported_symbolic_subscript_field_type_in_var_brackets() {
     let source = "var foo[\n  .a:dword\n] = 0x1234\n";
     let errors = parse(SourceId(0), source).expect_err("must fail");

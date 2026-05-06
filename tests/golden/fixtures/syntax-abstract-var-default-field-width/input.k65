@@ -1,0 +1,13 @@
+abstract var POINT:byte[
+    .x
+    .y
+    .flags :word
+]
+
+func main @a8 @i8 {
+    lda #POINT:sizeof
+    pha
+    lda #POINT.x:sizeof
+    pha
+    lda #POINT.flags:offsetof
+}

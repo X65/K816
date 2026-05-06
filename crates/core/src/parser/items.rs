@@ -14,9 +14,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::{
-    ParseExtra, boundary_parser, const_decl_item_parser, data_block_parser, ident_parser,
-    line_sep_parser, line_tail_parser, parse_contract_register, spanned, stmt_parser,
-    var_decl_parser,
+    ParseExtra, abstract_var_decl_parser, boundary_parser, const_decl_item_parser,
+    data_block_parser, ident_parser, line_sep_parser, line_tail_parser, parse_contract_register,
+    spanned, stmt_parser, var_decl_parser,
 };
 
 pub(super) fn file_parser<'src, I>(
@@ -84,6 +84,8 @@ where
 
     let const_item = const_decl_item_parser(source_id);
 
+    let abstract_var_item = abstract_var_decl_parser(source_id).map(Item::Var);
+
     let var_item = var_decl_parser(source_id).map(Item::Var);
 
     let data_item = just(TokenKind::Data)
@@ -128,6 +130,7 @@ where
             Item::Var(VarDecl {
                 name,
                 data_width: None,
+                is_abstract: false,
                 addr_mode_default: None,
                 array_len: None,
                 symbolic_subscript_fields: None,
@@ -150,6 +153,7 @@ where
         image_binary_var_item,
         segment_item,
         const_item,
+        abstract_var_item,
         var_item,
         data_item,
         code_block_item,

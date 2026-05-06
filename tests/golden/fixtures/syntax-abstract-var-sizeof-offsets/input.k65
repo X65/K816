@@ -1,0 +1,36 @@
+abstract var DEV_HANDLER[
+    .open    :word
+    .close   :word
+    .get     :word
+    .put     :word
+    .status  :word
+    .special :word
+    .init    :word
+    ._res[2] :byte
+]
+
+abstract var PACKET[
+    .kind :byte
+    .body[
+        .len  :word
+        .data :far
+    ]
+]
+
+func main @a8 @i8 {
+    lda #DEV_HANDLER:sizeof
+    pha
+    lda #DEV_HANDLER.open:offsetof
+    pha
+    lda #DEV_HANDLER.init:offsetof
+    pha
+    lda #DEV_HANDLER._res:sizeof
+    pha
+    lda #PACKET.body:offsetof
+    pha
+    lda #PACKET.body.data:offsetof
+    pha
+    lda #PACKET.body:sizeof
+    pha
+    lda #DEV_HANDLER:sizeof + PACKET:sizeof
+}

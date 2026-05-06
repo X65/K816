@@ -1,0 +1,5 @@
+abstract var plain:word
+
+func main @a8 @i8 {
+    lda #0
+}

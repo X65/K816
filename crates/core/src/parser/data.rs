@@ -22,7 +22,9 @@ mod consts;
 mod vars;
 
 pub(super) use self::consts::const_decl_item_parser;
-pub(super) use self::vars::{CommaTrailer, prefix_condition_parser, var_decl_parser};
+pub(super) use self::vars::{
+    CommaTrailer, abstract_var_decl_parser, prefix_condition_parser, var_decl_parser,
+};
 
 /// Build the rich-channel message for an unexpected identifier inside a `data
 /// {...}` block. When the identifier is an asset-block keyword (`image`,

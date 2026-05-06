@@ -21,6 +21,27 @@ pub(super) fn collect_var(
         return;
     }
 
+    if var.is_abstract {
+        if !validate_abstract_var(var, span, diagnostics) {
+            return;
+        }
+        let Some(layout) = eval_var_layout(var, span, &model.consts, diagnostics) else {
+            return;
+        };
+        model.vars.insert(
+            var.name.clone(),
+            VarMeta {
+                placement: VarPlacement::Abstract,
+                size: layout.size,
+                element_size: layout.element_size,
+                data_width: var.data_width,
+                addr_mode_default: None,
+                symbolic_subscript: layout.symbolic_subscript,
+            },
+        );
+        return;
+    }
+
     let Some(layout) = eval_var_layout(var, span, &model.consts, diagnostics) else {
         return;
     };
@@ -49,6 +70,102 @@ pub(super) fn collect_var(
             symbolic_subscript: layout.symbolic_subscript,
         },
     );
+}
+
+fn validate_abstract_var(var: &VarDecl, span: Span, diagnostics: &mut Vec<Diagnostic>) -> bool {
+    let mut valid = true;
+
+    if var.symbolic_subscript_fields.is_none() && var.array_len.is_none() {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("abstract var '{}' must declare a symbolic field layout", var.name),
+            )
+            .with_primary_label("abstract var without fields")
+            .with_help(format!(
+                "write `abstract var {}[ .field:byte ]` for layout metadata, or remove `abstract` to declare real storage",
+                var.name
+            ))
+            .with_note(
+                "`abstract var` carries only `:sizeof` and `:offsetof` metadata. Without a symbolic field list there is no layout to describe, and no storage is allocated.",
+            ),
+        );
+        valid = false;
+    }
+
+    if var.array_len.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("abstract var '{}' cannot use an array length", var.name),
+            )
+            .with_primary_label("array length on abstract var")
+            .with_help(format!(
+                "use a symbolic field list such as `abstract var {}[ .item:byte ]`, or remove `abstract` to allocate an array",
+                var.name
+            ))
+            .with_note(
+                "`abstract var` is for named field offsets only. Array-only declarations like `abstract var buf[16]` would define size without any field names to query.",
+            ),
+        );
+        valid = false;
+    }
+
+    if var.addr_mode_default.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("abstract var '{}' cannot use a storage prefix", var.name),
+            )
+            .with_primary_label("storage prefix on abstract var")
+            .with_help(format!(
+                "remove the `dp`/`abs`/`far` prefix from '{}'; abstract vars have no address or storage class",
+                var.name
+            ))
+            .with_note(
+                "Storage prefixes select how a real variable is addressed or allocated. An abstract var emits no symbol and cannot be used as an instruction operand.",
+            ),
+        );
+        valid = false;
+    }
+
+    if var.initializer.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                var.initializer_span.unwrap_or(span),
+                format!("abstract var '{}' cannot have an address initializer", var.name),
+            )
+            .with_primary_label("initializer on abstract var")
+            .with_help(format!(
+                "remove `= ...` from '{}', or remove `abstract` if this should name a real memory location",
+                var.name
+            ))
+            .with_note(
+                "`var NAME[...] = EXPR` pins a concrete memory location. `abstract var` intentionally has no concrete location.",
+            ),
+        );
+        valid = false;
+    }
+
+    if var.alloc_count.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                span,
+                format!("abstract var '{}' cannot use an allocation count", var.name),
+            )
+            .with_primary_label("allocation count on abstract var")
+            .with_help(format!(
+                "remove `* count` from '{}'; use `{}:sizeof * count` in expressions when you need scaled layout math",
+                var.name, var.name
+            ))
+            .with_note(
+                "`* count` reserves repeated storage for real vars. Abstract vars reserve no storage, so repetition belongs at the use site as arithmetic.",
+            ),
+        );
+        valid = false;
+    }
+
+    valid
 }
 
 fn eval_var_placement(

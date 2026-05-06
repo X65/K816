@@ -1,0 +1,7 @@
+abstract var SHAPE[
+    .field :byte
+] = $4000
+
+func main @a8 @i8 {
+    lda #0
+}

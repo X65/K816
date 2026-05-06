@@ -1,0 +1,41 @@
+Error: abstract var 'DP_SHAPE' cannot use a storage prefix
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-storage-prefix/input.k65:1:1 ]
+   │
+ 1 │ ╭─▶ abstract var dp DP_SHAPE[
+   ┆ ┆   
+ 3 │ ├─▶ ]
+   │ │       
+   │ ╰─────── storage prefix on abstract var
+   │     
+   │     Help: remove the `dp`/`abs`/`far` prefix from 'DP_SHAPE'; abstract vars have no address or storage class
+   │     
+   │     Note: Storage prefixes select how a real variable is addressed or allocated. An abstract var emits no symbol and cannot be used as an instruction operand.
+───╯
+
+Error: abstract var 'ABS_SHAPE' cannot use a storage prefix
+   ╭─[ tests/golden/fixtures/syntax-abstract-var-err-storage-prefix/input.k65:5:1 ]
+   │
+ 5 │ ╭─▶ abstract var abs ABS_SHAPE[
+   ┆ ┆   
+ 7 │ ├─▶ ]
+   │ │       
+   │ ╰─────── storage prefix on abstract var
+   │     
+   │     Help: remove the `dp`/`abs`/`far` prefix from 'ABS_SHAPE'; abstract vars have no address or storage class
+   │     
+   │     Note: Storage prefixes select how a real variable is addressed or allocated. An abstract var emits no symbol and cannot be used as an instruction operand.
+───╯
+
+Error: abstract var 'FAR_SHAPE' cannot use a storage prefix
+    ╭─[ tests/golden/fixtures/syntax-abstract-var-err-storage-prefix/input.k65:9:1 ]
+    │
+  9 │ ╭─▶ abstract var far FAR_SHAPE[
+    ┆ ┆   
+ 11 │ ├─▶ ]
+    │ │       
+    │ ╰─────── storage prefix on abstract var
+    │     
+    │     Help: remove the `dp`/`abs`/`far` prefix from 'FAR_SHAPE'; abstract vars have no address or storage class
+    │     
+    │     Note: Storage prefixes select how a real variable is addressed or allocated. An abstract var emits no symbol and cannot be used as an instruction operand.
+────╯

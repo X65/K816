@@ -3280,6 +3280,7 @@ fn emit_var_absolute_symbols(
                 *current_segment = prev_segment;
             }
         }
+        VarPlacement::Abstract => {}
     }
 }
 
@@ -3923,6 +3924,9 @@ fn validate_instruction_width_rules(
     };
 
     if let Some(expr) = imm_expr {
+        if abstract_layout_ref_in_expr(expr, sema).is_some() {
+            return;
+        }
         let reg_mode = match mnemonic_width_sensitivity(&mnemonic, false) {
             (true, false) => mode.a_width,
             (false, true) => mode.i_width,
@@ -4884,10 +4888,18 @@ fn eval_to_number_strict(
         Expr::Number(value, _) => Some(*value),
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
-            if let Some(var) = sema.vars.get(name)
-                && let Some(addr) = var.compile_time_address()
-            {
-                return Some(i64::from(addr));
+            if let Some(var) = sema.vars.get(name) {
+                if var.is_abstract() {
+                    diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
+                    return None;
+                }
+                if let Some(addr) = var.compile_time_address() {
+                    return Some(i64::from(addr));
+                }
+            }
+            if is_abstract_layout_name(name, sema) {
+                diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
+                return None;
             }
             if let Some(constant) = sema.consts.get(name) {
                 return constant_to_exact_i64(
@@ -5453,6 +5465,65 @@ fn lookup_layout<'a>(
         .and_then(|class| class.symbolic_subscript.as_ref())
 }
 
+fn is_abstract_layout_name(name: &str, sema: &SemanticModel) -> bool {
+    if sema.vars.get(name).is_some_and(|var| var.is_abstract())
+        || sema
+            .external_var_classes
+            .get(name)
+            .is_some_and(|class| class.is_abstract)
+    {
+        return true;
+    }
+    let Some((base_name, field_name)) = name.split_once('.') else {
+        return false;
+    };
+    let base_is_abstract = sema
+        .vars
+        .get(base_name)
+        .is_some_and(|var| var.is_abstract())
+        || sema
+            .external_var_classes
+            .get(base_name)
+            .is_some_and(|class| class.is_abstract);
+    base_is_abstract
+        && lookup_layout(base_name, sema)
+            .is_some_and(|layout| layout.fields.contains_key(field_name))
+}
+
+fn abstract_layout_ref_in_expr<'a>(expr: &'a Expr, sema: &SemanticModel) -> Option<&'a str> {
+    match expr {
+        Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
+            is_abstract_layout_name(name, sema).then_some(name.as_str())
+        }
+        Expr::Binary { lhs, rhs, .. } => abstract_layout_ref_in_expr(lhs, sema)
+            .or_else(|| abstract_layout_ref_in_expr(rhs, sema)),
+        Expr::Unary { expr, .. }
+        | Expr::TypedView { expr, .. }
+        | Expr::MetadataQuery { expr, .. } => abstract_layout_ref_in_expr(expr, sema),
+        Expr::Index { base, index } => abstract_layout_ref_in_expr(base, sema)
+            .or_else(|| abstract_layout_ref_in_expr(index, sema)),
+        Expr::Number(_, _) | Expr::EvalText(_) => None,
+    }
+}
+
+fn abstract_var_address_diagnostic(span: Span, name: &str) -> Diagnostic {
+    let help = if name.contains('.') {
+        format!(
+            "use `{name}:offsetof` for the field offset or `{name}:sizeof` for the field size, or declare a real `var`/`data` symbol when storage is needed",
+        )
+    } else {
+        format!(
+            "use `{name}:sizeof` or `{name}.field:offsetof` for layout metadata, or declare a real `var`/`data` symbol when storage is needed",
+        )
+    };
+    Diagnostic::error(span, format!("abstract var layout '{name}' has no address"))
+        .with_primary_label("layout-only symbol")
+        .with_help(help)
+        .with_note(
+            "`abstract var` declares packed field offsets only. It emits no bytes, no linker symbol, and cannot be used as an instruction operand or address-of target.",
+        )
+}
+
 fn resolve_symbolic_subscript_name(
     name: &str,
     sema: &SemanticModel,
@@ -5461,6 +5532,10 @@ fn resolve_symbolic_subscript_name(
 ) -> Result<Option<ResolvedSymbolicSubscriptName>, ()> {
     if let Some(var) = sema.vars.get(name) {
         if var.symbolic_subscript.is_some() {
+            if var.is_abstract() {
+                diagnostics.push(abstract_var_address_diagnostic(span, name));
+                return Err(());
+            }
             // Step 3 will extend this to carry a Label/addend pair for
             // Allocated bases; today sema only produces Fixed placements.
             let Some(address) = var.compile_time_address() else {
@@ -5496,6 +5571,11 @@ fn resolve_symbolic_subscript_name(
         diagnostics.push(diagnostic);
         return Err(());
     };
+
+    if base_var.is_abstract() {
+        diagnostics.push(abstract_var_address_diagnostic(span, name));
+        return Err(());
+    }
 
     let Some(base_address) = base_var.compile_time_address() else {
         // Step 3 will return a Label/addend variant for Allocated bases.
@@ -5752,6 +5832,15 @@ fn lower_immediate_operand(
     {
         return Some(OperandOp::ImmediateByteRelocation { kind, label });
     }
+    if let Some((_is_far, name, _addend, label_span)) = peel_address_of(expr, span)
+        && is_abstract_layout_name(name, sema)
+    {
+        diagnostics.push(abstract_var_address_diagnostic(
+            label_span.unwrap_or(span),
+            name,
+        ));
+        return None;
+    }
     if let Some(op) = resolve_symbolic_address_immediate(expr, scope, sema, span, diagnostics) {
         return Some(op);
     }
@@ -5787,7 +5876,9 @@ fn reject_address_taking_immediate(
         }
         _ => span,
     };
-    let kind = if sema.vars.contains_key(name) {
+    let kind = if sema.vars.get(name).is_some_and(|var| var.is_abstract()) {
+        "abstract var layout"
+    } else if sema.vars.contains_key(name) {
         "var"
     } else if sema.functions.contains_key(name) {
         "function"
@@ -5796,18 +5887,30 @@ fn reject_address_taking_immediate(
     } else {
         "addressable symbol"
     };
+    let diagnostic = Diagnostic::error(
+        primary_span,
+        format!("cannot use {kind} '{name}' as an immediate value"),
+    )
+    .with_primary_label(format!("{kind} reference"));
+    if sema.vars.get(name).is_some_and(|var| var.is_abstract()) {
+        return Some(
+            diagnostic
+                .with_help(format!(
+                    "use `{name}:sizeof` for the layout size or `{name}.field:offsetof` for a field offset",
+                ))
+                .with_note(
+                    "`abstract var` names layout metadata only; they do not resolve to addresses or immediate values.",
+                ),
+        );
+    }
     Some(
-        Diagnostic::error(
-            primary_span,
-            format!("cannot use {kind} '{name}' as an immediate value"),
-        )
-        .with_primary_label(format!("{kind} reference"))
-        .with_help(format!(
-            "use `&&{name}` to load its 16-bit address, or `&&&{name}` for the far address"
-        ))
-        .with_note(
-            "Immediate operands (`#expr`) take a compile-time numeric value baked into the instruction byte stream. Vars, functions, and data-block labels resolve to addresses, not values — load their address with `&&NAME`, or read the byte at that address by dropping the `#`.",
-        ),
+        diagnostic
+            .with_help(format!(
+                "use `&&{name}` to load its 16-bit address, or `&&&{name}` for the far address"
+            ))
+            .with_note(
+                "Immediate operands (`#expr`) take a compile-time numeric value baked into the instruction byte stream. Vars, functions, and data-block labels resolve to addresses, not values — load their address with `&&NAME`, or read the byte at that address by dropping the `#`.",
+            ),
     )
 }
 
@@ -6218,6 +6321,10 @@ fn eval_address_expr(
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
             if let Some(var) = sema.vars.get(name) {
+                if var.is_abstract() {
+                    diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
+                    return None;
+                }
                 match var.compile_time_address() {
                     Some(addr) => {
                         return Some((i64::from(addr), AddressProvenance::Address));
@@ -6229,6 +6336,10 @@ fn eval_address_expr(
                         return None;
                     }
                 }
+            }
+            if is_abstract_layout_name(name, sema) {
+                diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
+                return None;
             }
             if let Some(constant) = sema.consts.get(name) {
                 let value = constant_to_exact_i64(
@@ -6372,10 +6483,18 @@ fn eval_to_number(
         Expr::Number(value, _) => Some(*value),
         Expr::Ident(name) | Expr::IdentSpanned { name, .. } => {
             let ident_span = expr_ident_span(expr, span).unwrap_or(span);
-            if let Some(var) = sema.vars.get(name)
-                && let Some(addr) = var.compile_time_address()
-            {
-                return Some(i64::from(addr));
+            if let Some(var) = sema.vars.get(name) {
+                if var.is_abstract() {
+                    diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
+                    return None;
+                }
+                if let Some(addr) = var.compile_time_address() {
+                    return Some(i64::from(addr));
+                }
+            }
+            if is_abstract_layout_name(name, sema) {
+                diagnostics.push(abstract_var_address_diagnostic(ident_span, name));
+                return None;
             }
             if let Some(constant) = sema.consts.get(name) {
                 return constant_to_exact_i64(
@@ -6699,6 +6818,10 @@ fn resolve_operand_ident(
     }
 
     if let Some(var) = sema.vars.get(name) {
+        if var.is_abstract() {
+            diagnostics.push(abstract_var_address_diagnostic(span, name));
+            return None;
+        }
         if stack_rel {
             diagnostics.push(stack_offset_not_address_diag(span, name, "var"));
             return None;
@@ -6718,7 +6841,12 @@ fn resolve_operand_ident(
                     mode,
                 });
             }
+            VarPlacement::Abstract => unreachable!("abstract vars are handled above"),
         }
+    }
+    if is_abstract_layout_name(name, sema) {
+        diagnostics.push(abstract_var_address_diagnostic(span, name));
+        return None;
     }
     if let Some(constant) = sema.consts.get(name) {
         if stack_rel {
@@ -6835,6 +6963,9 @@ fn try_label_offset_operand(
     if sema.consts.contains_key(name) {
         return None;
     }
+    if is_abstract_layout_name(name, sema) {
+        return None;
+    }
     if let Some(var) = sema.vars.get(name)
         && var.compile_time_address().is_some()
     {
@@ -6869,6 +7000,11 @@ fn address_of_help_for_name(name: &str, sema: &SemanticModel, span: Span) -> Opt
     if sema.functions.contains_key(name) {
         return Some(format!(
             "'{name}' is a function — use `&&{name}` to load its 16-bit address (or `&&&{name}` for a far address)"
+        ));
+    }
+    if sema.vars.get(name).is_some_and(|var| var.is_abstract()) {
+        return Some(format!(
+            "'{name}' is an abstract var layout — use `{name}:sizeof` or `{name}.field:offsetof` for layout metadata"
         ));
     }
     if sema.vars.contains_key(name) {

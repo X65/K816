@@ -102,11 +102,14 @@ pub struct SymbolicSubscriptMeta {
 ///   the final 8-bit DP offset by first-fit allocation across all input
 ///   objects in link-input order; sema only carries `VarMeta.size` for the
 ///   request.
+/// - `Abstract` is a layout-only `abstract var`: it has field/size metadata
+///   but no address, allocation request, or linker-visible symbol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarPlacement {
     Fixed { address: u32 },
     AllocatedAbs { segment: String, offset: u32 },
     AllocatedDp,
+    Abstract,
 }
 
 impl VarPlacement {
@@ -115,7 +118,9 @@ impl VarPlacement {
     pub fn compile_time_address(&self) -> Option<u32> {
         match self {
             VarPlacement::Fixed { address } => Some(*address),
-            VarPlacement::AllocatedAbs { .. } | VarPlacement::AllocatedDp => None,
+            VarPlacement::AllocatedAbs { .. }
+            | VarPlacement::AllocatedDp
+            | VarPlacement::Abstract => None,
         }
     }
 }
@@ -141,6 +146,10 @@ impl VarMeta {
     pub fn compile_time_address(&self) -> Option<u32> {
         self.placement.compile_time_address()
     }
+
+    pub fn is_abstract(&self) -> bool {
+        matches!(self.placement, VarPlacement::Abstract)
+    }
 }
 
 /// Classification of a cross-unit `var` whose address is *not* known at
@@ -152,6 +161,7 @@ impl VarMeta {
 /// per-file auto-allocated address, which is meaningless across units.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalVarClass {
+    pub is_abstract: bool,
     pub data_width: Option<DataWidth>,
     pub addr_mode_default: Option<ForceAddrMode>,
     /// Base element size in bytes (before any `* count` multiplier). Used by

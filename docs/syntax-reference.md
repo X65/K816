@@ -100,6 +100,25 @@ var after_sprites               // Allocated: next slot, after the 40-byte sprit
 
 `count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries — it only scales the total allocation.
 
+### Abstract symbolic layouts
+
+`abstract var` declares a packed symbolic-subscript layout without declaring storage:
+
+```k65
+abstract var DEV_HANDLER[
+    .open  :word
+    .close :word
+    .init  :word
+]
+
+lda #DEV_HANDLER:sizeof
+lda #DEV_HANDLER.init:offsetof
+```
+
+An abstract var emits no bytes, no object symbol, and no linker allocation. It exists only for metadata queries (`:sizeof`, `:offsetof`) and occupies the normal symbol namespace so duplicate names are still rejected. Because it has no address, it cannot be used as an instruction operand or address-of target (`lda DEV_HANDLER`, `lda DEV_HANDLER.open`, and `lda &&DEV_HANDLER` are errors).
+
+The declaration must use a symbolic field list. Declaration-level default field width is allowed (`abstract var POINT:byte[ .x .y ]`), but storage-specific forms are rejected: no `dp`/`abs`/`far` prefix, no initializer, no allocation count, and no array-only form like `abstract var buf[16]`.
+
 ### Two orthogonal axes: data width vs. address encoding
 
 K65 separates two unrelated concerns into different syntax slots:

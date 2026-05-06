@@ -1,0 +1,9 @@
+abstract var DEV_HANDLER[
+    .open :word
+]
+
+func main @a16 @i16 {
+    lda DEV_HANDLER
+    lda DEV_HANDLER.open
+    ldx &&DEV_HANDLER
+}

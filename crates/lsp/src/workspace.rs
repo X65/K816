@@ -177,14 +177,14 @@ impl ServerState {
         // Any document whose path didn't make it into a unit (e.g. pathless
         // virtual URI, or a manifest project's `tests/` file the user opened
         // directly) gets a singleton unit so analysis still runs against it.
-        let mut covered: std::collections::HashSet<Uri> = std::collections::HashSet::new();
+        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
         for unit in &units {
             for uri in &unit.uris {
-                covered.insert(uri.clone());
+                covered.insert(uri.as_str().to_string());
             }
         }
         for uri in self.documents.keys() {
-            if !covered.contains(uri) {
+            if !covered.contains(uri.as_str()) {
                 let config_key = self
                     .documents
                     .get(uri)

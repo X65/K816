@@ -34,10 +34,7 @@ pub fn link_diagnostic_to_diagnostic(
             // output can drop the label.
             let source_id = SourceId(0);
             let span = Span::new(source_id, 0, 0);
-            let label = link_diag
-                .primary_label
-                .clone()
-                .unwrap_or_else(|| String::new());
+            let label = link_diag.primary_label.clone().unwrap_or_default();
             (span, label)
         }
     };

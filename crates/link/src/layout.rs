@@ -186,7 +186,7 @@ pub fn link_objects_diagnostics(
             &mut placed_by_section,
             true,
         ) {
-            errors.push(diag);
+            errors.push(*diag);
             record_unplaced_chunk(chunk, base, &mut placed_by_section);
         }
     }
@@ -260,7 +260,7 @@ pub fn link_objects_diagnostics(
                 &mut placed_by_section,
                 false,
             ) {
-                errors.push(diag);
+                errors.push(*diag);
                 record_unplaced_chunk(chunk, base, &mut placed_by_section);
             }
         }
@@ -407,7 +407,7 @@ pub fn link_objects_diagnostics(
                 &symbols,
                 &mut memory_map,
             ) {
-                errors.push(diag);
+                errors.push(*diag);
             }
         }
     }
@@ -654,10 +654,16 @@ fn record_unplaced_chunk(
     });
 }
 
-/// Resolve a single relocation. Returns a `LinkDiagnostic` on failure so the
-/// caller can accumulate it. Reasons for failure: missing section placement,
-/// site outside section, undefined symbol, range overflow on relative jumps,
-/// width mismatch on byte halves.
+type LinkDiagResult<T> = std::result::Result<T, Box<LinkDiagnostic>>;
+
+fn boxed_link_diagnostic(diag: LinkDiagnostic) -> Box<LinkDiagnostic> {
+    Box::new(diag)
+}
+
+/// Resolve a single relocation. Returns a boxed `LinkDiagnostic` on failure so
+/// the caller can accumulate it. Reasons for failure: missing section
+/// placement, site outside section, undefined symbol, range overflow on
+/// relative jumps, width mismatch on byte halves.
 #[allow(clippy::too_many_arguments)]
 fn resolve_one_relocation(
     obj_idx: usize,
@@ -667,24 +673,24 @@ fn resolve_one_relocation(
     placed_by_section: &HashMap<(usize, String), Vec<PlacedChunk>>,
     symbols: &HashMap<String, ResolvedSymbol>,
     memory_map: &mut HashMap<String, MemoryState>,
-) -> std::result::Result<(), LinkDiagnostic> {
+) -> LinkDiagResult<()> {
     let _ = object;
     let section_key = (obj_idx, reloc.section.clone());
     let placements = placed_by_section.get(&section_key).ok_or_else(|| {
-        anchorless_error(format!(
+        boxed_link_diagnostic(anchorless_error(format!(
             "relocation references unknown section '{}'",
             reloc.section
-        ))
+        )))
     })?;
 
     let (site_memory_name, site_addr) = resolve_reloc_site(placements, reloc.offset, reloc.width)
         .ok_or_else(|| {
-        anchorless_error(format!(
+        boxed_link_diagnostic(anchorless_error(format!(
             "relocation site {:#X}..{:#X} is outside section '{}'",
             reloc.offset,
             reloc.offset.saturating_add(u32::from(reloc.width)),
             reloc.section
-        ))
+        )))
     })?;
 
     let target = symbols.get(&reloc.symbol).cloned().ok_or_else(|| {
@@ -692,7 +698,7 @@ fn resolve_one_relocation(
             find_section_anchor_context(objects, obj_idx, &reloc.section, reloc.offset)
                 .and_then(|ctx| ctx.source)
         });
-        anchored_error_rich(
+        boxed_link_diagnostic(anchored_error_rich(
             format!("undefined symbol '{}'", reloc.symbol),
             Some(format!("symbol '{}' referenced here", reloc.symbol)),
             anchor,
@@ -703,7 +709,7 @@ fn resolve_one_relocation(
             Some(
                 "Symbol resolution happens at link time across every `.o65` in the project. Missing-symbol errors usually mean a source file was not compiled into the link group, or an `inline` import / cross-unit reference was renamed.".to_string(),
             ),
-        )
+        ))
     })?;
 
     if reloc.kind == RelocationKind::Absolute
@@ -712,7 +718,7 @@ fn resolve_one_relocation(
         && reloc.section != target.segment
         && reloc.call_metadata.is_some()
     {
-        return Err(anchored_error(
+        return Err(boxed_link_diagnostic(anchored_error(
             format!(
                 "16-bit relocation from segment '{}' to '{}' requires far addressing",
                 reloc.section, target.segment
@@ -720,24 +726,28 @@ fn resolve_one_relocation(
             None,
             reloc.source.clone(),
             None,
-        ));
+        )));
     }
 
     let mem = memory_map.get_mut(site_memory_name).ok_or_else(|| {
-        anchorless_error(format!(
+        boxed_link_diagnostic(anchorless_error(format!(
             "internal linker error: memory '{}' missing",
             site_memory_name
-        ))
+        )))
     })?;
 
     if site_addr < mem.spec.start {
-        return Err(anchorless_error("relocation site underflows memory range"));
+        return Err(boxed_link_diagnostic(anchorless_error(
+            "relocation site underflows memory range",
+        )));
     }
 
     let rel_idx = (site_addr - mem.spec.start) as usize;
     let end_idx = rel_idx.saturating_add(reloc.width as usize);
     if end_idx > mem.bytes.len() {
-        return Err(anchorless_error("relocation writes outside memory range"));
+        return Err(boxed_link_diagnostic(anchorless_error(
+            "relocation writes outside memory range",
+        )));
     }
 
     let effective_addr = (target.addr as i64 + reloc.addend as i64) as u32;
@@ -748,19 +758,19 @@ fn resolve_one_relocation(
                 effective_addr,
                 reloc.width,
             ) {
-                return Err(anchored_error(
+                return Err(boxed_link_diagnostic(anchored_error(
                     err.to_string(),
                     None,
                     reloc.source.clone(),
                     None,
-                ));
+                )));
             }
         }
         RelocationKind::Relative => match reloc.width {
             1 => {
                 let delta = effective_addr as i64 - (site_addr as i64 + 1);
                 if delta < i8::MIN as i64 || delta > i8::MAX as i64 {
-                    return Err(anchored_error(
+                    return Err(boxed_link_diagnostic(anchored_error(
                         format!(
                             "relative relocation to '{}' out of range at {:#X}",
                             reloc.symbol, site_addr
@@ -768,14 +778,14 @@ fn resolve_one_relocation(
                         None,
                         reloc.source.clone(),
                         None,
-                    ));
+                    )));
                 }
                 mem.bytes[rel_idx] = delta as i8 as u8;
             }
             2 => {
                 let delta = effective_addr as i64 - (site_addr as i64 + 2);
                 if delta < i16::MIN as i64 || delta > i16::MAX as i64 {
-                    return Err(anchored_error(
+                    return Err(boxed_link_diagnostic(anchored_error(
                         format!(
                             "relative relocation to '{}' out of range at {:#X}",
                             reloc.symbol, site_addr
@@ -783,25 +793,29 @@ fn resolve_one_relocation(
                         None,
                         reloc.source.clone(),
                         None,
-                    ));
+                    )));
                 }
                 mem.bytes[rel_idx..end_idx].copy_from_slice(&(delta as i16).to_le_bytes());
             }
             _ => {
-                return Err(anchorless_error(
+                return Err(boxed_link_diagnostic(anchorless_error(
                     "relative relocation width must be 1 or 2 bytes",
-                ));
+                )));
             }
         },
         RelocationKind::LowByte => {
             if reloc.width != 1 {
-                return Err(anchorless_error("low-byte relocation width must be 1"));
+                return Err(boxed_link_diagnostic(anchorless_error(
+                    "low-byte relocation width must be 1",
+                )));
             }
             mem.bytes[rel_idx] = (effective_addr & 0xFF) as u8;
         }
         RelocationKind::HighByte => {
             if reloc.width != 1 {
-                return Err(anchorless_error("high-byte relocation width must be 1"));
+                return Err(boxed_link_diagnostic(anchorless_error(
+                    "high-byte relocation width must be 1",
+                )));
             }
             mem.bytes[rel_idx] = ((effective_addr >> 8) & 0xFF) as u8;
         }
@@ -1023,39 +1037,44 @@ fn place_chunk(
     memory_map: &mut HashMap<String, MemoryState>,
     placed_by_section: &mut HashMap<(usize, String), Vec<PlacedChunk>>,
     fixed: bool,
-) -> std::result::Result<(), LinkDiagnostic> {
+) -> LinkDiagResult<()> {
     let anchor = find_anchor_context(objects, chunk);
 
     let section = objects
         .get(chunk.obj_idx)
         .and_then(|object| object.sections.get(&chunk.segment))
         .ok_or_else(|| {
-            anchorless_error(format!(
+            boxed_link_diagnostic(anchorless_error(format!(
                 "internal linker error: missing section '{}'",
                 chunk.segment
-            ))
+            )))
         })?;
     let source_chunk = section.chunks.get(chunk.chunk_idx).ok_or_else(|| {
-        anchorless_error(format!(
+        boxed_link_diagnostic(anchorless_error(format!(
             "internal linker error: missing chunk {} in section '{}'",
             chunk.chunk_idx, chunk.segment
-        ))
+        )))
     })?;
 
-    let mem = memory_map
-        .get_mut(&chunk.memory_name)
-        .ok_or_else(|| anchorless_error(format!("unknown memory area '{}'", chunk.memory_name)))?;
+    let mem = memory_map.get_mut(&chunk.memory_name).ok_or_else(|| {
+        boxed_link_diagnostic(anchorless_error(format!(
+            "unknown memory area '{}'",
+            chunk.memory_name
+        )))
+    })?;
 
-    let mem_end =
-        mem.spec.start.checked_add(mem.spec.size).ok_or_else(|| {
-            anchorless_error(format!("memory '{}' range overflow", mem.spec.name))
-        })?;
+    let mem_end = mem.spec.start.checked_add(mem.spec.size).ok_or_else(|| {
+        boxed_link_diagnostic(anchorless_error(format!(
+            "memory '{}' range overflow",
+            mem.spec.name
+        )))
+    })?;
 
     let end = base.checked_add(chunk.len).ok_or_else(|| {
-        anchorless_error(format!(
+        boxed_link_diagnostic(anchorless_error(format!(
             "placement overflow for segment '{}'",
             chunk.segment
-        ))
+        )))
     })?;
 
     if base < mem.spec.start || end > mem_end {
@@ -1076,7 +1095,7 @@ fn place_chunk(
             )
         };
         let note = "Memory ranges in your `.ld.ron` are hard bounds: the linker never extends them, even by a single byte. Width, alignment, and any `offset = ...` add to the chunk's footprint, so a chunk that just barely fits in source can spill out after alignment.".to_string();
-        return Err(anchored_error_rich(
+        return Err(boxed_link_diagnostic(anchored_error_rich(
             detail,
             anchor
                 .as_ref()
@@ -1084,27 +1103,27 @@ fn place_chunk(
             anchor.and_then(|a| a.source),
             Some(help),
             Some(note),
-        ));
+        )));
     }
 
     let rel_start = (base - mem.spec.start) as usize;
     let rel_end = rel_start
         .checked_add(chunk.len as usize)
-        .ok_or_else(|| anchorless_error("placement index overflow"))?;
+        .ok_or_else(|| boxed_link_diagnostic(anchorless_error("placement index overflow")))?;
 
     if rel_end > mem.bytes.len() {
         let detail = format!(
             "segment '{}' chunk placement exceeds memory '{}': start={:#X}, len={:#X}",
             chunk.segment, mem.spec.name, base, chunk.len
         );
-        return Err(anchored_error(
+        return Err(boxed_link_diagnostic(anchored_error(
             detail,
             anchor
                 .as_ref()
                 .map(|a| format!("function '{}' defined here", a.symbol_name)),
             anchor.and_then(|a| a.source),
             None,
-        ));
+        )));
     }
 
     if let Some(conflict) = mem.used[rel_start..rel_end].iter().position(|used| *used) {
@@ -1119,7 +1138,7 @@ fn place_chunk(
                 chunk.segment, mem.spec.name, overlap_addr
             );
             let note = "The linker treats `at = ...` placements as immovable: when two pieces of code are pinned to overlapping addresses, neither can move out of the way, so the only fix is to change the address (or remove one pin). Relocatable placements are only laid down after every fixed range is reserved.".to_string();
-            return Err(anchored_error_rich(
+            return Err(boxed_link_diagnostic(anchored_error_rich(
                 detail,
                 anchor
                     .as_ref()
@@ -1127,7 +1146,7 @@ fn place_chunk(
                 anchor.and_then(|a| a.source),
                 Some(help),
                 Some(note),
-            ));
+            )));
         }
 
         let detail = format!(
@@ -1139,7 +1158,7 @@ fn place_chunk(
             chunk.segment, base, mem.spec.name, mem.spec.name
         );
         let note = "Relocatable chunks are placed after fixed (`at = ...`) chunks reserve their ranges. If a relocatable chunk cannot find any free aligned span large enough, the layout fails — even when the total free bytes would be sufficient if defragmented.".to_string();
-        return Err(anchored_error_rich(
+        return Err(boxed_link_diagnostic(anchored_error_rich(
             detail,
             anchor
                 .as_ref()
@@ -1147,7 +1166,7 @@ fn place_chunk(
             anchor.and_then(|a| a.source),
             Some(help),
             Some(note),
-        ));
+        )));
     }
 
     mem.bytes[rel_start..rel_end].copy_from_slice(&source_chunk.bytes);

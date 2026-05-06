@@ -703,7 +703,7 @@ fn single_file_build_command(
             &errors,
             &source_map,
             &source_ids,
-            &[source_name.clone()],
+            std::slice::from_ref(&source_name),
         ))
     })?;
     let output_path = output

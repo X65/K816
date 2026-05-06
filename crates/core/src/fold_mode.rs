@@ -594,7 +594,7 @@ mod tests {
             .ops
             .iter()
             .find_map(|op| match &op.node {
-                Op::FunctionStart { mode_contract, .. } => Some(mode_contract.clone()),
+                Op::FunctionStart { mode_contract, .. } => Some(*mode_contract),
                 _ => None,
             })
             .expect("FunctionStart in result");

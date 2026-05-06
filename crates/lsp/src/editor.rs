@@ -16,7 +16,8 @@ use super::hover::{
 use super::text::{
     QualifiedSegment, colon_keyword_at_offset, cumulative_field_key, evaluator_call_at_offset,
     in_symbol_completion_context, is_ident_byte, numeric_literal_at_offset, resolve_field_from_ast,
-    resolve_qualified_segment, resolve_register_operand_at, token_at_offset, token_prefix_at_offset,
+    resolve_qualified_segment, resolve_register_operand_at, token_at_offset,
+    token_prefix_at_offset,
 };
 use super::{
     ByteRange, INSTRUCTION_DESCRIPTIONS, ServerState, SymbolCategory, byte_range_to_lsp,
@@ -34,8 +35,7 @@ fn field_completion_address_text(
     field_meta: &k816_core::sema::SymbolicSubscriptFieldMeta,
 ) -> (String, String) {
     if let Some(parent_offset) = var_meta.compile_time_dp_offset() {
-        let resolved =
-            (parent_offset as u32).wrapping_add(field_meta.offset) & 0xFF;
+        let resolved = (parent_offset as u32).wrapping_add(field_meta.offset) & 0xFF;
         let text = format!("dp +{:#04X}", resolved);
         return (text.clone(), text);
     }

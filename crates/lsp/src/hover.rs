@@ -189,7 +189,10 @@ pub(super) fn hover_contents_for_subscript_field(
     // absolute address — only correct when D=0 at runtime). Allocated vars
     // have no compile-time address; fall back to 0 here.
     let address_text = if let Some(parent_offset) = var_meta.compile_time_dp_offset() {
-        format!("dp +{:#04X}", (parent_offset as u32).wrapping_add(field_meta.offset) & 0xFF)
+        format!(
+            "dp +{:#04X}",
+            (parent_offset as u32).wrapping_add(field_meta.offset) & 0xFF
+        )
     } else {
         let abs_addr = var_meta.compile_time_address().unwrap_or(0) + field_meta.offset;
         format_address(abs_addr)

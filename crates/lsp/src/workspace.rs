@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use lsp_types::{Diagnostic, Uri};
 
 use super::project::{
-    CompilationUnit, discover_workspace_sources, partition_workspace_into_units, uri_from_file_path,
-    uri_to_file_path,
+    CompilationUnit, discover_workspace_sources, partition_workspace_into_units,
+    uri_from_file_path, uri_to_file_path,
 };
 use super::protocol::{
     QueryMemoryMapDetail, QueryMemoryMapMemory, QueryMemoryMapParams, QueryMemoryMapResult,
@@ -189,9 +189,7 @@ impl ServerState {
                     .documents
                     .get(uri)
                     .and_then(|doc| doc.path.as_ref())
-                    .map(|path| {
-                        super::linker_config::key_for_source(&self.workspace_root, path)
-                    })
+                    .map(|path| super::linker_config::key_for_source(&self.workspace_root, path))
                     .unwrap_or(super::linker_config::LinkerConfigKey::Workspace);
                 units.push(CompilationUnit {
                     uris: vec![uri.clone()],
@@ -294,8 +292,7 @@ impl ServerState {
                     }
                 }
                 FsEventKind::LinkerConfig => {
-                    let canonical =
-                        std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
                     self.linker_configs
                         .invalidate(&super::linker_config::LinkerConfigKey::Path(canonical));
                     dirty = true;
@@ -506,17 +503,11 @@ impl ServerState {
 
                 for link_diag in &link_diags {
                     let Some(anchor) = link_diag.anchor.as_ref() else {
-                        log::warn!(
-                            "dropping anchorless link diagnostic: {}",
-                            link_diag.message
-                        );
+                        log::warn!("dropping anchorless link diagnostic: {}", link_diag.message);
                         continue;
                     };
                     let Some(target_uri) = path_to_uri.get(&anchor.file) else {
-                        log::warn!(
-                            "link diagnostic anchored at unknown file '{}'",
-                            anchor.file
-                        );
+                        log::warn!("link diagnostic anchored at unknown file '{}'", anchor.file);
                         continue;
                     };
                     let Some(target_doc) = self.documents.get_mut(target_uri) else {
@@ -529,13 +520,15 @@ impl ServerState {
                     let mut local_map = k816_core::span::SourceMap::default();
                     let local_id = local_map.add_source(anchor.file.clone(), &target_doc.text);
                     let resolve = |path: &str| -> Option<k816_core::span::SourceId> {
-                        if path == anchor.file { Some(local_id) } else { None }
+                        if path == anchor.file {
+                            Some(local_id)
+                        } else {
+                            None
+                        }
                     };
-                    if let Some(diag) = k816_core::link_diagnostic_to_diagnostic(
-                        link_diag,
-                        &local_map,
-                        &resolve,
-                    ) {
+                    if let Some(diag) =
+                        k816_core::link_diagnostic_to_diagnostic(link_diag, &local_map, &resolve)
+                    {
                         // Re-anchor to source_id 0 so it composes with the
                         // doc's own diagnostics (which use the per-doc map
                         // built inside `analyze_document`).
@@ -544,9 +537,8 @@ impl ServerState {
                             diag.primary.start,
                             diag.primary.end,
                         );
-                        let mut rebound =
-                            k816_core::diag::Diagnostic::error(primary, diag.message)
-                                .with_primary_label(diag.primary_label);
+                        let mut rebound = k816_core::diag::Diagnostic::error(primary, diag.message)
+                            .with_primary_label(diag.primary_label);
                         for label in diag.labels {
                             let span = k816_core::span::Span::new(
                                 k816_core::span::SourceId(0),

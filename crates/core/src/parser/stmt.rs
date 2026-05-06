@@ -176,9 +176,9 @@ where
         .then(bare_call_outputs)
         .then(chumsky::primitive::any().rewind().or_not())
         .try_map(
-            |(((target, args), outputs), peek), span: SimpleSpan|
-                -> Result<Stmt, Rich<'_, TokenKind>>
-            {
+            |(((target, args), outputs), peek),
+             span: SimpleSpan|
+             -> Result<Stmt, Rich<'_, TokenKind>> {
                 if let Some(tok) = peek
                     && !is_statement_boundary(&tok)
                 {
@@ -416,22 +416,25 @@ where
     // a same-named const/var/label shadow the accumulator. Only matches when
     // the register token is followed by an operand boundary (newline / `}` /
     // EOF) so trailing forms like `lda x0,X` still flow to `direct_operand`.
-    let register_operand = ident_parser()
-        .map_with(|name, extra| (name, extra.span()))
-        .try_map(move |(name, simple_span): (String, SimpleSpan), _: SimpleSpan| {
-            match parse_cpu_register(&name) {
-                Some(reg) => {
-                    let range = simple_span.into_range();
-                    Ok(Some(Operand::Register {
-                        reg,
-                        span: Span::new(source_id, range.start, range.end),
-                    }))
-                }
-                None => Err(Rich::custom(simple_span, "not a register name")),
-            }
-        })
-        .then_ignore(operand_boundary.clone())
-        .boxed();
+    let register_operand =
+        ident_parser()
+            .map_with(|name, extra| (name, extra.span()))
+            .try_map(
+                move |(name, simple_span): (String, SimpleSpan), _: SimpleSpan| {
+                    match parse_cpu_register(&name) {
+                        Some(reg) => {
+                            let range = simple_span.into_range();
+                            Ok(Some(Operand::Register {
+                                reg,
+                                span: Span::new(source_id, range.start, range.end),
+                            }))
+                        }
+                        None => Err(Rich::custom(simple_span, "not a register name")),
+                    }
+                },
+            )
+            .then_ignore(operand_boundary.clone())
+            .boxed();
 
     let operand = choice((
         operand_boundary.to(None),

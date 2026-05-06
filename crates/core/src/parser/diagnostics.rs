@@ -283,17 +283,16 @@ fn detect_old_symbolic_field_count_order(
 fn near_var_bracket_opening(source_text: &str, error_offset: usize) -> bool {
     let cursor = error_offset.min(source_text.len());
     let prefix = &source_text[..cursor];
-    let mut last_lines = prefix
-        .rsplit('\n')
-        .take(8)
-        .collect::<Vec<_>>();
+    let mut last_lines = prefix.rsplit('\n').take(8).collect::<Vec<_>>();
     last_lines.reverse();
     let mut saw_opener = false;
     for line in last_lines {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("var ") {
             let mut chars = rest.chars();
-            if chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            if chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
                 && chars
                     .by_ref()
                     .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -304,7 +303,8 @@ fn near_var_bracket_opening(source_text: &str, error_offset: usize) -> bool {
                 saw_opener = true;
             }
         }
-        if saw_opener && (trimmed.starts_with('.') || trimmed.starts_with(']') || trimmed.is_empty())
+        if saw_opener
+            && (trimmed.starts_with('.') || trimmed.starts_with(']') || trimmed.is_empty())
         {
             continue;
         }
@@ -317,10 +317,7 @@ fn near_var_bracket_opening(source_text: &str, error_offset: usize) -> bool {
 /// has no namespace operator; the second `:` is the unexpected token, so we
 /// look one byte back and detect the doubled colon, then point the user at
 /// `.` or the legal alternative.
-fn detect_double_colon_typo(
-    source_text: &str,
-    error_offset: usize,
-) -> Option<ContextEnrichment> {
+fn detect_double_colon_typo(source_text: &str, error_offset: usize) -> Option<ContextEnrichment> {
     let bytes = source_text.as_bytes();
     if bytes.get(error_offset).copied()? != b':' {
         return None;
@@ -339,16 +336,16 @@ fn detect_double_colon_typo(
 /// declaration-time syntax. The legacy `:abs` (and `:dp`/`:far`) on
 /// expressions was replaced by per-declaration prefixes (`var name:abs = ...`)
 /// and per-call-site prefixes (`abs name`/`dp name`/`far name`).
-fn detect_abs_suffix_typo(
-    source_text: &str,
-    error_offset: usize,
-) -> Option<ContextEnrichment> {
+fn detect_abs_suffix_typo(source_text: &str, error_offset: usize) -> Option<ContextEnrichment> {
     let cursor = error_offset.min(source_text.len());
     let after = source_text.get(cursor..)?;
     let trimmed = after.trim_start();
     let suffix = trimmed.split(|c: char| !c.is_ascii_alphabetic()).next()?;
     let suffix_lower = suffix.to_ascii_lowercase();
-    if !matches!(suffix_lower.as_str(), "abs" | "dp" | "far" | "word" | "byte") {
+    if !matches!(
+        suffix_lower.as_str(),
+        "abs" | "dp" | "far" | "word" | "byte"
+    ) {
         return None;
     }
     let prefix = &source_text[..cursor];

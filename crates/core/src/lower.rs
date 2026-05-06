@@ -5799,10 +5799,7 @@ fn repeat_access_compile_time_value(
     span: Span,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<i64> {
-    let base_value = sema
-        .vars
-        .get(&access.root)?
-        .compile_time_numeric_value()?;
+    let base_value = sema.vars.get(&access.root)?.compile_time_numeric_value()?;
     let addend = access.total_addend().or_else(|| {
         diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
         None

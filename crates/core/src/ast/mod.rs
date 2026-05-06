@@ -245,7 +245,10 @@ pub enum Operand {
     /// Lowering validates that the mnemonic accepts this register; any
     /// register other than `A` is rejected with a diagnostic. The span
     /// covers just the register token, so diagnostics point at it.
-    Register { reg: HlaCpuRegister, span: Span },
+    Register {
+        reg: HlaCpuRegister,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

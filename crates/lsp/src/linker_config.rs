@@ -42,10 +42,9 @@ impl LinkerConfigCache {
     /// linking always has a config to work with.
     pub(super) fn resolve(&mut self, key: &LinkerConfigKey) -> LinkerConfig {
         match key {
-            LinkerConfigKey::Workspace => self
-                .workspace
-                .clone()
-                .unwrap_or_else(default_stub_config),
+            LinkerConfigKey::Workspace => {
+                self.workspace.clone().unwrap_or_else(default_stub_config)
+            }
             LinkerConfigKey::Path(path) => {
                 if !self.by_path.contains_key(path) {
                     match k816_link::load_config(path) {
@@ -63,11 +62,7 @@ impl LinkerConfigCache {
                 self.by_path
                     .get(path)
                     .cloned()
-                    .unwrap_or_else(|| {
-                        self.workspace
-                            .clone()
-                            .unwrap_or_else(default_stub_config)
-                    })
+                    .unwrap_or_else(|| self.workspace.clone().unwrap_or_else(default_stub_config))
             }
         }
     }
@@ -98,10 +93,7 @@ impl LinkerConfigCache {
 /// for `link.ld.ron` (preferred) then `link.ron` at each level. Returns the
 /// first match. Stops at `root` — never escapes the workspace, even if a
 /// matching file lives further up the filesystem.
-pub(super) fn discover_linker_config_for(
-    root: &Path,
-    source_path: &Path,
-) -> Option<PathBuf> {
+pub(super) fn discover_linker_config_for(root: &Path, source_path: &Path) -> Option<PathBuf> {
     let canonical_root = canonical_or_logical(root);
 
     let start = source_path.parent()?.to_path_buf();
@@ -219,7 +211,10 @@ mod tests {
         fs::write(&source, "").unwrap();
 
         let found = discover_linker_config_for(&root, &source);
-        assert!(found.is_none(), "found unexpected outside config: {found:?}");
+        assert!(
+            found.is_none(),
+            "found unexpected outside config: {found:?}"
+        );
     }
 
     #[test]

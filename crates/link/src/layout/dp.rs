@@ -108,9 +108,7 @@ pub(super) fn allocate(objects: &[O65Object]) -> (DpAllocations, Vec<LinkDiagnos
                             source: source.clone(),
                         },
                     );
-                    alloc
-                        .listing_order
-                        .push((name.clone(), offset, size as u8));
+                    alloc.listing_order.push((name.clone(), offset, size as u8));
                 }
                 None => {
                     errors.push(dp_overflow_diagnostic(

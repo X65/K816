@@ -553,7 +553,10 @@ fn format_dp_listing(dp_alloc: &dp::DpAllocations, objects: &[O65Object]) -> Str
     for (offset, name, size) in entries {
         match size {
             Some(size) if size > 1 => {
-                out.push_str(&format!("    ${offset:02X}..${:02X}: {name}\n", offset.saturating_add(size).saturating_sub(1)));
+                out.push_str(&format!(
+                    "    ${offset:02X}..${:02X}: {name}\n",
+                    offset.saturating_add(size).saturating_sub(1)
+                ));
             }
             Some(_) => {
                 out.push_str(&format!("    ${offset:02X}: {name}\n"));

@@ -284,12 +284,12 @@ fn mode_family_description(m: &str, mode: AddressingMode) -> String {
         Accumulator => format!("the accumulator (`{m} A`)"),
         Immediate8 => format!("an 8-bit immediate (`{m} #$NN`)"),
         Immediate16 => format!("a 16-bit immediate (`{m} #$NNNN`)"),
-        ImmediateM => format!(
-            "an M-width immediate (`{m} #$NN` under `@a8`, `{m} #$NNNN` under `@a16`)"
-        ),
-        ImmediateX => format!(
-            "an X-width immediate (`{m} #$NN` under `@i8`, `{m} #$NNNN` under `@i16`)"
-        ),
+        ImmediateM => {
+            format!("an M-width immediate (`{m} #$NN` under `@a8`, `{m} #$NNNN` under `@a16`)")
+        }
+        ImmediateX => {
+            format!("an X-width immediate (`{m} #$NN` under `@i8`, `{m} #$NNNN` under `@i16`)")
+        }
         DirectPage | DirectPageX | DirectPageY => {
             format!("a direct-page address (`{m} addr`, `{m} addr,X`, or `{m} addr,Y`)")
         }
@@ -307,9 +307,7 @@ fn mode_family_description(m: &str, mode: AddressingMode) -> String {
             format!("an absolute-long address (`{m} addr` or `{m} addr,X`)")
         }
         AbsoluteIndirect | AbsoluteIndirectLong | AbsoluteIndexedIndirectX => {
-            format!(
-                "an absolute-indirect address (`{m} (addr)`, `{m} [addr]`, or `{m} (addr,X)`)"
-            )
+            format!("an absolute-indirect address (`{m} (addr)`, `{m} [addr]`, or `{m} (addr,X)`)")
         }
         StackRelative | StackRelativeIndirectIndexedY => {
             format!("a stack-relative offset (`{m} offset,S` or `{m} (offset,S),Y`)")
@@ -558,15 +556,12 @@ fn enrich_invalid_indirect(
         AddressOperandMode::IndexedIndirectX => ("(addr,X)", "indexed-indirect operand"),
         AddressOperandMode::IndirectIndexedY => ("(addr),Y", "indirect-indexed operand"),
         AddressOperandMode::IndirectLong => ("[addr]", "long-indirect operand"),
-        AddressOperandMode::IndirectLongIndexedY => {
-            ("[addr],Y", "long-indirect-indexed operand")
-        }
+        AddressOperandMode::IndirectLongIndexedY => ("[addr],Y", "long-indirect-indexed operand"),
         _ => return None,
     };
 
-    let primary_msg = format!(
-        "`{mnemonic} {mode_syntax}` requires the address to lie within the direct page",
-    );
+    let primary_msg =
+        format!("`{mnemonic} {mode_syntax}` requires the address to lie within the direct page",);
     let inner_syntax = match mode {
         AddressOperandMode::Indirect => "(dp X)",
         AddressOperandMode::IndexedIndirectX => "(dp X,X)",

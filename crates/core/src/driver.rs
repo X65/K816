@@ -227,8 +227,13 @@ pub fn compile_sources_keeping_map(
 ) {
     let (source_map, source_ids) = assign_source_ids(sources);
     let externals = collect_workspace_externals(sources);
-    let results =
-        compile_sources_with_externals_inner(sources, &source_ids, &source_map, &externals, options);
+    let results = compile_sources_with_externals_inner(
+        sources,
+        &source_ids,
+        &source_map,
+        &externals,
+        options,
+    );
     (results, source_map, source_ids)
 }
 
@@ -672,8 +677,7 @@ mod tests {
             .expect_err("expected const-as-address rejection");
         let rendered = format!("{err:?}");
         assert!(
-            rendered.contains("`const BAR`")
-                && rendered.contains("cannot be used as an address"),
+            rendered.contains("`const BAR`") && rendered.contains("cannot be used as an address"),
             "expected const-as-address diagnostic, got {rendered}"
         );
     }

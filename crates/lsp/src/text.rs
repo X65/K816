@@ -347,9 +347,7 @@ pub(super) fn resolve_register_operand_at(
 
     fn check_operand(op: &Operand, offset: usize) -> Option<HlaCpuRegister> {
         match op {
-            Operand::Register { reg, span }
-                if span.start <= offset && offset <= span.end =>
-            {
+            Operand::Register { reg, span } if span.start <= offset && offset <= span.end => {
                 Some(*reg)
             }
             _ => None,

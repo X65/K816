@@ -43,7 +43,9 @@ pub fn link_diagnostic_to_diagnostic(
     };
 
     let mut diag = match link_diag.severity {
-        k816_link::LinkSeverity::Error => Diagnostic::error(primary_span, link_diag.message.clone()),
+        k816_link::LinkSeverity::Error => {
+            Diagnostic::error(primary_span, link_diag.message.clone())
+        }
         k816_link::LinkSeverity::Warning => {
             Diagnostic::warning(primary_span, link_diag.message.clone())
         }
@@ -133,7 +135,13 @@ fn anchor_byte_range(
 mod tests {
     use super::*;
 
-    fn dummy_anchor(file: &str, line: u32, col: u32, col_end: u32, line_text: &str) -> k816_o65::SourceLocation {
+    fn dummy_anchor(
+        file: &str,
+        line: u32,
+        col: u32,
+        col_end: u32,
+        line_text: &str,
+    ) -> k816_o65::SourceLocation {
         k816_o65::SourceLocation {
             file: file.to_string(),
             line,

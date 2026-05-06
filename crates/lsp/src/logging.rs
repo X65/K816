@@ -16,9 +16,7 @@ pub(crate) fn init() {
         let env = env_logger::Env::default().default_filter_or("k816_lsp=info");
         env_logger::Builder::from_env(env)
             .target(env_logger::Target::Stderr)
-            .format(|buf, record| {
-                writeln!(buf, "k816-lsp [{}] {}", record.level(), record.args())
-            })
+            .format(|buf, record| writeln!(buf, "k816-lsp [{}] {}", record.level(), record.args()))
             .init();
     });
 }

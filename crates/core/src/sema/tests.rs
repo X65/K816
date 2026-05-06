@@ -512,10 +512,7 @@ fn dp_fixed_var_does_not_expose_compile_time_address() {
         foo.compile_time_address().is_none(),
         "DP-class fixed vars must not surface as absolute addresses",
     );
-    assert_eq!(
-        foo.compile_time_dp_offset().expect("DP offset"),
-        0x42,
-    );
+    assert_eq!(foo.compile_time_dp_offset().expect("DP offset"), 0x42,);
     assert_eq!(
         foo.compile_time_numeric_value().expect("numeric value"),
         0x42,

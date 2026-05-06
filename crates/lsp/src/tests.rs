@@ -296,13 +296,10 @@ func test2 @a8 @i8 {
             )
         });
     assert!(
-        lsrx_diag
-            .supplements
-            .iter()
-            .any(|supplement| matches!(
-                supplement,
-                k816_core::diag::Supplemental::Help(help) if help.contains("lsrx #3")
-            )),
+        lsrx_diag.supplements.iter().any(|supplement| matches!(
+            supplement,
+            k816_core::diag::Supplemental::Help(help) if help.contains("lsrx #3")
+        )),
         "expected `lsrx #3` hint in supplements; got {:?}",
         lsrx_diag.supplements
     );
@@ -2070,9 +2067,7 @@ fn link_undefined_symbol_appears_as_diagnostic() {
                 && diag.message.contains("undefined symbol 'missing'")
         })
         .unwrap_or_else(|| {
-            panic!(
-                "expected an undefined-symbol diagnostic for 'missing'; got: {diagnostics:?}",
-            )
+            panic!("expected an undefined-symbol diagnostic for 'missing'; got: {diagnostics:?}",)
         });
 
     let missing_offset = main_text.find("missing").expect("missing token");
@@ -2220,7 +2215,9 @@ fn partition_splits_units_by_nearest_link_ld_ron() {
         "two configs should produce two units: {units:?}"
     );
     assert!(
-        units.iter().all(|u| matches!(u.config_key, LinkerConfigKey::Path(_))),
+        units
+            .iter()
+            .all(|u| matches!(u.config_key, LinkerConfigKey::Path(_))),
         "every unit should bind to a path-keyed config: {units:?}",
     );
 }
@@ -2289,7 +2286,8 @@ fn apply_fs_events_invalidates_linker_config_cache_on_change() {
     std::fs::create_dir_all(&unit_dir).expect("unit dir");
 
     let main_path = unit_dir.join("input.k65");
-    let main_text = "func main @a8 @i8 {\n    nop\n    nop\n    nop\n    nop\n    nop\n    nop\n}\n";
+    let main_text =
+        "func main @a8 @i8 {\n    nop\n    nop\n    nop\n    nop\n    nop\n    nop\n}\n";
     std::fs::write(&main_path, main_text).expect("main");
 
     let cfg_path = unit_dir.join("link.ld.ron");

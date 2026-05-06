@@ -677,8 +677,11 @@ fn single_file_build_command(
         source.as_str(),
     )));
     let (compile_outputs, source_map, source_ids) =
-        k816_core::compile_sources_all_or_nothing_keeping_map(&compile_inputs, auto_compile_render())
-            .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
+        k816_core::compile_sources_all_or_nothing_keeping_map(
+            &compile_inputs,
+            auto_compile_render(),
+        )
+        .map_err(|error| anyhow::Error::new(RenderedDiagnosticError(error.rendered)))?;
 
     let mut objects = Vec::with_capacity(compile_outputs.len());
     for output in compile_outputs {

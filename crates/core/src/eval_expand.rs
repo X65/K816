@@ -571,26 +571,51 @@ fn expand_symbolic_subscript_fields(
 
 fn expand_expr(
     expr: &Expr,
-    _span: Span,
+    span: Span,
     source_id: SourceId,
-    _diagnostics: &mut Vec<Diagnostic>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Expr {
     match expr {
         Expr::EvalText(input) => {
-            let expanded = match k816_eval::expand(input) {
+            // The evaluator runs with a fresh empty `EvalContext` and cannot see
+            // user-declared `const` symbols. For brackets like `[FOO + BAR]`
+            // referencing top-level k816 consts, the evaluator returns
+            // `UnknownIdentifier`; fall back to parsing the original text as a
+            // K65 expression so sema can resolve idents through `ctx.consts`.
+            let to_parse: String = match k816_eval::expand(input) {
                 Ok(expanded) => expanded,
-                Err(_err) => return Expr::Number(0, NumFmt::Dec),
+                Err(_eval_err) => input.clone(),
             };
 
-            match parse_expression_fragment(source_id, &expanded) {
+            match parse_expression_fragment(source_id, &to_parse) {
                 Ok(expr) => expr.node,
-                Err(_err) => Expr::Number(0, NumFmt::Dec),
+                Err(_parse_err) => {
+                    diagnostics.push(
+                        Diagnostic::error(span, "could not evaluate eval-bracket expression")
+                            .with_primary_label("eval-bracket expression")
+                            .with_help(format!(
+                                "the bracketed text `{}` is neither a valid evaluator \
+                                 expression nor a parseable K65 expression",
+                                input.trim()
+                            ))
+                            .with_note(
+                                "eval brackets `[...]` accept either evaluator expressions \
+                                 (numeric/float arithmetic, math functions like sin/cos/clamp, \
+                                 evaluator-block-local assignments like `[A=1, A*2]`) or K65 \
+                                 expressions referencing user-declared consts (`[FOO + BAR]`). \
+                                 If you meant a const reference, ensure the const is declared \
+                                 and reachable; if you meant evaluator math, the evaluator \
+                                 does not see top-level k816 consts.",
+                            ),
+                    );
+                    Expr::Number(0, NumFmt::Dec)
+                }
             }
         }
         Expr::Number(_, _) | Expr::Ident(_) | Expr::IdentSpanned { .. } => expr.clone(),
         Expr::Index { base, index } => Expr::Index {
-            base: Box::new(expand_expr(base, _span, source_id, _diagnostics)),
-            index: Box::new(expand_expr(index, _span, source_id, _diagnostics)),
+            base: Box::new(expand_expr(base, span, source_id, diagnostics)),
+            index: Box::new(expand_expr(index, span, source_id, diagnostics)),
         },
         Expr::Member {
             base,
@@ -598,26 +623,26 @@ fn expand_expr(
             start,
             end,
         } => Expr::Member {
-            base: Box::new(expand_expr(base, _span, source_id, _diagnostics)),
+            base: Box::new(expand_expr(base, span, source_id, diagnostics)),
             field: field.clone(),
             start: *start,
             end: *end,
         },
         Expr::Binary { op, lhs, rhs } => Expr::Binary {
             op: *op,
-            lhs: Box::new(expand_expr(lhs, _span, source_id, _diagnostics)),
-            rhs: Box::new(expand_expr(rhs, _span, source_id, _diagnostics)),
+            lhs: Box::new(expand_expr(lhs, span, source_id, diagnostics)),
+            rhs: Box::new(expand_expr(rhs, span, source_id, diagnostics)),
         },
         Expr::Unary { op, expr } => Expr::Unary {
             op: *op,
-            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
         },
         Expr::TypedView { expr, width } => Expr::TypedView {
-            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
             width: *width,
         },
         Expr::MetadataQuery { expr, query } => Expr::MetadataQuery {
-            expr: Box::new(expand_expr(expr, _span, source_id, _diagnostics)),
+            expr: Box::new(expand_expr(expr, span, source_id, diagnostics)),
             query: *query,
         },
     }

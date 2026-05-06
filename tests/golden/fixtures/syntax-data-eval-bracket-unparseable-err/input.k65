@@ -1,0 +1,9 @@
+const FOO = 42
+const BAR = 3
+
+data SOME {
+    [FOO|BAR]
+}
+
+func main {
+}

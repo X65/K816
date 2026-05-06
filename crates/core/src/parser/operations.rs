@@ -452,20 +452,14 @@ where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
     let shift_op = choice((
-        just(TokenKind::Lt)
-            .then_ignore(just(TokenKind::Lt))
+        just(TokenKind::LtLt)
             .then_ignore(just(TokenKind::Lt))
             .to(HlaShiftOp::Rol),
-        just(TokenKind::Gt)
-            .then_ignore(just(TokenKind::Gt))
+        just(TokenKind::GtGt)
             .then_ignore(just(TokenKind::Gt))
             .to(HlaShiftOp::Ror),
-        just(TokenKind::Lt)
-            .then_ignore(just(TokenKind::Lt))
-            .to(HlaShiftOp::Asl),
-        just(TokenKind::Gt)
-            .then_ignore(just(TokenKind::Gt))
-            .to(HlaShiftOp::Lsr),
+        just(TokenKind::LtLt).to(HlaShiftOp::Asl),
+        just(TokenKind::GtGt).to(HlaShiftOp::Lsr),
     ));
 
     let indexed = ident_parser()

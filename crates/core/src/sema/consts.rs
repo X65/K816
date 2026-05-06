@@ -434,19 +434,19 @@ fn eval_const_expr(expr: &Expr, ctx: &ConstEvalCtx<'_>) -> Result<Number, ConstE
         Expr::Binary { op, lhs, rhs } => {
             let lhs = eval_const_expr(lhs, ctx)?;
             let rhs = eval_const_expr(rhs, ctx)?;
+            let map_err = |error| match error {
+                EvaluatorError::Overflow => ConstExprError::Overflow,
+                _ => ConstExprError::NonInteger,
+            };
             match op {
-                ExprBinaryOp::Add => lhs.checked_add(rhs).map_err(|error| match error {
-                    EvaluatorError::Overflow => ConstExprError::Overflow,
-                    _ => ConstExprError::NonInteger,
-                }),
-                ExprBinaryOp::Sub => lhs.checked_sub(rhs).map_err(|error| match error {
-                    EvaluatorError::Overflow => ConstExprError::Overflow,
-                    _ => ConstExprError::NonInteger,
-                }),
-                ExprBinaryOp::Mul => lhs.checked_mul(rhs).map_err(|error| match error {
-                    EvaluatorError::Overflow => ConstExprError::Overflow,
-                    _ => ConstExprError::NonInteger,
-                }),
+                ExprBinaryOp::Add => lhs.checked_add(rhs).map_err(map_err),
+                ExprBinaryOp::Sub => lhs.checked_sub(rhs).map_err(map_err),
+                ExprBinaryOp::Mul => lhs.checked_mul(rhs).map_err(map_err),
+                ExprBinaryOp::BitOr => lhs.bit_or(rhs).map_err(map_err),
+                ExprBinaryOp::BitAnd => lhs.bit_and(rhs).map_err(map_err),
+                ExprBinaryOp::BitXor => lhs.bit_xor(rhs).map_err(map_err),
+                ExprBinaryOp::Shl => lhs.checked_shl(rhs).map_err(map_err),
+                ExprBinaryOp::Shr => lhs.checked_shr(rhs).map_err(map_err),
             }
         }
         Expr::Unary { op, expr } => {
@@ -484,6 +484,7 @@ fn eval_const_expr(expr: &Expr, ctx: &ConstEvalCtx<'_>) -> Result<Number, ConstE
                     .checked_neg()
                     .map(Number::Int)
                     .ok_or(ConstExprError::Overflow),
+                ExprUnaryOp::BitNot => Ok(Number::Int(!value)),
             }
         }
         Expr::TypedView { expr, .. } => eval_const_expr(expr, ctx),

@@ -540,6 +540,11 @@ pub enum ExprBinaryOp {
     Add,
     Sub,
     Mul,
+    BitOr,
+    BitAnd,
+    BitXor,
+    Shl,
+    Shr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,6 +555,7 @@ pub enum ExprUnaryOp {
     FarLittleEndian,
     EvalBracketed,
     Negate,
+    BitNot,
     /// `&EXPR` prefix: force the expression into address-operand position
     /// for indexed `,X`/`,Y` modes. Pass-through value-wise; suppresses the
     /// const-vs-address provenance check so a `const` may serve as a small

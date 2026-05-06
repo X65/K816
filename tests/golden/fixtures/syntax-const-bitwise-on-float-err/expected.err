@@ -1,11 +1,11 @@
 Error: could not evaluate eval-bracket expression
-   ╭─[ tests/golden/fixtures/syntax-data-eval-bracket-unparseable-err/input.k65:4:5 ]
+   ╭─[ tests/golden/fixtures/syntax-const-bitwise-on-float-err/input.k65:2:5 ]
    │
- 4 │     [( unbalanced]
-   │     ───────┬──────  
-   │            ╰──────── eval-bracket expression
+ 2 │     [1.5 | 2]
+   │     ────┬────  
+   │         ╰────── eval-bracket expression
    │ 
-   │ Help: the bracketed text `( unbalanced` is neither a valid evaluator expression nor a parseable K65 expression
+   │ Help: the bracketed text `1.5 | 2` is neither a valid evaluator expression nor a parseable K65 expression
    │ 
    │ Note: eval brackets `[...]` accept either evaluator expressions (numeric/float arithmetic, math functions like sin/cos/clamp, evaluator-block-local assignments like `[A=1, A*2]`) or K65 expressions referencing user-declared consts (`[FOO + BAR]`). If you meant a const reference, ensure the const is declared and reachable; if you meant evaluator math, the evaluator does not see top-level k816 consts.
 ───╯

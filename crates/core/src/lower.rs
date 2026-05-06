@@ -4977,6 +4977,11 @@ fn eval_to_number_strict(
                 ExprBinaryOp::Add => lhs.checked_add(rhs),
                 ExprBinaryOp::Sub => lhs.checked_sub(rhs),
                 ExprBinaryOp::Mul => lhs.checked_mul(rhs),
+                ExprBinaryOp::BitOr => Some(lhs | rhs),
+                ExprBinaryOp::BitAnd => Some(lhs & rhs),
+                ExprBinaryOp::BitXor => Some(lhs ^ rhs),
+                ExprBinaryOp::Shl => u32::try_from(rhs).ok().and_then(|n| lhs.checked_shl(n)),
+                ExprBinaryOp::Shr => u32::try_from(rhs).ok().and_then(|n| lhs.checked_shr(n)),
             }
             .or_else(|| {
                 diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
@@ -4995,6 +5000,7 @@ fn eval_to_number_strict(
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
                 }),
+                ExprUnaryOp::BitNot => Some(!value),
             }
         }
         Expr::TypedView { expr, .. } => eval_to_number_strict(expr, sema, span, diagnostics),
@@ -5203,7 +5209,8 @@ fn resolve_symbolic_byte_relocation(
         | ExprUnaryOp::FarLittleEndian
         | ExprUnaryOp::EvalBracketed
         | ExprUnaryOp::AddressPositioned
-        | ExprUnaryOp::Negate => return None,
+        | ExprUnaryOp::Negate
+        | ExprUnaryOp::BitNot => return None,
     };
 
     let symbol = expr_ident_name(expr.as_ref())?;
@@ -6993,6 +7000,15 @@ fn eval_address_expr(
                 ExprBinaryOp::Add => lhs_val.checked_add(rhs_val),
                 ExprBinaryOp::Sub => lhs_val.checked_sub(rhs_val),
                 ExprBinaryOp::Mul => lhs_val.checked_mul(rhs_val),
+                ExprBinaryOp::BitOr => Some(lhs_val | rhs_val),
+                ExprBinaryOp::BitAnd => Some(lhs_val & rhs_val),
+                ExprBinaryOp::BitXor => Some(lhs_val ^ rhs_val),
+                ExprBinaryOp::Shl => u32::try_from(rhs_val)
+                    .ok()
+                    .and_then(|n| lhs_val.checked_shl(n)),
+                ExprBinaryOp::Shr => u32::try_from(rhs_val)
+                    .ok()
+                    .and_then(|n| lhs_val.checked_shr(n)),
             }
             .or_else(|| {
                 diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
@@ -7012,6 +7028,7 @@ fn eval_address_expr(
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None
                 })?,
+                ExprUnaryOp::BitNot => !value,
             };
             // The `&EXPR` marker upgrades provenance to `Address` so a
             // const-rooted offset is accepted by the caller's address-vs-
@@ -7136,6 +7153,11 @@ fn eval_to_number(
                 ExprBinaryOp::Add => lhs.checked_add(rhs),
                 ExprBinaryOp::Sub => lhs.checked_sub(rhs),
                 ExprBinaryOp::Mul => lhs.checked_mul(rhs),
+                ExprBinaryOp::BitOr => Some(lhs | rhs),
+                ExprBinaryOp::BitAnd => Some(lhs & rhs),
+                ExprBinaryOp::BitXor => Some(lhs ^ rhs),
+                ExprBinaryOp::Shl => u32::try_from(rhs).ok().and_then(|n| lhs.checked_shl(n)),
+                ExprBinaryOp::Shr => u32::try_from(rhs).ok().and_then(|n| lhs.checked_shr(n)),
             }
             .or_else(|| {
                 diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
@@ -7150,6 +7172,7 @@ fn eval_to_number(
                 ExprUnaryOp::WordLittleEndian | ExprUnaryOp::FarLittleEndian => Some(value),
                 ExprUnaryOp::EvalBracketed => Some(value),
                 ExprUnaryOp::AddressPositioned => Some(value),
+                ExprUnaryOp::BitNot => Some(!value),
                 ExprUnaryOp::Negate => value.checked_neg().or_else(|| {
                     diagnostics.push(Diagnostic::error(span, "arithmetic overflow"));
                     None

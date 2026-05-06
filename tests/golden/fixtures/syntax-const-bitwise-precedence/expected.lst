@@ -1,0 +1,9 @@
+[default]
+000000: 0F 03 1F F0 FC 60
+
+
+[data obj#0 default::PREC]
+000000: <5 bytes of data>
+
+[disasm obj#0 default::main]
+000005: 60          rts

@@ -1,0 +1,23 @@
+const FLAG_NMI = $80
+const FLAG_DLI = $40
+const FLAG_VBI = $20
+
+// Const-level union: full expression parser, folds at sema time.
+const ALL_IRQ      = FLAG_NMI | FLAG_DLI | FLAG_VBI
+const NMI_NOT_DLI  = FLAG_NMI & ~FLAG_DLI
+const NMI_XOR_DLI  = FLAG_NMI ^ FLAG_DLI
+const BIT3         = 1 << 3
+const HIGH_NIBBLE  = $FF >> 4
+
+data SOME {
+    byte ALL_IRQ            // $E0
+    byte NMI_NOT_DLI        // $80
+    byte NMI_XOR_DLI        // $C0
+    byte BIT3               // $08
+    byte HIGH_NIBBLE        // $0F
+    [FLAG_NMI | FLAG_DLI]   // eval-bracket form, $C0
+    [1 << 5]                // pure-numeric eval, $20
+}
+
+func main {
+}

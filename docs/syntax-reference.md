@@ -315,6 +315,77 @@ The shorthand form only applies to comma-separated groups. A standalone declarat
 const LIMIT               // error
 ```
 
+## Expression Operators
+
+K65 expressions (used in `const NAME = …`, `var NAME = …`, instruction operands, eval brackets `[…]`, and other compile-time positions) support a C-style operator set. All ops fold at compile time when their operands resolve to integer constants — so flag-style unions, bit-position shifts, and mask inversions all work in `const` declarations and resolve to a single byte/word value at sema time.
+
+### Binary operators
+
+Listed from highest to lowest precedence. Same-row operators are left-associative.
+
+| Precedence | Operators | Description |
+|------------|-----------|-------------|
+| 1 (highest) | `*` | Multiplication |
+| 2 | `+`  `-` | Addition, subtraction |
+| 3 | `<<`  `>>` | Left shift, right shift |
+| 4 | `&` | Bitwise AND |
+| 5 | `^` | Bitwise XOR |
+| 6 (lowest) | `\|` | Bitwise OR |
+
+So `A \| B & C` parses as `A \| (B & C)`, `A + B & C` parses as `(A + B) & C`, and `A << 1 \| C` parses as `(A << 1) \| C` — matching standard C precedence.
+
+```k65
+const FLAG_NMI = $80
+const FLAG_DLI = $40
+const FLAG_VBI = $20
+
+const ALL_IRQ      = FLAG_NMI | FLAG_DLI | FLAG_VBI    // $E0
+const NMI_NOT_DLI  = FLAG_NMI & ~FLAG_DLI              // $80
+const NMI_XOR_DLI  = FLAG_NMI ^ FLAG_DLI               // $C0
+const BIT_3        = 1 << 3                            // $08
+const HIGH_NIBBLE  = $FF >> 4                          // $0F
+```
+
+### Unary operators
+
+| Operator | Description |
+|----------|-------------|
+| `-` | Numeric negation |
+| `~` | Bitwise NOT (one's complement) |
+
+Both repeat in the order written: `-~FOO` is Negate(BitNot(FOO)) and `~-FOO` is BitNot(Negate(FOO)).
+
+### Where compound expressions are accepted
+
+| Position | Compound expressions accepted? |
+|----------|-------------------------------|
+| `const NAME = expr` | yes |
+| `var NAME = expr` | yes |
+| Instruction operands (`a = expr`, `lda expr`, ...) | yes |
+| Eval brackets `[expr]` | yes (see notes below) |
+| Data-block entry value lists (`byte X Y Z`, `word X Y`, `far X`) | **no — atom-only** |
+
+Inside a data-block entry value list, each value must be a single atom: a numeric literal, an identifier (const or label reference), an address-byte operator (`&<`, `&>`, `&&`, `&&&`), or `?`. To use a compound expression in a `byte`/`word`/`far` line, declare a `const` that pre-folds the expression and reference the const, **or** wrap the expression in `[ … ]`:
+
+```k65
+const COMBINED = FLAG_A | FLAG_B    // const-decl path: full expression parser
+data SOME {
+    byte COMBINED                   // ✓ const reference, single atom
+    [FLAG_A | FLAG_B]               // ✓ eval-bracket form
+    byte FLAG_A | FLAG_B            // ✗ atom-list, doesn't accept `|`
+}
+```
+
+### Evaluator-bracket forms
+
+`[ expr ]` first tries the compile-time evaluator (which handles float math, `sin`/`cos`/`clamp`, evaluator-block-local assignments). If that fails (most commonly because the expression references user-declared k65 consts that the evaluator can't see), the bracketed text is re-parsed as a K65 expression and resolved through the const table. So `[FLAG_A | FLAG_B]` works on user consts because the K65 expression layer handles it after the evaluator declines.
+
+The evaluator side additionally supports `/`, `%`, comparison operators, ternary, and assignment-locals — these are not part of the K65 expression layer and only work on numeric/evaluator-local operands. `[1 / 2]` works; `[CONST_A / CONST_B]` does not (and produces a "could not evaluate eval-bracket expression" diagnostic).
+
+### `&&` gotcha
+
+Because `&&` is the existing 16-bit address-of unary prefix in K65, the expression `FOO && BAR` parses as bitwise-AND of `FOO` with `&&BAR` (the 16-bit address of `BAR`). This is rarely what a user wants if they're thinking of logical AND. K65 does not have a logical-AND operator at this layer; if you really need bitwise-AND with an address-of expression, write it with whitespace and parens to make the intent clear: `FOO & (&&BAR)`.
+
 ## Labels
 
 A label can be placed at the beginning of a statement. During assembly, the label is assigned the current value of the active location counter and serves as an instruction operand. There are two types of labels: global and local.

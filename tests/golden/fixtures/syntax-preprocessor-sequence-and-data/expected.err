@@ -1,4 +1,4 @@
-Error: invalid syntax: expected something else, ':', '*', '+', '-', ',', or '=', found number literal
+Error: invalid syntax: expected something else, ':', '*', '+', '-', '<<', '>>', '&', '^', '|', ',', or '=', found number literal
     ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:11 ]
     │
  10 │         3 4
@@ -62,7 +62,7 @@ Warning: invalid syntax: preprocessor directive ignored
    │ Note: K65/K816 sources are passed straight to the parser without a C-style preprocessor pass; the `#`-prefixed directives are recognized only so older K65 sources do not fail outright. Use the evaluator (`eval { ... }` blocks) for compile-time conditionals.
 ───╯
 
-Error: invalid syntax: expected something else, ':', '*', '+', '-', ',', or '=', found number literal
+Error: invalid syntax: expected something else, ':', '*', '+', '-', '<<', '>>', '&', '^', '|', ',', or '=', found number literal
     ╭─[ tests/golden/fixtures/syntax-preprocessor-sequence-and-data/input.k65:10:11 ]
     │
  10 │         3 4

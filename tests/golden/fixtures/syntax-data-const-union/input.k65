@@ -9,7 +9,7 @@ data SOME {
     byte FOO BAR 1 2 ?
     [FOO]
     [FOO + BAR]
-    [FOO * 2]
+    [FOO | BAR]
     repeat 3 {
         [FOO - BAR]
     }

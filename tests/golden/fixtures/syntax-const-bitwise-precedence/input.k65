@@ -1,0 +1,22 @@
+const A = $0F
+const B = $F0
+const C = $03
+
+// Const-decl level uses the full expression parser. Each const here folds
+// at sema time and verifies a precedence relationship.
+const PREC_OR_AND     = A | B & C        // A | (B & C) = $0F | $00 = $0F
+const PREC_ADD_AND    = A + B & C        // (A + B) & C = $FF & $03 = $03
+const PREC_SHL_OR     = A << 1 | C       // (A << 1) | C = $1E | $03 = $1F
+const PREC_NOT_AND    = ~A & $FF         // (~A) & $FF = $F0
+const PREC_XOR_CHAIN  = A ^ B ^ C        // (A ^ B) ^ C = $FF ^ $03 = $FC
+
+data PREC {
+    byte PREC_OR_AND
+    byte PREC_ADD_AND
+    byte PREC_SHL_OR
+    byte PREC_NOT_AND
+    byte PREC_XOR_CHAIN
+}
+
+func main {
+}

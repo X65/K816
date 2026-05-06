@@ -53,7 +53,7 @@ pub enum TokenKind {
     ModeI16,
 
     #[token("~")]
-    SwapOp,
+    Tilde,
 
     #[token("{")]
     LBrace,
@@ -99,6 +99,10 @@ pub enum TokenKind {
     LtLtEq,
     #[token(">>=")]
     GtGtEq,
+    #[token("<<")]
+    LtLt,
+    #[token(">>")]
+    GtGt,
     #[token("<=")]
     LtEq,
     #[token(">=")]

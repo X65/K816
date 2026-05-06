@@ -140,24 +140,28 @@ where
             })
             .boxed();
 
-        // Unary minus: numeric negation prefix. Sits outside the `&` address-of
-        // chain and inside `mul_expr`, so `5 - -1` parses as binary-sub of 5
-        // and Negate(1): the add-level loop greedily takes the binary `-`,
-        // and `signed_unary` then consumes the second `-`.
-        let signed_unary = just(TokenKind::Minus)
-            .repeated()
-            .count()
-            .then(unary)
-            .map(|(minus_count, mut inner)| {
-                for _ in 0..minus_count {
-                    inner = Expr::Unary {
-                        op: ExprUnaryOp::Negate,
-                        expr: Box::new(inner),
-                    };
-                }
-                inner
-            })
-            .boxed();
+        // Numeric unary prefixes: `-` (Negate) and `~` (BitNot). Both repeat in
+        // order so `-~FOO` and `~-FOO` produce distinct nestings. Sits outside
+        // the `&` address-of chain and inside `mul_expr`, so `5 - -1` parses
+        // as binary-sub of 5 and Negate(1): the add-level loop greedily takes
+        // the binary `-`, and `signed_unary` then consumes the second `-`.
+        let signed_unary = choice((
+            just(TokenKind::Tilde).to(ExprUnaryOp::BitNot),
+            just(TokenKind::Minus).to(ExprUnaryOp::Negate),
+        ))
+        .repeated()
+        .collect::<Vec<_>>()
+        .then(unary)
+        .map(|(ops, mut inner)| {
+            for op in ops.into_iter().rev() {
+                inner = Expr::Unary {
+                    op,
+                    expr: Box::new(inner),
+                };
+            }
+            inner
+        })
+        .boxed();
 
         let mul_expr = signed_unary
             .clone()
@@ -177,13 +181,91 @@ where
             })
             .boxed();
 
-        mul_expr
+        let add_expr = mul_expr
             .clone()
             .then(
                 just(TokenKind::Plus)
                     .to(ExprBinaryOp::Add)
                     .or(just(TokenKind::Minus).to(ExprBinaryOp::Sub))
                     .then(mul_expr)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, chain)| {
+                chain.into_iter().fold(lhs, |lhs, (op, rhs)| Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            })
+            .boxed();
+
+        // Bitwise/shift cascade follows C precedence (highest first):
+        //   shift  (<<, >>)  >  bit_and (&)  >  bit_xor (^)  >  bit_or (|)
+        // The binary `&` here only fires after a fully-parsed left operand,
+        // so it never competes with the address-of `&` prefix in `unary`
+        // (which only fires at the start of an atom).
+        let shift_expr = add_expr
+            .clone()
+            .then(
+                just(TokenKind::LtLt)
+                    .to(ExprBinaryOp::Shl)
+                    .or(just(TokenKind::GtGt).to(ExprBinaryOp::Shr))
+                    .then(add_expr)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, chain)| {
+                chain.into_iter().fold(lhs, |lhs, (op, rhs)| Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            })
+            .boxed();
+
+        let bit_and_expr = shift_expr
+            .clone()
+            .then(
+                just(TokenKind::Amp)
+                    .to(ExprBinaryOp::BitAnd)
+                    .then(shift_expr)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, chain)| {
+                chain.into_iter().fold(lhs, |lhs, (op, rhs)| Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            })
+            .boxed();
+
+        let bit_xor_expr = bit_and_expr
+            .clone()
+            .then(
+                just(TokenKind::Caret)
+                    .to(ExprBinaryOp::BitXor)
+                    .then(bit_and_expr)
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .map(|(lhs, chain)| {
+                chain.into_iter().fold(lhs, |lhs, (op, rhs)| Expr::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            })
+            .boxed();
+
+        bit_xor_expr
+            .clone()
+            .then(
+                just(TokenKind::Pipe)
+                    .to(ExprBinaryOp::BitOr)
+                    .then(bit_xor_expr)
                     .repeated()
                     .collect::<Vec<_>>(),
             )
@@ -364,6 +446,11 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprBinaryOp::Add => lhs.checked_add(rhs),
                 ExprBinaryOp::Sub => lhs.checked_sub(rhs),
                 ExprBinaryOp::Mul => lhs.checked_mul(rhs),
+                ExprBinaryOp::BitOr => Some(lhs | rhs),
+                ExprBinaryOp::BitAnd => Some(lhs & rhs),
+                ExprBinaryOp::BitXor => Some(lhs ^ rhs),
+                ExprBinaryOp::Shl => u32::try_from(rhs).ok().and_then(|n| lhs.checked_shl(n)),
+                ExprBinaryOp::Shr => u32::try_from(rhs).ok().and_then(|n| lhs.checked_shr(n)),
             }
         }
         Expr::Unary { op, expr } => {
@@ -375,6 +462,7 @@ pub(super) fn eval_static_expr(expr: &Expr) -> Option<i64> {
                 ExprUnaryOp::EvalBracketed => Some(value),
                 ExprUnaryOp::AddressPositioned => Some(value),
                 ExprUnaryOp::Negate => value.checked_neg(),
+                ExprUnaryOp::BitNot => Some(!value),
             }
         }
         Expr::TypedView { expr, .. } => eval_static_expr(expr),

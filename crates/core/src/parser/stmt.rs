@@ -265,7 +265,7 @@ where
     let swap_ab_stmt = chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("b") || value.eq_ignore_ascii_case("a") => value
     }
-    .then(just(TokenKind::SwapOp))
+    .then(just(TokenKind::Tilde))
     .then(chumsky::select! {
         TokenKind::Ident(value) if value.eq_ignore_ascii_case("a") || value.eq_ignore_ascii_case("b") => ()
     })

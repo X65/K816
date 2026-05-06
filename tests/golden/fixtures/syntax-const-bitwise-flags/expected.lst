@@ -1,0 +1,9 @@
+[default]
+000000: E0 80 C0 08 0F C0 20 60
+
+
+[data obj#0 default::SOME]
+000000: <7 bytes of data>
+
+[disasm obj#0 default::main]
+000007: 60          rts

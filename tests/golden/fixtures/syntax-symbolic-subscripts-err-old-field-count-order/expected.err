@@ -1,4 +1,4 @@
-Error: invalid syntax: expected something else, ':', '*', '+', '-', ',', newline, or ']', found '['
+Error: invalid syntax: unexpected '['
    ╭─[ tests/golden/fixtures/syntax-symbolic-subscripts-err-old-field-count-order/input.k65:2:12 ]
    │
  2 │     .string[20]:byte

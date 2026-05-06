@@ -1,0 +1,6 @@
+data SOME {
+    [1.5 | 2]
+}
+
+func main {
+}

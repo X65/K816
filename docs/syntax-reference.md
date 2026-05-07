@@ -18,8 +18,9 @@ K65 uses C-style comments:
 - Decimal: `42`
 - Hexadecimal: `0x2A` or `$2A`
 - Binary: `0b101010` or `%101010`
+- Character literals: `'A'`, `'\n'`, `'\0'`
 
-Within evaluator expressions, floating-point literals are also supported (e.g. `[1.5 + .5]`). When used as an instruction operand, the result is rounded to the nearest integer and AND-ed with `0xFF`.
+Within evaluator expressions, floating-point literals are also supported (e.g. `[1.5 + .5]`). Values that flow back into K65 integer contexts must resolve exactly to an integer and still pass the target width/range check; they are not rounded or masked automatically.
 
 ## Variable Declaration
 
@@ -31,7 +32,7 @@ Variables in K65 are named storage slots. Each declaration belongs to **one of t
 | Absolute (default) | `var NAME[:w]` or `var abs NAME[:w]`| 2 bytes       | per-segment cursor                          | no                    |
 | Far                | `var far NAME[:w]`                  | 3 bytes       | **none — must have an explicit address**    | yes                   |
 
-Storage class is set by the `dp` / `abs` / `far` prefix before the name. It is **independent** of the data-width suffix (`:byte`, `:word`, `:far`) — `var dp ptr:far` means a 3-byte FAR pointer **stored** in a 1-byte DP slot, addressable through `[ptr]`-style indirect-long forms. See the "two orthogonal axes" section below.
+Storage class is set by the `dp` / `abs` / `far` prefix before the name. It is **independent** of the data-width suffix (`:byte`, `:word`, `:far`) — `var dp ptr:far` means a 3-byte FAR pointer stored at a 1-byte DP offset. The DP pool reserves three bytes for the variable, while plain references to `ptr` use direct-page address encoding by default. See the "two orthogonal axes" section below.
 
 The final address of a variable is decided at one of two points:
 
@@ -170,7 +171,7 @@ var ptr:far = 0x3000   // 3-byte variable at $3000
                        // direct lda/sta is an error — no register holds 3 bytes
 ```
 
-The `:far` width marks a 24-bit / 3-byte memory slot. Direct register access of a `:far` variable always errors (no register can hold 3 bytes); use partial views (`ptr:word`, `(ptr+2):byte`) or indirect-long (`[ptr]`) instead.
+The `:far` width marks a 24-bit / 3-byte memory slot. Direct register access of a `:far` variable always errors (no register can hold 3 bytes); use partial views (`ptr:word`, `(ptr+2):byte`) or raw long-indirect mnemonic operands such as `lda [ptr]` instead.
 
 Use-site typed views apply the same widths to one expression:
 
@@ -221,7 +222,7 @@ func main {
 
 Auto-shrink behavior applies only when the address is known at compile time — numeric literals (`lda $80`) and Fixed vars (`var addr = $0080`). For unprefixed operands in that category, an address that fits in page 0 picks DirectPage encoding if the instruction supports it; otherwise Absolute, with AbsoluteLong reserved for cross-bank values.
 
-Allocated vars (those without an `= addr` initializer) are excluded from auto-shrink: the linker assigns the final address at link time, so the assembler cannot prove DP fit during encoding and defaults to 16-bit Absolute. To put an Allocated var in direct page, opt in with the declaration-position `dp` prefix (`var dp counter:byte`) — the assembler emits a 1-byte DP-width relocation, and the linker rejects it if the resolved address overflows `$00..$FF`. The same applies in reverse: declaration-level `:abs` / `:far` continue to bias plain references toward Absolute / AbsoluteLong on Fixed vars.
+Allocated vars (those without an `= addr` initializer) are excluded from auto-shrink: the linker assigns the final address at link time, so the assembler cannot prove DP fit during encoding and defaults to 16-bit Absolute. To put an Allocated var in direct page, opt in with the declaration-position `dp` prefix (`var dp counter:byte`) — the assembler emits a 1-byte DP-width relocation, and the linker rejects it if the resolved address overflows `$00..$FF`. The same applies in reverse: declaration-position `abs` / `far` prefixes bias plain references toward Absolute / AbsoluteLong on Fixed vars.
 
 `dp` and `abs` are recognized **only in the prefix slot** (immediately before an operand expression, or between `var` and the variable name), so they remain available as variable, label, and evaluator-function names (e.g. `var dp = 0` and the `abs(x)` evaluator function still work).
 
@@ -290,7 +291,7 @@ K65 also supports symbolic subscript arrays with named `.field` entries inside `
 
 ## Constant Declaration
 
-The best way of defining constants is using the evaluator. Evaluator-defined constants are processed in source order and can be mutated within a single evaluator block (`=`, `+=`, `++`, and similar operators). Reassigning the same constant name in a later top-level evaluator block is an error. Constants can be any value of floating point type. When used within a 6502 instruction, they are converted to a single byte by rounding to the nearest integer and AND-ing with `0xFF` (this way negative values are represented in U2 form).
+The best way of defining constants is using the evaluator. Evaluator-defined constants are processed in source order and can be mutated within a single evaluator block (`=`, `+=`, `++`, and similar operators). Reassigning the same constant name in a later top-level evaluator block is an error. Evaluator constants can be floating-point values, but K65 instruction operands, variable addresses, data widths, and other integer contexts require an exact integer value that fits the selected encoding width. The compiler does not round evaluator values or mask them to one byte automatically.
 
 ```k65
 [                       // square brace starts evaluator expression
@@ -365,13 +366,13 @@ Both repeat in the order written: `-~FOO` is Negate(BitNot(FOO)) and `~-FOO` is 
 | Eval brackets `[expr]` | yes (see notes below) |
 | Data-block entry value lists (`byte X Y Z`, `word X Y`, `far X`) | **no — atom-only** |
 
-Inside a data-block entry value list, each value must be a single atom: a numeric literal, an identifier (const or label reference), an address-byte operator (`&<`, `&>`, `&&`, `&&&`), or `?`. To use a compound expression in a `byte`/`word`/`far` line, declare a `const` that pre-folds the expression and reference the const, **or** wrap the expression in `[ … ]`:
+Inside a data-block entry value list, each value must be a single atom: a numeric literal, an identifier (const or label reference), an address-byte operator (`&<`, `&>`, `&&`, `&&&`), or `?`. To use a compound expression in a `byte`/`word`/`far` value list, declare a `const` that pre-folds the expression and reference the const. A standalone `[ … ]` data entry is also available for byte-oriented evaluator output:
 
 ```k65
 const COMBINED = FLAG_A | FLAG_B    // const-decl path: full expression parser
 data SOME {
     byte COMBINED                   // ✓ const reference, single atom
-    [FLAG_A | FLAG_B]               // ✓ eval-bracket form
+    [FLAG_A | FLAG_B]               // ✓ standalone byte-oriented eval-bracket entry
     byte FLAG_A | FLAG_B            // ✗ atom-list, doesn't accept `|`
 }
 ```
@@ -686,7 +687,7 @@ data MyData1 {
 }
 
 data MyData2 {
-  align 256 + 8         // align to 8 bytes after page boundary (lower address byte will be 0x08)
+  align 256             // align to a 256-byte boundary
   1 2 3 4 5 6 7 8
 }
 
@@ -742,7 +743,7 @@ a=&>addr               // LDA #>addr (high byte)
 
 ### `?` (Undefined Byte Placeholder)
 
-A bare `?` inside a data entry reserves a slot whose value is intentionally unspecified — "fill later" / "value doesn't matter". It is accepted in the same value alphabet as numeric literals, both in the implicit-default (bare-numeric) form and inside `byte` / `word` / `far` entries. (This is distinct from a `?` placed at the very end of a data block, which is a verbose-output flag — see the `?` (Verbose Flag) section later in the data-block documentation.)
+A bare `?` inside a data entry reserves a slot whose value is intentionally unspecified — "fill later" / "value doesn't matter". It is accepted in the same value alphabet as numeric literals, both in the implicit-default (bare-numeric) form and inside `byte` / `word` / `far` entries.
 
 ```k65
 data record {
@@ -794,10 +795,10 @@ Each value on a `word` line emits 2 bytes in little-endian order. Values can be:
 
 - **Numeric literals** (validated to fit in 16 bits): `word 0 $1234 255`
 - **Symbol references** (resolved to full 16-bit addresses): `word main RESET_HDL`
-- **Address byte operators**: `word &<ptr &>ptr` (still emit single bytes within the word context)
-- **Evaluator expressions**: `word [2+2] [SOME_CONST]`
+- **Address operators**: `word &&ptr` for a full 16-bit little-endian address
+- **Undef words** (`?`) for placeholder slots: `word ?`
 
-This replaces the verbose byte-splitting pattern using `&<` and `&>`:
+This replaces the verbose byte-splitting pattern using `&<` and `&>` in byte entries:
 
 ```k65
 // Before: manually split addresses into low/high bytes
@@ -832,8 +833,8 @@ Each value on a `far` line emits 3 bytes in little-endian order. Values can be:
 
 - **Numeric literals** (validated to fit in 24 bits): `far 0 $01C000 $ABCDEF`
 - **Symbol references** (resolved to full 24-bit addresses): `far main RESET_HDL`
-- **Address byte operators**: `far &<ptr &>ptr` (still emit single bytes within the far context)
-- **Evaluator expressions**: `far [2+2] [SOME_CONST]`
+- **Address operators**: `far &&&ptr` for a full 24-bit little-endian address
+- **Undef far slots** (`?`) for placeholder slots: `far ?`
 
 Note that since each `far` value is 3 bytes, a line of 8 far values produces 24 bytes.
 
@@ -974,22 +975,11 @@ image "RawSprite" = "raw.bmp"
 binary Blob = "payload.bin"
 ```
 
-### `?` (Verbose Flag)
-
-Adding `?` at the end of a data block makes the compiler print its address and size:
-
-```k65
-data generated {
-  code { a=1 }
-  ?
-}
-```
-
 ## Compile-time Evaluator
 
-The K65 compiler has an embedded evaluator that executes at compile-time. It can perform arbitrary math operations whose results are inlined in the final code as immediates. The evaluator can also set and use global compiler constants.
+The K65 compiler has an embedded evaluator that executes at compile-time. It can perform math operations whose integer results are inlined into K65 integer contexts. The evaluator can also set and use global compiler constants.
 
-In every place where the compiler expects a single number, you can invoke the evaluator using square brackets:
+In many expression positions where the compiler expects a number, you can invoke the evaluator using square brackets. In data blocks, a standalone eval-bracket entry emits byte-oriented output:
 
 ```k65
 data NumberFour {
@@ -1041,6 +1031,7 @@ Prec|Assoc|Operators|Description
 
 Function|Description
 :---|:---
+`abs(x)`|Absolute value
 `sin(x)`|Sine
 `cos(x)`|Cosine
 `asin(x)`|Arc sine
@@ -1054,15 +1045,14 @@ Function|Description
 `min(a, b)`|Minimum
 `max(a, b)`|Maximum
 `clamp(x, min, max)`|Clamp x to range
-`rnd()`|Random value `0 <= x < 1`
-`index(tab, x)`|1-dimensional indexing (same as `tab[x]`)
-`index(tab, x, y)`|2-dimensional indexing (same as `tab[x, y]`)
-`size(sec)`|Current size of section
-`addbyte(sec, b)`|Add byte to section
-`color(r, g, b)`|Nearest palette index for color (r, g, b)
-`color(x)`|Nearest palette index for color `0xRRGGBB`
-`print(msg)`|Print message
-`error(err)`|Print error and terminate compilation
+`index(tab, x)`|1-dimensional indexing helper for evaluator array literals
+`size(sec)`|Deferred compatibility function; currently rejected in deterministic evaluation
+`addbyte(sec, b)`|Deferred compatibility function; currently rejected because section mutation is not supported
+`color(r, g, b)`|Deferred compatibility function; currently rejected because palette conversion is not supported
+`color(x)`|Deferred compatibility function; currently rejected because palette conversion is not supported
+`rnd()`|Deferred compatibility function; currently rejected because randomness is disabled
+`print(msg)`|Deferred compatibility function; currently rejected because compile-time side effects are not supported
+`error(msg)`|Deferred compatibility function; currently rejected because compile-time side effects are not supported
 
 ## Assignment Chaining
 
@@ -1114,6 +1104,8 @@ For chains that genuinely do want the accumulator loaded too (e.g. storing the s
 
 ## Standard 6502 Instructions
 
+The per-instruction tables in this section document the classical 6502 spellings and the matching K65 HLA shorthand forms. k816 also accepts the 65816 native mnemonic modes listed in [65816 Addressing Modes in K65](#65816-addressing-modes-in-k65), and the exhaustive compiler coverage is kept in `tests/golden/fixtures/syntax-all-256-opcodes/`.
+
 ### [Address Modes](https://www.masswerk.at/6502/6502_instruction_set.html)
 
 - `A` accumulator `OPC A` operand is AC (implied single byte instruction)
@@ -1149,7 +1141,7 @@ In addition to the classical 6502 modes, the K65 operand grammar exposes these 6
 - `expr,S` — stack-relative (e.g. `lda 4,s`). Written the same for raw mnemonics and HLA forms.
 - `(expr,S),Y` — stack-relative indirect, Y-indexed (e.g. `lda (4,s),y`). Usable in both raw-mnemonic and HLA contexts.
 - `dp expr` / `abs expr` / `far expr` — operand prefixes that force the address-encoding width to DirectPage / Absolute (16-bit) / AbsoluteLong (24-bit). Composable with the index trailers (`abs expr,x`, `far expr,x`, etc.) and with the parenthesized indirect forms (`jmp (abs expr,x)`, `jmp (abs expr)`, `lda [dp expr]`, `lda [dp expr],y`).
-- `[expr]` — indirect-long. The emitted opcode depends on the mnemonic: `lda [zp]` picks `DirectPageIndirectLong`; `jmp [abs]` picks `AbsoluteIndirectLong`. The `[...]` operand form is currently recognised only when it directly follows a raw mnemonic (e.g. `lda [ptr]`, `jmp [vec]`); inside an HLA assignment like `a = [ptr]` the brackets are captured by the compile-time evaluator instead — use the raw form or declare a `:far` typed variable to get long-indirect semantics through HLA.
+- `[expr]` — indirect-long. The emitted opcode depends on the mnemonic: `lda [zp]` picks `DirectPageIndirectLong`; `jmp [abs]` picks `AbsoluteIndirectLong`. The `[...]` operand form is currently recognised only when it directly follows a raw mnemonic (e.g. `lda [ptr]`, `jmp [vec]`); inside an HLA assignment like `a = [ptr]` the brackets are captured by the compile-time evaluator instead. Use the raw mnemonic form for long-indirect addressing.
 - `[expr],Y` — indirect-long, Y-indexed. Raw-mnemonic only for the same reason.
 - `&expr` — address-positioned marker for `,X`/`,Y` indexed modes. Lets a `const` (or any const-rooted expression) serve as a small literal byte/word field offset when the struct base is in `X` or `Y`:
 
@@ -1162,7 +1154,7 @@ In addition to the classical 6502 modes, the K65 operand grammar exposes these 6
 
   Without the `&` marker, a bare const in `,X`/`,Y` position is rejected (`const` names a value, not a memory address). The marker is **only** valid in `,X` or `,Y` direct/absolute indexed modes; using it in plain direct/absolute, in stack-relative (`,s`), or inside `#expr` is an error. The marker rhymes with the `&`-led address-of family — `&&label` (16-bit address as immediate), `&&&label` (24-bit), `&<expr` / `&>expr` (low/high byte) — and is the inverse direction: it lets a value play the role of an address-mode operand.
 
-Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-index position is treated as an **immediate** operand, not a direct-page address. So `lda 0` and `inc 0` fail with *"does not accept #immediate operand"* for instructions without an immediate form. To target zero-page or absolute memory via a raw mnemonic, reference a symbolic name (declare `var addr = 0` and write `lda addr`), or attach an explicit address-encoding prefix (`lda dp 0`, `lda abs 0`, `lda far 0`). HLA assignment forms (`a = mem`, `mem = a`) look up the symbol in the semantic model and don't have this ambiguity.
+Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed value operand (`lda 0`, `lda addr`, `lda expr`) is an address-mode operand. Bare `const` names and const-rooted expressions are rejected in address position because `const` names values, not memory locations; use `#CONST` for an immediate, declare a `var`/label for memory access, or attach an address-encoding prefix (`lda dp 0`, `lda abs 0`, `lda far 0`) when a numeric literal should force a specific address width. The address-of operators `&&label` and `&&&label` are the intentional exception: they produce immediate relocations even without `#`.
 
 ### Registers
 
@@ -1173,12 +1165,12 @@ Operand quirk for **raw mnemonics**: a bare number literal in the Direct + no-in
 - `Y` index register Y (8/16 bit)
 - `D` direct page register (16 bit)
 - `S` stack pointer (16 bit)
-- `PC` program counter (16 bit)
-- `DBR` data bank register
-- `PBR` program bank register
-- `P` processor status register **NVMXDIZC** (8 bit)
+- `PC` program counter (16 bit; CPU architectural register, not an HLA assignment target)
+- `DBR` data bank register (CPU architectural register, manipulated with native mnemonics such as `phb`/`plb`)
+- `PBR` program bank register (CPU architectural register, manipulated through long control flow and `phk`)
+- `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p`, `flag`, or an individual flag name)
 
-In K65 HLA syntax, single-letter register names (A, B, X, Y, D, S) are native symbols used in assignment and transfer expressions. The `b~a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
+In K65 HLA syntax, single-letter register names `A`, `B`, `C`, `D`, `S`, `X`, and `Y` are native symbols used by the supported assignment, transfer, and stack shorthand parsers. Not every CPU register is a general-purpose assignment target; unsupported HLA assignments are rejected and must be written with the dedicated native mnemonic. The `b~a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
 
 ### SR Flags NVMXDIZC
 
@@ -1201,7 +1193,7 @@ Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` 
 
 ### Processor Stack
 
-**LIFO**, top down, 8 bit range `0x0100 - 0x01FF`
+**LIFO**, descending. In emulation mode the stack is page-1 based (`0x0100 - 0x01FF`); in native mode the 65816 uses the 16-bit `S` register.
 
 ### Bytes, Words, Addressing
 
@@ -1448,7 +1440,13 @@ BPL  Branch on Result Plus
 
 ### `BRK` interrupt
 
-/\* TBD \*/
+Raw mnemonic: `brk` or `brk #imm`. The one-character shorthand `%` emits
+`brk #0`, which is useful as a compact debug breakpoint marker.
+
+```k65
+%        // brk #0
+brk #1   // explicit BRK immediate
+```
 
 ```none
 BRK  Force Break
@@ -1468,7 +1466,7 @@ BRK  Force Break
 - `<<={ ... }`
 - `>>= goto label`
 - `{ ... } >>=`
-- `v+{ ... }`
+- `v+?{ ... }`
 - `v- goto label`
 - `{ ... } v-`
 
@@ -1490,7 +1488,7 @@ BVC  Branch on Overflow Clear
 - `>>={ ... }`
 - `<<= goto label`
 - `{ ... } <<=`
-- `v-{ ... }`
+- `v-?{ ... }`
 - `v+ goto label`
 - `{ ... } v+`
 
@@ -1937,7 +1935,6 @@ LSR  Shift One Bit Right (Memory or Accumulator)
 - `*` for single NOP
 - `* N` to emit `N` NOPs (where `N` is a constant expression: literal, global `const`, or inline-fn `#param`)
 - `<mnemonic> * N` to repeat any implied-addressing instruction `N` times (e.g. `inx * 3`, `clc * 2`, `pha * 4`)
-- `%` is shorthand for `brk #0`
 
 ```none
 NOP  No Operation
@@ -2001,7 +1998,7 @@ PHA  Push Accumulator on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`flag!!`|||||||
+|`p!!` / `flag!!`|||||||
 
 ```none
 PHP  Push Processor Status on Stack
@@ -2039,7 +2036,7 @@ PLA  Pull Accumulator from Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`flag??`|||||||
+|`p??` / `flag??`|||||||
 
 ```none
 PLP  Pull Processor Status from Stack
@@ -3180,20 +3177,20 @@ Comparison|Flag|Prefix|Goto|Postfix|6502
 `!=`|`z-?`|`=={ ... }`|`!= goto label`|`{ ... } !=`|BNE
 `<0`|`n+?`|`>=0{ ... }`|`<0 goto label`|`{ ... } <0`|BMI
 `>=0`|`n-?`|`<0{ ... }`|`>=0 goto label`|`{ ... } >=0`|BPL
-`>>=`|`v-`|`<<={ ... }`|`>>= goto label`|`{ ... } >>=`|BVC
-`<<=`|`v+`|`>>={ ... }`|`<<= goto label`|`{ ... } <<=`|BVS
+`>>=`|`v-` / `v-?`|`<<={ ... }` or `v+?{ ... }`|`>>= goto label` or `v- goto label`|`{ ... } >>=` or `{ ... } v-`|BVC
+`<<=`|`v+` / `v+?`|`>>={ ... }` or `v-?{ ... }`|`<<= goto label` or `v+ goto label`|`{ ... } <<=` or `{ ... } v+`|BVS
 
 Note: prefix form inverts the condition (block executes when condition is false, branch skips over it).
 
 ### Prefix Form
 
-The condition before `{ ... }` causes a branch *over* the block when true:
+Prefix form emits a branch *over* the block, so the parser uses the opposite branch mnemonic for the block condition:
 
 ```k65
 a?10
 >={ x++ }             // executes x++ only when A < 10 (BCS skips over)
 
-c+?{ mem++ }          // executes mem++ only when carry is clear
+c-?{ mem++ }          // executes mem++ only when carry is clear
 ```
 
 ### Goto Form
@@ -3298,7 +3295,6 @@ The `>` and `<=` postfix operators emit efficiency warnings:
 * 5                     // 5 NOPs
 * COUNT                 // N NOPs, with N from a global `const`
 inx * 3                 // repeat any implied-mode instruction N times
-%                       // brk #0 (debug breakpoint)
 ```
 
 ## Preprocessor Directives

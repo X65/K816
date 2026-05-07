@@ -1,0 +1,18 @@
+func target {
+    *
+}
+
+func main @a8 @i8 {
+    v+ goto target
+    { } v+
+    { } v-
+    o-
+    o+? goto target
+    o-? goto target
+    o+?{ * }
+    o-?{ * }
+    { } o+?
+    { } o-?
+    o!!
+    o??
+}

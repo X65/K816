@@ -70,11 +70,14 @@ where
             );
 
     let v_flag =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
             .ignore_then(
                 just(TokenKind::Plus)
+                    .then_ignore(just(TokenKind::Question))
                     .to(do_close_branch("bvs"))
-                    .or(just(TokenKind::Minus).to(do_close_branch("bvc"))),
+                    .or(just(TokenKind::Minus)
+                        .then_ignore(just(TokenKind::Question))
+                        .to(do_close_branch("bvc"))),
             );
 
     let signed_cmp = just(TokenKind::Lt)

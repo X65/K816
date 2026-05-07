@@ -306,7 +306,7 @@ where
             );
 
     let v_flag =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
+        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") => () }
             .ignore_then(
                 just(TokenKind::Plus)
                     .then_ignore(just(TokenKind::Question))

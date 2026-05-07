@@ -340,7 +340,6 @@ pub enum HlaCompareOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HlaBranchForm {
     FlagQuestion,
-    FlagPlain,
     Symbolic,
 }
 

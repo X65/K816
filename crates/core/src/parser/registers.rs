@@ -35,7 +35,6 @@ pub(super) fn parse_stack_target(value: &str) -> Option<HlaStackTarget> {
         || value.eq_ignore_ascii_case("flag")
         || value.eq_ignore_ascii_case("n")
         || value.eq_ignore_ascii_case("v")
-        || value.eq_ignore_ascii_case("o")
         || value.eq_ignore_ascii_case("m")
         || value.eq_ignore_ascii_case("i")
         || value.eq_ignore_ascii_case("z")

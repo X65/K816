@@ -543,7 +543,7 @@ where
                     flag: HlaFlag::Interrupt,
                     set: false,
                 })),
-                ("v" | "o", false) => Ok(Stmt::Hla(HlaStmt::FlagSet {
+                ("v", false) => Ok(Stmt::Hla(HlaStmt::FlagSet {
                     flag: HlaFlag::Overflow,
                     set: false,
                 })),

@@ -1467,8 +1467,8 @@ BRK  Force Break
 - `>>= goto label`
 - `{ ... } >>=`
 - `v+?{ ... }`
-- `v- goto label`
-- `{ ... } v-`
+- `v-? goto label`
+- `{ ... } v-?`
 
 ```none
 BVC  Branch on Overflow Clear
@@ -1489,8 +1489,8 @@ BVC  Branch on Overflow Clear
 - `<<= goto label`
 - `{ ... } <<=`
 - `v-?{ ... }`
-- `v+ goto label`
-- `{ ... } v+`
+- `v+? goto label`
+- `{ ... } v+?`
 
 ```none
 BVS  Branch on Overflow Set
@@ -3177,8 +3177,8 @@ Comparison|Flag|Prefix|Goto|Postfix|6502
 `!=`|`z-?`|`=={ ... }`|`!= goto label`|`{ ... } !=`|BNE
 `<0`|`n+?`|`>=0{ ... }`|`<0 goto label`|`{ ... } <0`|BMI
 `>=0`|`n-?`|`<0{ ... }`|`>=0 goto label`|`{ ... } >=0`|BPL
-`>>=`|`v-` / `v-?`|`<<={ ... }` or `v+?{ ... }`|`>>= goto label` or `v- goto label`|`{ ... } >>=` or `{ ... } v-`|BVC
-`<<=`|`v+` / `v+?`|`>>={ ... }` or `v-?{ ... }`|`<<= goto label` or `v+ goto label`|`{ ... } <<=` or `{ ... } v+`|BVS
+`>>=`|`v-?`|`<<={ ... }` or `v+?{ ... }`|`>>= goto label` or `v-? goto label`|`{ ... } >>=` or `{ ... } v-?`|BVC
+`<<=`|`v+?`|`>>={ ... }` or `v-?{ ... }`|`<<= goto label` or `v+? goto label`|`{ ... } <<=` or `{ ... } v+?`|BVS
 
 Note: prefix form inverts the condition (block executes when condition is false, branch skips over it).
 

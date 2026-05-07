@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::HlaFlag;
 
 #[test]
 fn parses_address_statement_inside_code_block() {
@@ -237,6 +238,57 @@ fn rejects_unknown_stack_shorthand_target() {
             .any(|error| error.message.contains("unsupported stack shorthand")),
         "expected unsupported stack shorthand error, got: {errors:?}"
     );
+}
+
+#[test]
+fn rejects_bare_overflow_conditionals_and_o_aliases() {
+    let cases = [
+        "v+ goto target",
+        "{ } v+",
+        "{ } v-",
+        "o-",
+        "o+? goto target",
+        "o-? goto target",
+        "o+?{ * }",
+        "o-?{ * }",
+        "{ } o+?",
+        "{ } o-?",
+        "o!!",
+        "o??",
+    ];
+
+    for case in cases {
+        let source = format!("func main {{\n  {case}\n}}\n");
+        assert!(
+            parse(SourceId(0), &source).is_err(),
+            "expected removed overflow/o alias form to fail: {case}"
+        );
+    }
+}
+
+#[test]
+fn parses_v_minus_then_goto_as_two_statements() {
+    let source = "func main {\n  v- goto target\n}\n";
+    let parsed = parse(SourceId(0), source).expect("parse");
+    let Item::CodeBlock(block) = &parsed.items[0].node else {
+        panic!("expected code block");
+    };
+    assert_eq!(block.body.len(), 2);
+    assert!(matches!(
+        block.body[0].node,
+        Stmt::Hla(HlaStmt::FlagSet {
+            flag: HlaFlag::Overflow,
+            set: false,
+        })
+    ));
+    assert!(matches!(
+        block.body[1].node,
+        Stmt::Hla(HlaStmt::Goto {
+            indirect: false,
+            far: false,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -490,8 +542,7 @@ fn invalid_flag_goto_parser_matches_signed_flag_form() {
 
 #[test]
 fn keeps_flag_and_symbolic_branch_goto_forms_distinct() {
-    let source =
-        "func main {\n  c-? goto target\n  < goto target\n  v+ goto target\n  <<= goto target\n}\n";
+    let source = "func main {\n  c-? goto target\n  < goto target\n  v+? goto target\n  <<= goto target\n}\n";
     let parsed = parse(SourceId(0), source).expect("parse");
     let Item::CodeBlock(block) = &parsed.items[0].node else {
         panic!("expected code block");
@@ -522,7 +573,7 @@ fn keeps_flag_and_symbolic_branch_goto_forms_distinct() {
         third,
         Stmt::Hla(HlaStmt::BranchGoto {
             mnemonic,
-            form: HlaBranchForm::FlagPlain,
+            form: HlaBranchForm::FlagQuestion,
             ..
         }) if mnemonic == "bvs"
     ));

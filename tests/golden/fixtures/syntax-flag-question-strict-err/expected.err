@@ -1,0 +1,15 @@
+Error: invalid syntax: expected something else, ':', '*', '+', '-', '<<', '>>', '&', '^', '|', ',', or '=', found identifier 'target'
+   ╭─[ tests/golden/fixtures/syntax-flag-question-strict-err/input.k65:6:13 ]
+   │
+ 6 │     v+ goto target
+   │             ───┬──  
+   │                ╰──── here
+───╯
+
+Error: invalid syntax: expected '~', '-', '&', something else, '(', or '?', found newline
+   ╭─[ tests/golden/fixtures/syntax-flag-question-strict-err/input.k65:7:11 ]
+   │
+ 7 │     { } v+
+   │           │ 
+   │           ╰─ expected here
+───╯

@@ -62,8 +62,8 @@ where
             ("z", false) => "bne",
             ("n", true) => "bmi",
             ("n", false) => "bpl",
-            ("v" | "o", true) => "bvs",
-            ("v" | "o", false) => "bvc",
+            ("v", true) => "bvs",
+            ("v", false) => "bvc",
             _ => {
                 let sign = if plus { '+' } else { '-' };
                 return Err(Rich::custom(
@@ -80,14 +80,6 @@ where
     })
     .boxed();
 
-    let v_flag_goto =
-        chumsky::select! { TokenKind::Ident(value) if value.eq_ignore_ascii_case("v") || value.eq_ignore_ascii_case("o") => () }
-            .ignore_then(
-                just(TokenKind::Plus)
-                    .to(("bvs", HlaBranchForm::FlagPlain))
-                    .or(just(TokenKind::Minus).to(("bvc", HlaBranchForm::FlagPlain))),
-            );
-
     let signed_goto = just(TokenKind::Lt)
         .ignore_then(zero_number_token())
         .to(("bmi", HlaBranchForm::Symbolic))
@@ -100,7 +92,6 @@ where
         .or(just(TokenKind::GtGtEq).to(("bvc", HlaBranchForm::Symbolic)));
 
     let symbolic_branch_goto_stmt = choice((
-        v_flag_goto,
         signed_goto,
         overflow_goto,
         just(TokenKind::Lt).to(("bcc", HlaBranchForm::Symbolic)),

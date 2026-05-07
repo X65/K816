@@ -9,8 +9,8 @@ func main @a8 @i8 {
     z-? goto target
     n+? goto target
     n-? goto target
-    v+ goto target
-    v- goto target
+    v+? goto target
+    v-? goto target
     <0 goto target
     >=0 goto target
     <<= goto target

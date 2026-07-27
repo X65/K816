@@ -30,6 +30,7 @@
 pub mod ast;
 pub mod diagnostic;
 pub mod effects;
+pub mod emit_ca65;
 pub mod isa;
 pub mod lower;
 pub mod op;
@@ -89,7 +90,35 @@ pub fn analyze_workspace(_map: &SourceMap, _options: &Options) -> Analysis {
 
 /// Compiles one file to ca65 assembly.
 ///
-/// Stub until emission lands (sub-plan A6).
-pub fn compile_to_ca65(_map: &SourceMap, _file: FileId, _options: &Options) -> CompileResult {
-    unimplemented!("compile_to_ca65 lands with sub-plan A6")
+/// Runs the complete pipeline — parse, analyze, lower, emit — and returns
+/// the assembly together with all diagnostics. Errors suppress emission but
+/// never stop diagnostic collection.
+pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> CompileResult {
+    let parse = parser::parse_source(map.file(file), None);
+    let (model, semantic_diagnostics) = semantic::analyze_file(&parse.file);
+    let mut diagnostics = parse.diagnostics;
+    diagnostics.extend(semantic_diagnostics);
+    if diagnostic::has_errors(&diagnostics) {
+        return CompileResult {
+            assembly: None,
+            diagnostics,
+        };
+    }
+
+    let (program, lower_diagnostics) = lower::lower(&parse.file, &model);
+    diagnostics.extend(lower_diagnostics);
+    if diagnostic::has_errors(&diagnostics) {
+        return CompileResult {
+            assembly: None,
+            diagnostics,
+        };
+    }
+
+    // `options.optimize` engages the effect-aware optimizer (sub-plan A7).
+    let _ = options;
+    let assembly = emit_ca65::emit(map, file, &model, &program);
+    CompileResult {
+        assembly: Some(assembly),
+        diagnostics,
+    }
 }

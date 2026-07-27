@@ -1,0 +1,8 @@
+var SCREEN = $0400
+
+func main @a8 @i16 {
+    a = #0
+    a = #1
+    SCREEN = a
+    return
+}

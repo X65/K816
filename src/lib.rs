@@ -28,6 +28,7 @@
 //! project semantics on its own.
 
 pub mod ast;
+pub mod compat;
 pub mod diagnostic;
 pub mod effects;
 pub mod emit_ca65;

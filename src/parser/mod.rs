@@ -30,7 +30,7 @@ mod ast_builder;
 mod cst;
 mod diagnostics;
 
-pub use cst::SyntaxTree;
+pub use cst::{SourceEdit, SyntaxTree};
 
 use crate::ast::AstFile;
 use crate::diagnostic::Diagnostic;

@@ -1,0 +1,15 @@
+# Generation fingerprint for the committed Tree-sitter artifacts.
+#
+# `cargo test --test corpus` re-hashes every file listed here and fails when
+# a hash differs, so editing `grammar.js` without regenerating cannot pass
+# quietly. Regenerate with `npx tree-sitter-cli@0.26 generate` in
+# `tree-sitter-k65/`, then refresh this file with
+# `UPDATE_GENERATED_LOCK=1 cargo test --test corpus`.
+#
+# Hashes are FNV-1a/64 over the raw file bytes.
+
+tree-sitter-cli = 0.26
+grammar.js = 5a3b9c51303aeb67
+src/parser.c = 6e197a32c3d16982
+src/grammar.json = 7012194c4687ef61
+src/node-types.json = cbcaa06a8aea7189

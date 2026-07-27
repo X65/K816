@@ -246,9 +246,112 @@ pub enum StatementKind {
     Call(CallStatement),
     /// `inc_x` on its own — a call or an inline expansion.
     BareCall(Name),
+    /// `>={ ... }` / `c-?{ ... }`, with an optional `else`.
+    Conditional(ConditionalBlock),
+    /// `< goto label`, `c-? break`, `!= repeat`.
+    ConditionalJump(ConditionalJump),
+    /// `{ ... } !=`, `{ ... } always`, `{ ... } never`.
+    Loop(LoopStatement),
+    /// `goto label`, `goto (vec)`, `goto far label`.
+    Goto(GotoStatement),
+    /// `break` on its own.
+    Break,
+    /// `repeat` on its own.
+    Repeat,
+    /// `nocross { ... }` — advisory page-fit request on code.
+    Nocross(Block),
     Return(ReturnKind),
     /// Malformed statement; the span covers the unparsable region.
     Error,
+}
+
+/// A branch condition, in either of its two spellings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BranchCondition {
+    pub kind: BranchConditionKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchConditionKind {
+    /// `<`, `>=`, `==`, `!=`, `<0`, `>=0`, `<=`, `>`, `<<=`, `>>=`
+    Comparison(ComparisonKind),
+    /// `c+?`, `n-?`, `z+?`, `v-?`
+    Flag { flag: TestableFlag, set: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComparisonKind {
+    /// `<` — BCC
+    Less,
+    /// `>=` — BCS
+    GreaterEqual,
+    /// `==` — BEQ
+    Equal,
+    /// `!=` — BNE
+    NotEqual,
+    /// `<0` — BMI
+    Negative,
+    /// `>=0` — BPL
+    NotNegative,
+    /// `<<=` — BVS
+    OverflowSet,
+    /// `>>=` — BVC
+    OverflowClear,
+    /// `>` — the inefficient forward form.
+    Greater,
+    /// `<=` — the inefficient backward form.
+    LessEqual,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestableFlag {
+    Carry,
+    Negative,
+    Zero,
+    Overflow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionalBlock {
+    pub condition: BranchCondition,
+    pub body: Block,
+    /// The `else` block, if one was written.
+    pub otherwise: Option<Block>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConditionalJump {
+    pub condition: BranchCondition,
+    pub jump: Box<Statement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoopStatement {
+    pub body: Block,
+    /// `nocross { ... } !=` — the wrapper form.
+    pub nocross: bool,
+    pub condition: LoopCondition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopCondition {
+    /// `{ ... } !=` — branch back while the condition holds.
+    Branch(BranchCondition),
+    /// `{ ... } always` — an unconditional loop.
+    Always,
+    /// `{ ... } never` — a one-shot block.
+    Never,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GotoStatement {
+    /// The jump target. `goto (vec)` holds the vector's address expression.
+    pub target: Expr,
+    /// `goto (vec)` — jump through the address stored at the target.
+    pub indirect: bool,
+    /// `goto far label` — JML rather than JMP.
+    pub is_far: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

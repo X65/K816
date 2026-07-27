@@ -236,6 +236,13 @@ impl Lowering<'_> {
             StatementKind::Call(_) | StatementKind::BareCall(_) => {
                 self.skipped(span, "a function call");
             }
+            StatementKind::Conditional(_)
+            | StatementKind::ConditionalJump(_)
+            | StatementKind::Loop(_)
+            | StatementKind::Goto(_)
+            | StatementKind::Break
+            | StatementKind::Repeat
+            | StatementKind::Nocross(_) => self.skipped(span, "a branch or loop statement"),
             // Analysis reports labels as not-yet-implemented, so lowering is
             // never reached with one.
             StatementKind::Label(_) => self.skipped(span, "a label"),

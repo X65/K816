@@ -24,10 +24,11 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, ExprKind, FlagKind, FunctionKind,
-    HlaOperandKind, HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope,
-    MetadataQueryKind, NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind,
-    StepOp, StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, ComparisonKind,
+    ExprKind, FlagKind, FunctionKind, HlaOperandKind, HlaStatement, IndexRegister,
+    IndexRegisterKind, ItemKind, LabelScope, LoopCondition, MetadataQueryKind, NativeOperand,
+    RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind, StepOp, StorageClassKind,
+    TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -275,6 +276,44 @@ fn dump_ast(file: &AstFile) -> String {
                             )
                         }
                         StatementKind::BareCall(target) => format!("call {}", target.text),
+                        StatementKind::Conditional(conditional) => format!(
+                            "if {} ({} statements){}",
+                            dump_condition(conditional.condition.kind),
+                            conditional.body.statements.len(),
+                            match &conditional.otherwise {
+                                Some(otherwise) =>
+                                    format!(" else ({} statements)", otherwise.statements.len()),
+                                None => String::new(),
+                            }
+                        ),
+                        StatementKind::ConditionalJump(jump) => {
+                            format!("{} jump", dump_condition(jump.condition.kind))
+                        }
+                        StatementKind::Loop(loop_statement) => format!(
+                            "loop{} ({} statements) {}",
+                            if loop_statement.nocross {
+                                " nocross"
+                            } else {
+                                ""
+                            },
+                            loop_statement.body.statements.len(),
+                            match loop_statement.condition {
+                                LoopCondition::Always => "always".to_owned(),
+                                LoopCondition::Never => "never".to_owned(),
+                                LoopCondition::Branch(condition) => dump_condition(condition.kind),
+                            }
+                        ),
+                        StatementKind::Goto(goto) => format!(
+                            "goto {}{}{}",
+                            if goto.is_far { "far " } else { "" },
+                            if goto.indirect { "indirect " } else { "" },
+                            dump_expr(&goto.target.kind)
+                        ),
+                        StatementKind::Break => "break".to_owned(),
+                        StatementKind::Repeat => "repeat".to_owned(),
+                        StatementKind::Nocross(body) => {
+                            format!("nocross ({} statements)", body.statements.len())
+                        }
                         StatementKind::Error => "error".to_owned(),
                     };
                     out.push_str(&format!(
@@ -289,6 +328,34 @@ fn dump_ast(file: &AstFile) -> String {
         }
     }
     out
+}
+
+fn dump_condition(kind: BranchConditionKind) -> String {
+    match kind {
+        BranchConditionKind::Comparison(comparison) => match comparison {
+            ComparisonKind::Less => "<",
+            ComparisonKind::GreaterEqual => ">=",
+            ComparisonKind::Equal => "==",
+            ComparisonKind::NotEqual => "!=",
+            ComparisonKind::Negative => "<0",
+            ComparisonKind::NotNegative => ">=0",
+            ComparisonKind::OverflowSet => "<<=",
+            ComparisonKind::OverflowClear => ">>=",
+            ComparisonKind::Greater => ">",
+            ComparisonKind::LessEqual => "<=",
+        }
+        .to_owned(),
+        BranchConditionKind::Flag { flag, set } => format!(
+            "{}{}?",
+            match flag {
+                TestableFlag::Carry => "c",
+                TestableFlag::Negative => "n",
+                TestableFlag::Zero => "z",
+                TestableFlag::Overflow => "v",
+            },
+            if set { "+" } else { "-" }
+        ),
+    }
 }
 
 fn dump_width(kind: WidthAnnotationKind) -> &'static str {
@@ -1454,6 +1521,89 @@ fn section_forms_and_contracts_name_their_owner() {
     ] {
         let mut map = SourceMap::new();
         let id = map.add_file("section.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            "`{source}`"
+        );
+    }
+}
+
+#[test]
+fn control_flow_ast_snapshot_is_exact() {
+    let source = "func main @a8 {
+    >={ x++ }
+    < goto done
+    != repeat
+    { x++ } !=
+    { } always
+    =={ a = #1 } else { a = #2 }
+    goto (vec)
+    nocross { y++ } <0
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("control.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(
+        dump_ast(&result.file),
+        "\
+func main @a8 @0..162
+  if >= (1 statements) @20..29
+  < jump @34..45
+  != jump @50..59
+  loop (1 statements) != @64..74
+  loop (0 statements) always @79..89
+  if == (1 statements) else (1 statements) @94..122
+  goto indirect vec @127..137
+  loop nocross (1 statements) <0 @142..160
+"
+    );
+}
+
+#[test]
+fn a_condition_after_a_block_closes_that_block() {
+    // The documented hazard: `{ x++ } !=` is a loop, and `!= { y++ }` is a
+    // conditional. Consecutive blocks must not let the postfix condition of
+    // one become the prefix condition of the next.
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "postfix.k65",
+        "func f {\n  { x++ } !=\n  { y++ } ==\n  { } always\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 3);
+    for statement in &func.body.statements {
+        assert!(
+            matches!(statement.kind, StatementKind::Loop(_)),
+            "expected a loop, got {:?}",
+            statement.kind
+        );
+    }
+}
+
+#[test]
+fn control_flow_statements_name_their_owner() {
+    for source in [
+        "func main @a8 { >={ } }\n",
+        "func main @a8 { < goto done }\n",
+        "func main @a8 { { } always }\n",
+        "func main @a8 { goto done }\n",
+        "func main @a8 { break }\n",
+        "func main @a8 { repeat }\n",
+        "func main @a8 { nocross { } }\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("control.k65", source);
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);

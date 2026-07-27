@@ -528,7 +528,23 @@
           "named": true
         },
         {
+          "type": "break_statement",
+          "named": true
+        },
+        {
           "type": "call_statement",
+          "named": true
+        },
+        {
+          "type": "conditional_block",
+          "named": true
+        },
+        {
+          "type": "conditional_jump",
+          "named": true
+        },
+        {
+          "type": "goto_statement",
           "named": true
         },
         {
@@ -573,6 +589,18 @@
         },
         {
           "type": "native_instruction",
+          "named": true
+        },
+        {
+          "type": "nocross_block",
+          "named": true
+        },
+        {
+          "type": "postfix_loop",
+          "named": true
+        },
+        {
+          "type": "repeat_statement",
           "named": true
         },
         {
@@ -779,6 +807,76 @@
     }
   },
   {
+    "type": "conditional_block",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "branch_condition",
+            "named": true
+          }
+        ]
+      },
+      "else": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "else_clause",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "conditional_jump",
+    "named": true,
+    "fields": {
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "branch_condition",
+            "named": true
+          }
+        ]
+      },
+      "jump": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "break_statement",
+            "named": true
+          },
+          {
+            "type": "goto_statement",
+            "named": true
+          },
+          {
+            "type": "repeat_statement",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "const_declaration",
     "named": true,
     "fields": {},
@@ -942,6 +1040,22 @@
         "types": [
           {
             "type": "type_suffix",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "else_clause",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
             "named": true
           }
         ]
@@ -1280,6 +1394,84 @@
         "types": [
           {
             "type": "width_annotation",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "goto_statement",
+    "named": true,
+    "fields": {
+      "far": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "far_marker",
+            "named": true
+          }
+        ]
+      },
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
             "named": true
           }
         ]
@@ -1884,6 +2076,11 @@
     }
   },
   {
+    "type": "loop_condition",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "metadata_query",
     "named": true,
     "fields": {
@@ -2086,6 +2283,22 @@
     }
   },
   {
+    "type": "nocross_block",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "parenthesized_expression",
     "named": true,
     "fields": {},
@@ -2150,6 +2363,40 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "postfix_loop",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          },
+          {
+            "type": "nocross_block",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "branch_condition",
+            "named": true
+          },
+          {
+            "type": "loop_condition",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -2939,9 +3186,21 @@
     "named": true
   },
   {
+    "type": "always",
+    "named": false
+  },
+  {
     "type": "block_comment",
     "named": true,
     "extra": true
+  },
+  {
+    "type": "branch_condition",
+    "named": true
+  },
+  {
+    "type": "break_statement",
+    "named": true
   },
   {
     "type": "byte",
@@ -2960,6 +3219,10 @@
     "named": false
   },
   {
+    "type": "else",
+    "named": false
+  },
+  {
     "type": "far",
     "named": false
   },
@@ -2973,6 +3236,10 @@
   },
   {
     "type": "func",
+    "named": false
+  },
+  {
+    "type": "goto",
     "named": false
   },
   {
@@ -3005,12 +3272,24 @@
     "named": false
   },
   {
+    "type": "never",
+    "named": false
+  },
+  {
+    "type": "nocross",
+    "named": false
+  },
+  {
     "type": "number",
     "named": true
   },
   {
     "type": "offsetof",
     "named": false
+  },
+  {
+    "type": "repeat_statement",
+    "named": true
   },
   {
     "type": "return",

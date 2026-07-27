@@ -46,7 +46,9 @@
  *     the `*` NOP and `%` break markers;
  *   - code sections: `func`, `naked`, `inline`, `far func`, and the legacy
  *     bare `main`, with width annotations, call contracts, module-level
- *     default widths, scoped width blocks, calls, and `return` / `return_i`.
+ *     default widths, scoped width blocks, calls, and `return` / `return_i`;
+ *   - control flow: the prefix, goto, and postfix branch forms, `always` /
+ *     `never` loops, `break` / `repeat`, `else`, `goto`, and `nocross`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -161,6 +163,8 @@ export default grammar({
     [$.bare_call, $.address],
     // `call far NAME` versus `call NAME` followed by a bare call.
     [$.call_statement],
+    // `goto far label` versus `goto label` followed by something.
+    [$.goto_statement],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
     // statements, not the single shift `(mem << mem,x) >>>`; likewise `* 5`
     // and `* COUNT` are two NOP counts, not `5 * COUNT`. Both readings are
@@ -350,6 +354,84 @@ export default grammar({
         ),
       ),
 
+    // ---- Branches, conditionals, and loops --------------------------------
+    //
+    // A condition is either a comparison operator or a flag test. The prefix
+    // form inverts it — `>={ ... }` runs the block when A < 10, because the
+    // branch it emits skips *over* the block.
+    branch_condition: _ =>
+      token(
+        choice(
+          // Longest first: `>=0` must not lex as `>=` then `0`, and `<<=`
+          // must not lex as the shift operator `<<`.
+          '>=0',
+          '<0',
+          '<<=',
+          '>>=',
+          '>=',
+          '<=',
+          '==',
+          '!=',
+          '<',
+          '>',
+          // Flag tests: `c+?`, `c-?`, `n+?`, ... for the six testable flags.
+          seq(choice('c', 'C', 'n', 'N', 'z', 'Z', 'v', 'V'), choice('+', '-'), '?'),
+        ),
+      ),
+
+    // `>={ ... }` / `c-?{ ... }`, with an optional `else`.
+    conditional_block: $ =>
+      seq(
+        field('condition', $.branch_condition),
+        field('body', $.block),
+        optional(field('else', $.else_clause)),
+      ),
+
+    else_clause: $ => seq('else', field('body', $.block)),
+
+    // `< goto label`, `c-? goto done`, `< break`, `!= repeat`.
+    conditional_jump: $ =>
+      seq(field('condition', $.branch_condition), field('jump', $._jump)),
+
+    _jump: $ => choice($.goto_statement, $.break_statement, $.repeat_statement),
+
+    // `{ ... } !=`, `{ ... } always`, `{ ... } never`, and the `nocross`
+    // wrapper form `nocross { ... } !=`.
+    // A condition *after* a block belongs to that block, not to whatever
+    // follows: `{ x++ } !=` is a loop, and only then may `{ ... }` start a new
+    // conditional. Both readings parse — this is the documented
+    // statement-boundary hazard — so the postfix form outranks the prefix one.
+    postfix_loop: $ =>
+      prec(
+        1,
+        prec.dynamic(
+        1,
+        seq(
+          field('body', choice($.block, $.nocross_block)),
+          field('condition', choice($.branch_condition, $.loop_condition)),
+        ),
+        ),
+      ),
+
+    loop_condition: _ => choice('always', 'never'),
+
+    goto_statement: $ =>
+      seq(
+        'goto',
+        optional(field('far', alias($.identifier, $.far_marker))),
+        choice(
+          field('target', $.identifier),
+          seq('(', field('target', $._expression), ')'),
+        ),
+      ),
+
+    break_statement: _ => 'break',
+
+    repeat_statement: _ => 'repeat',
+
+    // `nocross { ... }` — advisory on code, asking that the block fit a page.
+    nocross_block: $ => seq('nocross', field('body', $.block)),
+
     // `inc_x` on its own calls or inlines that function. It carries the
     // lowest dynamic precedence of any statement: a bare name is the weakest
     // possible claim on a token, so anything else that can parse wins.
@@ -376,6 +458,13 @@ export default grammar({
         $.width_block,
         $.call_statement,
         $.bare_call,
+        $.conditional_block,
+        $.conditional_jump,
+        $.postfix_loop,
+        $.goto_statement,
+        $.break_statement,
+        $.repeat_statement,
+        $.nocross_block,
         $.return_statement,
       ),
 

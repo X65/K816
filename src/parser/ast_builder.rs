@@ -28,15 +28,17 @@
 
 use crate::ast::{
     AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryExpr, BinaryOp, Block,
-    BlockMoveOperand, CallContract, CallStatement, ConstDeclaration, ConstEntry, ContractOutputs,
-    ContractParameter, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function,
-    FunctionKind, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
-    HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister, IndexRegisterKind, IndirectOperand,
-    Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand, MetadataQuery,
-    MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register, RegisterKind, ReturnKind,
-    ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass, StorageClassKind,
-    SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
-    WidthAnnotation, WidthAnnotationKind, WidthBlock,
+    BlockMoveOperand, BranchCondition, BranchConditionKind, CallContract, CallStatement,
+    ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
+    ContractOutputs, ContractParameter, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind,
+    Function, FunctionKind, GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag,
+    HlaOperand, HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister,
+    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
+    LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name,
+    NativeInstruction, NativeOperand, Register, RegisterKind, ReturnKind, ShiftOp, StackOp,
+    Statement, StatementKind, StepOp, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag,
+    TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
+    WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -439,6 +441,22 @@ impl AstBuilder<'_> {
                     }),
                     span: self.span(child),
                 }),
+                "conditional_block" => statements.push(self.conditional_block(child)),
+                "conditional_jump" => statements.push(self.conditional_jump(child)),
+                "postfix_loop" => statements.push(self.postfix_loop(child)),
+                "goto_statement" => statements.push(self.goto_statement(child)),
+                "break_statement" => statements.push(Statement {
+                    kind: StatementKind::Break,
+                    span: self.span(child),
+                }),
+                "repeat_statement" => statements.push(Statement {
+                    kind: StatementKind::Repeat,
+                    span: self.span(child),
+                }),
+                "nocross_block" => statements.push(Statement {
+                    kind: StatementKind::Nocross(self.body_of(child)),
+                    span: self.span(child),
+                }),
                 "bare_call" => statements.push(Statement {
                     kind: StatementKind::BareCall(
                         self.name(child.child_by_field_name("target"), child),
@@ -827,6 +845,164 @@ impl AstBuilder<'_> {
                 right: self.register(node.child_by_field_name("right"), node),
             })),
             span: self.span(node),
+        }
+    }
+
+    /// The `body` block of `node`, or an empty one anchored at its end when
+    /// recovery lost it.
+    fn body_of(&mut self, node: Node<'_>) -> Block {
+        match node.child_by_field_name("body") {
+            Some(body) if body.kind() == "block" => self.block(body),
+            _ => {
+                let span = self.span(node);
+                Block {
+                    statements: Vec::new(),
+                    span: Span::empty_at(span.file, span.end),
+                }
+            }
+        }
+    }
+
+    /// A branch condition, in either its comparison or its flag-test
+    /// spelling. The grammar accepts only these, so an unknown one is an
+    /// internal mismatch rather than user error.
+    fn branch_condition(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> BranchCondition {
+        let parent_span = self.span(parent);
+        let fallback = BranchCondition {
+            kind: BranchConditionKind::Comparison(ComparisonKind::NotEqual),
+            span: Span::empty_at(parent_span.file, parent_span.start),
+        };
+        let Some(node) = node else {
+            self.unexpected(parent, "a branch condition");
+            return fallback;
+        };
+        let text = self.text(node).to_ascii_lowercase();
+        let kind = match text.as_str() {
+            "<" => BranchConditionKind::Comparison(ComparisonKind::Less),
+            ">=" => BranchConditionKind::Comparison(ComparisonKind::GreaterEqual),
+            "==" => BranchConditionKind::Comparison(ComparisonKind::Equal),
+            "!=" => BranchConditionKind::Comparison(ComparisonKind::NotEqual),
+            "<0" => BranchConditionKind::Comparison(ComparisonKind::Negative),
+            ">=0" => BranchConditionKind::Comparison(ComparisonKind::NotNegative),
+            "<<=" => BranchConditionKind::Comparison(ComparisonKind::OverflowSet),
+            ">>=" => BranchConditionKind::Comparison(ComparisonKind::OverflowClear),
+            ">" => BranchConditionKind::Comparison(ComparisonKind::Greater),
+            "<=" => BranchConditionKind::Comparison(ComparisonKind::LessEqual),
+            flag_test => {
+                let mut characters = flag_test.chars();
+                let flag = match characters.next() {
+                    Some('c') => TestableFlag::Carry,
+                    Some('n') => TestableFlag::Negative,
+                    Some('z') => TestableFlag::Zero,
+                    Some('v') => TestableFlag::Overflow,
+                    _ => {
+                        self.unexpected(node, "a branch condition");
+                        return fallback;
+                    }
+                };
+                BranchConditionKind::Flag {
+                    flag,
+                    set: characters.next() == Some('+'),
+                }
+            }
+        };
+        BranchCondition {
+            kind,
+            span: self.span(node),
+        }
+    }
+
+    fn conditional_block(&mut self, node: Node<'_>) -> Statement {
+        let otherwise = node
+            .child_by_field_name("else")
+            .map(|clause| self.body_of(clause));
+        Statement {
+            kind: StatementKind::Conditional(ConditionalBlock {
+                condition: self.branch_condition(node.child_by_field_name("condition"), node),
+                body: self.body_of(node),
+                otherwise,
+            }),
+            span: self.span(node),
+        }
+    }
+
+    fn conditional_jump(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let condition = self.branch_condition(node.child_by_field_name("condition"), node);
+        let jump = match node.child_by_field_name("jump") {
+            Some(jump) => match jump.kind() {
+                "goto_statement" => self.goto_statement(jump),
+                "break_statement" => Statement {
+                    kind: StatementKind::Break,
+                    span: self.span(jump),
+                },
+                "repeat_statement" => Statement {
+                    kind: StatementKind::Repeat,
+                    span: self.span(jump),
+                },
+                _ => {
+                    self.unexpected(jump, "a conditional jump");
+                    Statement {
+                        kind: StatementKind::Error,
+                        span: self.span(jump),
+                    }
+                }
+            },
+            None => Statement {
+                kind: StatementKind::Error,
+                span: Span::empty_at(span.file, span.end),
+            },
+        };
+        Statement {
+            kind: StatementKind::ConditionalJump(ConditionalJump {
+                condition,
+                jump: Box::new(jump),
+            }),
+            span,
+        }
+    }
+
+    fn postfix_loop(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let body_node = node.child_by_field_name("body");
+        let nocross = body_node.is_some_and(|body| body.kind() == "nocross_block");
+        let body = match body_node {
+            Some(body) if body.kind() == "nocross_block" => self.body_of(body),
+            Some(body) => self.block(body),
+            None => Block {
+                statements: Vec::new(),
+                span: Span::empty_at(span.file, span.start),
+            },
+        };
+        let condition_node = node.child_by_field_name("condition");
+        let condition = match condition_node.map(|condition| self.text(condition)) {
+            Some("always") => LoopCondition::Always,
+            Some("never") => LoopCondition::Never,
+            _ => LoopCondition::Branch(self.branch_condition(condition_node, node)),
+        };
+        Statement {
+            kind: StatementKind::Loop(LoopStatement {
+                body,
+                nocross,
+                condition,
+            }),
+            span,
+        }
+    }
+
+    fn goto_statement(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let target = self.expr(node.child_by_field_name("target"), node);
+        // `goto (vec)` keeps its parentheses in the source text, which is how
+        // the indirect form is told from the direct one.
+        let indirect = self.text(node).contains('(');
+        Statement {
+            kind: StatementKind::Goto(GotoStatement {
+                target,
+                indirect,
+                is_far: self.far_marker(node),
+            }),
+            span,
         }
     }
 

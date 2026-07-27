@@ -334,6 +334,18 @@ impl Analysis {
                 "scoped width blocks",
                 compat::Owner::WidthAndContracts,
             )),
+            // Branches, loops, and jumps are recognized but not lowered yet.
+            StatementKind::Conditional(_)
+            | StatementKind::ConditionalJump(_)
+            | StatementKind::Loop(_)
+            | StatementKind::Goto(_)
+            | StatementKind::Break
+            | StatementKind::Repeat
+            | StatementKind::Nocross(_) => self.diagnostics.push(compat::unimplemented(
+                statement.span,
+                "branch and loop statements",
+                compat::Owner::HlaLowering,
+            )),
             StatementKind::Call(_) | StatementKind::BareCall(_) => {
                 self.diagnostics.push(compat::unimplemented(
                     statement.span,

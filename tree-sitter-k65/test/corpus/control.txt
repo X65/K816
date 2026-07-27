@@ -1,0 +1,350 @@
+================================================================================
+Prefix conditional form
+================================================================================
+
+func main {
+  a?10
+  >={ x++ }
+  c-?{ mem++ }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (number)))
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (register))))
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (hla_step
+            target: (address
+              value: (identifier))))))))
+
+================================================================================
+Conditional goto, break, and repeat
+================================================================================
+
+func main {
+  < goto done
+  c-? goto done
+  < break
+  != repeat
+  break
+  repeat
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (conditional_jump
+        condition: (branch_condition)
+        jump: (goto_statement
+          target: (identifier)))
+      (conditional_jump
+        condition: (branch_condition)
+        jump: (goto_statement
+          target: (identifier)))
+      (conditional_jump
+        condition: (branch_condition)
+        jump: (break_statement))
+      (conditional_jump
+        condition: (branch_condition)
+        jump: (repeat_statement))
+      (break_statement)
+      (repeat_statement))))
+
+================================================================================
+Postfix loop form
+================================================================================
+
+func main {
+  x=10 {
+    x--
+  } !=
+  {
+    a = ready
+  } n-?
+  { } always
+  { } never
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (number)))
+      (postfix_loop
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (address
+              value: (identifier))))
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (loop_condition))
+      (postfix_loop
+        body: (block)
+        condition: (loop_condition)))))
+
+================================================================================
+A condition after a block closes it
+================================================================================
+
+func main {
+  { x++ } !=
+  { y++ } ==
+  { } always
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (postfix_loop
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block
+          (hla_step
+            target: (register)))
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (loop_condition)))))
+
+================================================================================
+If-else
+================================================================================
+
+func main {
+  =={
+    a = #1
+  } else {
+    a = #2
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (immediate
+              value: (number))))
+        else: (else_clause
+          body: (block
+            (hla_assignment
+              operand: (register)
+              operand: (immediate
+                value: (number)))))))))
+
+================================================================================
+Flow control instructions
+================================================================================
+
+func main {
+  goto label
+  goto (vec)
+  goto far label
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (goto_statement
+        target: (identifier))
+      (goto_statement
+        target: (identifier))
+      (goto_statement
+        far: (far_marker)
+        target: (identifier)))))
+
+================================================================================
+nocross code wrappers
+================================================================================
+
+func main {
+  nocross {
+    a = mem
+    x++
+  } !=
+  nocross {
+    y++
+  }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (postfix_loop
+        body: (nocross_block
+          body: (block
+            (hla_assignment
+              operand: (register)
+              operand: (address
+                value: (identifier)))
+            (hla_step
+              target: (register))))
+        condition: (branch_condition))
+      (nocross_block
+        body: (block
+          (hla_step
+            target: (register)))))))
+
+================================================================================
+Every branch condition spelling
+================================================================================
+
+func main {
+  { } <
+  { } >=
+  { } ==
+  { } !=
+  { } <0
+  { } >=0
+  { } <<=
+  { } >>=
+  { } >
+  { } <=
+  { } c+?
+  { } c-?
+  { } n+?
+  { } n-?
+  { } z+?
+  { } z-?
+  { } v+?
+  { } v-?
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block)
+        condition: (branch_condition)))))
+
+================================================================================
+A wait loop
+================================================================================
+
+func main @a8 @i8 {
+  { a&?UART_READY } n-?
+  { a=ready } n-?
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (postfix_loop
+        body: (block
+          (hla_arithmetic
+            register: (register)
+            operand: (address
+              value: (identifier))))
+        condition: (branch_condition))
+      (postfix_loop
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (address
+              value: (identifier))))
+        condition: (branch_condition)))))

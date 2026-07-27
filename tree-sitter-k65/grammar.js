@@ -46,7 +46,8 @@
  *     the `*` NOP and `%` break markers;
  *   - code sections: `func`, `naked`, `inline`, `far func`, and the legacy
  *     bare `main`, with width annotations, call contracts, module-level
- *     default widths, scoped width blocks, calls, and `return` / `return_i`;
+ *     default widths, call contracts on both the header and the call site,
+ *     `call` / `call far` / `far NAME`, and `return` / `return_i`;
  *   - control flow: the prefix, goto, and postfix branch forms, `always` /
  *     `never` loops, `break` / `repeat`, `else`, `goto`, and `nocross`;
  *   - data blocks and the compile-time evaluator: placement directives,
@@ -192,18 +193,23 @@ export default grammar({
     [$.var_declaration],
     [$.bare_call, $._expression],
     [$.bare_call, $._expression, $.address],
-    [$.bare_call, $.address],
-    // `call far NAME` versus `call NAME` followed by a bare call.
-    [$.call_statement],
+    // A statement-leading `far` opens either the keyword-less far call or an
+    // operand prefix on an instruction whose mnemonic is still to come.
+    [$.call_statement, $._address_encoding],
+    [$.bare_call, $._expression, $._address_encoding],
+    [$.bare_call, $._address_encoding],
+    // A contract-bearing call reads its arguments after the name; a bare one
+    // stops at the name and lets the next statement start.
+    [$.bare_call],
+    [$._expression, $._address_encoding],
     // A `[` after a mnemonic opens an indirect-long operand, whose interior
     // is a K65 expression; anywhere else it opens the evaluator, whose
     // interior is a different grammar over some of the same tokens.
     [$._expression, $._eval_expression],
-    [$.long_indirect, $._expression, $._eval_expression],
+    [$._expression, $._eval_expression, $._address_encoding],
     // A comma inside `f(a, b)` separates arguments; elsewhere it is the
     // evaluator's expression-list operator.
     [$._eval_argument, $._eval_expression],
-    [$._eval_argument, $._expression],
     // Bare `nocross` guards the following run, `nocross EXPR` sizes one
     // chunk, and `nocross code { }` wraps a subblock — three readings of the
     // same keyword, separated by what comes after it.
@@ -214,8 +220,6 @@ export default grammar({
     [$.typed_entry],
     // The loose `image` argument run ends where the next entry begins.
     [$.reserved_image_block],
-    // `goto far label` versus `goto label` followed by something.
-    [$.goto_statement],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
     // statements, not the single shift `(mem << mem,x) >>>`; likewise `* 5`
     // and `* COUNT` are two NOP counts, not `5 * COUNT`. Both readings are
@@ -225,7 +229,6 @@ export default grammar({
     // Inside `(`, an identifier may be an encoding prefix or the operand
     // expression itself — the same one-token-late decision as above.
     [$.address, $._expression],
-    [$.indirect, $._expression],
     // `lda (foo)` is an indirect operand, not a parenthesized address — the
     // dynamic precedences settle it.
     [$.indirect, $.parenthesized_expression],
@@ -323,7 +326,7 @@ export default grammar({
     // followed by the optional call contract `(a, x) -> @a8 a, y`.
     func_declaration: $ =>
       seq(
-        optional(field('far', alias($.identifier, $.far_marker))),
+        optional(field('far', alias('far', $.far_marker))),
         choice(
           seq(
             field('kind', choice('func', 'naked', 'inline')),
@@ -401,8 +404,12 @@ export default grammar({
       choice(
         seq(
           'call',
-          optional(field('far', alias($.identifier, $.far_marker))),
+          optional(field('far', alias('far', $.far_marker))),
           field('target', $.identifier),
+        ),
+        prec.dynamic(
+          -2,
+          seq(field('far', alias('far', $.far_marker)), field('target', $.identifier)),
         ),
       ),
 
@@ -411,8 +418,12 @@ export default grammar({
     // `data NAME { ... }` labels the first emitted byte; `data { ... }` does
     // not. Both accept the same entries, and an anonymous block inside a
     // function emits its bytes inline.
+    // `nocross data { ... }` is the wrapper spelling of the page-fit request:
+    // the same guarantee as a bare `nocross` inside the block, asked for from
+    // outside it.
     data_block: $ =>
       seq(
+        optional(field('nocross', 'nocross')),
         'data',
         optional(field('name', $.identifier)),
         field('body', $.data_body),
@@ -467,9 +478,45 @@ export default grammar({
         $.char_literal,
         $.string,
         $.identifier,
-        $.address_of_expression,
+        alias($._data_address_of, $.address_of_expression),
         $.eval_bracket,
         $.undefined_byte,
+      ),
+
+    // An address-byte operator in a data entry takes a symbol and, at most,
+    // offset arithmetic — `&<ptr+1`, which the documentation shows. It
+    // deliberately does *not* take the whole expression grammar: with
+    // subscripting available, `&&ptr` on one line and the evaluator entry
+    // `[2+2]` on the next would become one value, `&&(ptr[2+2])`, silently
+    // losing an entry and changing the bytes emitted. Value lists are
+    // atom-only by documentation, and this is where that has teeth.
+    _data_address_of: $ =>
+      prec.right(
+        PREC.addressOf,
+        seq(
+          field('operator', choice('&&&', '&&', '&<', '&>')),
+          field('operand', $._data_offset),
+        ),
+      ),
+
+    _data_offset: $ =>
+      choice(
+        $.number,
+        $.char_literal,
+        $.identifier,
+        $.local_identifier,
+        $.parenthesized_expression,
+        alias($._data_offset_arithmetic, $.binary_expression),
+      ),
+
+    _data_offset_arithmetic: $ =>
+      prec.left(
+        PREC.add,
+        seq(
+          field('left', $._data_offset),
+          field('operator', choice('+', '-')),
+          field('right', $._data_offset),
+        ),
       ),
 
     // `?` reserves a slot whose value is deliberately unspecified.
@@ -618,7 +665,7 @@ export default grammar({
     goto_statement: $ =>
       seq(
         'goto',
-        optional(field('far', alias($.identifier, $.far_marker))),
+        optional(field('far', alias('far', $.far_marker))),
         choice(
           field('target', $.identifier),
           seq('(', field('target', $._expression), ')'),
@@ -632,10 +679,32 @@ export default grammar({
     // `nocross { ... }` — advisory on code, asking that the block fit a page.
     nocross_block: $ => seq('nocross', field('body', $.block)),
 
-    // `inc_x` on its own calls or inlines that function. It carries the
-    // lowest dynamic precedence of any statement: a bare name is the weakest
-    // possible claim on a token, so anything else that can parse wins.
-    bare_call: $ => prec.dynamic(-2, field('target', $.identifier)),
+    // `inc_x` on its own calls or inlines that function, and a
+    // contract-bearing call makes the register flow explicit at the call
+    // site: `add a, x -> a, y`, `scale a, #16 -> a`. A bare name is the
+    // weakest possible claim on a token, so the whole form carries the lowest
+    // dynamic precedence in the grammar and anything else that parses wins.
+    bare_call: $ =>
+      prec.dynamic(
+        -2,
+        seq(
+          field('target', $.identifier),
+          optional(field('arguments', $.call_arguments)),
+          optional(seq('->', field('outputs', $.call_outputs))),
+        ),
+      ),
+
+    call_arguments: $ => commaSep1(field('argument', $.call_argument)),
+
+    // Registers and immediates only. A bare identifier argument would eat the
+    // *next* bare call — `inc_x` on one line and `inc_y` on the next would
+    // become one call with an argument — and no documented call site passes
+    // one: the identifier aliases an `inline` may declare live in its header
+    // contract, not at the call.
+    call_argument: $ =>
+      choice(field('register', $.register), field('immediate', $.immediate)),
+
+    call_outputs: $ => commaSep1(field('register', $.register)),
 
     width_annotation: _ => token(choice('@a8', '@a16', '@i8', '@i16')),
 
@@ -753,11 +822,20 @@ export default grammar({
         // `lda foo` then `bar` — is genuinely ambiguous and resolves the same
         // way; write `call bar` or a `;` separator to force the split.
         seq(
-          field('encoding', alias($.identifier, $.address_encoding)),
+          field('encoding', $._address_encoding),
           field('value', $._expression),
           optional($._index_suffix),
         ),
       ),
+
+    // `dp` and `abs` reach the operand slot as identifiers, because they are
+    // reserved only here and stay available as names. `far` cannot: it is a
+    // keyword elsewhere — `far func`, `call far`, and the keyword-less far
+    // call — and a keyword token wins in the lexer wherever both it and an
+    // identifier are valid. Accepting both spellings in this one slot is what
+    // lets `lda far addr` be an AbsoluteLong load *and* `far NAME` be a call.
+    _address_encoding: $ =>
+      choice(alias($.identifier, $.address_encoding), alias('far', $.address_encoding)),
 
     _index_suffix: $ => seq(',', field('index', $.index_register)),
 
@@ -775,7 +853,7 @@ export default grammar({
         3,
         seq(
           '[',
-          optional(field('encoding', alias($.identifier, $.address_encoding))),
+          optional(field('encoding', $._address_encoding)),
           field('value', $._expression),
           ']',
           optional(seq(',', field('outer_index', $.index_register))),
@@ -788,7 +866,7 @@ export default grammar({
         2,
         seq(
           '(',
-          optional(field('encoding', alias($.identifier, $.address_encoding))),
+          optional(field('encoding', $._address_encoding)),
           field('value', $._expression),
           optional(seq(',', field('inner_index', $.index_register))),
           ')',

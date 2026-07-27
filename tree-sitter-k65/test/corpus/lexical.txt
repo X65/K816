@@ -282,6 +282,6 @@ var A = 0
     address: (binary_expression
       left: (number)
       (ERROR)
-      right: (identifier)))
-  (ERROR
-    (identifier)))
+      (ERROR
+        (identifier))
+      right: (identifier))))

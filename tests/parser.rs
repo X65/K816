@@ -24,11 +24,11 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, ComparisonKind,
-    EvalExprKind, ExprKind, FlagKind, FunctionKind, HlaOperandKind, HlaStatement, IndexRegister,
-    IndexRegisterKind, ItemKind, LabelScope, LoopCondition, MetadataQueryKind, NativeOperand,
-    RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind, StepOp, StorageClassKind,
-    TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, CallArgument,
+    ComparisonKind, EvalExprKind, ExprKind, FlagKind, FunctionKind, HlaOperandKind, HlaStatement,
+    IndexRegister, IndexRegisterKind, ItemKind, LabelScope, LoopCondition, MetadataQueryKind,
+    NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind, StepOp,
+    StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -310,7 +310,31 @@ fn dump_ast(file: &AstFile) -> String {
                                 call.target.text
                             )
                         }
-                        StatementKind::BareCall(target) => format!("call {}", target.text),
+                        StatementKind::BareCall(call) => {
+                            let mut rendered = format!("call {}", call.target.text);
+                            if let Some(arguments) = &call.arguments {
+                                let arguments: Vec<String> = arguments
+                                    .iter()
+                                    .map(|argument| match argument {
+                                        CallArgument::Register(register) => {
+                                            dump_register(register.kind).to_owned()
+                                        }
+                                        CallArgument::Immediate(value) => {
+                                            format!("#{}", dump_expr(&value.kind))
+                                        }
+                                    })
+                                    .collect();
+                                rendered.push_str(&format!(" {}", arguments.join(", ")));
+                            }
+                            if let Some(outputs) = &call.outputs {
+                                let outputs: Vec<&str> = outputs
+                                    .iter()
+                                    .map(|register| dump_register(register.kind))
+                                    .collect();
+                                rendered.push_str(&format!(" -> {}", outputs.join(", ")));
+                            }
+                            rendered
+                        }
                         StatementKind::Conditional(conditional) => format!(
                             "if {} ({} statements){}",
                             dump_condition(conditional.condition.kind),
@@ -2013,4 +2037,183 @@ fn a_syntax_error_names_what_was_expected_there() {
             "`{source}`: expected {expected:?} among {titles:?}"
         );
     }
+}
+
+#[test]
+fn a_keyword_less_far_call_is_one_call() {
+    // `far NAME` is the documented alternative spelling. It must not degrade
+    // into two bare calls, and it must not steal the `far` operand prefix.
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "far.k65",
+        "func f {\n  far long_range_sub\n  inc_x\n  inc_y\n  lda far addr\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 4);
+
+    let StatementKind::Call(call) = &func.body.statements[0].kind else {
+        panic!(
+            "expected a far call, got {:?}",
+            func.body.statements[0].kind
+        );
+    };
+    assert!(call.is_far);
+    assert_eq!(call.target.text, "long_range_sub");
+    assert!(matches!(
+        func.body.statements[1].kind,
+        StatementKind::BareCall(_)
+    ));
+    assert!(matches!(
+        func.body.statements[2].kind,
+        StatementKind::BareCall(_)
+    ));
+    let StatementKind::Native(native) = &func.body.statements[3].kind else {
+        panic!("expected an instruction");
+    };
+    let Some(NativeOperand::Address(address)) = &native.operand else {
+        panic!("expected an address operand");
+    };
+    assert_eq!(
+        address.encoding.expect("an encoding prefix").kind,
+        StorageClassKind::Far
+    );
+}
+
+#[test]
+fn a_call_site_contract_reaches_the_ast() {
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "contract.k65",
+        "func f {\n  add a, x -> a, y\n  scale a, #16 -> a\n  reader -> a\n  inc_x\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+
+    let calls: Vec<&k816::ast::BareCall> = func
+        .body
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::BareCall(call) => call,
+            other => panic!("expected a bare call, got {other:?}"),
+        })
+        .collect();
+
+    assert_eq!(calls[0].target.text, "add");
+    assert_eq!(calls[0].arguments.as_ref().expect("arguments").len(), 2);
+    assert_eq!(calls[0].outputs.as_ref().expect("outputs").len(), 2);
+
+    let scale = calls[1].arguments.as_ref().expect("arguments");
+    assert!(matches!(scale[0], CallArgument::Register(_)));
+    assert!(matches!(scale[1], CallArgument::Immediate(_)));
+
+    // A `->` clause with no arguments, and a call with neither.
+    assert!(calls[2].arguments.is_none());
+    assert_eq!(calls[2].outputs.as_ref().expect("outputs").len(), 1);
+    assert!(calls[3].arguments.is_none());
+    assert!(calls[3].outputs.is_none());
+}
+
+#[test]
+fn a_nested_reserved_construct_reports_its_own_k65_code() {
+    // A reserved construct keeps its `K816-K65-####` diagnostic wherever it
+    // sits — inside a data block or nested in an evaluator expression — not
+    // only when it is the whole item.
+    for (source, expected) in [
+        (
+            "data d {\n  [ 1 + size(section) ]\n}\n",
+            DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+        ),
+        (
+            "data d {\n  [ max(size(a), 1) ]\n}\n",
+            DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+        ),
+        (
+            "data d {\n  for x=0..255 eval [ rnd() & 255 ]\n}\n",
+            DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+        ),
+        (
+            "data d {\n  image sprites 0 0 8> 16v\n}\n",
+            DiagnosticCode::K65_RESERVED_IMAGE,
+        ),
+        ("image S = \"s.bmp\"\n", DiagnosticCode::K65_RESERVED_IMAGE),
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("reserved.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert!(
+            diagnostics.iter().any(|d| d.code == expected),
+            "`{source}`: expected {} among {:?}",
+            expected.as_str(),
+            diagnostics
+                .iter()
+                .map(|d| d.code.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn the_nocross_data_wrapper_is_the_same_block() {
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "nocross.k65",
+        "nocross data D { 1 2 3 }\ndata E { 4 }\nfunc f {\n  nocross data { 5 }\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let ItemKind::Data(wrapped) = &result.file.items[0].kind else {
+        panic!("expected a data block");
+    };
+    assert!(wrapped.nocross);
+    assert_eq!(wrapped.entries.len(), 3);
+
+    let ItemKind::Data(plain) = &result.file.items[1].kind else {
+        panic!("expected a data block");
+    };
+    assert!(!plain.nocross);
+
+    let ItemKind::Func(func) = &result.file.items[2].kind else {
+        panic!("expected a func");
+    };
+    let StatementKind::Data(inline) = &func.body.statements[0].kind else {
+        panic!("expected an inline data block");
+    };
+    assert!(inline.nocross);
+}
+
+#[test]
+fn an_evaluator_entry_is_its_own_data_value() {
+    // `&&ptr` followed by `[2+2]` is two entries — an address and an
+    // evaluator-produced byte — not one address-of applied to `ptr[2+2]`.
+    let mut map = SourceMap::new();
+    let id = map.add_file("data.k65", "data d {\n  &&ptr\n  [2+2]\n  &<ptr+1\n}\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Data(data) = &result.file.items[0].kind else {
+        panic!("expected a data block");
+    };
+    assert_eq!(data.entries.len(), 3);
+
+    let values: Vec<String> = data
+        .entries
+        .iter()
+        .map(|entry| match &entry.kind {
+            k816::ast::DataEntryKind::Value(k816::ast::DataValue::Expr(expr)) => {
+                dump_expr(&expr.kind)
+            }
+            other => panic!("expected a value entry, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(values, vec!["(&& ptr)", "[(+ 2 2)]", "(&< (+ ptr 1))"]);
 }

@@ -114,6 +114,7 @@ Raw values and address byte operators
 data bytes {
   "HELLO" 0
   0x7F &<ptr &>ptr
+  &<ptr+1 &>ptr+1
   &&ptr
   [2+2]
 }
@@ -138,11 +139,22 @@ data bytes {
           operand: (identifier)))
       (data_value
         value: (address_of_expression
-          operand: (subscript_expression
-            base: (identifier)
-            index: (binary_expression
-              left: (number)
-              right: (number))))))))
+          operand: (binary_expression
+            left: (identifier)
+            right: (number))))
+      (data_value
+        value: (address_of_expression
+          operand: (binary_expression
+            left: (identifier)
+            right: (number))))
+      (data_value
+        value: (address_of_expression
+          operand: (identifier)))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (number)
+            right: (number)))))))
 
 ================================================================================
 charset, code subblocks, and repeats
@@ -422,3 +434,67 @@ data eval {
           expression: (eval_binary
             left: (float)
             right: (float)))))))
+
+================================================================================
+The nocross data wrapper
+================================================================================
+
+nocross data D {
+  1 2 3
+}
+
+func f {
+  nocross data { 4 5 }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (data_block
+        body: (data_body
+          (data_value
+            value: (number))
+          (data_value
+            value: (number)))))))
+
+================================================================================
+An evaluator entry is not part of the value before it
+================================================================================
+
+data d {
+  &&ptr
+  [2+2]
+  &<ptr+1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (address_of_expression
+          operand: (identifier)))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (number)
+            right: (number))))
+      (data_value
+        value: (address_of_expression
+          operand: (binary_expression
+            left: (identifier)
+            right: (number)))))))

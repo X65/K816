@@ -467,6 +467,26 @@
     "type": "bare_call",
     "named": true,
     "fields": {
+      "arguments": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "call_arguments",
+            "named": true
+          }
+        ]
+      },
+      "outputs": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "call_outputs",
+            "named": true
+          }
+        ]
+      },
       "target": {
         "multiple": false,
         "required": true,
@@ -941,6 +961,48 @@
     }
   },
   {
+    "type": "call_argument",
+    "named": true,
+    "fields": {
+      "immediate": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "immediate",
+            "named": true
+          }
+        ]
+      },
+      "register": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "call_arguments",
+    "named": true,
+    "fields": {
+      "argument": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "call_argument",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "call_contract",
     "named": true,
     "fields": {
@@ -960,6 +1022,22 @@
         "types": [
           {
             "type": "contract_outputs",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "call_outputs",
+    "named": true,
+    "fields": {
+      "register": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "register",
             "named": true
           }
         ]
@@ -1295,6 +1373,16 @@
           {
             "type": "identifier",
             "named": true
+          }
+        ]
+      },
+      "nocross": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "nocross",
+            "named": false
           }
         ]
       }

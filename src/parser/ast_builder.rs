@@ -27,20 +27,20 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryDeclaration, BinaryExpr,
-    BinaryOp, Block, BlockMoveOperand, BranchCondition, BranchConditionKind, CallContract,
-    CallStatement, ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
-    ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue,
-    EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind,
-    Function, FunctionKind, GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag,
-    HlaOperand, HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister,
-    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
-    LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name,
-    NativeInstruction, NativeOperand, PreprocessorDirective, PreprocessorKind, Register,
-    RegisterKind, ReservedCall, ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp,
-    Statement, StatementKind, StepOp, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag,
-    TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
-    WidthAnnotationKind, WidthBlock,
+    AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BareCall, BinaryDeclaration,
+    BinaryExpr, BinaryOp, Block, BlockMoveOperand, BranchCondition, BranchConditionKind,
+    CallArgument, CallContract, CallStatement, ComparisonKind, ConditionalBlock, ConditionalJump,
+    ConstDeclaration, ConstEntry, ContractOutputs, ContractParameter, DataBlock, DataEntry,
+    DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, FieldAccess,
+    FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
+    HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
+    HlaStatement, HlaStep, IndexRegister, IndexRegisterKind, IndirectOperand, Item, ItemKind,
+    LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery,
+    MetadataQueryKind, Name, NativeInstruction, NativeOperand, PreprocessorDirective,
+    PreprocessorKind, Register, RegisterKind, ReservedCall, ReservedConstruct, ReservedKind,
+    ReturnKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass, StorageClassKind,
+    SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp,
+    VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -498,12 +498,7 @@ impl AstBuilder<'_> {
                     kind: StatementKind::Nocross(self.body_of(child)),
                     span: self.span(child),
                 }),
-                "bare_call" => statements.push(Statement {
-                    kind: StatementKind::BareCall(
-                        self.name(child.child_by_field_name("target"), child),
-                    ),
-                    span: self.span(child),
-                }),
+                "bare_call" => statements.push(self.bare_call(child)),
                 "line_comment" | "block_comment" => {}
                 "ERROR" => statements.push(Statement {
                     kind: StatementKind::Error,
@@ -1047,6 +1042,38 @@ impl AstBuilder<'_> {
         }
     }
 
+    fn bare_call(&mut self, node: Node<'_>) -> Statement {
+        let arguments = node.child_by_field_name("arguments").map(|list| {
+            let mut arguments = Vec::new();
+            let mut cursor = list.walk();
+            for argument in list.children_by_field_name("argument", &mut cursor) {
+                arguments.push(match argument.child_by_field_name("immediate") {
+                    Some(immediate) => CallArgument::Immediate(self.immediate_value(immediate)),
+                    None => CallArgument::Register(
+                        self.register(argument.child_by_field_name("register"), argument),
+                    ),
+                });
+            }
+            arguments
+        });
+        let outputs = node.child_by_field_name("outputs").map(|list| {
+            let mut registers = Vec::new();
+            let mut cursor = list.walk();
+            for register in list.children_by_field_name("register", &mut cursor) {
+                registers.push(self.register(Some(register), list));
+            }
+            registers
+        });
+        Statement {
+            kind: StatementKind::BareCall(BareCall {
+                target: self.name(node.child_by_field_name("target"), node),
+                arguments,
+                outputs,
+            }),
+            span: self.span(node),
+        }
+    }
+
     fn label(&mut self, node: Node<'_>) -> Statement {
         let name_node = node.child_by_field_name("name");
         let scope = match name_node.map(|name| name.kind()) {
@@ -1270,7 +1297,11 @@ impl AstBuilder<'_> {
                 entries.push(self.data_entry(child));
             }
         }
-        DataBlock { name, entries }
+        DataBlock {
+            name,
+            nocross: node.child_by_field_name("nocross").is_some(),
+            entries,
+        }
     }
 
     fn data_entry(&mut self, node: Node<'_>) -> DataEntry {

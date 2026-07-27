@@ -426,8 +426,8 @@
               "content": {
                 "type": "ALIAS",
                 "content": {
-                  "type": "SYMBOL",
-                  "name": "identifier"
+                  "type": "STRING",
+                  "value": "far"
                 },
                 "named": true,
                 "value": "far_marker"
@@ -824,8 +824,8 @@
                   "content": {
                     "type": "ALIAS",
                     "content": {
-                      "type": "SYMBOL",
-                      "name": "identifier"
+                      "type": "STRING",
+                      "value": "far"
                     },
                     "named": true,
                     "value": "far_marker"
@@ -845,12 +845,58 @@
               }
             }
           ]
+        },
+        {
+          "type": "PREC_DYNAMIC",
+          "value": -2,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "far",
+                "content": {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "STRING",
+                    "value": "far"
+                  },
+                  "named": true,
+                  "value": "far_marker"
+                }
+              },
+              {
+                "type": "FIELD",
+                "name": "target",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "identifier"
+                }
+              }
+            ]
+          }
         }
       ]
     },
     "data_block": {
       "type": "SEQ",
       "members": [
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "nocross",
+              "content": {
+                "type": "STRING",
+                "value": "nocross"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
         {
           "type": "STRING",
           "value": "data"
@@ -1129,8 +1175,13 @@
           "name": "identifier"
         },
         {
-          "type": "SYMBOL",
-          "name": "address_of_expression"
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_data_address_of"
+          },
+          "named": true,
+          "value": "address_of_expression"
         },
         {
           "type": "SYMBOL",
@@ -1141,6 +1192,124 @@
           "name": "undefined_byte"
         }
       ]
+    },
+    "_data_address_of": {
+      "type": "PREC_RIGHT",
+      "value": 4,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "operator",
+            "content": {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "&&&"
+                },
+                {
+                  "type": "STRING",
+                  "value": "&&"
+                },
+                {
+                  "type": "STRING",
+                  "value": "&<"
+                },
+                {
+                  "type": "STRING",
+                  "value": "&>"
+                }
+              ]
+            }
+          },
+          {
+            "type": "FIELD",
+            "name": "operand",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_data_offset"
+            }
+          }
+        ]
+      }
+    },
+    "_data_offset": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "number"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "char_literal"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "local_identifier"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "parenthesized_expression"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_data_offset_arithmetic"
+          },
+          "named": true,
+          "value": "binary_expression"
+        }
+      ]
+    },
+    "_data_offset_arithmetic": {
+      "type": "PREC_LEFT",
+      "value": 6,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "left",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_data_offset"
+            }
+          },
+          {
+            "type": "FIELD",
+            "name": "operator",
+            "content": {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "+"
+                },
+                {
+                  "type": "STRING",
+                  "value": "-"
+                }
+              ]
+            }
+          },
+          {
+            "type": "FIELD",
+            "name": "right",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_data_offset"
+            }
+          }
+        ]
+      }
     },
     "undefined_byte": {
       "type": "STRING",
@@ -1795,8 +1964,8 @@
               "content": {
                 "type": "ALIAS",
                 "content": {
-                  "type": "SYMBOL",
-                  "name": "identifier"
+                  "type": "STRING",
+                  "value": "far"
                 },
                 "named": true,
                 "value": "far_marker"
@@ -1872,13 +2041,146 @@
       "type": "PREC_DYNAMIC",
       "value": -2,
       "content": {
-        "type": "FIELD",
-        "name": "target",
-        "content": {
-          "type": "SYMBOL",
-          "name": "identifier"
-        }
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "target",
+            "content": {
+              "type": "SYMBOL",
+              "name": "identifier"
+            }
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "arguments",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "call_arguments"
+                }
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": "->"
+                  },
+                  {
+                    "type": "FIELD",
+                    "name": "outputs",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "call_outputs"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          }
+        ]
       }
+    },
+    "call_arguments": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "argument",
+          "content": {
+            "type": "SYMBOL",
+            "name": "call_argument"
+          }
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": ","
+              },
+              {
+                "type": "FIELD",
+                "name": "argument",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "call_argument"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "call_argument": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "register",
+          "content": {
+            "type": "SYMBOL",
+            "name": "register"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "immediate",
+          "content": {
+            "type": "SYMBOL",
+            "name": "immediate"
+          }
+        }
+      ]
+    },
+    "call_outputs": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "register",
+          "content": {
+            "type": "SYMBOL",
+            "name": "register"
+          }
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": ","
+              },
+              {
+                "type": "FIELD",
+                "name": "register",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "register"
+                }
+              }
+            ]
+          }
+        }
+      ]
     },
     "width_annotation": {
       "type": "TOKEN",
@@ -2673,13 +2975,8 @@
               "type": "FIELD",
               "name": "encoding",
               "content": {
-                "type": "ALIAS",
-                "content": {
-                  "type": "SYMBOL",
-                  "name": "identifier"
-                },
-                "named": true,
-                "value": "address_encoding"
+                "type": "SYMBOL",
+                "name": "_address_encoding"
               }
             },
             {
@@ -2703,6 +3000,29 @@
               ]
             }
           ]
+        }
+      ]
+    },
+    "_address_encoding": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          },
+          "named": true,
+          "value": "address_encoding"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "STRING",
+            "value": "far"
+          },
+          "named": true,
+          "value": "address_encoding"
         }
       ]
     },
@@ -2769,13 +3089,8 @@
                 "type": "FIELD",
                 "name": "encoding",
                 "content": {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "identifier"
-                  },
-                  "named": true,
-                  "value": "address_encoding"
+                  "type": "SYMBOL",
+                  "name": "_address_encoding"
                 }
               },
               {
@@ -2840,13 +3155,8 @@
                 "type": "FIELD",
                 "name": "encoding",
                 "content": {
-                  "type": "ALIAS",
-                  "content": {
-                    "type": "SYMBOL",
-                    "name": "identifier"
-                  },
-                  "named": true,
-                  "value": "address_encoding"
+                  "type": "SYMBOL",
+                  "name": "_address_encoding"
                 }
               },
               {
@@ -5597,28 +5907,37 @@
       "address"
     ],
     [
+      "call_statement",
+      "_address_encoding"
+    ],
+    [
       "bare_call",
-      "address"
+      "_expression",
+      "_address_encoding"
     ],
     [
-      "call_statement"
+      "bare_call",
+      "_address_encoding"
+    ],
+    [
+      "bare_call"
+    ],
+    [
+      "_expression",
+      "_address_encoding"
     ],
     [
       "_expression",
       "_eval_expression"
     ],
     [
-      "long_indirect",
       "_expression",
-      "_eval_expression"
+      "_eval_expression",
+      "_address_encoding"
     ],
     [
       "_eval_argument",
       "_eval_expression"
-    ],
-    [
-      "_eval_argument",
-      "_expression"
     ],
     [
       "nocross_directive"
@@ -5634,14 +5953,7 @@
       "reserved_image_block"
     ],
     [
-      "goto_statement"
-    ],
-    [
       "address",
-      "_expression"
-    ],
-    [
-      "indirect",
       "_expression"
     ],
     [

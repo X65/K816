@@ -194,6 +194,74 @@ func test {
       (return_statement))))
 
 ================================================================================
+The keyword-less far call
+================================================================================
+
+func test {
+  far long_range_sub
+  inc_x
+  inc_y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (call_statement
+        far: (far_marker)
+        target: (identifier))
+      (bare_call
+        target: (identifier))
+      (bare_call
+        target: (identifier)))))
+
+================================================================================
+Call-site contracts
+================================================================================
+
+func test {
+  add a, x -> a, y
+  scale a, #16 -> a
+  reader -> a
+  call add
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (bare_call
+        target: (identifier)
+        arguments: (call_arguments
+          argument: (call_argument
+            register: (register))
+          argument: (call_argument
+            register: (register)))
+        outputs: (call_outputs
+          register: (register)
+          register: (register)))
+      (bare_call
+        target: (identifier)
+        arguments: (call_arguments
+          argument: (call_argument
+            register: (register))
+          argument: (call_argument
+            immediate: (immediate
+              value: (number))))
+        outputs: (call_outputs
+          register: (register)))
+      (bare_call
+        target: (identifier)
+        outputs: (call_outputs
+          register: (register)))
+      (call_statement
+        target: (identifier)))))
+
+================================================================================
 An operand prefix is not a far call
 ================================================================================
 

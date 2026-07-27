@@ -254,8 +254,9 @@ pub enum StatementKind {
     WidthBlock(WidthBlock),
     /// `call NAME`, `call far NAME`, `far NAME`.
     Call(CallStatement),
-    /// `inc_x` on its own — a call or an inline expansion.
-    BareCall(Name),
+    /// `inc_x` on its own — a call or an inline expansion — and the
+    /// contract-bearing form `add a, x -> a, y`.
+    BareCall(BareCall),
     /// `>={ ... }` / `c-?{ ... }`, with an optional `else`.
     Conditional(ConditionalBlock),
     /// `< goto label`, `c-? break`, `!= repeat`.
@@ -379,6 +380,26 @@ pub struct CallStatement {
     pub target: Name,
     /// `call far NAME` or `far NAME` — a 24-bit call.
     pub is_far: bool,
+}
+
+/// A call written as just the callee's name, optionally stating the register
+/// flow: `add a, x -> a, y`. Omitting the clause keeps the legacy unchecked
+/// behavior, which is why both halves are optional and distinguishable from
+/// empty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BareCall {
+    pub target: Name,
+    /// `Some` when an argument list was written.
+    pub arguments: Option<Vec<CallArgument>>,
+    /// `Some` when a `->` clause was written.
+    pub outputs: Option<Vec<Register>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallArgument {
+    Register(Register),
+    /// `#16`
+    Immediate(Expr),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -799,6 +820,8 @@ pub enum EvalExprKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataBlock {
     pub name: Option<Name>,
+    /// `nocross data { ... }` — the wrapper form of the page-fit request.
+    pub nocross: bool,
     pub entries: Vec<DataEntry>,
 }
 

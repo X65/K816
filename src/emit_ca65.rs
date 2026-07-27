@@ -58,6 +58,19 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
         out.push_str(&equates);
     }
 
+    // Functions are visible across modules, so hand-written ca65 code (and
+    // later K816 units) can reference them; the full import/export model is
+    // sub-plan C.
+    if !program.functions.is_empty() {
+        out.push('\n');
+        for function in &program.functions {
+            out.push_str(&format!(
+                ".export {}\n",
+                model.symbols.name(function.symbol)
+            ));
+        }
+    }
+
     out.push_str("\n.segment \"CODE\"\n");
 
     for function in &program.functions {

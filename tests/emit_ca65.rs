@@ -74,6 +74,12 @@ fn every_instruction_carries_debug_and_source_annotations() {
 }
 
 #[test]
+fn functions_are_exported_for_cross_module_references() {
+    let assembly = emit("slice.k816", include_str!("golden/slice.k816"));
+    assert!(assembly.contains("\n.export main\n"));
+}
+
+#[test]
 fn fixed_address_vars_become_equates_not_resolved_addresses() {
     let assembly = emit("slice.k816", include_str!("golden/slice.k816"));
     assert!(assembly.contains("SCREEN          := $0400"));

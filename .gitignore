@@ -1,2 +1,5 @@
 target/
 plans/
+examples/fullstack/*.s
+examples/fullstack/*.o
+examples/fullstack/*.bin

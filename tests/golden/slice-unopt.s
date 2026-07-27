@@ -5,6 +5,8 @@
 
 SCREEN          := $0400                ; slice.k816:1: var SCREEN = $0400
 
+.export main
+
 .segment "CODE"
 
 main:

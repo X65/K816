@@ -27,26 +27,14 @@
 //! The tools are located in the cc65 tree's `bin/` (`../../bin` from this
 //! crate), overridable via the `CA65`/`LD65` environment variables.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
+use common::{run_ok, tool, work_dir};
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
-
-fn tool(env: &str, name: &str) -> PathBuf {
-    if let Ok(path) = std::env::var(env) {
-        return PathBuf::from(path);
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../bin")
-        .join(name)
-}
-
-fn work_dir(test: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(test);
-    std::fs::create_dir_all(&dir).expect("create work dir");
-    dir
-}
 
 /// Compiles `text`, assembles, links, and returns (binary bytes, debug file).
 fn compile_and_link(test: &str, name: &str, text: &str, options: &Options) -> (Vec<u8>, String) {
@@ -63,29 +51,21 @@ fn compile_and_link(test: &str, name: &str, text: &str, options: &Options) -> (V
     let dbg_path = dir.join("out.dbg");
     std::fs::write(&asm_path, assembly).expect("write assembly");
 
-    let ca65 = Command::new(tool("CA65", "ca65"))
-        .arg(&asm_path)
-        .args(["-o".as_ref(), obj_path.as_os_str()])
-        .output()
-        .expect("run ca65 (build it with `make -C ../.. ca65` first)");
-    assert!(
-        ca65.status.success(),
-        "ca65 failed:\n{}",
-        String::from_utf8_lossy(&ca65.stderr)
+    run_ok(
+        Command::new(tool("CA65", "ca65"))
+            .arg(&asm_path)
+            .args(["-o".as_ref(), obj_path.as_os_str()]),
+        "ca65 (build it with `make -C ../.. ca65` first)",
     );
 
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
-    let ld65 = Command::new(tool("LD65", "ld65"))
-        .args(["-C".as_ref(), config.as_os_str()])
-        .args(["-o".as_ref(), bin_path.as_os_str()])
-        .args(["--dbgfile".as_ref(), dbg_path.as_os_str()])
-        .arg(&obj_path)
-        .output()
-        .expect("run ld65 (build it with `make -C ../.. ld65` first)");
-    assert!(
-        ld65.status.success(),
-        "ld65 failed:\n{}",
-        String::from_utf8_lossy(&ld65.stderr)
+    run_ok(
+        Command::new(tool("LD65", "ld65"))
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), bin_path.as_os_str()])
+            .args(["--dbgfile".as_ref(), dbg_path.as_os_str()])
+            .arg(&obj_path),
+        "ld65 (build it with `make -C ../.. ld65` first)",
     );
 
     (

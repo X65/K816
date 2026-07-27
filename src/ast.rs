@@ -54,6 +54,12 @@ pub enum ItemKind {
     Data(DataBlock),
     /// A top-level `[ NAME = expr, ... ]` evaluator block.
     EvalBlock(Expr),
+    /// `#if` / `#elif` / `#else` / `#endif` / `#error` / `#warn`.
+    Preprocessor(PreprocessorDirective),
+    /// `binary NAME = "file"`.
+    Binary(BinaryDeclaration),
+    /// Recognized legacy syntax K816 reserves and never reinterprets.
+    Reserved(ReservedConstruct),
     /// A file-top `@a8` — the module's default width for that axis.
     ModuleWidth(WidthAnnotation),
     Func(Function),
@@ -266,6 +272,8 @@ pub enum StatementKind {
     Nocross(Block),
     /// `data { ... }` inside a function body, emitting bytes inline.
     Data(DataBlock),
+    /// A preprocessor directive inside a code section.
+    Preprocessor(PreprocessorDirective),
     Return(ReturnKind),
     /// Malformed statement; the span covers the unparsable region.
     Error,
@@ -782,6 +790,8 @@ pub enum EvalExprKind {
     },
     /// `a, b, c` — the expression list, whose value is the last item.
     List(Vec<EvalExpr>),
+    /// A call to one of the reserved evaluator functions.
+    ReservedCall(ReservedCall),
     Error,
 }
 
@@ -836,7 +846,82 @@ pub enum DataEntryKind {
         to: Expr,
         body: Expr,
     },
+    /// A preprocessor directive inside a data block.
+    Preprocessor(PreprocessorDirective),
+    /// `binary "file"`
+    Binary(String),
+    /// An `image` entry — recognized, reserved, never reinterpreted.
+    Reserved(ReservedConstruct),
     Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreprocessorDirective {
+    pub kind: PreprocessorKind,
+    /// The `#if` / `#elif` condition, when the directive takes one.
+    pub condition: Option<Expr>,
+    /// The `#error` / `#warn` message, when the directive takes one.
+    pub message: Option<String>,
+    pub keyword_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreprocessorKind {
+    If,
+    ElseIf,
+    Else,
+    EndIf,
+    Error,
+    Warn,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryDeclaration {
+    pub name: Name,
+    pub file: String,
+}
+
+/// A construct that belongs to the original K65 language, is recognized as
+/// its own named node so it never becomes a parse error, and is never
+/// reinterpreted as K816 syntax. The compiler reports it with a
+/// `K816-K65-####` diagnostic; see `doc/k65-compat.md`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReservedConstruct {
+    pub kind: ReservedKind,
+    /// The keyword itself, so the diagnostic can point at it precisely.
+    pub keyword_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReservedKind {
+    /// `image ...` inside a data block.
+    ImageBlock,
+    /// `image NAME = "file"` at the top level.
+    ImageTopLevel,
+    /// A reserved evaluator function used as a whole construct.
+    EvalCall(EvalCallName),
+}
+
+/// The evaluator functions that mutate sections, print, or randomize, which
+/// deterministic evaluation cannot keep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvalCallName {
+    Size,
+    AddByte,
+    Color,
+    Rnd,
+    Print,
+    Error,
+}
+
+/// A reserved evaluator call *inside* an expression: `[ 1 + size(section) ]`
+/// is arithmetic around one, and `[ max(size(a), 1) ]` nests them. Arguments
+/// stay ordinary parsed expressions, which may themselves contain more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReservedCall {
+    pub name: EvalCallName,
+    pub arguments: Vec<EvalExpr>,
+    pub keyword_span: Span,
 }
 
 /// One value in a data entry. Value lists are atom-only, so this is an

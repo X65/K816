@@ -27,18 +27,20 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryExpr, BinaryOp, Block,
-    BlockMoveOperand, BranchCondition, BranchConditionKind, CallContract, CallStatement,
-    ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
-    ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr,
-    EvalExprKind, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function, FunctionKind,
-    GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
-    HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister, IndexRegisterKind, IndirectOperand,
-    Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement,
-    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register,
-    RegisterKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass,
-    StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr,
-    UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
+    AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryDeclaration, BinaryExpr,
+    BinaryOp, Block, BlockMoveOperand, BranchCondition, BranchConditionKind, CallContract,
+    CallStatement, ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
+    ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue,
+    EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind,
+    Function, FunctionKind, GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag,
+    HlaOperand, HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister,
+    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
+    LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name,
+    NativeInstruction, NativeOperand, PreprocessorDirective, PreprocessorKind, Register,
+    RegisterKind, ReservedCall, ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp,
+    Statement, StatementKind, StepOp, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag,
+    TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
+    WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -104,6 +106,27 @@ impl AstBuilder<'_> {
                     kind: ItemKind::Data(self.data_block(child)),
                     span: self.span(child),
                 }),
+                "preprocessor_directive" => items.push(Item {
+                    kind: ItemKind::Preprocessor(self.preprocessor_directive(child)),
+                    span: self.span(child),
+                }),
+                "binary_declaration" => items.push(Item {
+                    kind: ItemKind::Binary(BinaryDeclaration {
+                        name: self.name(child.child_by_field_name("name"), child),
+                        file: child
+                            .child_by_field_name("file")
+                            .map(|file| decode_string(self.text(file)))
+                            .unwrap_or_default(),
+                    }),
+                    span: self.span(child),
+                }),
+                "reserved_image_toplevel" => {
+                    let reserved = self.reserved(child, ReservedKind::ImageTopLevel);
+                    items.push(Item {
+                        kind: ItemKind::Reserved(reserved),
+                        span: self.span(child),
+                    });
+                }
                 "eval_block" => items.push(Item {
                     kind: ItemKind::EvalBlock(
                         self.expr(child.child_by_field_name("expression"), child),
@@ -461,6 +484,10 @@ impl AstBuilder<'_> {
                 }),
                 "repeat_statement" => statements.push(Statement {
                     kind: StatementKind::Repeat,
+                    span: self.span(child),
+                }),
+                "preprocessor_directive" => statements.push(Statement {
+                    kind: StatementKind::Preprocessor(self.preprocessor_directive(child)),
                     span: self.span(child),
                 }),
                 "data_block" => statements.push(Statement {
@@ -1153,6 +1180,19 @@ impl AstBuilder<'_> {
                 base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
                 field: self.name(node.child_by_field_name("field"), node),
             },
+            "reserved_eval_call" => {
+                let mut arguments = Vec::new();
+                let mut cursor = node.walk();
+                for argument in node.children_by_field_name("argument", &mut cursor) {
+                    arguments.push(self.eval_expr(Some(argument), node));
+                }
+                let name_node = node.child_by_field_name("name");
+                EvalExprKind::ReservedCall(ReservedCall {
+                    name: self.eval_call_name(name_node),
+                    arguments,
+                    keyword_span: name_node.map(|name| self.span(name)).unwrap_or(span),
+                })
+            }
             "eval_list" => {
                 let mut items = Vec::new();
                 let mut cursor = node.walk();
@@ -1167,6 +1207,53 @@ impl AstBuilder<'_> {
             }
         };
         EvalExpr { kind, span }
+    }
+
+    fn eval_call_name(&mut self, node: Option<Node<'_>>) -> EvalCallName {
+        match node.map(|node| self.text(node)) {
+            Some("size") => EvalCallName::Size,
+            Some("addbyte") => EvalCallName::AddByte,
+            Some("color") => EvalCallName::Color,
+            Some("rnd") => EvalCallName::Rnd,
+            Some("print") => EvalCallName::Print,
+            _ => EvalCallName::Error,
+        }
+    }
+
+    fn preprocessor_directive(&mut self, node: Node<'_>) -> PreprocessorDirective {
+        let directive = node.child_by_field_name("directive");
+        let kind = match directive.map(|directive| self.text(directive)) {
+            Some("#if") => PreprocessorKind::If,
+            Some("#elif") => PreprocessorKind::ElseIf,
+            Some("#else") => PreprocessorKind::Else,
+            Some("#endif") => PreprocessorKind::EndIf,
+            Some("#error") => PreprocessorKind::Error,
+            _ => PreprocessorKind::Warn,
+        };
+        PreprocessorDirective {
+            kind,
+            condition: node
+                .child_by_field_name("condition")
+                .map(|condition| self.expr(Some(condition), node)),
+            message: node
+                .child_by_field_name("message")
+                .map(|message| decode_string(self.text(message))),
+            keyword_span: directive
+                .map(|directive| self.span(directive))
+                .unwrap_or_else(|| self.span(node)),
+        }
+    }
+
+    /// The `keyword` field of a reserved construct, or the whole node when
+    /// recovery lost it.
+    fn reserved(&mut self, node: Node<'_>, kind: ReservedKind) -> ReservedConstruct {
+        ReservedConstruct {
+            kind,
+            keyword_span: node
+                .child_by_field_name("keyword")
+                .map(|keyword| self.span(keyword))
+                .unwrap_or_else(|| self.span(node)),
+        }
     }
 
     fn data_block(&mut self, node: Node<'_>) -> DataBlock {
@@ -1235,6 +1322,17 @@ impl AstBuilder<'_> {
                 count: self.expr(node.child_by_field_name("count"), node),
                 body: self.data_block(node),
             },
+            "preprocessor_directive" => {
+                DataEntryKind::Preprocessor(self.preprocessor_directive(node))
+            }
+            "binary_entry" => DataEntryKind::Binary(
+                node.child_by_field_name("file")
+                    .map(|file| decode_string(self.text(file)))
+                    .unwrap_or_default(),
+            ),
+            "reserved_image_block" => {
+                DataEntryKind::Reserved(self.reserved(node, ReservedKind::ImageBlock))
+            }
             "for_eval" => DataEntryKind::ForEval {
                 variable: self.name(node.child_by_field_name("variable"), node),
                 from: self.expr(node.child_by_field_name("from"), node),

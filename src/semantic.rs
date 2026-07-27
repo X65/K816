@@ -29,8 +29,9 @@
 //! diagnostics.
 
 use crate::ast::{
-    AstFile, Expr, ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind,
-    NativeOperand, RegisterKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
+    AstFile, EvalCallName, Expr, ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement,
+    ItemKind, NativeOperand, RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind,
+    WidthAnnotationKind,
 };
 use crate::compat;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -122,6 +123,22 @@ impl Analysis {
                     "top-level evaluator blocks",
                     compat::Owner::Compatibility,
                 )),
+                ItemKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "preprocessor directives",
+                    compat::Owner::Compatibility,
+                )),
+                ItemKind::Binary(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "`binary` inclusions",
+                    compat::Owner::Compatibility,
+                )),
+                // Reserved legacy syntax reports itself through the
+                // `K816-K65-####` family, not as unimplemented K816 work.
+                ItemKind::Reserved(reserved) => {
+                    let diagnostic = reserved_diagnostic(reserved);
+                    self.diagnostics.push(diagnostic);
+                }
                 ItemKind::ModuleWidth(_) => self.diagnostics.push(compat::unimplemented(
                     item.span,
                     "module-level default widths",
@@ -361,6 +378,11 @@ impl Analysis {
                 "inline `data` blocks",
                 compat::Owner::NativeTranslator,
             )),
+            StatementKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
+                statement.span,
+                "preprocessor directives",
+                compat::Owner::Compatibility,
+            )),
             StatementKind::Call(_) | StatementKind::BareCall(_) => {
                 self.diagnostics.push(compat::unimplemented(
                     statement.span,
@@ -488,6 +510,27 @@ impl Analysis {
             }
         }
     }
+}
+
+/// The `K816-K65-####` diagnostic for a reserved legacy construct.
+fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
+    let (code, construct) = match reserved.kind {
+        ReservedKind::ImageBlock | ReservedKind::ImageTopLevel => {
+            (DiagnosticCode::K65_RESERVED_IMAGE, "image")
+        }
+        ReservedKind::EvalCall(name) => (
+            DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+            match name {
+                EvalCallName::Size => "size",
+                EvalCallName::AddByte => "addbyte",
+                EvalCallName::Color => "color",
+                EvalCallName::Rnd => "rnd",
+                EvalCallName::Print => "print",
+                EvalCallName::Error => "error",
+            },
+        ),
+    };
+    compat::k65_reserved(code, reserved.keyword_span, construct)
 }
 
 /// Names the first part of a code section that has no semantics yet, or

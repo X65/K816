@@ -1,0 +1,228 @@
+================================================================================
+Preprocessor directives at the top level
+================================================================================
+
+#if FOO
+var A = 1
+#elif BAR
+var B = 2
+#else
+var C = 3
+#endif
+#error "bad"
+#warn "hmm"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (preprocessor_directive
+    directive: (directive_name)
+    condition: (identifier))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (preprocessor_directive
+    directive: (directive_name)
+    condition: (identifier))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (preprocessor_directive
+    directive: (directive_name))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (preprocessor_directive
+    directive: (directive_name))
+  (preprocessor_directive
+    directive: (directive_name)
+    message: (string))
+  (preprocessor_directive
+    directive: (directive_name)
+    message: (string)))
+
+================================================================================
+Preprocessor directives in code and in data
+================================================================================
+
+func main {
+  #if DEBUG
+  a = #1
+  #endif
+}
+
+data table {
+  #if BIG
+  1 2 3
+  #endif
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (preprocessor_directive
+        directive: (directive_name)
+        condition: (identifier))
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
+          value: (number)))
+      (preprocessor_directive
+        directive: (directive_name))))
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (preprocessor_directive
+        directive: (directive_name)
+        condition: (identifier))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (preprocessor_directive
+        directive: (directive_name)))))
+
+================================================================================
+Binary inclusion
+================================================================================
+
+binary Blob = "payload.bin"
+
+data table {
+  address 0x2000
+  binary "table.bin"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (binary_declaration
+    name: (identifier)
+    file: (string))
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (address_directive
+        address: (number))
+      (binary_entry
+        file: (string)))))
+
+================================================================================
+Reserved image forms are named nodes, never parse errors
+================================================================================
+
+image SpriteSheet = "sprites.bmp"
+image "RawSprite" = "raw.bmp"
+
+data sprite {
+  align 256
+  image sprites  0 0 8> 16v
+  image "data/font" 0 0  8> 8v tiles 8 0 31
+  image "sprites_alt" 8 0 8> 8v inv
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (reserved_image_toplevel
+    name: (identifier)
+    file: (string))
+  (reserved_image_toplevel
+    name: (string)
+    file: (string))
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (align_directive
+        boundary: (number))
+      (reserved_image_block
+        argument: (identifier)
+        argument: (number)
+        argument: (number)
+        argument: (image_scan)
+        argument: (image_scan))
+      (reserved_image_block
+        argument: (string)
+        argument: (number)
+        argument: (number)
+        argument: (image_scan)
+        argument: (image_scan)
+        argument: (identifier)
+        argument: (number)
+        argument: (number)
+        argument: (number))
+      (reserved_image_block
+        argument: (string)
+        argument: (number)
+        argument: (number)
+        argument: (image_scan)
+        argument: (image_scan)
+        argument: (identifier)))))
+
+================================================================================
+Reserved evaluator functions
+================================================================================
+
+data stars {
+  [ rnd() ]
+  [ 1 + size(section) ]
+  [ max(size(a), 1) ]
+  [ addbyte(s, 1) ]
+  [ print("x") ]
+  [ error("x") ]
+  [ color(1, 2, 3) ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          expression: (reserved_eval_call
+            name: (reserved_function))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (number)
+            right: (reserved_eval_call
+              name: (reserved_function)
+              argument: (identifier)))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_call
+            name: (identifier)
+            argument: (reserved_eval_call
+              name: (reserved_function)
+              argument: (identifier))
+            argument: (number))))
+      (data_value
+        value: (eval_bracket
+          expression: (reserved_eval_call
+            name: (reserved_function)
+            argument: (identifier)
+            argument: (number))))
+      (data_value
+        value: (eval_bracket
+          expression: (reserved_eval_call
+            name: (reserved_function)
+            argument: (string))))
+      (data_value
+        value: (eval_bracket
+          expression: (reserved_eval_call
+            name: (reserved_function)
+            argument: (string))))
+      (data_value
+        value: (eval_bracket
+          expression: (reserved_eval_call
+            name: (reserved_function)
+            argument: (number)
+            argument: (number)
+            argument: (number)))))))

@@ -135,6 +135,24 @@ fn dump_ast(file: &AstFile) -> String {
                     item.span.end
                 ));
             }
+            ItemKind::Preprocessor(directive) => {
+                out.push_str(&format!(
+                    "preprocessor {:?} @{}..{}\n",
+                    directive.kind, item.span.start, item.span.end
+                ));
+            }
+            ItemKind::Binary(binary) => {
+                out.push_str(&format!(
+                    "binary {} = {:?} @{}..{}\n",
+                    binary.name.text, binary.file, item.span.start, item.span.end
+                ));
+            }
+            ItemKind::Reserved(reserved) => {
+                out.push_str(&format!(
+                    "reserved {:?} @{}..{}\n",
+                    reserved.kind, item.span.start, item.span.end
+                ));
+            }
             ItemKind::Segment(name) => {
                 out.push_str(&format!(
                     "segment {} @{}..{}\n",
@@ -333,6 +351,9 @@ fn dump_ast(file: &AstFile) -> String {
                         }
                         StatementKind::Data(data) => {
                             format!("data ({} entries)", data.entries.len())
+                        }
+                        StatementKind::Preprocessor(directive) => {
+                            format!("preprocessor {:?}", directive.kind)
                         }
                         StatementKind::Error => "error".to_owned(),
                     };
@@ -561,6 +582,11 @@ fn dump_eval(kind: &EvalExprKind) -> String {
         EvalExprKind::List(items) => {
             let items: Vec<String> = items.iter().map(|i| dump_eval(&i.kind)).collect();
             format!("(, {})", items.join(" "))
+        }
+        EvalExprKind::ReservedCall(call) => {
+            let arguments: Vec<String> =
+                call.arguments.iter().map(|a| dump_eval(&a.kind)).collect();
+            format!("reserved:{:?}({})", call.name, arguments.join(" "))
         }
         EvalExprKind::Error => "<error>".to_owned(),
     }

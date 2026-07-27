@@ -51,7 +51,10 @@
  *     `never` loops, `break` / `repeat`, `else`, `goto`, and `nocross`;
  *   - data blocks and the compile-time evaluator: placement directives,
  *     labels, typed and raw entries, `charset`, `code` subblocks, `repeat`,
- *     `for ... eval`, and the evaluator's own operator table.
+ *     `for ... eval`, and the evaluator's own operator table;
+ *   - the remaining namespace: preprocessor directives, `binary` inclusion,
+ *     and the reserved `image` and evaluator side-effect forms, which are
+ *     named nodes so legacy source never yields `ERROR`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -209,6 +212,8 @@ export default grammar({
     // A value list runs until something that is not a value; an eval bracket
     // could equally be the next entry on its own.
     [$.typed_entry],
+    // The loose `image` argument run ends where the next entry begins.
+    [$.reserved_image_block],
     // `goto far label` versus `goto label` followed by something.
     [$.goto_statement],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
@@ -241,6 +246,9 @@ export default grammar({
         $.func_declaration,
         $.data_block,
         $.eval_block,
+        $.preprocessor_directive,
+        $.binary_declaration,
+        $.reserved_image_toplevel,
       ),
 
     // The `var` family:
@@ -424,6 +432,9 @@ export default grammar({
         $.code_subblock,
         $.data_repeat,
         $.for_eval,
+        $.preprocessor_directive,
+        $.binary_entry,
+        $.reserved_image_block,
         $.data_value,
       ),
 
@@ -489,6 +500,59 @@ export default grammar({
 
     // A top-level `[ NAME = expr, ... ]` block sets compiler constants.
     eval_block: $ => field('expression', $.eval_bracket),
+
+    // ---- Preprocessor, binary inclusion, and the reserved namespace -------
+    //
+    // The directives are recognized flat rather than nested: an `#if` without
+    // its `#endif` is ordinary in a file being edited, and a flat rule keeps
+    // the rest of the file parsing. Evaluating them is compatibility work.
+    preprocessor_directive: $ =>
+      choice(
+        seq(
+          field('directive', alias(token(choice('#if', '#elif')), $.directive_name)),
+          field('condition', $._expression),
+        ),
+        field('directive', alias(token(choice('#else', '#endif')), $.directive_name)),
+        seq(
+          field('directive', alias(token(choice('#error', '#warn')), $.directive_name)),
+          field('message', $.string),
+        ),
+      ),
+
+    // `binary "file"` and `binary NAME = "file"` get real nodes: the mapping
+    // to ca65's `.incbin` is deferred, not reinterpreted.
+    binary_entry: $ => seq('binary', field('file', $.string)),
+
+    binary_declaration: $ =>
+      seq(
+        'binary',
+        field('name', $.identifier),
+        '=',
+        field('file', $.string),
+      ),
+
+    // `image` is reserved: recognized as a specific named node so legacy
+    // source never yields `ERROR`, and never reinterpreted. Its arguments are
+    // loose by design — the scan-mode words like `8>` and `16v` have no other
+    // use in the language, and nothing here needs their structure.
+    reserved_image_block: $ =>
+      seq(
+        field('keyword', 'image'),
+        repeat1(field('argument', $._image_argument)),
+      ),
+
+    reserved_image_toplevel: $ =>
+      seq(
+        field('keyword', 'image'),
+        field('name', choice($.identifier, $.string)),
+        '=',
+        field('file', $.string),
+      ),
+
+    _image_argument: $ => choice($.number, $.identifier, $.string, $.image_scan),
+
+    /// `8>` / `16v` — a count and a scan direction.
+    image_scan: _ => token(seq(/[0-9]+/, /[<>v^]/)),
 
     // ---- Branches, conditionals, and loops --------------------------------
     //
@@ -602,6 +666,7 @@ export default grammar({
         $.repeat_statement,
         $.nocross_block,
         $.data_block,
+        $.preprocessor_directive,
         $.return_statement,
       ),
 
@@ -1002,6 +1067,7 @@ export default grammar({
         $.string,
         $.identifier,
         $.eval_call,
+        $.reserved_eval_call,
         $.eval_parenthesized,
         $.eval_unary,
         $.eval_binary,
@@ -1019,6 +1085,7 @@ export default grammar({
         $.string,
         $.identifier,
         $.eval_call,
+        $.reserved_eval_call,
         $.eval_parenthesized,
         $.eval_unary,
         $.eval_binary,
@@ -1030,6 +1097,26 @@ export default grammar({
       ),
 
     eval_parenthesized: $ => seq('(', $._eval_expression, ')'),
+
+    // The six evaluator functions that mutate sections, print, or randomize.
+    // They are reserved rather than rejected: the parser names them so the
+    // compiler can say which construct it will not run.
+    reserved_eval_call: $ =>
+      prec(
+        EVAL_PREC.suffix,
+        seq(
+          field(
+            'name',
+            alias(
+              choice('size', 'addbyte', 'color', 'rnd', 'print', 'error'),
+              $.reserved_function,
+            ),
+          ),
+          '(',
+          optional(commaSep1(field('argument', $._eval_argument))),
+          ')',
+        ),
+      ),
 
     eval_call: $ =>
       prec(

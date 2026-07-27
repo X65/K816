@@ -26,8 +26,8 @@ The pipeline becomes:
 
 ```mermaid
 flowchart TD
-    S["K816 source"] --> P["Lexer and parser"]
-    P --> A["Semantic AST"]
+    S["K816 source"] --> P["Tree-sitter parser (CST)"]
+    P --> A["Owned semantic AST"]
     A --> L["HLA/native lowering"]
     L --> O["Common KOp representation"]
     O --> X["Effect-aware optimizer"]
@@ -46,47 +46,69 @@ Use one Cargo package containing one library and one executable:
 ```text
 k816/
   Cargo.toml
+  Cargo.lock
+  build.rs
+
+  tree-sitter-k65/
+    grammar.js
+    tree-sitter.json
+    src/
+      parser.c
+      grammar.json
+      node-types.json
+    queries/
+      highlights.scm
+      locals.scm
+      tags.scm
+      indents.scm
+      injections.scm
+    test/
+      corpus/
+
   src/
     lib.rs
     main.rs
 
     source.rs
-    token.rs
-    lexer.rs
+    diagnostic.rs
+
     parser/
       mod.rs
-      expr.rs
-      native.rs
-      hla.rs
-      declarations.rs
-      recovery.rs
-
+      cst.rs
+      ast_builder.rs
+      diagnostics.rs
     ast.rs
+
     symbol.rs
     semantic.rs
     lower.rs
 
+    isa.rs
     op.rs
     effects.rs
     optimize.rs
-    isa.rs
 
     emit_ca65.rs
-    diagnostic.rs
-
     workspace.rs
     lsp.rs
 
   tests/
-    lexer.rs
+    source.rs
     parser.rs
+    diagnostics.rs
+    semantic.rs
     lowering.rs
     optimizer.rs
-    diagnostics.rs
+    emit_ca65.rs
     compile.rs
     lsp.rs
     golden/
 ```
+
+`tree-sitter-k65/` is a top-level directory, not a second Cargo package. The
+generated parser (`parser.c`) and its metadata are committed and compiled by
+`build.rs` during the ordinary Cargo build; grammar regeneration is a
+maintainer operation, never part of a normal checkout build.
 
 This does not prohibit modules from being substantial. It prohibits turning every internal boundary into a published crate.
 
@@ -104,6 +126,10 @@ lsp-server = "..."
 lsp-types = "..."
 serde = { version = "...", features = ["derive"] }
 serde_json = "..."
+tree-sitter = "..."
+
+[build-dependencies]
+cc = "..."
 ```
 
 Possibly retain `indexmap` for deterministic user-visible ordering.
@@ -115,12 +141,18 @@ Do not initially use:
 * `tokio`
 * `tower-lsp`
 * `salsa`
-* parser generators
 * an arena framework
 * dependency-injection frameworks
 * generalized compiler pass frameworks
 
 None of these are intrinsically bad. They simply do not solve a problem K816 needs to have.
+
+Tree-sitter is the one deliberate parser-generator exception: it is the single
+canonical K65/K816 syntax parser shared by the compiler, the LSP, and external
+editors (see §5 and `tree-sitter.md`). The runtime dependency is the
+`tree-sitter` crate plus `cc` to compile the committed generated parser; the
+Tree-sitter CLI and Node.js are needed only when a maintainer regenerates the
+grammar.
 
 ## 4. Source representation
 
@@ -139,9 +171,9 @@ The `SourceMap` owns source text and translates byte offsets into line/column lo
 
 Important rules:
 
-* Never preprocess or rewrite source text before lexing.
-* Every token retains its original span.
-* Synthetic tokens and operations retain an origin span and are marked synthetic.
+* Never preprocess or rewrite source text before parsing.
+* Every CST and AST node retains its original byte span.
+* Synthetic nodes and operations retain an origin span and are marked synthetic.
 * AST nodes own their data. Avoid pervasive lifetime parameters.
 * Use interned `SymbolId` values after parsing, but plain strings in early syntax nodes are acceptable.
 
@@ -149,30 +181,59 @@ The recent span-preservation correction in K816 demonstrates why this must be fo
 
 ## 5. Parser
 
-Use a handwritten lexer and recursive-descent parser, with a Pratt parser for expressions.
+Use Tree-sitter as the single canonical parser (see `tree-sitter.md`). The
+grammar lives in `tree-sitter-k65/`; the generated C parser is committed and
+compiled into the compiler by `build.rs`. The same grammar and query files
+serve the CLI, the LSP, and external editors, so no tool ever implements a
+second syntax.
 
-That gives direct control over:
+Tree-sitter provides what the earlier handwritten-parser proposal wanted, plus
+incremental parsing for the LSP:
 
-* incomplete code during editing
-* recovery points
-* context-specific diagnostic messages
-* exact fix suggestions
-* native operand syntax
-* HLA-specific ambiguity
-* source spans
+* stable CSTs for incomplete code during editing
+* built-in error recovery (`ERROR`/`MISSING` nodes)
+* exact byte spans
+* incremental reparse for responsive editor operations
+* one grammar shared by compiler, LSP, and editor highlighting/navigation
 
-The parser returns a tree even when errors exist:
+Tree-sitter stops at the syntax boundary. A small adapter (`src/parser/`)
+wraps it behind a Rust API and converts the CST into the owned semantic AST:
 
 ```rust
+pub struct SyntaxTree {
+    tree: tree_sitter::Tree,
+}
+
+pub fn parse_source(
+    source: &SourceFile,
+    previous: Option<&SyntaxTree>,
+) -> ParseResult;
+
 pub struct ParseResult {
+    pub tree: SyntaxTree,
     pub file: AstFile,
     pub diagnostics: Vec<Diagnostic>,
 }
 ```
 
-Malformed constructs become `AstKind::Error` nodes. This lets LSP completion, document symbols, and later diagnostics continue functioning after the first syntax error.
+Rules for the boundary:
 
-The current project documentation describes substantial machinery for enriching automatically produced Chumsky errors after parsing. A handwritten parser lets the compiler create the correct diagnostic at the point where it understands the error.
+* `TSNode` and other Tree-sitter runtime types never cross into semantic
+  analysis, lowering, optimization, or emission; node-name matching is
+  localized in the CST-to-AST builder.
+* Malformed constructs become owned `AstKind::Error` nodes, so LSP completion,
+  document symbols, and later diagnostics continue functioning after the first
+  syntax error.
+* A syntax-diagnostic adapter maps common `ERROR`/`MISSING` shapes to stable,
+  actionable diagnostics and fixes; Tree-sitter supplies reliable ranges, K816
+  supplies the explanation and remediation.
+* Known-but-unsupported K65 syntax is recognized by the grammar as specific
+  named nodes; `ERROR` is reserved for genuinely malformed source.
+
+`tree-sitter.md` also sketches a C compiler core (`libk816`) with a Rust FFI
+host. That packaging does not apply to this Rust redesign; what carries over
+is the architectural rule that Tree-sitter is the canonical parser at the
+syntax boundary and no editor or tool implements a second semantic compiler.
 
 ## 6. AST and syntax parity
 
@@ -380,13 +441,15 @@ Keep `lsp-server` and `lsp-types`. They already provide the transport and protoc
 
 ```text
 stdio loop
-  -> document store
+  -> document store (source text + incremental Tree-sitter trees)
   -> compiler database
   -> shared parse/analyze API
   -> LSP response conversion
 ```
 
-Start synchronously. A K816 source tree is small enough to reparse and reanalyze after a short debounce.
+Start synchronously. Incremental Tree-sitter trees keep typing and syntax
+operations responsive; a K816 source tree is small enough to reanalyze
+semantically after a short debounce.
 
 Initial LSP milestone:
 
@@ -446,8 +509,9 @@ Organize testing into layers:
 
 | Layer       | Assertion                                          |
 | ----------- | -------------------------------------------------- |
-| Lexer       | tokens and exact spans                             |
-| Parser      | AST and recovered errors                           |
+| Grammar     | corpus acceptance and exact CST shapes             |
+| Incremental | incremental edit equals clean reparse              |
+| Parser      | owned AST, exact spans, and recovered errors       |
 | Semantics   | symbols, widths, contracts, operand classification |
 | Lowering    | native and HLA produce equivalent `KOp` sequences  |
 | Optimizer   | before/after operation streams                     |
@@ -488,8 +552,8 @@ Implement:
 
 * sources and spans
 * diagnostics
-* lexer
-* native syntax parser
+* Tree-sitter grammar for native syntax
+* CST-to-AST parser adapter
 * symbols and expressions
 * common `KOp`
 * ca65 emission
@@ -579,6 +643,8 @@ I would put these at the top of the new repository:
 10. No new crate without an independent release boundary.
 11. No async runtime without measured need.
 12. Golden outputs are reviewed, never blindly blessed.
+13. Tree-sitter is the single canonical parser for CLI, LSP, and editors.
+14. Tree-sitter runtime types never cross the syntax boundary into semantics.
 
 ## Recommended first deliverable
 

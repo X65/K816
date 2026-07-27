@@ -696,11 +696,13 @@ export default grammar({
 
     call_arguments: $ => commaSep1(field('argument', $.call_argument)),
 
-    // Registers and immediates only. A bare identifier argument would eat the
-    // *next* bare call — `inc_x` on one line and `inc_y` on the next would
-    // become one call with an argument — and no documented call site passes
-    // one: the identifier aliases an `inline` may declare live in its header
-    // contract, not at the call.
+    // Registers and immediates only, which is not a parser convenience: K816
+    // has no parameter-passing mechanism, so nothing else can cross a `JSR`.
+    // The identifier aliases an `inline` may declare are bound during macro
+    // expansion, at its header, never handed over at a call. See
+    // syntax-reference.md "Why aliases are inline-only" and design.md §1.
+    // It also keeps two consecutive bare calls unambiguous: with identifiers
+    // accepted here, `inc_x` then `inc_y` would be one call passing a name.
     call_argument: $ =>
       choice(field('register', $.register), field('immediate', $.immediate)),
 

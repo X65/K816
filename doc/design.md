@@ -39,6 +39,16 @@ flowchart TD
 
 The command-line compiler and LSP call the same frontend API. Neither independently reconstructs project semantics.
 
+### The call model has no parameters
+
+One consequence of that boundary is easy to forget and expensive to rediscover, so it is stated here rather than left implicit in the syntax.
+
+K816 does not have function parameters. A `func` is entered by `JSR` or `JSL`, and nothing crosses that jump except the machine's own registers and memory the caller wrote. There is no stack frame, no argument area, and no calling convention the compiler is free to invent — inventing one would mean owning a runtime, which is outside the four jobs above. A call contract therefore names only `a`, `x`, and `y`, and a call site passes only registers and immediates.
+
+`inline` is the exception, and it is an exception about *expansion*, not about calling. An inline body is substituted at the use site before instruction selection, so a parameter never has to travel: the compiler can bind an immediate alias (`#factor`) or an identifier alias for a variable or address while it emits the body. Macro expansion is the only mechanism in the language that can inject an arbitrary parameter, which is why aliases exist there and nowhere else.
+
+Read this as a boundary, not a limitation to be fixed later. Adding parameters to `func` would require a compiler-defined runtime convention, which §1 rules out; the available answers are a register, a `var`, or an `inline`.
+
 ## 2. Repository structure
 
 Use one Cargo package containing one library and one executable:

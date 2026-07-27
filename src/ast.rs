@@ -395,6 +395,11 @@ pub struct BareCall {
     pub outputs: Option<Vec<Register>>,
 }
 
+/// What a call site can hand over. Registers and immediates are the whole
+/// list because nothing else survives a `JSR`: K816 has no parameter-passing
+/// mechanism, and the identifier aliases an `inline` may declare are bound
+/// during macro expansion rather than passed at a call. See
+/// `doc/syntax-reference.md` "Why aliases are inline-only".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallArgument {
     Register(Register),

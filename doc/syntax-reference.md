@@ -484,7 +484,7 @@ func add @a16 @i16 (a, x) -> @a8 a, y {
 
 - `()` enables checked zero-input calls.
 - Register parameters use `a`, `x`, and `y`.
-- `inline` functions may additionally declare immediate aliases (`#name`, `#name:byte`, `#name:word`) and bare identifier aliases for variables/addresses.
+- `inline` functions may additionally declare immediate aliases (`#name`, `#name:byte`, `#name:word`) and bare identifier aliases for variables/addresses. See *Why aliases are inline-only* below — they are not available to `func`, and not available at any call site.
 - `->` can declare output registers, exit-width checks, or both.
 - Omitting the entire contract clause keeps the legacy unchecked behavior.
 
@@ -552,6 +552,27 @@ func test {
 Damage tracking for contract-bearing bare calls is **block-local**: after every such call the compiler scans the remaining statements in the same basic block and reports registers that are live past the call but clobbered by the callee. It does not perform inter-procedural or whole-program dataflow — split work into smaller functions if you need the check to see across block boundaries. Use `call foo` to opt out of the check entirely.
 
 Exit-width annotations in a `->` clause are **check-only**. They describe the widths the function body must actually have at every reachable return; they do not force the caller into that mode by declaration alone. If no exit-width annotation is present, a checked bare call adopts the callee's inferred exit mode from its reachable returns. An inferred exit mode of `Unknown` (callee not yet parsed, cross-unit reference, or body variants that are neither uniformly `Fixed` nor uniformly `Preserve`) is treated at the call site as `Preserve` — the caller's tracked widths are left unchanged. See *Unknown exit contracts preserve caller mode* in [register-width-aware-syntax.md](register-width-aware-syntax.md).
+
+### Why aliases are inline-only
+
+K65 has no general parameter-passing mechanism. A `func` is reached by `JSR` (or `JSL`), and the only things that survive that jump are the machine's own registers and whatever the caller left in memory. There is no stack frame, no argument area, and no convention for passing a value the compiler makes up. So a `func` contract can name only what the hardware can actually carry across a call: `a`, `x`, and `y`.
+
+An `inline` is different in kind. It is not called at all — its body is expanded at the use site, before any instruction is selected. That expansion is the one place where an arbitrary parameter *can* be injected, because the parameter never has to travel anywhere: the compiler substitutes it into the body as it emits it. That is why, and only why, an `inline` may declare immediate aliases (`#factor`) and bare identifier aliases for variables and addresses:
+
+```k65
+inline scale @a16 (a, #factor) -> a {
+  lda #factor          // `factor` is substituted during expansion
+}
+
+inline store_to (a, target) -> a {
+  target = a           // `target` names a variable at the use site
+}
+```
+
+Two consequences follow, and both are deliberate:
+
+- **`func` may not declare aliases.** There would be nowhere to put the value. A `func` that needs a compile-time constant should take it in a register, read it from a `var`, or be an `inline`.
+- **A call site never passes an alias.** Call-site arguments are registers and immediates only — `add a, x -> a, y`, `scale a, #16 -> a`. An alias is bound during expansion, not handed over at a call, so there is no call-site syntax for one. This also keeps two consecutive bare calls unambiguous: with bare identifiers accepted as arguments, `inc_x` followed by `inc_y` would read as one call passing the other's name.
 
 ### `else`
 

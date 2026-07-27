@@ -127,3 +127,62 @@ pub struct KFunction {
 pub struct KProgram {
     pub functions: Vec<KFunction>,
 }
+
+impl KProgram {
+    /// Renders the operation streams as a stable, human-readable IR dump —
+    /// the `emit-ir` output that makes optimizer behavior inspectable.
+    pub fn dump(
+        &self,
+        symbols: &crate::symbol::SymbolTable,
+        map: &crate::source::SourceMap,
+    ) -> String {
+        let mut out = String::new();
+        for (index, function) in self.functions.iter().enumerate() {
+            if index > 0 {
+                out.push('\n');
+            }
+            out.push_str(&format!("func {}", symbols.name(function.symbol)));
+            for (width, names) in [
+                (function.contract.a, ["@a8", "@a16"]),
+                (function.contract.i, ["@i8", "@i16"]),
+            ] {
+                match width {
+                    Some(RegisterWidth::W8) => out.push_str(&format!(" {}", names[0])),
+                    Some(RegisterWidth::W16) => out.push_str(&format!(" {}", names[1])),
+                    None => {}
+                }
+            }
+            out.push_str(" {\n");
+            for op in &function.ops {
+                let text = match &op.kind {
+                    KOpKind::Label(symbol) => format!("label {}", symbols.name(*symbol)),
+                    KOpKind::Instruction(instruction) => {
+                        let operand = match instruction.operand {
+                            None => String::new(),
+                            Some(Operand::Immediate(value)) => format!(" #${value:02X}"),
+                            Some(Operand::Address(symbol)) => {
+                                format!(" {}", symbols.name(symbol))
+                            }
+                        };
+                        format!("{}{}", instruction.mnemonic.ca65(), operand)
+                    }
+                };
+                out.push_str(&format!("  {:<24} ; {}\n", text, origin_note(op, map)));
+            }
+            out.push_str("}\n");
+        }
+        out
+    }
+}
+
+/// `origin file:line` annotation for one dumped op.
+fn origin_note(op: &KOp, map: &crate::source::SourceMap) -> String {
+    let source = map.file(op.span.file);
+    let line = source.line_col(op.span.start).line + 1;
+    let origin = match op.origin {
+        Origin::User => "user",
+        Origin::HlaExpansion => "hla",
+        Origin::CompilerGenerated => "compiler",
+    };
+    format!("{origin} {}:{line}", source.name())
+}

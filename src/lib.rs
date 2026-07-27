@@ -34,6 +34,7 @@ pub mod emit_ca65;
 pub mod isa;
 pub mod lower;
 pub mod op;
+pub mod optimize;
 pub mod parser;
 pub mod semantic;
 pub mod source;
@@ -105,7 +106,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         };
     }
 
-    let (program, lower_diagnostics) = lower::lower(&parse.file, &model);
+    let (mut program, lower_diagnostics) = lower::lower(&parse.file, &model);
     diagnostics.extend(lower_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return CompileResult {
@@ -114,11 +115,52 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         };
     }
 
-    // `options.optimize` engages the effect-aware optimizer (sub-plan A7).
-    let _ = options;
+    if options.optimize {
+        optimize::optimize(&mut program);
+    }
     let assembly = emit_ca65::emit(map, file, &model, &program);
     CompileResult {
         assembly: Some(assembly),
+        diagnostics,
+    }
+}
+
+/// Result of dumping a file's IR (`emit-ir`).
+#[derive(Debug)]
+pub struct IrResult {
+    /// The IR dump, or `None` when errors prevented lowering.
+    pub ir: Option<String>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Dumps the lowered [`op::KProgram`] of one file as readable IR, optimized
+/// when `options.optimize` is set (`emit-ir --after-opt`).
+pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
+    let parse = parser::parse_source(map.file(file), None);
+    let (model, semantic_diagnostics) = semantic::analyze_file(&parse.file);
+    let mut diagnostics = parse.diagnostics;
+    diagnostics.extend(semantic_diagnostics);
+    if diagnostic::has_errors(&diagnostics) {
+        return IrResult {
+            ir: None,
+            diagnostics,
+        };
+    }
+
+    let (mut program, lower_diagnostics) = lower::lower(&parse.file, &model);
+    diagnostics.extend(lower_diagnostics);
+    if diagnostic::has_errors(&diagnostics) {
+        return IrResult {
+            ir: None,
+            diagnostics,
+        };
+    }
+
+    if options.optimize {
+        optimize::optimize(&mut program);
+    }
+    IrResult {
+        ir: Some(program.dump(&model.symbols, map)),
         diagnostics,
     }
 }

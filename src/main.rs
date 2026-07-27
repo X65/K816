@@ -58,6 +58,7 @@ fn main() -> ExitCode {
 
     match args.first().map(String::as_str) {
         Some("compile") => compile(&prog_name, &args[1..]),
+        Some("emit-ir") => emit_ir(&prog_name, &args[1..]),
         _ => {
             usage(&prog_name);
             ExitCode::FAILURE
@@ -69,16 +70,32 @@ fn usage(prog_name: &str) {
     eprintln!("Usage: {prog_name} <command> [options]");
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  compile [-o OUT.s] FILE      compile K816 source to ca65 assembly");
+    eprintln!("  compile [--no-opt] [-o OUT.s] FILE   compile K816 source to ca65 assembly");
+    eprintln!("  emit-ir [--after-opt] FILE           dump the lowered operation stream");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  -V, --version                print the version number and exit");
+    eprintln!("  -V, --version                        print the version number and exit");
 }
 
-fn compile(prog_name: &str, args: &[String]) -> ExitCode {
+struct CommandLine {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    options: Options,
+}
+
+/// Parses `FILE`, `-o OUT`, and the optimizer toggle named by `opt_flag`
+/// (with the polarity given by `opt_flag_enables`).
+fn parse_command_line(
+    prog_name: &str,
+    args: &[String],
+    opt_flag: &str,
+    opt_flag_enables: bool,
+) -> Result<CommandLine, ()> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
-    let options = Options::default();
+    let mut options = Options {
+        optimize: !opt_flag_enables,
+    };
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -87,45 +104,82 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
                 Some(path) => output = Some(PathBuf::from(path)),
                 None => {
                     eprintln!("{prog_name}: `-o` needs a file name");
-                    return ExitCode::FAILURE;
+                    return Err(());
                 }
             },
+            flag if flag == opt_flag => options.optimize = opt_flag_enables,
             _ if arg.starts_with('-') => {
                 eprintln!("{prog_name}: unknown option `{arg}`");
-                return ExitCode::FAILURE;
+                return Err(());
             }
             _ if input.is_none() => input = Some(PathBuf::from(arg)),
             _ => {
                 eprintln!("{prog_name}: more than one input file");
-                return ExitCode::FAILURE;
+                return Err(());
             }
         }
     }
     let Some(input) = input else {
         eprintln!("{prog_name}: no input file");
+        return Err(());
+    };
+    Ok(CommandLine {
+        input,
+        output,
+        options,
+    })
+}
+
+fn load(prog_name: &str, map: &mut SourceMap, input: &Path) -> Result<k816::source::FileId, ()> {
+    match std::fs::read_to_string(input) {
+        Ok(text) => Ok(map.add_file(input.to_string_lossy(), text)),
+        Err(error) => {
+            eprintln!("{prog_name}: cannot read {}: {error}", input.display());
+            Err(())
+        }
+    }
+}
+
+fn compile(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(command) = parse_command_line(prog_name, args, "--no-opt", false) else {
+        return ExitCode::FAILURE;
+    };
+    let mut map = SourceMap::new();
+    let Ok(file) = load(prog_name, &mut map, &command.input) else {
         return ExitCode::FAILURE;
     };
 
-    let mut map = SourceMap::new();
-    let text = match std::fs::read_to_string(&input) {
-        Ok(text) => text,
-        Err(error) => {
-            eprintln!("{prog_name}: cannot read {}: {error}", input.display());
-            return ExitCode::FAILURE;
-        }
-    };
-    let file = map.add_file(input.to_string_lossy(), text);
-
-    let result = compile_to_ca65(&map, file, &options);
+    let result = compile_to_ca65(&map, file, &command.options);
     render::render_diagnostics(&map, &result.diagnostics);
 
     let Some(assembly) = result.assembly else {
         return ExitCode::FAILURE;
     };
-    let output = output.unwrap_or_else(|| input.with_extension("s"));
+    let output = command
+        .output
+        .unwrap_or_else(|| command.input.with_extension("s"));
     if let Err(error) = std::fs::write(&output, assembly) {
         eprintln!("{prog_name}: cannot write {}: {error}", output.display());
         return ExitCode::FAILURE;
     }
+    ExitCode::SUCCESS
+}
+
+fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(command) = parse_command_line(prog_name, args, "--after-opt", true) else {
+        return ExitCode::FAILURE;
+    };
+    let mut map = SourceMap::new();
+    let Ok(file) = load(prog_name, &mut map, &command.input) else {
+        return ExitCode::FAILURE;
+    };
+
+    let result = k816::emit_ir(&map, file, &command.options);
+    render::render_diagnostics(&map, &result.diagnostics);
+
+    let Some(ir) = result.ir else {
+        return ExitCode::FAILURE;
+    };
+    print!("{ir}");
     ExitCode::SUCCESS
 }

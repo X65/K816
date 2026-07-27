@@ -126,6 +126,34 @@ fn native_slice_links_to_identical_bytes() {
     assert_eq!(bytes, UNOPTIMIZED_BYTES);
 }
 
+/// The optimized slice: the dead `lda #$00` is gone, nothing else changes.
+const OPTIMIZED_BYTES: &[u8] = &[
+    0xE2, 0x20, // sep #$20
+    0xC2, 0x10, // rep #$10
+    0xA9, 0x01, // lda #$01
+    0x8D, 0x00, 0x04, // sta $0400
+    0x60, // rts
+];
+
+#[test]
+fn optimized_slice_links_without_the_dead_load() {
+    let (hla, _) = compile_and_link(
+        "hla-opt",
+        "slice.k816",
+        include_str!("golden/slice.k816"),
+        &Options { optimize: true },
+    );
+    assert_eq!(hla, OPTIMIZED_BYTES);
+
+    let (native, _) = compile_and_link(
+        "native-opt",
+        "slice-native.k816",
+        include_str!("golden/slice-native.k816"),
+        &Options { optimize: true },
+    );
+    assert_eq!(native, OPTIMIZED_BYTES);
+}
+
 #[test]
 fn debug_database_records_k816_source_ownership() {
     let (_, dbg) = compile_and_link(

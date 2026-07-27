@@ -134,8 +134,13 @@ fn dump_ast(file: &AstFile) -> String {
                                 }
                                 Some(NativeOperand::Accumulator) => " a".to_owned(),
                                 Some(NativeOperand::Address(address)) => format!(
-                                    " {}{}{}",
+                                    " {}{}{}{}",
                                     dump_encoding(address.encoding),
+                                    if address.offset_marker.is_some() {
+                                        "&"
+                                    } else {
+                                        ""
+                                    },
                                     dump_expr(&address.value.kind),
                                     dump_index(address.index)
                                 ),
@@ -145,6 +150,17 @@ fn dump_ast(file: &AstFile) -> String {
                                     dump_expr(&indirect.value.kind),
                                     dump_index(indirect.inner_index),
                                     dump_index(indirect.outer_index)
+                                ),
+                                Some(NativeOperand::LongIndirect(long)) => format!(
+                                    " [{}{}]{}",
+                                    dump_encoding(long.encoding),
+                                    dump_expr(&long.value.kind),
+                                    dump_index(long.outer_index)
+                                ),
+                                Some(NativeOperand::BlockMove(moved)) => format!(
+                                    " {},{}",
+                                    dump_expr(&moved.source.kind),
+                                    dump_expr(&moved.destination.kind)
                                 ),
                                 None => String::new(),
                             };
@@ -198,6 +214,7 @@ fn dump_index(index: Option<IndexRegister>) -> String {
     match index.map(|index| index.kind) {
         Some(IndexRegisterKind::X) => ",x".to_owned(),
         Some(IndexRegisterKind::Y) => ",y".to_owned(),
+        Some(IndexRegisterKind::Stack) => ",s".to_owned(),
         None => String::new(),
     }
 }
@@ -813,8 +830,13 @@ fn classical_operand_shapes_reach_the_ast() {
                 Some(NativeOperand::Immediate(expr)) => format!(" #{}", dump_expr(&expr.kind)),
                 Some(NativeOperand::Accumulator) => " a".to_owned(),
                 Some(NativeOperand::Address(address)) => format!(
-                    " {}{}{}",
+                    " {}{}{}{}",
                     dump_encoding(address.encoding),
+                    if address.offset_marker.is_some() {
+                        "&"
+                    } else {
+                        ""
+                    },
                     dump_expr(&address.value.kind),
                     dump_index(address.index)
                 ),
@@ -824,6 +846,17 @@ fn classical_operand_shapes_reach_the_ast() {
                     dump_expr(&indirect.value.kind),
                     dump_index(indirect.inner_index),
                     dump_index(indirect.outer_index)
+                ),
+                Some(NativeOperand::LongIndirect(long)) => format!(
+                    " [{}{}]{}",
+                    dump_encoding(long.encoding),
+                    dump_expr(&long.value.kind),
+                    dump_index(long.outer_index)
+                ),
+                Some(NativeOperand::BlockMove(moved)) => format!(
+                    " {},{}",
+                    dump_expr(&moved.source.kind),
+                    dump_expr(&moved.destination.kind)
                 ),
                 None => String::new(),
             };
@@ -914,6 +947,108 @@ fn operand_shapes_beyond_the_isa_table_name_the_translator() {
             "`{source}`"
         );
     }
+}
+
+#[test]
+fn native_65816_operand_shapes_reach_the_ast() {
+    let source = "func main {
+    lda 4,s
+    lda (4,s),y
+    lda [ptr]
+    lda [ptr],y
+    lda &FIELD_HP, x
+    lda abs &FIELD_HP, x
+    mvn $01,$02
+    xba
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("native816.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let rendered: Vec<String> = func
+        .body
+        .statements
+        .iter()
+        .map(|statement| {
+            let StatementKind::Native(native) = &statement.kind else {
+                panic!("expected a native instruction");
+            };
+            let operand = match &native.operand {
+                Some(NativeOperand::Address(address)) => format!(
+                    " {}{}{}{}",
+                    dump_encoding(address.encoding),
+                    if address.offset_marker.is_some() {
+                        "&"
+                    } else {
+                        ""
+                    },
+                    dump_expr(&address.value.kind),
+                    dump_index(address.index)
+                ),
+                Some(NativeOperand::Indirect(indirect)) => format!(
+                    " ({}{}){}",
+                    dump_expr(&indirect.value.kind),
+                    dump_index(indirect.inner_index),
+                    dump_index(indirect.outer_index)
+                ),
+                Some(NativeOperand::LongIndirect(long)) => format!(
+                    " [{}]{}",
+                    dump_expr(&long.value.kind),
+                    dump_index(long.outer_index)
+                ),
+                Some(NativeOperand::BlockMove(moved)) => format!(
+                    " {},{}",
+                    dump_expr(&moved.source.kind),
+                    dump_expr(&moved.destination.kind)
+                ),
+                _ => String::new(),
+            };
+            format!("{}{operand}", native.mnemonic.text)
+        })
+        .collect();
+    assert_eq!(
+        rendered,
+        vec![
+            "lda 4,s",
+            "lda (4,s),y",
+            "lda [ptr]",
+            "lda [ptr],y",
+            "lda &FIELD_HP,x",
+            "lda abs &FIELD_HP,x",
+            "mvn 1,2",
+            "xba",
+        ]
+    );
+}
+
+#[test]
+fn brackets_after_a_mnemonic_are_indirection_not_evaluation() {
+    // `lda [ptr]` dereferences; the same brackets in an HLA assignment are
+    // the compile-time evaluator's, which is why the operand form is
+    // raw-mnemonic-only.
+    let mut map = SourceMap::new();
+    let id = map.add_file("brackets.k65", "func f {\n  lda [ptr]\n  lda #[SIZE]\n}\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let StatementKind::Native(long) = &func.body.statements[0].kind else {
+        panic!("expected a native instruction");
+    };
+    assert!(matches!(long.operand, Some(NativeOperand::LongIndirect(_))));
+    let StatementKind::Native(immediate) = &func.body.statements[1].kind else {
+        panic!("expected a native instruction");
+    };
+    let Some(NativeOperand::Immediate(value)) = &immediate.operand else {
+        panic!("expected an immediate");
+    };
+    assert!(matches!(value.kind, ExprKind::Eval(_)));
 }
 
 #[test]

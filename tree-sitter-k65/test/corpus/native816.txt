@@ -1,0 +1,288 @@
+================================================================================
+Stack-relative operands
+================================================================================
+
+func main {
+  lda 4,s
+  lda (4,s),y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (number)
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          value: (number)
+          inner_index: (index_register)
+          outer_index: (index_register))))))
+
+================================================================================
+Indirect long operands
+================================================================================
+
+func main {
+  lda [ptr]
+  lda [ptr],y
+  lda [dp ptr]
+  jmp [vec]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (long_indirect
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (long_indirect
+          value: (identifier)
+          outer_index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (long_indirect
+          encoding: (address_encoding)
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (long_indirect
+          value: (identifier))))))
+
+================================================================================
+The indexed-offset marker
+================================================================================
+
+func main {
+  lda &FIELD_HP, x
+  lda abs &FIELD_HP, x
+  lda &FIELD_HP+1, y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (binary_expression
+            left: (identifier)
+            right: (number))
+          index: (index_register))))))
+
+================================================================================
+65C02 additions
+================================================================================
+
+func main {
+  bra target
+  phx phy plx ply
+  stz addr
+  tsb addr
+  trb addr
+  wai
+  stp
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)))))
+
+================================================================================
+65816 bank registers and mode switch
+================================================================================
+
+func main {
+  phb plb phd pld phk xce
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)))))
+
+================================================================================
+65816 control flow, mode and stack
+================================================================================
+
+func main {
+  brl far_target
+  jml far_target
+  jsl far_target
+  rtl
+  pea #$1234
+  pei (ptr)
+  per label
+  cop #2
+  wdm #3
+  brk #0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number))))))
+
+================================================================================
+65816 transfer instructions
+================================================================================
+
+func main {
+  tcd tcs tdc tsc txy tyx xba
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)))))
+
+================================================================================
+Block moves take two operands
+================================================================================
+
+func main {
+  mvn $01,$02
+  mvp src,dst
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (block_move
+        mnemonic: (mnemonic)
+        source: (number)
+        destination: (number))
+      (block_move
+        mnemonic: (mnemonic)
+        source: (identifier)
+        destination: (identifier)))))

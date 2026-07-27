@@ -238,7 +238,11 @@ impl Analysis {
                             self.constant(&address.value, "address operands");
                         }
                     },
-                    Some(NativeOperand::Accumulator) | Some(NativeOperand::Indirect(_)) | None => {}
+                    Some(NativeOperand::Accumulator)
+                    | Some(NativeOperand::Indirect(_))
+                    | Some(NativeOperand::LongIndirect(_))
+                    | Some(NativeOperand::BlockMove(_))
+                    | None => {}
                 }
             }
             StatementKind::Hla(HlaStatement::LoadImmediate { value, .. }) => {

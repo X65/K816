@@ -231,15 +231,38 @@ pub enum NativeOperand {
     /// differently: which encoding an address gets is decided from its value
     /// and the optional prefix.
     Address(AddressOperand),
-    /// `([dp|abs|far] expr [,X]) [,Y]`
+    /// `([dp|abs|far] expr [,X]) [,Y]`, including the 65816 `(expr,S),Y`.
     Indirect(IndirectOperand),
+    /// `[expr]` / `[expr],Y` — indirect long. Only a raw mnemonic can take
+    /// this shape; inside an HLA assignment the brackets are the evaluator's.
+    LongIndirect(LongIndirectOperand),
+    /// `mvn src,dst` / `mvp src,dst` — the two-operand block moves.
+    BlockMove(BlockMoveOperand),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AddressOperand {
     pub encoding: Option<AddressEncoding>,
+    /// `&expr` — the indexed-offset marker, which lets a constant serve as a
+    /// small field offset when the struct base is in X or Y. Legal only in
+    /// the indexed modes; the span is the `&` itself.
+    pub offset_marker: Option<Span>,
     pub value: Expr,
     pub index: Option<IndexRegister>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LongIndirectOperand {
+    pub encoding: Option<AddressEncoding>,
+    pub value: Expr,
+    /// `[expr],Y`
+    pub outer_index: Option<IndexRegister>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockMoveOperand {
+    pub source: Expr,
+    pub destination: Expr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -270,6 +293,9 @@ pub struct IndexRegister {
 pub enum IndexRegisterKind {
     X,
     Y,
+    /// `S` — stack-relative addressing, which shares the operand slot with
+    /// the two index registers but is a different mode.
+    Stack,
 }
 
 /// HLA statements stay distinct from native syntax until lowering.

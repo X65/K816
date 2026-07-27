@@ -162,7 +162,10 @@ impl Lowering<'_> {
                             None => return self.skipped(span, "an unresolved symbol"),
                         }
                     }
-                    Some(NativeOperand::Accumulator) | Some(NativeOperand::Indirect(_)) => {
+                    Some(NativeOperand::Accumulator)
+                    | Some(NativeOperand::Indirect(_))
+                    | Some(NativeOperand::LongIndirect(_))
+                    | Some(NativeOperand::BlockMove(_)) => {
                         return self.skipped(span, "an unsupported operand form");
                     }
                 };

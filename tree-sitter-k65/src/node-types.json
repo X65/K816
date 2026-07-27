@@ -28,6 +28,16 @@
           }
         ]
       },
+      "marker": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "&",
+            "named": false
+          }
+        ]
+      },
       "value": {
         "multiple": false,
         "required": true,
@@ -499,6 +509,10 @@
       "required": false,
       "types": [
         {
+          "type": "block_move",
+          "named": true
+        },
+        {
           "type": "hla_load_immediate",
           "named": true
         },
@@ -519,6 +533,146 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "block_move",
+    "named": true,
+    "fields": {
+      "destination": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      },
+      "mnemonic": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "mnemonic",
+            "named": true
+          }
+        ]
+      },
+      "source": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
     }
   },
   {
@@ -1205,6 +1359,94 @@
     }
   },
   {
+    "type": "long_indirect",
+    "named": true,
+    "fields": {
+      "encoding": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "address_encoding",
+            "named": true
+          }
+        ]
+      },
+      "outer_index": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "index_register",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "metadata_query",
     "named": true,
     "fields": {
@@ -1318,6 +1560,10 @@
           },
           {
             "type": "indirect",
+            "named": true
+          },
+          {
+            "type": "long_indirect",
             "named": true
           }
         ]
@@ -2141,6 +2387,10 @@
     "named": false
   },
   {
+    "type": "S",
+    "named": false
+  },
+  {
     "type": "X",
     "named": false
   },
@@ -2229,6 +2479,10 @@
   {
     "type": "return_statement",
     "named": true
+  },
+  {
+    "type": "s",
+    "named": false
   },
   {
     "type": "segment",

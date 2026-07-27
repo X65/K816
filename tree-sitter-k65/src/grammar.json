@@ -492,6 +492,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "block_move"
+        },
+        {
+          "type": "SYMBOL",
           "name": "hla_load_immediate"
         },
         {
@@ -825,14 +829,189 @@
           },
           {
             "type": "STRING",
+            "value": "bra"
+          },
+          {
+            "type": "STRING",
+            "value": "phx"
+          },
+          {
+            "type": "STRING",
+            "value": "phy"
+          },
+          {
+            "type": "STRING",
+            "value": "plx"
+          },
+          {
+            "type": "STRING",
+            "value": "ply"
+          },
+          {
+            "type": "STRING",
+            "value": "stz"
+          },
+          {
+            "type": "STRING",
+            "value": "tsb"
+          },
+          {
+            "type": "STRING",
+            "value": "trb"
+          },
+          {
+            "type": "STRING",
+            "value": "wai"
+          },
+          {
+            "type": "STRING",
+            "value": "stp"
+          },
+          {
+            "type": "STRING",
+            "value": "phb"
+          },
+          {
+            "type": "STRING",
+            "value": "plb"
+          },
+          {
+            "type": "STRING",
+            "value": "phd"
+          },
+          {
+            "type": "STRING",
+            "value": "pld"
+          },
+          {
+            "type": "STRING",
+            "value": "phk"
+          },
+          {
+            "type": "STRING",
+            "value": "xce"
+          },
+          {
+            "type": "STRING",
+            "value": "brl"
+          },
+          {
+            "type": "STRING",
+            "value": "jml"
+          },
+          {
+            "type": "STRING",
+            "value": "jsl"
+          },
+          {
+            "type": "STRING",
+            "value": "rtl"
+          },
+          {
+            "type": "STRING",
+            "value": "pea"
+          },
+          {
+            "type": "STRING",
+            "value": "pei"
+          },
+          {
+            "type": "STRING",
+            "value": "per"
+          },
+          {
+            "type": "STRING",
+            "value": "cop"
+          },
+          {
+            "type": "STRING",
+            "value": "wdm"
+          },
+          {
+            "type": "STRING",
             "value": "rep"
           },
           {
             "type": "STRING",
             "value": "sep"
+          },
+          {
+            "type": "STRING",
+            "value": "tcd"
+          },
+          {
+            "type": "STRING",
+            "value": "tcs"
+          },
+          {
+            "type": "STRING",
+            "value": "tdc"
+          },
+          {
+            "type": "STRING",
+            "value": "tsc"
+          },
+          {
+            "type": "STRING",
+            "value": "txy"
+          },
+          {
+            "type": "STRING",
+            "value": "tyx"
+          },
+          {
+            "type": "STRING",
+            "value": "xba"
           }
         ]
       }
+    },
+    "block_move": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "mnemonic",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "mvn"
+                },
+                {
+                  "type": "STRING",
+                  "value": "mvp"
+                }
+              ]
+            },
+            "named": true,
+            "value": "mnemonic"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "source",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": ","
+        },
+        {
+          "type": "FIELD",
+          "name": "destination",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_expression"
+          }
+        }
+      ]
     },
     "_operand": {
       "type": "CHOICE",
@@ -852,6 +1031,10 @@
         {
           "type": "SYMBOL",
           "name": "indirect"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "long_indirect"
         }
       ]
     },
@@ -881,6 +1064,72 @@
           "content": {
             "type": "SEQ",
             "members": [
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "FIELD",
+                    "name": "marker",
+                    "content": {
+                      "type": "STRING",
+                      "value": "&"
+                    }
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              },
+              {
+                "type": "FIELD",
+                "name": "value",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_expression"
+                }
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_index_suffix"
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "PREC_DYNAMIC",
+          "value": 2,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "encoding",
+                "content": {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  },
+                  "named": true,
+                  "value": "address_encoding"
+                }
+              },
+              {
+                "type": "FIELD",
+                "name": "marker",
+                "content": {
+                  "type": "STRING",
+                  "value": "&"
+                }
+              },
               {
                 "type": "FIELD",
                 "name": "value",
@@ -979,8 +1228,87 @@
         {
           "type": "STRING",
           "value": "Y"
+        },
+        {
+          "type": "STRING",
+          "value": "s"
+        },
+        {
+          "type": "STRING",
+          "value": "S"
         }
       ]
+    },
+    "long_indirect": {
+      "type": "PREC_DYNAMIC",
+      "value": 3,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "["
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "encoding",
+                "content": {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  },
+                  "named": true,
+                  "value": "address_encoding"
+                }
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "FIELD",
+            "name": "value",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "STRING",
+            "value": "]"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ","
+                  },
+                  {
+                    "type": "FIELD",
+                    "name": "outer_index",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "index_register"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          }
+        ]
+      }
     },
     "indirect": {
       "type": "PREC_DYNAMIC",
@@ -1954,6 +2282,14 @@
     [
       "indirect",
       "_expression"
+    ],
+    [
+      "long_indirect",
+      "_expression"
+    ],
+    [
+      "long_indirect",
+      "eval_bracket"
     ],
     [
       "indirect",

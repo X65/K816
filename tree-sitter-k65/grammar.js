@@ -35,9 +35,10 @@
  *   - symbolic subscripts: field lists with nesting and default widths,
  *     `abstract var` layouts, the field and repeat-element accessors, and the
  *     `:sizeof` / `:offsetof` and typed-view suffixes;
- *   - native instructions: the classical 6502 mnemonics with every classical
- *     operand shape, the `dp`/`abs`/`far` encoding prefixes, and `* N`
- *     repetition;
+ *   - native instructions: the 6502, 65C02, and 65816 mnemonics with every
+ *     operand shape — classical, stack-relative, indirect long, the
+ *     indexed-offset marker, and the two-operand block moves — plus the
+ *     `dp`/`abs`/`far` encoding prefixes and `* N` repetition;
  *   - code: `func NAME @a8 @i16 { ... }` and the HLA forms `a = #imm`,
  *     `TARGET = a`, and `return`.
  *
@@ -64,11 +65,22 @@ const MNEMONICS_6502 = [
   'tax', 'tay', 'tsx', 'txa', 'txs', 'tya',
 ];
 
+/** The 65C02 additions. */
+const MNEMONICS_65C02 = [
+  'bra', 'phx', 'phy', 'plx', 'ply', 'stz', 'tsb', 'trb', 'wai', 'stp',
+];
+
 /**
- * The two 65816 mnemonics the vertical slice already compiles. The rest of
- * the 65C02/65816 set arrives with the next group.
+ * The 65816 additions: bank and mode registers, long control flow, the stack
+ * pushes, and the register transfers documented under "65816 Transfer
+ * Instructions". `mvn` and `mvp` are not here — a block move takes two
+ * operands and has its own rule.
  */
-const MNEMONICS_SLICE_65816 = ['rep', 'sep'];
+const MNEMONICS_65816 = [
+  'phb', 'plb', 'phd', 'pld', 'phk', 'xce',
+  'brl', 'jml', 'jsl', 'rtl', 'pea', 'pei', 'per', 'cop', 'wdm', 'rep', 'sep',
+  'tcd', 'tcs', 'tdc', 'tsc', 'txy', 'tyx', 'xba',
+];
 
 /**
  * Precedence of the K65 expression layer, lowest first.
@@ -117,6 +129,10 @@ export default grammar({
     // expression itself — the same one-token-late decision as above.
     [$.address, $._expression],
     [$.indirect, $._expression],
+    [$.long_indirect, $._expression],
+    // `lda [ptr]` is an indirect-long operand, not an evaluator bracket used
+    // as an address; the dynamic precedences settle it.
+    [$.long_indirect, $.eval_bracket],
     // `lda (foo)` is an indirect operand, not a parenthesized address — the
     // dynamic precedences settle it.
     [$.indirect, $.parenthesized_expression],
@@ -214,6 +230,7 @@ export default grammar({
       choice(
         $.label,
         $.native_instruction,
+        $.block_move,
         $.hla_load_immediate,
         $.hla_store,
         $.return_statement,
@@ -242,9 +259,28 @@ export default grammar({
         ),
       ),
 
-    mnemonic: _ => token(choice(...MNEMONICS_6502, ...MNEMONICS_SLICE_65816)),
+    mnemonic: _ =>
+      token(choice(...MNEMONICS_6502, ...MNEMONICS_65C02, ...MNEMONICS_65816)),
 
-    _operand: $ => choice($.accumulator, $.immediate, $.address, $.indirect),
+    // mvn src,dst / mvp src,dst — the only two-operand instructions, so they
+    // get their own rule rather than widening the general operand grammar to
+    // accept `expr,expr` after every mnemonic.
+    block_move: $ =>
+      seq(
+        field('mnemonic', alias(choice('mvn', 'mvp'), $.mnemonic)),
+        field('source', $._expression),
+        ',',
+        field('destination', $._expression),
+      ),
+
+    _operand: $ =>
+      choice(
+        $.accumulator,
+        $.immediate,
+        $.address,
+        $.indirect,
+        $.long_indirect,
+      ),
 
     // `asl a` — the accumulator as an operand, which beats reading `a` as a
     // symbol of that name.
@@ -260,7 +296,26 @@ export default grammar({
     // both survive.
     address: $ =>
       choice(
-        prec.dynamic(1, seq(field('value', $._expression), optional($._index_suffix))),
+        prec.dynamic(
+          1,
+          seq(
+            optional(field('marker', '&')),
+            field('value', $._expression),
+            optional($._index_suffix),
+          ),
+        ),
+        // `abs &FIELD_HP,x` would otherwise read as the expression
+        // `abs & FIELD_HP` — a variable named `abs` bitwise-ANDed with the
+        // field offset — so the prefixed marker form outranks it.
+        prec.dynamic(
+          2,
+          seq(
+            field('encoding', alias($.identifier, $.address_encoding)),
+            field('marker', '&'),
+            field('value', $._expression),
+            optional($._index_suffix),
+          ),
+        ),
         seq(
           field('encoding', alias($.identifier, $.address_encoding)),
           field('value', $._expression),
@@ -270,9 +325,28 @@ export default grammar({
 
     _index_suffix: $ => seq(',', field('index', $.index_register)),
 
-    index_register: _ => choice('x', 'X', 'y', 'Y'),
+    // `,S` shares this slot with the two index registers: `4,s` is
+    // stack-relative rather than indexed, which the semantic layer tells
+    // apart from the register kind.
+    index_register: _ => choice('x', 'X', 'y', 'Y', 's', 'S'),
 
-    // (expr), (expr,X), (expr),Y
+    // [expr] and [expr],Y — indirect long. Recognized only directly after a
+    // raw mnemonic: inside an HLA assignment the same brackets belong to the
+    // compile-time evaluator, which is why `a = [ptr]` evaluates and
+    // `lda [ptr]` dereferences.
+    long_indirect: $ =>
+      prec.dynamic(
+        3,
+        seq(
+          '[',
+          optional(field('encoding', alias($.identifier, $.address_encoding))),
+          field('value', $._expression),
+          ']',
+          optional(seq(',', field('outer_index', $.index_register))),
+        ),
+      ),
+
+    // (expr), (expr,X), (expr),Y, and the 65816 (expr,S),Y
     indirect: $ =>
       prec.dynamic(
         2,

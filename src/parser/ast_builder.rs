@@ -27,13 +27,13 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AddressEncoding, AddressOperand, AstFile, BinaryExpr, BinaryOp, Block, ConstDeclaration,
-    ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration, Function, HlaStatement,
-    IndexRegister, IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
-    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register,
-    RegisterKind, Statement, StatementKind, StorageClass, StorageClassKind, SubscriptExpr,
-    TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
-    WidthAnnotationKind,
+    AddressEncoding, AddressOperand, AstFile, BinaryExpr, BinaryOp, Block, BlockMoveOperand,
+    ConstDeclaration, ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration, Function,
+    HlaStatement, IndexRegister, IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope,
+    LabelStatement, LongIndirectOperand, MetadataQuery, MetadataQueryKind, Name, NativeInstruction,
+    NativeOperand, Register, RegisterKind, Statement, StatementKind, StorageClass,
+    StorageClassKind, SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp,
+    VarDeclaration, WidthAnnotation, WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -282,6 +282,7 @@ impl AstBuilder<'_> {
             match child.kind() {
                 "label" => statements.push(self.label(child)),
                 "native_instruction" => statements.push(self.native_instruction(child)),
+                "block_move" => statements.push(self.block_move(child)),
                 "hla_load_immediate" => statements.push(self.hla_load_immediate(child)),
                 "hla_store" => statements.push(self.hla_store(child)),
                 "return_statement" => statements.push(Statement {
@@ -326,14 +327,38 @@ impl AstBuilder<'_> {
         }
     }
 
+    fn block_move(&mut self, node: Node<'_>) -> Statement {
+        let mnemonic = self.name(node.child_by_field_name("mnemonic"), node);
+        let operand = NativeOperand::BlockMove(BlockMoveOperand {
+            source: self.expr(node.child_by_field_name("source"), node),
+            destination: self.expr(node.child_by_field_name("destination"), node),
+        });
+        Statement {
+            kind: StatementKind::Native(NativeInstruction {
+                mnemonic,
+                operand: Some(operand),
+                repeat: None,
+            }),
+            span: self.span(node),
+        }
+    }
+
     fn native_operand(&mut self, node: Node<'_>) -> NativeOperand {
         match node.kind() {
             "immediate" => NativeOperand::Immediate(self.immediate_value(node)),
             "accumulator" => NativeOperand::Accumulator,
             "address" => NativeOperand::Address(AddressOperand {
                 encoding: self.address_encoding(node),
+                offset_marker: node
+                    .child_by_field_name("marker")
+                    .map(|marker| self.span(marker)),
                 value: self.expr(node.child_by_field_name("value"), node),
                 index: self.index_register(node.child_by_field_name("index")),
+            }),
+            "long_indirect" => NativeOperand::LongIndirect(LongIndirectOperand {
+                encoding: self.address_encoding(node),
+                value: self.expr(node.child_by_field_name("value"), node),
+                outer_index: self.index_register(node.child_by_field_name("outer_index")),
             }),
             "indirect" => NativeOperand::Indirect(IndirectOperand {
                 encoding: self.address_encoding(node),
@@ -384,6 +409,7 @@ impl AstBuilder<'_> {
         let kind = match self.text(node).to_ascii_lowercase().as_str() {
             "x" => IndexRegisterKind::X,
             "y" => IndexRegisterKind::Y,
+            "s" => IndexRegisterKind::Stack,
             _ => {
                 self.unexpected(node, "an index register");
                 return None;

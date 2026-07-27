@@ -1,3 +1,25 @@
+/*****************************************************************************/
+/*                                                                           */
+/*                                   ast.rs                                  */
+/*                                                                           */
+/*              Owned syntax AST for native and HLA K816 source              */
+/*                                                                           */
+/*                                                                           */
+/* Copyright (c) 2026 Tomasz Sterna (smokku)                                 */
+/*                                                                           */
+/* Permission to use, copy, modify, and/or distribute this software for any  */
+/* purpose with or without fee is hereby granted.                            */
+/*                                                                           */
+/* THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES  */
+/* WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF          */
+/* MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR   */
+/* ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES    */
+/* WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN     */
+/* ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF   */
+/* OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.            */
+/*                                                                           */
+/*****************************************************************************/
+
 //! Owned syntax AST.
 //!
 //! Built from the Tree-sitter CST by `parser::ast_builder`; contains no

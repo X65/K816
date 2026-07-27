@@ -82,6 +82,7 @@ fn usage(prog_name: &str) {
     eprintln!("  lsp                                  run the language server over stdio");
     eprintln!();
     eprintln!("Options:");
+    eprintln!("  --message-format FORMAT              diagnostic output: human, compact, json");
     eprintln!("  -V, --version                        print the version number and exit");
 }
 
@@ -89,6 +90,7 @@ struct CommandLine {
     input: PathBuf,
     output: Option<PathBuf>,
     options: Options,
+    message_format: render::MessageFormat,
 }
 
 /// Parses `FILE`, `-o OUT`, and the optimizer toggle named by `opt_flag`
@@ -104,6 +106,18 @@ fn parse_command_line(
     let mut options = Options {
         optimize: !opt_flag_enables,
     };
+    let mut message_format = render::MessageFormat::default();
+
+    let mut parse_format = |prog_name: &str, text: &str| match render::MessageFormat::parse(text) {
+        Some(format) => {
+            message_format = format;
+            Ok(())
+        }
+        None => {
+            eprintln!("{prog_name}: unknown message format `{text}` (human, compact, json)");
+            Err(())
+        }
+    };
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -115,6 +129,16 @@ fn parse_command_line(
                     return Err(());
                 }
             },
+            "--message-format" => match iter.next() {
+                Some(format) => parse_format(prog_name, format)?,
+                None => {
+                    eprintln!("{prog_name}: `--message-format` needs a value");
+                    return Err(());
+                }
+            },
+            _ if arg.starts_with("--message-format=") => {
+                parse_format(prog_name, &arg["--message-format=".len()..])?;
+            }
             flag if flag == opt_flag => options.optimize = opt_flag_enables,
             _ if arg.starts_with('-') => {
                 eprintln!("{prog_name}: unknown option `{arg}`");
@@ -135,6 +159,7 @@ fn parse_command_line(
         input,
         output,
         options,
+        message_format,
     })
 }
 
@@ -158,7 +183,7 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     };
 
     let result = compile_to_ca65(&map, file, &command.options);
-    render::render_diagnostics(&map, &result.diagnostics);
+    render::render_diagnostics(&map, &result.diagnostics, command.message_format);
 
     let Some(assembly) = result.assembly else {
         return ExitCode::FAILURE;
@@ -183,7 +208,7 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
     };
 
     let result = k816::emit_ir(&map, file, &command.options);
-    render::render_diagnostics(&map, &result.diagnostics);
+    render::render_diagnostics(&map, &result.diagnostics, command.message_format);
 
     let Some(ir) = result.ir else {
         return ExitCode::FAILURE;

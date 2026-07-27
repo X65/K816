@@ -1,0 +1,255 @@
+================================================================================
+Fixed-address var declaration
+================================================================================
+
+var SCREEN = $0400
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Number literal forms
+================================================================================
+
+var A = $2A
+var B = 0x2A
+var C = 42
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Empty function with width annotations
+================================================================================
+
+func main @a8 @i16 {
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block)))
+
+================================================================================
+All four width annotations
+================================================================================
+
+func a8 @a8 { }
+func a16 @a16 { }
+func i8 @i8 { }
+func i16 @i16 { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block)))
+
+================================================================================
+The HLA slice program
+================================================================================
+
+var SCREEN = $0400
+
+func main @a8 @i16 {
+    a = #0
+    a = #1
+    SCREEN = a
+    return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number)))
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number)))
+      (hla_store
+        target: (identifier)
+        source: (register))
+      (return_statement))))
+
+================================================================================
+The native slice program
+================================================================================
+
+var SCREEN = $0400
+
+func main @a8 @i16 {
+    sep #$20
+    rep #$10
+    lda #0
+    lda #1
+    sta SCREEN
+    rts
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          symbol: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)))))
+
+================================================================================
+Statements packed on one line
+================================================================================
+
+func main @a8 { a = #1 SCREEN = a return }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number)))
+      (hla_store
+        target: (identifier)
+        source: (register))
+      (return_statement))))
+
+================================================================================
+Line and block comments
+================================================================================
+
+// leading comment
+var SCREEN = $0400 // trailing comment
+
+/* block
+   comment */
+func main /* inline */ @a8 {
+    return // done
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (line_comment)
+  (block_comment)
+  (func_declaration
+    name: (identifier)
+    (block_comment)
+    width: (width_annotation)
+    body: (block
+      (return_statement)
+      (line_comment))))
+
+================================================================================
+Malformed statement recovers inside the block
+:error
+================================================================================
+
+func main @a8 {
+    a = =
+    return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (ERROR
+        (register))
+      (return_statement))))
+
+================================================================================
+Missing closing brace at end of file
+:error
+================================================================================
+
+func main @a8 {
+    return
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (return_statement)
+      (MISSING "}"))))

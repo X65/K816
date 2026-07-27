@@ -1,0 +1,27 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "k65",
+      "camelcase": "K65",
+      "title": "K65",
+      "scope": "source.k65",
+      "path": ".",
+      "file-types": ["k65", "k816"],
+      "injection-regex": "^k(65|816)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "Zlib",
+    "description": "K65/K816 grammar for tree-sitter",
+    "authors": [
+      {
+        "name": "Tomasz Sterna"
+      }
+    ],
+    "links": {
+      "repository": "https://github.com/X65/cc65"
+    }
+  }
+}

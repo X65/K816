@@ -6,6 +6,7 @@
 //! project semantics on its own.
 
 pub mod diagnostic;
+pub mod parser;
 pub mod source;
 
 use std::path::Path;

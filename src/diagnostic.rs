@@ -51,6 +51,10 @@ impl DiagnosticCode {
     pub const IMMEDIATE_RANGE: Self = Self("K816-E0103");
     /// A width-dependent immediate is used where the register width is unknown.
     pub const UNKNOWN_WIDTH: Self = Self("K816-E0104");
+    /// A native instruction uses a mnemonic the ISA does not know.
+    pub const UNKNOWN_MNEMONIC: Self = Self("K816-E0105");
+    /// An operand form is not legal for the instruction or symbol kind.
+    pub const INVALID_OPERAND: Self = Self("K816-E0106");
     /// The compiler met a CST shape it does not recognize (a K816 bug).
     pub const INTERNAL: Self = Self("K816-E0900");
 

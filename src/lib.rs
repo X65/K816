@@ -31,8 +31,12 @@ pub mod ast;
 pub mod diagnostic;
 pub mod effects;
 pub mod isa;
+pub mod lower;
+pub mod op;
 pub mod parser;
+pub mod semantic;
 pub mod source;
+pub mod symbol;
 
 use std::path::Path;
 

@@ -29,9 +29,9 @@
 //! diagnostics.
 
 use crate::ast::{
-    AstFile, EvalCallName, Expr, ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement,
-    ItemKind, NativeOperand, RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind,
-    WidthAnnotationKind,
+    AstFile, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr,
+    ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand,
+    RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
 };
 use crate::compat;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -113,16 +113,22 @@ impl Analysis {
                     "`const` declarations",
                     compat::Owner::NativeTranslator,
                 )),
-                ItemKind::Data(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "`data` blocks",
-                    compat::Owner::NativeTranslator,
-                )),
-                ItemKind::EvalBlock(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "top-level evaluator blocks",
-                    compat::Owner::Compatibility,
-                )),
+                ItemKind::Data(data) => {
+                    self.diagnostics.push(compat::unimplemented(
+                        item.span,
+                        "`data` blocks",
+                        compat::Owner::NativeTranslator,
+                    ));
+                    self.report_reserved_in_data(data);
+                }
+                ItemKind::EvalBlock(expression) => {
+                    self.diagnostics.push(compat::unimplemented(
+                        item.span,
+                        "top-level evaluator blocks",
+                        compat::Owner::Compatibility,
+                    ));
+                    self.report_reserved_in_expr(expression);
+                }
                 ItemKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
                     item.span,
                     "preprocessor directives",
@@ -373,11 +379,14 @@ impl Analysis {
                 "branch and loop statements",
                 compat::Owner::HlaLowering,
             )),
-            StatementKind::Data(_) => self.diagnostics.push(compat::unimplemented(
-                statement.span,
-                "inline `data` blocks",
-                compat::Owner::NativeTranslator,
-            )),
+            StatementKind::Data(data) => {
+                self.diagnostics.push(compat::unimplemented(
+                    statement.span,
+                    "inline `data` blocks",
+                    compat::Owner::NativeTranslator,
+                ));
+                self.report_reserved_in_data(data);
+            }
             StatementKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
                 statement.span,
                 "preprocessor directives",
@@ -447,6 +456,138 @@ impl Analysis {
                 )
                 .with_docs("doc/register-width-aware-syntax.md"),
             );
+        }
+    }
+
+    /// Reports every reserved legacy construct nested inside a data block.
+    ///
+    /// A reserved construct keeps its own `K816-K65-####` diagnostic wherever
+    /// it appears, not only when it *is* the whole item: an `image` entry and
+    /// a `size(...)` call inside an expression are as reserved as a top-level
+    /// `image NAME = "file"`, and reporting only the enclosing block as
+    /// not-yet-implemented would hide which construct the compiler refuses.
+    fn report_reserved_in_data(&mut self, data: &DataBlock) {
+        for entry in &data.entries {
+            match &entry.kind {
+                DataEntryKind::Reserved(reserved) => {
+                    let diagnostic = reserved_diagnostic(reserved);
+                    self.diagnostics.push(diagnostic);
+                }
+                DataEntryKind::Align(expr)
+                | DataEntryKind::Address(expr)
+                | DataEntryKind::Nocross(Some(expr)) => self.report_reserved_in_expr(expr),
+                DataEntryKind::Typed { values, .. } => {
+                    for value in values {
+                        if let DataValue::Expr(expr) = value {
+                            self.report_reserved_in_expr(expr);
+                        }
+                    }
+                }
+                DataEntryKind::Value(DataValue::Expr(expr)) => self.report_reserved_in_expr(expr),
+                DataEntryKind::Repeat { count, body } => {
+                    self.report_reserved_in_expr(count);
+                    self.report_reserved_in_data(body);
+                }
+                DataEntryKind::ForEval { from, to, body, .. } => {
+                    self.report_reserved_in_expr(from);
+                    self.report_reserved_in_expr(to);
+                    self.report_reserved_in_expr(body);
+                }
+                DataEntryKind::Code { body, .. } => {
+                    for statement in &body.statements {
+                        if let StatementKind::Data(nested) = &statement.kind {
+                            self.report_reserved_in_data(nested);
+                        }
+                    }
+                }
+                DataEntryKind::Segment(_)
+                | DataEntryKind::Nocross(None)
+                | DataEntryKind::Charset(_)
+                | DataEntryKind::Label(_)
+                | DataEntryKind::Value(_)
+                | DataEntryKind::Preprocessor(_)
+                | DataEntryKind::Binary(_)
+                | DataEntryKind::Error => {}
+            }
+        }
+    }
+
+    /// Reports reserved evaluator calls anywhere inside `expr`.
+    fn report_reserved_in_expr(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Eval(inner) => self.report_reserved_in_eval(inner),
+            ExprKind::Unary(unary) => self.report_reserved_in_expr(&unary.operand),
+            ExprKind::Binary(binary) => {
+                self.report_reserved_in_expr(&binary.left);
+                self.report_reserved_in_expr(&binary.right);
+            }
+            ExprKind::Field(access) => self.report_reserved_in_expr(&access.base),
+            ExprKind::Subscript(subscript) => {
+                self.report_reserved_in_expr(&subscript.base);
+                self.report_reserved_in_expr(&subscript.index);
+            }
+            ExprKind::Metadata(query) => self.report_reserved_in_expr(&query.base),
+            ExprKind::TypedView(view) => self.report_reserved_in_expr(&view.base),
+            ExprKind::Number(_)
+            | ExprKind::Symbol(_)
+            | ExprKind::LocalSymbol(_)
+            | ExprKind::Error => {}
+        }
+    }
+
+    /// `[ 1 + size(section) ]` is arithmetic around a reserved call and
+    /// `[ max(size(a), 1) ]` nests one, so the whole evaluator tree is walked.
+    fn report_reserved_in_eval(&mut self, expr: &EvalExpr) {
+        match &expr.kind {
+            EvalExprKind::ReservedCall(call) => {
+                let diagnostic = compat::k65_reserved(
+                    DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+                    call.keyword_span,
+                    eval_call_text(call.name),
+                );
+                self.diagnostics.push(diagnostic);
+                for argument in &call.arguments {
+                    self.report_reserved_in_eval(argument);
+                }
+            }
+            EvalExprKind::Call { arguments, .. } => {
+                for argument in arguments {
+                    self.report_reserved_in_eval(argument);
+                }
+            }
+            EvalExprKind::Unary { operand, .. } => self.report_reserved_in_eval(operand),
+            EvalExprKind::Binary { left, right, .. } => {
+                self.report_reserved_in_eval(left);
+                self.report_reserved_in_eval(right);
+            }
+            EvalExprKind::Ternary {
+                condition,
+                consequence,
+                alternative,
+            } => {
+                self.report_reserved_in_eval(condition);
+                self.report_reserved_in_eval(consequence);
+                self.report_reserved_in_eval(alternative);
+            }
+            EvalExprKind::Assignment { target, value, .. } => {
+                self.report_reserved_in_eval(target);
+                self.report_reserved_in_eval(value);
+            }
+            EvalExprKind::Subscript { base, index } => {
+                self.report_reserved_in_eval(base);
+                self.report_reserved_in_eval(index);
+            }
+            EvalExprKind::Member { base, .. } => self.report_reserved_in_eval(base),
+            EvalExprKind::List(items) => {
+                for item in items {
+                    self.report_reserved_in_eval(item);
+                }
+            }
+            EvalExprKind::Number(_)
+            | EvalExprKind::Float(_)
+            | EvalExprKind::String(_)
+            | EvalExprKind::Symbol(_)
+            | EvalExprKind::Error => {}
         }
     }
 
@@ -520,17 +661,22 @@ fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
         }
         ReservedKind::EvalCall(name) => (
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
-            match name {
-                EvalCallName::Size => "size",
-                EvalCallName::AddByte => "addbyte",
-                EvalCallName::Color => "color",
-                EvalCallName::Rnd => "rnd",
-                EvalCallName::Print => "print",
-                EvalCallName::Error => "error",
-            },
+            eval_call_text(name),
         ),
     };
     compat::k65_reserved(code, reserved.keyword_span, construct)
+}
+
+/// The source spelling of a reserved evaluator function.
+fn eval_call_text(name: EvalCallName) -> &'static str {
+    match name {
+        EvalCallName::Size => "size",
+        EvalCallName::AddByte => "addbyte",
+        EvalCallName::Color => "color",
+        EvalCallName::Rnd => "rnd",
+        EvalCallName::Print => "print",
+        EvalCallName::Error => "error",
+    }
 }
 
 /// Names the first part of a code section that has no semantics yet, or

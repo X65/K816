@@ -306,6 +306,111 @@ pub enum HlaStatement {
     Assign(HlaAssignment),
     /// `a~b` / `b~a` — the XBA exchange.
     Exchange(HlaExchange),
+    /// `a+mem`, `a-#1`, `a&mask`, and the compares `a?imm` and `a&?mem`.
+    Arithmetic(HlaArithmetic),
+    /// `a<<`, `mem,x>>>`
+    Shift(HlaShift),
+    /// `x++`, `mem,x--`
+    Step(HlaStep),
+    /// `c+`, `d-`, `i+`, `v-`
+    Flag(HlaFlag),
+    /// `a!!`, `d??`, `p!!`
+    Stack(HlaStack),
+    /// `*` or `* N` — one or N `NOP`s.
+    Nop { count: Option<Expr> },
+    /// `%` — the one-character `brk #0` breakpoint marker.
+    Break,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaArithmetic {
+    pub register: Register,
+    pub op: ArithmeticOp,
+    pub operand: HlaOperand,
+    pub op_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArithmeticOp {
+    /// `+` — ADC
+    Add,
+    /// `-` — SBC
+    Subtract,
+    /// `&` — AND
+    And,
+    /// `|` — ORA
+    Or,
+    /// `^` — EOR
+    Xor,
+    /// `?` — CMP / CPX / CPY
+    Compare,
+    /// `&?` — BIT
+    BitTest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaShift {
+    pub target: HlaOperand,
+    pub op: ShiftOp,
+    pub op_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShiftOp {
+    /// `<<` — ASL
+    Left,
+    /// `>>` — LSR
+    Right,
+    /// `<<<` — ROL
+    RotateLeft,
+    /// `>>>` — ROR
+    RotateRight,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaStep {
+    pub target: HlaOperand,
+    pub op: StepOp,
+    pub op_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepOp {
+    /// `++` — INC / INX / INY
+    Increment,
+    /// `--` — DEC / DEX / DEY
+    Decrement,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaFlag {
+    pub flag: FlagKind,
+    /// `true` for `+` (set), `false` for `-` (clear).
+    pub set: bool,
+    pub flag_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagKind {
+    Carry,
+    Decimal,
+    Interrupt,
+    Overflow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaStack {
+    pub register: Register,
+    pub op: StackOp,
+    pub op_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StackOp {
+    /// `!!` — push
+    Push,
+    /// `??` — pull
+    Pull,
 }
 
 /// One assignment chain. The value flows from `source` leftwards through
@@ -361,6 +466,8 @@ pub enum RegisterKind {
     S,
     X,
     Y,
+    /// The processor status register, spelled `p` or `flag`.
+    P,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

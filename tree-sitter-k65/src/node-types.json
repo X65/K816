@@ -508,11 +508,39 @@
           "named": true
         },
         {
+          "type": "hla_arithmetic",
+          "named": true
+        },
+        {
           "type": "hla_assignment",
           "named": true
         },
         {
+          "type": "hla_break",
+          "named": true
+        },
+        {
           "type": "hla_exchange",
+          "named": true
+        },
+        {
+          "type": "hla_flag",
+          "named": true
+        },
+        {
+          "type": "hla_nop",
+          "named": true
+        },
+        {
+          "type": "hla_shift",
+          "named": true
+        },
+        {
+          "type": "hla_stack",
+          "named": true
+        },
+        {
+          "type": "hla_step",
           "named": true
         },
         {
@@ -1023,6 +1051,11 @@
     }
   },
   {
+    "type": "flag_name",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "func_declaration",
     "named": true,
     "fields": {
@@ -1052,6 +1085,78 @@
         "types": [
           {
             "type": "width_annotation",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_arithmetic",
+    "named": true,
+    "fields": {
+      "operand": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address",
+            "named": true
+          },
+          {
+            "type": "immediate",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          },
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "&",
+            "named": false
+          },
+          {
+            "type": "&?",
+            "named": false
+          },
+          {
+            "type": "+",
+            "named": false
+          },
+          {
+            "type": "-",
+            "named": false
+          },
+          {
+            "type": "?",
+            "named": false
+          },
+          {
+            "type": "^",
+            "named": false
+          },
+          {
+            "type": "|",
+            "named": false
+          }
+        ]
+      },
+      "register": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "register",
             "named": true
           }
         ]
@@ -1104,6 +1209,198 @@
         "multiple": false,
         "required": true,
         "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_flag",
+    "named": true,
+    "fields": {
+      "flag": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "flag_name",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "+",
+            "named": false
+          },
+          {
+            "type": "-",
+            "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_nop",
+    "named": true,
+    "fields": {
+      "count": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_shift",
+    "named": true,
+    "fields": {
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "<<",
+            "named": false
+          },
+          {
+            "type": "<<<",
+            "named": false
+          },
+          {
+            "type": ">>",
+            "named": false
+          },
+          {
+            "type": ">>>",
+            "named": false
+          }
+        ]
+      },
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          },
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_stack",
+    "named": true,
+    "fields": {
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "!!",
+            "named": false
+          },
+          {
+            "type": "??",
+            "named": false
+          }
+        ]
+      },
+      "register": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_step",
+    "named": true,
+    "fields": {
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "++",
+            "named": false
+          },
+          {
+            "type": "--",
+            "named": false
+          }
+        ]
+      },
+      "target": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          },
           {
             "type": "register",
             "named": true
@@ -2260,6 +2557,10 @@
     }
   },
   {
+    "type": "!!",
+    "named": false
+  },
+  {
     "type": "#",
     "named": false
   },
@@ -2284,6 +2585,10 @@
     "named": false
   },
   {
+    "type": "&?",
+    "named": false
+  },
+  {
     "type": "(",
     "named": false
   },
@@ -2300,11 +2605,19 @@
     "named": false
   },
   {
+    "type": "++",
+    "named": false
+  },
+  {
     "type": ",",
     "named": false
   },
   {
     "type": "-",
+    "named": false
+  },
+  {
+    "type": "--",
     "named": false
   },
   {
@@ -2320,11 +2633,27 @@
     "named": false
   },
   {
+    "type": "<<<",
+    "named": false
+  },
+  {
     "type": "=",
     "named": false
   },
   {
     "type": ">>",
+    "named": false
+  },
+  {
+    "type": ">>>",
+    "named": false
+  },
+  {
+    "type": "?",
+    "named": false
+  },
+  {
+    "type": "??",
     "named": false
   },
   {
@@ -2387,6 +2716,10 @@
   {
     "type": "func",
     "named": false
+  },
+  {
+    "type": "hla_break",
+    "named": true
   },
   {
     "type": "identifier",

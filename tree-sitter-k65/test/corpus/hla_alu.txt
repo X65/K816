@@ -1,0 +1,298 @@
+================================================================================
+Arithmetic and logic shorthands
+================================================================================
+
+func main {
+  a+mem
+  a-#1
+  a&mask
+  a|bits
+  a^bits
+  a+mem,x
+  a+(mem),y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_arithmetic
+        register: (register)
+        operand: (immediate
+          value: (number)))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (hla_arithmetic
+        register: (register)
+        operand: (indirect
+          value: (identifier)
+          outer_index: (index_register))))))
+
+================================================================================
+Compares and the bit test
+================================================================================
+
+func main {
+  a?10
+  x?#1
+  y?mem
+  a&?READY
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (number)))
+      (hla_arithmetic
+        register: (register)
+        operand: (immediate
+          value: (number)))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier))))))
+
+================================================================================
+Shifts and rotates
+================================================================================
+
+func main {
+  a<<
+  a>>
+  a<<<
+  a>>>
+  mem<<
+  mem,x>>>
+  (base+1)<<
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_shift
+        target: (register))
+      (hla_shift
+        target: (register))
+      (hla_shift
+        target: (register))
+      (hla_shift
+        target: (register))
+      (hla_shift
+        target: (address
+          value: (identifier)))
+      (hla_shift
+        target: (address
+          value: (identifier)
+          index: (index_register)))
+      (hla_shift
+        target: (indirect
+          value: (binary_expression
+            left: (identifier)
+            right: (number)))))))
+
+================================================================================
+Increment and decrement
+================================================================================
+
+func main {
+  x++
+  y--
+  mem++
+  mem,x--
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_step
+        target: (register))
+      (hla_step
+        target: (register))
+      (hla_step
+        target: (address
+          value: (identifier)))
+      (hla_step
+        target: (address
+          value: (identifier)
+          index: (index_register))))))
+
+================================================================================
+Flag shorthands
+================================================================================
+
+func main {
+  c+ c- d+ d- i+ i- v-
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name)))))
+
+================================================================================
+Stack shorthands
+================================================================================
+
+func main {
+  a!! a?? x!! x?? y!! y?? p!! p?? flag!! b!! b?? d!! d??
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register)))))
+
+================================================================================
+NOP and break shorthands
+================================================================================
+
+func main {
+  *
+  * 5
+  * COUNT
+  %
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_nop)
+      (hla_nop
+        count: (number))
+      (hla_nop
+        count: (identifier))
+      (hla_break))))
+
+================================================================================
+A flag operation is not arithmetic on a register of that name
+================================================================================
+
+func main {
+  c+
+  c+mem
+  d-
+  d = c
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_flag
+        flag: (flag_name))
+      (hla_arithmetic
+        register: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_flag
+        flag: (flag_name))
+      (hla_assignment
+        operand: (register)
+        operand: (register)))))
+
+================================================================================
+A binary literal is not the break shorthand
+================================================================================
+
+func main {
+  x = %0
+  %
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (number)))
+      (hla_break))))

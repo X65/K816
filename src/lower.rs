@@ -210,8 +210,17 @@ impl Lowering<'_> {
                     _ => self.skipped(span, "an unsupported assignment chain"),
                 }
             }
-            StatementKind::Hla(HlaStatement::Exchange(_)) => {
-                self.skipped(span, "an accumulator exchange");
+            StatementKind::Hla(
+                HlaStatement::Exchange(_)
+                | HlaStatement::Arithmetic(_)
+                | HlaStatement::Shift(_)
+                | HlaStatement::Step(_)
+                | HlaStatement::Flag(_)
+                | HlaStatement::Stack(_)
+                | HlaStatement::Nop { .. }
+                | HlaStatement::Break,
+            ) => {
+                self.skipped(span, "an HLA shorthand");
             }
             StatementKind::Return => {
                 // `return` is the HLA spelling of `rts`.

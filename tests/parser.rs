@@ -24,9 +24,10 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AddressEncoding, AstFile, BinaryOp, ExprKind, HlaOperandKind, HlaStatement, IndexRegister,
-    IndexRegisterKind, ItemKind, LabelScope, MetadataQueryKind, NativeOperand, RegisterKind,
-    StatementKind, StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, ExprKind, FlagKind, HlaOperandKind,
+    HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope, MetadataQueryKind,
+    NativeOperand, RegisterKind, ShiftOp, StackOp, StatementKind, StepOp, StorageClassKind,
+    TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -185,6 +186,61 @@ fn dump_ast(file: &AstFile) -> String {
                             dump_register(exchange.left.kind),
                             dump_register(exchange.right.kind)
                         ),
+                        StatementKind::Hla(HlaStatement::Arithmetic(arithmetic)) => format!(
+                            "hla {}{}{}",
+                            dump_register(arithmetic.register.kind),
+                            match arithmetic.op {
+                                ArithmeticOp::Add => "+",
+                                ArithmeticOp::Subtract => "-",
+                                ArithmeticOp::And => "&",
+                                ArithmeticOp::Or => "|",
+                                ArithmeticOp::Xor => "^",
+                                ArithmeticOp::Compare => "?",
+                                ArithmeticOp::BitTest => "&?",
+                            },
+                            dump_hla_operand(&arithmetic.operand.kind)
+                        ),
+                        StatementKind::Hla(HlaStatement::Shift(shift)) => format!(
+                            "hla {}{}",
+                            dump_hla_operand(&shift.target.kind),
+                            match shift.op {
+                                ShiftOp::Left => "<<",
+                                ShiftOp::Right => ">>",
+                                ShiftOp::RotateLeft => "<<<",
+                                ShiftOp::RotateRight => ">>>",
+                            }
+                        ),
+                        StatementKind::Hla(HlaStatement::Step(step)) => format!(
+                            "hla {}{}",
+                            dump_hla_operand(&step.target.kind),
+                            match step.op {
+                                StepOp::Increment => "++",
+                                StepOp::Decrement => "--",
+                            }
+                        ),
+                        StatementKind::Hla(HlaStatement::Flag(flag)) => format!(
+                            "hla {}{}",
+                            match flag.flag {
+                                FlagKind::Carry => "c",
+                                FlagKind::Decimal => "d",
+                                FlagKind::Interrupt => "i",
+                                FlagKind::Overflow => "v",
+                            },
+                            if flag.set { "+" } else { "-" }
+                        ),
+                        StatementKind::Hla(HlaStatement::Stack(stack)) => format!(
+                            "hla {}{}",
+                            dump_register(stack.register.kind),
+                            match stack.op {
+                                StackOp::Push => "!!",
+                                StackOp::Pull => "??",
+                            }
+                        ),
+                        StatementKind::Hla(HlaStatement::Nop { count }) => match count {
+                            Some(count) => format!("hla * {}", dump_expr(&count.kind)),
+                            None => "hla *".to_owned(),
+                        },
+                        StatementKind::Hla(HlaStatement::Break) => "hla %".to_owned(),
                         StatementKind::Label(label) => format!(
                             "{} {}",
                             match label.scope {
@@ -219,6 +275,7 @@ fn dump_register(kind: RegisterKind) -> &'static str {
         RegisterKind::S => "s",
         RegisterKind::X => "x",
         RegisterKind::Y => "y",
+        RegisterKind::P => "p",
     }
 }
 
@@ -1121,6 +1178,20 @@ fn parse_hla(statement: &str) -> String {
             dump_register(exchange.left.kind),
             dump_register(exchange.right.kind)
         ),
+        StatementKind::Hla(_) => {
+            // Every other HLA shorthand renders through `dump_ast`.
+            let rendered = dump_ast(&result.file);
+            rendered
+                .lines()
+                .nth(1)
+                .expect("a statement line")
+                .trim()
+                .split(" @")
+                .next()
+                .expect("a rendered statement")
+                .trim_start_matches("hla ")
+                .to_owned()
+        }
         other => panic!("`{statement}` is not an HLA statement: {other:?}"),
     }
 }
@@ -1198,6 +1269,74 @@ fn the_slice_chain_shapes_still_compile_and_the_rest_name_their_owner() {
             "`{source}`"
         );
     }
+}
+
+#[test]
+fn every_shorthand_reaches_the_ast() {
+    assert_eq!(parse_hla("a+mem"), "a+mem");
+    assert_eq!(parse_hla("a-#1"), "a-#1");
+    assert_eq!(parse_hla("a&mask"), "a&mask");
+    assert_eq!(parse_hla("a|bits"), "a|bits");
+    assert_eq!(parse_hla("a^bits"), "a^bits");
+    assert_eq!(parse_hla("a?10"), "a?10");
+    assert_eq!(parse_hla("x?#1"), "x?#1");
+    assert_eq!(parse_hla("a&?READY"), "a&?READY");
+    assert_eq!(parse_hla("a<<"), "a<<");
+    assert_eq!(parse_hla("mem,x>>>"), "mem,x>>>");
+    assert_eq!(parse_hla("x++"), "x++");
+    assert_eq!(parse_hla("mem,x--"), "mem,x--");
+    assert_eq!(parse_hla("c+"), "c+");
+    assert_eq!(parse_hla("v-"), "v-");
+    assert_eq!(parse_hla("a!!"), "a!!");
+    assert_eq!(parse_hla("d??"), "d??");
+    assert_eq!(parse_hla("flag!!"), "p!!");
+    assert_eq!(parse_hla("*"), "*");
+    assert_eq!(parse_hla("* 5"), "* 5");
+    assert_eq!(parse_hla("%"), "%");
+}
+
+#[test]
+fn a_shift_statement_ends_at_its_operator() {
+    // `mem<<` and `mem,x>>>` on consecutive lines are two shifts, not the
+    // single shift `(mem << mem,x) >>>` — the shift target accepts atoms
+    // only, so the operator cannot be swallowed into an operand.
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "shifts.k65",
+        "func f {\n  mem<<\n  mem,x>>>\n  * 5\n  * COUNT\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 4);
+}
+
+#[test]
+fn a_flag_shorthand_is_not_arithmetic_on_a_register() {
+    // `c` names both a register and a flag; `c+` sets the carry while
+    // `c+mem` is arithmetic, and only the token after the operator says which.
+    assert_eq!(parse_hla("c+"), "c+");
+    assert_eq!(parse_hla("c+mem"), "c+mem");
+    assert_eq!(parse_hla("d-"), "d-");
+    assert_eq!(parse_hla("d = c"), "d = c");
+}
+
+#[test]
+fn a_flag_without_a_shorthand_is_reported() {
+    // `a` is a register but not a flag with a set/clear form.
+    let mut map = SourceMap::new();
+    let id = map.add_file("flag.k65", "func f {\n  s+\n}\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].code, DiagnosticCode::SYNTAX_ERROR);
+}
+
+#[test]
+fn a_binary_literal_is_not_the_break_shorthand() {
+    assert_eq!(parse_hla("x = %0"), "x = 0");
+    assert_eq!(parse_hla("%"), "%");
 }
 
 #[test]

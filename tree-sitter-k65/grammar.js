@@ -41,6 +41,9 @@
  *     `dp`/`abs`/`far` encoding prefixes and `* N` repetition;
  *   - HLA data movement: the assignment chain covering every load, store,
  *     and register transfer, plus the `a~b` exchange;
+ *   - HLA arithmetic and shorthands: the ALU and compare forms, shifts and
+ *     rotates, increment and decrement, the flag and stack shorthands, and
+ *     the `*` NOP and `%` break markers;
  *   - code: `func NAME @a8 @i16 { ... }` and `return`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
@@ -135,6 +138,22 @@ export default grammar({
     // survives; where both would, the dynamic precedences above prefer the
     // shorter operand.
     [$.native_instruction],
+    // `*` alone is one NOP and `* N` is N of them, so whether what follows is
+    // this statement's count or the next statement is the same open question.
+    [$.hla_nop],
+    // `c+` is a flag operation and `a+mem` is arithmetic; the two look alike
+    // until the token after the operator arrives.
+    [$.hla_arithmetic, $.hla_flag],
+    // A shift target and a NOP count accept only atoms, so an atom at the
+    // start of a statement may belong to either that restricted rule or the
+    // full expression grammar until the statement's shape is known.
+    [$._atom, $._expression],
+    // `mem<<` on one line and `mem,x>>>` on the next are two shift
+    // statements, not the single shift `(mem << mem,x) >>>`; likewise `* 5`
+    // and `* COUNT` are two NOP counts, not `5 * COUNT`. Both readings are
+    // explored and the dynamic precedences prefer the one that ends the
+    // statement at the operator.
+
     // Inside `(`, an identifier may be an encoding prefix or the operand
     // expression itself — the same one-token-late decision as above.
     [$.address, $._expression],
@@ -243,6 +262,13 @@ export default grammar({
         $.block_move,
         $.hla_assignment,
         $.hla_exchange,
+        $.hla_arithmetic,
+        $.hla_shift,
+        $.hla_step,
+        $.hla_flag,
+        $.hla_stack,
+        $.hla_nop,
+        $.hla_break,
         $.return_statement,
       ),
 
@@ -388,6 +414,84 @@ export default grammar({
     hla_exchange: $ =>
       seq(field('left', $.register), '~', field('right', $.register)),
 
+    // a+mem, a-#1, a&mask, a|bits, a^bits, and the compares a?imm, x?imm,
+    // y?imm, and the BIT form a&?mem. One rule for the whole family: they
+    // differ only in the operator, and every one of them is a register, an
+    // operator, and an operand.
+    hla_arithmetic: $ =>
+      seq(
+        field('register', $.register),
+        field('operator', choice('+', '-', '&?', '&', '|', '^', '?')),
+        field('operand', $._hla_operand),
+      ),
+
+    // a<<, a>>, a<<<, a>>>, mem<<, mem,x>>> — shifts and rotates.
+    //
+    // `<<` and `>>` are also expression operators, so `mem<<` on one line
+    // followed by `mem,x>>>` on the next would otherwise read as the single
+    // shift `(mem << mem,x) >>>`. The statement outranks the expression: a
+    // shift operator that closes a statement wins over one that continues an
+    // operand.
+    hla_shift: $ =>
+      seq(
+        field('target', $._shift_target),
+        field('operator', choice('<<<', '>>>', '<<', '>>')),
+      ),
+
+    // x++, y--, mem++, mem,x--
+    hla_step: $ =>
+      seq(field('target', $._hla_target), field('operator', choice('++', '--'))),
+
+    // c+ (SEC), c- (CLC), d+ (SED), d- (CLD), i+ (SEI), i- (CLI), v- (CLV).
+    // The flag name shares the register token — `c` and `d` are both — so
+    // which it is follows from the statement, and the builder checks that the
+    // name is one of the four flags with a shorthand.
+    hla_flag: $ =>
+      seq(
+        field('flag', alias($.register, $.flag_name)),
+        field('operator', choice('+', '-')),
+      ),
+
+    // a!! (PHA), a?? (PLA), p!! (PHP), b!! (PHB), d?? (PLD), ...
+    hla_stack: $ =>
+      seq(field('register', $.register), field('operator', choice('!!', '??'))),
+
+    // `*` is one NOP, `* N` is N of them.
+    hla_nop: $ => seq('*', optional(field('count', $._atom))),
+
+    // `%` is the one-character `brk #0` breakpoint marker. A binary literal
+    // takes the same character, but only with digits attached.
+    hla_break: _ => '%',
+
+    _hla_target: $ => choice($.register, $.address, $.indirect),
+
+    // The shift target is deliberately *not* the full operand grammar. `<<`
+    // and `>>` are expression operators too, so a target that could contain
+    // one at the top level would swallow the operator this statement ends
+    // with: `mem<<` followed by `mem,x>>>` would become the single shift
+    // `(mem << mem,x) >>>`. Atoms and index suffixes only, which is exactly
+    // the set of shift targets the per-mnemonic tables document — `a<<`,
+    // `mem<<`, `mem,x<<`. The NOP count is restricted the same way, and for
+    // the same reason: the documentation asks only for a literal, a `const`,
+    // or an inline parameter there.
+    _shift_target: $ =>
+      choice($.register, alias($._atom_address, $.address), $.indirect),
+
+    _atom_address: $ => seq(field('value', $._atom), optional($._index_suffix)),
+
+    _atom: $ =>
+      choice(
+        $.number,
+        $.char_literal,
+        $.identifier,
+        $.local_identifier,
+        $.parenthesized_expression,
+        $.field_access,
+        $.subscript_expression,
+        $.metadata_query,
+        $.eval_bracket,
+      ),
+
     // The operand alphabet of an assignment chain: a register, an immediate,
     // or a memory reference in any of the shapes a raw mnemonic accepts.
     // `[expr]` is deliberately absent — inside an assignment those brackets
@@ -406,6 +510,12 @@ export default grammar({
           choice(
             'a', 'A', 'b', 'B', 'c', 'C', 'd', 'D',
             's', 'S', 'x', 'X', 'y', 'Y',
+            // The status register, whose stack shorthand spells it either
+            // way, and the two flags that are not registers at all. One token
+            // for all of them keeps the lexer from having to choose between
+            // two rules over the same spelling; the builder decides which
+            // meaning the statement asked for.
+            'p', 'P', 'flag', 'i', 'I', 'v', 'V',
           ),
         ),
       ),

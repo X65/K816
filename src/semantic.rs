@@ -281,10 +281,21 @@ impl Analysis {
                     )),
                 }
             }
-            StatementKind::Hla(HlaStatement::Exchange(_)) => {
+            // Everything else in the HLA statement family is recognized but
+            // not lowered yet.
+            StatementKind::Hla(
+                HlaStatement::Exchange(_)
+                | HlaStatement::Arithmetic(_)
+                | HlaStatement::Shift(_)
+                | HlaStatement::Step(_)
+                | HlaStatement::Flag(_)
+                | HlaStatement::Stack(_)
+                | HlaStatement::Nop { .. }
+                | HlaStatement::Break,
+            ) => {
                 self.diagnostics.push(compat::unimplemented(
                     statement.span,
-                    "accumulator exchanges",
+                    "these HLA shorthands",
                     compat::Owner::HlaLowering,
                 ));
             }

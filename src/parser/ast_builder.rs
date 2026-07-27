@@ -27,14 +27,15 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AddressEncoding, AddressOperand, AstFile, BinaryExpr, BinaryOp, Block, BlockMoveOperand,
-    ConstDeclaration, ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration, Function,
-    HlaAssignment, HlaExchange, HlaOperand, HlaOperandKind, HlaStatement, IndexRegister,
-    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
-    LongIndirectOperand, MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand,
-    Register, RegisterKind, Statement, StatementKind, StorageClass, StorageClassKind,
-    SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
-    WidthAnnotation, WidthAnnotationKind,
+    AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryExpr, BinaryOp, Block,
+    BlockMoveOperand, ConstDeclaration, ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration,
+    FlagKind, Function, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand,
+    HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister, IndexRegisterKind,
+    IndirectOperand, Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand,
+    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register,
+    RegisterKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass,
+    StorageClassKind, SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp,
+    VarDeclaration, WidthAnnotation, WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -286,6 +287,23 @@ impl AstBuilder<'_> {
                 "block_move" => statements.push(self.block_move(child)),
                 "hla_assignment" => statements.push(self.hla_assignment(child)),
                 "hla_exchange" => statements.push(self.hla_exchange(child)),
+                "hla_arithmetic" => statements.push(self.hla_arithmetic(child)),
+                "hla_shift" => statements.push(self.hla_shift(child)),
+                "hla_step" => statements.push(self.hla_step(child)),
+                "hla_flag" => statements.push(self.hla_flag(child)),
+                "hla_stack" => statements.push(self.hla_stack(child)),
+                "hla_nop" => statements.push(Statement {
+                    kind: StatementKind::Hla(HlaStatement::Nop {
+                        count: child
+                            .child_by_field_name("count")
+                            .map(|count| self.expr(Some(count), child)),
+                    }),
+                    span: self.span(child),
+                }),
+                "hla_break" => statements.push(Statement {
+                    kind: StatementKind::Hla(HlaStatement::Break),
+                    span: self.span(child),
+                }),
                 "return_statement" => statements.push(Statement {
                     kind: StatementKind::Return,
                     span: self.span(child),
@@ -474,6 +492,197 @@ impl AstBuilder<'_> {
         HlaOperand { kind, span }
     }
 
+    /// The operator token of `node`, plus its span. `None` (with an internal
+    /// diagnostic already recorded) when recovery lost it.
+    fn operator<'t>(&mut self, node: Node<'t>, context: &str) -> Option<(String, Span)> {
+        match node.child_by_field_name("operator") {
+            Some(operator) => Some((self.text(operator).to_owned(), self.span(operator))),
+            None => {
+                self.unexpected(node, context);
+                None
+            }
+        }
+    }
+
+    fn hla_arithmetic(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let Some((operator, op_span)) = self.operator(node, "an arithmetic statement") else {
+            return Statement {
+                kind: StatementKind::Error,
+                span,
+            };
+        };
+        let op = match operator.as_str() {
+            "+" => ArithmeticOp::Add,
+            "-" => ArithmeticOp::Subtract,
+            "&" => ArithmeticOp::And,
+            "|" => ArithmeticOp::Or,
+            "^" => ArithmeticOp::Xor,
+            "?" => ArithmeticOp::Compare,
+            "&?" => ArithmeticOp::BitTest,
+            _ => {
+                self.unexpected(node, "an arithmetic statement");
+                return Statement {
+                    kind: StatementKind::Error,
+                    span,
+                };
+            }
+        };
+        let operand = match node.child_by_field_name("operand") {
+            Some(operand) => self.hla_operand(operand),
+            None => HlaOperand {
+                kind: HlaOperandKind::Error,
+                span: Span::empty_at(span.file, span.end),
+            },
+        };
+        Statement {
+            kind: StatementKind::Hla(HlaStatement::Arithmetic(HlaArithmetic {
+                register: self.register(node.child_by_field_name("register"), node),
+                op,
+                operand,
+                op_span,
+            })),
+            span,
+        }
+    }
+
+    fn hla_shift(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let Some((operator, op_span)) = self.operator(node, "a shift statement") else {
+            return Statement {
+                kind: StatementKind::Error,
+                span,
+            };
+        };
+        let op = match operator.as_str() {
+            "<<" => ShiftOp::Left,
+            ">>" => ShiftOp::Right,
+            "<<<" => ShiftOp::RotateLeft,
+            ">>>" => ShiftOp::RotateRight,
+            _ => {
+                self.unexpected(node, "a shift statement");
+                return Statement {
+                    kind: StatementKind::Error,
+                    span,
+                };
+            }
+        };
+        Statement {
+            kind: StatementKind::Hla(HlaStatement::Shift(HlaShift {
+                target: self.hla_target(node, span),
+                op,
+                op_span,
+            })),
+            span,
+        }
+    }
+
+    fn hla_step(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let Some((operator, op_span)) = self.operator(node, "an increment statement") else {
+            return Statement {
+                kind: StatementKind::Error,
+                span,
+            };
+        };
+        let op = match operator.as_str() {
+            "++" => StepOp::Increment,
+            "--" => StepOp::Decrement,
+            _ => {
+                self.unexpected(node, "an increment statement");
+                return Statement {
+                    kind: StatementKind::Error,
+                    span,
+                };
+            }
+        };
+        Statement {
+            kind: StatementKind::Hla(HlaStatement::Step(HlaStep {
+                target: self.hla_target(node, span),
+                op,
+                op_span,
+            })),
+            span,
+        }
+    }
+
+    fn hla_target(&mut self, node: Node<'_>, span: Span) -> HlaOperand {
+        match node.child_by_field_name("target") {
+            Some(target) => self.hla_operand(target),
+            None => HlaOperand {
+                kind: HlaOperandKind::Error,
+                span: Span::empty_at(span.file, span.start),
+            },
+        }
+    }
+
+    /// `c+` and friends. The flag name shares the register token, so the four
+    /// flags that have a shorthand are checked here.
+    fn hla_flag(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let flag_node = node.child_by_field_name("flag");
+        let Some((operator, _)) = self.operator(node, "a flag statement") else {
+            return Statement {
+                kind: StatementKind::Error,
+                span,
+            };
+        };
+        let name = flag_node.map(|flag| self.text(flag).to_ascii_lowercase());
+        let flag = match name.as_deref() {
+            Some("c") => FlagKind::Carry,
+            Some("d") => FlagKind::Decimal,
+            Some("i") => FlagKind::Interrupt,
+            Some("v") => FlagKind::Overflow,
+            other => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SYNTAX_ERROR,
+                        format!(
+                            "`{}` is not a flag with a set/clear shorthand",
+                            other.unwrap_or_default()
+                        ),
+                        Label::new(span, "expected `c`, `d`, `i`, or `v`"),
+                    )
+                    .with_docs("doc/syntax-reference.md#sr-flags-nvmxdizc"),
+                );
+                return Statement {
+                    kind: StatementKind::Error,
+                    span,
+                };
+            }
+        };
+        Statement {
+            kind: StatementKind::Hla(HlaStatement::Flag(HlaFlag {
+                flag,
+                set: operator == "+",
+                flag_span: flag_node.map(|flag| self.span(flag)).unwrap_or(span),
+            })),
+            span,
+        }
+    }
+
+    fn hla_stack(&mut self, node: Node<'_>) -> Statement {
+        let span = self.span(node);
+        let Some((operator, op_span)) = self.operator(node, "a stack statement") else {
+            return Statement {
+                kind: StatementKind::Error,
+                span,
+            };
+        };
+        Statement {
+            kind: StatementKind::Hla(HlaStatement::Stack(HlaStack {
+                register: self.register(node.child_by_field_name("register"), node),
+                op: if operator == "!!" {
+                    StackOp::Push
+                } else {
+                    StackOp::Pull
+                },
+                op_span,
+            })),
+            span,
+        }
+    }
+
     fn hla_exchange(&mut self, node: Node<'_>) -> Statement {
         Statement {
             kind: StatementKind::Hla(HlaStatement::Exchange(HlaExchange {
@@ -522,6 +731,7 @@ impl AstBuilder<'_> {
             "s" => RegisterKind::S,
             "x" => RegisterKind::X,
             "y" => RegisterKind::Y,
+            "p" | "flag" => RegisterKind::P,
             _ => {
                 self.unexpected(node, "a register");
                 RegisterKind::A

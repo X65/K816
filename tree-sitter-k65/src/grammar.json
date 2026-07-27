@@ -504,6 +504,34 @@
         },
         {
           "type": "SYMBOL",
+          "name": "hla_arithmetic"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "hla_shift"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "hla_step"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "hla_flag"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "hla_stack"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "hla_nop"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "hla_break"
+        },
+        {
+          "type": "SYMBOL",
           "name": "return_statement"
         }
       ]
@@ -1447,6 +1475,331 @@
         }
       ]
     },
+    "hla_arithmetic": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "register",
+          "content": {
+            "type": "SYMBOL",
+            "name": "register"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "operator",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "+"
+              },
+              {
+                "type": "STRING",
+                "value": "-"
+              },
+              {
+                "type": "STRING",
+                "value": "&?"
+              },
+              {
+                "type": "STRING",
+                "value": "&"
+              },
+              {
+                "type": "STRING",
+                "value": "|"
+              },
+              {
+                "type": "STRING",
+                "value": "^"
+              },
+              {
+                "type": "STRING",
+                "value": "?"
+              }
+            ]
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "operand",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_hla_operand"
+          }
+        }
+      ]
+    },
+    "hla_shift": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "target",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_shift_target"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "operator",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "<<<"
+              },
+              {
+                "type": "STRING",
+                "value": ">>>"
+              },
+              {
+                "type": "STRING",
+                "value": "<<"
+              },
+              {
+                "type": "STRING",
+                "value": ">>"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "hla_step": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "target",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_hla_target"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "operator",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "++"
+              },
+              {
+                "type": "STRING",
+                "value": "--"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "hla_flag": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "flag",
+          "content": {
+            "type": "ALIAS",
+            "content": {
+              "type": "SYMBOL",
+              "name": "register"
+            },
+            "named": true,
+            "value": "flag_name"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "operator",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "+"
+              },
+              {
+                "type": "STRING",
+                "value": "-"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "hla_stack": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "register",
+          "content": {
+            "type": "SYMBOL",
+            "name": "register"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "operator",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "!!"
+              },
+              {
+                "type": "STRING",
+                "value": "??"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "hla_nop": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "*"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "count",
+              "content": {
+                "type": "SYMBOL",
+                "name": "_atom"
+              }
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "hla_break": {
+      "type": "STRING",
+      "value": "%"
+    },
+    "_hla_target": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "register"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "address"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "indirect"
+        }
+      ]
+    },
+    "_shift_target": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "register"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_atom_address"
+          },
+          "named": true,
+          "value": "address"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "indirect"
+        }
+      ]
+    },
+    "_atom_address": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "value",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_atom"
+          }
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "_index_suffix"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        }
+      ]
+    },
+    "_atom": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "number"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "char_literal"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "local_identifier"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "parenthesized_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "field_access"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "subscript_expression"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "metadata_query"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "eval_bracket"
+        }
+      ]
+    },
     "_hla_operand": {
       "type": "CHOICE",
       "members": [
@@ -1535,6 +1888,34 @@
             {
               "type": "STRING",
               "value": "Y"
+            },
+            {
+              "type": "STRING",
+              "value": "p"
+            },
+            {
+              "type": "STRING",
+              "value": "P"
+            },
+            {
+              "type": "STRING",
+              "value": "flag"
+            },
+            {
+              "type": "STRING",
+              "value": "i"
+            },
+            {
+              "type": "STRING",
+              "value": "I"
+            },
+            {
+              "type": "STRING",
+              "value": "v"
+            },
+            {
+              "type": "STRING",
+              "value": "V"
             }
           ]
         }
@@ -2350,6 +2731,17 @@
     ],
     [
       "native_instruction"
+    ],
+    [
+      "hla_nop"
+    ],
+    [
+      "hla_arithmetic",
+      "hla_flag"
+    ],
+    [
+      "_atom",
+      "_expression"
     ],
     [
       "address",

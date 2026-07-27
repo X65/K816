@@ -52,6 +52,17 @@ func main @a8 @i16 {
 }
 ";
 
+/// One of each literal form the lexical layer accepts (sub-plan B group 1).
+const LEXICAL: &str = "var BIN = %1010
+var CH = '\\n'
+
+func main @a8 {
+    a = #0b0101
+    a = #'A'
+    lda #$FF
+}
+";
+
 /// Renders the AST in a compact, exact form for snapshot comparison.
 fn dump_ast(file: &AstFile) -> String {
     let mut out = String::new();
@@ -190,6 +201,107 @@ func main @a8 @i16 @20..113
   native sta SCREEN @93..103
   native rts @108..111
 "
+    );
+}
+
+#[test]
+fn lexical_cst_snapshot_is_exact() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("lexical.k65", LEXICAL);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(
+        result.tree.dump(),
+        "\
+source_file 0..91
+  var_declaration 0..15
+    name: identifier 4..7
+    address: number 10..15
+  var_declaration 16..29
+    name: identifier 20..22
+    address: char_literal 25..29
+  func_declaration 31..90
+    name: identifier 36..40
+    width: width_annotation 41..44
+    body: block 45..90
+      hla_load_immediate 51..62
+        register: register 51..52
+        value: immediate 55..62
+          value: number 56..62
+      hla_load_immediate 67..75
+        register: register 67..68
+        value: immediate 71..75
+          value: char_literal 72..75
+      native_instruction 80..88
+        mnemonic: mnemonic 80..83
+        operand: immediate 84..88
+          value: number 85..88
+"
+    );
+}
+
+#[test]
+fn lexical_ast_snapshot_is_exact() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("lexical.k65", LEXICAL);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(
+        dump_ast(&result.file),
+        "\
+var BIN = 10 @0..15
+var CH = 10 @16..29
+func main @a8 @31..90
+  hla a = #5 @51..62
+  hla a = #65 @67..75
+  native lda #255 @80..88
+"
+    );
+}
+
+#[test]
+fn every_literal_form_decodes_to_its_value() {
+    let source = "var DEC = 42
+var DOLLAR = $2A
+var HEX = 0x2A
+var HEX_UPPER = 0X2A
+var PCT = %101010
+var BIN = 0b101010
+var BIN_UPPER = 0B101010
+var LETTER = 'A'
+var NEWLINE = '\\n'
+var NUL = '\\0'
+var TAB = '\\t'
+var BACKSLASH = '\\\\'
+var APOSTROPHE = '\\''
+var HEX_ESCAPE = '\\x41'
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("literals.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let values: Vec<u32> = result
+        .file
+        .items
+        .iter()
+        .map(|item| {
+            let ItemKind::Var(var) = &item.kind else {
+                panic!("expected var declaration");
+            };
+            match var.address.kind {
+                ExprKind::Number(value) => value,
+                ExprKind::Error => panic!("`{}` did not decode", var.name.text),
+            }
+        })
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            42, 42, 42, 42, // decimal and the three hexadecimal spellings
+            42, 42, 42, // the three binary spellings
+            0x41, 0x0A, 0x00, 0x09, 0x5C, 0x27, 0x41, // character literals
+        ]
     );
 }
 

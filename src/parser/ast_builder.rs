@@ -305,6 +305,25 @@ impl AstBuilder<'_> {
                     }
                 }
             }
+            "char_literal" => {
+                // A character literal is a numeric atom; the grammar accepts
+                // only well-formed escapes, so decoding cannot fail on a
+                // tree without errors.
+                let text = self.text(node);
+                match parse_char_literal(text) {
+                    Some(value) => Expr {
+                        kind: ExprKind::Number(value),
+                        span,
+                    },
+                    None => {
+                        self.unexpected(node, "a character literal");
+                        Expr {
+                            kind: ExprKind::Error,
+                            span,
+                        }
+                    }
+                }
+            }
             _ => {
                 self.unexpected(node, "an expression");
                 Expr {
@@ -316,13 +335,43 @@ impl AstBuilder<'_> {
     }
 }
 
-/// Decodes a K65 numeric literal: `$2A`, `0x2A`, or decimal `42`.
+/// Decodes a K65 numeric literal: `$2A`, `0x2A`, `%101010`, `0b101010`, or
+/// decimal `42`.
 fn parse_number(text: &str) -> Option<u32> {
     if let Some(hex) = text.strip_prefix('$') {
         u32::from_str_radix(hex, 16).ok()
     } else if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         u32::from_str_radix(hex, 16).ok()
+    } else if let Some(binary) = text.strip_prefix('%') {
+        u32::from_str_radix(binary, 2).ok()
+    } else if let Some(binary) = text.strip_prefix("0b").or_else(|| text.strip_prefix("0B")) {
+        u32::from_str_radix(binary, 2).ok()
     } else {
         text.parse().ok()
     }
+}
+
+/// Decodes a character literal, quotes and escape included: `'A'`, `'\n'`,
+/// `'\x41'`. Returns the character's code point, which is its byte value for
+/// the ASCII range K65 source uses.
+fn parse_char_literal(text: &str) -> Option<u32> {
+    let body = text.strip_prefix('\'')?.strip_suffix('\'')?;
+    let mut characters = body.chars();
+    let value = match characters.next()? {
+        '\\' => match characters.next()? {
+            'a' => 0x07,
+            'b' => 0x08,
+            'f' => 0x0C,
+            'n' => 0x0A,
+            'r' => 0x0D,
+            't' => 0x09,
+            'v' => 0x0B,
+            '0' => 0x00,
+            'x' => return u32::from_str_radix(characters.as_str(), 16).ok(),
+            escaped @ ('\\' | '\'' | '"') => escaped as u32,
+            _ => return None,
+        },
+        character => character as u32,
+    };
+    characters.next().is_none().then_some(value)
 }

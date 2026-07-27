@@ -1,0 +1,282 @@
+================================================================================
+Binary literal forms
+================================================================================
+
+var PCT = %1010
+var PREFIXED = 0b1010
+var UPPER = 0B1010
+var ONE_DIGIT = %0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Hexadecimal literal forms
+================================================================================
+
+var DOLLAR = $2A
+var LOWER = 0x2a
+var UPPER_PREFIX = 0X2A
+var WIDE = $00FFFFFF
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Numbers keep their leading zero digits
+================================================================================
+
+var ZERO = 0
+var PADDED = 007
+var HEX_ZERO = 0x0
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Character literals
+================================================================================
+
+var LETTER = 'A'
+var DIGIT = '7'
+var SPACE = ' '
+var QUOTE = '"'
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal)))
+
+================================================================================
+Character literal escapes
+================================================================================
+
+var NEWLINE = '\n'
+var NUL = '\0'
+var TAB = '\t'
+var BACKSLASH = '\\'
+var APOSTROPHE = '\''
+var HEX = '\x41'
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal))
+  (var_declaration
+    name: (identifier)
+    address: (char_literal)))
+
+================================================================================
+An unknown escape is malformed source
+:error
+================================================================================
+
+var BAD = '\q'
+var OK = 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (ERROR
+    (identifier)
+    (UNEXPECTED 'q')
+    (identifier)
+    (UNEXPECTED '\n'))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Literals as immediate operands
+================================================================================
+
+func main @a8 {
+    a = #%0101
+    a = #0b0101
+    a = #'Z'
+    a = #'\n'
+    lda #$FF
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number)))
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number)))
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (char_literal)))
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (char_literal)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number))))))
+
+================================================================================
+Identifiers use the full name namespace
+================================================================================
+
+var _leading = 0
+var trailing_ = 1
+var MiXeD = 2
+var with9digits = 3
+var x = 4
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Comment edge cases
+================================================================================
+
+/// doc comment
+//
+var A = 0 // trailing, contains /* not a block start
+/* block containing // a line comment */
+/** leading stars
+  * continued
+  */
+var B = 1
+/*/ not closed by the first slash */
+var C = 2
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (line_comment)
+  (line_comment)
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (line_comment)
+  (block_comment)
+  (block_comment)
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (block_comment)
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+A line comment need not be terminated at end of file
+================================================================================
+
+var A = 0
+// last line, no newline
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (line_comment))
+
+================================================================================
+An unterminated block comment is malformed source
+:error
+================================================================================
+
+var A = 0
+/* never closed
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (ERROR
+    (UNEXPECTED '\0')))

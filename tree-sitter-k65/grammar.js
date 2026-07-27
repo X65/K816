@@ -21,18 +21,22 @@
 /*****************************************************************************/
 
 /**
- * Tree-sitter grammar for K65/K816 — vertical-slice subset (sub-plan A).
+ * Tree-sitter grammar for K65/K816.
  *
- * Covers exactly the constructs the first vertical slice compiles:
- * fixed-address `var NAME = $addr` declarations, `func NAME @a8 @i16 { ... }`,
- * the HLA forms `a = #imm` and `NAME = a`, `return`, and the native
- * equivalents `lda #imm`, `sta NAME`, `rts`, `sep #imm`, `rep #imm`.
+ * Grown group by group by sub-plan B from the vertical-slice subset sub-plan A
+ * established. Implemented so far:
  *
- * The complete grammar (all operand shapes, HLA statements, data blocks, and
- * the reserved legacy-K65 namespace) is sub-plan B. Grammar regeneration is a
- * maintainer operation: `npx tree-sitter-cli@0.26 generate` in this directory;
- * the generated `src/parser.c` and metadata are committed and compiled by the
- * ordinary Cargo build.
+ *   - declarations and code: fixed-address `var NAME = <literal>`,
+ *     `func NAME @a8 @i16 { ... }`, the HLA forms `a = #imm` and `NAME = a`,
+ *     `return`, and the native equivalents `lda #imm`, `sta NAME`, `rts`,
+ *     `sep #imm`, `rep #imm`;
+ *   - the lexical layer: decimal / `$` / `0x` / `%` / `0b` numeric literals,
+ *     character literals with escapes, identifiers, and comments.
+ *
+ * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
+ * generate` in this directory; the generated `src/parser.c` and metadata are
+ * committed and compiled by the ordinary Cargo build, and `generated.lock`
+ * (checked by `cargo test`) records that they are current.
  */
 
 /// <reference types="tree-sitter-cli/dsl" />
@@ -51,9 +55,9 @@ export default grammar({
     _item: $ => choice($.var_declaration, $.func_declaration),
 
     // var SCREEN = $0400 — fixed-address declaration only; allocated,
-    // dp/abs/far, typed, and subscripted forms are sub-plan B/E.
+    // dp/abs/far, typed, and subscripted forms are still to come.
     var_declaration: $ =>
-      seq('var', field('name', $.identifier), '=', field('address', $.number)),
+      seq('var', field('name', $.identifier), '=', field('address', $._literal)),
 
     // func main @a8 @i16 { ... }
     func_declaration: $ =>
@@ -102,16 +106,49 @@ export default grammar({
 
     register: _ => 'a',
 
-    immediate: $ => seq('#', field('value', $.number)),
+    immediate: $ => seq('#', field('value', $._literal)),
 
     address: $ => field('symbol', $.identifier),
 
-    number: _ => token(choice(/\$[0-9a-fA-F]+/, /0x[0-9a-fA-F]+/, /[0-9]+/)),
+    // A single value token. Hidden, so literals keep appearing under the
+    // field that holds them rather than behind a wrapper node.
+    _literal: $ => choice($.number, $.char_literal),
+
+    // Decimal, `$`/`0x` hexadecimal, `%`/`0b` binary. The lexer's longest
+    // match keeps `0b1010` and `0x2A` whole rather than splitting a leading
+    // `0` off as a decimal literal.
+    number: _ =>
+      token(
+        choice(
+          /\$[0-9a-fA-F]+/,
+          /0[xX][0-9a-fA-F]+/,
+          /%[01]+/,
+          /0[bB][01]+/,
+          /[0-9]+/,
+        ),
+      ),
+
+    // 'A', '\n', '\0', '\x41'. Only the escapes listed here are accepted, so
+    // a typo like '\q' is reported as malformed source instead of silently
+    // decoding to something else.
+    char_literal: _ =>
+      token(
+        seq(
+          "'",
+          choice(
+            /[^'\\\n]/,
+            seq('\\', choice(/[abfnrtv0\\'"]/, seq('x', /[0-9a-fA-F][0-9a-fA-F]/))),
+          ),
+          "'",
+        ),
+      ),
 
     identifier: _ => /[A-Za-z_][A-Za-z0-9_]*/,
 
+    // `//` to end of line; a comment on the last line need not be terminated.
     line_comment: _ => token(seq('//', /[^\n]*/)),
 
+    // Non-nesting C block comment: everything up to the first `*/`.
     block_comment: _ => token(seq('/*', /[^*]*\*+([^/*][^*]*\*+)*/, '/')),
   },
 });

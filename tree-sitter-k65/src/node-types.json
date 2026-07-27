@@ -139,6 +139,10 @@
         "required": true,
         "types": [
           {
+            "type": "char_literal",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           }
@@ -205,6 +209,10 @@
         "required": true,
         "types": [
           {
+            "type": "char_literal",
+            "named": true
+          },
+          {
             "type": "number",
             "named": true
           }
@@ -234,6 +242,10 @@
     "type": "block_comment",
     "named": true,
     "extra": true
+  },
+  {
+    "type": "char_literal",
+    "named": true
   },
   {
     "type": "func",

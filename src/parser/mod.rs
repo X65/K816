@@ -106,6 +106,7 @@ mod tests {
             "immediate",
             "address",
             "number",
+            "char_literal",
             "identifier",
         ] {
             assert!(kinds.contains(&expected), "missing node kind {expected}");

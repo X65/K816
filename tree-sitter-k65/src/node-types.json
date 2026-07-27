@@ -1,10 +1,5 @@
 [
   {
-    "type": "accumulator",
-    "named": true,
-    "fields": {}
-  },
-  {
     "type": "address",
     "named": true,
     "fields": {
@@ -513,11 +508,11 @@
           "named": true
         },
         {
-          "type": "hla_load_immediate",
+          "type": "hla_assignment",
           "named": true
         },
         {
-          "type": "hla_store",
+          "type": "hla_exchange",
           "named": true
         },
         {
@@ -1064,25 +1059,27 @@
     }
   },
   {
-    "type": "hla_load_immediate",
+    "type": "hla_assignment",
     "named": true,
     "fields": {
-      "register": {
-        "multiple": false,
+      "operand": {
+        "multiple": true,
         "required": true,
         "types": [
           {
-            "type": "register",
+            "type": "address",
             "named": true
-          }
-        ]
-      },
-      "value": {
-        "multiple": false,
-        "required": true,
-        "types": [
+          },
           {
             "type": "immediate",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          },
+          {
+            "type": "register",
             "named": true
           }
         ]
@@ -1090,10 +1087,10 @@
     }
   },
   {
-    "type": "hla_store",
+    "type": "hla_exchange",
     "named": true,
     "fields": {
-      "source": {
+      "left": {
         "multiple": false,
         "required": true,
         "types": [
@@ -1103,64 +1100,12 @@
           }
         ]
       },
-      "target": {
+      "right": {
         "multiple": false,
         "required": true,
         "types": [
           {
-            "type": "address_and_expression",
-            "named": true
-          },
-          {
-            "type": "address_of_expression",
-            "named": true
-          },
-          {
-            "type": "binary_expression",
-            "named": true
-          },
-          {
-            "type": "char_literal",
-            "named": true
-          },
-          {
-            "type": "eval_bracket",
-            "named": true
-          },
-          {
-            "type": "field_access",
-            "named": true
-          },
-          {
-            "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "local_identifier",
-            "named": true
-          },
-          {
-            "type": "metadata_query",
-            "named": true
-          },
-          {
-            "type": "number",
-            "named": true
-          },
-          {
-            "type": "parenthesized_expression",
-            "named": true
-          },
-          {
-            "type": "subscript_expression",
-            "named": true
-          },
-          {
-            "type": "typed_view",
-            "named": true
-          },
-          {
-            "type": "unary_expression",
+            "type": "register",
             "named": true
           }
         ]
@@ -1547,10 +1492,6 @@
         "required": false,
         "types": [
           {
-            "type": "accumulator",
-            "named": true
-          },
-          {
             "type": "address",
             "named": true
           },
@@ -1564,6 +1505,10 @@
           },
           {
             "type": "long_indirect",
+            "named": true
+          },
+          {
+            "type": "register",
             "named": true
           }
         ]
@@ -2383,10 +2328,6 @@
     "named": false
   },
   {
-    "type": "A",
-    "named": false
-  },
-  {
     "type": "S",
     "named": false
   },
@@ -2408,10 +2349,6 @@
   },
   {
     "type": "^",
-    "named": false
-  },
-  {
-    "type": "a",
     "named": false
   },
   {

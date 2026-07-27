@@ -39,8 +39,9 @@
  *     operand shape — classical, stack-relative, indirect long, the
  *     indexed-offset marker, and the two-operand block moves — plus the
  *     `dp`/`abs`/`far` encoding prefixes and `* N` repetition;
- *   - code: `func NAME @a8 @i16 { ... }` and the HLA forms `a = #imm`,
- *     `TARGET = a`, and `return`.
+ *   - HLA data movement: the assignment chain covering every load, store,
+ *     and register transfer, plus the `a~b` exchange;
+ *   - code: `func NAME @a8 @i16 { ... }` and `return`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -112,6 +113,15 @@ export default grammar({
   word: $ => $.identifier,
 
   extras: $ => [/\s/, $.line_comment, $.block_comment],
+
+  // Words that never lex as an identifier. Without this, recovery from a
+  // malformed statement swallows the keyword that starts the *next* one —
+  // `a = =` followed by `return` would take `return` as the operand it is
+  // missing. Deliberately absent: `dp`, `abs`, `far`, `byte`, `word`, which
+  // are reserved only in their own slots and stay available as names.
+  reserved: {
+    global: _ => ['var', 'const', 'segment', 'func', 'abstract', 'return'],
+  },
 
   conflicts: $ => [
     // `foo:` is a label, `foo:sizeof` a metadata query, and `foo:byte` a typed
@@ -231,8 +241,8 @@ export default grammar({
         $.label,
         $.native_instruction,
         $.block_move,
-        $.hla_load_immediate,
-        $.hla_store,
+        $.hla_assignment,
+        $.hla_exchange,
         $.return_statement,
       ),
 
@@ -273,18 +283,14 @@ export default grammar({
         field('destination', $._expression),
       ),
 
+    // `asl a` names a register as its operand. There is one `register` rule
+    // for both this and the assignment chain: two tokens over the same
+    // spelling would fight in the lexer, and which of them a bare `a` after
+    // a mnemonic is — this instruction's operand or the start of the next
+    // statement — is a parse question the `native_instruction` conflict
+    // already answers.
     _operand: $ =>
-      choice(
-        $.accumulator,
-        $.immediate,
-        $.address,
-        $.indirect,
-        $.long_indirect,
-      ),
-
-    // `asl a` — the accumulator as an operand, which beats reading `a` as a
-    // symbol of that name.
-    accumulator: _ => prec(1, choice('a', 'A')),
+      choice($.register, $.immediate, $.address, $.indirect, $.long_indirect),
 
     // [dp|abs|far] expr [,X|,Y]
     //
@@ -360,18 +366,49 @@ export default grammar({
         ),
       ),
 
-    // a = #imm
-    hla_load_immediate: $ =>
-      seq(field('register', $.register), '=', field('value', $.immediate)),
+    // The HLA assignment chain, which is *one* rule for every load, store,
+    // and register transfer:
+    //
+    //   a = #imm          x = a            dst0 = dst1 = a = src
+    //   SCREEN = a        d = c            UART_DATA = a = text,x
+    //   mem,x = a         s = x = y        .LT+1 = a
+    //   mem = 0           a = (ptr),y
+    //
+    // The value flows from the rightmost operand leftwards through every
+    // target, so the chain is a list of operands separated by `=` with at
+    // least two entries. Which combinations are legal, and what they lower
+    // to, is the HLA lowering work; the grammar only records the chain.
+    hla_assignment: $ =>
+      seq(
+        field('operand', $._hla_operand),
+        repeat1(seq('=', field('operand', $._hla_operand))),
+      ),
 
-    // SCREEN = a, and the self-modifying-code form `.LT+1 = a`. The full set
-    // of store shapes and assignment chaining is the HLA movement group.
-    hla_store: $ =>
-      seq(field('target', $._expression), '=', field('source', $.register)),
+    // `a~b` and `b~a` — exchange the accumulator halves (XBA).
+    hla_exchange: $ =>
+      seq(field('left', $.register), '~', field('right', $.register)),
+
+    // The operand alphabet of an assignment chain: a register, an immediate,
+    // or a memory reference in any of the shapes a raw mnemonic accepts.
+    // `[expr]` is deliberately absent — inside an assignment those brackets
+    // are the compile-time evaluator's, and reach here as an expression.
+    _hla_operand: $ => choice($.register, $.immediate, $.address, $.indirect),
 
     return_statement: _ => 'return',
 
-    register: _ => 'a',
+    // Register names are case-insensitive. `C` and `D` name both a register
+    // and a flag; which one is meant follows from the statement, not the
+    // spelling.
+    register: _ =>
+      prec(
+        2,
+        token(
+          choice(
+            'a', 'A', 'b', 'B', 'c', 'C', 'd', 'D',
+            's', 'S', 'x', 'X', 'y', 'Y',
+          ),
+        ),
+      ),
 
     immediate: $ => seq('#', field('value', $._expression)),
 

@@ -1,0 +1,341 @@
+================================================================================
+Loads in every operand shape
+================================================================================
+
+func main {
+  a = #1
+  a = mem
+  a = mem,x
+  a = mem,y
+  a = (mem,x)
+  a = (mem),y
+  a = (mem)
+  x = #1
+  x = mem
+  x = mem,y
+  y = mem,x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
+          value: (number)))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (hla_assignment
+        operand: (register)
+        operand: (indirect
+          value: (identifier)
+          inner_index: (index_register)))
+      (hla_assignment
+        operand: (register)
+        operand: (indirect
+          value: (identifier)
+          outer_index: (index_register)))
+      (hla_assignment
+        operand: (register)
+        operand: (indirect
+          value: (identifier)))
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
+          value: (number)))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (identifier)
+          index: (index_register))))))
+
+================================================================================
+Stores in every operand shape
+================================================================================
+
+func main {
+  mem = a
+  mem,x = a
+  mem,y = a
+  (mem,x) = a
+  (mem),y = a
+  mem = x
+  mem = y
+  mem = 0
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier)
+          index: (index_register))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier)
+          index: (index_register))
+        operand: (register))
+      (hla_assignment
+        operand: (indirect
+          value: (identifier)
+          inner_index: (index_register))
+        operand: (register))
+      (hla_assignment
+        operand: (indirect
+          value: (identifier)
+          outer_index: (index_register))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (address
+          value: (number))))))
+
+================================================================================
+Assignment chaining
+================================================================================
+
+func main {
+  dst0 = dst1 = a = src
+  x = a = dst0
+  COLPF2 = a = VCOUNT
+  UART_DATA = a = text,x
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (address
+          value: (identifier))
+        operand: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_assignment
+        operand: (register)
+        operand: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register)
+        operand: (address
+          value: (identifier)))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register)
+        operand: (address
+          value: (identifier)
+          index: (index_register))))))
+
+================================================================================
+Register to register transfers
+================================================================================
+
+func main {
+  x = a
+  y = a
+  a = x
+  a = y
+  x = s
+  s = x
+  d = c
+  c = d
+  s = c
+  c = s
+  y = x
+  x = y
+  y = x = a
+  d = c = s
+  s = x = y
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register)
+        operand: (register)))))
+
+================================================================================
+Registers are case-insensitive
+================================================================================
+
+func main {
+  A = #0
+  X = A
+  Y = x
+  D = C
+  S = X
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
+          value: (number)))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register))
+      (hla_assignment
+        operand: (register)
+        operand: (register)))))
+
+================================================================================
+Accumulator exchange
+================================================================================
+
+func main {
+  b~a
+  a~b
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_exchange
+        left: (register)
+        right: (register))
+      (hla_exchange
+        left: (register)
+        right: (register)))))
+
+================================================================================
+An evaluator bracket is a source operand
+================================================================================
+
+func main @a8 @i8 {
+  API_OP = a = [$FF]
+  y = [LV_SIZE]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register)
+        operand: (address
+          value: (eval_bracket
+            expression: (number))))
+      (hla_assignment
+        operand: (register)
+        operand: (address
+          value: (eval_bracket
+            expression: (identifier)))))))

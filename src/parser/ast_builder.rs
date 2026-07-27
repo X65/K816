@@ -29,11 +29,12 @@
 use crate::ast::{
     AddressEncoding, AddressOperand, AstFile, BinaryExpr, BinaryOp, Block, BlockMoveOperand,
     ConstDeclaration, ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration, Function,
-    HlaStatement, IndexRegister, IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope,
-    LabelStatement, LongIndirectOperand, MetadataQuery, MetadataQueryKind, Name, NativeInstruction,
-    NativeOperand, Register, RegisterKind, Statement, StatementKind, StorageClass,
-    StorageClassKind, SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp,
-    VarDeclaration, WidthAnnotation, WidthAnnotationKind,
+    HlaAssignment, HlaExchange, HlaOperand, HlaOperandKind, HlaStatement, IndexRegister,
+    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
+    LongIndirectOperand, MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand,
+    Register, RegisterKind, Statement, StatementKind, StorageClass, StorageClassKind,
+    SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
+    WidthAnnotation, WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -283,8 +284,8 @@ impl AstBuilder<'_> {
                 "label" => statements.push(self.label(child)),
                 "native_instruction" => statements.push(self.native_instruction(child)),
                 "block_move" => statements.push(self.block_move(child)),
-                "hla_load_immediate" => statements.push(self.hla_load_immediate(child)),
-                "hla_store" => statements.push(self.hla_store(child)),
+                "hla_assignment" => statements.push(self.hla_assignment(child)),
+                "hla_exchange" => statements.push(self.hla_exchange(child)),
                 "return_statement" => statements.push(Statement {
                     kind: StatementKind::Return,
                     span: self.span(child),
@@ -346,7 +347,7 @@ impl AstBuilder<'_> {
     fn native_operand(&mut self, node: Node<'_>) -> NativeOperand {
         match node.kind() {
             "immediate" => NativeOperand::Immediate(self.immediate_value(node)),
-            "accumulator" => NativeOperand::Accumulator,
+            "register" => NativeOperand::Register(self.register(Some(node), node)),
             "address" => NativeOperand::Address(AddressOperand {
                 encoding: self.address_encoding(node),
                 offset_marker: node
@@ -421,23 +422,64 @@ impl AstBuilder<'_> {
         })
     }
 
-    fn hla_load_immediate(&mut self, node: Node<'_>) -> Statement {
-        let register = self.register(node.child_by_field_name("register"), node);
-        let value = match node.child_by_field_name("value") {
-            Some(immediate) => self.immediate_value(immediate),
-            None => self.expr(None, node),
-        };
+    /// An assignment chain. The rightmost operand is the source; everything
+    /// to its left is a target, in the order the value flows through them.
+    fn hla_assignment(&mut self, node: Node<'_>) -> Statement {
+        let mut cursor = node.walk();
+        let mut operands: Vec<HlaOperand> = node
+            .children_by_field_name("operand", &mut cursor)
+            .map(|operand| self.hla_operand(operand))
+            .collect();
+        let span = self.span(node);
+        let source = operands.pop().unwrap_or_else(|| {
+            // The grammar guarantees at least two operands; recovery may not.
+            HlaOperand {
+                kind: HlaOperandKind::Error,
+                span: Span::empty_at(span.file, span.end),
+            }
+        });
         Statement {
-            kind: StatementKind::Hla(HlaStatement::LoadImmediate { register, value }),
-            span: self.span(node),
+            kind: StatementKind::Hla(HlaStatement::Assign(HlaAssignment {
+                targets: operands,
+                source,
+            })),
+            span,
         }
     }
 
-    fn hla_store(&mut self, node: Node<'_>) -> Statement {
-        let target = self.expr(node.child_by_field_name("target"), node);
-        let register = self.register(node.child_by_field_name("source"), node);
+    fn hla_operand(&mut self, node: Node<'_>) -> HlaOperand {
+        let span = self.span(node);
+        let kind = match node.kind() {
+            "register" => HlaOperandKind::Register(self.register(Some(node), node)),
+            "immediate" => HlaOperandKind::Immediate(self.immediate_value(node)),
+            "address" => HlaOperandKind::Memory(AddressOperand {
+                encoding: self.address_encoding(node),
+                offset_marker: node
+                    .child_by_field_name("marker")
+                    .map(|marker| self.span(marker)),
+                value: self.expr(node.child_by_field_name("value"), node),
+                index: self.index_register(node.child_by_field_name("index")),
+            }),
+            "indirect" => HlaOperandKind::Indirect(IndirectOperand {
+                encoding: self.address_encoding(node),
+                value: self.expr(node.child_by_field_name("value"), node),
+                inner_index: self.index_register(node.child_by_field_name("inner_index")),
+                outer_index: self.index_register(node.child_by_field_name("outer_index")),
+            }),
+            _ => {
+                self.unexpected(node, "an assignment chain");
+                HlaOperandKind::Error
+            }
+        };
+        HlaOperand { kind, span }
+    }
+
+    fn hla_exchange(&mut self, node: Node<'_>) -> Statement {
         Statement {
-            kind: StatementKind::Hla(HlaStatement::Store { target, register }),
+            kind: StatementKind::Hla(HlaStatement::Exchange(HlaExchange {
+                left: self.register(node.child_by_field_name("left"), node),
+                right: self.register(node.child_by_field_name("right"), node),
+            })),
             span: self.span(node),
         }
     }
@@ -462,19 +504,32 @@ impl AstBuilder<'_> {
         self.expr(node.child_by_field_name("value"), node)
     }
 
+    /// Register names are case-insensitive. Recovery may leave one missing,
+    /// in which case the accumulator stands in at a zero-width span.
     fn register(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> Register {
-        // The slice grammar only knows the accumulator; recovery may leave the
-        // register missing, in which case `a` is still the only possibility.
-        let span = match node {
-            Some(node) => self.span(node),
-            None => {
-                let parent_span = self.span(parent);
-                Span::empty_at(parent_span.file, parent_span.start)
+        let Some(node) = node else {
+            let parent_span = self.span(parent);
+            return Register {
+                kind: RegisterKind::A,
+                span: Span::empty_at(parent_span.file, parent_span.start),
+            };
+        };
+        let kind = match self.text(node).to_ascii_lowercase().as_str() {
+            "a" => RegisterKind::A,
+            "b" => RegisterKind::B,
+            "c" => RegisterKind::C,
+            "d" => RegisterKind::D,
+            "s" => RegisterKind::S,
+            "x" => RegisterKind::X,
+            "y" => RegisterKind::Y,
+            _ => {
+                self.unexpected(node, "a register");
+                RegisterKind::A
             }
         };
         Register {
-            kind: RegisterKind::A,
-            span,
+            kind,
+            span: self.span(node),
         }
     }
 

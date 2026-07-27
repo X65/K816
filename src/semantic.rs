@@ -29,8 +29,8 @@
 //! diagnostics.
 
 use crate::ast::{
-    AstFile, Expr, ExprKind, Function, HlaStatement, ItemKind, NativeOperand, Statement,
-    StatementKind, WidthAnnotationKind,
+    AstFile, Expr, ExprKind, Function, HlaOperandKind, HlaStatement, ItemKind, NativeOperand,
+    RegisterKind, Statement, StatementKind, WidthAnnotationKind,
 };
 use crate::compat;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -238,43 +238,56 @@ impl Analysis {
                             self.constant(&address.value, "address operands");
                         }
                     },
-                    Some(NativeOperand::Accumulator)
+                    Some(NativeOperand::Register(_))
                     | Some(NativeOperand::Indirect(_))
                     | Some(NativeOperand::LongIndirect(_))
                     | Some(NativeOperand::BlockMove(_))
                     | None => {}
                 }
             }
-            StatementKind::Hla(HlaStatement::LoadImmediate { value, .. }) => {
-                // `a = #imm` sizes like the native `lda #imm`.
-                self.check_immediate(
-                    value,
-                    Some(ImmediateWidthClass::MDependent),
-                    contract,
-                    Mnemonic::Lda,
-                );
-            }
-            StatementKind::Hla(HlaStatement::Store { target, .. }) => match &target.kind {
-                ExprKind::Symbol(name) if name.provenance != Provenance::Synthetic => {
-                    self.check_memory_operand(&name.text, name.span);
+            StatementKind::Hla(HlaStatement::Assign(assign)) => {
+                match (assign.targets.as_slice(), &assign.source.kind) {
+                    // `a = #imm` sizes like the native `lda #imm`.
+                    ([target], HlaOperandKind::Immediate(value))
+                        if is_accumulator(&target.kind) =>
+                    {
+                        self.check_immediate(
+                            value,
+                            Some(ImmediateWidthClass::MDependent),
+                            contract,
+                            Mnemonic::Lda,
+                        );
+                    }
+                    // `MEM = a` is the store the slice compiles.
+                    ([target], HlaOperandKind::Register(register))
+                        if register.kind == RegisterKind::A =>
+                    {
+                        match plain_symbol(&target.kind) {
+                            Some(name) if name.provenance != Provenance::Synthetic => {
+                                self.check_memory_operand(&name.text, name.span);
+                            }
+                            Some(_) => {}
+                            None => self.diagnostics.push(compat::unimplemented(
+                                statement.span,
+                                "these assignment targets",
+                                compat::Owner::HlaLowering,
+                            )),
+                        }
+                    }
+                    _ => self.diagnostics.push(compat::unimplemented(
+                        statement.span,
+                        "these assignment chains",
+                        compat::Owner::HlaLowering,
+                    )),
                 }
-                ExprKind::Symbol(_) | ExprKind::Error => {}
-                // `.LT+1 = a` and friends: the target is an address
-                // expression, which needs the store lowering work.
-                ExprKind::LocalSymbol(_)
-                | ExprKind::Number(_)
-                | ExprKind::Unary(_)
-                | ExprKind::Binary(_)
-                | ExprKind::Field(_)
-                | ExprKind::Subscript(_)
-                | ExprKind::Metadata(_)
-                | ExprKind::TypedView(_)
-                | ExprKind::Eval(_) => self.diagnostics.push(compat::unimplemented(
-                    target.span,
-                    "computed assignment targets",
+            }
+            StatementKind::Hla(HlaStatement::Exchange(_)) => {
+                self.diagnostics.push(compat::unimplemented(
+                    statement.span,
+                    "accumulator exchanges",
                     compat::Owner::HlaLowering,
-                )),
-            },
+                ));
+            }
             StatementKind::Label(_) => self.diagnostics.push(compat::unimplemented(
                 statement.span,
                 "labels",
@@ -400,6 +413,27 @@ impl Analysis {
                 }
             }
         }
+    }
+}
+
+/// True when this operand is the accumulator, the only register the slice
+/// loads.
+fn is_accumulator(kind: &HlaOperandKind) -> bool {
+    matches!(kind, HlaOperandKind::Register(register) if register.kind == RegisterKind::A)
+}
+
+/// The plain symbol an assignment target names, if that is all it is: no
+/// index, no encoding prefix, no arithmetic.
+fn plain_symbol(kind: &HlaOperandKind) -> Option<&crate::ast::Name> {
+    let HlaOperandKind::Memory(memory) = kind else {
+        return None;
+    };
+    if memory.encoding.is_some() || memory.index.is_some() || memory.offset_marker.is_some() {
+        return None;
+    }
+    match &memory.value.kind {
+        ExprKind::Symbol(name) => Some(name),
+        _ => None,
     }
 }
 

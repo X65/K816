@@ -24,9 +24,9 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AddressEncoding, AstFile, BinaryOp, ExprKind, HlaStatement, IndexRegister, IndexRegisterKind,
-    ItemKind, LabelScope, MetadataQueryKind, NativeOperand, StatementKind, StorageClassKind,
-    TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AddressEncoding, AstFile, BinaryOp, ExprKind, HlaOperandKind, HlaStatement, IndexRegister,
+    IndexRegisterKind, ItemKind, LabelScope, MetadataQueryKind, NativeOperand, RegisterKind,
+    StatementKind, StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -132,7 +132,9 @@ fn dump_ast(file: &AstFile) -> String {
                                 Some(NativeOperand::Immediate(expr)) => {
                                     format!(" #{}", dump_expr(&expr.kind))
                                 }
-                                Some(NativeOperand::Accumulator) => " a".to_owned(),
+                                Some(NativeOperand::Register(register)) => {
+                                    format!(" {}", dump_register(register.kind))
+                                }
                                 Some(NativeOperand::Address(address)) => format!(
                                     " {}{}{}{}",
                                     dump_encoding(address.encoding),
@@ -170,12 +172,19 @@ fn dump_ast(file: &AstFile) -> String {
                             };
                             format!("native {}{operand}{repeat}", native.mnemonic.text)
                         }
-                        StatementKind::Hla(HlaStatement::LoadImmediate { value, .. }) => {
-                            format!("hla a = #{}", dump_expr(&value.kind))
+                        StatementKind::Hla(HlaStatement::Assign(assign)) => {
+                            let mut chain = String::from("hla");
+                            for target in &assign.targets {
+                                chain.push_str(&format!(" {} =", dump_hla_operand(&target.kind)));
+                            }
+                            chain.push_str(&format!(" {}", dump_hla_operand(&assign.source.kind)));
+                            chain
                         }
-                        StatementKind::Hla(HlaStatement::Store { target, .. }) => {
-                            format!("hla {} = a", dump_expr(&target.kind))
-                        }
+                        StatementKind::Hla(HlaStatement::Exchange(exchange)) => format!(
+                            "hla {}~{}",
+                            dump_register(exchange.left.kind),
+                            dump_register(exchange.right.kind)
+                        ),
                         StatementKind::Label(label) => format!(
                             "{} {}",
                             match label.scope {
@@ -199,6 +208,38 @@ fn dump_ast(file: &AstFile) -> String {
         }
     }
     out
+}
+
+fn dump_register(kind: RegisterKind) -> &'static str {
+    match kind {
+        RegisterKind::A => "a",
+        RegisterKind::B => "b",
+        RegisterKind::C => "c",
+        RegisterKind::D => "d",
+        RegisterKind::S => "s",
+        RegisterKind::X => "x",
+        RegisterKind::Y => "y",
+    }
+}
+
+fn dump_hla_operand(kind: &HlaOperandKind) -> String {
+    match kind {
+        HlaOperandKind::Register(register) => dump_register(register.kind).to_owned(),
+        HlaOperandKind::Immediate(value) => format!("#{}", dump_expr(&value.kind)),
+        HlaOperandKind::Memory(memory) => format!(
+            "{}{}{}",
+            dump_encoding(memory.encoding),
+            dump_expr(&memory.value.kind),
+            dump_index(memory.index)
+        ),
+        HlaOperandKind::Indirect(indirect) => format!(
+            "({}{}){}",
+            dump_expr(&indirect.value.kind),
+            dump_index(indirect.inner_index),
+            dump_index(indirect.outer_index)
+        ),
+        HlaOperandKind::Error => "<error>".to_owned(),
+    }
 }
 
 fn dump_encoding(encoding: Option<AddressEncoding>) -> String {
@@ -318,17 +359,18 @@ source_file 0..91
     width: width_annotation 30..33
     width: width_annotation 34..38
     body: block 39..90
-      hla_load_immediate 45..51
-        register: register 45..46
-        value: immediate 49..51
+      hla_assignment 45..51
+        operand: register 45..46
+        operand: immediate 49..51
           value: number 50..51
-      hla_load_immediate 56..62
-        register: register 56..57
-        value: immediate 60..62
+      hla_assignment 56..62
+        operand: register 56..57
+        operand: immediate 60..62
           value: number 61..62
-      hla_store 67..77
-        target: identifier 67..73
-        source: register 76..77
+      hla_assignment 67..77
+        operand: address 67..73
+          value: identifier 67..73
+        operand: register 76..77
       return_statement 82..88
 "
     );
@@ -394,13 +436,13 @@ source_file 0..91
     name: identifier 36..40
     width: width_annotation 41..44
     body: block 45..90
-      hla_load_immediate 51..62
-        register: register 51..52
-        value: immediate 55..62
+      hla_assignment 51..62
+        operand: register 51..52
+        operand: immediate 55..62
           value: number 56..62
-      hla_load_immediate 67..75
-        register: register 67..68
-        value: immediate 71..75
+      hla_assignment 67..75
+        operand: register 67..68
+        operand: immediate 71..75
           value: char_literal 72..75
       native_instruction 80..88
         mnemonic: mnemonic 80..83
@@ -645,11 +687,13 @@ fn local_labels_keep_their_leading_dot() {
     assert_eq!(label.name.text, ".loop");
     assert_eq!(map.span_text(label.name.span), ".loop");
 
-    let StatementKind::Hla(HlaStatement::Store { target, .. }) = &func.body.statements[1].kind
-    else {
-        panic!("expected a store");
+    let StatementKind::Hla(HlaStatement::Assign(assign)) = &func.body.statements[1].kind else {
+        panic!("expected an assignment");
     };
-    let ExprKind::Binary(binary) = &target.kind else {
+    let HlaOperandKind::Memory(memory) = &assign.targets[0].kind else {
+        panic!("expected a memory target");
+    };
+    let ExprKind::Binary(binary) = &memory.value.kind else {
         panic!("expected a label+offset target");
     };
     assert!(matches!(binary.left.kind, ExprKind::LocalSymbol(_)));
@@ -828,7 +872,9 @@ fn classical_operand_shapes_reach_the_ast() {
             };
             let operand = match &native.operand {
                 Some(NativeOperand::Immediate(expr)) => format!(" #{}", dump_expr(&expr.kind)),
-                Some(NativeOperand::Accumulator) => " a".to_owned(),
+                Some(NativeOperand::Register(register)) => {
+                    format!(" {}", dump_register(register.kind))
+                }
                 Some(NativeOperand::Address(address)) => format!(
                     " {}{}{}{}",
                     dump_encoding(address.encoding),
@@ -908,7 +954,7 @@ fn an_operand_does_not_swallow_the_next_statement() {
     assert!(address.encoding.is_none());
     assert!(matches!(
         func.body.statements[1].kind,
-        StatementKind::Hla(HlaStatement::Store { .. })
+        StatementKind::Hla(HlaStatement::Assign(_))
     ));
 }
 
@@ -1051,6 +1097,109 @@ fn brackets_after_a_mnemonic_are_indirection_not_evaluation() {
     assert!(matches!(value.kind, ExprKind::Eval(_)));
 }
 
+/// Parses one HLA statement and renders it in the `dump_ast` chain form.
+fn parse_hla(statement: &str) -> String {
+    let mut map = SourceMap::new();
+    let id = map.add_file("hla.k65", format!("func f {{\n  {statement}\n}}\n"));
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![], "`{statement}` did not parse");
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 1, "`{statement}`");
+    match &func.body.statements[0].kind {
+        StatementKind::Hla(HlaStatement::Assign(assign)) => {
+            let mut chain = String::new();
+            for target in &assign.targets {
+                chain.push_str(&format!("{} = ", dump_hla_operand(&target.kind)));
+            }
+            chain.push_str(&dump_hla_operand(&assign.source.kind));
+            chain
+        }
+        StatementKind::Hla(HlaStatement::Exchange(exchange)) => format!(
+            "{}~{}",
+            dump_register(exchange.left.kind),
+            dump_register(exchange.right.kind)
+        ),
+        other => panic!("`{statement}` is not an HLA statement: {other:?}"),
+    }
+}
+
+#[test]
+fn every_movement_shape_reaches_the_ast() {
+    assert_eq!(parse_hla("a = #1"), "a = #1");
+    assert_eq!(parse_hla("a = mem,x"), "a = mem,x");
+    assert_eq!(parse_hla("a = (mem),y"), "a = (mem),y");
+    assert_eq!(parse_hla("mem = a"), "mem = a");
+    assert_eq!(parse_hla("mem,x = a"), "mem,x = a");
+    assert_eq!(parse_hla("(mem),y = a"), "(mem),y = a");
+    assert_eq!(parse_hla("mem = x"), "mem = x");
+    assert_eq!(parse_hla("mem = 0"), "mem = 0");
+    assert_eq!(parse_hla("b~a"), "b~a");
+    assert_eq!(parse_hla("a~b"), "a~b");
+}
+
+#[test]
+fn a_chain_flows_from_its_rightmost_operand() {
+    // "The value flows from the rightmost source through each target
+    // left-to-right" — syntax-reference.md "Assignment Chaining".
+    assert_eq!(parse_hla("dst0 = dst1 = a = src"), "dst0 = dst1 = a = src");
+    assert_eq!(parse_hla("x = a = dst0"), "x = a = dst0");
+    assert_eq!(parse_hla("s = x = y"), "s = x = y");
+    assert_eq!(
+        parse_hla("UART_DATA = a = text,x"),
+        "UART_DATA = a = text,x"
+    );
+
+    let mut map = SourceMap::new();
+    let id = map.add_file("chain.k65", "func f {\n  dst0 = dst1 = a = src\n}\n");
+    let result = parse_source(map.file(id), None);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let StatementKind::Hla(HlaStatement::Assign(assign)) = &func.body.statements[0].kind else {
+        panic!("expected an assignment");
+    };
+    assert_eq!(assign.targets.len(), 3);
+    assert_eq!(map.span_text(assign.source.span), "src");
+    assert_eq!(map.span_text(assign.targets[0].span), "dst0");
+}
+
+#[test]
+fn registers_are_case_insensitive() {
+    assert_eq!(parse_hla("A = X"), "a = x");
+    assert_eq!(parse_hla("D = C"), "d = c");
+    assert_eq!(parse_hla("S = X = Y"), "s = x = y");
+}
+
+#[test]
+fn the_slice_chain_shapes_still_compile_and_the_rest_name_their_owner() {
+    // The two shapes sub-plan A compiles keep their semantics through the
+    // generalization; every other chain says who owns it.
+    let mut map = SourceMap::new();
+    let slice = map.add_file("slice.k816", HLA_SLICE);
+    let parsed = parse_source(map.file(slice), None);
+    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+    assert_eq!(diagnostics, vec![], "the slice must stay clean");
+
+    for source in ["x = a\n", "mem,x = a\n", "a = mem\n", "b~a\n"] {
+        let mut map = SourceMap::new();
+        let id = map.add_file(
+            "chain.k65",
+            format!("var mem = $0400\nfunc main @a8 {{\n  {source}}}\n"),
+        );
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            "`{source}`"
+        );
+    }
+}
+
 #[test]
 fn exact_spans_map_back_to_source_text() {
     let mut map = SourceMap::new();
@@ -1076,13 +1225,11 @@ fn exact_spans_map_back_to_source_text() {
     assert_eq!(func.width[1].kind, WidthAnnotationKind::I16);
     assert_eq!(map.span_text(func.width[1].span), "@i16");
 
-    let StatementKind::Hla(HlaStatement::Store { target, register }) =
-        &func.body.statements[2].kind
-    else {
+    let StatementKind::Hla(HlaStatement::Assign(assign)) = &func.body.statements[2].kind else {
         panic!("expected store statement");
     };
-    assert_eq!(map.span_text(target.span), "SCREEN");
-    assert_eq!(map.span_text(register.span), "a");
+    assert_eq!(map.span_text(assign.targets[0].span), "SCREEN");
+    assert_eq!(map.span_text(assign.source.span), "a");
 }
 
 #[test]

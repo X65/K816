@@ -496,11 +496,11 @@
         },
         {
           "type": "SYMBOL",
-          "name": "hla_load_immediate"
+          "name": "hla_assignment"
         },
         {
           "type": "SYMBOL",
-          "name": "hla_store"
+          "name": "hla_exchange"
         },
         {
           "type": "SYMBOL",
@@ -1018,7 +1018,7 @@
       "members": [
         {
           "type": "SYMBOL",
-          "name": "accumulator"
+          "name": "register"
         },
         {
           "type": "SYMBOL",
@@ -1037,23 +1037,6 @@
           "name": "long_indirect"
         }
       ]
-    },
-    "accumulator": {
-      "type": "PREC",
-      "value": 1,
-      "content": {
-        "type": "CHOICE",
-        "members": [
-          {
-            "type": "STRING",
-            "value": "a"
-          },
-          {
-            "type": "STRING",
-            "value": "A"
-          }
-        ]
-      }
     },
     "address": {
       "type": "CHOICE",
@@ -1406,53 +1389,82 @@
         ]
       }
     },
-    "hla_load_immediate": {
+    "hla_assignment": {
       "type": "SEQ",
       "members": [
         {
           "type": "FIELD",
-          "name": "register",
+          "name": "operand",
           "content": {
             "type": "SYMBOL",
-            "name": "register"
+            "name": "_hla_operand"
           }
         },
         {
-          "type": "STRING",
-          "value": "="
-        },
-        {
-          "type": "FIELD",
-          "name": "value",
+          "type": "REPEAT1",
           "content": {
-            "type": "SYMBOL",
-            "name": "immediate"
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "="
+              },
+              {
+                "type": "FIELD",
+                "name": "operand",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_hla_operand"
+                }
+              }
+            ]
           }
         }
       ]
     },
-    "hla_store": {
+    "hla_exchange": {
       "type": "SEQ",
       "members": [
         {
           "type": "FIELD",
-          "name": "target",
-          "content": {
-            "type": "SYMBOL",
-            "name": "_expression"
-          }
-        },
-        {
-          "type": "STRING",
-          "value": "="
-        },
-        {
-          "type": "FIELD",
-          "name": "source",
+          "name": "left",
           "content": {
             "type": "SYMBOL",
             "name": "register"
           }
+        },
+        {
+          "type": "STRING",
+          "value": "~"
+        },
+        {
+          "type": "FIELD",
+          "name": "right",
+          "content": {
+            "type": "SYMBOL",
+            "name": "register"
+          }
+        }
+      ]
+    },
+    "_hla_operand": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "register"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "immediate"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "address"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "indirect"
         }
       ]
     },
@@ -1461,8 +1473,72 @@
       "value": "return"
     },
     "register": {
-      "type": "STRING",
-      "value": "a"
+      "type": "PREC",
+      "value": 2,
+      "content": {
+        "type": "TOKEN",
+        "content": {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "STRING",
+              "value": "a"
+            },
+            {
+              "type": "STRING",
+              "value": "A"
+            },
+            {
+              "type": "STRING",
+              "value": "b"
+            },
+            {
+              "type": "STRING",
+              "value": "B"
+            },
+            {
+              "type": "STRING",
+              "value": "c"
+            },
+            {
+              "type": "STRING",
+              "value": "C"
+            },
+            {
+              "type": "STRING",
+              "value": "d"
+            },
+            {
+              "type": "STRING",
+              "value": "D"
+            },
+            {
+              "type": "STRING",
+              "value": "s"
+            },
+            {
+              "type": "STRING",
+              "value": "S"
+            },
+            {
+              "type": "STRING",
+              "value": "x"
+            },
+            {
+              "type": "STRING",
+              "value": "X"
+            },
+            {
+              "type": "STRING",
+              "value": "y"
+            },
+            {
+              "type": "STRING",
+              "value": "Y"
+            }
+          ]
+        }
+      }
     },
     "immediate": {
       "type": "SEQ",
@@ -2300,5 +2376,32 @@
   "externals": [],
   "inline": [],
   "supertypes": [],
-  "reserved": {}
+  "reserved": {
+    "global": [
+      {
+        "type": "STRING",
+        "value": "var"
+      },
+      {
+        "type": "STRING",
+        "value": "const"
+      },
+      {
+        "type": "STRING",
+        "value": "segment"
+      },
+      {
+        "type": "STRING",
+        "value": "func"
+      },
+      {
+        "type": "STRING",
+        "value": "abstract"
+      },
+      {
+        "type": "STRING",
+        "value": "return"
+      }
+    ]
+  }
 }

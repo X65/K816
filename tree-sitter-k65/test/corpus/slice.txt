@@ -101,17 +101,18 @@ func main @a8 @i16 {
     width: (width_annotation)
     width: (width_annotation)
     body: (block
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number)))
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number)))
-      (hla_store
-        target: (identifier)
-        source: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
       (return_statement))))
 
 ================================================================================
@@ -176,13 +177,14 @@ func main @a8 { a = #1 SCREEN = a return }
     name: (identifier)
     width: (width_annotation)
     body: (block
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number)))
-      (hla_store
-        target: (identifier)
-        source: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
       (return_statement))))
 
 ================================================================================

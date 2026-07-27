@@ -213,16 +213,18 @@ func draw {
   (func_declaration
     name: (identifier)
     body: (block
-      (hla_store
-        target: (binary_expression
-          left: (local_identifier)
-          right: (number))
-        source: (register))
-      (hla_store
-        target: (binary_expression
-          left: (identifier)
-          right: (number))
-        source: (register)))))
+      (hla_assignment
+        operand: (address
+          value: (binary_expression
+            left: (local_identifier)
+            right: (number)))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          value: (binary_expression
+            left: (identifier)
+            right: (number)))
+        operand: (register)))))
 
 ================================================================================
 Semicolons are optional separators and empty statements are ignored
@@ -249,13 +251,14 @@ func main @a8 {
     name: (identifier)
     width: (width_annotation)
     body: (block
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number)))
-      (hla_store
-        target: (identifier)
-        source: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
       (return_statement))))
 
 ================================================================================

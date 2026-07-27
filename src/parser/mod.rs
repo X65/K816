@@ -86,30 +86,68 @@ pub fn parse_source(source: &SourceFile, previous: Option<&SyntaxTree>) -> Parse
 
 #[cfg(test)]
 mod tests {
+    /// Every node kind `ast_builder` matches on by name. A grammar rename
+    /// would otherwise drop the matching arm silently, leaving the construct
+    /// to fall through to the builder's "unexpected node" path.
+    const MATCHED_NODE_KINDS: &[&str] = &[
+        // items
+        "source_file",
+        "var_declaration",
+        "storage_class",
+        "type_suffix",
+        "field_list",
+        "field_declaration",
+        "const_declaration",
+        "const_entry",
+        "segment_declaration",
+        "func_declaration",
+        "width_annotation",
+        "block",
+        // statements
+        "label",
+        "native_instruction",
+        "block_move",
+        "hla_assignment",
+        "hla_exchange",
+        "return_statement",
+        // operands
+        "mnemonic",
+        "immediate",
+        "address",
+        "address_encoding",
+        "index_register",
+        "indirect",
+        "long_indirect",
+        "register",
+        // expressions
+        "parenthesized_expression",
+        "unary_expression",
+        "address_of_expression",
+        "binary_expression",
+        "address_and_expression",
+        "field_access",
+        "field_name",
+        "subscript_expression",
+        "metadata_query",
+        "typed_view",
+        "eval_bracket",
+        "number",
+        "char_literal",
+        "identifier",
+        "local_identifier",
+        "line_comment",
+        "block_comment",
+    ];
+
     #[test]
-    fn generated_language_loads_and_knows_slice_nodes() {
+    fn the_generated_language_has_every_node_kind_the_builder_matches() {
         let language = super::language();
         assert!(language.abi_version() >= 14);
         let kinds: Vec<&str> = (0..language.node_kind_count() as u16)
             .filter_map(|id| language.node_kind_for_id(id))
             .collect();
-        for expected in [
-            "source_file",
-            "var_declaration",
-            "func_declaration",
-            "width_annotation",
-            "block",
-            "native_instruction",
-            "hla_load_immediate",
-            "hla_store",
-            "return_statement",
-            "immediate",
-            "address",
-            "number",
-            "char_literal",
-            "identifier",
-        ] {
-            assert!(kinds.contains(&expected), "missing node kind {expected}");
+        for expected in MATCHED_NODE_KINDS {
+            assert!(kinds.contains(expected), "missing node kind {expected}");
         }
     }
 }

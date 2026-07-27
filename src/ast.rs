@@ -225,8 +225,8 @@ pub struct NativeInstruction {
 pub enum NativeOperand {
     /// `#expr`
     Immediate(Expr),
-    /// `A` — the accumulator itself, as in `asl a`.
-    Accumulator,
+    /// A register named as the operand, as in `asl a`.
+    Register(Register),
     /// `[dp|abs|far] expr [,X|,Y]`. K65 does not spell zero page and absolute
     /// differently: which encoding an address gets is decided from its value
     /// and the optional prefix.
@@ -301,12 +301,44 @@ pub enum IndexRegisterKind {
 /// HLA statements stay distinct from native syntax until lowering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HlaStatement {
-    /// `a = #imm`
-    LoadImmediate { register: Register, value: Expr },
-    /// `MEM = a`, and the label+offset form `.LT+1 = a`. The target is an
-    /// expression because self-modifying-code idioms address into an
-    /// instruction rather than at a symbol.
-    Store { target: Expr, register: Register },
+    /// An assignment chain: `a = #imm`, `MEM = a`, `x = a = dst0`,
+    /// `UART_DATA = a = text,x`, `mem = 0`.
+    Assign(HlaAssignment),
+    /// `a~b` / `b~a` — the XBA exchange.
+    Exchange(HlaExchange),
+}
+
+/// One assignment chain. The value flows from `source` leftwards through
+/// every target, so `dst0 = dst1 = a = src` has targets `[dst0, dst1, a]`
+/// and source `src`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaAssignment {
+    pub targets: Vec<HlaOperand>,
+    pub source: HlaOperand,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaExchange {
+    pub left: Register,
+    pub right: Register,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HlaOperand {
+    pub kind: HlaOperandKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HlaOperandKind {
+    Register(Register),
+    /// `#expr`
+    Immediate(Expr),
+    /// A memory reference, in the same shapes a raw mnemonic accepts.
+    Memory(AddressOperand),
+    Indirect(IndirectOperand),
+    /// Malformed operand; the span covers the unparsable region.
+    Error,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,7 +349,18 @@ pub struct Register {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegisterKind {
+    /// The 8-bit accumulator.
     A,
+    /// The high half of the 16-bit accumulator.
+    B,
+    /// The full 16-bit accumulator, available to transfers only.
+    C,
+    /// The direct page register.
+    D,
+    /// The stack pointer.
+    S,
+    X,
+    Y,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

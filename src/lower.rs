@@ -29,7 +29,9 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
-use crate::ast::{AstFile, ExprKind, HlaStatement, ItemKind, NativeOperand, StatementKind};
+use crate::ast::{
+    AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand, StatementKind,
+};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
 use crate::isa::Mnemonic;
@@ -162,7 +164,7 @@ impl Lowering<'_> {
                             None => return self.skipped(span, "an unresolved symbol"),
                         }
                     }
-                    Some(NativeOperand::Accumulator)
+                    Some(NativeOperand::Register(_))
                     | Some(NativeOperand::Indirect(_))
                     | Some(NativeOperand::LongIndirect(_))
                     | Some(NativeOperand::BlockMove(_)) => {
@@ -171,33 +173,45 @@ impl Lowering<'_> {
                 };
                 self.instruction(mnemonic, operand, span, Origin::User);
             }
-            StatementKind::Hla(HlaStatement::LoadImmediate { value, .. }) => {
-                // `a = #imm` is the HLA spelling of `lda #imm`.
-                let ExprKind::Number(number) = value.kind else {
-                    return self.skipped(span, "a malformed immediate");
-                };
-                self.instruction(
-                    Mnemonic::Lda,
-                    Some(Operand::Immediate(number)),
-                    span,
-                    Origin::HlaExpansion,
-                );
+            StatementKind::Hla(HlaStatement::Assign(assign)) => {
+                // Analysis accepts exactly two chain shapes so far; anything
+                // else never reaches lowering.
+                match (assign.targets.as_slice(), &assign.source.kind) {
+                    // `a = #imm` is the HLA spelling of `lda #imm`.
+                    ([_], HlaOperandKind::Immediate(value)) => {
+                        let ExprKind::Number(number) = value.kind else {
+                            return self.skipped(span, "a malformed immediate");
+                        };
+                        self.instruction(
+                            Mnemonic::Lda,
+                            Some(Operand::Immediate(number)),
+                            span,
+                            Origin::HlaExpansion,
+                        );
+                    }
+                    // `MEM = a` is the HLA spelling of `sta MEM`.
+                    ([target], HlaOperandKind::Register(_)) => {
+                        let HlaOperandKind::Memory(memory) = &target.kind else {
+                            return self.skipped(span, "an unsupported assignment target");
+                        };
+                        let ExprKind::Symbol(name) = &memory.value.kind else {
+                            return self.skipped(span, "an unsupported assignment target");
+                        };
+                        let Some(symbol) = self.model.symbols.lookup(&name.text) else {
+                            return self.skipped(span, "an unresolved symbol");
+                        };
+                        self.instruction(
+                            Mnemonic::Sta,
+                            Some(Operand::Address(symbol)),
+                            span,
+                            Origin::HlaExpansion,
+                        );
+                    }
+                    _ => self.skipped(span, "an unsupported assignment chain"),
+                }
             }
-            StatementKind::Hla(HlaStatement::Store { target, .. }) => {
-                // `MEM = a` is the HLA spelling of `sta MEM`. Analysis rejects
-                // every target it cannot resolve to a plain symbol.
-                let ExprKind::Symbol(name) = &target.kind else {
-                    return self.skipped(span, "a computed assignment target");
-                };
-                let Some(symbol) = self.model.symbols.lookup(&name.text) else {
-                    return self.skipped(span, "an unresolved symbol");
-                };
-                self.instruction(
-                    Mnemonic::Sta,
-                    Some(Operand::Address(symbol)),
-                    span,
-                    Origin::HlaExpansion,
-                );
+            StatementKind::Hla(HlaStatement::Exchange(_)) => {
+                self.skipped(span, "an accumulator exchange");
             }
             StatementKind::Return => {
                 // `return` is the HLA spelling of `rts`.

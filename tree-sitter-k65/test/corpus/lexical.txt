@@ -168,21 +168,21 @@ func main @a8 {
     name: (identifier)
     width: (width_annotation)
     body: (block
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number)))
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number)))
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (char_literal)))
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (char_literal)))
       (native_instruction
         mnemonic: (mnemonic)

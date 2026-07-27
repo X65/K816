@@ -25,7 +25,7 @@ func main {
         mnemonic: (mnemonic))
       (native_instruction
         mnemonic: (mnemonic)
-        operand: (accumulator))
+        operand: (register))
       (native_instruction
         mnemonic: (mnemonic)
         operand: (immediate
@@ -166,14 +166,15 @@ func main {
         mnemonic: (mnemonic)
         operand: (address
           value: (identifier)))
-      (hla_store
-        target: (identifier)
-        source: (register))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
       (native_instruction
         mnemonic: (mnemonic))
-      (hla_load_immediate
-        register: (register)
-        value: (immediate
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
           value: (number))))))
 
 ================================================================================
@@ -272,7 +273,7 @@ func main {
           value: (identifier)))
       (native_instruction
         mnemonic: (mnemonic)
-        operand: (accumulator))
+        operand: (register))
       (native_instruction
         mnemonic: (mnemonic)
         operand: (address
@@ -373,7 +374,7 @@ func main {
           value: (identifier)))
       (native_instruction
         mnemonic: (mnemonic)
-        operand: (accumulator))
+        operand: (register))
       (native_instruction
         mnemonic: (mnemonic))
       (native_instruction
@@ -390,10 +391,10 @@ func main {
         mnemonic: (mnemonic))
       (native_instruction
         mnemonic: (mnemonic)
-        operand: (accumulator))
+        operand: (register))
       (native_instruction
         mnemonic: (mnemonic)
-        operand: (accumulator))
+        operand: (register))
       (native_instruction
         mnemonic: (mnemonic))
       (native_instruction

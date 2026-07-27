@@ -540,26 +540,8 @@
               "type": "FIELD",
               "name": "mnemonic",
               "content": {
-                "type": "ALIAS",
-                "content": {
-                  "type": "CHOICE",
-                  "members": [
-                    {
-                      "type": "STRING",
-                      "value": "lda"
-                    },
-                    {
-                      "type": "STRING",
-                      "value": "sep"
-                    },
-                    {
-                      "type": "STRING",
-                      "value": "rep"
-                    }
-                  ]
-                },
-                "named": true,
-                "value": "mnemonic"
+                "type": "SYMBOL",
+                "name": "mnemonic"
               }
             },
             {
@@ -567,7 +549,7 @@
               "name": "operand",
               "content": {
                 "type": "SYMBOL",
-                "name": "immediate"
+                "name": "_operand"
               }
             }
           ]
@@ -579,39 +561,522 @@
               "type": "FIELD",
               "name": "mnemonic",
               "content": {
+                "type": "SYMBOL",
+                "name": "mnemonic"
+              }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "*"
+                    },
+                    {
+                      "type": "FIELD",
+                      "name": "repeat",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "_expression"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "mnemonic": {
+      "type": "TOKEN",
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "adc"
+          },
+          {
+            "type": "STRING",
+            "value": "and"
+          },
+          {
+            "type": "STRING",
+            "value": "asl"
+          },
+          {
+            "type": "STRING",
+            "value": "bcc"
+          },
+          {
+            "type": "STRING",
+            "value": "bcs"
+          },
+          {
+            "type": "STRING",
+            "value": "beq"
+          },
+          {
+            "type": "STRING",
+            "value": "bit"
+          },
+          {
+            "type": "STRING",
+            "value": "bmi"
+          },
+          {
+            "type": "STRING",
+            "value": "bne"
+          },
+          {
+            "type": "STRING",
+            "value": "bpl"
+          },
+          {
+            "type": "STRING",
+            "value": "brk"
+          },
+          {
+            "type": "STRING",
+            "value": "bvc"
+          },
+          {
+            "type": "STRING",
+            "value": "bvs"
+          },
+          {
+            "type": "STRING",
+            "value": "clc"
+          },
+          {
+            "type": "STRING",
+            "value": "cld"
+          },
+          {
+            "type": "STRING",
+            "value": "cli"
+          },
+          {
+            "type": "STRING",
+            "value": "clv"
+          },
+          {
+            "type": "STRING",
+            "value": "cmp"
+          },
+          {
+            "type": "STRING",
+            "value": "cpx"
+          },
+          {
+            "type": "STRING",
+            "value": "cpy"
+          },
+          {
+            "type": "STRING",
+            "value": "dec"
+          },
+          {
+            "type": "STRING",
+            "value": "dex"
+          },
+          {
+            "type": "STRING",
+            "value": "dey"
+          },
+          {
+            "type": "STRING",
+            "value": "eor"
+          },
+          {
+            "type": "STRING",
+            "value": "inc"
+          },
+          {
+            "type": "STRING",
+            "value": "inx"
+          },
+          {
+            "type": "STRING",
+            "value": "iny"
+          },
+          {
+            "type": "STRING",
+            "value": "jmp"
+          },
+          {
+            "type": "STRING",
+            "value": "jsr"
+          },
+          {
+            "type": "STRING",
+            "value": "lda"
+          },
+          {
+            "type": "STRING",
+            "value": "ldx"
+          },
+          {
+            "type": "STRING",
+            "value": "ldy"
+          },
+          {
+            "type": "STRING",
+            "value": "lsr"
+          },
+          {
+            "type": "STRING",
+            "value": "nop"
+          },
+          {
+            "type": "STRING",
+            "value": "ora"
+          },
+          {
+            "type": "STRING",
+            "value": "pha"
+          },
+          {
+            "type": "STRING",
+            "value": "php"
+          },
+          {
+            "type": "STRING",
+            "value": "pla"
+          },
+          {
+            "type": "STRING",
+            "value": "plp"
+          },
+          {
+            "type": "STRING",
+            "value": "rol"
+          },
+          {
+            "type": "STRING",
+            "value": "ror"
+          },
+          {
+            "type": "STRING",
+            "value": "rti"
+          },
+          {
+            "type": "STRING",
+            "value": "rts"
+          },
+          {
+            "type": "STRING",
+            "value": "sbc"
+          },
+          {
+            "type": "STRING",
+            "value": "sec"
+          },
+          {
+            "type": "STRING",
+            "value": "sed"
+          },
+          {
+            "type": "STRING",
+            "value": "sei"
+          },
+          {
+            "type": "STRING",
+            "value": "sta"
+          },
+          {
+            "type": "STRING",
+            "value": "stx"
+          },
+          {
+            "type": "STRING",
+            "value": "sty"
+          },
+          {
+            "type": "STRING",
+            "value": "tax"
+          },
+          {
+            "type": "STRING",
+            "value": "tay"
+          },
+          {
+            "type": "STRING",
+            "value": "tsx"
+          },
+          {
+            "type": "STRING",
+            "value": "txa"
+          },
+          {
+            "type": "STRING",
+            "value": "txs"
+          },
+          {
+            "type": "STRING",
+            "value": "tya"
+          },
+          {
+            "type": "STRING",
+            "value": "rep"
+          },
+          {
+            "type": "STRING",
+            "value": "sep"
+          }
+        ]
+      }
+    },
+    "_operand": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "accumulator"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "immediate"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "address"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "indirect"
+        }
+      ]
+    },
+    "accumulator": {
+      "type": "PREC",
+      "value": 1,
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "a"
+          },
+          {
+            "type": "STRING",
+            "value": "A"
+          }
+        ]
+      }
+    },
+    "address": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "PREC_DYNAMIC",
+          "value": 1,
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "value",
+                "content": {
+                  "type": "SYMBOL",
+                  "name": "_expression"
+                }
+              },
+              {
+                "type": "CHOICE",
+                "members": [
+                  {
+                    "type": "SYMBOL",
+                    "name": "_index_suffix"
+                  },
+                  {
+                    "type": "BLANK"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "FIELD",
+              "name": "encoding",
+              "content": {
                 "type": "ALIAS",
                 "content": {
-                  "type": "STRING",
-                  "value": "sta"
+                  "type": "SYMBOL",
+                  "name": "identifier"
                 },
                 "named": true,
-                "value": "mnemonic"
+                "value": "address_encoding"
               }
             },
             {
               "type": "FIELD",
-              "name": "operand",
+              "name": "value",
               "content": {
                 "type": "SYMBOL",
-                "name": "address"
+                "name": "_expression"
               }
+            },
+            {
+              "type": "CHOICE",
+              "members": [
+                {
+                  "type": "SYMBOL",
+                  "name": "_index_suffix"
+                },
+                {
+                  "type": "BLANK"
+                }
+              ]
             }
           ]
+        }
+      ]
+    },
+    "_index_suffix": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": ","
         },
         {
           "type": "FIELD",
-          "name": "mnemonic",
+          "name": "index",
           "content": {
-            "type": "ALIAS",
-            "content": {
-              "type": "STRING",
-              "value": "rts"
-            },
-            "named": true,
-            "value": "mnemonic"
+            "type": "SYMBOL",
+            "name": "index_register"
           }
         }
       ]
+    },
+    "index_register": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "x"
+        },
+        {
+          "type": "STRING",
+          "value": "X"
+        },
+        {
+          "type": "STRING",
+          "value": "y"
+        },
+        {
+          "type": "STRING",
+          "value": "Y"
+        }
+      ]
+    },
+    "indirect": {
+      "type": "PREC_DYNAMIC",
+      "value": 2,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "("
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "FIELD",
+                "name": "encoding",
+                "content": {
+                  "type": "ALIAS",
+                  "content": {
+                    "type": "SYMBOL",
+                    "name": "identifier"
+                  },
+                  "named": true,
+                  "value": "address_encoding"
+                }
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "FIELD",
+            "name": "value",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_expression"
+            }
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ","
+                  },
+                  {
+                    "type": "FIELD",
+                    "name": "inner_index",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "index_register"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          },
+          {
+            "type": "STRING",
+            "value": ")"
+          },
+          {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": ","
+                  },
+                  {
+                    "type": "FIELD",
+                    "name": "outer_index",
+                    "content": {
+                      "type": "SYMBOL",
+                      "name": "index_register"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "BLANK"
+              }
+            ]
+          }
+        ]
+      }
     },
     "hla_load_immediate": {
       "type": "SEQ",
@@ -687,14 +1152,6 @@
           }
         }
       ]
-    },
-    "address": {
-      "type": "FIELD",
-      "name": "symbol",
-      "content": {
-        "type": "SYMBOL",
-        "name": "identifier"
-      }
     },
     "_expression": {
       "type": "CHOICE",
@@ -1486,6 +1943,21 @@
     [
       "label",
       "_expression"
+    ],
+    [
+      "native_instruction"
+    ],
+    [
+      "address",
+      "_expression"
+    ],
+    [
+      "indirect",
+      "_expression"
+    ],
+    [
+      "indirect",
+      "parenthesized_expression"
     ]
   ],
   "precedences": [],

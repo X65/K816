@@ -159,7 +159,7 @@ func main @a8 @i16 {
       (native_instruction
         mnemonic: (mnemonic)
         operand: (address
-          symbol: (identifier)))
+          value: (identifier)))
       (native_instruction
         mnemonic: (mnemonic)))))
 

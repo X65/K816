@@ -35,9 +35,11 @@
  *   - symbolic subscripts: field lists with nesting and default widths,
  *     `abstract var` layouts, the field and repeat-element accessors, and the
  *     `:sizeof` / `:offsetof` and typed-view suffixes;
- *   - code: `func NAME @a8 @i16 { ... }`, the HLA forms `a = #imm` and
- *     `TARGET = a`, `return`, and the native instructions `lda #imm`,
- *     `sta NAME`, `rts`, `sep #imm`, `rep #imm`.
+ *   - native instructions: the classical 6502 mnemonics with every classical
+ *     operand shape, the `dp`/`abs`/`far` encoding prefixes, and `* N`
+ *     repetition;
+ *   - code: `func NAME @a8 @i16 { ... }` and the HLA forms `a = #imm`,
+ *     `TARGET = a`, and `return`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -47,6 +49,26 @@
 
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
+
+/**
+ * The 56 classical 6502 mnemonics. The 65C02 and 65816 additions arrive with
+ * the next group. Mnemonics are lowercase: only registers and flags are
+ * documented as case-insensitive.
+ */
+const MNEMONICS_6502 = [
+  'adc', 'and', 'asl', 'bcc', 'bcs', 'beq', 'bit', 'bmi', 'bne', 'bpl',
+  'brk', 'bvc', 'bvs', 'clc', 'cld', 'cli', 'clv', 'cmp', 'cpx', 'cpy',
+  'dec', 'dex', 'dey', 'eor', 'inc', 'inx', 'iny', 'jmp', 'jsr', 'lda',
+  'ldx', 'ldy', 'lsr', 'nop', 'ora', 'pha', 'php', 'pla', 'plp', 'rol',
+  'ror', 'rti', 'rts', 'sbc', 'sec', 'sed', 'sei', 'sta', 'stx', 'sty',
+  'tax', 'tay', 'tsx', 'txa', 'txs', 'tya',
+];
+
+/**
+ * The two 65816 mnemonics the vertical slice already compiles. The rest of
+ * the 65C02/65816 set arrives with the next group.
+ */
+const MNEMONICS_SLICE_65816 = ['rep', 'sep'];
 
 /**
  * Precedence of the K65 expression layer, lowest first.
@@ -84,6 +106,20 @@ export default grammar({
     // view — which one it is depends on the token *after* the colon, one more
     // than an LR(1) decision can see.
     [$.label, $._expression],
+    // Statements have no terminator, so `nop` followed by `a = #1` could also
+    // read as `nop a` followed by `= #1`, and `lda foo` followed by
+    // `bar = a` as `lda foo bar` (a direct-page prefix) followed by `= a`.
+    // Both readings are explored and only the one that goes on to parse
+    // survives; where both would, the dynamic precedences above prefer the
+    // shorter operand.
+    [$.native_instruction],
+    // Inside `(`, an identifier may be an encoding prefix or the operand
+    // expression itself — the same one-token-late decision as above.
+    [$.address, $._expression],
+    [$.indirect, $._expression],
+    // `lda (foo)` is an indirect operand, not a parenthesized address — the
+    // dynamic precedences settle it.
+    [$.indirect, $.parenthesized_expression],
   ],
 
   rules: {
@@ -188,18 +224,66 @@ export default grammar({
     label: $ =>
       seq(field('name', choice($.identifier, $.local_identifier)), ':'),
 
-    // Native slice instructions, each with its single legal operand shape.
+    // A raw mnemonic with one of the classical operand shapes. Which shapes a
+    // given mnemonic actually accepts is an ISA question, not a grammar one —
+    // the grammar accepts any shape after any mnemonic and lets the semantic
+    // layer reject illegal combinations, where the diagnostic can name the
+    // legal ones.
+    //
+    // `<mnemonic> * N` repeats an implied-mode instruction N times. It is only
+    // available *without* an operand, which is what keeps `lda foo * 3` from
+    // being ambiguous between a repeat and a multiplication in the operand.
     native_instruction: $ =>
       choice(
+        seq(field('mnemonic', $.mnemonic), field('operand', $._operand)),
         seq(
-          field('mnemonic', alias(choice('lda', 'sep', 'rep'), $.mnemonic)),
-          field('operand', $.immediate),
+          field('mnemonic', $.mnemonic),
+          optional(seq('*', field('repeat', $._expression))),
         ),
+      ),
+
+    mnemonic: _ => token(choice(...MNEMONICS_6502, ...MNEMONICS_SLICE_65816)),
+
+    _operand: $ => choice($.accumulator, $.immediate, $.address, $.indirect),
+
+    // `asl a` — the accumulator as an operand, which beats reading `a` as a
+    // symbol of that name.
+    accumulator: _ => prec(1, choice('a', 'A')),
+
+    // [dp|abs|far] expr [,X|,Y]
+    //
+    // The encoding prefix is an aliased identifier, not a keyword, because
+    // `dp` and `abs` are reserved only in the prefix slot: `lda dp` loads the
+    // variable `dp` while `lda dp dpa` forces direct-page encoding on `dpa`.
+    // Telling those apart needs the token *after* the first identifier, so the
+    // grammar declares the conflict and prefers the prefix-less reading when
+    // both survive.
+    address: $ =>
+      choice(
+        prec.dynamic(1, seq(field('value', $._expression), optional($._index_suffix))),
         seq(
-          field('mnemonic', alias('sta', $.mnemonic)),
-          field('operand', $.address),
+          field('encoding', alias($.identifier, $.address_encoding)),
+          field('value', $._expression),
+          optional($._index_suffix),
         ),
-        field('mnemonic', alias('rts', $.mnemonic)),
+      ),
+
+    _index_suffix: $ => seq(',', field('index', $.index_register)),
+
+    index_register: _ => choice('x', 'X', 'y', 'Y'),
+
+    // (expr), (expr,X), (expr),Y
+    indirect: $ =>
+      prec.dynamic(
+        2,
+        seq(
+          '(',
+          optional(field('encoding', alias($.identifier, $.address_encoding))),
+          field('value', $._expression),
+          optional(seq(',', field('inner_index', $.index_register))),
+          ')',
+          optional(seq(',', field('outer_index', $.index_register))),
+        ),
       ),
 
     // a = #imm
@@ -216,8 +300,6 @@ export default grammar({
     register: _ => 'a',
 
     immediate: $ => seq('#', field('value', $._expression)),
-
-    address: $ => field('symbol', $.identifier),
 
     // ---- The K65 expression layer -----------------------------------------
     //

@@ -27,12 +27,13 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AstFile, BinaryExpr, BinaryOp, Block, ConstDeclaration, ConstEntry, Expr, ExprKind,
-    FieldAccess, FieldDeclaration, Function, HlaStatement, Item, ItemKind, LabelScope,
-    LabelStatement, MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand,
-    Register, RegisterKind, Statement, StatementKind, StorageClass, StorageClassKind,
-    SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
-    WidthAnnotation, WidthAnnotationKind,
+    AddressEncoding, AddressOperand, AstFile, BinaryExpr, BinaryOp, Block, ConstDeclaration,
+    ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration, Function, HlaStatement,
+    IndexRegister, IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
+    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register,
+    RegisterKind, Statement, StatementKind, StorageClass, StorageClassKind, SubscriptExpr,
+    TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
+    WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -311,21 +312,87 @@ impl AstBuilder<'_> {
         let mnemonic = self.name(node.child_by_field_name("mnemonic"), node);
         let operand = node
             .child_by_field_name("operand")
-            .map(|operand| match operand.kind() {
-                "immediate" => NativeOperand::Immediate(self.immediate_value(operand)),
-                "address" => NativeOperand::Address(self.name(operand.child(0), operand)),
-                _ => {
-                    self.unexpected(operand, "a native operand");
-                    NativeOperand::Immediate(Expr {
-                        kind: ExprKind::Error,
-                        span: self.span(operand),
-                    })
-                }
-            });
+            .map(|operand| self.native_operand(operand));
+        let repeat = node
+            .child_by_field_name("repeat")
+            .map(|repeat| self.expr(Some(repeat), node));
         Statement {
-            kind: StatementKind::Native(NativeInstruction { mnemonic, operand }),
+            kind: StatementKind::Native(NativeInstruction {
+                mnemonic,
+                operand,
+                repeat,
+            }),
             span: self.span(node),
         }
+    }
+
+    fn native_operand(&mut self, node: Node<'_>) -> NativeOperand {
+        match node.kind() {
+            "immediate" => NativeOperand::Immediate(self.immediate_value(node)),
+            "accumulator" => NativeOperand::Accumulator,
+            "address" => NativeOperand::Address(AddressOperand {
+                encoding: self.address_encoding(node),
+                value: self.expr(node.child_by_field_name("value"), node),
+                index: self.index_register(node.child_by_field_name("index")),
+            }),
+            "indirect" => NativeOperand::Indirect(IndirectOperand {
+                encoding: self.address_encoding(node),
+                value: self.expr(node.child_by_field_name("value"), node),
+                inner_index: self.index_register(node.child_by_field_name("inner_index")),
+                outer_index: self.index_register(node.child_by_field_name("outer_index")),
+            }),
+            _ => {
+                self.unexpected(node, "a native operand");
+                NativeOperand::Immediate(Expr {
+                    kind: ExprKind::Error,
+                    span: self.span(node),
+                })
+            }
+        }
+    }
+
+    /// The operand-position `dp` / `abs` / `far` prefix. Like the declaration
+    /// prefix it arrives as an identifier, so the same three names are checked
+    /// here rather than in the grammar.
+    fn address_encoding(&mut self, node: Node<'_>) -> Option<AddressEncoding> {
+        let node = node.child_by_field_name("encoding")?;
+        let kind = match self.text(node) {
+            "dp" => StorageClassKind::DirectPage,
+            "abs" => StorageClassKind::Absolute,
+            "far" => StorageClassKind::Far,
+            other => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SYNTAX_ERROR,
+                        format!("`{other}` is not an address-encoding prefix"),
+                        Label::new(self.span(node), "expected `dp`, `abs`, or `far`"),
+                    )
+                    .with_help("an operand takes at most one value expression")
+                    .with_docs("doc/syntax-reference.md#address-encoding-prefixes"),
+                );
+                return None;
+            }
+        };
+        Some(AddressEncoding {
+            kind,
+            span: self.span(node),
+        })
+    }
+
+    fn index_register(&mut self, node: Option<Node<'_>>) -> Option<IndexRegister> {
+        let node = node?;
+        let kind = match self.text(node).to_ascii_lowercase().as_str() {
+            "x" => IndexRegisterKind::X,
+            "y" => IndexRegisterKind::Y,
+            _ => {
+                self.unexpected(node, "an index register");
+                return None;
+            }
+        };
+        Some(IndexRegister {
+            kind,
+            span: self.span(node),
+        })
     }
 
     fn hla_load_immediate(&mut self, node: Node<'_>) -> Statement {

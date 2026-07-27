@@ -151,11 +151,19 @@ impl Lowering<'_> {
                             return self.skipped(span, "an unresolved immediate");
                         }
                     },
-                    Some(NativeOperand::Address(name)) => {
+                    // Analysis rejects every address operand that is not a
+                    // plain symbol in the ISA table's absolute mode.
+                    Some(NativeOperand::Address(address)) => {
+                        let ExprKind::Symbol(name) = &address.value.kind else {
+                            return self.skipped(span, "an unresolved address operand");
+                        };
                         match self.model.symbols.lookup(&name.text) {
                             Some(symbol) => Some(Operand::Address(symbol)),
                             None => return self.skipped(span, "an unresolved symbol"),
                         }
+                    }
+                    Some(NativeOperand::Accumulator) | Some(NativeOperand::Indirect(_)) => {
+                        return self.skipped(span, "an unsupported operand form");
                     }
                 };
                 self.instruction(mnemonic, operand, span, Origin::User);

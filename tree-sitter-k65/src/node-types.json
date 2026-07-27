@@ -1,14 +1,91 @@
 [
   {
+    "type": "accumulator",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "address",
     "named": true,
     "fields": {
-      "symbol": {
+      "encoding": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "address_encoding",
+            "named": true
+          }
+        ]
+      },
+      "index": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "index_register",
+            "named": true
+          }
+        ]
+      },
+      "value": {
         "multiple": false,
         "required": true,
         "types": [
           {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
             "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
             "named": true
           }
         ]
@@ -1005,6 +1082,109 @@
     }
   },
   {
+    "type": "index_register",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "indirect",
+    "named": true,
+    "fields": {
+      "encoding": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "address_encoding",
+            "named": true
+          }
+        ]
+      },
+      "inner_index": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "index_register",
+            "named": true
+          }
+        ]
+      },
+      "outer_index": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "index_register",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "label",
     "named": true,
     "fields": {
@@ -1125,11 +1305,81 @@
         "required": false,
         "types": [
           {
+            "type": "accumulator",
+            "named": true
+          },
+          {
             "type": "address",
             "named": true
           },
           {
             "type": "immediate",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          }
+        ]
+      },
+      "repeat": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "address_and_expression",
+            "named": true
+          },
+          {
+            "type": "address_of_expression",
+            "named": true
+          },
+          {
+            "type": "binary_expression",
+            "named": true
+          },
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          },
+          {
+            "type": "typed_view",
+            "named": true
+          },
+          {
+            "type": "unary_expression",
             "named": true
           }
         ]
@@ -1202,6 +1452,11 @@
         }
       ]
     }
+  },
+  {
+    "type": "register",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "segment_declaration",
@@ -1882,6 +2137,18 @@
     "named": false
   },
   {
+    "type": "A",
+    "named": false
+  },
+  {
+    "type": "X",
+    "named": false
+  },
+  {
+    "type": "Y",
+    "named": false
+  },
+  {
     "type": "[",
     "named": false
   },
@@ -1894,8 +2161,16 @@
     "named": false
   },
   {
+    "type": "a",
+    "named": false
+  },
+  {
     "type": "abstract",
     "named": false
+  },
+  {
+    "type": "address_encoding",
+    "named": true
   },
   {
     "type": "block_comment",
@@ -1952,10 +2227,6 @@
     "named": false
   },
   {
-    "type": "register",
-    "named": true
-  },
-  {
     "type": "return_statement",
     "named": true
   },
@@ -1981,6 +2252,14 @@
   },
   {
     "type": "word",
+    "named": false
+  },
+  {
+    "type": "x",
+    "named": false
+  },
+  {
+    "type": "y",
     "named": false
   },
   {

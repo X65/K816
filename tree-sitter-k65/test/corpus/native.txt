@@ -1,0 +1,434 @@
+================================================================================
+Classical operand shapes
+================================================================================
+
+func main {
+  nop
+  asl a
+  lda #1
+  lda addr
+  lda addr,x
+  sta addr,y
+  lda (ptr,x)
+  lda (ptr),y
+  jmp (vector)
+  bcc target
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (accumulator))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          value: (identifier)
+          inner_index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          value: (identifier)
+          outer_index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier))))))
+
+================================================================================
+Address-encoding operand prefixes
+================================================================================
+
+func main {
+  lda dp addr
+  lda abs addr
+  lda far addr
+  lda abs addr,x
+  jmp (abs vec,x)
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (indirect
+          encoding: (address_encoding)
+          value: (identifier)
+          inner_index: (index_register))))))
+
+================================================================================
+A prefix name is still available as an operand
+================================================================================
+
+func main {
+  lda dp
+  lda dpa
+  lda abs dp
+  lda dp dpa
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier))))))
+
+================================================================================
+An operand ends at the next statement
+================================================================================
+
+func main {
+  lda foo
+  bar = a
+  nop
+  a = #1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (hla_store
+        target: (identifier)
+        source: (register))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number))))))
+
+================================================================================
+Implied instructions repeat with a count
+================================================================================
+
+func main {
+  inx * 3
+  nop * COUNT
+  nop
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        repeat: (number))
+      (native_instruction
+        mnemonic: (mnemonic)
+        repeat: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)))))
+
+================================================================================
+Compound operand expressions
+================================================================================
+
+func main {
+  lda base+3
+  lda base-2,x
+  lda #&<ptr
+  sta SCREEN+1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (binary_expression
+            left: (identifier)
+            right: (number))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (binary_expression
+            left: (identifier)
+            right: (number))
+          index: (index_register)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (address_of_expression
+            operand: (identifier))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (binary_expression
+            left: (identifier)
+            right: (number)))))))
+
+================================================================================
+Every classical mnemonic is recognized
+================================================================================
+
+func main {
+  adc x0 and x0 asl a bcc x0 bcs x0 beq x0 bit x0 bmi x0 bne x0 bpl x0
+  brk bvc x0 bvs x0 clc cld cli clv cmp x0 cpx x0 cpy x0
+  dec x0 dex dey eor x0 inc x0 inx iny jmp x0 jsr x0 lda x0
+  ldx x0 ldy x0 lsr a nop ora x0 pha php pla plp rol a
+  ror a rti rts sbc x0 sec sed sei sta x0 stx x0 sty x0
+  tax tay tsx txa txs tya
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (accumulator))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (accumulator))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (accumulator))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (accumulator))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (identifier)))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic))
+      (native_instruction
+        mnemonic: (mnemonic)))))

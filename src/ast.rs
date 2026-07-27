@@ -217,14 +217,59 @@ pub enum LabelScope {
 pub struct NativeInstruction {
     pub mnemonic: Name,
     pub operand: Option<NativeOperand>,
+    /// `<mnemonic> * N` — repeat an implied-mode instruction N times.
+    pub repeat: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeOperand {
     /// `#expr`
     Immediate(Expr),
-    /// A symbol used as an address operand, e.g. `sta SCREEN`.
-    Address(Name),
+    /// `A` — the accumulator itself, as in `asl a`.
+    Accumulator,
+    /// `[dp|abs|far] expr [,X|,Y]`. K65 does not spell zero page and absolute
+    /// differently: which encoding an address gets is decided from its value
+    /// and the optional prefix.
+    Address(AddressOperand),
+    /// `([dp|abs|far] expr [,X]) [,Y]`
+    Indirect(IndirectOperand),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressOperand {
+    pub encoding: Option<AddressEncoding>,
+    pub value: Expr,
+    pub index: Option<IndexRegister>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndirectOperand {
+    pub encoding: Option<AddressEncoding>,
+    pub value: Expr,
+    /// `(expr,X)` — indexing applied before the pointer is read.
+    pub inner_index: Option<IndexRegister>,
+    /// `(expr),Y` — indexing applied to the pointer that was read.
+    pub outer_index: Option<IndexRegister>,
+}
+
+/// An operand-position `dp` / `abs` / `far` prefix, which forces the
+/// address-encoding width independently of the value's data width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AddressEncoding {
+    pub kind: StorageClassKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexRegister {
+    pub kind: IndexRegisterKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndexRegisterKind {
+    X,
+    Y,
 }
 
 /// HLA statements stay distinct from native syntax until lowering.

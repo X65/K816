@@ -24,8 +24,9 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AstFile, BinaryOp, ExprKind, HlaStatement, ItemKind, LabelScope, MetadataQueryKind,
-    NativeOperand, StatementKind, StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AddressEncoding, AstFile, BinaryOp, ExprKind, HlaStatement, IndexRegister, IndexRegisterKind,
+    ItemKind, LabelScope, MetadataQueryKind, NativeOperand, StatementKind, StorageClassKind,
+    TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -131,10 +132,27 @@ fn dump_ast(file: &AstFile) -> String {
                                 Some(NativeOperand::Immediate(expr)) => {
                                     format!(" #{}", dump_expr(&expr.kind))
                                 }
-                                Some(NativeOperand::Address(name)) => format!(" {}", name.text),
+                                Some(NativeOperand::Accumulator) => " a".to_owned(),
+                                Some(NativeOperand::Address(address)) => format!(
+                                    " {}{}{}",
+                                    dump_encoding(address.encoding),
+                                    dump_expr(&address.value.kind),
+                                    dump_index(address.index)
+                                ),
+                                Some(NativeOperand::Indirect(indirect)) => format!(
+                                    " ({}{}{}){}",
+                                    dump_encoding(indirect.encoding),
+                                    dump_expr(&indirect.value.kind),
+                                    dump_index(indirect.inner_index),
+                                    dump_index(indirect.outer_index)
+                                ),
                                 None => String::new(),
                             };
-                            format!("native {}{}", native.mnemonic.text, operand)
+                            let repeat = match &native.repeat {
+                                Some(repeat) => format!(" * {}", dump_expr(&repeat.kind)),
+                                None => String::new(),
+                            };
+                            format!("native {}{operand}{repeat}", native.mnemonic.text)
                         }
                         StatementKind::Hla(HlaStatement::LoadImmediate { value, .. }) => {
                             format!("hla a = #{}", dump_expr(&value.kind))
@@ -165,6 +183,23 @@ fn dump_ast(file: &AstFile) -> String {
         }
     }
     out
+}
+
+fn dump_encoding(encoding: Option<AddressEncoding>) -> String {
+    match encoding.map(|encoding| encoding.kind) {
+        Some(StorageClassKind::DirectPage) => "dp ".to_owned(),
+        Some(StorageClassKind::Absolute) => "abs ".to_owned(),
+        Some(StorageClassKind::Far) => "far ".to_owned(),
+        None => String::new(),
+    }
+}
+
+fn dump_index(index: Option<IndexRegister>) -> String {
+    match index.map(|index| index.kind) {
+        Some(IndexRegisterKind::X) => ",x".to_owned(),
+        Some(IndexRegisterKind::Y) => ",y".to_owned(),
+        None => String::new(),
+    }
 }
 
 /// Renders an expression fully parenthesized in prefix form, so operator
@@ -728,6 +763,147 @@ fn subscript_forms_name_their_owner() {
     ] {
         let mut map = SourceMap::new();
         let id = map.add_file("owner.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            "`{source}`"
+        );
+    }
+}
+
+#[test]
+fn classical_operand_shapes_reach_the_ast() {
+    let source = "func main {
+    nop
+    asl a
+    lda #1
+    lda addr
+    lda addr,x
+    sta addr,y
+    lda (ptr,x)
+    lda (ptr),y
+    jmp (vector)
+    lda dp addr
+    lda abs addr,x
+    lda far base+3
+    inx * 3
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("native.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let rendered: Vec<String> = func
+        .body
+        .statements
+        .iter()
+        .map(|statement| {
+            let StatementKind::Native(native) = &statement.kind else {
+                panic!("expected a native instruction");
+            };
+            let operand = match &native.operand {
+                Some(NativeOperand::Immediate(expr)) => format!(" #{}", dump_expr(&expr.kind)),
+                Some(NativeOperand::Accumulator) => " a".to_owned(),
+                Some(NativeOperand::Address(address)) => format!(
+                    " {}{}{}",
+                    dump_encoding(address.encoding),
+                    dump_expr(&address.value.kind),
+                    dump_index(address.index)
+                ),
+                Some(NativeOperand::Indirect(indirect)) => format!(
+                    " ({}{}{}){}",
+                    dump_encoding(indirect.encoding),
+                    dump_expr(&indirect.value.kind),
+                    dump_index(indirect.inner_index),
+                    dump_index(indirect.outer_index)
+                ),
+                None => String::new(),
+            };
+            let repeat = match &native.repeat {
+                Some(repeat) => format!(" * {}", dump_expr(&repeat.kind)),
+                None => String::new(),
+            };
+            format!("{}{operand}{repeat}", native.mnemonic.text)
+        })
+        .collect();
+    assert_eq!(
+        rendered,
+        vec![
+            "nop",
+            "asl a",
+            "lda #1",
+            "lda addr",
+            "lda addr,x",
+            "sta addr,y",
+            "lda (ptr,x)",
+            "lda (ptr),y",
+            "jmp (vector)",
+            "lda dp addr",
+            "lda abs addr,x",
+            "lda far (+ base 3)",
+            "inx * 3",
+        ]
+    );
+}
+
+#[test]
+fn an_operand_does_not_swallow_the_next_statement() {
+    // `lda foo` then `bar = a` could also read as the direct-page prefix form
+    // `lda foo bar` followed by `= a`; only the first goes on to parse.
+    let mut map = SourceMap::new();
+    let id = map.add_file("boundary.k65", "func f {\n  lda foo\n  bar = a\n}\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 2);
+    let StatementKind::Native(native) = &func.body.statements[0].kind else {
+        panic!("expected a native instruction");
+    };
+    let Some(NativeOperand::Address(address)) = &native.operand else {
+        panic!("expected an address operand");
+    };
+    assert!(address.encoding.is_none());
+    assert!(matches!(
+        func.body.statements[1].kind,
+        StatementKind::Hla(HlaStatement::Store { .. })
+    ));
+}
+
+#[test]
+fn a_recognized_mnemonic_without_isa_support_names_the_translator() {
+    // `inx` is a real instruction the frozen ISA table does not carry yet, so
+    // it must not be reported as an unknown mnemonic.
+    let mut map = SourceMap::new();
+    let id = map.add_file("inx.k65", "func main @a8 {\n    inx\n}\n");
+    let parsed = parse_source(map.file(id), None);
+    assert_eq!(parsed.diagnostics, vec![]);
+    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_YET_IMPLEMENTED);
+    assert_eq!(map.span_text(diagnostics[0].primary.span), "inx");
+}
+
+#[test]
+fn operand_shapes_beyond_the_isa_table_name_the_translator() {
+    for source in [
+        "func main @a8 { lda SCREEN,x }\n",
+        "func main @a8 { lda (SCREEN),y }\n",
+        "func main @a8 { lda dp SCREEN }\n",
+        "func main @a8 { asl a }\n",
+        "func main @a8 { rts * 2 }\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("shape.k65", format!("var SCREEN = $0400\n{source}"));
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);

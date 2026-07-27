@@ -175,21 +175,44 @@ impl Analysis {
                 if native.mnemonic.provenance == Provenance::Synthetic {
                     return;
                 }
+                if native.repeat.is_some() {
+                    self.diagnostics.push(compat::unimplemented(
+                        statement.span,
+                        "instruction repetition counts",
+                        compat::Owner::HlaLowering,
+                    ));
+                    return;
+                }
+                // The grammar only produces mnemonics the CPU has, so a
+                // mnemonic the ISA table does not carry is one the native
+                // translator has yet to add, not a typo.
                 let Some(mnemonic) = Mnemonic::parse(&native.mnemonic.text) else {
-                    self.diagnostics.push(
-                        Diagnostic::error(
-                            DiagnosticCode::UNKNOWN_MNEMONIC,
-                            format!("unknown instruction `{}`", native.mnemonic.text),
-                            Label::new(native.mnemonic.span, "not a supported 65816 mnemonic"),
-                        )
-                        .with_docs("doc/syntax-reference.md#standard-6502-instructions"),
-                    );
+                    self.diagnostics.push(compat::unimplemented(
+                        native.mnemonic.span,
+                        &format!("`{}` instructions", native.mnemonic.text),
+                        compat::Owner::NativeTranslator,
+                    ));
                     return;
                 };
+                // Likewise for the operand shapes the frozen ISA table cannot
+                // describe yet: indexing, indirection, and the encoding
+                // prefixes all grow with the native translator.
                 let mode = match &native.operand {
                     None => AddressingMode::Implied,
                     Some(NativeOperand::Immediate(_)) => AddressingMode::Immediate,
-                    Some(NativeOperand::Address(_)) => AddressingMode::Absolute,
+                    Some(NativeOperand::Address(address))
+                        if address.encoding.is_none() && address.index.is_none() =>
+                    {
+                        AddressingMode::Absolute
+                    }
+                    Some(_) => {
+                        self.diagnostics.push(compat::unimplemented(
+                            statement.span,
+                            "these operand addressing modes",
+                            compat::Owner::NativeTranslator,
+                        ));
+                        return;
+                    }
                 };
                 let Some(spec) = spec(mnemonic, mode) else {
                     self.diagnostics.push(
@@ -209,10 +232,13 @@ impl Analysis {
                     Some(NativeOperand::Immediate(value)) => {
                         self.check_immediate(value, spec.immediate_width, contract, mnemonic);
                     }
-                    Some(NativeOperand::Address(name)) => {
-                        self.check_memory_operand(&name.text, name.span);
-                    }
-                    None => {}
+                    Some(NativeOperand::Address(address)) => match &address.value.kind {
+                        ExprKind::Symbol(name) => self.check_memory_operand(&name.text, name.span),
+                        _ => {
+                            self.constant(&address.value, "address operands");
+                        }
+                    },
+                    Some(NativeOperand::Accumulator) | Some(NativeOperand::Indirect(_)) | None => {}
                 }
             }
             StatementKind::Hla(HlaStatement::LoadImmediate { value, .. }) => {

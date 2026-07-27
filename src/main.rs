@@ -59,6 +59,13 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("compile") => compile(&prog_name, &args[1..]),
         Some("emit-ir") => emit_ir(&prog_name, &args[1..]),
+        Some("lsp") => match k816::lsp::run_stdio_server() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{prog_name}: LSP server error: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => {
             usage(&prog_name);
             ExitCode::FAILURE
@@ -72,6 +79,7 @@ fn usage(prog_name: &str) {
     eprintln!("Commands:");
     eprintln!("  compile [--no-opt] [-o OUT.s] FILE   compile K816 source to ca65 assembly");
     eprintln!("  emit-ir [--after-opt] FILE           dump the lowered operation stream");
+    eprintln!("  lsp                                  run the language server over stdio");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  -V, --version                        print the version number and exit");

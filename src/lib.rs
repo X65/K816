@@ -33,12 +33,14 @@ pub mod effects;
 pub mod emit_ca65;
 pub mod isa;
 pub mod lower;
+pub mod lsp;
 pub mod op;
 pub mod optimize;
 pub mod parser;
 pub mod semantic;
 pub mod source;
 pub mod symbol;
+pub mod workspace;
 
 use std::path::Path;
 
@@ -84,9 +86,19 @@ pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<(FileId, 
 
 /// Runs syntax and semantic analysis over every file in `map`.
 ///
-/// Stub until the semantic frontend lands (sub-plans A3–A5, wired in A8).
-pub fn analyze_workspace(_map: &SourceMap, _options: &Options) -> Analysis {
-    unimplemented!("analyze_workspace lands with sub-plan A8")
+/// This is where the LSP stops; the CLI may continue to ca65 emission.
+/// Each file is currently analyzed as its own unit — cross-unit symbols are
+/// sub-plan C territory.
+pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
+    let _ = options;
+    let mut diagnostics = Vec::new();
+    for source in map.files() {
+        let parse = parser::parse_source(source, None);
+        let (_, semantic_diagnostics) = semantic::analyze_file(&parse.file);
+        diagnostics.extend(parse.diagnostics);
+        diagnostics.extend(semantic_diagnostics);
+    }
+    Analysis { diagnostics }
 }
 
 /// Compiles one file to ca65 assembly.

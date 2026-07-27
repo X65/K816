@@ -5,6 +5,7 @@
 //! both the CLI (`main.rs`) and the LSP server. Neither tool reconstructs
 //! project semantics on its own.
 
+pub mod ast;
 pub mod diagnostic;
 pub mod parser;
 pub mod source;
@@ -12,6 +13,7 @@ pub mod source;
 use std::path::Path;
 
 use diagnostic::Diagnostic;
+use parser::ParseResult;
 use source::{FileId, SourceMap};
 
 /// Compilation options shared by the CLI and LSP.
@@ -44,12 +46,10 @@ pub struct CompileResult {
 }
 
 /// Reads `path` into `map` and parses it.
-///
-/// Stub until the parser adapter lands (sub-plan A3).
-pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<FileId> {
+pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<(FileId, ParseResult)> {
     let text = std::fs::read_to_string(path)?;
     let id = map.add_file(path.to_string_lossy(), text);
-    Ok(id)
+    Ok((id, parser::parse_source(map.file(id), None)))
 }
 
 /// Runs syntax and semantic analysis over every file in `map`.

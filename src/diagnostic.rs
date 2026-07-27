@@ -19,6 +19,8 @@ impl DiagnosticCode {
     pub const SYNTAX_ERROR: Self = Self("K816-E0001");
     /// Incomplete source: Tree-sitter inserted a `MISSING` node.
     pub const SYNTAX_MISSING: Self = Self("K816-E0002");
+    /// A numeric literal does not fit its representable range.
+    pub const NUMBER_RANGE: Self = Self("K816-E0003");
     /// A symbol is used but never declared.
     pub const UNDECLARED_SYMBOL: Self = Self("K816-E0101");
     /// A symbol is declared more than once.
@@ -27,6 +29,8 @@ impl DiagnosticCode {
     pub const IMMEDIATE_RANGE: Self = Self("K816-E0103");
     /// A width-dependent immediate is used where the register width is unknown.
     pub const UNKNOWN_WIDTH: Self = Self("K816-E0104");
+    /// The compiler met a CST shape it does not recognize (a K816 bug).
+    pub const INTERNAL: Self = Self("K816-E0900");
 
     pub fn as_str(self) -> &'static str {
         self.0

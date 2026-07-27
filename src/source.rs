@@ -1,0 +1,201 @@
+//! Source text management: files, byte-offset spans, and location translation.
+//!
+//! Every CST, AST, and lowered operation carries a [`Span`] with exact byte
+//! offsets into an unmodified source file. Source text is never preprocessed
+//! or rewritten before parsing. Synthetic constructs (compiler-inserted nodes
+//! and operations) keep a zero-width span at the source position they were
+//! derived from and are marked via [`Provenance::Synthetic`].
+
+/// Identifies one source file inside a [`SourceMap`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FileId(u32);
+
+impl FileId {
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A byte-offset range inside one source file.
+///
+/// `start` and `end` are byte offsets into the file's UTF-8 text with
+/// `start <= end`. A zero-width span (`start == end`) marks a point location,
+/// used for EOF diagnostics and synthetic nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Span {
+    pub file: FileId,
+    pub start: u32,
+    pub end: u32,
+}
+
+impl Span {
+    pub fn new(file: FileId, start: u32, end: u32) -> Self {
+        debug_assert!(start <= end);
+        Self { file, start, end }
+    }
+
+    /// A zero-width span at `offset`, for point locations and synthetic nodes.
+    pub fn empty_at(file: FileId, offset: u32) -> Self {
+        Self::new(file, offset, offset)
+    }
+
+    pub fn len(self) -> u32 {
+        self.end - self.start
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    /// The smallest span covering both `self` and `other` (same file).
+    pub fn join(self, other: Span) -> Span {
+        debug_assert_eq!(self.file, other.file);
+        Span::new(
+            self.file,
+            self.start.min(other.start),
+            self.end.max(other.end),
+        )
+    }
+}
+
+/// Whether a node or operation was written by the user or synthesized by the
+/// compiler. Synthetic entities keep an origin [`Span`] pointing at the source
+/// they were derived from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Provenance {
+    /// Present verbatim in user source at its span.
+    Source,
+    /// Inserted by the compiler; the span is the (possibly zero-width) origin.
+    Synthetic,
+}
+
+/// A zero-based line/column location. `column` counts bytes within the line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineCol {
+    pub line: u32,
+    pub column: u32,
+}
+
+/// One source file: its name, unmodified text, and a line-start index.
+#[derive(Debug)]
+pub struct SourceFile {
+    id: FileId,
+    name: String,
+    text: String,
+    /// Byte offset of the first byte of every line. `line_starts[0] == 0`.
+    line_starts: Vec<u32>,
+}
+
+impl SourceFile {
+    fn new(id: FileId, name: String, text: String) -> Self {
+        assert!(
+            u32::try_from(text.len()).is_ok(),
+            "source file larger than 4 GiB: {name}"
+        );
+        let mut line_starts = vec![0];
+        for (offset, byte) in text.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(offset as u32 + 1);
+            }
+        }
+        Self {
+            id,
+            name,
+            text,
+            line_starts,
+        }
+    }
+
+    pub fn id(&self) -> FileId {
+        self.id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// A span covering the entire file.
+    pub fn span(&self) -> Span {
+        Span::new(self.id, 0, self.text.len() as u32)
+    }
+
+    /// A zero-width span at end of file.
+    pub fn end_span(&self) -> Span {
+        Span::empty_at(self.id, self.text.len() as u32)
+    }
+
+    /// Translates a byte offset into a zero-based line/column pair.
+    ///
+    /// Offsets past the end of the file clamp to the final position. The
+    /// column counts bytes from the line start, so multi-byte UTF-8 characters
+    /// advance it by their encoded length.
+    pub fn line_col(&self, offset: u32) -> LineCol {
+        let offset = offset.min(self.text.len() as u32);
+        let line = self
+            .line_starts
+            .partition_point(|&start| start <= offset)
+            .saturating_sub(1);
+        LineCol {
+            line: line as u32,
+            column: offset - self.line_starts[line],
+        }
+    }
+
+    /// The text of a zero-based line, without its trailing newline.
+    pub fn line_text(&self, line: u32) -> &str {
+        let line = line as usize;
+        let start = self.line_starts.get(line).copied().unwrap_or(0) as usize;
+        let end = self
+            .line_starts
+            .get(line + 1)
+            .map(|&next| next as usize)
+            .unwrap_or(self.text.len());
+        self.text[start..end].trim_end_matches(['\n', '\r'])
+    }
+
+    /// The source text covered by `span`, which must belong to this file.
+    pub fn span_text(&self, span: Span) -> &str {
+        debug_assert_eq!(span.file, self.id);
+        &self.text[span.start as usize..span.end as usize]
+    }
+}
+
+/// Owns all source files of a compilation and translates spans to locations.
+#[derive(Debug, Default)]
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+impl SourceMap {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers source text under `name` and returns its new [`FileId`].
+    pub fn add_file(&mut self, name: impl Into<String>, text: impl Into<String>) -> FileId {
+        let id = FileId(u32::try_from(self.files.len()).expect("too many source files"));
+        self.files
+            .push(SourceFile::new(id, name.into(), text.into()));
+        id
+    }
+
+    pub fn file(&self, id: FileId) -> &SourceFile {
+        &self.files[id.index()]
+    }
+
+    pub fn files(&self) -> impl Iterator<Item = &SourceFile> {
+        self.files.iter()
+    }
+
+    pub fn line_col(&self, file: FileId, offset: u32) -> LineCol {
+        self.file(file).line_col(offset)
+    }
+
+    pub fn span_text(&self, span: Span) -> &str {
+        self.file(span.file).span_text(span)
+    }
+}

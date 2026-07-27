@@ -156,8 +156,64 @@ pub struct Expr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExprKind {
-    /// A numeric literal, already decoded from its source form.
+    /// A numeric or character literal, already decoded from its source form.
     Number(u32),
+    /// A reference to a named symbol: a `const`, `var`, or label.
+    Symbol(Name),
+    /// `-x`, `~x`, `&<x`, `&>x`, `&&x`, `&&&x`.
+    Unary(UnaryExpr),
+    /// `x * y`, `x | y`, ...
+    Binary(BinaryExpr),
+    /// `[ ... ]` — a compile-time evaluator bracket. Its interior is a K65
+    /// expression until the evaluator gets its own grammar and AST.
+    Eval(Box<Expr>),
     /// Malformed or missing expression.
     Error,
+}
+
+/// Parentheses do not appear here: grouping is the tree shape. The grouped
+/// expression's span still covers the parentheses, so diagnostics can point
+/// at what the user wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnaryExpr {
+    pub op: UnaryOp,
+    pub operand: Box<Expr>,
+    /// The operator's own span, for diagnostics about the operator itself.
+    pub op_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// `-x`
+    Negate,
+    /// `~x`
+    BitNot,
+    /// `&<x` — low byte of an address.
+    LowByte,
+    /// `&>x` — high byte of an address.
+    HighByte,
+    /// `&&x` — 16-bit address.
+    Address16,
+    /// `&&&x` — 24-bit address.
+    Address24,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryExpr {
+    pub op: BinaryOp,
+    pub left: Box<Expr>,
+    pub right: Box<Expr>,
+    pub op_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    Mul,
+    Add,
+    Sub,
+    Shl,
+    Shr,
+    BitAnd,
+    BitXor,
+    BitOr,
 }

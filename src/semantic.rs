@@ -32,6 +32,7 @@ use crate::ast::{
     AstFile, Expr, ExprKind, Function, HlaStatement, ItemKind, NativeOperand, Statement,
     StatementKind, WidthAnnotationKind,
 };
+use crate::compat;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::isa::{AddressingMode, ImmediateWidthClass, Mnemonic, spec};
 use crate::op::{RegisterWidth, WidthContract};
@@ -83,9 +84,8 @@ impl Analysis {
                     if var.name.provenance == Provenance::Synthetic {
                         continue; // Recovery invented the name; syntax error already reported.
                     }
-                    let address = match var.address.kind {
-                        ExprKind::Number(value) => value,
-                        ExprKind::Error => continue,
+                    let Some(address) = self.constant(&var.address, "variable addresses") else {
+                        continue;
                     };
                     self.declare(
                         &var.name.text,
@@ -218,8 +218,8 @@ impl Analysis {
         contract: WidthContract,
         mnemonic: Mnemonic,
     ) {
-        let ExprKind::Number(number) = value.kind else {
-            return; // Syntax diagnostics already cover malformed values.
+        let Some(number) = self.constant(value, "immediate operands") else {
+            return;
         };
         let (limit, axis) = match width {
             Some(ImmediateWidthClass::Fixed8) => (0xFF, None),
@@ -263,6 +263,29 @@ impl Analysis {
                 )
                 .with_docs("doc/register-width-aware-syntax.md"),
             );
+        }
+    }
+
+    /// The value of `expr`, which must already be a literal.
+    ///
+    /// Constant folding — symbol references, arithmetic, and the compile-time
+    /// evaluator — belongs to the native translator, so every other shape
+    /// reports itself as not-yet-implemented instead of being silently
+    /// ignored. `position` names where the expression appeared, in plural form
+    /// ("immediate operands"). Returns `None` for malformed expressions, whose
+    /// syntax diagnostic was already reported.
+    fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
+        match &expr.kind {
+            ExprKind::Number(value) => Some(*value),
+            ExprKind::Error => None,
+            ExprKind::Symbol(_) | ExprKind::Unary(_) | ExprKind::Binary(_) | ExprKind::Eval(_) => {
+                self.diagnostics.push(compat::unimplemented(
+                    expr.span,
+                    &format!("compound expressions in {position}"),
+                    compat::Owner::NativeTranslator,
+                ));
+                None
+            }
         }
     }
 

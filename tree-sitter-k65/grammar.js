@@ -42,6 +42,29 @@
 /// <reference types="tree-sitter-cli/dsl" />
 // @ts-check
 
+/**
+ * Precedence of the K65 expression layer, lowest first.
+ *
+ * Levels 1-3 and 5-7 are the C-style table in syntax-reference.md "Binary
+ * operators". The address-byte operators sit in between: `&<ptr+1` has to mean
+ * the low byte of `ptr+1` (the documented "with offset arithmetic" form), so
+ * they bind looser than the arithmetic operators, while the `&&` gotcha —
+ * `FOO && BAR` meaning `FOO & (&&BAR)` — puts them tighter than `&`.
+ *
+ * The compile-time evaluator has a *different*, larger operator table over
+ * partly the same tokens; it lives behind `[` and is not modelled here.
+ */
+const PREC = {
+  or: 1,
+  xor: 2,
+  and: 3,
+  addressOf: 4,
+  shift: 5,
+  add: 6,
+  mul: 7,
+  unary: 8,
+};
+
 export default grammar({
   name: 'k65',
 
@@ -57,7 +80,7 @@ export default grammar({
     // var SCREEN = $0400 — fixed-address declaration only; allocated,
     // dp/abs/far, typed, and subscripted forms are still to come.
     var_declaration: $ =>
-      seq('var', field('name', $.identifier), '=', field('address', $._literal)),
+      seq('var', field('name', $.identifier), '=', field('address', $._expression)),
 
     // func main @a8 @i16 { ... }
     func_declaration: $ =>
@@ -106,13 +129,89 @@ export default grammar({
 
     register: _ => 'a',
 
-    immediate: $ => seq('#', field('value', $._literal)),
+    immediate: $ => seq('#', field('value', $._expression)),
 
     address: $ => field('symbol', $.identifier),
 
-    // A single value token. Hidden, so literals keep appearing under the
-    // field that holds them rather than behind a wrapper node.
-    _literal: $ => choice($.number, $.char_literal),
+    // ---- The K65 expression layer -----------------------------------------
+    //
+    // Hidden, so an expression appears directly under the field that holds it
+    // rather than behind a wrapper node.
+    _expression: $ =>
+      choice(
+        $.number,
+        $.char_literal,
+        $.identifier,
+        $.parenthesized_expression,
+        $.unary_expression,
+        $.address_of_expression,
+        $.binary_expression,
+        $.address_and_expression,
+        $.eval_bracket,
+      ),
+
+    parenthesized_expression: $ => seq('(', $._expression, ')'),
+
+    unary_expression: $ =>
+      prec.right(
+        PREC.unary,
+        seq(field('operator', choice('-', '~')), field('operand', $._expression)),
+      ),
+
+    // &<expr (low byte), &>expr (high byte), &&expr (16-bit address),
+    // &&&expr (24-bit address).
+    address_of_expression: $ =>
+      prec.right(
+        PREC.addressOf,
+        seq(
+          field('operator', choice('&&&', '&&', '&<', '&>')),
+          field('operand', $._expression),
+        ),
+      ),
+
+    binary_expression: $ =>
+      choice(
+        ...[
+          ['|', PREC.or],
+          ['^', PREC.xor],
+          ['&', PREC.and],
+          ['<<', PREC.shift],
+          ['>>', PREC.shift],
+          ['+', PREC.add],
+          ['-', PREC.add],
+          ['*', PREC.mul],
+        ].map(([operator, precedence]) =>
+          prec.left(
+            precedence,
+            seq(
+              field('left', $._expression),
+              field('operator', operator),
+              field('right', $._expression),
+            ),
+          ),
+        ),
+      ),
+
+    // The documented `&&` gotcha (syntax-reference.md "`&&` gotcha"): the
+    // lexer takes `&&` whole, so `FOO && BAR` is bitwise AND of FOO with the
+    // 16-bit address of BAR. K65 has no logical AND in this layer — that
+    // meaning of `&&` exists only inside evaluator brackets. The single token
+    // carries both roles; the AST expands it into the two operations.
+    address_and_expression: $ =>
+      prec.left(
+        PREC.and,
+        seq(
+          field('left', $._expression),
+          field('operator', '&&'),
+          field('right', $._expression),
+        ),
+      ),
+
+    // `[ ... ]` invokes the compile-time evaluator. Its interior is a
+    // *different* grammar with its own operator table and is written in the
+    // data/evaluator group; until then the K65 expression layer stands in, so
+    // the common `[$FF]` and `[CONST]` forms already parse.
+    eval_bracket: $ => seq('[', field('expression', $._expression), ']'),
 
     // Decimal, `$`/`0x` hexadecimal, `%`/`0b` binary. The lexer's longest
     // match keeps `0b1010` and `0x2A` whole rather than splitting a leading

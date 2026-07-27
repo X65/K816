@@ -24,7 +24,8 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AstFile, ExprKind, HlaStatement, ItemKind, NativeOperand, StatementKind, WidthAnnotationKind,
+    AstFile, BinaryOp, ExprKind, HlaStatement, ItemKind, NativeOperand, StatementKind, UnaryOp,
+    WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -123,11 +124,59 @@ fn dump_ast(file: &AstFile) -> String {
     out
 }
 
+/// Renders an expression fully parenthesized in prefix form, so operator
+/// precedence and associativity are visible in the snapshot.
 fn dump_expr(kind: &ExprKind) -> String {
     match kind {
         ExprKind::Number(value) => format!("{value}"),
+        ExprKind::Symbol(name) => name.text.clone(),
+        ExprKind::Unary(unary) => {
+            let operator = match unary.op {
+                UnaryOp::Negate => "-",
+                UnaryOp::BitNot => "~",
+                UnaryOp::LowByte => "&<",
+                UnaryOp::HighByte => "&>",
+                UnaryOp::Address16 => "&&",
+                UnaryOp::Address24 => "&&&",
+            };
+            format!("({operator} {})", dump_expr(&unary.operand.kind))
+        }
+        ExprKind::Binary(binary) => {
+            let operator = match binary.op {
+                BinaryOp::Mul => "*",
+                BinaryOp::Add => "+",
+                BinaryOp::Sub => "-",
+                BinaryOp::Shl => "<<",
+                BinaryOp::Shr => ">>",
+                BinaryOp::BitAnd => "&",
+                BinaryOp::BitXor => "^",
+                BinaryOp::BitOr => "|",
+            };
+            format!(
+                "({operator} {} {})",
+                dump_expr(&binary.left.kind),
+                dump_expr(&binary.right.kind)
+            )
+        }
+        ExprKind::Eval(inner) => format!("[{}]", dump_expr(&inner.kind)),
         ExprKind::Error => "<error>".to_owned(),
     }
+}
+
+/// Parses `var X = <expression>` and renders the expression in prefix form.
+fn parse_expr(expression: &str) -> String {
+    let mut map = SourceMap::new();
+    let id = map.add_file("expr.k65", format!("var X = {expression}\n"));
+    let result = parse_source(map.file(id), None);
+    assert_eq!(
+        result.diagnostics,
+        vec![],
+        "`{expression}` did not parse cleanly"
+    );
+    let ItemKind::Var(var) = &result.file.items[0].kind else {
+        panic!("expected a var declaration");
+    };
+    dump_expr(&var.address.kind)
 }
 
 #[test]
@@ -291,7 +340,7 @@ var HEX_ESCAPE = '\\x41'
             };
             match var.address.kind {
                 ExprKind::Number(value) => value,
-                ExprKind::Error => panic!("`{}` did not decode", var.name.text),
+                _ => panic!("`{}` did not decode to a number", var.name.text),
             }
         })
         .collect();
@@ -303,6 +352,94 @@ var HEX_ESCAPE = '\\x41'
             0x41, 0x0A, 0x00, 0x09, 0x5C, 0x27, 0x41, // character literals
         ]
     );
+}
+
+#[test]
+fn binary_operators_follow_c_precedence() {
+    // The table in syntax-reference.md "Binary operators", including the three
+    // worked examples stated there.
+    assert_eq!(parse_expr("A | B & C"), "(| A (& B C))");
+    assert_eq!(parse_expr("A + B & C"), "(& (+ A B) C)");
+    assert_eq!(parse_expr("A << 1 | C"), "(| (<< A 1) C)");
+    assert_eq!(parse_expr("A ^ B | C"), "(| (^ A B) C)");
+    assert_eq!(parse_expr("A * B + C * D"), "(+ (* A B) (* C D))");
+    assert_eq!(parse_expr("A + B - C"), "(- (+ A B) C)");
+    assert_eq!(parse_expr("A >> B >> C"), "(>> (>> A B) C)");
+    assert_eq!(parse_expr("(A | B) & C"), "(& (| A B) C)");
+}
+
+#[test]
+fn unary_operators_repeat_in_the_order_written() {
+    // "Both repeat in the order written" — syntax-reference.md "Unary
+    // operators".
+    assert_eq!(parse_expr("-~FOO"), "(- (~ FOO))");
+    assert_eq!(parse_expr("~-FOO"), "(~ (- FOO))");
+    assert_eq!(parse_expr("-FOO * 2"), "(* (- FOO) 2)");
+}
+
+#[test]
+fn address_byte_operators_take_the_whole_offset_expression() {
+    // `&<ptr+1` is the low byte of `ptr+1`, not `(&<ptr)+1` —
+    // syntax-reference.md "Address Byte Operators".
+    assert_eq!(parse_expr("&<ptr+1"), "(&< (+ ptr 1))");
+    assert_eq!(parse_expr("&>screen_1+0x100"), "(&> (+ screen_1 256))");
+    assert_eq!(parse_expr("&&ptr"), "(&& ptr)");
+    assert_eq!(parse_expr("&&&ptr"), "(&&& ptr)");
+    // ...but tighter than the bitwise operators, matching the `&&` gotcha.
+    assert_eq!(parse_expr("&<ptr & $F0"), "(& (&< ptr) 240)");
+}
+
+#[test]
+fn double_ampersand_is_address_of_not_logical_and() {
+    // The documented quirk: `FOO && BAR` is `FOO & (&&BAR)`. One source
+    // token, two operations — logical AND does not exist in this layer.
+    assert_eq!(parse_expr("FOO && BAR"), "(& FOO (&& BAR))");
+    assert_eq!(parse_expr("FOO & (&&BAR)"), "(& FOO (&& BAR))");
+    assert_eq!(parse_expr("FOO && BAR + 1"), "(& FOO (&& (+ BAR 1)))");
+}
+
+#[test]
+fn evaluator_brackets_are_expression_atoms() {
+    assert_eq!(parse_expr("[$FF]"), "[255]");
+    assert_eq!(parse_expr("[LV_SIZE]"), "[LV_SIZE]");
+    assert_eq!(parse_expr("[FLAG_A | FLAG_B]"), "[(| FLAG_A FLAG_B)]");
+    assert_eq!(parse_expr("BASE + [SIZE]"), "(+ BASE [SIZE])");
+}
+
+#[test]
+fn grouping_keeps_the_span_of_the_parentheses() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("paren.k65", "var X = (A + B)\n");
+    let result = parse_source(map.file(id), None);
+    let ItemKind::Var(var) = &result.file.items[0].kind else {
+        panic!("expected a var declaration");
+    };
+    assert_eq!(map.span_text(var.address.span), "(A + B)");
+    let ExprKind::Binary(binary) = &var.address.kind else {
+        panic!("expected the grouped binary expression");
+    };
+    assert_eq!(map.span_text(binary.op_span), "+");
+    assert_eq!(map.span_text(binary.left.span), "A");
+}
+
+#[test]
+fn a_compound_address_reports_itself_as_unimplemented() {
+    // The parser accepts it; folding it is the native translator's job, so
+    // the arm has to say so rather than stay silent.
+    let mut map = SourceMap::new();
+    let id = map.add_file("fold.k65", "var X = BASE + 3\n");
+    let parsed = parse_source(map.file(id), None);
+    assert_eq!(parsed.diagnostics, vec![]);
+
+    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].code,
+        DiagnosticCode::NOT_YET_IMPLEMENTED,
+        "{:?}",
+        diagnostics[0]
+    );
+    assert_eq!(map.span_text(diagnostics[0].primary.span), "BASE + 3");
 }
 
 #[test]

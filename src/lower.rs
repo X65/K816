@@ -136,7 +136,15 @@ impl Lowering<'_> {
                     None => None,
                     Some(NativeOperand::Immediate(expr)) => match expr.kind {
                         ExprKind::Number(value) => Some(Operand::Immediate(value)),
-                        ExprKind::Error => return self.skipped(span, "a malformed immediate"),
+                        // Analysis rejects every immediate it cannot reduce to
+                        // a number, so nothing else can reach lowering.
+                        ExprKind::Error
+                        | ExprKind::Symbol(_)
+                        | ExprKind::Unary(_)
+                        | ExprKind::Binary(_)
+                        | ExprKind::Eval(_) => {
+                            return self.skipped(span, "an unresolved immediate");
+                        }
                     },
                     Some(NativeOperand::Address(name)) => {
                         match self.model.symbols.lookup(&name.text) {

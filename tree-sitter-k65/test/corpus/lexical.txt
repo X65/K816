@@ -138,10 +138,12 @@ var OK = 1
 --------------------------------------------------------------------------------
 
 (source_file
+  (var_declaration
+    name: (identifier)
+    (ERROR
+      (UNEXPECTED 'q'))
+    address: (identifier))
   (ERROR
-    (identifier)
-    (UNEXPECTED 'q')
-    (identifier)
     (UNEXPECTED '\n'))
   (var_declaration
     name: (identifier)

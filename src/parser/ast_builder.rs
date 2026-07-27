@@ -27,9 +27,9 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AstFile, Block, Expr, ExprKind, Function, HlaStatement, Item, ItemKind, Name,
-    NativeInstruction, NativeOperand, Register, RegisterKind, Statement, StatementKind,
-    VarDeclaration, WidthAnnotation, WidthAnnotationKind,
+    AstFile, BinaryExpr, BinaryOp, Block, Expr, ExprKind, Function, HlaStatement, Item, ItemKind,
+    Name, NativeInstruction, NativeOperand, Register, RegisterKind, Statement, StatementKind,
+    UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -243,6 +243,21 @@ impl AstBuilder<'_> {
         }
     }
 
+    /// Builds a binary expression from `node`'s `left` and `right` fields.
+    fn binary(&mut self, node: Node<'_>, op: BinaryOp, op_span: Span, span: Span) -> Expr {
+        let left = self.expr(node.child_by_field_name("left"), node);
+        let right = self.expr(node.child_by_field_name("right"), node);
+        Expr {
+            kind: ExprKind::Binary(BinaryExpr {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+                op_span,
+            }),
+            span,
+        }
+    }
+
     fn name(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> Name {
         match node {
             Some(node) if !node.is_missing() => Name {
@@ -303,6 +318,120 @@ impl AstBuilder<'_> {
                             span,
                         }
                     }
+                }
+            }
+            "identifier" => Expr {
+                kind: ExprKind::Symbol(self.name(Some(node), node)),
+                span,
+            },
+            "parenthesized_expression" => {
+                // Grouping is the tree shape, so the parentheses vanish — but
+                // the span keeps covering them.
+                let inner = self.expr(node.named_child(0), node);
+                Expr {
+                    kind: inner.kind,
+                    span,
+                }
+            }
+            "unary_expression" | "address_of_expression" => {
+                let Some(operator) = node.child_by_field_name("operator") else {
+                    self.unexpected(node, "a unary expression");
+                    return Expr {
+                        kind: ExprKind::Error,
+                        span,
+                    };
+                };
+                let op = match self.text(operator) {
+                    "-" => UnaryOp::Negate,
+                    "~" => UnaryOp::BitNot,
+                    "&<" => UnaryOp::LowByte,
+                    "&>" => UnaryOp::HighByte,
+                    "&&" => UnaryOp::Address16,
+                    "&&&" => UnaryOp::Address24,
+                    _ => {
+                        self.unexpected(operator, "a unary operator");
+                        return Expr {
+                            kind: ExprKind::Error,
+                            span,
+                        };
+                    }
+                };
+                let operand = self.expr(node.child_by_field_name("operand"), node);
+                Expr {
+                    kind: ExprKind::Unary(UnaryExpr {
+                        op,
+                        operand: Box::new(operand),
+                        op_span: self.span(operator),
+                    }),
+                    span,
+                }
+            }
+            "binary_expression" => {
+                let Some(operator) = node.child_by_field_name("operator") else {
+                    self.unexpected(node, "a binary expression");
+                    return Expr {
+                        kind: ExprKind::Error,
+                        span,
+                    };
+                };
+                let op = match self.text(operator) {
+                    "*" => BinaryOp::Mul,
+                    "+" => BinaryOp::Add,
+                    "-" => BinaryOp::Sub,
+                    "<<" => BinaryOp::Shl,
+                    ">>" => BinaryOp::Shr,
+                    "&" => BinaryOp::BitAnd,
+                    "^" => BinaryOp::BitXor,
+                    "|" => BinaryOp::BitOr,
+                    _ => {
+                        self.unexpected(operator, "a binary operator");
+                        return Expr {
+                            kind: ExprKind::Error,
+                            span,
+                        };
+                    }
+                };
+                self.binary(node, op, self.span(operator), span)
+            }
+            // `FOO && BAR` is bitwise AND with the 16-bit address of BAR: one
+            // source token, two operations. The CST keeps what was written;
+            // the AST records what it means.
+            "address_and_expression" => {
+                let operator = node.child_by_field_name("operator");
+                let op_span = match operator {
+                    Some(operator) => self.span(operator),
+                    None => Span::empty_at(span.file, span.start),
+                };
+                let expanded = self.binary(node, BinaryOp::BitAnd, op_span, span);
+                let ExprKind::Binary(BinaryExpr {
+                    op, left, right, ..
+                }) = expanded.kind
+                else {
+                    return expanded;
+                };
+                let address = Expr {
+                    span: right.span,
+                    kind: ExprKind::Unary(UnaryExpr {
+                        op: UnaryOp::Address16,
+                        operand: right,
+                        op_span,
+                    }),
+                };
+                Expr {
+                    kind: ExprKind::Binary(BinaryExpr {
+                        op,
+                        left,
+                        right: Box::new(address),
+                        op_span,
+                    }),
+                    span,
+                }
+            }
+            "eval_bracket" => {
+                let inner = self.expr(node.child_by_field_name("expression"), node);
+                Expr {
+                    kind: ExprKind::Eval(Box::new(inner)),
+                    span,
                 }
             }
             "char_literal" => {

@@ -1,0 +1,179 @@
+================================================================================
+A malformed declaration recovers at the next one
+:error
+================================================================================
+
+var = $0400
+var OK = 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (ERROR
+    (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+A malformed statement recovers at the next one
+:error
+================================================================================
+
+func f @a8 {
+  a = =
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (ERROR
+        (register))
+      (return_statement))))
+
+================================================================================
+A missing closing brace is inferred
+:error
+================================================================================
+
+func f @a8 {
+  return
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (return_statement)
+      (MISSING "}"))))
+
+================================================================================
+A malformed data entry recovers
+:error
+================================================================================
+
+data d {
+  repeat
+  1 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (ERROR
+        (number)
+        (number)))))
+
+================================================================================
+A malformed field list recovers
+:error
+================================================================================
+
+var v[
+  .x :
+]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    fields: (field_list
+      (field_declaration
+        name: (local_identifier))
+      (ERROR))))
+
+================================================================================
+A malformed call contract recovers
+:error
+================================================================================
+
+func f (a, { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    (ERROR
+      (contract_parameter
+        register: (register)))
+    body: (block)))
+
+================================================================================
+A malformed conditional recovers
+:error
+================================================================================
+
+func f {
+  >=
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (ERROR
+        (branch_condition))
+      (return_statement))))
+
+================================================================================
+A malformed evaluator bracket recovers
+:error
+================================================================================
+
+data d {
+  [ 1 + ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (number)
+            right: (MISSING identifier)))))))
+
+================================================================================
+An unclosed function still yields the next one
+:error
+================================================================================
+
+func first @a8 {
+  return
+
+func second @a8 {
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (return_statement)
+      (MISSING "}")))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (return_statement))))

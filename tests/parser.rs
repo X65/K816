@@ -1908,3 +1908,109 @@ fn every_corpus_program_parses_without_syntax_diagnostics() {
         assert!(!result.file.items.is_empty(), "{path} produced no items");
     }
 }
+
+/// Every fixture the sub-plan names as a corpus program, plus the two slice
+/// forms, for the tests that sweep over real source.
+fn fixture_sources() -> Vec<(&'static str, String)> {
+    [
+        "examples/hello_uart.k65",
+        "examples/fullstack/main.k816",
+        "examples/k65/atari-xl/include/defs.k65",
+        "examples/k65/atari-xl/dli-example/main.k65",
+        "examples/k65/atari-xl/landscape/main.k65",
+        "examples/k65/atari-xl/rainbow/main.k65",
+        "examples/k65/atari-xl/starfield/main.k65",
+    ]
+    .into_iter()
+    .map(|path| {
+        let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        (path, std::fs::read_to_string(full).expect("read fixture"))
+    })
+    .collect()
+}
+
+#[test]
+fn truncating_a_fixture_anywhere_yields_a_usable_tree() {
+    // Every prefix of a real program is a file someone is part-way through
+    // typing. None of them may panic, produce a span outside the file, or
+    // lose the declarations that were already complete.
+    for (path, source) in fixture_sources() {
+        for end in (0..source.len()).step_by(7) {
+            if !source.is_char_boundary(end) {
+                continue;
+            }
+            let truncated = &source[..end];
+            let mut map = SourceMap::new();
+            let id = map.add_file(path, truncated);
+            let result = parse_source(map.file(id), None);
+
+            let length = truncated.len() as u32;
+            for item in &result.file.items {
+                assert!(
+                    item.span.start <= item.span.end && item.span.end <= length,
+                    "{path} truncated at {end}: item span {:?} escapes the file",
+                    item.span
+                );
+            }
+            for diagnostic in &result.diagnostics {
+                assert!(
+                    diagnostic.primary.span.end <= length,
+                    "{path} truncated at {end}: diagnostic span escapes the file"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn typing_a_fixture_character_by_character_stays_stable() {
+    // The same sweep from the other direction: a growing prefix must produce
+    // the same tree as parsing that prefix outright, which is what an editor
+    // sees between keystrokes.
+    let (path, source) = fixture_sources()
+        .into_iter()
+        .find(|(path, _)| path.ends_with("hello_uart.k65"))
+        .expect("the stress-test fixture");
+
+    for end in (0..source.len()).step_by(11) {
+        if !source.is_char_boundary(end) {
+            continue;
+        }
+        let prefix = &source[..end];
+        let mut map = SourceMap::new();
+        let id = map.add_file(path, prefix);
+        let first = parse_source(map.file(id), None);
+        let second = parse_source(map.file(id), None);
+        assert_eq!(
+            first.tree.dump(),
+            second.tree.dump(),
+            "{path} at {end}: parsing is not deterministic"
+        );
+        assert_eq!(first.file, second.file);
+    }
+}
+
+#[test]
+fn a_syntax_error_names_what_was_expected_there() {
+    // The expected-context table covers the whole grammar, so the message
+    // depends on where the error is rather than defaulting to "valid syntax".
+    for (source, expected) in [
+        ("var = 1\n", "expected a declaration or a code section"),
+        ("func f { >= }\n", "expected a statement"),
+        ("data d { repeat }\n", "expected a data entry"),
+        ("var v[ .x : ]\n", "expected a `.field` entry"),
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("bad.k65", source);
+        let result = parse_source(map.file(id), None);
+        let titles: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.title.as_str())
+            .collect();
+        assert!(
+            titles.contains(&expected),
+            "`{source}`: expected {expected:?} among {titles:?}"
+        );
+    }
+}

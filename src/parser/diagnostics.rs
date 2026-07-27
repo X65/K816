@@ -65,17 +65,63 @@ fn walk(node: tree_sitter::Node<'_>, source: &SourceFile, diagnostics: &mut Vec<
 /// A Tree-sitter `ERROR` node: genuinely malformed source.
 fn error_diagnostic(node: tree_sitter::Node<'_>, source: &SourceFile) -> Diagnostic {
     let span = node_span(node, source);
-    let expected = match node.parent().map(|parent| parent.kind()) {
-        Some("block") => "a statement",
-        Some("source_file") | None => "a `var` or `func` declaration",
-        _ => "valid K816 syntax",
-    };
+    let expected = expected_in(node.parent().map(|parent| parent.kind()));
     Diagnostic::error(
         DiagnosticCode::SYNTAX_ERROR,
         format!("expected {expected}"),
         Label::new(span, format!("cannot be parsed as {expected}")),
     )
     .with_docs("doc/syntax-reference.md")
+}
+
+/// What the grammar was looking for where an `ERROR` node appeared, phrased
+/// for the message "expected …".
+///
+/// Keyed by the *parent* node kind, which is what Tree-sitter reliably knows
+/// at a recovery point. Anything not listed falls back to a phrasing that is
+/// vague but never wrong.
+fn expected_in(parent: Option<&str>) -> &'static str {
+    match parent {
+        Some("source_file") | None => "a declaration or a code section",
+        Some("block") => "a statement",
+        Some("data_body") => "a data entry",
+        Some("data_block") | Some("data_repeat") => "a `{` opening the data block",
+        Some("func_declaration") => "a function header or its body",
+        Some("var_declaration") => "a variable name, type, or initializer",
+        Some("const_declaration") | Some("const_entry") => "a constant name or its value",
+        Some("segment_declaration") => "a segment name",
+        Some("field_list") | Some("field_declaration") => "a `.field` entry",
+        Some("call_contract") | Some("contract_inputs") | Some("contract_outputs") => {
+            "a call contract parameter"
+        }
+        Some("native_instruction") | Some("block_move") => "an instruction operand",
+        Some("immediate") => "an expression after `#`",
+        Some("address") | Some("indirect") | Some("long_indirect") => "an address expression",
+        Some("hla_assignment") => "an assignment operand",
+        Some("hla_arithmetic") => "an operand for the arithmetic shorthand",
+        Some("hla_shift") | Some("hla_step") => "a shift or step target",
+        Some("conditional_block") | Some("postfix_loop") | Some("else_clause") => {
+            "a `{ ... }` block"
+        }
+        Some("conditional_jump") => "`goto`, `break`, or `repeat`",
+        Some("goto_statement") => "a jump target",
+        Some("width_block") | Some("nocross_block") | Some("code_subblock") => "a `{ ... }` block",
+        Some("eval_bracket") | Some("eval_call") | Some("eval_parenthesized") => {
+            "an evaluator expression"
+        }
+        Some("for_eval") => "a `for x=A..B eval [ ... ]` range",
+        Some("preprocessor_directive") => "a condition or message",
+        Some("binary_declaration") | Some("binary_entry") => "a quoted file name",
+        Some("reserved_image_block") | Some("reserved_image_toplevel") => "an `image` argument",
+        Some("parenthesized_expression") => "an expression inside the parentheses",
+        Some("binary_expression") | Some("address_and_expression") => {
+            "an expression after the operator"
+        }
+        Some("unary_expression") | Some("address_of_expression") => {
+            "an expression after the operator"
+        }
+        _ => "valid K816 syntax",
+    }
 }
 
 /// A Tree-sitter `MISSING` node: incomplete source with an inferable token.

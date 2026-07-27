@@ -24,11 +24,11 @@
 //! edited tree must equal parsing the new text from scratch — on the CST dump,
 //! on the owned `AstFile`, and on the diagnostics.
 //!
-//! This file is the harness plus the scenarios the slice grammar can express.
-//! Sub-plan B13 extends the table over `examples/hello_uart.k65` and a
-//! control-flow-heavy fixture, and adds the scenario classes that need
-//! grammar B has not written yet (edits inside strings and data blocks, and an
-//! edit that flips a construct between two rules).
+//! The scenarios run over the slice program, `examples/hello_uart.k65`, and a
+//! control-flow-heavy fixture, and cover every class the sub-plan lists:
+//! typing a statement, deleting and restoring a brace, inserting an item,
+//! editing inside a comment, a string, and a data block, editing at EOF, and
+//! an edit that flips a construct between two rules.
 
 use k816::parser::{SourceEdit, SyntaxTree, parse_source};
 use k816::source::{FileId, SourceFile, SourceMap, Span};
@@ -174,6 +174,106 @@ fn editing_at_end_of_file() {
         vec![
             edit("return\n}\n", "return\n}\n\nvar TAIL = $0500\n"),
             edit("var TAIL = $0500\n", "var TAIL = $0500"),
+        ],
+    );
+}
+
+/// The stress-test fixture, which exercises data blocks, a wait loop, an
+/// assignment chain, and an evaluator bracket at once.
+fn hello_uart() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello_uart.k65");
+    std::fs::read_to_string(path).expect("read the stress-test fixture")
+}
+
+const CONTROL_FLOW: &str = "func main @a8 @i8 {
+    x = %0
+    {
+        { a&?READY } n-?
+        DATA = a = text,x
+        x++
+        a?0
+    } !=
+    >={ x-- } else { y++ }
+    < goto done
+    { } always
+}
+
+data text {
+    \"Hello\"
+    $0D $0A $00
+}
+";
+
+#[test]
+fn editing_inside_a_string() {
+    assert_incremental_equals_clean(
+        "edit inside a string",
+        CONTROL_FLOW,
+        vec![
+            edit("Hello", "Hello, World!"),
+            edit("Hello, World!", "Hello, World!\\n"),
+            // Closing the string is what makes this class interesting: the
+            // edit changes where the string ends, not only its contents.
+            edit("\"Hello, World!\\n\"", "\"Hello, World!\\n"),
+        ],
+    );
+}
+
+#[test]
+fn editing_inside_a_data_block() {
+    assert_incremental_equals_clean(
+        "edit inside a data block",
+        CONTROL_FLOW,
+        vec![
+            edit("$0D $0A $00", "$0D $0A"),
+            edit("$0D $0A", "$0D $0A $00 $FF"),
+            edit("data text {", "data text {\n    align 256"),
+        ],
+    );
+}
+
+#[test]
+fn an_edit_that_flips_a_construct_between_two_rules() {
+    // `{ ... } !=` is a loop and `!= { ... }` is a conditional, so moving the
+    // condition across the brace changes which rule matched — the hardest
+    // case for tree reuse, because the reused subtree is the block itself.
+    assert_incremental_equals_clean(
+        "flip loop and conditional",
+        CONTROL_FLOW,
+        vec![
+            edit("    } !=\n", "    }\n"),
+            edit(
+                "    {\n        { a&?READY }",
+                "    != {\n        { a&?READY }",
+            ),
+            edit("< goto done", "< break"),
+            edit("{ } always", "{ } !="),
+        ],
+    );
+}
+
+#[test]
+fn typing_a_statement_into_the_stress_test_fixture() {
+    assert_incremental_equals_clean(
+        "typing into hello_uart",
+        &hello_uart(),
+        typing("    x++", "a?$FF\n    "),
+    );
+}
+
+#[test]
+fn editing_the_stress_test_fixture_across_its_shapes() {
+    assert_incremental_equals_clean(
+        "edits across hello_uart",
+        &hello_uart(),
+        vec![
+            edit("$0D $0A $00", "$0D $0A"),
+            edit("Hello, World!", "Goodbye"),
+            edit("UART example", "UART sample"),
+            edit("word 0 0 0 0 0 0 main 0", "word 0 0 0 0 0 0 0 main"),
+            edit("x = %0", "x = %1"),
+            edit("[$FF]", "[$FE]"),
+            edit("func main @a8 @i8 {", "func main @a8 {"),
         ],
     );
 }

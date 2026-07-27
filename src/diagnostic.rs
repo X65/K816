@@ -55,8 +55,26 @@ impl DiagnosticCode {
     pub const UNKNOWN_MNEMONIC: Self = Self("K816-E0105");
     /// An operand form is not legal for the instruction or symbol kind.
     pub const INVALID_OPERAND: Self = Self("K816-E0106");
+    /// The parser recognizes a construct the compiler cannot compile yet.
+    ///
+    /// The `K816-E02xx` range covers "recognized, not implemented": the
+    /// grammar and AST know the form, but the owning sub-plan has not landed
+    /// its semantics. Distinct from [`Self::SYNTAX_ERROR`] (malformed source)
+    /// and from the K65 compatibility family below (legacy-only syntax).
+    pub const NOT_YET_IMPLEMENTED: Self = Self("K816-E0201");
     /// The compiler met a CST shape it does not recognize (a K816 bug).
     pub const INTERNAL: Self = Self("K816-E0900");
+
+    // The `K816-K65-####` family: syntax that belongs to the original K65
+    // language, is reserved so K816 never reinterprets it, and is recognized
+    // by the parser as a specific named node rather than a parse error. Per
+    // `doc/k65-compat.md`, each such construct gets its own stable code.
+
+    /// `image` blocks and top-level `image NAME = "file"` declarations.
+    pub const K65_RESERVED_IMAGE: Self = Self("K816-K65-0001");
+    /// Evaluator side-effect functions: `size`, `addbyte`, `color`, `rnd`,
+    /// `print`, `error`.
+    pub const K65_RESERVED_EVAL_FUNCTION: Self = Self("K816-K65-0002");
 
     pub fn as_str(self) -> &'static str {
         self.0
@@ -211,4 +229,43 @@ impl Diagnostic {
 /// True when any diagnostic in `diagnostics` is an error.
 pub fn has_errors(diagnostics: &[Diagnostic]) -> bool {
     diagnostics.iter().any(Diagnostic::is_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DiagnosticCode;
+
+    /// Every registered code, so the uniqueness check below sees all of them.
+    const REGISTERED: &[DiagnosticCode] = &[
+        DiagnosticCode::SYNTAX_ERROR,
+        DiagnosticCode::SYNTAX_MISSING,
+        DiagnosticCode::NUMBER_RANGE,
+        DiagnosticCode::UNDECLARED_SYMBOL,
+        DiagnosticCode::DUPLICATE_SYMBOL,
+        DiagnosticCode::IMMEDIATE_RANGE,
+        DiagnosticCode::UNKNOWN_WIDTH,
+        DiagnosticCode::UNKNOWN_MNEMONIC,
+        DiagnosticCode::INVALID_OPERAND,
+        DiagnosticCode::NOT_YET_IMPLEMENTED,
+        DiagnosticCode::INTERNAL,
+        DiagnosticCode::K65_RESERVED_IMAGE,
+        DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+    ];
+
+    #[test]
+    fn codes_are_unique_and_well_formed() {
+        let mut seen = std::collections::HashSet::new();
+        for code in REGISTERED {
+            assert!(
+                code.as_str().starts_with("K816-"),
+                "{} lacks the K816 prefix",
+                code.as_str()
+            );
+            assert!(
+                seen.insert(code.as_str()),
+                "duplicate code {}",
+                code.as_str()
+            );
+        }
+    }
 }

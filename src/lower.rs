@@ -243,6 +243,7 @@ impl Lowering<'_> {
             | StatementKind::Break
             | StatementKind::Repeat
             | StatementKind::Nocross(_) => self.skipped(span, "a branch or loop statement"),
+            StatementKind::Data(_) => self.skipped(span, "an inline data block"),
             // Analysis reports labels as not-yet-implemented, so lowering is
             // never reached with one.
             StatementKind::Label(_) => self.skipped(span, "a label"),

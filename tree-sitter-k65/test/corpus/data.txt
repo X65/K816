@@ -1,0 +1,424 @@
+================================================================================
+Named and anonymous data blocks
+================================================================================
+
+data SOMEBLOCK {
+  0 1 2 3 4
+  FOO: 5 6 7
+}
+
+data {
+  SOMEBLOCK2: 0 1 2
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_label
+        name: (identifier))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))))
+  (data_block
+    body: (data_body
+      (data_label
+        name: (identifier))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number)))))
+
+================================================================================
+Placement directives
+================================================================================
+
+data MyData {
+  segment VECTORS
+  align 16
+  address 0x5000
+  nocross
+  nocross 8
+  1 2 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (segment_declaration
+        name: (identifier))
+      (align_directive
+        boundary: (number))
+      (address_directive
+        address: (number))
+      (nocross_directive)
+      (nocross_directive
+        size: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number)))))
+
+================================================================================
+Typed entries
+================================================================================
+
+data record {
+  byte $7F ? ?
+  word VECTOR ?
+  far ?
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (typed_entry
+        value: (number)
+        value: (undefined_byte)
+        value: (undefined_byte))
+      (typed_entry
+        value: (identifier)
+        value: (undefined_byte))
+      (typed_entry
+        value: (undefined_byte)))))
+
+================================================================================
+Raw values and address byte operators
+================================================================================
+
+data bytes {
+  "HELLO" 0
+  0x7F &<ptr &>ptr
+  &&ptr
+  [2+2]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (string))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (address_of_expression
+          operand: (identifier)))
+      (data_value
+        value: (address_of_expression
+          operand: (identifier)))
+      (data_value
+        value: (address_of_expression
+          operand: (subscript_expression
+            base: (identifier)
+            index: (binary_expression
+              left: (number)
+              right: (number))))))))
+
+================================================================================
+charset, code subblocks, and repeats
+================================================================================
+
+data generated {
+  charset ".ABC "
+  hello: "HELLO" 0
+  code { a=1 x=2 }
+  nocross code { y=3 }
+  repeat 3 { 4 }
+  ?
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (charset_directive
+        mapping: (string))
+      (data_label
+        name: (identifier))
+      (data_value
+        value: (string))
+      (data_value
+        value: (number))
+      (code_subblock
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (address
+              value: (number)))
+          (hla_assignment
+            operand: (register)
+            operand: (address
+              value: (number)))))
+      (code_subblock
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (address
+              value: (number)))))
+      (data_repeat
+        count: (number)
+        body: (data_body
+          (data_value
+            value: (number))))
+      (data_value
+        value: (undefined_byte)))))
+
+================================================================================
+Generated data from an evaluator range
+================================================================================
+
+data SineX {
+  align 256
+  0
+  for x=0..213 eval [ (sin(x/212*pi*2)*.499+.499)*130 ]
+  for j=4..0 eval [ j ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (align_directive
+        boundary: (number))
+      (data_value
+        value: (number))
+      (for_eval
+        variable: (identifier)
+        from: (number)
+        to: (number)
+        body: (eval_bracket
+          expression: (eval_binary
+            left: (eval_parenthesized
+              (eval_binary
+                left: (eval_binary
+                  left: (eval_call
+                    name: (identifier)
+                    argument: (eval_binary
+                      left: (eval_binary
+                        left: (eval_binary
+                          left: (identifier)
+                          right: (number))
+                        right: (identifier))
+                      right: (number)))
+                  right: (float))
+                right: (float)))
+            right: (number))))
+      (for_eval
+        variable: (identifier)
+        from: (number)
+        to: (number)
+        body: (eval_bracket
+          expression: (identifier))))))
+
+================================================================================
+An inline data block inside a function
+================================================================================
+
+func main {
+  data { 0xEA 0xEA 0xEA }
+  { bcol++ } always
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (data_block
+        body: (data_body
+          (data_value
+            value: (number))
+          (data_value
+            value: (number))
+          (data_value
+            value: (number))))
+      (postfix_loop
+        body: (block
+          (hla_step
+            target: (address
+              value: (identifier))))
+        condition: (loop_condition)))))
+
+================================================================================
+A typed value list runs to the next non-value token
+================================================================================
+
+data mixed {
+  byte 1 2
+  3 4
+  word 5
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (typed_entry
+        value: (number)
+        value: (number)
+        value: (number)
+        value: (number))
+      (typed_entry
+        value: (number)))))
+
+================================================================================
+The full evaluator operator table
+================================================================================
+
+data eval {
+  [ 1 + 2 * 3 ]
+  [ 1 / 2 % 3 ]
+  [ A && B || C ]
+  [ A == B != C ]
+  [ A < B <= C ]
+  [ A ?> B ?< C ]
+  [ A ? B : C ]
+  [ N = 1, M += 2 ]
+  [ ++i ]
+  [ i-- ]
+  [ !A ]
+  [ ~A ]
+  [ tab[0] ]
+  [ point.x ]
+  [ clamp(x, 0, 1) ]
+  [ 1.5 + .5 ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (number)
+            right: (eval_binary
+              left: (number)
+              right: (number)))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (eval_binary
+              left: (number)
+              right: (number))
+            right: (number))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (eval_binary
+              left: (identifier)
+              right: (identifier))
+            right: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (eval_binary
+              left: (identifier)
+              right: (identifier))
+            right: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (eval_binary
+              left: (identifier)
+              right: (identifier))
+            right: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (eval_binary
+              left: (identifier)
+              right: (identifier))
+            right: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_ternary
+            condition: (identifier)
+            consequence: (identifier)
+            alternative: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_list
+            item: (eval_assignment
+              target: (identifier)
+              value: (number))
+            item: (eval_assignment
+              target: (identifier)
+              value: (number)))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_unary
+            operand: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_unary
+            operand: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_unary
+            operand: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_unary
+            operand: (identifier))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_subscript
+            base: (identifier)
+            index: (number))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_member
+            base: (identifier)
+            field: (field_name))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_call
+            name: (identifier)
+            argument: (identifier)
+            argument: (number)
+            argument: (number))))
+      (data_value
+        value: (eval_bracket
+          expression: (eval_binary
+            left: (float)
+            right: (float)))))))

@@ -112,6 +112,16 @@ impl Analysis {
                     "`const` declarations",
                     compat::Owner::NativeTranslator,
                 )),
+                ItemKind::Data(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "`data` blocks",
+                    compat::Owner::NativeTranslator,
+                )),
+                ItemKind::EvalBlock(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "top-level evaluator blocks",
+                    compat::Owner::Compatibility,
+                )),
                 ItemKind::ModuleWidth(_) => self.diagnostics.push(compat::unimplemented(
                     item.span,
                     "module-level default widths",
@@ -345,6 +355,11 @@ impl Analysis {
                 statement.span,
                 "branch and loop statements",
                 compat::Owner::HlaLowering,
+            )),
+            StatementKind::Data(_) => self.diagnostics.push(compat::unimplemented(
+                statement.span,
+                "inline `data` blocks",
+                compat::Owner::NativeTranslator,
             )),
             StatementKind::Call(_) | StatementKind::BareCall(_) => {
                 self.diagnostics.push(compat::unimplemented(

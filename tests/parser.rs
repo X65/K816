@@ -25,7 +25,7 @@
 
 use k816::ast::{
     AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, ComparisonKind,
-    ExprKind, FlagKind, FunctionKind, HlaOperandKind, HlaStatement, IndexRegister,
+    EvalExprKind, ExprKind, FlagKind, FunctionKind, HlaOperandKind, HlaStatement, IndexRegister,
     IndexRegisterKind, ItemKind, LabelScope, LoopCondition, MetadataQueryKind, NativeOperand,
     RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind, StepOp, StorageClassKind,
     TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
@@ -114,6 +114,23 @@ fn dump_ast(file: &AstFile) -> String {
                 out.push_str(&format!(
                     "module {} @{}..{}\n",
                     dump_width(width.kind),
+                    item.span.start,
+                    item.span.end
+                ));
+            }
+            ItemKind::Data(data) => {
+                out.push_str(&format!(
+                    "data {} ({} entries) @{}..{}\n",
+                    data.name.as_ref().map(|n| n.text.as_str()).unwrap_or("-"),
+                    data.entries.len(),
+                    item.span.start,
+                    item.span.end
+                ));
+            }
+            ItemKind::EvalBlock(expression) => {
+                out.push_str(&format!(
+                    "eval {} @{}..{}\n",
+                    dump_expr(&expression.kind),
                     item.span.start,
                     item.span.end
                 ));
@@ -314,6 +331,9 @@ fn dump_ast(file: &AstFile) -> String {
                         StatementKind::Nocross(body) => {
                             format!("nocross ({} statements)", body.statements.len())
                         }
+                        StatementKind::Data(data) => {
+                            format!("data ({} entries)", data.entries.len())
+                        }
                         StatementKind::Error => "error".to_owned(),
                     };
                     out.push_str(&format!(
@@ -477,8 +497,72 @@ fn dump_expr(kind: &ExprKind) -> String {
                 TypeWidthKind::Far => "far",
             }
         ),
-        ExprKind::Eval(inner) => format!("[{}]", dump_expr(&inner.kind)),
+        ExprKind::Eval(inner) => format!("[{}]", dump_eval(&inner.kind)),
         ExprKind::Error => "<error>".to_owned(),
+    }
+}
+
+/// Renders an evaluator expression in the same prefix form.
+fn dump_eval(kind: &EvalExprKind) -> String {
+    match kind {
+        EvalExprKind::Number(value) => format!("{value}"),
+        EvalExprKind::Float(text) => text.clone(),
+        EvalExprKind::String(text) => format!("{text:?}"),
+        EvalExprKind::Symbol(name) => name.text.clone(),
+        EvalExprKind::Call { name, arguments } => {
+            let arguments: Vec<String> = arguments.iter().map(|a| dump_eval(&a.kind)).collect();
+            format!("{}({})", name.text, arguments.join(" "))
+        }
+        EvalExprKind::Unary {
+            operator,
+            operand,
+            is_suffix,
+        } => {
+            if *is_suffix {
+                format!("({} {})", dump_eval(&operand.kind), operator)
+            } else {
+                format!("({operator} {})", dump_eval(&operand.kind))
+            }
+        }
+        EvalExprKind::Binary {
+            operator,
+            left,
+            right,
+        } => format!(
+            "({operator} {} {})",
+            dump_eval(&left.kind),
+            dump_eval(&right.kind)
+        ),
+        EvalExprKind::Ternary {
+            condition,
+            consequence,
+            alternative,
+        } => format!(
+            "(?: {} {} {})",
+            dump_eval(&condition.kind),
+            dump_eval(&consequence.kind),
+            dump_eval(&alternative.kind)
+        ),
+        EvalExprKind::Assignment {
+            operator,
+            target,
+            value,
+        } => format!(
+            "({operator} {} {})",
+            dump_eval(&target.kind),
+            dump_eval(&value.kind)
+        ),
+        EvalExprKind::Subscript { base, index } => {
+            format!("({}[{}])", dump_eval(&base.kind), dump_eval(&index.kind))
+        }
+        EvalExprKind::Member { base, field } => {
+            format!("({}{})", dump_eval(&base.kind), field.text)
+        }
+        EvalExprKind::List(items) => {
+            let items: Vec<String> = items.iter().map(|i| dump_eval(&i.kind)).collect();
+            format!("(, {})", items.join(" "))
+        }
+        EvalExprKind::Error => "<error>".to_owned(),
     }
 }
 
@@ -1774,4 +1858,27 @@ fn empty_file_parses_to_empty_ast() {
     assert_eq!(result.diagnostics, vec![]);
     assert_eq!(result.file.items, vec![]);
     let _ = Span::empty_at(id, 0);
+}
+
+#[test]
+fn every_corpus_program_parses_without_syntax_diagnostics() {
+    // The end-to-end gate: the stress test, the full-stack fixture, and the
+    // four legacy K65 programs with their shared header.
+    for path in [
+        "examples/hello_uart.k65",
+        "examples/fullstack/main.k816",
+        "examples/k65/atari-xl/include/defs.k65",
+        "examples/k65/atari-xl/dli-example/main.k65",
+        "examples/k65/atari-xl/landscape/main.k65",
+        "examples/k65/atari-xl/rainbow/main.k65",
+        "examples/k65/atari-xl/starfield/main.k65",
+    ] {
+        let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+        let text = std::fs::read_to_string(&full).expect("read fixture");
+        let mut map = SourceMap::new();
+        let id = map.add_file(path, text);
+        let result = parse_source(map.file(id), None);
+        assert_eq!(result.diagnostics, vec![], "{path} did not parse cleanly");
+        assert!(!result.file.items.is_empty(), "{path} produced no items");
+    }
 }

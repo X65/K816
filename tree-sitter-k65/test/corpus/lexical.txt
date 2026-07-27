@@ -279,6 +279,9 @@ var A = 0
 (source_file
   (var_declaration
     name: (identifier)
-    address: (number))
+    address: (binary_expression
+      left: (number)
+      (ERROR)
+      right: (identifier)))
   (ERROR
-    (UNEXPECTED '\0')))
+    (identifier)))

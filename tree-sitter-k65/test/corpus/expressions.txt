@@ -240,7 +240,7 @@ var NESTED = BASE + [SIZE]
   (var_declaration
     name: (identifier)
     address: (eval_bracket
-      expression: (binary_expression
+      expression: (eval_binary
         left: (identifier)
         right: (identifier))))
   (var_declaration

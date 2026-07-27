@@ -48,7 +48,10 @@
  *     bare `main`, with width annotations, call contracts, module-level
  *     default widths, scoped width blocks, calls, and `return` / `return_i`;
  *   - control flow: the prefix, goto, and postfix branch forms, `always` /
- *     `never` loops, `break` / `repeat`, `else`, `goto`, and `nocross`.
+ *     `never` loops, `break` / `repeat`, `else`, `goto`, and `nocross`;
+ *   - data blocks and the compile-time evaluator: placement directives,
+ *     labels, typed and raw entries, `charset`, `code` subblocks, `repeat`,
+ *     `for ... eval`, and the evaluator's own operator table.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -102,6 +105,32 @@ const MNEMONICS_65816 = [
  * The compile-time evaluator has a *different*, larger operator table over
  * partly the same tokens; it lives behind `[` and is not modelled here.
  */
+/**
+ * The compile-time evaluator's operator table (syntax-reference.md
+ * "Compile-time Evaluator" / "Operators"), which is a *different* language
+ * from the K65 expression layer above even where the tokens coincide. `&&` is
+ * logical AND here and 16-bit address-of there; `/`, `%`, `!`, `||`, `?:`,
+ * subscripting, member access, and the assignment and increment families
+ * exist only inside brackets.
+ */
+const EVAL_PREC = {
+  comma: 1,
+  assign: 2,
+  ternary: 3,
+  logicalOr: 4,
+  logicalAnd: 5,
+  bitOr: 6,
+  bitXor: 7,
+  bitAnd: 8,
+  equality: 9,
+  relational: 10,
+  shift: 11,
+  add: 12,
+  mul: 13,
+  prefix: 14,
+  suffix: 15,
+};
+
 const PREC = {
   or: 1,
   xor: 2,
@@ -163,6 +192,23 @@ export default grammar({
     [$.bare_call, $.address],
     // `call far NAME` versus `call NAME` followed by a bare call.
     [$.call_statement],
+    // A `[` after a mnemonic opens an indirect-long operand, whose interior
+    // is a K65 expression; anywhere else it opens the evaluator, whose
+    // interior is a different grammar over some of the same tokens.
+    [$._expression, $._eval_expression],
+    [$.long_indirect, $._expression, $._eval_expression],
+    // A comma inside `f(a, b)` separates arguments; elsewhere it is the
+    // evaluator's expression-list operator.
+    [$._eval_argument, $._eval_expression],
+    [$._eval_argument, $._expression],
+    // Bare `nocross` guards the following run, `nocross EXPR` sizes one
+    // chunk, and `nocross code { }` wraps a subblock — three readings of the
+    // same keyword, separated by what comes after it.
+    [$.nocross_directive],
+    [$.nocross_directive, $.code_subblock],
+    // A value list runs until something that is not a value; an eval bracket
+    // could equally be the next entry on its own.
+    [$.typed_entry],
     // `goto far label` versus `goto label` followed by something.
     [$.goto_statement],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
@@ -175,10 +221,6 @@ export default grammar({
     // expression itself — the same one-token-late decision as above.
     [$.address, $._expression],
     [$.indirect, $._expression],
-    [$.long_indirect, $._expression],
-    // `lda [ptr]` is an indirect-long operand, not an evaluator bracket used
-    // as an address; the dynamic precedences settle it.
-    [$.long_indirect, $.eval_bracket],
     // `lda (foo)` is an indirect operand, not a parenthesized address — the
     // dynamic precedences settle it.
     [$.indirect, $.parenthesized_expression],
@@ -197,6 +239,8 @@ export default grammar({
         $.segment_declaration,
         $.module_width,
         $.func_declaration,
+        $.data_block,
+        $.eval_block,
       ),
 
     // The `var` family:
@@ -354,6 +398,98 @@ export default grammar({
         ),
       ),
 
+    // ---- Data blocks ------------------------------------------------------
+    //
+    // `data NAME { ... }` labels the first emitted byte; `data { ... }` does
+    // not. Both accept the same entries, and an anonymous block inside a
+    // function emits its bytes inline.
+    data_block: $ =>
+      seq(
+        'data',
+        optional(field('name', $.identifier)),
+        field('body', $.data_body),
+      ),
+
+    data_body: $ => seq('{', repeat(choice($._data_entry, ';')), '}'),
+
+    _data_entry: $ =>
+      choice(
+        $.segment_declaration,
+        $.align_directive,
+        $.address_directive,
+        $.nocross_directive,
+        $.charset_directive,
+        $.data_label,
+        $.typed_entry,
+        $.code_subblock,
+        $.data_repeat,
+        $.for_eval,
+        $.data_value,
+      ),
+
+    align_directive: $ => seq('align', field('boundary', $._expression)),
+
+    address_directive: $ => seq('address', field('address', $._expression)),
+
+    // Bare `nocross` guards the following run; `nocross EXPR` is the older
+    // next-chunk-only form.
+    nocross_directive: $ => seq('nocross', optional(field('size', $._expression))),
+
+    charset_directive: $ => seq('charset', field('mapping', $.string)),
+
+    data_label: $ => seq(field('name', $.identifier), ':'),
+
+    // `byte 1 2 3`, `word main 0`, `far handler`. Values are atoms only: a
+    // compound expression in a value list has to go through a `const`.
+    typed_entry: $ =>
+      seq(
+        field('type', choice('byte', 'word', 'far')),
+        repeat1(field('value', $._data_atom)),
+      ),
+
+    // A value with no type keyword, which defaults to bytes.
+    data_value: $ => field('value', $._data_atom),
+
+    _data_atom: $ =>
+      choice(
+        $.number,
+        $.char_literal,
+        $.string,
+        $.identifier,
+        $.address_of_expression,
+        $.eval_bracket,
+        $.undefined_byte,
+      ),
+
+    // `?` reserves a slot whose value is deliberately unspecified.
+    undefined_byte: _ => '?',
+
+    code_subblock: $ =>
+      seq(
+        optional(field('nocross', 'nocross')),
+        'code',
+        field('body', $.block),
+      ),
+
+    data_repeat: $ =>
+      seq('repeat', field('count', $._expression), field('body', $.data_body)),
+
+    // `for x=0..213 eval [ ... ]` generates bytes from evaluator output.
+    for_eval: $ =>
+      seq(
+        'for',
+        field('variable', $.identifier),
+        '=',
+        field('from', $._expression),
+        '..',
+        field('to', $._expression),
+        'eval',
+        field('body', $.eval_bracket),
+      ),
+
+    // A top-level `[ NAME = expr, ... ]` block sets compiler constants.
+    eval_block: $ => field('expression', $.eval_bracket),
+
     // ---- Branches, conditionals, and loops --------------------------------
     //
     // A condition is either a comparison operator or a flag test. The prefix
@@ -465,6 +601,7 @@ export default grammar({
         $.break_statement,
         $.repeat_statement,
         $.nocross_block,
+        $.data_block,
         $.return_statement,
       ),
 
@@ -848,11 +985,163 @@ export default grammar({
         ),
       ),
 
-    // `[ ... ]` invokes the compile-time evaluator. Its interior is a
-    // *different* grammar with its own operator table and is written in the
-    // data/evaluator group; until then the K65 expression layer stands in, so
-    // the common `[$FF]` and `[CONST]` forms already parse.
-    eval_bracket: $ => seq('[', field('expression', $._expression), ']'),
+    // `[ ... ]` invokes the compile-time evaluator, whose interior is its own
+    // grammar over `EVAL_PREC` — not the K65 expression layer around it.
+    eval_bracket: $ => seq('[', field('expression', $._eval_expression), ']'),
+
+    // ---- The compile-time evaluator ---------------------------------------
+
+    // An argument list separates with commas, so the comma *operator* is not
+    // available at the top level of an argument; `f(a, b)` is two arguments,
+    // never one expression list.
+    _eval_argument: $ =>
+      choice(
+        $.number,
+        $.float,
+        $.char_literal,
+        $.string,
+        $.identifier,
+        $.eval_call,
+        $.eval_parenthesized,
+        $.eval_unary,
+        $.eval_binary,
+        $.eval_ternary,
+        $.eval_assignment,
+        $.eval_subscript,
+        $.eval_member,
+      ),
+
+    _eval_expression: $ =>
+      choice(
+        $.number,
+        $.float,
+        $.char_literal,
+        $.string,
+        $.identifier,
+        $.eval_call,
+        $.eval_parenthesized,
+        $.eval_unary,
+        $.eval_binary,
+        $.eval_ternary,
+        $.eval_assignment,
+        $.eval_subscript,
+        $.eval_member,
+        $.eval_list,
+      ),
+
+    eval_parenthesized: $ => seq('(', $._eval_expression, ')'),
+
+    eval_call: $ =>
+      prec(
+        EVAL_PREC.suffix,
+        seq(
+          field('name', $.identifier),
+          '(',
+          optional(commaSep1(field('argument', $._eval_argument))),
+          ')',
+        ),
+      ),
+
+    eval_subscript: $ =>
+      prec(
+        EVAL_PREC.suffix,
+        seq(field('base', $._eval_expression), '[', field('index', $._eval_expression), ']'),
+      ),
+
+    eval_member: $ =>
+      prec.left(
+        EVAL_PREC.suffix,
+        seq(field('base', $._eval_expression), field('field', $.field_name)),
+      ),
+
+    eval_unary: $ =>
+      choice(
+        // Suffix increment and decrement bind tightest.
+        prec(
+          EVAL_PREC.suffix,
+          seq(field('operand', $._eval_expression), field('operator', choice('++', '--'))),
+        ),
+        prec.right(
+          EVAL_PREC.prefix,
+          seq(
+            field('operator', choice('++', '--', '+', '-', '!', '~')),
+            field('operand', $._eval_expression),
+          ),
+        ),
+      ),
+
+    eval_binary: $ =>
+      choice(
+        ...[
+          ['*', EVAL_PREC.mul],
+          ['/', EVAL_PREC.mul],
+          ['%', EVAL_PREC.mul],
+          ['+', EVAL_PREC.add],
+          ['-', EVAL_PREC.add],
+          ['<<', EVAL_PREC.shift],
+          ['>>', EVAL_PREC.shift],
+          ['<=', EVAL_PREC.relational],
+          ['>=', EVAL_PREC.relational],
+          ['?>', EVAL_PREC.relational],
+          ['?<', EVAL_PREC.relational],
+          ['<', EVAL_PREC.relational],
+          ['>', EVAL_PREC.relational],
+          ['==', EVAL_PREC.equality],
+          ['!=', EVAL_PREC.equality],
+          ['&&', EVAL_PREC.logicalAnd],
+          ['||', EVAL_PREC.logicalOr],
+          ['&', EVAL_PREC.bitAnd],
+          ['^', EVAL_PREC.bitXor],
+          ['|', EVAL_PREC.bitOr],
+        ].map(([operator, precedence]) =>
+          prec.left(
+            precedence,
+            seq(
+              field('left', $._eval_expression),
+              field('operator', operator),
+              field('right', $._eval_expression),
+            ),
+          ),
+        ),
+      ),
+
+    eval_ternary: $ =>
+      prec.right(
+        EVAL_PREC.ternary,
+        seq(
+          field('condition', $._eval_expression),
+          '?',
+          field('consequence', $._eval_expression),
+          ':',
+          field('alternative', $._eval_expression),
+        ),
+      ),
+
+    eval_assignment: $ =>
+      prec.right(
+        EVAL_PREC.assign,
+        seq(
+          field('target', $._eval_expression),
+          field(
+            'operator',
+            choice('=', '+=', '-=', '*=', '/=', '%=', '<<=', '>>=', '&=', '^=', '|='),
+          ),
+          field('value', $._eval_expression),
+        ),
+      ),
+
+    // `,` returns the value of the last expression.
+    eval_list: $ =>
+      prec.left(
+        EVAL_PREC.comma,
+        seq(field('item', $._eval_expression), repeat1(seq(',', field('item', $._eval_expression)))),
+      ),
+
+    // Floats exist only inside evaluator brackets: `[1.5 + .5]`.
+    float: _ => token(choice(/[0-9]+\.[0-9]*/, /\.[0-9]+/)),
+
+    string: _ =>
+      token(seq('"', repeat(choice(/[^"\\\n]/, seq('\\', /[abfnrtv0\\'"]/))), '"')),
 
     // Decimal, `$`/`0x` hexadecimal, `%`/`0b` binary. The lexer's longest
     // match keeps `0b1010` and `0x2A` whole rather than splitting a leading

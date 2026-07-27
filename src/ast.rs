@@ -50,6 +50,10 @@ pub enum ItemKind {
     Const(ConstDeclaration),
     /// `segment NAME` — selects the output segment for what follows.
     Segment(Name),
+    /// `data NAME { ... }` at the top level.
+    Data(DataBlock),
+    /// A top-level `[ NAME = expr, ... ]` evaluator block.
+    EvalBlock(Expr),
     /// A file-top `@a8` — the module's default width for that axis.
     ModuleWidth(WidthAnnotation),
     Func(Function),
@@ -260,6 +264,8 @@ pub enum StatementKind {
     Repeat,
     /// `nocross { ... }` — advisory page-fit request on code.
     Nocross(Block),
+    /// `data { ... }` inside a function body, emitting bytes inline.
+    Data(DataBlock),
     Return(ReturnKind),
     /// Malformed statement; the span covers the unparsable region.
     Error,
@@ -678,9 +684,9 @@ pub enum ExprKind {
     Metadata(MetadataQuery),
     /// `x:byte` at a use site — a data-width view of one expression.
     TypedView(TypedViewExpr),
-    /// `[ ... ]` — a compile-time evaluator bracket. Its interior is a K65
-    /// expression until the evaluator gets its own grammar and AST.
-    Eval(Box<Expr>),
+    /// `[ ... ]` — a compile-time evaluator bracket. Its interior is the
+    /// evaluator's own language, not this one.
+    Eval(Box<EvalExpr>),
     /// Malformed or missing expression.
     Error,
 }
@@ -718,6 +724,131 @@ pub struct BinaryExpr {
     pub left: Box<Expr>,
     pub right: Box<Expr>,
     pub op_span: Span,
+}
+
+/// An expression in the compile-time evaluator's language.
+///
+/// Grammar only: nothing here is evaluated, and the operator spellings are
+/// kept as written rather than classified, because which of them are
+/// deterministic enough to keep is the compatibility work's decision. Floats
+/// keep their source text for the same reason — and because an AST that
+/// derives `Eq` cannot hold one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalExpr {
+    pub kind: EvalExprKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EvalExprKind {
+    Number(u32),
+    /// A floating-point literal, as written.
+    Float(String),
+    /// A string literal, quotes stripped and escapes decoded.
+    String(String),
+    Symbol(Name),
+    Call {
+        name: Name,
+        arguments: Vec<EvalExpr>,
+    },
+    Unary {
+        operator: String,
+        operand: Box<EvalExpr>,
+        /// `true` for the suffix `++` / `--`.
+        is_suffix: bool,
+    },
+    Binary {
+        operator: String,
+        left: Box<EvalExpr>,
+        right: Box<EvalExpr>,
+    },
+    Ternary {
+        condition: Box<EvalExpr>,
+        consequence: Box<EvalExpr>,
+        alternative: Box<EvalExpr>,
+    },
+    Assignment {
+        operator: String,
+        target: Box<EvalExpr>,
+        value: Box<EvalExpr>,
+    },
+    Subscript {
+        base: Box<EvalExpr>,
+        index: Box<EvalExpr>,
+    },
+    Member {
+        base: Box<EvalExpr>,
+        field: Name,
+    },
+    /// `a, b, c` — the expression list, whose value is the last item.
+    List(Vec<EvalExpr>),
+    Error,
+}
+
+/// `data NAME { ... }` or `data { ... }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataBlock {
+    pub name: Option<Name>,
+    pub entries: Vec<DataEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataEntry {
+    pub kind: DataEntryKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataEntryKind {
+    /// `segment NAME`, legal only as the first entry.
+    Segment(Name),
+    /// `align N`
+    Align(Expr),
+    /// `address $addr`
+    Address(Expr),
+    /// `nocross`, or the older `nocross EXPR`.
+    Nocross(Option<Expr>),
+    /// `charset "..."`
+    Charset(String),
+    /// `hello:`
+    Label(Name),
+    /// `byte 1 2 3`, `word main 0`, `far handler`.
+    Typed {
+        width: TypeWidthKind,
+        values: Vec<DataValue>,
+    },
+    /// A bare value, which defaults to one byte.
+    Value(DataValue),
+    /// `code { ... }`, optionally `nocross`.
+    Code {
+        nocross: bool,
+        body: Block,
+    },
+    /// `repeat N { ... }`
+    Repeat {
+        count: Expr,
+        body: DataBlock,
+    },
+    /// `for x=A..B eval [ ... ]`
+    ForEval {
+        variable: Name,
+        from: Expr,
+        to: Expr,
+        body: Expr,
+    },
+    Error,
+}
+
+/// One value in a data entry. Value lists are atom-only, so this is an
+/// expression that the grammar has already restricted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataValue {
+    /// A literal, symbol, address-byte operator, or evaluator bracket.
+    Expr(Expr),
+    /// A string, whose bytes go through the active `charset`.
+    String(String),
+    /// `?` — a reserved slot of the entry's width.
+    Undefined,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

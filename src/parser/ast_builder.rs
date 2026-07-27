@@ -30,15 +30,15 @@ use crate::ast::{
     AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryExpr, BinaryOp, Block,
     BlockMoveOperand, BranchCondition, BranchConditionKind, CallContract, CallStatement,
     ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
-    ContractOutputs, ContractParameter, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind,
-    Function, FunctionKind, GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag,
-    HlaOperand, HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister,
-    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
-    LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name,
-    NativeInstruction, NativeOperand, Register, RegisterKind, ReturnKind, ShiftOp, StackOp,
-    Statement, StatementKind, StepOp, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag,
-    TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
-    WidthAnnotationKind, WidthBlock,
+    ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr,
+    EvalExprKind, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function, FunctionKind,
+    GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
+    HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister, IndexRegisterKind, IndirectOperand,
+    Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement,
+    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register,
+    RegisterKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass,
+    StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr,
+    UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -100,6 +100,16 @@ impl AstBuilder<'_> {
                     span: self.span(child),
                 }),
                 "func_declaration" => items.push(self.func_declaration(child)),
+                "data_block" => items.push(Item {
+                    kind: ItemKind::Data(self.data_block(child)),
+                    span: self.span(child),
+                }),
+                "eval_block" => items.push(Item {
+                    kind: ItemKind::EvalBlock(
+                        self.expr(child.child_by_field_name("expression"), child),
+                    ),
+                    span: self.span(child),
+                }),
                 "line_comment" | "block_comment" => {}
                 "ERROR" => items.push(Item {
                     kind: ItemKind::Error,
@@ -451,6 +461,10 @@ impl AstBuilder<'_> {
                 }),
                 "repeat_statement" => statements.push(Statement {
                     kind: StatementKind::Repeat,
+                    span: self.span(child),
+                }),
+                "data_block" => statements.push(Statement {
+                    kind: StatementKind::Data(self.data_block(child)),
                     span: self.span(child),
                 }),
                 "nocross_block" => statements.push(Statement {
@@ -1056,6 +1070,198 @@ impl AstBuilder<'_> {
         }
     }
 
+    /// An expression in the evaluator's language. Operator spellings are kept
+    /// as written; nothing here is evaluated.
+    fn eval_expr(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> EvalExpr {
+        let Some(node) = node else {
+            let parent_span = self.span(parent);
+            return EvalExpr {
+                kind: EvalExprKind::Error,
+                span: Span::empty_at(parent_span.file, parent_span.end),
+            };
+        };
+        let span = self.span(node);
+        let operator = |builder: &mut Self| {
+            node.child_by_field_name("operator")
+                .map(|operator| builder.text(operator).to_owned())
+                .unwrap_or_default()
+        };
+        let kind = match node.kind() {
+            "number" => match parse_number(self.text(node)) {
+                Some(value) => EvalExprKind::Number(value),
+                None => EvalExprKind::Error,
+            },
+            "float" => EvalExprKind::Float(self.text(node).to_owned()),
+            "char_literal" => match parse_char_literal(self.text(node)) {
+                Some(value) => EvalExprKind::Number(value),
+                None => EvalExprKind::Error,
+            },
+            "string" => EvalExprKind::String(decode_string(self.text(node))),
+            "identifier" => EvalExprKind::Symbol(self.name(Some(node), node)),
+            "eval_parenthesized" => {
+                return EvalExpr {
+                    kind: self.eval_expr(node.named_child(0), node).kind,
+                    span,
+                };
+            }
+            "eval_call" => {
+                let mut arguments = Vec::new();
+                let mut cursor = node.walk();
+                for argument in node.children_by_field_name("argument", &mut cursor) {
+                    arguments.push(self.eval_expr(Some(argument), node));
+                }
+                EvalExprKind::Call {
+                    name: self.name(node.child_by_field_name("name"), node),
+                    arguments,
+                }
+            }
+            "eval_unary" => {
+                let operand = node.child_by_field_name("operand");
+                EvalExprKind::Unary {
+                    operator: operator(self),
+                    is_suffix: operand.is_some_and(|operand| {
+                        node.child_by_field_name("operator")
+                            .is_some_and(|op| op.start_byte() > operand.start_byte())
+                    }),
+                    operand: Box::new(self.eval_expr(operand, node)),
+                }
+            }
+            "eval_binary" => EvalExprKind::Binary {
+                operator: operator(self),
+                left: Box::new(self.eval_expr(node.child_by_field_name("left"), node)),
+                right: Box::new(self.eval_expr(node.child_by_field_name("right"), node)),
+            },
+            "eval_ternary" => EvalExprKind::Ternary {
+                condition: Box::new(self.eval_expr(node.child_by_field_name("condition"), node)),
+                consequence: Box::new(
+                    self.eval_expr(node.child_by_field_name("consequence"), node),
+                ),
+                alternative: Box::new(
+                    self.eval_expr(node.child_by_field_name("alternative"), node),
+                ),
+            },
+            "eval_assignment" => EvalExprKind::Assignment {
+                operator: operator(self),
+                target: Box::new(self.eval_expr(node.child_by_field_name("target"), node)),
+                value: Box::new(self.eval_expr(node.child_by_field_name("value"), node)),
+            },
+            "eval_subscript" => EvalExprKind::Subscript {
+                base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
+                index: Box::new(self.eval_expr(node.child_by_field_name("index"), node)),
+            },
+            "eval_member" => EvalExprKind::Member {
+                base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
+                field: self.name(node.child_by_field_name("field"), node),
+            },
+            "eval_list" => {
+                let mut items = Vec::new();
+                let mut cursor = node.walk();
+                for item in node.children_by_field_name("item", &mut cursor) {
+                    items.push(self.eval_expr(Some(item), node));
+                }
+                EvalExprKind::List(items)
+            }
+            _ => {
+                self.unexpected(node, "an evaluator expression");
+                EvalExprKind::Error
+            }
+        };
+        EvalExpr { kind, span }
+    }
+
+    fn data_block(&mut self, node: Node<'_>) -> DataBlock {
+        let name = node
+            .child_by_field_name("name")
+            .map(|name| self.name(Some(name), node));
+        let mut entries = Vec::new();
+        if let Some(body) = node.child_by_field_name("body") {
+            let mut cursor = body.walk();
+            for child in body.named_children(&mut cursor) {
+                if matches!(child.kind(), "line_comment" | "block_comment") {
+                    continue;
+                }
+                entries.push(self.data_entry(child));
+            }
+        }
+        DataBlock { name, entries }
+    }
+
+    fn data_entry(&mut self, node: Node<'_>) -> DataEntry {
+        let span = self.span(node);
+        let kind = match node.kind() {
+            "segment_declaration" => {
+                DataEntryKind::Segment(self.name(node.child_by_field_name("name"), node))
+            }
+            "align_directive" => {
+                DataEntryKind::Align(self.expr(node.child_by_field_name("boundary"), node))
+            }
+            "address_directive" => {
+                DataEntryKind::Address(self.expr(node.child_by_field_name("address"), node))
+            }
+            "nocross_directive" => DataEntryKind::Nocross(
+                node.child_by_field_name("size")
+                    .map(|size| self.expr(Some(size), node)),
+            ),
+            "charset_directive" => DataEntryKind::Charset(
+                node.child_by_field_name("mapping")
+                    .map(|mapping| decode_string(self.text(mapping)))
+                    .unwrap_or_default(),
+            ),
+            "data_label" => DataEntryKind::Label(self.name(node.child_by_field_name("name"), node)),
+            "typed_entry" => {
+                let width = match node.child_by_field_name("type").map(|w| self.text(w)) {
+                    Some("byte") => TypeWidthKind::Byte,
+                    Some("word") => TypeWidthKind::Word,
+                    Some("far") => TypeWidthKind::Far,
+                    _ => {
+                        self.unexpected(node, "a typed data entry");
+                        TypeWidthKind::Byte
+                    }
+                };
+                DataEntryKind::Typed {
+                    width,
+                    values: self.data_values(node),
+                }
+            }
+            "data_value" => match self.data_values(node).pop() {
+                Some(value) => DataEntryKind::Value(value),
+                None => DataEntryKind::Error,
+            },
+            "code_subblock" => DataEntryKind::Code {
+                nocross: node.child_by_field_name("nocross").is_some(),
+                body: self.body_of(node),
+            },
+            "data_repeat" => DataEntryKind::Repeat {
+                count: self.expr(node.child_by_field_name("count"), node),
+                body: self.data_block(node),
+            },
+            "for_eval" => DataEntryKind::ForEval {
+                variable: self.name(node.child_by_field_name("variable"), node),
+                from: self.expr(node.child_by_field_name("from"), node),
+                to: self.expr(node.child_by_field_name("to"), node),
+                body: self.expr(node.child_by_field_name("body"), node),
+            },
+            _ => {
+                self.unexpected(node, "a data block");
+                DataEntryKind::Error
+            }
+        };
+        DataEntry { kind, span }
+    }
+
+    fn data_values(&mut self, node: Node<'_>) -> Vec<DataValue> {
+        let mut values = Vec::new();
+        let mut cursor = node.walk();
+        for value in node.children_by_field_name("value", &mut cursor) {
+            values.push(match value.kind() {
+                "string" => DataValue::String(decode_string(self.text(value))),
+                "undefined_byte" => DataValue::Undefined,
+                _ => DataValue::Expr(self.expr(Some(value), node)),
+            });
+        }
+        values
+    }
+
     /// Builds a binary expression from `node`'s `left` and `right` fields.
     fn binary(&mut self, node: Node<'_>, op: BinaryOp, op_span: Span, span: Span) -> Expr {
         let left = self.expr(node.child_by_field_name("left"), node);
@@ -1316,13 +1522,12 @@ impl AstBuilder<'_> {
                     },
                 }
             }
-            "eval_bracket" => {
-                let inner = self.expr(node.child_by_field_name("expression"), node);
-                Expr {
-                    kind: ExprKind::Eval(Box::new(inner)),
-                    span,
-                }
-            }
+            "eval_bracket" => Expr {
+                kind: ExprKind::Eval(Box::new(
+                    self.eval_expr(node.child_by_field_name("expression"), node),
+                )),
+                span,
+            },
             "char_literal" => {
                 // A character literal is a numeric atom; the grammar accepts
                 // only well-formed escapes, so decoding cannot fail on a
@@ -1357,6 +1562,35 @@ impl AstBuilder<'_> {
 fn node_width(builder: &mut AstBuilder<'_>, node: Node<'_>) -> Option<WidthAnnotation> {
     let annotation = node.child_by_field_name("width")?;
     builder.width_annotation(annotation)
+}
+
+/// Strips the quotes from a string literal and decodes its escapes.
+fn decode_string(text: &str) -> String {
+    let body = text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .unwrap_or(text);
+    let mut decoded = String::with_capacity(body.len());
+    let mut characters = body.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        decoded.push(match characters.next() {
+            Some('a') => '\u{7}',
+            Some('b') => '\u{8}',
+            Some('f') => '\u{c}',
+            Some('n') => '\n',
+            Some('r') => '\r',
+            Some('t') => '\t',
+            Some('v') => '\u{b}',
+            Some('0') => '\0',
+            Some(escaped) => escaped,
+            None => break,
+        });
+    }
+    decoded
 }
 
 /// Decodes a K65 numeric literal: `$2A`, `0x2A`, `%101010`, `0b101010`, or

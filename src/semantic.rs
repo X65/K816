@@ -84,7 +84,21 @@ impl Analysis {
                     if var.name.provenance == Provenance::Synthetic {
                         continue; // Recovery invented the name; syntax error already reported.
                     }
-                    let Some(address) = self.constant(&var.address, "variable addresses") else {
+                    // Only the fixed-address form has semantics so far; every
+                    // other axis of the declaration says who owns it.
+                    if let Some(feature) = unsupported_var_feature(var) {
+                        self.diagnostics.push(compat::unimplemented(
+                            item.span,
+                            feature,
+                            compat::Owner::HlaLowering,
+                        ));
+                        continue;
+                    }
+                    let Some(address) = var
+                        .address
+                        .as_ref()
+                        .and_then(|address| self.constant(address, "variable addresses"))
+                    else {
                         continue;
                     };
                     self.declare(
@@ -93,6 +107,16 @@ impl Analysis {
                         var.name.span,
                     );
                 }
+                ItemKind::Const(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "`const` declarations",
+                    compat::Owner::NativeTranslator,
+                )),
+                ItemKind::Segment(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "`segment` selections",
+                    compat::Owner::NativeTranslator,
+                )),
                 ItemKind::Func(func) => {
                     if func.name.provenance == Provenance::Synthetic {
                         continue;
@@ -200,11 +224,28 @@ impl Analysis {
                     Mnemonic::Lda,
                 );
             }
-            StatementKind::Hla(HlaStatement::Store { target, .. }) => {
-                if target.provenance != Provenance::Synthetic {
-                    self.check_memory_operand(&target.text, target.span);
+            StatementKind::Hla(HlaStatement::Store { target, .. }) => match &target.kind {
+                ExprKind::Symbol(name) if name.provenance != Provenance::Synthetic => {
+                    self.check_memory_operand(&name.text, name.span);
                 }
-            }
+                ExprKind::Symbol(_) | ExprKind::Error => {}
+                // `.LT+1 = a` and friends: the target is an address
+                // expression, which needs the store lowering work.
+                ExprKind::LocalSymbol(_)
+                | ExprKind::Number(_)
+                | ExprKind::Unary(_)
+                | ExprKind::Binary(_)
+                | ExprKind::Eval(_) => self.diagnostics.push(compat::unimplemented(
+                    target.span,
+                    "computed assignment targets",
+                    compat::Owner::HlaLowering,
+                )),
+            },
+            StatementKind::Label(_) => self.diagnostics.push(compat::unimplemented(
+                statement.span,
+                "labels",
+                compat::Owner::NativeTranslator,
+            )),
             StatementKind::Return | StatementKind::Error => {}
         }
     }
@@ -278,7 +319,11 @@ impl Analysis {
         match &expr.kind {
             ExprKind::Number(value) => Some(*value),
             ExprKind::Error => None,
-            ExprKind::Symbol(_) | ExprKind::Unary(_) | ExprKind::Binary(_) | ExprKind::Eval(_) => {
+            ExprKind::Symbol(_)
+            | ExprKind::LocalSymbol(_)
+            | ExprKind::Unary(_)
+            | ExprKind::Binary(_)
+            | ExprKind::Eval(_) => {
                 self.diagnostics.push(compat::unimplemented(
                     expr.span,
                     &format!("compound expressions in {position}"),
@@ -317,6 +362,24 @@ impl Analysis {
                 }
             }
         }
+    }
+}
+
+/// Names the first part of `var` that has no semantics yet, or `None` when
+/// the declaration is the fixed-address form the slice compiles.
+fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static str> {
+    if var.storage.is_some() {
+        Some("`dp` / `abs` / `far` storage classes")
+    } else if var.width.is_some() {
+        Some("typed width suffixes")
+    } else if var.size.is_some() {
+        Some("array declarations")
+    } else if var.count.is_some() {
+        Some("allocation counts")
+    } else if var.address.is_none() {
+        Some("linker-allocated variables")
+    } else {
+        None
     }
 }
 

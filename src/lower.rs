@@ -140,6 +140,7 @@ impl Lowering<'_> {
                         // a number, so nothing else can reach lowering.
                         ExprKind::Error
                         | ExprKind::Symbol(_)
+                        | ExprKind::LocalSymbol(_)
                         | ExprKind::Unary(_)
                         | ExprKind::Binary(_)
                         | ExprKind::Eval(_) => {
@@ -168,8 +169,12 @@ impl Lowering<'_> {
                 );
             }
             StatementKind::Hla(HlaStatement::Store { target, .. }) => {
-                // `MEM = a` is the HLA spelling of `sta MEM`.
-                let Some(symbol) = self.model.symbols.lookup(&target.text) else {
+                // `MEM = a` is the HLA spelling of `sta MEM`. Analysis rejects
+                // every target it cannot resolve to a plain symbol.
+                let ExprKind::Symbol(name) = &target.kind else {
+                    return self.skipped(span, "a computed assignment target");
+                };
+                let Some(symbol) = self.model.symbols.lookup(&name.text) else {
                     return self.skipped(span, "an unresolved symbol");
                 };
                 self.instruction(
@@ -183,6 +188,9 @@ impl Lowering<'_> {
                 // `return` is the HLA spelling of `rts`.
                 self.instruction(Mnemonic::Rts, None, span, Origin::HlaExpansion);
             }
+            // Analysis reports labels as not-yet-implemented, so lowering is
+            // never reached with one.
+            StatementKind::Label(_) => self.skipped(span, "a label"),
             StatementKind::Error => {}
         }
     }

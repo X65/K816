@@ -2,7 +2,7 @@
 /*                                                                           */
 /*                                 grammar.js                                */
 /*                                                                           */
-/*              Tree-sitter grammar for K65/K816 (slice subset)              */
+/*                    Tree-sitter grammar for K65/K816                       */
 /*                                                                           */
 /*                                                                           */
 /* Copyright (c) 2026 Tomasz Sterna (smokku)                                 */
@@ -26,12 +26,15 @@
  * Grown group by group by sub-plan B from the vertical-slice subset sub-plan A
  * established. Implemented so far:
  *
- *   - declarations and code: fixed-address `var NAME = <literal>`,
- *     `func NAME @a8 @i16 { ... }`, the HLA forms `a = #imm` and `NAME = a`,
- *     `return`, and the native equivalents `lda #imm`, `sta NAME`, `rts`,
- *     `sep #imm`, `rep #imm`;
  *   - the lexical layer: decimal / `$` / `0x` / `%` / `0b` numeric literals,
- *     character literals with escapes, identifiers, and comments.
+ *     character literals with escapes, identifiers, and comments;
+ *   - the K65 expression layer: C-precedence binary operators, unary `-` and
+ *     `~`, the address-byte operators, and `[ ... ]` evaluator brackets;
+ *   - program structure: optional semicolons, the `var` family, `const`
+ *     groups, `segment` selection, and global and local labels;
+ *   - code: `func NAME @a8 @i16 { ... }`, the HLA forms `a = #imm` and
+ *     `TARGET = a`, `return`, and the native instructions `lda #imm`,
+ *     `sta NAME`, `rts`, `sep #imm`, `rep #imm`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -73,14 +76,59 @@ export default grammar({
   extras: $ => [/\s/, $.line_comment, $.block_comment],
 
   rules: {
-    source_file: $ => repeat($._item),
+    // Semicolons are optional separators and empty statements are ignored, so
+    // `;` is consumed by the item and statement lists themselves and leaves no
+    // node behind.
+    source_file: $ => repeat(choice($._item, ';')),
 
-    _item: $ => choice($.var_declaration, $.func_declaration),
+    _item: $ =>
+      choice(
+        $.var_declaration,
+        $.const_declaration,
+        $.segment_declaration,
+        $.func_declaration,
+      ),
 
-    // var SCREEN = $0400 — fixed-address declaration only; allocated,
-    // dp/abs/far, typed, and subscripted forms are still to come.
+    // The `var` family:
+    //
+    //   var SCREEN = $0400          fixed address
+    //   var counter                 linker-allocated
+    //   var dp scratch              storage class prefix
+    //   var w:word = $2000          typed width
+    //   var buffer[32]              raw span
+    //   var simple:byte * 32        allocation count
+    //
+    // Symbolic subscript field lists (`var name[ .f :w ... ]`) are the next
+    // group. The storage prefix is an aliased identifier rather than a
+    // keyword: `dp` and `abs` are reserved *only* in the prefix slot, so
+    // `var dp = 0` still declares a variable named `dp`, which a keyword token
+    // would swallow. The builder checks that the prefix is one of the three
+    // storage classes.
     var_declaration: $ =>
-      seq('var', field('name', $.identifier), '=', field('address', $._expression)),
+      seq(
+        'var',
+        optional(field('storage', alias($.identifier, $.storage_class))),
+        field('name', $.identifier),
+        optional(field('type', $.type_suffix)),
+        optional(seq('[', field('size', $._expression), ']')),
+        optional(seq('*', field('count', $._expression))),
+        optional(seq('=', field('address', $._expression))),
+      ),
+
+    type_suffix: _ => seq(':', field('width', choice('byte', 'word', 'far'))),
+
+    // const A = 0, B, C — a comma-separated group, where an entry without an
+    // initializer continues the previous one (enum-like auto-increment).
+    const_declaration: $ => seq('const', commaSep1($.const_entry)),
+
+    const_entry: $ =>
+      seq(
+        field('name', $.identifier),
+        optional(seq('=', field('value', $._expression))),
+      ),
+
+    // segment NAME — selects the output segment for what follows.
+    segment_declaration: $ => seq('segment', field('name', $.identifier)),
 
     // func main @a8 @i16 { ... }
     func_declaration: $ =>
@@ -93,15 +141,21 @@ export default grammar({
 
     width_annotation: _ => token(choice('@a8', '@a16', '@i8', '@i16')),
 
-    block: $ => seq('{', repeat($._statement), '}'),
+    block: $ => seq('{', repeat(choice($._statement, ';')), '}'),
 
     _statement: $ =>
       choice(
+        $.label,
         $.native_instruction,
         $.hla_load_immediate,
         $.hla_store,
         $.return_statement,
       ),
+
+    // `name:` is a global label; `.name:` is local to the enclosing function,
+    // so two functions may use the same local label name.
+    label: $ =>
+      seq(field('name', choice($.identifier, $.local_identifier)), ':'),
 
     // Native slice instructions, each with its single legal operand shape.
     native_instruction: $ =>
@@ -121,9 +175,10 @@ export default grammar({
     hla_load_immediate: $ =>
       seq(field('register', $.register), '=', field('value', $.immediate)),
 
-    // SCREEN = a
+    // SCREEN = a, and the self-modifying-code form `.LT+1 = a`. The full set
+    // of store shapes and assignment chaining is the HLA movement group.
     hla_store: $ =>
-      seq(field('target', $.identifier), '=', field('source', $.register)),
+      seq(field('target', $._expression), '=', field('source', $.register)),
 
     return_statement: _ => 'return',
 
@@ -142,6 +197,7 @@ export default grammar({
         $.number,
         $.char_literal,
         $.identifier,
+        $.local_identifier,
         $.parenthesized_expression,
         $.unary_expression,
         $.address_of_expression,
@@ -244,6 +300,10 @@ export default grammar({
 
     identifier: _ => /[A-Za-z_][A-Za-z0-9_]*/,
 
+    // `.name` — a function-scoped local label, in both its declaration and
+    // its references (`.LT+1`).
+    local_identifier: _ => token(seq('.', /[A-Za-z_][A-Za-z0-9_]*/)),
+
     // `//` to end of line; a comment on the last line need not be terminated.
     line_comment: _ => token(seq('//', /[^\n]*/)),
 
@@ -251,3 +311,8 @@ export default grammar({
     block_comment: _ => token(seq('/*', /[^*]*\*+([^/*][^*]*\*+)*/, '/')),
   },
 });
+
+/** One or more `rule`, separated by commas. */
+function commaSep1(rule) {
+  return seq(rule, repeat(seq(',', rule)));
+}

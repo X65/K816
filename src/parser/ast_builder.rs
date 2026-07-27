@@ -27,9 +27,11 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AstFile, BinaryExpr, BinaryOp, Block, Expr, ExprKind, Function, HlaStatement, Item, ItemKind,
-    Name, NativeInstruction, NativeOperand, Register, RegisterKind, Statement, StatementKind,
-    UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind,
+    AstFile, BinaryExpr, BinaryOp, Block, ConstDeclaration, ConstEntry, Expr, ExprKind, Function,
+    HlaStatement, Item, ItemKind, LabelScope, LabelStatement, Name, NativeInstruction,
+    NativeOperand, Register, RegisterKind, Statement, StatementKind, StorageClass,
+    StorageClassKind, TypeWidth, TypeWidthKind, UnaryExpr, UnaryOp, VarDeclaration,
+    WidthAnnotation, WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -77,6 +79,11 @@ impl AstBuilder<'_> {
         for child in root.named_children(&mut cursor) {
             match child.kind() {
                 "var_declaration" => items.push(self.var_declaration(child)),
+                "const_declaration" => items.push(self.const_declaration(child)),
+                "segment_declaration" => items.push(Item {
+                    kind: ItemKind::Segment(self.name(child.child_by_field_name("name"), child)),
+                    span: self.span(child),
+                }),
                 "func_declaration" => items.push(self.func_declaration(child)),
                 "line_comment" | "block_comment" => {}
                 "ERROR" => items.push(Item {
@@ -97,9 +104,95 @@ impl AstBuilder<'_> {
 
     fn var_declaration(&mut self, node: Node<'_>) -> Item {
         let name = self.name(node.child_by_field_name("name"), node);
-        let address = self.expr(node.child_by_field_name("address"), node);
+        let storage = node
+            .child_by_field_name("storage")
+            .and_then(|storage| self.storage_class(storage));
+        let width = node
+            .child_by_field_name("type")
+            .and_then(|width| self.type_width(width));
+        let size = node
+            .child_by_field_name("size")
+            .map(|size| self.expr(Some(size), node));
+        let count = node
+            .child_by_field_name("count")
+            .map(|count| self.expr(Some(count), node));
+        let address = node
+            .child_by_field_name("address")
+            .map(|address| self.expr(Some(address), node));
         Item {
-            kind: ItemKind::Var(VarDeclaration { name, address }),
+            kind: ItemKind::Var(VarDeclaration {
+                name,
+                storage,
+                width,
+                size,
+                count,
+                address,
+            }),
+            span: self.span(node),
+        }
+    }
+
+    /// The storage prefix is lexed as an identifier so `var dp = 0` keeps
+    /// declaring a variable named `dp`; anything other than the three storage
+    /// classes in that slot is a user error, reported here.
+    fn storage_class(&mut self, node: Node<'_>) -> Option<StorageClass> {
+        let kind = match self.text(node) {
+            "dp" => StorageClassKind::DirectPage,
+            "abs" => StorageClassKind::Absolute,
+            "far" => StorageClassKind::Far,
+            other => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::SYNTAX_ERROR,
+                        format!("`{other}` is not a storage class"),
+                        Label::new(self.span(node), "expected `dp`, `abs`, or `far`"),
+                    )
+                    .with_help("a `var` declaration takes at most one name")
+                    .with_docs("doc/syntax-reference.md#variable-declaration"),
+                );
+                return None;
+            }
+        };
+        Some(StorageClass {
+            kind,
+            span: self.span(node),
+        })
+    }
+
+    fn type_width(&mut self, node: Node<'_>) -> Option<TypeWidth> {
+        let kind = match node.child_by_field_name("width").map(|w| self.text(w)) {
+            Some("byte") => TypeWidthKind::Byte,
+            Some("word") => TypeWidthKind::Word,
+            Some("far") => TypeWidthKind::Far,
+            _ => {
+                self.unexpected(node, "a type suffix");
+                return None;
+            }
+        };
+        Some(TypeWidth {
+            kind,
+            span: self.span(node),
+        })
+    }
+
+    fn const_declaration(&mut self, node: Node<'_>) -> Item {
+        let mut entries = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "const_entry" => entries.push(ConstEntry {
+                    name: self.name(child.child_by_field_name("name"), child),
+                    value: child
+                        .child_by_field_name("value")
+                        .map(|value| self.expr(Some(value), child)),
+                    span: self.span(child),
+                }),
+                "line_comment" | "block_comment" => {}
+                _ => self.unexpected(child, "a `const` declaration"),
+            }
+        }
+        Item {
+            kind: ItemKind::Const(ConstDeclaration { entries }),
             span: self.span(node),
         }
     }
@@ -153,6 +246,7 @@ impl AstBuilder<'_> {
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
+                "label" => statements.push(self.label(child)),
                 "native_instruction" => statements.push(self.native_instruction(child)),
                 "hla_load_immediate" => statements.push(self.hla_load_immediate(child)),
                 "hla_store" => statements.push(self.hla_store(child)),
@@ -214,10 +308,25 @@ impl AstBuilder<'_> {
     }
 
     fn hla_store(&mut self, node: Node<'_>) -> Statement {
-        let target = self.name(node.child_by_field_name("target"), node);
+        let target = self.expr(node.child_by_field_name("target"), node);
         let register = self.register(node.child_by_field_name("source"), node);
         Statement {
             kind: StatementKind::Hla(HlaStatement::Store { target, register }),
+            span: self.span(node),
+        }
+    }
+
+    fn label(&mut self, node: Node<'_>) -> Statement {
+        let name_node = node.child_by_field_name("name");
+        let scope = match name_node.map(|name| name.kind()) {
+            Some("local_identifier") => LabelScope::Local,
+            _ => LabelScope::Global,
+        };
+        Statement {
+            kind: StatementKind::Label(LabelStatement {
+                name: self.name(name_node, node),
+                scope,
+            }),
             span: self.span(node),
         }
     }
@@ -322,6 +431,10 @@ impl AstBuilder<'_> {
             }
             "identifier" => Expr {
                 kind: ExprKind::Symbol(self.name(Some(node), node)),
+                span,
+            },
+            "local_identifier" => Expr {
+                kind: ExprKind::LocalSymbol(self.name(Some(node), node)),
                 span,
             },
             "parenthesized_expression" => {

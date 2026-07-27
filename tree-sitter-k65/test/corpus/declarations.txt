@@ -1,0 +1,276 @@
+================================================================================
+Storage class prefixes
+================================================================================
+
+var dp counter
+var abs slot
+var far handler = 0x030000
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    storage: (storage_class)
+    name: (identifier))
+  (var_declaration
+    storage: (storage_class)
+    name: (identifier))
+  (var_declaration
+    storage: (storage_class)
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+The storage prefix slot does not reserve dp as a name
+================================================================================
+
+var dp = 0
+var abs = 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))
+
+================================================================================
+Typed width suffixes
+================================================================================
+
+var w:word = 0x2000
+var b:byte
+var p:far = 0x3000
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    type: (type_suffix)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    type: (type_suffix))
+  (var_declaration
+    name: (identifier)
+    type: (type_suffix)
+    address: (number)))
+
+================================================================================
+Array spans and allocation counts
+================================================================================
+
+var buffer[32] = 0x0100
+var simple:byte * 32
+var sprites[8] * NUM_SPRITES
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    size: (number)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    type: (type_suffix)
+    count: (number))
+  (var_declaration
+    name: (identifier)
+    size: (number)
+    count: (identifier)))
+
+================================================================================
+Linker-allocated variables have no initializer
+================================================================================
+
+var bar
+var dp scratch
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier))
+  (var_declaration
+    storage: (storage_class)
+    name: (identifier)))
+
+================================================================================
+Constant groups with enum-like auto-increment
+================================================================================
+
+const A = 0, B, C
+const D, E, F
+const BASE = 10
+const M = 0, N, O = 10, P
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (number))
+    (const_entry
+      name: (identifier))
+    (const_entry
+      name: (identifier)))
+  (const_declaration
+    (const_entry
+      name: (identifier))
+    (const_entry
+      name: (identifier))
+    (const_entry
+      name: (identifier)))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (number)))
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (number))
+    (const_entry
+      name: (identifier))
+    (const_entry
+      name: (identifier)
+      value: (number))
+    (const_entry
+      name: (identifier))))
+
+================================================================================
+Segment selection
+================================================================================
+
+segment fixed_lo
+var slot_a:word
+segment default
+var scratch
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (segment_declaration
+    name: (identifier))
+  (var_declaration
+    name: (identifier)
+    type: (type_suffix))
+  (segment_declaration
+    name: (identifier))
+  (var_declaration
+    name: (identifier)))
+
+================================================================================
+Global and local labels
+================================================================================
+
+func one {
+  .loop:
+  hello:
+  return
+}
+
+func two {
+  .loop:
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (label
+        name: (local_identifier))
+      (label
+        name: (identifier))
+      (return_statement)))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (label
+        name: (local_identifier))
+      (return_statement))))
+
+================================================================================
+Label plus offset assignment targets
+================================================================================
+
+func draw {
+  .LT+1 = a
+  SCREEN+1 = a
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_store
+        target: (binary_expression
+          left: (local_identifier)
+          right: (number))
+        source: (register))
+      (hla_store
+        target: (binary_expression
+          left: (identifier)
+          right: (number))
+        source: (register)))))
+
+================================================================================
+Semicolons are optional separators and empty statements are ignored
+================================================================================
+
+var A = 0; var B = 1;;
+;
+func main @a8 {
+    a = #0; SCREEN = a;;
+    ;
+    return;
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    body: (block
+      (hla_load_immediate
+        register: (register)
+        value: (immediate
+          value: (number)))
+      (hla_store
+        target: (identifier)
+        source: (register))
+      (return_statement))))
+
+================================================================================
+A declaration with no name recovers
+:error
+================================================================================
+
+var = $0400
+var OK = 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (ERROR
+    (number))
+  (var_declaration
+    name: (identifier)
+    address: (number)))

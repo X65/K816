@@ -24,8 +24,8 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AstFile, BinaryOp, ExprKind, HlaStatement, ItemKind, NativeOperand, StatementKind, UnaryOp,
-    WidthAnnotationKind,
+    AstFile, BinaryOp, ExprKind, HlaStatement, ItemKind, LabelScope, NativeOperand, StatementKind,
+    StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -70,12 +70,47 @@ fn dump_ast(file: &AstFile) -> String {
     for item in &file.items {
         match &item.kind {
             ItemKind::Var(var) => {
+                out.push_str("var ");
+                if let Some(storage) = var.storage {
+                    out.push_str(match storage.kind {
+                        StorageClassKind::DirectPage => "dp ",
+                        StorageClassKind::Absolute => "abs ",
+                        StorageClassKind::Far => "far ",
+                    });
+                }
+                out.push_str(&var.name.text);
+                if let Some(width) = var.width {
+                    out.push_str(match width.kind {
+                        TypeWidthKind::Byte => ":byte",
+                        TypeWidthKind::Word => ":word",
+                        TypeWidthKind::Far => ":far",
+                    });
+                }
+                if let Some(size) = &var.size {
+                    out.push_str(&format!("[{}]", dump_expr(&size.kind)));
+                }
+                if let Some(count) = &var.count {
+                    out.push_str(&format!(" * {}", dump_expr(&count.kind)));
+                }
+                if let Some(address) = &var.address {
+                    out.push_str(&format!(" = {}", dump_expr(&address.kind)));
+                }
+                out.push_str(&format!(" @{}..{}\n", item.span.start, item.span.end));
+            }
+            ItemKind::Const(group) => {
+                out.push_str("const");
+                for entry in &group.entries {
+                    out.push_str(&format!(" {}", entry.name.text));
+                    if let Some(value) = &entry.value {
+                        out.push_str(&format!(" = {}", dump_expr(&value.kind)));
+                    }
+                }
+                out.push_str(&format!(" @{}..{}\n", item.span.start, item.span.end));
+            }
+            ItemKind::Segment(name) => {
                 out.push_str(&format!(
-                    "var {} = {} @{}..{}\n",
-                    var.name.text,
-                    dump_expr(&var.address.kind),
-                    item.span.start,
-                    item.span.end
+                    "segment {} @{}..{}\n",
+                    name.text, item.span.start, item.span.end
                 ));
             }
             ItemKind::Func(func) => {
@@ -105,8 +140,16 @@ fn dump_ast(file: &AstFile) -> String {
                             format!("hla a = #{}", dump_expr(&value.kind))
                         }
                         StatementKind::Hla(HlaStatement::Store { target, .. }) => {
-                            format!("hla {} = a", target.text)
+                            format!("hla {} = a", dump_expr(&target.kind))
                         }
+                        StatementKind::Label(label) => format!(
+                            "{} {}",
+                            match label.scope {
+                                LabelScope::Global => "label",
+                                LabelScope::Local => "local label",
+                            },
+                            label.name.text
+                        ),
                         StatementKind::Return => "return".to_owned(),
                         StatementKind::Error => "error".to_owned(),
                     };
@@ -129,7 +172,7 @@ fn dump_ast(file: &AstFile) -> String {
 fn dump_expr(kind: &ExprKind) -> String {
     match kind {
         ExprKind::Number(value) => format!("{value}"),
-        ExprKind::Symbol(name) => name.text.clone(),
+        ExprKind::Symbol(name) | ExprKind::LocalSymbol(name) => name.text.clone(),
         ExprKind::Unary(unary) => {
             let operator = match unary.op {
                 UnaryOp::Negate => "-",
@@ -176,7 +219,8 @@ fn parse_expr(expression: &str) -> String {
     let ItemKind::Var(var) = &result.file.items[0].kind else {
         panic!("expected a var declaration");
     };
-    dump_expr(&var.address.kind)
+    let address = var.address.as_ref().expect("expected an initializer");
+    dump_expr(&address.kind)
 }
 
 #[test]
@@ -338,7 +382,8 @@ var HEX_ESCAPE = '\\x41'
             let ItemKind::Var(var) = &item.kind else {
                 panic!("expected var declaration");
             };
-            match var.address.kind {
+            let address = var.address.as_ref().expect("expected an initializer");
+            match address.kind {
                 ExprKind::Number(value) => value,
                 _ => panic!("`{}` did not decode to a number", var.name.text),
             }
@@ -414,8 +459,9 @@ fn grouping_keeps_the_span_of_the_parentheses() {
     let ItemKind::Var(var) = &result.file.items[0].kind else {
         panic!("expected a var declaration");
     };
-    assert_eq!(map.span_text(var.address.span), "(A + B)");
-    let ExprKind::Binary(binary) = &var.address.kind else {
+    let address = var.address.as_ref().expect("expected an initializer");
+    assert_eq!(map.span_text(address.span), "(A + B)");
+    let ExprKind::Binary(binary) = &address.kind else {
         panic!("expected the grouped binary expression");
     };
     assert_eq!(map.span_text(binary.op_span), "+");
@@ -443,6 +489,135 @@ fn a_compound_address_reports_itself_as_unimplemented() {
 }
 
 #[test]
+fn declaration_ast_snapshot_is_exact() {
+    let source = "segment fixed_lo
+var dp counter
+var abs slot = $0012
+var w:word = $2000
+var buffer[32] = $0100
+var simple:byte * 32
+var allocated
+const A = 0, B, C
+
+func draw {
+    .loop:
+    hello:
+    .LT+1 = a
+    return
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("declarations.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(
+        dump_ast(&result.file),
+        "\
+segment fixed_lo @0..16
+var dp counter @17..31
+var abs slot = 18 @32..52
+var w:word = 8192 @53..71
+var buffer[32] = 256 @72..94
+var simple:byte * 32 @95..115
+var allocated @116..129
+const A = 0 B C @130..147
+func draw @149..209
+  local label .loop @165..171
+  label hello @176..182
+  hla (+ .LT 1) = a @187..196
+  return @201..207
+"
+    );
+}
+
+#[test]
+fn a_var_prefix_that_is_not_a_storage_class_is_reported() {
+    // `var foo bar` cannot be two names; the prefix slot is checked in the
+    // builder so the message names the three storage classes.
+    let mut map = SourceMap::new();
+    let id = map.add_file("bad.k65", "var foo bar = 1\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].code, DiagnosticCode::SYNTAX_ERROR);
+    assert_eq!(map.span_text(result.diagnostics[0].primary.span), "foo");
+}
+
+#[test]
+fn semicolons_leave_no_trace_in_the_ast() {
+    let mut map = SourceMap::new();
+    let dense = map.add_file("dense.k65", "var A = 0; var B = 1;;\n;\n");
+    let sparse = map.add_file("sparse.k65", "var A = 0\nvar B = 1\n");
+    let dense = parse_source(map.file(dense), None);
+    let sparse = parse_source(map.file(sparse), None);
+    assert_eq!(dense.diagnostics, vec![]);
+    assert_eq!(dense.file.items.len(), sparse.file.items.len());
+}
+
+#[test]
+fn local_labels_keep_their_leading_dot() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("labels.k65", "func f {\n  .loop:\n  .LT+1 = a\n}\n");
+    let result = parse_source(map.file(id), None);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let StatementKind::Label(label) = &func.body.statements[0].kind else {
+        panic!("expected a label");
+    };
+    assert_eq!(label.scope, LabelScope::Local);
+    assert_eq!(label.name.text, ".loop");
+    assert_eq!(map.span_text(label.name.span), ".loop");
+
+    let StatementKind::Hla(HlaStatement::Store { target, .. }) = &func.body.statements[1].kind
+    else {
+        panic!("expected a store");
+    };
+    let ExprKind::Binary(binary) = &target.kind else {
+        panic!("expected a label+offset target");
+    };
+    assert!(matches!(binary.left.kind, ExprKind::LocalSymbol(_)));
+}
+
+#[test]
+fn every_new_declaration_form_names_its_owner() {
+    // The parser accepts these; each one has to say which sub-plan owns its
+    // semantics rather than compile to nothing.
+    for (source, expected_code) in [
+        ("var counter\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+        (
+            "var dp counter = $10\n",
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+        ),
+        ("var w:word = $2000\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+        (
+            "var buffer[32] = $100\n",
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+        ),
+        ("var s:byte * 32\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+        ("const LIMIT = 10\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+        ("segment code\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+        ("func f { .loop: }\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+        (
+            "func f { .LT+1 = a }\n",
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+        ),
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("owner.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(diagnostics[0].code, expected_code, "`{source}`");
+        assert!(
+            diagnostics[0].notes[0].starts_with("implemented by sub-plan "),
+            "`{source}`: {:?}",
+            diagnostics[0].notes
+        );
+    }
+}
+
+#[test]
 fn exact_spans_map_back_to_source_text() {
     let mut map = SourceMap::new();
     let id = map.add_file("slice.k816", HLA_SLICE);
@@ -452,8 +627,9 @@ fn exact_spans_map_back_to_source_text() {
         panic!("expected var declaration");
     };
     assert_eq!(map.span_text(var.name.span), "SCREEN");
-    assert_eq!(map.span_text(var.address.span), "$0400");
-    assert_eq!(var.address.kind, ExprKind::Number(0x0400));
+    let address = var.address.as_ref().expect("expected an initializer");
+    assert_eq!(map.span_text(address.span), "$0400");
+    assert_eq!(address.kind, ExprKind::Number(0x0400));
     assert_eq!(var.name.provenance, Provenance::Source);
 
     let ItemKind::Func(func) = &result.file.items[1].kind else {

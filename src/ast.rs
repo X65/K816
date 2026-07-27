@@ -47,6 +47,9 @@ pub struct Item {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemKind {
     Var(VarDeclaration),
+    Const(ConstDeclaration),
+    /// `segment NAME` — selects the output segment for what follows.
+    Segment(Name),
     Func(Function),
     /// Malformed top-level construct; the span covers the unparsable region.
     Error,
@@ -62,11 +65,70 @@ pub struct Name {
     pub provenance: Provenance,
 }
 
-/// `var NAME = $addr` — fixed-address declaration (the only slice form).
+/// A `var` declaration in any of its documented shapes:
+/// `var NAME = $addr`, `var NAME`, `var dp NAME`, `var NAME:word`,
+/// `var NAME[32]`, `var NAME:byte * 32`.
+///
+/// The three axes are independent: [`StorageClass`] chooses where the
+/// variable lives and how plain references encode, [`TypeWidth`] is the
+/// element's data width, and `size`/`count` are the two different ways of
+/// repeating it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarDeclaration {
     pub name: Name,
-    pub address: Expr,
+    /// `dp` / `abs` / `far` before the name.
+    pub storage: Option<StorageClass>,
+    /// `:byte` / `:word` / `:far` after the name.
+    pub width: Option<TypeWidth>,
+    /// `[N]` — a raw span of N elements, without repeat-element metadata.
+    pub size: Option<Expr>,
+    /// `* count` — the allocation count, which does create repeat elements.
+    pub count: Option<Expr>,
+    /// `= expr`. Absent for linker-allocated variables.
+    pub address: Option<Expr>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageClass {
+    pub kind: StorageClassKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageClassKind {
+    /// `dp` — a slot in the 256-byte direct-page pool.
+    DirectPage,
+    /// `abs` — 16-bit absolute, the default.
+    Absolute,
+    /// `far` — 24-bit, and never auto-allocated.
+    Far,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeWidth {
+    pub kind: TypeWidthKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeWidthKind {
+    Byte,
+    Word,
+    Far,
+}
+
+/// `const A = 0, B, C` — one comma-separated group. An entry without a value
+/// continues the previous one (enum-like auto-increment).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstDeclaration {
+    pub entries: Vec<ConstEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConstEntry {
+    pub name: Name,
+    pub value: Option<Expr>,
+    pub span: Span,
 }
 
 /// `func NAME @a8 @i16 { ... }`
@@ -105,11 +167,29 @@ pub struct Statement {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatementKind {
+    /// `name:` or `.name:`
+    Label(LabelStatement),
     Native(NativeInstruction),
     Hla(HlaStatement),
     Return,
     /// Malformed statement; the span covers the unparsable region.
     Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelStatement {
+    /// The label's name. A local label keeps its leading `.`, matching the
+    /// source text its span covers.
+    pub name: Name,
+    pub scope: LabelScope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelScope {
+    /// `name:` — visible across the compilation unit.
+    Global,
+    /// `.name:` — scoped to the enclosing function.
+    Local,
 }
 
 /// A native instruction as written, e.g. `lda #1`. The mnemonic stays source
@@ -133,8 +213,10 @@ pub enum NativeOperand {
 pub enum HlaStatement {
     /// `a = #imm`
     LoadImmediate { register: Register, value: Expr },
-    /// `MEM = a`
-    Store { target: Name, register: Register },
+    /// `MEM = a`, and the label+offset form `.LT+1 = a`. The target is an
+    /// expression because self-modifying-code idioms address into an
+    /// instruction rather than at a symbol.
+    Store { target: Expr, register: Register },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,8 +240,11 @@ pub struct Expr {
 pub enum ExprKind {
     /// A numeric or character literal, already decoded from its source form.
     Number(u32),
-    /// A reference to a named symbol: a `const`, `var`, or label.
+    /// A reference to a named symbol: a `const`, `var`, or global label.
     Symbol(Name),
+    /// A reference to a function-scoped local label, `.name`. The name keeps
+    /// its leading `.`.
+    LocalSymbol(Name),
     /// `-x`, `~x`, `&<x`, `&>x`, `&&x`, `&&&x`.
     Unary(UnaryExpr),
     /// `x * y`, `x | y`, ...

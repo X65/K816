@@ -143,6 +143,10 @@ impl Lowering<'_> {
                         | ExprKind::LocalSymbol(_)
                         | ExprKind::Unary(_)
                         | ExprKind::Binary(_)
+                        | ExprKind::Field(_)
+                        | ExprKind::Subscript(_)
+                        | ExprKind::Metadata(_)
+                        | ExprKind::TypedView(_)
                         | ExprKind::Eval(_) => {
                             return self.skipped(span, "an unresolved immediate");
                         }

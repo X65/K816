@@ -24,8 +24,8 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AstFile, BinaryOp, ExprKind, HlaStatement, ItemKind, LabelScope, NativeOperand, StatementKind,
-    StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AstFile, BinaryOp, ExprKind, HlaStatement, ItemKind, LabelScope, MetadataQueryKind,
+    NativeOperand, StatementKind, StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -201,6 +201,31 @@ fn dump_expr(kind: &ExprKind) -> String {
                 dump_expr(&binary.right.kind)
             )
         }
+        ExprKind::Field(access) => {
+            format!("({}{})", dump_expr(&access.base.kind), access.field.text)
+        }
+        ExprKind::Subscript(subscript) => format!(
+            "({}[{}])",
+            dump_expr(&subscript.base.kind),
+            dump_expr(&subscript.index.kind)
+        ),
+        ExprKind::Metadata(query) => format!(
+            "({}:{})",
+            dump_expr(&query.base.kind),
+            match query.query {
+                MetadataQueryKind::SizeOf => "sizeof",
+                MetadataQueryKind::OffsetOf => "offsetof",
+            }
+        ),
+        ExprKind::TypedView(view) => format!(
+            "({}:{})",
+            dump_expr(&view.base.kind),
+            match view.width.kind {
+                TypeWidthKind::Byte => "byte",
+                TypeWidthKind::Word => "word",
+                TypeWidthKind::Far => "far",
+            }
+        ),
         ExprKind::Eval(inner) => format!("[{}]", dump_expr(&inner.kind)),
         ExprKind::Error => "<error>".to_owned(),
     }
@@ -613,6 +638,104 @@ fn every_new_declaration_form_names_its_owner() {
             diagnostics[0].notes[0].starts_with("implemented by sub-plan "),
             "`{source}`: {:?}",
             diagnostics[0].notes
+        );
+    }
+}
+
+#[test]
+fn accessors_and_metadata_queries_bind_at_atom_level() {
+    // `#TASKS:sizeof + 1` is `(TASKS:sizeof) + 1` — syntax-reference.md
+    // "Metadata Query Suffixes".
+    assert_eq!(parse_expr("TASKS.sp"), "(TASKS.sp)");
+    assert_eq!(parse_expr("COMP[2]"), "(COMP[2])");
+    assert_eq!(parse_expr("COMP[2].two"), "((COMP[2]).two)");
+    assert_eq!(parse_expr("COMP[2].str[3]"), "(((COMP[2]).str)[3])");
+    assert_eq!(parse_expr("TASKS:sizeof + 1"), "(+ (TASKS:sizeof) 1)");
+    assert_eq!(
+        parse_expr("REGS.data.lo:offsetof"),
+        "(((REGS.data).lo):offsetof)"
+    );
+    assert_eq!(parse_expr("ptr:byte"), "(ptr:byte)");
+}
+
+#[test]
+fn bracketed_field_selection_matches_dotted_selection() {
+    // The two spellings are documented as equivalent, so they reach the AST
+    // as one shape even though the CST keeps them apart.
+    assert_eq!(parse_expr("COMP[2][.two]"), parse_expr("COMP[2].two"));
+}
+
+#[test]
+fn a_field_name_must_touch_its_base() {
+    // Otherwise `X = FOO` followed by the local label reference `.LT+1` would
+    // read as a single field access across the statement boundary.
+    let mut map = SourceMap::new();
+    let id = map.add_file("adjacent.k65", "func f {\n  FOO = a\n  .LT+1 = a\n}\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 2);
+}
+
+#[test]
+fn subscript_declarations_reach_the_ast() {
+    let source = "abstract var POINT:byte[ .x .y ]
+var REGS[
+    .status :byte
+    .data[
+        .lo :byte
+        .hi :byte
+    ]
+] = $D000
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("fields.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let ItemKind::Var(point) = &result.file.items[0].kind else {
+        panic!("expected a var");
+    };
+    assert!(point.is_abstract);
+    assert_eq!(
+        point.width.expect("default width").kind,
+        TypeWidthKind::Byte
+    );
+    assert_eq!(point.fields.len(), 2);
+    assert_eq!(point.fields[0].name.text, ".x");
+    assert!(point.fields[0].width.is_none());
+
+    let ItemKind::Var(regs) = &result.file.items[1].kind else {
+        panic!("expected a var");
+    };
+    assert!(!regs.is_abstract);
+    assert_eq!(regs.fields.len(), 2);
+    assert_eq!(regs.fields[1].name.text, ".data");
+    assert_eq!(regs.fields[1].fields.len(), 2);
+    assert_eq!(regs.fields[1].fields[1].name.text, ".hi");
+    assert_eq!(map.span_text(regs.fields[1].fields[1].span), ".hi :byte");
+}
+
+#[test]
+fn subscript_forms_name_their_owner() {
+    for source in [
+        "abstract var P[ .x :byte ]\n",
+        "var TASKS[ .sp :word ] = $4000\n",
+        "func f { lda #TASKS:sizeof }\n",
+        "func f { lda #TASKS.sp }\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("owner.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            "`{source}`"
         );
     }
 }

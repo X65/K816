@@ -32,6 +32,9 @@
  *     `~`, the address-byte operators, and `[ ... ]` evaluator brackets;
  *   - program structure: optional semicolons, the `var` family, `const`
  *     groups, `segment` selection, and global and local labels;
+ *   - symbolic subscripts: field lists with nesting and default widths,
+ *     `abstract var` layouts, the field and repeat-element accessors, and the
+ *     `:sizeof` / `:offsetof` and typed-view suffixes;
  *   - code: `func NAME @a8 @i16 { ... }`, the HLA forms `a = #imm` and
  *     `TARGET = a`, `return`, and the native instructions `lda #imm`,
  *     `sta NAME`, `rts`, `sep #imm`, `rep #imm`.
@@ -66,6 +69,7 @@ const PREC = {
   add: 6,
   mul: 7,
   unary: 8,
+  access: 9,
 };
 
 export default grammar({
@@ -74,6 +78,13 @@ export default grammar({
   word: $ => $.identifier,
 
   extras: $ => [/\s/, $.line_comment, $.block_comment],
+
+  conflicts: $ => [
+    // `foo:` is a label, `foo:sizeof` a metadata query, and `foo:byte` a typed
+    // view — which one it is depends on the token *after* the colon, one more
+    // than an LR(1) decision can see.
+    [$.label, $._expression],
+  ],
 
   rules: {
     // Semicolons are optional separators and empty statements are ignored, so
@@ -98,21 +109,41 @@ export default grammar({
     //   var buffer[32]              raw span
     //   var simple:byte * 32        allocation count
     //
-    // Symbolic subscript field lists (`var name[ .f :w ... ]`) are the next
-    // group. The storage prefix is an aliased identifier rather than a
+    // The storage prefix is an aliased identifier rather than a
     // keyword: `dp` and `abs` are reserved *only* in the prefix slot, so
     // `var dp = 0` still declares a variable named `dp`, which a keyword token
     // would swallow. The builder checks that the prefix is one of the three
     // storage classes.
     var_declaration: $ =>
       seq(
+        optional(field('abstract', 'abstract')),
         'var',
         optional(field('storage', alias($.identifier, $.storage_class))),
         field('name', $.identifier),
         optional(field('type', $.type_suffix)),
-        optional(seq('[', field('size', $._expression), ']')),
+        optional($._span_or_fields),
         optional(seq('*', field('count', $._expression))),
         optional(seq('=', field('address', $._expression))),
+      ),
+
+    // `[32]` is a raw span, `[ .x :word ]` a symbolic field list. Which one a
+    // bracket opens is decided by whether a `.field` name follows.
+    _span_or_fields: $ =>
+      choice(seq('[', field('size', $._expression), ']'), field('fields', $.field_list)),
+
+    field_list: $ => seq('[', repeat1($.field_declaration), ']'),
+
+    // .name, .name :byte, .name :byte [count], .name [count], and nested
+    // field lists. The declaration-level width is the default for fields that
+    // do not state one.
+    field_declaration: $ =>
+      prec(
+        PREC.access + 1,
+        seq(
+          field('name', $.local_identifier),
+          optional(field('type', $.type_suffix)),
+          optional($._span_or_fields),
+        ),
       ),
 
     type_suffix: _ => seq(':', field('width', choice('byte', 'word', 'far'))),
@@ -199,6 +230,10 @@ export default grammar({
         $.identifier,
         $.local_identifier,
         $.parenthesized_expression,
+        $.field_access,
+        $.subscript_expression,
+        $.metadata_query,
+        $.typed_view,
         $.unary_expression,
         $.address_of_expression,
         $.binary_expression,
@@ -207,6 +242,51 @@ export default grammar({
       ),
 
     parenthesized_expression: $ => seq('(', $._expression, ')'),
+
+    // foo.field and COMP[2].str — the field name must follow the base with no
+    // space, which is what keeps `X = FOO` followed by the label reference
+    // `.LT+1` from being read as one field access.
+    field_access: $ =>
+      prec.left(
+        PREC.access,
+        seq(field('base', $._expression), field('field', $.field_name)),
+      ),
+
+    field_name: _ => token.immediate(seq('.', /[A-Za-z_][A-Za-z0-9_]*/)),
+
+    // COMP[2] (a repeat element) and the equivalent field-selection spelling
+    // COMP[.two]. Inside the brackets a `.name` is always a field, so it wins
+    // over reading it as a local label used as an index.
+    subscript_expression: $ =>
+      prec.left(
+        PREC.access,
+        seq(
+          field('base', $._expression),
+          '[',
+          choice(
+            field('field', prec(1, $.local_identifier)),
+            field('index', $._expression),
+          ),
+          ']',
+        ),
+      ),
+
+    // NAME:sizeof, NAME.field:offsetof — compile-time metadata, binding at
+    // atom level so `#TASKS:sizeof + 1` is `(TASKS:sizeof) + 1`.
+    metadata_query: $ =>
+      prec.left(
+        PREC.access,
+        seq(
+          field('base', $._expression),
+          ':',
+          field('query', choice('sizeof', 'offsetof')),
+        ),
+      ),
+
+    // Use-site typed views: `lda far x:byte` applies a data width to one
+    // expression, independently of the address encoding.
+    typed_view: $ =>
+      prec.left(PREC.access, seq(field('base', $._expression), field('type', $.type_suffix))),
 
     unary_expression: $ =>
       prec.right(

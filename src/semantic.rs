@@ -235,6 +235,10 @@ impl Analysis {
                 | ExprKind::Number(_)
                 | ExprKind::Unary(_)
                 | ExprKind::Binary(_)
+                | ExprKind::Field(_)
+                | ExprKind::Subscript(_)
+                | ExprKind::Metadata(_)
+                | ExprKind::TypedView(_)
                 | ExprKind::Eval(_) => self.diagnostics.push(compat::unimplemented(
                     target.span,
                     "computed assignment targets",
@@ -323,6 +327,10 @@ impl Analysis {
             | ExprKind::LocalSymbol(_)
             | ExprKind::Unary(_)
             | ExprKind::Binary(_)
+            | ExprKind::Field(_)
+            | ExprKind::Subscript(_)
+            | ExprKind::Metadata(_)
+            | ExprKind::TypedView(_)
             | ExprKind::Eval(_) => {
                 self.diagnostics.push(compat::unimplemented(
                     expr.span,
@@ -368,7 +376,11 @@ impl Analysis {
 /// Names the first part of `var` that has no semantics yet, or `None` when
 /// the declaration is the fixed-address form the slice compiles.
 fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static str> {
-    if var.storage.is_some() {
+    if var.is_abstract {
+        Some("`abstract var` layouts")
+    } else if !var.fields.is_empty() {
+        Some("symbolic subscript field lists")
+    } else if var.storage.is_some() {
         Some("`dp` / `abs` / `far` storage classes")
     } else if var.width.is_some() {
         Some("typed width suffixes")

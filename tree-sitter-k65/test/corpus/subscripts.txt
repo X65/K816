@@ -1,0 +1,297 @@
+================================================================================
+Symbolic subscript field list
+================================================================================
+
+var TASKS[
+    .sp      :word
+    .state   :byte
+    .signals :byte
+] = $4000
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    fields: (field_list
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix)))
+    address: (number)))
+
+================================================================================
+Field lists nest
+================================================================================
+
+var REGS[
+    .status :byte
+    .data[
+        .lo :byte
+        .hi :byte
+    ]
+] = $D000
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    fields: (field_list
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        fields: (field_list
+          (field_declaration
+            name: (local_identifier)
+            type: (type_suffix))
+          (field_declaration
+            name: (local_identifier)
+            type: (type_suffix)))))
+    address: (number)))
+
+================================================================================
+Field counts follow the field width
+================================================================================
+
+var COMP[
+    .one :byte
+    .two :word
+    .str :byte [5]
+    .shorthand[4]
+] * 10 = $1000
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    fields: (field_list
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix)
+        size: (number))
+      (field_declaration
+        name: (local_identifier)
+        size: (number)))
+    count: (number)
+    address: (number)))
+
+================================================================================
+Declaration-level default field width
+================================================================================
+
+abstract var POINT:byte[ .x .y ]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    type: (type_suffix)
+    fields: (field_list
+      (field_declaration
+        name: (local_identifier))
+      (field_declaration
+        name: (local_identifier)))))
+
+================================================================================
+Abstract layout declarations
+================================================================================
+
+abstract var DEV_HANDLER[
+    .open  :word
+    .close :word
+    .init  :word
+]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    fields: (field_list
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix))
+      (field_declaration
+        name: (local_identifier)
+        type: (type_suffix)))))
+
+================================================================================
+Field access and repeat element accessors
+================================================================================
+
+func main {
+  lda #TASKS.sp
+  lda #COMP[2]
+  lda #COMP[2].two
+  lda #COMP[2][.two]
+  lda #COMP[2].str[3]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (field_access
+            base: (identifier)
+            field: (field_name))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (subscript_expression
+            base: (identifier)
+            index: (number))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (field_access
+            base: (subscript_expression
+              base: (identifier)
+              index: (number))
+            field: (field_name))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (subscript_expression
+            base: (subscript_expression
+              base: (identifier)
+              index: (number))
+            field: (local_identifier))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (subscript_expression
+            base: (field_access
+              base: (subscript_expression
+                base: (identifier)
+                index: (number))
+              field: (field_name))
+            index: (number)))))))
+
+================================================================================
+Metadata query suffixes
+================================================================================
+
+func main {
+  lda #TASKS:sizeof
+  lda #TASKS.sp:sizeof
+  lda #TASKS.sp:offsetof
+  lda #REGS.data.lo:offsetof
+  lda #TASKS:sizeof + 1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (metadata_query
+            base: (identifier))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (metadata_query
+            base: (field_access
+              base: (identifier)
+              field: (field_name)))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (metadata_query
+            base: (field_access
+              base: (identifier)
+              field: (field_name)))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (metadata_query
+            base: (field_access
+              base: (field_access
+                base: (identifier)
+                field: (field_name))
+              field: (field_name)))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (binary_expression
+            left: (metadata_query
+              base: (identifier))
+            right: (number)))))))
+
+================================================================================
+Use-site typed views
+================================================================================
+
+func main {
+  lda #ptr:byte
+  lda #ptr:word
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (typed_view
+            base: (identifier)
+            type: (type_suffix))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (typed_view
+            base: (identifier)
+            type: (type_suffix)))))))
+
+================================================================================
+A label is not a metadata query
+================================================================================
+
+func main {
+  hello:
+  lda #hello:sizeof
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (label
+        name: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (metadata_query
+            base: (identifier)))))))

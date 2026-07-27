@@ -76,16 +76,35 @@ pub struct Name {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VarDeclaration {
     pub name: Name,
+    /// `abstract var` — a layout with no storage, for metadata queries only.
+    pub is_abstract: bool,
     /// `dp` / `abs` / `far` before the name.
     pub storage: Option<StorageClass>,
     /// `:byte` / `:word` / `:far` after the name.
     pub width: Option<TypeWidth>,
     /// `[N]` — a raw span of N elements, without repeat-element metadata.
     pub size: Option<Expr>,
+    /// `[ .x :word .y :word ]` — a symbolic subscript field list. Mutually
+    /// exclusive with `size`: a bracket opens one or the other.
+    pub fields: Vec<FieldDeclaration>,
     /// `* count` — the allocation count, which does create repeat elements.
     pub count: Option<Expr>,
     /// `= expr`. Absent for linker-allocated variables.
     pub address: Option<Expr>,
+}
+
+/// One `.name` entry of a symbolic subscript field list. Fields nest, and a
+/// field without its own width takes the declaration's default.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldDeclaration {
+    /// Keeps its leading `.`, matching the source text its span covers.
+    pub name: Name,
+    pub width: Option<TypeWidth>,
+    /// `[count]` — repeated elements of this field.
+    pub size: Option<Expr>,
+    /// A nested field list.
+    pub fields: Vec<FieldDeclaration>,
+    pub span: Span,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,6 +268,15 @@ pub enum ExprKind {
     Unary(UnaryExpr),
     /// `x * y`, `x | y`, ...
     Binary(BinaryExpr),
+    /// `foo.field`, and the equivalent spelling `foo[.field]` — both are the
+    /// same selection, so the AST keeps one shape for them.
+    Field(FieldAccess),
+    /// `COMP[2]` — a repeat element at a compile-time constant index.
+    Subscript(SubscriptExpr),
+    /// `NAME:sizeof`, `NAME.field:offsetof`.
+    Metadata(MetadataQuery),
+    /// `x:byte` at a use site — a data-width view of one expression.
+    TypedView(TypedViewExpr),
     /// `[ ... ]` — a compile-time evaluator bracket. Its interior is a K65
     /// expression until the evaluator gets its own grammar and AST.
     Eval(Box<Expr>),
@@ -289,6 +317,40 @@ pub struct BinaryExpr {
     pub left: Box<Expr>,
     pub right: Box<Expr>,
     pub op_span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldAccess {
+    pub base: Box<Expr>,
+    /// Keeps its leading `.`, matching the source text its span covers.
+    pub field: Name,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubscriptExpr {
+    pub base: Box<Expr>,
+    pub index: Box<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MetadataQuery {
+    pub base: Box<Expr>,
+    pub query: MetadataQueryKind,
+    pub query_span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataQueryKind {
+    /// `:sizeof` — the element size, never `size * count`.
+    SizeOf,
+    /// `:offsetof` — a field's offset within its top-level variable.
+    OffsetOf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedViewExpr {
+    pub base: Box<Expr>,
+    pub width: TypeWidth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -27,10 +27,11 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AstFile, BinaryExpr, BinaryOp, Block, ConstDeclaration, ConstEntry, Expr, ExprKind, Function,
-    HlaStatement, Item, ItemKind, LabelScope, LabelStatement, Name, NativeInstruction,
-    NativeOperand, Register, RegisterKind, Statement, StatementKind, StorageClass,
-    StorageClassKind, TypeWidth, TypeWidthKind, UnaryExpr, UnaryOp, VarDeclaration,
+    AstFile, BinaryExpr, BinaryOp, Block, ConstDeclaration, ConstEntry, Expr, ExprKind,
+    FieldAccess, FieldDeclaration, Function, HlaStatement, Item, ItemKind, LabelScope,
+    LabelStatement, MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand,
+    Register, RegisterKind, Statement, StatementKind, StorageClass, StorageClassKind,
+    SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
     WidthAnnotation, WidthAnnotationKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -113,6 +114,10 @@ impl AstBuilder<'_> {
         let size = node
             .child_by_field_name("size")
             .map(|size| self.expr(Some(size), node));
+        let fields = node
+            .child_by_field_name("fields")
+            .map(|list| self.field_list(list))
+            .unwrap_or_default();
         let count = node
             .child_by_field_name("count")
             .map(|count| self.expr(Some(count), node));
@@ -122,14 +127,42 @@ impl AstBuilder<'_> {
         Item {
             kind: ItemKind::Var(VarDeclaration {
                 name,
+                is_abstract: node.child_by_field_name("abstract").is_some(),
                 storage,
                 width,
                 size,
+                fields,
                 count,
                 address,
             }),
             span: self.span(node),
         }
+    }
+
+    fn field_list(&mut self, node: Node<'_>) -> Vec<FieldDeclaration> {
+        let mut fields = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            match child.kind() {
+                "field_declaration" => fields.push(FieldDeclaration {
+                    name: self.name(child.child_by_field_name("name"), child),
+                    width: child
+                        .child_by_field_name("type")
+                        .and_then(|width| self.type_width(width)),
+                    size: child
+                        .child_by_field_name("size")
+                        .map(|size| self.expr(Some(size), child)),
+                    fields: child
+                        .child_by_field_name("fields")
+                        .map(|list| self.field_list(list))
+                        .unwrap_or_default(),
+                    span: self.span(child),
+                }),
+                "line_comment" | "block_comment" => {}
+                _ => self.unexpected(child, "a field list"),
+            }
+        }
+        fields
     }
 
     /// The storage prefix is lexed as an identifier so `var dp = 0` keeps
@@ -538,6 +571,78 @@ impl AstBuilder<'_> {
                         op_span,
                     }),
                     span,
+                }
+            }
+            "field_access" => Expr {
+                kind: ExprKind::Field(FieldAccess {
+                    base: Box::new(self.expr(node.child_by_field_name("base"), node)),
+                    field: self.name(node.child_by_field_name("field"), node),
+                }),
+                span,
+            },
+            // `foo[.field]` is the same selection as `foo.field`, so both
+            // reach the AST as one shape; the CST keeps the spelling.
+            "subscript_expression" => {
+                let base = Box::new(self.expr(node.child_by_field_name("base"), node));
+                match node.child_by_field_name("field") {
+                    Some(field) => Expr {
+                        kind: ExprKind::Field(FieldAccess {
+                            base,
+                            field: self.name(Some(field), node),
+                        }),
+                        span,
+                    },
+                    None => Expr {
+                        kind: ExprKind::Subscript(SubscriptExpr {
+                            base,
+                            index: Box::new(self.expr(node.child_by_field_name("index"), node)),
+                        }),
+                        span,
+                    },
+                }
+            }
+            "metadata_query" => {
+                let Some(query_node) = node.child_by_field_name("query") else {
+                    self.unexpected(node, "a metadata query");
+                    return Expr {
+                        kind: ExprKind::Error,
+                        span,
+                    };
+                };
+                let query = match self.text(query_node) {
+                    "sizeof" => MetadataQueryKind::SizeOf,
+                    "offsetof" => MetadataQueryKind::OffsetOf,
+                    _ => {
+                        self.unexpected(query_node, "a metadata query");
+                        return Expr {
+                            kind: ExprKind::Error,
+                            span,
+                        };
+                    }
+                };
+                Expr {
+                    kind: ExprKind::Metadata(MetadataQuery {
+                        base: Box::new(self.expr(node.child_by_field_name("base"), node)),
+                        query,
+                        query_span: self.span(query_node),
+                    }),
+                    span,
+                }
+            }
+            "typed_view" => {
+                let base = Box::new(self.expr(node.child_by_field_name("base"), node));
+                match node
+                    .child_by_field_name("type")
+                    .and_then(|width| self.type_width(width))
+                {
+                    Some(width) => Expr {
+                        kind: ExprKind::TypedView(TypedViewExpr { base, width }),
+                        span,
+                    },
+                    None => Expr {
+                        kind: ExprKind::Error,
+                        span,
+                    },
                 }
             }
             "eval_bracket" => {

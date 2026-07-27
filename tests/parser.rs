@@ -24,10 +24,10 @@
 //! (master plan Phase 3).
 
 use k816::ast::{
-    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, ExprKind, FlagKind, HlaOperandKind,
-    HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope, MetadataQueryKind,
-    NativeOperand, RegisterKind, ShiftOp, StackOp, StatementKind, StepOp, StorageClassKind,
-    TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    AddressEncoding, ArithmeticOp, AstFile, BinaryOp, ExprKind, FlagKind, FunctionKind,
+    HlaOperandKind, HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope,
+    MetadataQueryKind, NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind,
+    StepOp, StorageClassKind, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -109,6 +109,14 @@ fn dump_ast(file: &AstFile) -> String {
                 }
                 out.push_str(&format!(" @{}..{}\n", item.span.start, item.span.end));
             }
+            ItemKind::ModuleWidth(width) => {
+                out.push_str(&format!(
+                    "module {} @{}..{}\n",
+                    dump_width(width.kind),
+                    item.span.start,
+                    item.span.end
+                ));
+            }
             ItemKind::Segment(name) => {
                 out.push_str(&format!(
                     "segment {} @{}..{}\n",
@@ -116,14 +124,21 @@ fn dump_ast(file: &AstFile) -> String {
                 ));
             }
             ItemKind::Func(func) => {
-                out.push_str(&format!("func {}", func.name.text));
+                if func.is_far {
+                    out.push_str("far ");
+                }
+                out.push_str(match func.kind {
+                    FunctionKind::Func => "func ",
+                    FunctionKind::Naked => "naked ",
+                    FunctionKind::Inline => "inline ",
+                    FunctionKind::Main => "main ",
+                });
+                out.push_str(&func.name.text);
                 for annotation in &func.width {
-                    out.push_str(match annotation.kind {
-                        WidthAnnotationKind::A8 => " @a8",
-                        WidthAnnotationKind::A16 => " @a16",
-                        WidthAnnotationKind::I8 => " @i8",
-                        WidthAnnotationKind::I16 => " @i16",
-                    });
+                    out.push_str(&format!(" {}", dump_width(annotation.kind)));
+                }
+                if func.contract.is_some() {
+                    out.push_str(" (contract)");
                 }
                 out.push_str(&format!(" @{}..{}\n", item.span.start, item.span.end));
                 for statement in &func.body.statements {
@@ -249,7 +264,17 @@ fn dump_ast(file: &AstFile) -> String {
                             },
                             label.name.text
                         ),
-                        StatementKind::Return => "return".to_owned(),
+                        StatementKind::Return(ReturnKind::Subroutine) => "return".to_owned(),
+                        StatementKind::Return(ReturnKind::Interrupt) => "return_i".to_owned(),
+                        StatementKind::WidthBlock(_) => "width block".to_owned(),
+                        StatementKind::Call(call) => {
+                            format!(
+                                "call {}{}",
+                                if call.is_far { "far " } else { "" },
+                                call.target.text
+                            )
+                        }
+                        StatementKind::BareCall(target) => format!("call {}", target.text),
                         StatementKind::Error => "error".to_owned(),
                     };
                     out.push_str(&format!(
@@ -264,6 +289,15 @@ fn dump_ast(file: &AstFile) -> String {
         }
     }
     out
+}
+
+fn dump_width(kind: WidthAnnotationKind) -> &'static str {
+    match kind {
+        WidthAnnotationKind::A8 => "@a8",
+        WidthAnnotationKind::A16 => "@a16",
+        WidthAnnotationKind::I8 => "@i8",
+        WidthAnnotationKind::I16 => "@i16",
+    }
 }
 
 fn dump_register(kind: RegisterKind) -> &'static str {
@@ -1340,6 +1374,99 @@ fn a_binary_literal_is_not_the_break_shorthand() {
 }
 
 #[test]
+fn every_code_section_form_reaches_the_ast() {
+    let source = "func inc_x { }
+naked dli { }
+inline inc_y { }
+far func long_range_sub { }
+main { }
+func add @a16 (a, x) -> @a8 a, y { }
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("sections.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(
+        dump_ast(&result.file),
+        "\
+func inc_x @0..14
+naked dli @15..28
+inline inc_y @29..45
+far func long_range_sub @46..73
+main main @74..82
+func add @a16 (contract) @83..119
+"
+    );
+
+    let ItemKind::Func(add) = &result.file.items[5].kind else {
+        panic!("expected a func");
+    };
+    let contract = add.contract.as_ref().expect("a contract");
+    let inputs = contract.inputs.as_ref().expect("an input list");
+    assert_eq!(inputs.len(), 2);
+    let outputs = contract.outputs.as_ref().expect("an output clause");
+    assert_eq!(outputs.width.len(), 1);
+    assert_eq!(outputs.registers.len(), 2);
+}
+
+#[test]
+fn an_operand_prefix_is_not_a_far_call() {
+    // `far` is an aliased identifier, not a keyword, so `lda far addr` stays
+    // an AbsoluteLong load rather than `lda` followed by a far call.
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "far.k65",
+        "func main {\n  lda far addr\n  call far lib_init\n}\n",
+    );
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let StatementKind::Native(native) = &func.body.statements[0].kind else {
+        panic!("expected a native instruction");
+    };
+    let Some(NativeOperand::Address(address)) = &native.operand else {
+        panic!("expected an address operand");
+    };
+    assert_eq!(
+        address.encoding.expect("an encoding prefix").kind,
+        StorageClassKind::Far
+    );
+    let StatementKind::Call(call) = &func.body.statements[1].kind else {
+        panic!("expected a call");
+    };
+    assert!(call.is_far);
+}
+
+#[test]
+fn section_forms_and_contracts_name_their_owner() {
+    for source in [
+        "naked f { }\n",
+        "inline f { }\n",
+        "far func f { }\n",
+        "func f () { }\n",
+        "@a8\nfunc main @a8 { }\n",
+        "func main @a8 { @a16 { } }\n",
+        "func main @a8 { call other }\n",
+        "func main @a8 { other }\n",
+        "func main @a8 { return_i }\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("section.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            "`{source}`"
+        );
+    }
+}
+
+#[test]
 fn exact_spans_map_back_to_source_text() {
     let mut map = SourceMap::new();
     let id = map.add_file("slice.k816", HLA_SLICE);
@@ -1390,7 +1517,7 @@ fn native_and_hla_parse_to_distinct_ast_forms() {
             .body
             .statements
             .iter()
-            .all(|s| matches!(s.kind, StatementKind::Hla(_) | StatementKind::Return))
+            .all(|s| matches!(s.kind, StatementKind::Hla(_) | StatementKind::Return(_)))
     );
     assert!(
         native_func
@@ -1436,7 +1563,7 @@ fn malformed_statement_yields_navigable_ast_after_first_error() {
         func.body
             .statements
             .iter()
-            .any(|s| matches!(s.kind, StatementKind::Return))
+            .any(|s| matches!(s.kind, StatementKind::Return(_)))
     );
     let ItemKind::Func(after) = &result.file.items[1].kind else {
         panic!("expected second func");

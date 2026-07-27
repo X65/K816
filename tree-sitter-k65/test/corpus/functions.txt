@@ -1,0 +1,218 @@
+================================================================================
+Every code section form
+================================================================================
+
+func inc_x { x++ }
+naked dli { a!! return_i }
+inline inc_y { y++ }
+far func long_range_sub { x++ }
+main { a = #0 }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_step
+        target: (register))))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_stack
+        register: (register))
+      (return_statement)))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_step
+        target: (register))))
+  (func_declaration
+    far: (far_marker)
+    name: (identifier)
+    body: (block
+      (hla_step
+        target: (register))))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_assignment
+        operand: (register)
+        operand: (immediate
+          value: (number))))))
+
+================================================================================
+Call contracts on a section header
+================================================================================
+
+func add @a16 @i16 (a, x) -> @a8 a, y { }
+inline scale @a16 (a, #factor) -> a { }
+inline typed (#name:byte) { }
+func zero () { }
+func out_only -> a { }
+func width_only -> @a8 { }
+func aliased (buffer) { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    contract: (call_contract
+      inputs: (contract_inputs
+        (contract_parameter
+          register: (register))
+        (contract_parameter
+          register: (register)))
+      outputs: (contract_outputs
+        width: (width_annotation)
+        register: (register)
+        register: (register)))
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    contract: (call_contract
+      inputs: (contract_inputs
+        (contract_parameter
+          register: (register))
+        (contract_parameter
+          alias: (identifier)))
+      outputs: (contract_outputs
+        register: (register)))
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    contract: (call_contract
+      inputs: (contract_inputs
+        (contract_parameter
+          alias: (identifier)
+          type: (type_suffix))))
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    contract: (call_contract
+      inputs: (contract_inputs))
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    contract: (call_contract
+      outputs: (contract_outputs
+        register: (register)))
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    contract: (call_contract
+      outputs: (contract_outputs
+        width: (width_annotation)))
+    body: (block))
+  (func_declaration
+    name: (identifier)
+    contract: (call_contract
+      inputs: (contract_inputs
+        (contract_parameter
+          alias: (identifier))))
+    body: (block)))
+
+================================================================================
+Module-level default widths
+================================================================================
+
+@a8
+@i16
+
+func main { }
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (module_width
+    width: (width_annotation))
+  (module_width
+    width: (width_annotation))
+  (func_declaration
+    name: (identifier)
+    body: (block)))
+
+================================================================================
+Scoped width blocks
+================================================================================
+
+func main {
+  @a16 {
+    a = #1
+  }
+  @a8 @i16 { }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (width_block
+        width: (width_annotation)
+        body: (block
+          (hla_assignment
+            operand: (register)
+            operand: (immediate
+              value: (number)))))
+      (width_block
+        width: (width_annotation)
+        width: (width_annotation)
+        body: (block)))))
+
+================================================================================
+Call statements
+================================================================================
+
+func test {
+  inc_x
+  call add
+  call far lib_init
+  return
+  return_i
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (bare_call
+        target: (identifier))
+      (call_statement
+        target: (identifier))
+      (call_statement
+        far: (far_marker)
+        target: (identifier))
+      (return_statement)
+      (return_statement))))
+
+================================================================================
+An operand prefix is not a far call
+================================================================================
+
+func main {
+  lda far addr
+  call far lib_init
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier)))
+      (call_statement
+        far: (far_marker)
+        target: (identifier)))))

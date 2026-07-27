@@ -30,7 +30,8 @@
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
 use crate::ast::{
-    AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand, StatementKind,
+    AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand, ReturnKind,
+    StatementKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
@@ -222,9 +223,18 @@ impl Lowering<'_> {
             ) => {
                 self.skipped(span, "an HLA shorthand");
             }
-            StatementKind::Return => {
+            StatementKind::Return(ReturnKind::Subroutine) => {
                 // `return` is the HLA spelling of `rts`.
                 self.instruction(Mnemonic::Rts, None, span, Origin::HlaExpansion);
+            }
+            // Analysis reports each of these as not-yet-implemented, so
+            // lowering is never reached with one.
+            StatementKind::Return(ReturnKind::Interrupt) => {
+                self.skipped(span, "a `return_i`");
+            }
+            StatementKind::WidthBlock(_) => self.skipped(span, "a scoped width block"),
+            StatementKind::Call(_) | StatementKind::BareCall(_) => {
+                self.skipped(span, "a function call");
             }
             // Analysis reports labels as not-yet-implemented, so lowering is
             // never reached with one.

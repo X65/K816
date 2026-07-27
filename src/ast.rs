@@ -50,6 +50,8 @@ pub enum ItemKind {
     Const(ConstDeclaration),
     /// `segment NAME` — selects the output segment for what follows.
     Segment(Name),
+    /// A file-top `@a8` — the module's default width for that axis.
+    ModuleWidth(WidthAnnotation),
     Func(Function),
     /// Malformed top-level construct; the span covers the unparsable region.
     Error,
@@ -150,12 +152,60 @@ pub struct ConstEntry {
     pub span: Span,
 }
 
-/// `func NAME @a8 @i16 { ... }`
+/// A code section: `func`, `naked`, `inline`, or the legacy bare `main`,
+/// optionally `far`, with width annotations and a call contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Function {
     pub name: Name,
+    pub kind: FunctionKind,
+    /// `far func` — called with JSL and returning with RTL.
+    pub is_far: bool,
     pub width: Vec<WidthAnnotation>,
+    pub contract: Option<CallContract>,
     pub body: Block,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionKind {
+    /// `func` — auto-`RTS` at the end.
+    Func,
+    /// `naked` — no auto-`RTS`, no exit contract.
+    Naked,
+    /// `inline` — expanded at the call site.
+    Inline,
+    /// `main { ... }` written without a section keyword.
+    Main,
+}
+
+/// `(a, x) -> @a8 a, y`. Absent entirely for the legacy unchecked form;
+/// present with no inputs (`()`) for a checked zero-input call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallContract {
+    /// `Some` when the input list was written, even if it was empty.
+    pub inputs: Option<Vec<ContractParameter>>,
+    /// `Some` when a `->` clause was written.
+    pub outputs: Option<ContractOutputs>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContractParameter {
+    Register(Register),
+    /// `#name` / `#name:byte` — an `inline` immediate alias.
+    ImmediateAlias {
+        name: Name,
+        width: Option<TypeWidth>,
+    },
+    /// A bare identifier alias for a variable or address.
+    Alias(Name),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractOutputs {
+    /// Exit-width annotations, which are check-only.
+    pub width: Vec<WidthAnnotation>,
+    pub registers: Vec<Register>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -190,9 +240,36 @@ pub enum StatementKind {
     Label(LabelStatement),
     Native(NativeInstruction),
     Hla(HlaStatement),
-    Return,
+    /// `@a16 { ... }` — a width scoped to a block, restored after it.
+    WidthBlock(WidthBlock),
+    /// `call NAME`, `call far NAME`, `far NAME`.
+    Call(CallStatement),
+    /// `inc_x` on its own — a call or an inline expansion.
+    BareCall(Name),
+    Return(ReturnKind),
     /// Malformed statement; the span covers the unparsable region.
     Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WidthBlock {
+    pub width: Vec<WidthAnnotation>,
+    pub body: Block,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallStatement {
+    pub target: Name,
+    /// `call far NAME` or `far NAME` — a 24-bit call.
+    pub is_far: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReturnKind {
+    /// `return` — RTS (or RTL in a `far func`).
+    Subroutine,
+    /// `return_i` — RTI.
+    Interrupt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

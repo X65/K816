@@ -28,14 +28,15 @@
 
 use crate::ast::{
     AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BinaryExpr, BinaryOp, Block,
-    BlockMoveOperand, ConstDeclaration, ConstEntry, Expr, ExprKind, FieldAccess, FieldDeclaration,
-    FlagKind, Function, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand,
-    HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister, IndexRegisterKind,
-    IndirectOperand, Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand,
-    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register,
-    RegisterKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass,
-    StorageClassKind, SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp,
-    VarDeclaration, WidthAnnotation, WidthAnnotationKind,
+    BlockMoveOperand, CallContract, CallStatement, ConstDeclaration, ConstEntry, ContractOutputs,
+    ContractParameter, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function,
+    FunctionKind, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
+    HlaShift, HlaStack, HlaStatement, HlaStep, IndexRegister, IndexRegisterKind, IndirectOperand,
+    Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand, MetadataQuery,
+    MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register, RegisterKind, ReturnKind,
+    ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass, StorageClassKind,
+    SubscriptExpr, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
+    WidthAnnotation, WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -84,6 +85,14 @@ impl AstBuilder<'_> {
             match child.kind() {
                 "var_declaration" => items.push(self.var_declaration(child)),
                 "const_declaration" => items.push(self.const_declaration(child)),
+                "module_width" => {
+                    if let Some(width) = node_width(self, child) {
+                        items.push(Item {
+                            kind: ItemKind::ModuleWidth(width),
+                            span: self.span(child),
+                        });
+                    }
+                }
                 "segment_declaration" => items.push(Item {
                     kind: ItemKind::Segment(self.name(child.child_by_field_name("name"), child)),
                     span: self.span(child),
@@ -235,13 +244,18 @@ impl AstBuilder<'_> {
 
     fn func_declaration(&mut self, node: Node<'_>) -> Item {
         let name = self.name(node.child_by_field_name("name"), node);
-        let mut width = Vec::new();
-        let mut cursor = node.walk();
-        for annotation in node.children_by_field_name("width", &mut cursor) {
-            if let Some(parsed) = self.width_annotation(annotation) {
-                width.push(parsed);
+        let kind = match node.child_by_field_name("kind").map(|kind| self.text(kind)) {
+            Some("func") => FunctionKind::Func,
+            Some("naked") => FunctionKind::Naked,
+            Some("inline") => FunctionKind::Inline,
+            // No section keyword: the legacy bare `main { ... }`.
+            None => FunctionKind::Main,
+            Some(_) => {
+                self.unexpected(node, "a code section");
+                FunctionKind::Func
             }
-        }
+        };
+        let width = self.width_annotations(node);
         let body = match node.child_by_field_name("body") {
             Some(body) => self.block(body),
             None => {
@@ -255,8 +269,100 @@ impl AstBuilder<'_> {
             }
         };
         Item {
-            kind: ItemKind::Func(Function { name, width, body }),
+            kind: ItemKind::Func(Function {
+                name,
+                kind,
+                is_far: self.far_marker(node),
+                width,
+                contract: node
+                    .child_by_field_name("contract")
+                    .map(|contract| self.call_contract(contract)),
+                body,
+            }),
             span: self.span(node),
+        }
+    }
+
+    /// Whether `node` carries a `far` marker. Like the storage and encoding
+    /// prefixes it is lexed as an identifier, so the word is checked here.
+    fn far_marker(&mut self, node: Node<'_>) -> bool {
+        let Some(marker) = node.child_by_field_name("far") else {
+            return false;
+        };
+        if self.text(marker) == "far" {
+            return true;
+        }
+        let span = self.span(marker);
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SYNTAX_ERROR,
+                format!("`{}` is not a call-convention prefix", self.text(marker)),
+                Label::new(span, "expected `far`"),
+            )
+            .with_docs("doc/syntax-reference.md#far-calls"),
+        );
+        false
+    }
+
+    fn width_annotations(&mut self, node: Node<'_>) -> Vec<WidthAnnotation> {
+        let mut width = Vec::new();
+        let mut cursor = node.walk();
+        for annotation in node.children_by_field_name("width", &mut cursor) {
+            if let Some(parsed) = self.width_annotation(annotation) {
+                width.push(parsed);
+            }
+        }
+        width
+    }
+
+    fn call_contract(&mut self, node: Node<'_>) -> CallContract {
+        let inputs = node.child_by_field_name("inputs").map(|inputs| {
+            let mut parameters = Vec::new();
+            let mut cursor = inputs.walk();
+            for child in inputs.named_children(&mut cursor) {
+                match child.kind() {
+                    "contract_parameter" => parameters.push(self.contract_parameter(child)),
+                    "line_comment" | "block_comment" => {}
+                    _ => self.unexpected(child, "a call contract"),
+                }
+            }
+            parameters
+        });
+        let outputs = node.child_by_field_name("outputs").map(|outputs| {
+            let mut registers = Vec::new();
+            let mut cursor = outputs.walk();
+            for register in outputs.children_by_field_name("register", &mut cursor) {
+                registers.push(self.register(Some(register), outputs));
+            }
+            ContractOutputs {
+                width: self.width_annotations(outputs),
+                registers,
+                span: self.span(outputs),
+            }
+        });
+        CallContract {
+            inputs,
+            outputs,
+            span: self.span(node),
+        }
+    }
+
+    fn contract_parameter(&mut self, node: Node<'_>) -> ContractParameter {
+        if let Some(register) = node.child_by_field_name("register") {
+            return ContractParameter::Register(self.register(Some(register), node));
+        }
+        let name = self.name(node.child_by_field_name("alias"), node);
+        // `#name` and `#name:byte` are the immediate aliases an `inline`
+        // may declare; a bare name aliases a variable or address.
+        if self.text(node).starts_with('#') {
+            ContractParameter::ImmediateAlias {
+                name,
+                width: node
+                    .child_by_field_name("type")
+                    .and_then(|width| self.type_width(width)),
+            }
+        } else {
+            ContractParameter::Alias(name)
         }
     }
 
@@ -305,7 +411,38 @@ impl AstBuilder<'_> {
                     span: self.span(child),
                 }),
                 "return_statement" => statements.push(Statement {
-                    kind: StatementKind::Return,
+                    kind: StatementKind::Return(if self.text(child) == "return_i" {
+                        ReturnKind::Interrupt
+                    } else {
+                        ReturnKind::Subroutine
+                    }),
+                    span: self.span(child),
+                }),
+                "width_block" => {
+                    let width = self.width_annotations(child);
+                    let body = match child.child_by_field_name("body") {
+                        Some(body) => self.block(body),
+                        None => Block {
+                            statements: Vec::new(),
+                            span: self.span(child),
+                        },
+                    };
+                    statements.push(Statement {
+                        kind: StatementKind::WidthBlock(WidthBlock { width, body }),
+                        span: self.span(child),
+                    });
+                }
+                "call_statement" => statements.push(Statement {
+                    kind: StatementKind::Call(CallStatement {
+                        target: self.name(child.child_by_field_name("target"), child),
+                        is_far: self.far_marker(child),
+                    }),
+                    span: self.span(child),
+                }),
+                "bare_call" => statements.push(Statement {
+                    kind: StatementKind::BareCall(
+                        self.name(child.child_by_field_name("target"), child),
+                    ),
                     span: self.span(child),
                 }),
                 "line_comment" | "block_comment" => {}
@@ -1038,6 +1175,12 @@ impl AstBuilder<'_> {
             }
         }
     }
+}
+
+/// The single width annotation of a `module_width` item.
+fn node_width(builder: &mut AstBuilder<'_>, node: Node<'_>) -> Option<WidthAnnotation> {
+    let annotation = node.child_by_field_name("width")?;
+    builder.width_annotation(annotation)
 }
 
 /// Decodes a K65 numeric literal: `$2A`, `0x2A`, `%101010`, `0b101010`, or

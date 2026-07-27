@@ -44,7 +44,9 @@
  *   - HLA arithmetic and shorthands: the ALU and compare forms, shifts and
  *     rotates, increment and decrement, the flag and stack shorthands, and
  *     the `*` NOP and `%` break markers;
- *   - code: `func NAME @a8 @i16 { ... }` and `return`.
+ *   - code sections: `func`, `naked`, `inline`, `far func`, and the legacy
+ *     bare `main`, with width annotations, call contracts, module-level
+ *     default widths, scoped width blocks, calls, and `return` / `return_i`.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -148,6 +150,17 @@ export default grammar({
     // start of a statement may belong to either that restricted rule or the
     // full expression grammar until the statement's shape is known.
     [$._atom, $._expression],
+    // A bare identifier statement calls that function, but it is also how an
+    // assignment target, a shift target, and a label all start.
+    // `var dp counter` and `far func f` both alias an identifier into a
+    // marker slot, which leaves the parser holding two identifiers before it
+    // knows which is which.
+    [$.var_declaration],
+    [$.bare_call, $._expression],
+    [$.bare_call, $._expression, $.address],
+    [$.bare_call, $.address],
+    // `call far NAME` versus `call NAME` followed by a bare call.
+    [$.call_statement],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
     // statements, not the single shift `(mem << mem,x) >>>`; likewise `* 5`
     // and `* COUNT` are two NOP counts, not `5 * COUNT`. Both readings are
@@ -178,6 +191,7 @@ export default grammar({
         $.var_declaration,
         $.const_declaration,
         $.segment_declaration,
+        $.module_width,
         $.func_declaration,
       ),
 
@@ -242,14 +256,104 @@ export default grammar({
     // segment NAME — selects the output segment for what follows.
     segment_declaration: $ => seq('segment', field('name', $.identifier)),
 
-    // func main @a8 @i16 { ... }
+    // The code sections:
+    //
+    //   func NAME @a8 @i16 { ... }      a called function, auto-RTS
+    //   naked NAME { ... }              no auto-RTS, no exit contract
+    //   inline NAME { ... }             expanded at the call site
+    //   far func NAME { ... }           JSL/RTL instead of JSR/RTS
+    //   main { ... }                    the legacy spelling of the entry point
+    //
+    // followed by the optional call contract `(a, x) -> @a8 a, y`.
     func_declaration: $ =>
       seq(
-        'func',
-        field('name', $.identifier),
+        optional(field('far', alias($.identifier, $.far_marker))),
+        choice(
+          seq(
+            field('kind', choice('func', 'naked', 'inline')),
+            field('name', $.identifier),
+          ),
+          // `main { ... }` — the entry point needs no keyword in original
+          // K65, and every legacy program in `examples/k65/` uses that form.
+          field('name', alias('main', $.identifier)),
+        ),
         repeat(field('width', $.width_annotation)),
+        optional(field('contract', $.call_contract)),
         field('body', $.block),
       ),
+
+    // `(a, x) -> @a8 a, y`. `()` enables checked zero-input calls; `->` may
+    // declare output registers, exit widths, or both. `inline` functions may
+    // also name immediate aliases (`#factor`, `#name:byte`) and bare
+    // identifier aliases. Whether a given contract is legal for a given
+    // section kind is contract analysis, not grammar.
+    call_contract: $ =>
+      choice(
+        seq(field('inputs', $.contract_inputs), optional($._contract_outputs)),
+        $._contract_outputs,
+      ),
+
+    contract_inputs: $ => seq('(', optional(commaSep1($.contract_parameter)), ')'),
+
+    contract_parameter: $ =>
+      choice(
+        field('register', $.register),
+        seq(
+          '#',
+          field('alias', $.identifier),
+          optional(field('type', $.type_suffix)),
+        ),
+        field('alias', $.identifier),
+      ),
+
+    _contract_outputs: $ => seq('->', field('outputs', $.contract_outputs)),
+
+    contract_outputs: $ =>
+      choice(
+        seq(
+          repeat1(field('width', $.width_annotation)),
+          optional(commaSep1(field('register', $.register))),
+        ),
+        commaSep1(field('register', $.register)),
+      ),
+
+    // Module-level default widths sit at the top of a file on their own.
+    // Each annotation is its own item, so a run of them needs no lookahead to
+    // tell where the run ends and a `func` header's annotations begin.
+    module_width: $ => field('width', $.width_annotation),
+
+    // `@a16 { ... }` scopes a width to a block and restores it afterwards.
+    width_block: $ =>
+      seq(repeat1(field('width', $.width_annotation)), field('body', $.block)),
+
+    // `call NAME` and `call far NAME`. A bare name is also a call; see
+    // `bare_call`.
+    //
+    // The keyword-less `far NAME` spelling is *not* here. It is two
+    // identifiers in a row, which is also `lda far addr` with the operand
+    // prefix, an assignment target followed by a bare call, and half a dozen
+    // other statement shapes; every attempt to prefer one reading broke
+    // another. It belongs with the rest of the statement-boundary work in the
+    // control-flow group, where the whole statement grammar is in view.
+    //
+    // `far` is an aliased identifier here and on a section header, not a
+    // keyword, for the same reason the encoding prefixes are: a keyword token
+    // would win in the lexer wherever both are valid, and `lda far addr` is
+    // an AbsoluteLong load rather than `lda` followed by a far call. The
+    // builder checks that the marker really says `far`.
+    call_statement: $ =>
+      choice(
+        seq(
+          'call',
+          optional(field('far', alias($.identifier, $.far_marker))),
+          field('target', $.identifier),
+        ),
+      ),
+
+    // `inc_x` on its own calls or inlines that function. It carries the
+    // lowest dynamic precedence of any statement: a bare name is the weakest
+    // possible claim on a token, so anything else that can parse wins.
+    bare_call: $ => prec.dynamic(-2, field('target', $.identifier)),
 
     width_annotation: _ => token(choice('@a8', '@a16', '@i8', '@i16')),
 
@@ -269,6 +373,9 @@ export default grammar({
         $.hla_stack,
         $.hla_nop,
         $.hla_break,
+        $.width_block,
+        $.call_statement,
+        $.bare_call,
         $.return_statement,
       ),
 
@@ -348,6 +455,12 @@ export default grammar({
             optional($._index_suffix),
           ),
         ),
+        // `lda dp addr` is a prefixed operand, not `lda dp` followed by a
+        // bare call to `addr`, so the prefixed reading outranks the
+        // prefix-less one wherever both parse. The reverse case — an
+        // instruction with a plain operand followed by a bare call, as in
+        // `lda foo` then `bar` — is genuinely ambiguous and resolves the same
+        // way; write `call bar` or a `;` separator to force the split.
         seq(
           field('encoding', alias($.identifier, $.address_encoding)),
           field('value', $._expression),
@@ -498,7 +611,7 @@ export default grammar({
     // are the compile-time evaluator's, and reach here as an expression.
     _hla_operand: $ => choice($.register, $.immediate, $.address, $.indirect),
 
-    return_statement: _ => 'return',
+    return_statement: _ => choice('return', 'return_i'),
 
     // Register names are case-insensitive. `C` and `D` name both a register
     // and a flag; which one is meant follows from the statement, not the

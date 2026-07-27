@@ -29,8 +29,8 @@
 //! diagnostics.
 
 use crate::ast::{
-    AstFile, Expr, ExprKind, Function, HlaOperandKind, HlaStatement, ItemKind, NativeOperand,
-    RegisterKind, Statement, StatementKind, WidthAnnotationKind,
+    AstFile, Expr, ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind,
+    NativeOperand, RegisterKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
 };
 use crate::compat;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -112,6 +112,11 @@ impl Analysis {
                     "`const` declarations",
                     compat::Owner::NativeTranslator,
                 )),
+                ItemKind::ModuleWidth(_) => self.diagnostics.push(compat::unimplemented(
+                    item.span,
+                    "module-level default widths",
+                    compat::Owner::WidthAndContracts,
+                )),
                 ItemKind::Segment(_) => self.diagnostics.push(compat::unimplemented(
                     item.span,
                     "`segment` selections",
@@ -119,6 +124,16 @@ impl Analysis {
                 )),
                 ItemKind::Func(func) => {
                     if func.name.provenance == Provenance::Synthetic {
+                        continue;
+                    }
+                    // Only a plain `func` (or the legacy bare `main`) with no
+                    // call contract has semantics so far.
+                    if let Some(feature) = unsupported_function_feature(func) {
+                        self.diagnostics.push(compat::unimplemented(
+                            item.span,
+                            feature,
+                            compat::Owner::WidthAndContracts,
+                        ));
                         continue;
                     }
                     let Some(symbol) =
@@ -304,7 +319,28 @@ impl Analysis {
                 "labels",
                 compat::Owner::NativeTranslator,
             )),
-            StatementKind::Return | StatementKind::Error => {}
+            // `return` is the slice's; `return_i` and everything else in the
+            // section family belongs to later work.
+            StatementKind::Return(ReturnKind::Subroutine) | StatementKind::Error => {}
+            StatementKind::Return(ReturnKind::Interrupt) => {
+                self.diagnostics.push(compat::unimplemented(
+                    statement.span,
+                    "`return_i` statements",
+                    compat::Owner::HlaLowering,
+                ));
+            }
+            StatementKind::WidthBlock(_) => self.diagnostics.push(compat::unimplemented(
+                statement.span,
+                "scoped width blocks",
+                compat::Owner::WidthAndContracts,
+            )),
+            StatementKind::Call(_) | StatementKind::BareCall(_) => {
+                self.diagnostics.push(compat::unimplemented(
+                    statement.span,
+                    "function calls",
+                    compat::Owner::WidthAndContracts,
+                ));
+            }
         }
     }
 
@@ -423,6 +459,22 @@ impl Analysis {
                     );
                 }
             }
+        }
+    }
+}
+
+/// Names the first part of a code section that has no semantics yet, or
+/// `None` for the plain `func` the slice compiles.
+fn unsupported_function_feature(func: &Function) -> Option<&'static str> {
+    if func.is_far {
+        Some("`far func` sections")
+    } else if func.contract.is_some() {
+        Some("call contracts")
+    } else {
+        match func.kind {
+            FunctionKind::Func | FunctionKind::Main => None,
+            FunctionKind::Naked => Some("`naked` sections"),
+            FunctionKind::Inline => Some("`inline` sections"),
         }
     }
 }

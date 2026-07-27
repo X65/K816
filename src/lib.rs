@@ -29,6 +29,8 @@
 
 pub mod ast;
 pub mod diagnostic;
+pub mod effects;
+pub mod isa;
 pub mod parser;
 pub mod source;
 

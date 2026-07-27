@@ -30,6 +30,11 @@
 //! variant, and machine-readable `json` (one object per diagnostic, one per
 //! line). The human layouts fall back to plain ASCII without colors when
 //! stderr is not a terminal.
+//!
+//! In `json` mode stderr is a pure stream of newline-delimited JSON objects:
+//! tool-level failures (bad arguments, unreadable files) go through
+//! [`render_tool_error`] so they do not corrupt the stream for consumers that
+//! parse every line.
 
 use std::io::IsTerminal;
 
@@ -73,6 +78,18 @@ pub fn render_diagnostics(map: &SourceMap, diagnostics: &[Diagnostic], format: M
                 eprintln!("{}", json_diagnostic(map, diagnostic));
             }
         }
+    }
+}
+
+/// Reports a tool-level failure (bad arguments, unreadable input, unwritable
+/// output) in the requested format.
+///
+/// These messages are not [`Diagnostic`]s -- they carry no span -- but they
+/// share stderr with them, so `json` mode must render them as JSON too.
+pub fn render_tool_error(prog_name: &str, message: &str, format: MessageFormat) {
+    match format {
+        MessageFormat::Human | MessageFormat::Compact => eprintln!("{prog_name}: {message}"),
+        MessageFormat::Json => eprintln!("{}", json!({ "severity": "error", "message": message })),
     }
 }
 
@@ -142,7 +159,7 @@ fn build_report(
 }
 
 /// One diagnostic as a JSON object. Spans carry byte offsets plus 1-based
-/// line/column so both machines and humans can locate them.
+/// line/column for both ends, so machines and humans can locate them.
 fn json_diagnostic(map: &SourceMap, diagnostic: &Diagnostic) -> serde_json::Value {
     let severity = match diagnostic.severity {
         Severity::Error => "error",
@@ -194,14 +211,20 @@ fn json_label(map: &SourceMap, label: &DiagnosticLabel) -> serde_json::Value {
     value
 }
 
+/// `start`/`end` are byte offsets; `line`/`column` and `end_line`/`end_column`
+/// are their 1-based positions. Columns count *bytes* from the line start, the
+/// same indexing the human layouts use; the LSP converts to UTF-16 itself.
 fn json_span(map: &SourceMap, span: Span) -> serde_json::Value {
-    let location = map.line_col(span.file, span.start);
+    let start = map.line_col(span.file, span.start);
+    let end = map.line_col(span.file, span.end);
     json!({
         "file": map.file(span.file).name(),
         "start": span.start,
         "end": span.end,
-        "line": location.line + 1,
-        "column": location.column + 1,
+        "line": start.line + 1,
+        "column": start.column + 1,
+        "end_line": end.line + 1,
+        "end_column": end.column + 1,
     })
 }
 

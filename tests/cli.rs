@@ -107,6 +107,46 @@ fn json_format_emits_one_parseable_object_per_diagnostic() {
 }
 
 #[test]
+fn json_spans_carry_both_ends_as_line_and_column() {
+    let (stderr, _) = compile("cli-json-span", BROKEN, &["--message-format=json"]);
+    let diagnostic: serde_json::Value =
+        serde_json::from_str(stderr.lines().next().expect("a diagnostic")).expect("JSON object");
+
+    let span = &diagnostic["primary"];
+    assert_eq!(span["line"], 2);
+    assert_eq!(span["column"], 5);
+    assert_eq!(span["end_line"], 2);
+    // `SCREEN` is six bytes wide, so the end column trails the start by six.
+    assert_eq!(span["end_column"], 11);
+}
+
+#[test]
+fn json_mode_keeps_tool_errors_on_the_json_stream() {
+    // A consumer parses every stderr line; a plain-text `cannot read` would
+    // break it. Missing input files are the common case.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-json-tool-error");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .args(["compile", "--message-format=json"])
+        .arg(dir.join("does-not-exist.k816"))
+        .output()
+        .expect("run k816");
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    let error: serde_json::Value =
+        serde_json::from_str(stderr.lines().next().expect("an error line")).expect("JSON object");
+    assert_eq!(error["severity"], "error");
+    assert!(
+        error["message"]
+            .as_str()
+            .expect("message is a string")
+            .contains("cannot read"),
+        "unexpected message in: {stderr}"
+    );
+}
+
+#[test]
 fn both_flag_spellings_and_bad_values_are_handled() {
     // `--message-format json` (space-separated) works like the `=` form.
     let (stderr, _) = compile("cli-json-space", BROKEN, &["--message-format", "json"]);

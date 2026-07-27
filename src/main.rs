@@ -82,7 +82,8 @@ fn usage(prog_name: &str) {
     eprintln!("  lsp                                  run the language server over stdio");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --message-format FORMAT              diagnostic output: human, compact, json");
+    eprintln!("  --message-format FORMAT              diagnostic output of compile and emit-ir:");
+    eprintln!("                                       human, compact, json");
     eprintln!("  -V, --version                        print the version number and exit");
 }
 
@@ -108,51 +109,49 @@ fn parse_command_line(
     };
     let mut message_format = render::MessageFormat::default();
 
-    let mut parse_format = |prog_name: &str, text: &str| match render::MessageFormat::parse(text) {
-        Some(format) => {
-            message_format = format;
-            Ok(())
-        }
-        None => {
-            eprintln!("{prog_name}: unknown message format `{text}` (human, compact, json)");
-            Err(())
-        }
-    };
-
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "-o" => match iter.next() {
                 Some(path) => output = Some(PathBuf::from(path)),
                 None => {
-                    eprintln!("{prog_name}: `-o` needs a file name");
+                    render::render_tool_error(prog_name, "`-o` needs a file name", message_format);
                     return Err(());
                 }
             },
             "--message-format" => match iter.next() {
-                Some(format) => parse_format(prog_name, format)?,
+                Some(text) => set_message_format(prog_name, text, &mut message_format)?,
                 None => {
-                    eprintln!("{prog_name}: `--message-format` needs a value");
+                    render::render_tool_error(
+                        prog_name,
+                        "`--message-format` needs a value",
+                        message_format,
+                    );
                     return Err(());
                 }
             },
             _ if arg.starts_with("--message-format=") => {
-                parse_format(prog_name, &arg["--message-format=".len()..])?;
+                let text = &arg["--message-format=".len()..];
+                set_message_format(prog_name, text, &mut message_format)?;
             }
             flag if flag == opt_flag => options.optimize = opt_flag_enables,
             _ if arg.starts_with('-') => {
-                eprintln!("{prog_name}: unknown option `{arg}`");
+                render::render_tool_error(
+                    prog_name,
+                    &format!("unknown option `{arg}`"),
+                    message_format,
+                );
                 return Err(());
             }
             _ if input.is_none() => input = Some(PathBuf::from(arg)),
             _ => {
-                eprintln!("{prog_name}: more than one input file");
+                render::render_tool_error(prog_name, "more than one input file", message_format);
                 return Err(());
             }
         }
     }
     let Some(input) = input else {
-        eprintln!("{prog_name}: no input file");
+        render::render_tool_error(prog_name, "no input file", message_format);
         return Err(());
     };
     Ok(CommandLine {
@@ -163,11 +162,43 @@ fn parse_command_line(
     })
 }
 
-fn load(prog_name: &str, map: &mut SourceMap, input: &Path) -> Result<k816::source::FileId, ()> {
+/// Applies one `--message-format` value, reporting unknown ones in whatever
+/// format is in effect so far.
+fn set_message_format(
+    prog_name: &str,
+    text: &str,
+    message_format: &mut render::MessageFormat,
+) -> Result<(), ()> {
+    match render::MessageFormat::parse(text) {
+        Some(format) => {
+            *message_format = format;
+            Ok(())
+        }
+        None => {
+            render::render_tool_error(
+                prog_name,
+                &format!("unknown message format `{text}` (human, compact, json)"),
+                *message_format,
+            );
+            Err(())
+        }
+    }
+}
+
+fn load(
+    prog_name: &str,
+    map: &mut SourceMap,
+    input: &Path,
+    format: render::MessageFormat,
+) -> Result<k816::source::FileId, ()> {
     match std::fs::read_to_string(input) {
         Ok(text) => Ok(map.add_file(input.to_string_lossy(), text)),
         Err(error) => {
-            eprintln!("{prog_name}: cannot read {}: {error}", input.display());
+            render::render_tool_error(
+                prog_name,
+                &format!("cannot read {}: {error}", input.display()),
+                format,
+            );
             Err(())
         }
     }
@@ -178,7 +209,7 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let mut map = SourceMap::new();
-    let Ok(file) = load(prog_name, &mut map, &command.input) else {
+    let Ok(file) = load(prog_name, &mut map, &command.input, command.message_format) else {
         return ExitCode::FAILURE;
     };
 
@@ -192,7 +223,11 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
         .output
         .unwrap_or_else(|| command.input.with_extension("s"));
     if let Err(error) = std::fs::write(&output, assembly) {
-        eprintln!("{prog_name}: cannot write {}: {error}", output.display());
+        render::render_tool_error(
+            prog_name,
+            &format!("cannot write {}: {error}", output.display()),
+            command.message_format,
+        );
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -203,7 +238,7 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let mut map = SourceMap::new();
-    let Ok(file) = load(prog_name, &mut map, &command.input) else {
+    let Ok(file) = load(prog_name, &mut map, &command.input, command.message_format) else {
         return ExitCode::FAILURE;
     };
 

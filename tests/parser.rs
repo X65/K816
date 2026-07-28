@@ -893,7 +893,10 @@ fn a_compound_address_folds_through_the_const_table() {
     let x = model.symbols.lookup("X").expect("X is declared");
     assert_eq!(
         model.symbols.symbol(x).kind,
-        k816::symbol::SymbolKind::FixedAddressVar { address: 0x0403 }
+        k816::symbol::SymbolKind::Var {
+            address: Some(0x0403),
+            size: k816::symbol::AddressSize::Absolute,
+        }
     );
 }
 
@@ -995,10 +998,9 @@ fn every_new_declaration_form_names_its_owner() {
     // semantics rather than compile to nothing.
     for (source, expected_code) in [
         ("var counter\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        (
-            "var dp counter = $10\n",
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-        ),
+        // The pool allocation is E's; the encoding default on a *pinned*
+        // variable is the address-size axis C owns.
+        ("var dp counter\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         ("var w:word = $2000\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         (
             "var buffer[32] = $100\n",
@@ -1006,7 +1008,6 @@ fn every_new_declaration_form_names_its_owner() {
         ),
         ("var s:byte * 32\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         ("segment code\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        ("func f { .loop: }\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         (
             "func f { .LT+1 = a }\n",
             DiagnosticCode::NOT_YET_IMPLEMENTED,

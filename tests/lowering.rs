@@ -128,12 +128,12 @@ fn the_unoptimized_stream_is_exactly_the_expected_slice_sequence() {
     assert_eq!(
         kinds,
         vec![
-            "label#1",  // main
+            "label#0",  // main
             "sep #$20", // entry @a8
             "rep #$10", // entry @i16
             "lda #$00", // the dead load — removed only by the optimizer
             "lda #$01",
-            "sta sym#0", // SCREEN
+            "sta sym#1", // SCREEN
             "rts",
         ]
     );

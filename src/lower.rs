@@ -63,6 +63,7 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
 
         let mut lowering = Lowering {
             model,
+            function: Some(info.symbol),
             ops: Vec::new(),
             diagnostics: Vec::new(),
         };
@@ -88,6 +89,8 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
 
 struct Lowering<'a> {
     model: &'a SemanticModel,
+    /// The function being lowered, which local labels are scoped to.
+    function: Option<SymbolId>,
     ops: Vec<KOp>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -172,10 +175,14 @@ impl Lowering<'_> {
                     // Analysis rejects every address operand that is not a
                     // plain symbol in the ISA table's absolute mode.
                     Some(NativeOperand::Address(address)) => {
-                        let ExprKind::Symbol(name) = &address.value.kind else {
-                            return self.skipped(span, "an unresolved address operand");
+                        let symbol = match &address.value.kind {
+                            ExprKind::Symbol(name) => self.model.symbols.lookup(&name.text),
+                            ExprKind::LocalSymbol(name) => self.function.and_then(|owner| {
+                                self.model.symbols.lookup_local(owner, &name.text)
+                            }),
+                            _ => return self.skipped(span, "an unresolved address operand"),
                         };
-                        match self.model.symbols.lookup(&name.text) {
+                        match symbol {
                             Some(symbol) => Some(Self::absolute(symbol)),
                             None => return self.skipped(span, "an unresolved symbol"),
                         }
@@ -269,9 +276,20 @@ impl Lowering<'_> {
             | StatementKind::Nocross(_) => self.skipped(span, "a branch or loop statement"),
             StatementKind::Data(_) => self.skipped(span, "an inline data block"),
             StatementKind::Preprocessor(_) => self.skipped(span, "a preprocessor directive"),
-            // Analysis reports labels as not-yet-implemented, so lowering is
-            // never reached with one.
-            StatementKind::Label(_) => self.skipped(span, "a label"),
+            StatementKind::Label(label) => {
+                // Analysis declared both scopes; a local label lives in the
+                // enclosing function's scope, a global one in the unit's.
+                let symbol = match label.scope {
+                    crate::ast::LabelScope::Global => self.model.symbols.lookup(&label.name.text),
+                    crate::ast::LabelScope::Local => self
+                        .function
+                        .and_then(|owner| self.model.symbols.lookup_local(owner, &label.name.text)),
+                };
+                match symbol {
+                    Some(symbol) => self.push(KOpKind::Label(symbol), span, Origin::User),
+                    None => self.skipped(span, "an undeclared label"),
+                }
+            }
             StatementKind::Error => {}
         }
     }

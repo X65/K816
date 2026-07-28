@@ -99,3 +99,52 @@ fn width_directives_track_the_entry_contract() {
     assert!(main_at < a8_at && a8_at < first_dbg);
     assert!(main_at < i16_at && i16_at < first_dbg);
 }
+
+// ---------------------------------------------------------------------------
+// Label emission (sub-plan C, task C2 with backend decision 4).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn local_labels_become_ca65_cheap_locals() {
+    let assembly = emit(
+        "labels.k816",
+        "var SCREEN = $0400\nfunc main @a8 @i16 {\n  .again:\n    lda #1\n    sta .again\n}\n",
+    );
+    assert!(assembly.contains("\n@again:\n"), "{assembly}");
+    assert!(
+        assembly.contains("sta     @again"),
+        "references use the cheap-local spelling too: {assembly}"
+    );
+}
+
+#[test]
+fn a_global_label_inside_a_function_qualifies_its_local_labels() {
+    // ca65 restarts the cheap-local scope at every non-cheap label, so a
+    // global label written inside a function body would strand every `@name`
+    // declared before it. The qualified spelling is what keeps a reference
+    // across that boundary resolvable instead of failing inside ca65.
+    let assembly = emit(
+        "split.k816",
+        "func main @a8 @i16 {\n  .again:\n    lda #1\n  done:\n    sta .again\n}\n",
+    );
+    assert!(assembly.contains("\nmain_again:\n"), "{assembly}");
+    assert!(assembly.contains("\ndone:\n"), "{assembly}");
+    assert!(assembly.contains("sta     main_again"), "{assembly}");
+    assert!(
+        !assembly.contains('@'),
+        "no cheap local may survive the split: {assembly}"
+    );
+}
+
+#[test]
+fn two_functions_reusing_a_local_label_name_stay_distinct() {
+    let assembly = emit(
+        "twice.k816",
+        "func one @a8 {\n  .loop:\n    lda #1\n}\nfunc two @a8 {\n  .loop:\n    lda #2\n}\n",
+    );
+    assert_eq!(
+        assembly.matches("\n@loop:\n").count(),
+        2,
+        "each function opens its own cheap-local scope: {assembly}"
+    );
+}

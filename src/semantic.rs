@@ -40,7 +40,7 @@ use crate::isa::{
 };
 use crate::op::WidthContract;
 use crate::source::{Provenance, Span};
-use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
 use crate::value::{BinaryOp, KExpr, UnaryOp};
 
 /// The result of analyzing one file: symbols plus per-function facts.
@@ -67,7 +67,9 @@ pub fn analyze_file(file: &AstFile) -> (SemanticModel, Vec<Diagnostic>) {
     let mut analysis = Analysis {
         model: SemanticModel::default(),
         diagnostics: Vec::new(),
+        current_function: None,
     };
+    analysis.declare_placed_symbols(file);
     analysis.declare_items(file);
     analysis.check_functions(file);
     (analysis.model, analysis.diagnostics)
@@ -76,11 +78,147 @@ pub fn analyze_file(file: &AstFile) -> (SemanticModel, Vec<Diagnostic>) {
 struct Analysis {
     model: SemanticModel,
     diagnostics: Vec<Diagnostic>,
+    /// The function whose body is being walked, for local label scope.
+    current_function: Option<SymbolId>,
 }
 
 impl Analysis {
-    /// Declares all top-level symbols first, so use-before-declaration inside
-    /// function bodies resolves within one file.
+    /// First pass: declares every symbol ld65 places — functions, labels, and
+    /// data-block labels.
+    ///
+    /// These have no value to fold, so declaring them all before anything is
+    /// checked is what makes forward references work: a `goto` may name a
+    /// label further down its function, and an operand may name a data block
+    /// declared at the end of the file.
+    ///
+    /// `const` and `var` are *not* declared here. Their values fold, and a
+    /// fold reads other declarations, so they stay in source order — the
+    /// same rule the documentation states for evaluator constants. Declaring
+    /// them early with a placeholder value would let a forward reference
+    /// silently read the placeholder.
+    fn declare_placed_symbols(&mut self, file: &AstFile) {
+        for item in &file.items {
+            match &item.kind {
+                ItemKind::Func(func) => {
+                    if func.name.provenance == Provenance::Synthetic
+                        || unsupported_function_feature(func).is_some()
+                    {
+                        continue;
+                    }
+                    let Some(symbol) = self.declare(
+                        &func.name.text,
+                        SymbolKind::Function {
+                            size: AddressSize::Absolute,
+                        },
+                        func.name.span,
+                    ) else {
+                        continue;
+                    };
+                    self.declare_labels_in(symbol, &func.body);
+                }
+                ItemKind::Data(data) => self.declare_data_labels(data),
+                ItemKind::Var(_)
+                | ItemKind::Const(_)
+                | ItemKind::Segment(_)
+                | ItemKind::EvalBlock(_)
+                | ItemKind::Preprocessor(_)
+                | ItemKind::Binary(_)
+                | ItemKind::Reserved(_)
+                | ItemKind::ModuleWidth(_)
+                | ItemKind::Error => {}
+            }
+        }
+    }
+
+    /// Declares the labels of one function body. A global label is visible
+    /// across the unit; a `.name` label is scoped to `owner`, so two
+    /// functions may use the same one.
+    fn declare_labels_in(&mut self, owner: SymbolId, block: &crate::ast::Block) {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Label(label) => {
+                    if label.name.provenance == Provenance::Synthetic {
+                        continue;
+                    }
+                    let kind = SymbolKind::Label {
+                        scope: match label.scope {
+                            crate::ast::LabelScope::Global => LabelScope::Global,
+                            crate::ast::LabelScope::Local => LabelScope::Local,
+                        },
+                        size: AddressSize::Absolute,
+                    };
+                    match label.scope {
+                        crate::ast::LabelScope::Global => {
+                            self.declare(&label.name.text, kind, label.name.span);
+                        }
+                        crate::ast::LabelScope::Local => {
+                            self.declare_local(owner, &label.name.text, kind, label.name.span);
+                        }
+                    }
+                }
+                // Labels nest wherever a block does; the scope stays the
+                // enclosing function's either way.
+                StatementKind::WidthBlock(width) => self.declare_labels_in(owner, &width.body),
+                StatementKind::Nocross(body) => self.declare_labels_in(owner, body),
+                StatementKind::Loop(loop_statement) => {
+                    self.declare_labels_in(owner, &loop_statement.body);
+                }
+                StatementKind::Conditional(conditional) => {
+                    self.declare_labels_in(owner, &conditional.body);
+                    if let Some(otherwise) = &conditional.otherwise {
+                        self.declare_labels_in(owner, otherwise);
+                    }
+                }
+                StatementKind::Data(data) => self.declare_data_labels(data),
+                StatementKind::Native(_)
+                | StatementKind::Hla(_)
+                | StatementKind::Call(_)
+                | StatementKind::BareCall(_)
+                | StatementKind::ConditionalJump(_)
+                | StatementKind::Goto(_)
+                | StatementKind::Break
+                | StatementKind::Repeat
+                | StatementKind::Preprocessor(_)
+                | StatementKind::Return(_)
+                | StatementKind::Error => {}
+            }
+        }
+    }
+
+    /// Declares a data block's own name and every label inside it. Both are
+    /// unit-level: a data label is exactly how one unit hands another the
+    /// address of some bytes.
+    fn declare_data_labels(&mut self, data: &DataBlock) {
+        if let Some(name) = &data.name
+            && name.provenance != Provenance::Synthetic
+        {
+            self.declare(
+                &name.text,
+                SymbolKind::DataLabel {
+                    size: AddressSize::Absolute,
+                },
+                name.span,
+            );
+        }
+        for entry in &data.entries {
+            match &entry.kind {
+                DataEntryKind::Label(name) if name.provenance != Provenance::Synthetic => {
+                    self.declare(
+                        &name.text,
+                        SymbolKind::DataLabel {
+                            size: AddressSize::Absolute,
+                        },
+                        name.span,
+                    );
+                }
+                DataEntryKind::Repeat { body, .. } => self.declare_data_labels(body),
+                _ => {}
+            }
+        }
+    }
+
+    /// Second pass: declares the symbols whose value has to be folded, and
+    /// records what the rest of analysis needs about each item.
     fn declare_items(&mut self, file: &AstFile) {
         for (item_index, item) in file.items.iter().enumerate() {
             match &item.kind {
@@ -105,9 +243,20 @@ impl Analysis {
                     else {
                         continue;
                     };
+                    // A declaration-position prefix sets the default
+                    // encoding for plain references; without one the value's
+                    // own magnitude decides (`doc/syntax-reference.md`,
+                    // "Address-encoding (prefixes)").
+                    let size = var.storage.map_or_else(
+                        || AddressSize::of_value(address),
+                        |storage| address_size_of(storage.kind),
+                    );
                     self.declare(
                         &var.name.text,
-                        SymbolKind::FixedAddressVar { address },
+                        SymbolKind::Var {
+                            address: Some(address),
+                            size,
+                        },
                         var.name.span,
                     );
                 }
@@ -168,11 +317,15 @@ impl Analysis {
                         ));
                         continue;
                     }
-                    let Some(symbol) =
-                        self.declare(&func.name.text, SymbolKind::Function, func.name.span)
-                    else {
+                    // The first pass declared the name; a duplicate reported
+                    // itself there, and this pass records what lowering and
+                    // emission need about the function it kept.
+                    let Some(symbol) = self.model.symbols.lookup(&func.name.text) else {
                         continue;
                     };
+                    if self.model.symbols.symbol(symbol).declaration != func.name.span {
+                        continue; // Another declaration won this name.
+                    }
                     self.model.functions.push(FunctionInfo {
                         symbol,
                         item_index,
@@ -186,22 +339,54 @@ impl Analysis {
     }
 
     fn declare(&mut self, name: &str, kind: SymbolKind, span: Span) -> Option<SymbolId> {
-        match self.model.symbols.declare(name, kind, span) {
-            Ok(id) => Some(id),
-            Err(existing) => {
-                let previous = self.model.symbols.symbol(existing).declaration;
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        DiagnosticCode::DUPLICATE_SYMBOL,
-                        format!("`{name}` is declared more than once"),
-                        Label::new(span, "redeclared here"),
-                    )
-                    .with_secondary(Label::new(previous, "first declared here"))
-                    .with_help("rename one of the declarations"),
-                );
-                None
-            }
-        }
+        let result = self.model.symbols.declare(name, kind, span);
+        self.declared(name, span, result)
+    }
+
+    fn declare_local(
+        &mut self,
+        owner: SymbolId,
+        name: &str,
+        kind: SymbolKind,
+        span: Span,
+    ) -> Option<SymbolId> {
+        let result = self.model.symbols.declare_local(owner, name, kind, span);
+        self.declared(name, span, result)
+    }
+
+    /// Reports a duplicate declaration, pointing the "first declared here"
+    /// label at whichever declaration actually comes first in the source.
+    ///
+    /// Declaration runs in two passes, so the surviving symbol is not always
+    /// the earlier one — a function declared in the first pass wins a name a
+    /// `var` on an earlier line asked for. Ordering by span keeps the
+    /// diagnostic honest about which line the reader should look at first.
+    fn declared(
+        &mut self,
+        name: &str,
+        span: Span,
+        result: Result<SymbolId, SymbolId>,
+    ) -> Option<SymbolId> {
+        let existing = match result {
+            Ok(id) => return Some(id),
+            Err(existing) => existing,
+        };
+        let previous = self.model.symbols.symbol(existing).declaration;
+        let (first, again) = if previous.start <= span.start {
+            (previous, span)
+        } else {
+            (span, previous)
+        };
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::DUPLICATE_SYMBOL,
+                format!("`{name}` is declared more than once"),
+                Label::new(again, "redeclared here"),
+            )
+            .with_secondary(Label::new(first, "first declared here"))
+            .with_help("rename one of the declarations"),
+        );
+        None
     }
 
     fn check_functions(&mut self, file: &AstFile) {
@@ -210,9 +395,11 @@ impl Analysis {
             let ItemKind::Func(func) = &file.items[function.item_index].kind else {
                 continue;
             };
+            self.current_function = Some(function.symbol);
             for statement in &func.body.statements {
                 self.check_statement(statement, function.contract);
             }
+            self.current_function = None;
         }
     }
 
@@ -281,9 +468,21 @@ impl Analysis {
                     }
                     Some(NativeOperand::Address(address)) => match &address.value.kind {
                         ExprKind::Symbol(name) => self.check_memory_operand(&name.text, name.span),
-                        _ => {
-                            self.constant(&address.value, "address operands");
+                        // A local label resolves in the enclosing function's
+                        // scope and, like any label, gets its address from
+                        // ld65 — so it is checked, not folded.
+                        ExprKind::LocalSymbol(_) => {
+                            self.fold(&address.value);
                         }
+                        // Literal and compound address operands need the
+                        // encoding choice operand classification makes, so
+                        // they wait for it rather than being folded into an
+                        // absolute the auto-shrink rule has not looked at.
+                        _ => self.diagnostics.push(compat::unimplemented(
+                            address.value.span,
+                            "these address operand forms",
+                            compat::Owner::NativeTranslator,
+                        )),
                     },
                     Some(NativeOperand::Register(_))
                     | Some(NativeOperand::Indirect(_))
@@ -346,11 +545,9 @@ impl Analysis {
                     compat::Owner::HlaLowering,
                 ));
             }
-            StatementKind::Label(_) => self.diagnostics.push(compat::unimplemented(
-                statement.span,
-                "labels",
-                compat::Owner::NativeTranslator,
-            )),
+            // Both label scopes were declared by the first pass, so a label
+            // statement has nothing left to check here.
+            StatementKind::Label(_) => {}
             // `return` is the slice's; `return_i` and everything else in the
             // section family belongs to later work.
             StatementKind::Return(ReturnKind::Subroutine) | StatementKind::Error => {}
@@ -654,7 +851,10 @@ impl Analysis {
                     // value; a variable or function keeps its name, and
                     // ca65/ld65 resolve it.
                     SymbolKind::Const { value } => KExpr::number(value),
-                    SymbolKind::FixedAddressVar { .. } | SymbolKind::Function => KExpr::Symbol(id),
+                    SymbolKind::Var { .. }
+                    | SymbolKind::Label { .. }
+                    | SymbolKind::DataLabel { .. }
+                    | SymbolKind::Function { .. } => KExpr::Symbol(id),
                 })
             }
             ExprKind::Unary(unary) => {
@@ -672,15 +872,24 @@ impl Analysis {
                     right?,
                 ))
             }
-            // Local labels are function-scoped, which means resolution needs
-            // the enclosing scope; that lands with task C2.
-            ExprKind::LocalSymbol(_) => {
-                self.diagnostics.push(compat::unimplemented(
-                    expr.span,
-                    "local label references",
-                    compat::Owner::NativeTranslator,
-                ));
-                None
+            ExprKind::LocalSymbol(name) => {
+                let owner = self.current_function?;
+                match self.model.symbols.lookup_local(owner, &name.text) {
+                    Some(id) => Some(KExpr::Symbol(id)),
+                    None => {
+                        let function = self.model.symbols.name(owner).to_owned();
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticCode::UNDECLARED_SYMBOL,
+                                format!("`{}` is not declared in `{function}`", name.text),
+                                Label::new(name.span, "no such local label in this function"),
+                            )
+                            .with_note("local labels are scoped to their enclosing function")
+                            .with_docs("doc/syntax-reference.md#local"),
+                        );
+                        None
+                    }
+                }
             }
             ExprKind::Field(_)
             | ExprKind::Subscript(_)
@@ -820,7 +1029,10 @@ impl Analysis {
         let symbol = self.model.symbols.symbol(id);
         let declaration = symbol.declaration;
         match symbol.kind {
-            SymbolKind::FixedAddressVar { .. } => {}
+            // Variables and labels all name memory: a data label is how one
+            // unit hands another the address of some bytes, and a code label
+            // is the target of the legacy self-modifying-code idiom.
+            SymbolKind::Var { .. } | SymbolKind::Label { .. } | SymbolKind::DataLabel { .. } => {}
             // A `const` names a value, not a memory location. The `&&label`
             // and `&&&label` forms are the intentional exception, and they
             // are not bare symbols.
@@ -838,13 +1050,19 @@ impl Analysis {
                 })
                 .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
             ),
-            SymbolKind::Function => self.diagnostics.push(
+            // Reading a function's first byte is legal on the hardware and
+            // is almost never what the writer meant; a call goes through
+            // `call`, and its address through `&&name`.
+            SymbolKind::Function { .. } => self.diagnostics.push(
                 Diagnostic::error(
-                    DiagnosticCode::INVALID_OPERAND,
+                    DiagnosticCode::SYMBOL_KIND_MISMATCH,
                     format!("`{name}` is a function, not a variable"),
                     Label::new(span, "cannot be used as a memory operand"),
                 )
-                .with_secondary(Label::new(declaration, "declared here")),
+                .with_secondary(Label::new(declaration, "declared here"))
+                .with_help(format!(
+                    "call it with `call {name}`, or take its address with `&&{name}`"
+                )),
             ),
         }
     }
@@ -1014,8 +1232,12 @@ fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static 
         Some("`abstract var` layouts")
     } else if !var.fields.is_empty() {
         Some("symbolic subscript field lists")
-    } else if var.storage.is_some() {
-        Some("`dp` / `abs` / `far` storage classes")
+    } else if var.storage.is_some() && var.address.is_none() {
+        // On a pinned variable the prefix only picks the encoding plain
+        // references default to, which is the address-size axis C owns. On
+        // an allocated one it also asks for a storage pool — the direct-page
+        // pool, or far storage — and that allocation is E's.
+        Some("`dp` / `abs` / `far` storage classes on allocated variables")
     } else if var.width.is_some() {
         Some("typed width suffixes")
     } else if var.size.is_some() {
@@ -1042,4 +1264,13 @@ fn contract_of(func: &Function) -> WidthContract {
         }
     }
     contract
+}
+
+/// The address size a `dp` / `abs` / `far` prefix forces.
+fn address_size_of(kind: crate::ast::StorageClassKind) -> AddressSize {
+    match kind {
+        crate::ast::StorageClassKind::DirectPage => AddressSize::DirectPage,
+        crate::ast::StorageClassKind::Absolute => AddressSize::Absolute,
+        crate::ast::StorageClassKind::Far => AddressSize::Long,
+    }
 }

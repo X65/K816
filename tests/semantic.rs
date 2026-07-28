@@ -106,7 +106,10 @@ func main @a8 @i16 {
     let screen = model.symbols.lookup("SCREEN").expect("SCREEN declared");
     assert_eq!(
         model.symbols.symbol(screen).kind,
-        k816::symbol::SymbolKind::FixedAddressVar { address: 0x0400 }
+        k816::symbol::SymbolKind::Var {
+            address: Some(0x0400),
+            size: k816::symbol::AddressSize::Absolute,
+        }
     );
 }
 
@@ -155,7 +158,7 @@ fn storing_through_a_function_symbol_is_rejected() {
     // misuse path is reachable today:
     let (_, diagnostics) = analyze("func f @a8 {\n    sta f\n}\n");
     assert_eq!(diagnostics.len(), 1);
-    assert_eq!(diagnostics[0].code, DiagnosticCode::INVALID_OPERAND);
+    assert_eq!(diagnostics[0].code, DiagnosticCode::SYMBOL_KIND_MISMATCH);
     assert_eq!(diagnostics[0].title, "`f` is a function, not a variable");
     assert_eq!(diagnostics[0].secondary.len(), 1);
 }
@@ -360,5 +363,134 @@ fn a_compound_expression_in_a_data_value_list_is_rejected() {
             .iter()
             .any(|d| d.code == DiagnosticCode::COMPOUND_DATA_VALUE),
         "{diagnostics:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Symbols, labels, and address sizes (sub-plan C, task C2).
+// ---------------------------------------------------------------------------
+
+fn kind_of(model: &k816::semantic::SemanticModel, name: &str) -> k816::symbol::SymbolKind {
+    let id = model
+        .symbols
+        .lookup(name)
+        .unwrap_or_else(|| panic!("`{name}` is declared"));
+    model.symbols.symbol(id).kind
+}
+
+#[test]
+fn a_global_label_is_visible_before_it_is_written() {
+    // Declaration is a real first pass, so a forward reference resolves.
+    let source = "func main @a8 {\n    sta later\n  later:\n    return\n}\n";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+    assert!(matches!(
+        kind_of(&model, "later"),
+        k816::symbol::SymbolKind::Label {
+            scope: k816::symbol::LabelScope::Global,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn two_functions_may_reuse_one_local_label_name() {
+    let source =
+        "func one @a8 {\n  .loop:\n    return\n}\nfunc two @a8 {\n  .loop:\n    return\n}\n";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+
+    let one = model.symbols.lookup("one").unwrap();
+    let two = model.symbols.lookup("two").unwrap();
+    let first = model.symbols.lookup_local(one, ".loop").expect("one's");
+    let second = model.symbols.lookup_local(two, ".loop").expect("two's");
+    assert_ne!(first, second);
+    // …and neither leaks into unit scope.
+    assert_eq!(model.symbols.lookup(".loop"), None);
+}
+
+#[test]
+fn a_local_label_of_another_function_is_not_in_scope() {
+    let source = "func one @a8 {\n  .loop:\n    return\n}\nfunc two @a8 {\n    sta .loop\n}\n";
+    let (_, diagnostics) = analyze(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::UNDECLARED_SYMBOL);
+    assert_eq!(diagnostics[0].title, "`.loop` is not declared in `two`");
+}
+
+#[test]
+fn a_local_label_declared_twice_in_one_function_is_a_duplicate() {
+    let source = "func one @a8 {\n  .loop:\n  .loop:\n    return\n}\n";
+    let (_, diagnostics) = analyze(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::DUPLICATE_SYMBOL);
+}
+
+#[test]
+fn data_block_names_and_labels_are_unit_level() {
+    // The block itself is still C8's to compile, so its own diagnostic is
+    // expected; what this pins down is that its names are declared.
+    let source = "data text {\n  hello:\n  1 2 3\n}\n";
+    let (model, _) = analyze(source);
+    for name in ["text", "hello"] {
+        assert!(
+            matches!(
+                kind_of(&model, name),
+                k816::symbol::SymbolKind::DataLabel { .. }
+            ),
+            "`{name}`"
+        );
+    }
+}
+
+#[test]
+fn address_size_comes_from_the_prefix_or_else_the_value() {
+    use k816::symbol::{AddressSize, SymbolKind};
+    let source = "var ZP = $80\nvar MID = $0400\nvar FAR = $030000\nvar abs WIDE = $0012\n";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+    for (name, expected) in [
+        ("ZP", AddressSize::DirectPage),
+        ("MID", AddressSize::Absolute),
+        ("FAR", AddressSize::Long),
+        // The declaration prefix overrides what the value alone would pick.
+        ("WIDE", AddressSize::Absolute),
+    ] {
+        let SymbolKind::Var { size, .. } = kind_of(&model, name) else {
+            panic!("`{name}` is not a variable");
+        };
+        assert_eq!(size, expected, "`{name}`");
+    }
+}
+
+#[test]
+fn a_label_is_placed_by_ld65_and_never_carries_a_known_address() {
+    let source = "func main @a8 {\n  spot:\n    return\n}\n";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![]);
+    assert_eq!(
+        kind_of(&model, "spot").known_address(),
+        None,
+        "assuming an address for a label is what makes auto-shrink unsound"
+    );
+    assert_eq!(
+        kind_of(&model, "spot").address_size(),
+        Some(k816::symbol::AddressSize::Absolute)
+    );
+}
+
+#[test]
+fn duplicate_reports_point_at_the_earlier_declaration() {
+    // Functions are declared in the first pass and variables in the second,
+    // so the surviving symbol is not the earlier one — the label ordering
+    // has to come from the spans, not the declaration order.
+    let source = "var thing = $10\nfunc thing @a8 {\n    return\n}\n";
+    let (_, diagnostics) = analyze(source);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::DUPLICATE_SYMBOL);
+    assert!(
+        diagnostic.secondary[0].span.start < diagnostic.primary.span.start,
+        "`first declared here` must point at the earlier line"
     );
 }

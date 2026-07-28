@@ -37,16 +37,109 @@
 //! would silently change a working program's numbers, which is why
 //! [`format_expr`] never does (sub-plan C, backend decision 1).
 
+use std::collections::HashMap;
+
 use crate::effects::WidthEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
 use crate::op::{
-    DataOp, IndexRegister, Instruction, KOp, KOpKind, KProgram, KProgramItem, Operand, Origin,
-    WidthContract,
+    DataOp, IndexRegister, Instruction, KFunction, KOp, KOpKind, KProgram, KProgramItem, Operand,
+    Origin, WidthContract,
 };
 use crate::semantic::SemanticModel;
 use crate::source::{FileId, SourceMap, Span};
-use crate::symbol::{SymbolKind, SymbolTable};
+use crate::symbol::{LabelScope, SymbolId, SymbolKind, SymbolTable};
 use crate::value::{KExpr, UnaryOp, Value};
+
+/// The ca65 spelling chosen for every symbol, decided once per unit.
+///
+/// A K65 function-local `.name` label normally becomes a ca65 cheap local,
+/// `@name`. K65 scopes a local label to its enclosing function and ca65
+/// scopes a cheap local to the preceding non-cheap label, so the mapping is
+/// exact *as long as the function emits exactly one non-cheap label* — its
+/// own name (sub-plan C, backend decision 4).
+///
+/// A global label written inside a function body breaks that premise: ca65
+/// starts a new cheap-local scope there, and a later reference to an earlier
+/// `@name` becomes "Symbol '@name' is undefined" — an error far from its
+/// cause. Such a function's local labels are therefore emitted as unit-level
+/// identifiers qualified by the function name instead. The readable form is
+/// kept wherever it is correct, and the correct form is used everywhere.
+struct Names<'a> {
+    symbols: &'a SymbolTable,
+    /// Local labels that cannot be cheap, and the name they take instead.
+    qualified: HashMap<SymbolId, String>,
+}
+
+impl<'a> Names<'a> {
+    fn new(symbols: &'a SymbolTable, program: &KProgram) -> Self {
+        let mut qualified = HashMap::new();
+        for function in program.functions() {
+            if !splits_cheap_local_scope(symbols, function) {
+                continue;
+            }
+            let prefix = symbols.name(function.symbol).to_owned();
+            for op in &function.ops {
+                let KOpKind::Label(id) = &op.kind else {
+                    continue;
+                };
+                if !matches!(
+                    symbols.kind(*id),
+                    SymbolKind::Label {
+                        scope: LabelScope::Local,
+                        ..
+                    }
+                ) {
+                    continue;
+                }
+                let bare = symbols.name(*id).trim_start_matches('.');
+                let mut name = format!("{prefix}_{bare}");
+                // A user symbol may already own that spelling; lengthening
+                // is deterministic, so the choice stays stable across runs.
+                while symbols.lookup(&name).is_some() {
+                    name.push('_');
+                }
+                qualified.insert(*id, name);
+            }
+        }
+        Self { symbols, qualified }
+    }
+
+    /// The ca65 identifier for `id`.
+    fn of(&self, id: SymbolId) -> String {
+        if let Some(name) = self.qualified.get(&id) {
+            return name.clone();
+        }
+        let symbol = self.symbols.symbol(id);
+        match symbol.kind {
+            SymbolKind::Label {
+                scope: LabelScope::Local,
+                ..
+            } => format!("@{}", symbol.name.trim_start_matches('.')),
+            SymbolKind::Label { .. }
+            | SymbolKind::DataLabel { .. }
+            | SymbolKind::Var { .. }
+            | SymbolKind::Function { .. }
+            | SymbolKind::Const { .. } => symbol.name.clone(),
+        }
+    }
+}
+
+/// True when `function` emits a non-cheap label other than its own.
+fn splits_cheap_local_scope(symbols: &SymbolTable, function: &KFunction) -> bool {
+    function.ops.iter().any(|op| match &op.kind {
+        KOpKind::Label(id) => {
+            *id != function.symbol
+                && !matches!(
+                    symbols.kind(*id),
+                    SymbolKind::Label {
+                        scope: LabelScope::Local,
+                        ..
+                    }
+                )
+        }
+        _ => false,
+    })
+}
 
 /// Emits the whole lowered `program` as ca65 assembly.
 pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KProgram) -> String {
@@ -60,7 +153,11 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
 
     let mut equates = String::new();
     for (_, symbol) in model.symbols.iter() {
-        if let SymbolKind::FixedAddressVar { address } = symbol.kind {
+        if let SymbolKind::Var {
+            address: Some(address),
+            ..
+        } = symbol.kind
+        {
             let target = format!("{:<15} := {}", symbol.name, format_address(address));
             equates.push_str(&annotated(&target, &line_comment(map, symbol.declaration)));
         }
@@ -87,9 +184,10 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
 
     out.push_str("\n.segment \"CODE\"\n");
 
+    let names = Names::new(&model.symbols, program);
     for item in &program.items {
         match item {
-            KProgramItem::Op(op) => emit_unit_op(map, source.name(), model, op, &mut out),
+            KProgramItem::Op(op) => emit_unit_op(map, source.name(), &names, op, &mut out),
             KProgramItem::Function(function) => {
                 out.push('\n');
                 let mut widths = WidthState::default();
@@ -105,13 +203,13 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
                         KOpKind::Instruction(instruction) => emit_instruction(
                             map,
                             source.name(),
-                            model,
+                            &names,
                             instruction,
                             op,
                             &mut widths,
                             &mut out,
                         ),
-                        _ => emit_unit_op(map, source.name(), model, op, &mut out),
+                        _ => emit_unit_op(map, source.name(), &names, op, &mut out),
                     }
                 }
             }
@@ -125,25 +223,18 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
 /// The *decision* to produce these — segment selection, derived linkage,
 /// data blocks, alignment — belongs to tasks C7 and C8; this is only their
 /// ca65 spelling, so both tasks extend the callers rather than the printer.
-fn emit_unit_op(
-    map: &SourceMap,
-    file_name: &str,
-    model: &SemanticModel,
-    op: &KOp,
-    out: &mut String,
-) {
-    let symbols = &model.symbols;
+fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, out: &mut String) {
     match &op.kind {
         KOpKind::Instruction(_) => unreachable!("instructions are emitted with their width state"),
-        KOpKind::Label(symbol) => out.push_str(&format!("{}:\n", symbols.name(*symbol))),
-        KOpKind::Export(symbol) => out.push_str(&format!(".export {}\n", symbols.name(*symbol))),
-        KOpKind::Import(symbol) => out.push_str(&format!(".import {}\n", symbols.name(*symbol))),
+        KOpKind::Label(symbol) => out.push_str(&format!("{}:\n", names.of(*symbol))),
+        KOpKind::Export(symbol) => out.push_str(&format!(".export {}\n", names.of(*symbol))),
+        KOpKind::Import(symbol) => out.push_str(&format!(".import {}\n", names.of(*symbol))),
         KOpKind::Segment(name) => out.push_str(&annotated(
             &format!(".segment \"{name}\""),
             &source_comment(map, op.span),
         )),
         KOpKind::Align(expr) => out.push_str(&annotated(
-            &format!("        .align   {}", format_expr(expr, symbols)),
+            &format!("        .align   {}", format_expr(expr, names)),
             &source_comment(map, op.span),
         )),
         KOpKind::Data(data) => {
@@ -154,7 +245,7 @@ fn emit_unit_op(
             let list = |values: &[KExpr]| {
                 values
                     .iter()
-                    .map(|value| format_expr(value, symbols))
+                    .map(|value| format_expr(value, names))
                     .collect::<Vec<_>>()
                     .join(", ")
             };
@@ -163,7 +254,7 @@ fn emit_unit_op(
                 DataOp::Word(values) => format!("        .word    {}", list(values)),
                 DataOp::Far(values) => format!("        .faraddr {}", list(values)),
                 DataOp::Reserve(count) => {
-                    format!("        .res     {}", format_expr(count, symbols))
+                    format!("        .res     {}", format_expr(count, names))
                 }
             };
             out.push_str(&annotated(&text, &source_comment(map, op.span)));
@@ -239,7 +330,7 @@ impl WidthState {
 fn emit_instruction(
     map: &SourceMap,
     file_name: &str,
-    model: &SemanticModel,
+    names: &Names<'_>,
     instruction: &Instruction,
     op: &KOp,
     widths: &mut WidthState,
@@ -252,7 +343,7 @@ fn emit_instruction(
     let operand = instruction
         .operand
         .as_ref()
-        .map(|operand| format_operand(instruction, operand, widths, &model.symbols));
+        .map(|operand| format_operand(instruction, operand, widths, names));
     let mut text = format!("        {:<7}", instruction.mnemonic.ca65());
     if let Some(operand) = &operand {
         text.push_str(&format!(" {operand}"));
@@ -272,7 +363,7 @@ fn format_operand(
     instruction: &Instruction,
     operand: &Operand,
     widths: &WidthState,
-    symbols: &SymbolTable,
+    names: &Names<'_>,
 ) -> String {
     match operand {
         Operand::Immediate(expr) => {
@@ -281,7 +372,7 @@ fn format_operand(
             let width_class = spec.and_then(|spec| spec.immediate_width());
             let text = match expr.value() {
                 Some(value) => format_immediate_value(value, width_class, widths),
-                None => format_expr(expr, symbols),
+                None => format_expr(expr, names),
             };
             if sigil { format!("#{text}") } else { text }
         }
@@ -289,17 +380,17 @@ fn format_operand(
         // explicit `z:`/`a:`/`f:` address-size prefix arrives with task C6,
         // together with the golden it changes.
         Operand::Address { expr, index, .. } => {
-            format!("{}{}", format_expr(expr, symbols), format_index(*index))
+            format!("{}{}", format_expr(expr, names), format_index(*index))
         }
-        Operand::Label(expr) => format_expr(expr, symbols),
-        Operand::StackRelative(expr) => format!("{},s", format_expr(expr, symbols)),
+        Operand::Label(expr) => format_expr(expr, names),
+        Operand::StackRelative(expr) => format!("{},s", format_expr(expr, names)),
         Operand::BlockMove {
             source,
             destination,
         } => format!(
             "{},{}",
-            format_expr(source, symbols),
-            format_expr(destination, symbols)
+            format_expr(source, names),
+            format_expr(destination, names)
         ),
         Operand::Indirect {
             expr,
@@ -317,7 +408,7 @@ fn format_operand(
             };
             format!(
                 "{open}{}{inner_text}{close}{}",
-                format_expr(expr, symbols),
+                format_expr(expr, names),
                 format_index(*outer)
             )
         }
@@ -354,12 +445,12 @@ fn format_immediate_value(
 /// A ca65 expression, fully parenthesized and spelled with ca65's named
 /// operators. See the module documentation for why nothing here relies on
 /// ca65 and K65 agreeing about precedence.
-fn format_expr(expr: &KExpr, symbols: &SymbolTable) -> String {
+fn format_expr(expr: &KExpr, names: &Names<'_>) -> String {
     match expr {
         KExpr::Number(value) => value.to_string(),
-        KExpr::Symbol(symbol) => symbols.name(*symbol).to_owned(),
+        KExpr::Symbol(symbol) => names.of(*symbol),
         KExpr::Unary { op, operand } => {
-            let inner = format_expr(operand, symbols);
+            let inner = format_expr(operand, names);
             match op.ca65_function() {
                 Some(function) => format!("{function}({inner})"),
                 // `&&&x` is already a 24-bit address value in ca65 terms;
@@ -377,9 +468,9 @@ fn format_expr(expr: &KExpr, symbols: &SymbolTable) -> String {
         }
         KExpr::Binary { op, left, right } => format!(
             "({} {} {})",
-            format_expr(left, symbols),
+            format_expr(left, names),
             op.ca65_operator(),
-            format_expr(right, symbols)
+            format_expr(right, names)
         ),
     }
 }

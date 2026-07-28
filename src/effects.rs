@@ -322,71 +322,636 @@ impl Effects {
 /// Derives the effects of one instruction.
 ///
 /// `immediate` is the operand value when statically known; `SEP`/`REP` use it
-/// to narrow their flag writes to the actual mask. An unknown mask is treated
-/// conservatively as writing all P flags.
+/// to narrow their effects to the actual mask.
 ///
 /// The match is exhaustive over [`Mnemonic`] without wildcards, so adding an
-/// instruction without describing its effects fails to compile.
+/// instruction without describing its effects fails to compile. Exhaustiveness
+/// is not the whole gate, though: memory and register reads are
+/// *mode-sensitive*, and a table that answered the same way for `lda #imm`
+/// and `lda addr` would be exhaustive and wrong.
+///
+/// # What the two state sets promise
+///
+/// `reads` is a **may-read** set: over-approximating it keeps a value alive
+/// that might have been dead, which costs an instruction and never breaks a
+/// program. `writes` is a **must-write** set: the optimizer subtracts it from
+/// the state a candidate produced, so over-approximating it would declare a
+/// live value dead. `SEP`/`REP` with an unfolded mask therefore write
+/// *nothing* — the mask may be zero — while reading every P flag and
+/// reporting [`WidthEffect::Unknown`], which is the signal that stops the
+/// scan entirely.
 pub fn instruction_effects(
     mnemonic: Mnemonic,
     mode: AddressingMode,
     immediate: Option<u32>,
 ) -> Effects {
+    use ControlEffect as C;
+    use MemoryEffect as M;
+
+    let nz = FlagSet::N.union(FlagSet::Z);
+    let nzc = nz.union(FlagSet::C);
+    let nvzc = nzc.union(FlagSet::V);
+    // The address-forming registers this mode reads, which is the part of an
+    // effect a mnemonic alone cannot answer.
+    let addressing = mode_registers(mode);
+    // A load-style instruction touches memory in every mode but immediate.
+    let loads = if mode == AddressingMode::Immediate {
+        M::None
+    } else {
+        M::Read
+    };
+    // A read-modify-write instruction touches memory in every mode but
+    // accumulator, where it rewrites A instead.
+    let modifies = if mode == AddressingMode::Accumulator {
+        M::None
+    } else {
+        M::ReadWrite
+    };
+    let on_accumulator = mode == AddressingMode::Accumulator;
+
+    /// Reads and writes the given state, with the given memory and control
+    /// effects and no width transition.
+    fn make(
+        reads: CpuState,
+        writes: CpuState,
+        memory: MemoryEffect,
+        control: ControlEffect,
+    ) -> Effects {
+        Effects {
+            reads,
+            writes,
+            memory,
+            control,
+            width: WidthEffect::Unchanged,
+        }
+    }
+    let state = CpuState::new;
+    let regs = |registers| state(registers, FlagSet::NONE);
+    let flags = |flags| state(RegisterSet::NONE, flags);
+
     match mnemonic {
-        // LDA loads A and sets N/Z from the value; the operand size of the
-        // immediate form depends on the M flag. Only the memory-addressed
-        // modes read memory — `lda #imm` reads none.
-        Mnemonic::Lda => Effects {
-            reads: CpuState::new(RegisterSet::NONE, FlagSet::M),
-            writes: CpuState::new(RegisterSet::A, FlagSet::N.union(FlagSet::Z)),
-            memory: if mode == AddressingMode::Immediate {
-                MemoryEffect::None
+        // -------------------------------------------------------------- ALU
+        // ADC and SBC read the carry and the decimal flag and write all four
+        // arithmetic flags; the accumulator's width comes from M.
+        Mnemonic::Adc | Mnemonic::Sbc => make(
+            state(
+                RegisterSet::A.union(addressing),
+                FlagSet::M.union(FlagSet::C).union(FlagSet::D),
+            ),
+            state(RegisterSet::A, nvzc),
+            loads,
+            C::FallThrough,
+        ),
+        Mnemonic::And | Mnemonic::Eor | Mnemonic::Ora => make(
+            state(RegisterSet::A.union(addressing), FlagSet::M),
+            state(RegisterSet::A, nz),
+            loads,
+            C::FallThrough,
+        ),
+        // The compares write flags only.
+        Mnemonic::Cmp => make(
+            state(RegisterSet::A.union(addressing), FlagSet::M),
+            flags(nzc),
+            loads,
+            C::FallThrough,
+        ),
+        Mnemonic::Cpx => make(
+            state(RegisterSet::X.union(addressing), FlagSet::X),
+            flags(nzc),
+            loads,
+            C::FallThrough,
+        ),
+        Mnemonic::Cpy => make(
+            state(RegisterSet::Y.union(addressing), FlagSet::X),
+            flags(nzc),
+            loads,
+            C::FallThrough,
+        ),
+        // `doc/w65c816s.md` Table 5-5 note 1: the immediate form of BIT
+        // affects Z only, while every addressed form also takes N and V from
+        // the operand's top bits. Claiming N and V for `bit #imm` would let
+        // the optimizer delete a live flag write.
+        Mnemonic::Bit => make(
+            state(RegisterSet::A.union(addressing), FlagSet::M),
+            flags(if mode == AddressingMode::Immediate {
+                FlagSet::Z
             } else {
-                MemoryEffect::Read
+                nz.union(FlagSet::V)
+            }),
+            loads,
+            C::FallThrough,
+        ),
+        // ------------------------------------------------------- loads/stores
+        Mnemonic::Lda => make(
+            state(addressing, FlagSet::M),
+            state(RegisterSet::A, nz),
+            loads,
+            C::FallThrough,
+        ),
+        Mnemonic::Ldx => make(
+            state(addressing, FlagSet::X),
+            state(RegisterSet::X, nz),
+            loads,
+            C::FallThrough,
+        ),
+        Mnemonic::Ldy => make(
+            state(addressing, FlagSet::X),
+            state(RegisterSet::Y, nz),
+            loads,
+            C::FallThrough,
+        ),
+        Mnemonic::Sta => make(
+            state(RegisterSet::A.union(addressing), FlagSet::M),
+            CpuState::NONE,
+            M::Write,
+            C::FallThrough,
+        ),
+        Mnemonic::Stx => make(
+            state(RegisterSet::X.union(addressing), FlagSet::X),
+            CpuState::NONE,
+            M::Write,
+            C::FallThrough,
+        ),
+        Mnemonic::Sty => make(
+            state(RegisterSet::Y.union(addressing), FlagSet::X),
+            CpuState::NONE,
+            M::Write,
+            C::FallThrough,
+        ),
+        // STZ stores a constant zero, so it reads no register but the ones
+        // that form the address — and M, which sizes the store.
+        Mnemonic::Stz => make(
+            state(addressing, FlagSet::M),
+            CpuState::NONE,
+            M::Write,
+            C::FallThrough,
+        ),
+        // -------------------------------------------- shifts, rotates, steps
+        Mnemonic::Asl | Mnemonic::Lsr => make(
+            state(
+                if on_accumulator {
+                    RegisterSet::A
+                } else {
+                    addressing
+                },
+                FlagSet::M,
+            ),
+            state(
+                if on_accumulator {
+                    RegisterSet::A
+                } else {
+                    RegisterSet::NONE
+                },
+                nzc,
+            ),
+            modifies,
+            C::FallThrough,
+        ),
+        // The rotates additionally shift the carry in.
+        Mnemonic::Rol | Mnemonic::Ror => make(
+            state(
+                if on_accumulator {
+                    RegisterSet::A
+                } else {
+                    addressing
+                },
+                FlagSet::M.union(FlagSet::C),
+            ),
+            state(
+                if on_accumulator {
+                    RegisterSet::A
+                } else {
+                    RegisterSet::NONE
+                },
+                nzc,
+            ),
+            modifies,
+            C::FallThrough,
+        ),
+        Mnemonic::Inc | Mnemonic::Dec => make(
+            state(
+                if on_accumulator {
+                    RegisterSet::A
+                } else {
+                    addressing
+                },
+                FlagSet::M,
+            ),
+            state(
+                if on_accumulator {
+                    RegisterSet::A
+                } else {
+                    RegisterSet::NONE
+                },
+                nz,
+            ),
+            modifies,
+            C::FallThrough,
+        ),
+        Mnemonic::Inx | Mnemonic::Dex => make(
+            state(RegisterSet::X, FlagSet::X),
+            state(RegisterSet::X, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Iny | Mnemonic::Dey => make(
+            state(RegisterSet::Y, FlagSet::X),
+            state(RegisterSet::Y, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        // TSB and TRB set or clear the accumulator's bits in memory and
+        // report only whether the tested bits were all zero.
+        Mnemonic::Tsb | Mnemonic::Trb => make(
+            state(RegisterSet::A.union(addressing), FlagSet::M),
+            flags(FlagSet::Z),
+            M::ReadWrite,
+            C::FallThrough,
+        ),
+        // ----------------------------------------------------------- branches
+        Mnemonic::Bcc | Mnemonic::Bcs => {
+            make(flags(FlagSet::C), CpuState::NONE, M::None, C::Branch)
+        }
+        Mnemonic::Beq | Mnemonic::Bne => {
+            make(flags(FlagSet::Z), CpuState::NONE, M::None, C::Branch)
+        }
+        Mnemonic::Bmi | Mnemonic::Bpl => {
+            make(flags(FlagSet::N), CpuState::NONE, M::None, C::Branch)
+        }
+        Mnemonic::Bvc | Mnemonic::Bvs => {
+            make(flags(FlagSet::V), CpuState::NONE, M::None, C::Branch)
+        }
+        Mnemonic::Bra | Mnemonic::Brl => make(CpuState::NONE, CpuState::NONE, M::None, C::Jump),
+        // ------------------------------------------------------- control flow
+        // The indirect jumps read their pointer out of memory.
+        Mnemonic::Jmp | Mnemonic::Jml => make(
+            regs(addressing),
+            CpuState::NONE,
+            match mode {
+                AddressingMode::AbsoluteIndirect | AddressingMode::AbsoluteIndexedIndirect => {
+                    M::Read
+                }
+                _ => M::None,
             },
-            control: ControlEffect::FallThrough,
-            width: WidthEffect::Unchanged,
+            C::Jump,
+        ),
+        Mnemonic::Jsr => make(
+            state(
+                RegisterSet::S.union(RegisterSet::PBR).union(addressing),
+                FlagSet::NONE,
+            ),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::Call,
+        ),
+        // JSL pushes the program bank as well, and loads a new one.
+        Mnemonic::Jsl => make(
+            regs(RegisterSet::S.union(RegisterSet::PBR)),
+            regs(RegisterSet::S.union(RegisterSet::PBR)),
+            M::Stack,
+            C::Call,
+        ),
+        Mnemonic::Rts => make(
+            regs(RegisterSet::S),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::Return,
+        ),
+        Mnemonic::Rtl => make(
+            regs(RegisterSet::S),
+            regs(RegisterSet::S.union(RegisterSet::PBR)),
+            M::Stack,
+            C::Return,
+        ),
+        // RTI restores the whole status byte, so the widths that follow are
+        // whatever the interrupted code had. That is unknowable here, and an
+        // 8-bit index width would have zeroed the high bytes of X and Y.
+        Mnemonic::Rti => Effects {
+            reads: regs(RegisterSet::S),
+            writes: state(
+                RegisterSet::S
+                    .union(RegisterSet::PBR)
+                    .union(RegisterSet::X)
+                    .union(RegisterSet::Y),
+                FlagSet::ALL_P,
+            ),
+            memory: M::Stack,
+            control: C::Return,
+            width: WidthEffect::Unknown,
         },
-        // STA stores A; the store width depends on M, and absolute
-        // addressing goes through the data bank register.
-        Mnemonic::Sta => Effects {
-            reads: CpuState::new(RegisterSet::A.union(RegisterSet::DBR), FlagSet::M),
-            writes: CpuState::NONE,
-            memory: MemoryEffect::Write,
-            control: ControlEffect::FallThrough,
-            width: WidthEffect::Unchanged,
+        // BRK and COP push the status byte, disable interrupts, and clear
+        // decimal mode; the widths are untouched.
+        Mnemonic::Brk | Mnemonic::Cop => make(
+            state(RegisterSet::S.union(RegisterSet::PBR), FlagSet::ALL_P),
+            state(
+                RegisterSet::S.union(RegisterSet::PBR),
+                FlagSet::I.union(FlagSet::D),
+            ),
+            M::Stack,
+            C::Trap,
+        ),
+        Mnemonic::Wai | Mnemonic::Stp => make(CpuState::NONE, CpuState::NONE, M::None, C::Halt),
+        // ------------------------------------------------------------- stack
+        Mnemonic::Pha => make(
+            state(RegisterSet::A.union(RegisterSet::S), FlagSet::M),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Phx => make(
+            state(RegisterSet::X.union(RegisterSet::S), FlagSet::X),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Phy => make(
+            state(RegisterSet::Y.union(RegisterSet::S), FlagSet::X),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Phb => make(
+            regs(RegisterSet::DBR.union(RegisterSet::S)),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Phd => make(
+            regs(RegisterSet::D.union(RegisterSet::S)),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Phk => make(
+            regs(RegisterSet::PBR.union(RegisterSet::S)),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Php => make(
+            state(RegisterSet::S, FlagSet::ALL_P),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Pla => make(
+            state(RegisterSet::S, FlagSet::M),
+            state(RegisterSet::A.union(RegisterSet::S), nz),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Plx => make(
+            state(RegisterSet::S, FlagSet::X),
+            state(RegisterSet::X.union(RegisterSet::S), nz),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Ply => make(
+            state(RegisterSet::S, FlagSet::X),
+            state(RegisterSet::Y.union(RegisterSet::S), nz),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Plb => make(
+            regs(RegisterSet::S),
+            state(RegisterSet::DBR.union(RegisterSet::S), nz),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Pld => make(
+            regs(RegisterSet::S),
+            state(RegisterSet::D.union(RegisterSet::S), nz),
+            M::Stack,
+            C::FallThrough,
+        ),
+        // PLP pulls a whole status byte, so M and X become whatever was
+        // pushed — and an 8-bit index width zeroes the high bytes of X and Y.
+        Mnemonic::Plp => Effects {
+            reads: regs(RegisterSet::S),
+            writes: state(
+                RegisterSet::S.union(RegisterSet::X).union(RegisterSet::Y),
+                FlagSet::ALL_P,
+            ),
+            memory: M::Stack,
+            control: C::FallThrough,
+            width: WidthEffect::Unknown,
         },
-        // RTS pulls the return address from the stack.
-        Mnemonic::Rts => Effects {
-            reads: CpuState::new(RegisterSet::S, FlagSet::NONE),
-            writes: CpuState::new(RegisterSet::S, FlagSet::NONE),
-            memory: MemoryEffect::Stack,
-            control: ControlEffect::Return,
-            width: WidthEffect::Unchanged,
-        },
-        // SEP/REP set/clear exactly the P flags in the mask operand. The
-        // flag set records *which* bits were written; the width effect
-        // records what M and X became, which is the part `SEP` and `REP`
-        // disagree about.
+        // The push-effective family computes a value and pushes it; only PEI
+        // reads memory to do so, through the direct page register.
+        Mnemonic::Pea => make(
+            regs(RegisterSet::S),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Pei => make(
+            regs(RegisterSet::S.union(RegisterSet::D)),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        Mnemonic::Per => make(
+            regs(RegisterSet::S.union(RegisterSet::PBR)),
+            regs(RegisterSet::S),
+            M::Stack,
+            C::FallThrough,
+        ),
+        // --------------------------------------------------------- block move
+        // MVN and MVP move C+1 bytes, stepping X and Y and counting C down,
+        // and load the destination bank byte into DBR.
+        Mnemonic::Mvn | Mnemonic::Mvp => make(
+            regs(
+                RegisterSet::A
+                    .union(RegisterSet::X)
+                    .union(RegisterSet::Y)
+                    .union(RegisterSet::DBR),
+            ),
+            regs(
+                RegisterSet::A
+                    .union(RegisterSet::X)
+                    .union(RegisterSet::Y)
+                    .union(RegisterSet::DBR),
+            ),
+            M::ReadWrite,
+            C::FallThrough,
+        ),
+        // ----------------------------------------------------------- transfers
+        Mnemonic::Tax => make(
+            state(RegisterSet::A, FlagSet::X),
+            state(RegisterSet::X, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tay => make(
+            state(RegisterSet::A, FlagSet::X),
+            state(RegisterSet::Y, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Txa => make(
+            state(RegisterSet::X, FlagSet::M),
+            state(RegisterSet::A, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tya => make(
+            state(RegisterSet::Y, FlagSet::M),
+            state(RegisterSet::A, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Txy => make(
+            state(RegisterSet::X, FlagSet::X),
+            state(RegisterSet::Y, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tyx => make(
+            state(RegisterSet::Y, FlagSet::X),
+            state(RegisterSet::X, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tsx => make(
+            state(RegisterSet::S, FlagSet::X),
+            state(RegisterSet::X, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        // The two transfers into the stack pointer are the full-width ones
+        // that set no flags at all.
+        Mnemonic::Txs => make(
+            regs(RegisterSet::X),
+            regs(RegisterSet::S),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tcs => make(
+            regs(RegisterSet::A),
+            regs(RegisterSet::S),
+            M::None,
+            C::FallThrough,
+        ),
+        // The remaining 65816 transfers move all 16 bits regardless of width.
+        Mnemonic::Tcd => make(
+            regs(RegisterSet::A),
+            state(RegisterSet::D, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tdc => make(
+            regs(RegisterSet::D),
+            state(RegisterSet::A, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Tsc => make(
+            regs(RegisterSet::S),
+            state(RegisterSet::A, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        Mnemonic::Xba => make(
+            regs(RegisterSet::A),
+            state(RegisterSet::A, nz),
+            M::None,
+            C::FallThrough,
+        ),
+        // ------------------------------------------------------- flags & mode
+        Mnemonic::Clc | Mnemonic::Sec => {
+            make(CpuState::NONE, flags(FlagSet::C), M::None, C::FallThrough)
+        }
+        Mnemonic::Cld | Mnemonic::Sed => {
+            make(CpuState::NONE, flags(FlagSet::D), M::None, C::FallThrough)
+        }
+        Mnemonic::Cli | Mnemonic::Sei => {
+            make(CpuState::NONE, flags(FlagSet::I), M::None, C::FallThrough)
+        }
+        Mnemonic::Clv => make(CpuState::NONE, flags(FlagSet::V), M::None, C::FallThrough),
+        // SEP and REP set or clear exactly the flags in their mask. With the
+        // mask unknown the *must-write* set is empty — the mask may be zero —
+        // while the width transition is Unknown, which is what stops the
+        // optimizer rather than a pretend flag write.
         Mnemonic::Sep | Mnemonic::Rep => {
             let mask = immediate.map(|mask| mask as u8);
-            let written = match mask {
-                Some(mask) => FlagSet::from_p_mask(mask),
-                None => FlagSet::ALL_P,
-            };
-            let width = match mnemonic {
+            let to = match mnemonic {
                 Mnemonic::Sep => RegisterWidth::W8,
-                Mnemonic::Rep => RegisterWidth::W16,
-                Mnemonic::Lda | Mnemonic::Sta | Mnemonic::Rts => unreachable!(),
+                _ => RegisterWidth::W16,
+            };
+            let width = WidthEffect::from_p_mask(mask, to);
+            // Narrowing the index registers zeroes their high bytes; every
+            // other transition leaves the register contents alone.
+            let truncated = if width.index() == Some(RegisterWidth::W8) {
+                RegisterSet::X.union(RegisterSet::Y)
+            } else {
+                RegisterSet::NONE
             };
             Effects {
-                reads: CpuState::NONE,
-                writes: CpuState::new(RegisterSet::NONE, written),
-                memory: MemoryEffect::None,
-                control: ControlEffect::FallThrough,
-                width: WidthEffect::from_p_mask(mask, width),
+                reads: flags(FlagSet::ALL_P),
+                writes: state(truncated, mask.map_or(FlagSet::NONE, FlagSet::from_p_mask)),
+                memory: M::None,
+                control: C::FallThrough,
+                width,
             }
         }
+        // XCE swaps the carry with the hidden emulation flag. Entering
+        // emulation forces 8-bit registers and a page-1 stack, so the widths
+        // and the high bytes of X, Y, and S all become unknowable here.
+        Mnemonic::Xce => Effects {
+            reads: flags(FlagSet::C.union(FlagSet::E)),
+            writes: state(RegisterSet::NONE, FlagSet::C.union(FlagSet::E)),
+            memory: M::None,
+            control: C::FallThrough,
+            width: WidthEffect::Unknown,
+        },
+        // ------------------------------------------------------------ no-ops
+        Mnemonic::Nop | Mnemonic::Wdm => {
+            make(CpuState::NONE, CpuState::NONE, M::None, C::FallThrough)
+        }
+    }
+}
+
+/// The registers an addressing mode reads to form its effective address.
+///
+/// This is the half of an effect the mnemonic cannot supply: `lda $10,x`
+/// reads the direct page register and X, `lda $1234` reads the data bank
+/// register, and `lda #1` reads neither.
+fn mode_registers(mode: AddressingMode) -> RegisterSet {
+    use AddressingMode as A;
+    let d = RegisterSet::D;
+    let x = RegisterSet::X;
+    let y = RegisterSet::Y;
+    let s = RegisterSet::S;
+    let dbr = RegisterSet::DBR;
+    match mode {
+        A::Direct => d,
+        A::DirectIndexedX => d.union(x),
+        A::DirectIndexedY => d.union(y),
+        A::DirectIndexedIndirect => d.union(x).union(dbr),
+        A::DirectIndirect => d.union(dbr),
+        A::DirectIndirectIndexed => d.union(y).union(dbr),
+        // The long indirect forms carry their own bank byte, so they do not
+        // read DBR.
+        A::DirectIndirectLong => d,
+        A::DirectIndirectLongIndexed => d.union(y),
+        A::StackRelative => s,
+        A::StackRelativeIndirectIndexed => s.union(y).union(dbr),
+        A::Absolute => dbr,
+        A::AbsoluteIndexedX => dbr.union(x),
+        A::AbsoluteIndexedY => dbr.union(y),
+        A::AbsoluteLong => RegisterSet::NONE,
+        A::AbsoluteLongIndexedX => x,
+        // The absolute indirect pointers live in bank 0; the indexed form
+        // jumps within the current program bank.
+        A::AbsoluteIndirect => RegisterSet::NONE,
+        A::AbsoluteIndexedIndirect => x.union(RegisterSet::PBR),
+        A::Accumulator
+        | A::BlockMove
+        | A::Immediate
+        | A::Implied
+        | A::Relative
+        | A::RelativeLong
+        | A::Stack => RegisterSet::NONE,
     }
 }
 
@@ -395,16 +960,268 @@ mod tests {
     use super::*;
     use crate::isa::all_specs;
 
+    fn effects_of(mnemonic: Mnemonic, mode: AddressingMode) -> Effects {
+        instruction_effects(mnemonic, mode, None)
+    }
+
     #[test]
-    fn every_supported_spec_has_derivable_effects() {
+    fn every_legal_pair_has_a_classified_effect() {
         for spec in all_specs() {
             let effects = instruction_effects(spec.mnemonic, spec.mode, Some(0x20));
-            // Conservative sanity: control classification exists for all.
-            assert!(matches!(
+            assert_ne!(
                 effects.control,
-                ControlEffect::FallThrough | ControlEffect::Return
-            ));
+                ControlEffect::Unknown,
+                "{:?} {:?}",
+                spec.mnemonic,
+                spec.mode
+            );
+            assert_ne!(
+                effects.memory,
+                MemoryEffect::Unknown,
+                "{:?} {:?}",
+                spec.mnemonic,
+                spec.mode
+            );
         }
+    }
+
+    #[test]
+    fn control_flow_is_classified_by_family() {
+        use ControlEffect::*;
+        for (mnemonic, mode, expected) in [
+            (Mnemonic::Bcc, AddressingMode::Relative, Branch),
+            (Mnemonic::Bvs, AddressingMode::Relative, Branch),
+            (Mnemonic::Bra, AddressingMode::Relative, Jump),
+            (Mnemonic::Brl, AddressingMode::RelativeLong, Jump),
+            (Mnemonic::Jmp, AddressingMode::Absolute, Jump),
+            (Mnemonic::Jml, AddressingMode::AbsoluteIndirect, Jump),
+            (Mnemonic::Jsr, AddressingMode::Absolute, Call),
+            (Mnemonic::Jsl, AddressingMode::AbsoluteLong, Call),
+            (Mnemonic::Rts, AddressingMode::Stack, Return),
+            (Mnemonic::Rtl, AddressingMode::Stack, Return),
+            (Mnemonic::Rti, AddressingMode::Stack, Return),
+            (Mnemonic::Brk, AddressingMode::Stack, Trap),
+            (Mnemonic::Cop, AddressingMode::Stack, Trap),
+            (Mnemonic::Wai, AddressingMode::Implied, Halt),
+            (Mnemonic::Stp, AddressingMode::Implied, Halt),
+            (Mnemonic::Nop, AddressingMode::Implied, FallThrough),
+        ] {
+            assert_eq!(effects_of(mnemonic, mode).control, expected, "{mnemonic:?}");
+        }
+    }
+
+    #[test]
+    fn memory_effects_are_mode_sensitive() {
+        // The same mnemonic answers differently per mode, which is the part
+        // an exhaustive match over mnemonics alone cannot get right.
+        assert_eq!(
+            effects_of(Mnemonic::Lda, AddressingMode::Immediate).memory,
+            MemoryEffect::None
+        );
+        assert_eq!(
+            effects_of(Mnemonic::Lda, AddressingMode::Absolute).memory,
+            MemoryEffect::Read
+        );
+        assert_eq!(
+            effects_of(Mnemonic::Asl, AddressingMode::Accumulator).memory,
+            MemoryEffect::None
+        );
+        assert_eq!(
+            effects_of(Mnemonic::Asl, AddressingMode::Direct).memory,
+            MemoryEffect::ReadWrite
+        );
+        assert_eq!(
+            effects_of(Mnemonic::Sta, AddressingMode::Absolute).memory,
+            MemoryEffect::Write
+        );
+        // A plain jump reads no memory; an indirect one fetches its pointer.
+        assert_eq!(
+            effects_of(Mnemonic::Jmp, AddressingMode::Absolute).memory,
+            MemoryEffect::None
+        );
+        assert_eq!(
+            effects_of(Mnemonic::Jmp, AddressingMode::AbsoluteIndirect).memory,
+            MemoryEffect::Read
+        );
+    }
+
+    #[test]
+    fn bank_and_page_registers_are_read_per_mode() {
+        let reads = |mode| effects_of(Mnemonic::Lda, mode).reads.registers;
+        assert!(reads(AddressingMode::Absolute).contains(RegisterSet::DBR));
+        assert!(reads(AddressingMode::Direct).contains(RegisterSet::D));
+        assert!(reads(AddressingMode::DirectIndexedX).contains(RegisterSet::X));
+        assert!(reads(AddressingMode::StackRelative).contains(RegisterSet::S));
+        // A long address carries its own bank, so it does not read DBR.
+        assert!(!reads(AddressingMode::AbsoluteLong).contains(RegisterSet::DBR));
+        assert!(reads(AddressingMode::Immediate).is_empty());
+    }
+
+    #[test]
+    fn accumulator_mode_writes_a_while_memory_mode_does_not() {
+        let acc = effects_of(Mnemonic::Asl, AddressingMode::Accumulator);
+        assert!(acc.writes.registers.contains(RegisterSet::A));
+        assert!(acc.reads.registers.contains(RegisterSet::A));
+        assert!(acc.is_removal_candidate());
+
+        let memory = effects_of(Mnemonic::Asl, AddressingMode::Absolute);
+        assert!(!memory.writes.registers.contains(RegisterSet::A));
+        assert!(!memory.is_removal_candidate());
+    }
+
+    /// `doc/w65c816s.md` Table 5-5 note 1: `BIT #imm` affects Z only.
+    /// Claiming N and V there would let the optimizer delete a live write.
+    #[test]
+    fn bit_immediate_writes_only_z() {
+        assert_eq!(
+            effects_of(Mnemonic::Bit, AddressingMode::Immediate)
+                .writes
+                .flags,
+            FlagSet::Z
+        );
+        assert_eq!(
+            effects_of(Mnemonic::Bit, AddressingMode::Absolute)
+                .writes
+                .flags,
+            FlagSet::N.union(FlagSet::V).union(FlagSet::Z)
+        );
+    }
+
+    #[test]
+    fn sep_and_rep_write_exactly_the_masked_flags() {
+        let sep = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x20));
+        assert_eq!(sep.writes.flags, FlagSet::M);
+        let rep = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x10));
+        assert_eq!(rep.writes.flags, FlagSet::X);
+        let both = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x30));
+        assert_eq!(both.writes.flags, FlagSet::M.union(FlagSet::X));
+    }
+
+    #[test]
+    fn width_effects_distinguish_sep_from_rep() {
+        let sep = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x20));
+        let rep = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x20));
+        // Both write M; only the width effect says which width followed.
+        assert_eq!(sep.writes.flags, rep.writes.flags);
+        assert_eq!(sep.width.accumulator(), Some(RegisterWidth::W8));
+        assert_eq!(rep.width.accumulator(), Some(RegisterWidth::W16));
+        assert_eq!(sep.width.index(), None);
+    }
+
+    /// Narrowing the index registers zeroes their high bytes, so `sep #$10`
+    /// is a write to X and Y — widening them is not.
+    #[test]
+    fn narrowing_the_index_width_truncates_x_and_y() {
+        let narrow = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x10));
+        assert!(narrow.writes.registers.contains(RegisterSet::X));
+        assert!(narrow.writes.registers.contains(RegisterSet::Y));
+
+        let widen = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x10));
+        assert!(widen.writes.registers.is_empty());
+    }
+
+    /// An unfolded mask may be zero, so nothing is *definitely* written. The
+    /// optimizer subtracts `writes` from a candidate's live state, so a
+    /// pretend write here would declare a live flag dead; the barrier is the
+    /// unknown width transition instead.
+    #[test]
+    fn an_unfolded_mask_writes_nothing_and_makes_the_width_unknown() {
+        let effects = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, None);
+        assert_eq!(effects.writes, CpuState::NONE);
+        assert_eq!(effects.reads.flags, FlagSet::ALL_P);
+        assert!(effects.width.is_unknown());
+    }
+
+    #[test]
+    fn a_mask_that_touches_no_width_flag_changes_no_width() {
+        let effects = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x01));
+        assert_eq!(effects.width, WidthEffect::Unchanged);
+        assert_eq!(effects.writes.flags, FlagSet::C);
+    }
+
+    /// `PLP` and `RTI` restore a whole status byte and `XCE` may enter
+    /// emulation mode; none of the three can say what width follows, and the
+    /// first two may have truncated the index registers on the way.
+    #[test]
+    fn plp_rti_and_xce_are_unknown_width_transitions() {
+        for (mnemonic, mode) in [
+            (Mnemonic::Plp, AddressingMode::Stack),
+            (Mnemonic::Rti, AddressingMode::Stack),
+            (Mnemonic::Xce, AddressingMode::Implied),
+        ] {
+            assert!(
+                effects_of(mnemonic, mode).width.is_unknown(),
+                "{mnemonic:?}"
+            );
+        }
+        for mnemonic in [Mnemonic::Plp, Mnemonic::Rti] {
+            let writes = effects_of(mnemonic, AddressingMode::Stack).writes;
+            assert_eq!(writes.flags, FlagSet::ALL_P, "{mnemonic:?}");
+            assert!(writes.registers.contains(RegisterSet::X), "{mnemonic:?}");
+            assert!(writes.registers.contains(RegisterSet::Y), "{mnemonic:?}");
+        }
+        let xce = effects_of(Mnemonic::Xce, AddressingMode::Implied);
+        assert_eq!(xce.writes.flags, FlagSet::C.union(FlagSet::E));
+        assert!(xce.reads.flags.contains(FlagSet::E));
+    }
+
+    /// `doc/w65c816s.md` §3.5.9: the block moves step X and Y, count the
+    /// accumulator down, and load the destination bank into DBR.
+    #[test]
+    fn block_moves_write_the_data_bank_register() {
+        for mnemonic in [Mnemonic::Mvn, Mnemonic::Mvp] {
+            let effects = effects_of(mnemonic, AddressingMode::BlockMove);
+            for register in [
+                RegisterSet::A,
+                RegisterSet::X,
+                RegisterSet::Y,
+                RegisterSet::DBR,
+            ] {
+                assert!(effects.reads.registers.contains(register), "{mnemonic:?}");
+                assert!(effects.writes.registers.contains(register), "{mnemonic:?}");
+            }
+            assert_eq!(effects.memory, MemoryEffect::ReadWrite);
+            assert!(!effects.is_removal_candidate());
+        }
+    }
+
+    #[test]
+    fn the_stack_family_is_never_a_removal_candidate() {
+        for mnemonic in [
+            Mnemonic::Pha,
+            Mnemonic::Php,
+            Mnemonic::Pla,
+            Mnemonic::Plb,
+            Mnemonic::Pea,
+            Mnemonic::Pei,
+            Mnemonic::Per,
+            Mnemonic::Rts,
+        ] {
+            let effects = effects_of(mnemonic, AddressingMode::Stack);
+            assert_eq!(effects.memory, MemoryEffect::Stack, "{mnemonic:?}");
+            assert!(!effects.is_removal_candidate(), "{mnemonic:?}");
+            assert!(
+                effects.reads.registers.contains(RegisterSet::S),
+                "{mnemonic:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_width_transfers_set_no_flags() {
+        // TXS and TCS move all 16 bits and touch no flag at all.
+        for mnemonic in [Mnemonic::Txs, Mnemonic::Tcs] {
+            let effects = effects_of(mnemonic, AddressingMode::Implied);
+            assert_eq!(effects.writes.flags, FlagSet::NONE, "{mnemonic:?}");
+            assert!(effects.writes.registers.contains(RegisterSet::S));
+        }
+        // TSX does set them.
+        assert_eq!(
+            effects_of(Mnemonic::Tsx, AddressingMode::Implied)
+                .writes
+                .flags,
+            FlagSet::N.union(FlagSet::Z)
+        );
     }
 
     #[test]
@@ -418,7 +1235,7 @@ mod tests {
 
     #[test]
     fn sta_absolute_is_an_observable_write() {
-        let effects = instruction_effects(Mnemonic::Sta, AddressingMode::Absolute, None);
+        let effects = effects_of(Mnemonic::Sta, AddressingMode::Absolute);
         assert!(effects.reads.registers.contains(RegisterSet::A));
         assert_eq!(effects.memory, MemoryEffect::Write);
         assert!(!effects.is_removal_candidate());
@@ -426,84 +1243,10 @@ mod tests {
 
     #[test]
     fn rts_is_a_stack_using_return_barrier() {
-        let effects = instruction_effects(Mnemonic::Rts, AddressingMode::Stack, None);
+        let effects = effects_of(Mnemonic::Rts, AddressingMode::Stack);
         assert_eq!(effects.control, ControlEffect::Return);
         assert_eq!(effects.memory, MemoryEffect::Stack);
         assert!(!effects.is_removal_candidate());
-    }
-
-    #[test]
-    fn memory_effects_are_mode_sensitive() {
-        // `lda #imm` touches no memory; every addressed form reads it.
-        assert_eq!(
-            instruction_effects(Mnemonic::Lda, AddressingMode::Immediate, Some(1)).memory,
-            MemoryEffect::None
-        );
-        assert_eq!(
-            instruction_effects(Mnemonic::Lda, AddressingMode::Absolute, None).memory,
-            MemoryEffect::Read
-        );
-    }
-
-    #[test]
-    fn width_effects_distinguish_sep_from_rep() {
-        let sep = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x20));
-        let rep = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x20));
-        // Both write M; only the width effect says which width followed.
-        assert_eq!(sep.writes.flags, rep.writes.flags);
-        assert_eq!(sep.width.accumulator(), Some(RegisterWidth::W8));
-        assert_eq!(rep.width.accumulator(), Some(RegisterWidth::W16));
-        assert_eq!(sep.width.index(), None);
-
-        let both = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x30));
-        assert_eq!(both.width.accumulator(), Some(RegisterWidth::W16));
-        assert_eq!(both.width.index(), Some(RegisterWidth::W16));
-    }
-
-    #[test]
-    fn a_mask_that_touches_no_width_flag_changes_no_width() {
-        let effects = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x01));
-        assert_eq!(effects.width, WidthEffect::Unchanged);
-        assert_eq!(effects.writes.flags, FlagSet::C);
-    }
-
-    #[test]
-    fn an_unfolded_mask_makes_the_width_unknown_not_unchanged() {
-        let effects = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, None);
-        assert!(effects.width.is_unknown());
-        assert_eq!(effects.width.accumulator(), None);
-    }
-
-    #[test]
-    fn instructions_that_do_not_touch_p_leave_the_widths_alone() {
-        for (mnemonic, mode) in [
-            (Mnemonic::Lda, AddressingMode::Immediate),
-            (Mnemonic::Sta, AddressingMode::Absolute),
-            (Mnemonic::Rts, AddressingMode::Stack),
-        ] {
-            assert_eq!(
-                instruction_effects(mnemonic, mode, None).width,
-                WidthEffect::Unchanged,
-                "{mnemonic:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn sep_rep_write_exactly_the_masked_flags() {
-        let sep = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x20));
-        assert_eq!(sep.writes.flags, FlagSet::M);
-        let rep = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x10));
-        assert_eq!(rep.writes.flags, FlagSet::X);
-        let both = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x30));
-        assert_eq!(both.writes.flags, FlagSet::M.union(FlagSet::X));
-    }
-
-    #[test]
-    fn unknown_sep_rep_mask_is_conservative() {
-        let effects = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, None);
-        assert_eq!(effects.writes.flags, FlagSet::ALL_P);
-        assert!(!effects.writes.flags.contains(FlagSet::E));
     }
 
     #[test]

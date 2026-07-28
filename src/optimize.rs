@@ -130,9 +130,13 @@ fn removable(ops: &[KOp], index: usize) -> Option<usize> {
             return Some(offset);
         }
         // Unknown effects inhibit optimization; other control flow may
-        // observe the remaining state.
+        // observe the remaining state. An unknown width transition is the
+        // third stop: `PLP`, `RTI`, `XCE`, and an unfolded `SEP`/`REP` mask
+        // may narrow the index registers and truncate them, which their
+        // must-write set cannot express.
         if next_effects.memory == MemoryEffect::Unknown
             || next_effects.control != ControlEffect::FallThrough
+            || next_effects.width.is_unknown()
         {
             return None;
         }

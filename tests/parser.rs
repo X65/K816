@@ -1249,17 +1249,18 @@ fn an_operand_does_not_swallow_the_next_statement() {
 }
 
 #[test]
-fn a_recognized_mnemonic_without_isa_support_names_the_translator() {
-    // `inx` is a real instruction the frozen ISA table does not carry yet, so
-    // it must not be reported as an unknown mnemonic.
-    let mut map = SourceMap::new();
-    let id = map.add_file("inx.k65", "func main @a8 {\n    inx\n}\n");
-    let parsed = parse_source(map.file(id), None);
-    assert_eq!(parsed.diagnostics, vec![]);
-    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_YET_IMPLEMENTED);
-    assert_eq!(map.span_text(diagnostics[0].primary.span), "inx");
+fn every_operandless_mnemonic_the_grammar_accepts_is_in_the_isa_table() {
+    // The grammar produces only real 65816 mnemonics, and the table now
+    // carries all 92 of them — so an operandless instruction analyzes clean
+    // rather than naming a sub-plan.
+    for mnemonic in ["inx", "nop", "pha", "xce", "tcd", "rtl", "wai"] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("op.k65", format!("func main @a8 {{\n    {mnemonic}\n}}\n"));
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{mnemonic}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics, vec![], "`{mnemonic}`");
+    }
 }
 
 #[test]

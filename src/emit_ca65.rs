@@ -514,11 +514,16 @@ fn line_comment(map: &SourceMap, span: Span) -> String {
 }
 
 /// A short explanation for compiler-generated operations.
+///
+/// Only a handful of mnemonics are ever synthesized, and this is comment
+/// text rather than semantics — the one place a wildcard over [`Mnemonic`]
+/// costs nothing, because a missing arm produces a vaguer comment and not a
+/// wrong instruction.
 fn generated_note(instruction: &Instruction) -> &'static str {
     match instruction.mnemonic {
         Mnemonic::Sep => "entry width setup (8-bit)",
         Mnemonic::Rep => "entry width setup (16-bit)",
-        Mnemonic::Rts => "implicit return",
-        Mnemonic::Lda | Mnemonic::Sta => "generated",
+        Mnemonic::Rts | Mnemonic::Rtl => "implicit return",
+        _ => "generated",
     }
 }

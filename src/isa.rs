@@ -42,45 +42,76 @@
 //! classification (sub-plan C, task C4) selects among a mnemonic's specs by
 //! matching `OperandForm` and then choosing an address encoding.
 //!
-//! Only the mnemonics the vertical slice lowers to are populated here; the
-//! complete 256-pair table lands with task C3.
+//! The table carries all 92 mnemonics and exactly 256 legal
+//! (mnemonic, mode) pairs — `doc/w65c816s.md` §1.1 states "24 addressing
+//! modes … 92 instructions using 256 opcodes", which makes both a countable
+//! completeness gate rather than a judgement call.
 
-/// A validated 65816 mnemonic. Adding a variant without handling it
-/// everywhere is a compile error by design: matches over `Mnemonic` do not
-/// use wildcards.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Mnemonic {
-    Lda,
-    Sta,
-    Rts,
-    Sep,
-    Rep,
+/// Declares the mnemonic set once: the variant, its ca65 spelling, and the
+/// source spelling that resolves to it.
+///
+/// Matches over [`Mnemonic`] elsewhere stay wildcard-free, so adding a
+/// mnemonic here without describing its effects still fails to compile.
+macro_rules! mnemonics {
+    ($($variant:ident => $spelling:literal),+ $(,)?) => {
+        /// A validated 65816 mnemonic.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum Mnemonic {
+            $($variant),+
+        }
+
+        impl Mnemonic {
+            /// Every mnemonic, for table-driven tests.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// Resolves a source spelling (case-insensitive).
+            pub fn parse(text: &str) -> Option<Self> {
+                let lower = text.to_ascii_lowercase();
+                match lower.as_str() {
+                    $($spelling => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            /// The ca65 spelling of this mnemonic.
+            pub fn ca65(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $spelling),+
+                }
+            }
+        }
+    };
 }
 
-impl Mnemonic {
-    /// Resolves a source spelling (case-insensitive) to a known mnemonic.
-    pub fn parse(text: &str) -> Option<Self> {
-        let lower = text.to_ascii_lowercase();
-        match lower.as_str() {
-            "lda" => Some(Self::Lda),
-            "sta" => Some(Self::Sta),
-            "rts" => Some(Self::Rts),
-            "sep" => Some(Self::Sep),
-            "rep" => Some(Self::Rep),
-            _ => None,
-        }
-    }
-
-    /// The ca65 spelling of this mnemonic.
-    pub fn ca65(self) -> &'static str {
-        match self {
-            Self::Lda => "lda",
-            Self::Sta => "sta",
-            Self::Rts => "rts",
-            Self::Sep => "sep",
-            Self::Rep => "rep",
-        }
-    }
+mnemonics! {
+    Adc => "adc", And => "and", Asl => "asl",
+    Bcc => "bcc", Bcs => "bcs", Beq => "beq", Bit => "bit", Bmi => "bmi",
+    Bne => "bne", Bpl => "bpl", Bra => "bra", Brk => "brk", Brl => "brl",
+    Bvc => "bvc", Bvs => "bvs",
+    Clc => "clc", Cld => "cld", Cli => "cli", Clv => "clv", Cmp => "cmp",
+    Cop => "cop", Cpx => "cpx", Cpy => "cpy",
+    Dec => "dec", Dex => "dex", Dey => "dey",
+    Eor => "eor",
+    Inc => "inc", Inx => "inx", Iny => "iny",
+    Jml => "jml", Jmp => "jmp", Jsl => "jsl", Jsr => "jsr",
+    Lda => "lda", Ldx => "ldx", Ldy => "ldy", Lsr => "lsr",
+    Mvn => "mvn", Mvp => "mvp",
+    Nop => "nop",
+    Ora => "ora",
+    Pea => "pea", Pei => "pei", Per => "per",
+    Pha => "pha", Phb => "phb", Phd => "phd", Phk => "phk", Php => "php",
+    Phx => "phx", Phy => "phy",
+    Pla => "pla", Plb => "plb", Pld => "pld", Plp => "plp", Plx => "plx",
+    Ply => "ply",
+    Rep => "rep", Rol => "rol", Ror => "ror", Rti => "rti", Rtl => "rtl",
+    Rts => "rts",
+    Sbc => "sbc", Sec => "sec", Sed => "sed", Sei => "sei", Sep => "sep",
+    Sta => "sta", Stp => "stp", Stx => "stx", Sty => "sty", Stz => "stz",
+    Tax => "tax", Tay => "tay", Tcd => "tcd", Tcs => "tcs", Tdc => "tdc",
+    Trb => "trb", Tsb => "tsb", Tsc => "tsc", Tsx => "tsx", Txa => "txa",
+    Txs => "txs", Txy => "txy", Tya => "tya", Tyx => "tyx",
+    Wai => "wai", Wdm => "wdm",
+    Xba => "xba", Xce => "xce",
 }
 
 /// A hardware addressing mode: the 24 modes of `doc/w65c816s.md` §3.5, in the
@@ -358,6 +389,25 @@ pub enum OperandForm {
     BlockMove,
 }
 
+impl OperandForm {
+    /// True when the emitted operand carries an explicit ca65 address-size
+    /// prefix (`z:` / `a:` / `f:`).
+    ///
+    /// Only these three forms are ambiguous: one K65 spelling covers direct,
+    /// absolute, and long, so without a prefix ca65 would pick the encoding
+    /// from its own symbol knowledge rather than the one K816 validated
+    /// (sub-plan C, backend decision 3). Every other form fixes its operand
+    /// size by its shape — `(d,x)` is always direct-page, `(d,s),y` always
+    /// stack-relative — and ca65 rejects a prefix there outright, which the
+    /// cross-check in `tests/isa.rs` confirms against the real assembler.
+    pub fn takes_address_size_prefix(self) -> bool {
+        matches!(
+            self,
+            Self::Address | Self::AddressIndexedX | Self::AddressIndexedY
+        )
+    }
+}
+
 /// The encoded width of a spec's operand field, which fixes the range K816
 /// validates the folded value against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -445,47 +495,431 @@ impl InstructionSpec {
     }
 }
 
-/// Every legal combination the slice supports, per `doc/w65c816s.md`.
-const SPECS: &[InstructionSpec] = &[
-    InstructionSpec {
-        mnemonic: Mnemonic::Lda,
-        mode: AddressingMode::Immediate,
-        operand: OperandConstraint::immediate(
-            OperandForm::Immediate,
-            ImmediateWidthClass::MDependent,
-        ),
-    },
-    InstructionSpec {
-        mnemonic: Mnemonic::Sta,
-        mode: AddressingMode::Absolute,
-        operand: OperandConstraint::plain(
-            OperandForm::Address,
-            OperandWidth::Address(AddressEncoding::Absolute),
-        ),
-    },
-    InstructionSpec {
-        mnemonic: Mnemonic::Rts,
-        mode: AddressingMode::Stack,
-        operand: OperandConstraint::plain(OperandForm::Nothing, OperandWidth::None),
-    },
-    InstructionSpec {
-        mnemonic: Mnemonic::Sep,
-        mode: AddressingMode::Immediate,
-        operand: OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::Fixed8),
-    },
-    InstructionSpec {
-        mnemonic: Mnemonic::Rep,
-        mode: AddressingMode::Immediate,
-        operand: OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::Fixed8),
-    },
+/// The memory-addressing modes every accumulator operation supports —
+/// `ADC`, `AND`, `CMP`, `EOR`, `LDA`, `ORA`, `SBC`, and `STA` — in
+/// `doc/w65c816s.md` Table 5-5 column order. The seven that also take an
+/// immediate get it separately; `STA` does not.
+const ACCUMULATOR_MODES: &[AddressingMode] = &[
+    AddressingMode::DirectIndexedIndirect,
+    AddressingMode::StackRelative,
+    AddressingMode::Direct,
+    AddressingMode::DirectIndirectLong,
+    AddressingMode::Absolute,
+    AddressingMode::AbsoluteLong,
+    AddressingMode::DirectIndirectIndexed,
+    AddressingMode::DirectIndirect,
+    AddressingMode::StackRelativeIndirectIndexed,
+    AddressingMode::DirectIndexedX,
+    AddressingMode::DirectIndirectLongIndexed,
+    AddressingMode::AbsoluteIndexedY,
+    AddressingMode::AbsoluteIndexedX,
+    AddressingMode::AbsoluteLongIndexedX,
 ];
 
+/// The read-modify-write shape shared by the shifts, rotates, `INC`, and
+/// `DEC`: the accumulator plus four memory modes.
+const SHIFT_MODES: &[AddressingMode] = &[
+    AddressingMode::Accumulator,
+    AddressingMode::Absolute,
+    AddressingMode::AbsoluteIndexedX,
+    AddressingMode::Direct,
+    AddressingMode::DirectIndexedX,
+];
+
+/// Every entry whose operand constraint follows from its mode alone, which
+/// is all of them except the immediates and WDC's Stack group.
+const ADDRESSED: &[(Mnemonic, &[AddressingMode])] = &[
+    (Mnemonic::Adc, ACCUMULATOR_MODES),
+    (Mnemonic::And, ACCUMULATOR_MODES),
+    (Mnemonic::Cmp, ACCUMULATOR_MODES),
+    (Mnemonic::Eor, ACCUMULATOR_MODES),
+    (Mnemonic::Lda, ACCUMULATOR_MODES),
+    (Mnemonic::Ora, ACCUMULATOR_MODES),
+    (Mnemonic::Sbc, ACCUMULATOR_MODES),
+    (Mnemonic::Sta, ACCUMULATOR_MODES),
+    (Mnemonic::Asl, SHIFT_MODES),
+    (Mnemonic::Lsr, SHIFT_MODES),
+    (Mnemonic::Rol, SHIFT_MODES),
+    (Mnemonic::Ror, SHIFT_MODES),
+    (Mnemonic::Dec, SHIFT_MODES),
+    (Mnemonic::Inc, SHIFT_MODES),
+    (
+        Mnemonic::Bit,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::AbsoluteIndexedX,
+            AddressingMode::Direct,
+            AddressingMode::DirectIndexedX,
+        ],
+    ),
+    (
+        Mnemonic::Cpx,
+        &[AddressingMode::Absolute, AddressingMode::Direct],
+    ),
+    (
+        Mnemonic::Cpy,
+        &[AddressingMode::Absolute, AddressingMode::Direct],
+    ),
+    (
+        Mnemonic::Ldx,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::AbsoluteIndexedY,
+            AddressingMode::Direct,
+            AddressingMode::DirectIndexedY,
+        ],
+    ),
+    (
+        Mnemonic::Ldy,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::AbsoluteIndexedX,
+            AddressingMode::Direct,
+            AddressingMode::DirectIndexedX,
+        ],
+    ),
+    (
+        Mnemonic::Stx,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::Direct,
+            AddressingMode::DirectIndexedY,
+        ],
+    ),
+    (
+        Mnemonic::Sty,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::Direct,
+            AddressingMode::DirectIndexedX,
+        ],
+    ),
+    (
+        Mnemonic::Stz,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::AbsoluteIndexedX,
+            AddressingMode::Direct,
+            AddressingMode::DirectIndexedX,
+        ],
+    ),
+    (
+        Mnemonic::Trb,
+        &[AddressingMode::Absolute, AddressingMode::Direct],
+    ),
+    (
+        Mnemonic::Tsb,
+        &[AddressingMode::Absolute, AddressingMode::Direct],
+    ),
+    // The two long jumps are `JML`'s: the cc65 tree's ca65 spells the
+    // 24-bit jump `jml al` and rejects `jmp al` outright, so `jml` is the
+    // canonical mnemonic for it even though `doc/w65c816s.md` Table 5-5
+    // lists that opcode under `JMP`. `jmp [a]`, which some assemblers also
+    // accept, is a source alias resolved during classification — one opcode
+    // keeps exactly one canonical spec. The two `JML` rows are told apart by
+    // their source form: `jml al` is a bare address, `jml [a]` a bracketed
+    // pointer, which is precisely why form is a second axis.
+    (
+        Mnemonic::Jmp,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::AbsoluteIndirect,
+            AddressingMode::AbsoluteIndexedIndirect,
+        ],
+    ),
+    (Mnemonic::Jml, &[AddressingMode::AbsoluteLong]),
+    (
+        Mnemonic::Jsr,
+        &[
+            AddressingMode::Absolute,
+            AddressingMode::AbsoluteIndexedIndirect,
+        ],
+    ),
+    (Mnemonic::Jsl, &[AddressingMode::AbsoluteLong]),
+    (Mnemonic::Mvn, &[AddressingMode::BlockMove]),
+    (Mnemonic::Mvp, &[AddressingMode::BlockMove]),
+    (Mnemonic::Bcc, &[AddressingMode::Relative]),
+    (Mnemonic::Bcs, &[AddressingMode::Relative]),
+    (Mnemonic::Beq, &[AddressingMode::Relative]),
+    (Mnemonic::Bmi, &[AddressingMode::Relative]),
+    (Mnemonic::Bne, &[AddressingMode::Relative]),
+    (Mnemonic::Bpl, &[AddressingMode::Relative]),
+    (Mnemonic::Bra, &[AddressingMode::Relative]),
+    (Mnemonic::Bvc, &[AddressingMode::Relative]),
+    (Mnemonic::Bvs, &[AddressingMode::Relative]),
+    (Mnemonic::Brl, &[AddressingMode::RelativeLong]),
+    (Mnemonic::Clc, &[AddressingMode::Implied]),
+    (Mnemonic::Cld, &[AddressingMode::Implied]),
+    (Mnemonic::Cli, &[AddressingMode::Implied]),
+    (Mnemonic::Clv, &[AddressingMode::Implied]),
+    (Mnemonic::Sec, &[AddressingMode::Implied]),
+    (Mnemonic::Sed, &[AddressingMode::Implied]),
+    (Mnemonic::Sei, &[AddressingMode::Implied]),
+    (Mnemonic::Dex, &[AddressingMode::Implied]),
+    (Mnemonic::Dey, &[AddressingMode::Implied]),
+    (Mnemonic::Inx, &[AddressingMode::Implied]),
+    (Mnemonic::Iny, &[AddressingMode::Implied]),
+    (Mnemonic::Nop, &[AddressingMode::Implied]),
+    (Mnemonic::Stp, &[AddressingMode::Implied]),
+    (Mnemonic::Wai, &[AddressingMode::Implied]),
+    (Mnemonic::Tax, &[AddressingMode::Implied]),
+    (Mnemonic::Tay, &[AddressingMode::Implied]),
+    (Mnemonic::Tcd, &[AddressingMode::Implied]),
+    (Mnemonic::Tcs, &[AddressingMode::Implied]),
+    (Mnemonic::Tdc, &[AddressingMode::Implied]),
+    (Mnemonic::Tsc, &[AddressingMode::Implied]),
+    (Mnemonic::Tsx, &[AddressingMode::Implied]),
+    (Mnemonic::Txa, &[AddressingMode::Implied]),
+    (Mnemonic::Txs, &[AddressingMode::Implied]),
+    (Mnemonic::Txy, &[AddressingMode::Implied]),
+    (Mnemonic::Tya, &[AddressingMode::Implied]),
+    (Mnemonic::Tyx, &[AddressingMode::Implied]),
+    (Mnemonic::Xba, &[AddressingMode::Implied]),
+    (Mnemonic::Xce, &[AddressingMode::Implied]),
+];
+
+/// The instructions WDC groups under Stack mode that take no operand at all.
+const OPERANDLESS_STACK: &[Mnemonic] = &[
+    Mnemonic::Pha,
+    Mnemonic::Phb,
+    Mnemonic::Phd,
+    Mnemonic::Phk,
+    Mnemonic::Php,
+    Mnemonic::Phx,
+    Mnemonic::Phy,
+    Mnemonic::Pla,
+    Mnemonic::Plb,
+    Mnemonic::Pld,
+    Mnemonic::Plp,
+    Mnemonic::Plx,
+    Mnemonic::Ply,
+    Mnemonic::Rti,
+    Mnemonic::Rtl,
+    Mnemonic::Rts,
+];
+
+/// The entries a mode cannot describe on its own.
+///
+/// Immediates need a width class, and WDC's Stack mode deliberately groups
+/// unrelated source spellings: `PEA #word` pushes a constant, `PEI (dp)`
+/// pushes the word at a direct-page pointer, `PER label` pushes a computed
+/// address, and `BRK`/`COP` carry a signature byte. All five are written
+/// with the shape below in K65 and, except `PEI` and `PER`, spelled without
+/// a `#` by ca65 — which is why the sigil is recorded rather than derived.
+const SPECIAL: &[(Mnemonic, AddressingMode, OperandConstraint)] = &[
+    (
+        Mnemonic::Adc,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::And,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Bit,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Cmp,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Eor,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Lda,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Ora,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Sbc,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::MDependent),
+    ),
+    (
+        Mnemonic::Cpx,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::XDependent),
+    ),
+    (
+        Mnemonic::Cpy,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::XDependent),
+    ),
+    (
+        Mnemonic::Ldx,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::XDependent),
+    ),
+    (
+        Mnemonic::Ldy,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::XDependent),
+    ),
+    (
+        Mnemonic::Rep,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::Fixed8),
+    ),
+    (
+        Mnemonic::Sep,
+        AddressingMode::Immediate,
+        OperandConstraint::immediate(OperandForm::Immediate, ImmediateWidthClass::Fixed8),
+    ),
+    // `wdm #imm` is written with a `#` and spelled `wdm $nn` by ca65.
+    (
+        Mnemonic::Wdm,
+        AddressingMode::Immediate,
+        OperandConstraint {
+            form: OperandForm::Immediate,
+            width: OperandWidth::Immediate(ImmediateWidthClass::Fixed8),
+            ca65_immediate_sigil: false,
+        },
+    ),
+    (
+        Mnemonic::Brk,
+        AddressingMode::Stack,
+        OperandConstraint {
+            form: OperandForm::Immediate,
+            width: OperandWidth::Immediate(ImmediateWidthClass::Fixed8),
+            ca65_immediate_sigil: false,
+        },
+    ),
+    (
+        Mnemonic::Cop,
+        AddressingMode::Stack,
+        OperandConstraint {
+            form: OperandForm::Immediate,
+            width: OperandWidth::Immediate(ImmediateWidthClass::Fixed8),
+            ca65_immediate_sigil: false,
+        },
+    ),
+    (
+        Mnemonic::Pea,
+        AddressingMode::Stack,
+        OperandConstraint {
+            form: OperandForm::Immediate,
+            width: OperandWidth::Immediate(ImmediateWidthClass::Fixed16),
+            ca65_immediate_sigil: false,
+        },
+    ),
+    (
+        Mnemonic::Pei,
+        AddressingMode::Stack,
+        OperandConstraint::plain(
+            OperandForm::Indirect,
+            OperandWidth::Address(AddressEncoding::Direct),
+        ),
+    ),
+    (
+        Mnemonic::Per,
+        AddressingMode::Stack,
+        OperandConstraint::plain(OperandForm::Address, OperandWidth::Displacement),
+    ),
+    // Absolute indirect long: two operand bytes, written `jml [expr]`.
+    (
+        Mnemonic::Jml,
+        AddressingMode::AbsoluteIndirect,
+        OperandConstraint::plain(
+            OperandForm::LongIndirect,
+            OperandWidth::Address(AddressEncoding::Absolute),
+        ),
+    ),
+];
+
+/// The operand constraint a mode implies on its own.
+///
+/// Every mode except `Immediate` and `Stack` fixes both the source shape and
+/// the encoded width; those two are listed in [`SPECIAL`] instead.
+fn derived_constraint(mode: AddressingMode) -> Option<OperandConstraint> {
+    use AddressEncoding::{Absolute, Direct, Long};
+    use OperandForm as F;
+    use OperandWidth::Address;
+    let plain = |form, width| Some(OperandConstraint::plain(form, width));
+    match mode {
+        AddressingMode::Direct => plain(F::Address, Address(Direct)),
+        AddressingMode::DirectIndexedX => plain(F::AddressIndexedX, Address(Direct)),
+        AddressingMode::DirectIndexedY => plain(F::AddressIndexedY, Address(Direct)),
+        AddressingMode::DirectIndexedIndirect => plain(F::IndirectIndexedX, Address(Direct)),
+        AddressingMode::DirectIndirect => plain(F::Indirect, Address(Direct)),
+        AddressingMode::DirectIndirectIndexed => plain(F::IndirectIndexedY, Address(Direct)),
+        AddressingMode::DirectIndirectLong => plain(F::LongIndirect, Address(Direct)),
+        AddressingMode::DirectIndirectLongIndexed => {
+            plain(F::LongIndirectIndexedY, Address(Direct))
+        }
+        AddressingMode::StackRelative => plain(F::StackRelative, Address(Direct)),
+        AddressingMode::StackRelativeIndirectIndexed => {
+            plain(F::StackRelativeIndirectIndexedY, Address(Direct))
+        }
+        AddressingMode::Absolute => plain(F::Address, Address(Absolute)),
+        AddressingMode::AbsoluteIndexedX => plain(F::AddressIndexedX, Address(Absolute)),
+        AddressingMode::AbsoluteIndexedY => plain(F::AddressIndexedY, Address(Absolute)),
+        AddressingMode::AbsoluteIndirect => plain(F::Indirect, Address(Absolute)),
+        AddressingMode::AbsoluteIndexedIndirect => plain(F::IndirectIndexedX, Address(Absolute)),
+        AddressingMode::AbsoluteLong => plain(F::Address, Address(Long)),
+        AddressingMode::AbsoluteLongIndexedX => plain(F::AddressIndexedX, Address(Long)),
+        AddressingMode::Accumulator => plain(F::Accumulator, OperandWidth::None),
+        AddressingMode::Implied => plain(F::Nothing, OperandWidth::None),
+        // K816 never computes a branch displacement: it does not own
+        // placement, so an out-of-range branch is ca65's error to report.
+        AddressingMode::Relative | AddressingMode::RelativeLong => {
+            plain(F::Address, OperandWidth::Displacement)
+        }
+        AddressingMode::BlockMove => plain(F::BlockMove, OperandWidth::BankPair),
+        AddressingMode::Immediate | AddressingMode::Stack => None,
+    }
+}
+
+/// Every legal (mnemonic, mode) pair, built once from the tables above.
+static SPECS: std::sync::LazyLock<Vec<InstructionSpec>> = std::sync::LazyLock::new(|| {
+    let mut specs = Vec::with_capacity(256);
+    for (mnemonic, modes) in ADDRESSED {
+        for &mode in *modes {
+            let operand = derived_constraint(mode)
+                .expect("an addressed mode always implies its operand constraint");
+            specs.push(InstructionSpec {
+                mnemonic: *mnemonic,
+                mode,
+                operand,
+            });
+        }
+    }
+    for mnemonic in OPERANDLESS_STACK {
+        specs.push(InstructionSpec {
+            mnemonic: *mnemonic,
+            mode: AddressingMode::Stack,
+            operand: OperandConstraint::plain(OperandForm::Nothing, OperandWidth::None),
+        });
+    }
+    for (mnemonic, mode, operand) in SPECIAL {
+        specs.push(InstructionSpec {
+            mnemonic: *mnemonic,
+            mode: *mode,
+            operand: *operand,
+        });
+    }
+    specs.sort_by_key(|spec| (spec.mnemonic, spec.mode));
+    specs
+});
 /// Looks up the specification for a (mnemonic, mode) pair; `None` means the
 /// combination is illegal on the 65816 or not yet supported.
 pub fn spec(mnemonic: Mnemonic, mode: AddressingMode) -> Option<&'static InstructionSpec> {
+    // The table is sorted by its own key, so lookup is a binary search.
     SPECS
-        .iter()
-        .find(|spec| spec.mnemonic == mnemonic && spec.mode == mode)
+        .binary_search_by_key(&(mnemonic, mode), |spec| (spec.mnemonic, spec.mode))
+        .ok()
+        .map(|index| &SPECS[index])
 }
 
 /// Every spec of one mnemonic, in table order — the candidate set operand
@@ -494,9 +928,20 @@ pub fn specs_for(mnemonic: Mnemonic) -> impl Iterator<Item = &'static Instructio
     SPECS.iter().filter(move |spec| spec.mnemonic == mnemonic)
 }
 
+/// The single spec of `mnemonic` whose source shape is `form`, if there is
+/// exactly one. Several address modes share a form — direct, absolute, and
+/// long are one K65 spelling — so the address family is resolved by encoding
+/// rather than by form alone.
+pub fn spec_for_form(
+    mnemonic: Mnemonic,
+    form: OperandForm,
+) -> impl Iterator<Item = &'static InstructionSpec> {
+    specs_for(mnemonic).filter(move |spec| spec.operand.form == form)
+}
+
 /// All supported instruction specifications, for table-driven tests.
 pub fn all_specs() -> &'static [InstructionSpec] {
-    SPECS
+    &SPECS
 }
 
 /// The hardware mode of `mnemonic` written without an operand, or `None`
@@ -520,15 +965,11 @@ pub fn operandless_mode(mnemonic: Mnemonic) -> Option<AddressingMode> {
 mod tests {
     use super::*;
 
+    /// `doc/w65c816s.md` §1.1: "24 addressing modes … 92 instructions using
+    /// 256 opcodes". Each number is a countable completeness gate.
     #[test]
-    fn every_spec_is_reachable_through_lookup() {
-        for expected in all_specs() {
-            assert_eq!(spec(expected.mnemonic, expected.mode), Some(expected));
-        }
-    }
-
-    #[test]
-    fn hardware_keys_are_unique() {
+    fn the_table_carries_every_opcode_exactly_once() {
+        assert_eq!(all_specs().len(), 256, "one spec per opcode");
         let mut seen = std::collections::HashSet::new();
         for spec in all_specs() {
             assert!(
@@ -538,6 +979,31 @@ mod tests {
                 spec.mode
             );
         }
+        assert_eq!(Mnemonic::ALL.len(), 92);
+        assert_eq!(AddressingMode::ALL.len(), 24);
+    }
+
+    #[test]
+    fn every_mnemonic_and_every_mode_is_used() {
+        for mnemonic in Mnemonic::ALL {
+            assert!(
+                specs_for(*mnemonic).next().is_some(),
+                "{mnemonic:?} has no legal mode"
+            );
+        }
+        for mode in AddressingMode::ALL {
+            assert!(
+                all_specs().iter().any(|spec| spec.mode == mode),
+                "{mode:?} is used by no instruction"
+            );
+        }
+    }
+
+    #[test]
+    fn every_spec_is_reachable_through_lookup() {
+        for expected in all_specs() {
+            assert_eq!(spec(expected.mnemonic, expected.mode), Some(expected));
+        }
     }
 
     #[test]
@@ -546,8 +1012,9 @@ mod tests {
             assert_eq!(
                 spec.immediate_width().is_some(),
                 spec.operand.form == OperandForm::Immediate,
-                "{:?}",
-                spec.mnemonic
+                "{:?} {:?}",
+                spec.mnemonic,
+                spec.mode
             );
         }
     }
@@ -595,26 +1062,106 @@ mod tests {
         );
     }
 
+    /// WDC's Stack mode groups source spellings that share no syntax, which
+    /// is the whole reason [`OperandForm`] is a second axis. These five are
+    /// the awkward ones, and two of them are also why the ca65 `#` is
+    /// recorded rather than derived from the form.
+    #[test]
+    fn the_stack_group_keeps_its_five_different_source_shapes() {
+        let form = |mnemonic| spec(mnemonic, AddressingMode::Stack).map(|s| s.operand.form);
+        assert_eq!(form(Mnemonic::Pha), Some(OperandForm::Nothing));
+        assert_eq!(form(Mnemonic::Rts), Some(OperandForm::Nothing));
+        assert_eq!(form(Mnemonic::Pea), Some(OperandForm::Immediate));
+        assert_eq!(form(Mnemonic::Brk), Some(OperandForm::Immediate));
+        assert_eq!(form(Mnemonic::Cop), Some(OperandForm::Immediate));
+        assert_eq!(form(Mnemonic::Pei), Some(OperandForm::Indirect));
+        assert_eq!(form(Mnemonic::Per), Some(OperandForm::Address));
+
+        // K65 writes `pea #addr`, `brk #sig`, and `cop #sig` with a `#`;
+        // ca65 spells all three without one.
+        for mnemonic in [Mnemonic::Pea, Mnemonic::Brk, Mnemonic::Cop] {
+            let spec = spec(mnemonic, AddressingMode::Stack).unwrap();
+            assert!(!spec.operand.ca65_immediate_sigil, "{mnemonic:?}");
+        }
+        // A real immediate keeps it.
+        assert!(
+            spec(Mnemonic::Lda, AddressingMode::Immediate)
+                .unwrap()
+                .operand
+                .ca65_immediate_sigil
+        );
+    }
+
+    #[test]
+    fn pea_is_a_fixed_sixteen_bit_immediate_not_an_m_dependent_one() {
+        assert_eq!(
+            spec(Mnemonic::Pea, AddressingMode::Stack)
+                .unwrap()
+                .immediate_width(),
+            Some(ImmediateWidthClass::Fixed16)
+        );
+    }
+
+    /// `PER` and the branches take a bare address in K65 and a displacement
+    /// ca65 computes — K816 never works one out, because it does not own
+    /// placement.
+    #[test]
+    fn relative_targets_are_displacements_ca65_computes() {
+        for (mnemonic, mode) in [
+            (Mnemonic::Bcc, AddressingMode::Relative),
+            (Mnemonic::Brl, AddressingMode::RelativeLong),
+            (Mnemonic::Per, AddressingMode::Stack),
+        ] {
+            let spec = spec(mnemonic, mode).unwrap();
+            assert_eq!(spec.operand.form, OperandForm::Address, "{mnemonic:?}");
+            assert_eq!(
+                spec.operand.width,
+                OperandWidth::Displacement,
+                "{mnemonic:?}"
+            );
+        }
+    }
+
+    /// One source shape covers direct, absolute, and long, which is why
+    /// classification narrows by form and *then* picks an encoding.
+    #[test]
+    fn one_source_form_can_cover_three_encodings() {
+        let encodings: Vec<_> = spec_for_form(Mnemonic::Lda, OperandForm::Address)
+            .map(|spec| spec.encoding())
+            .collect();
+        assert_eq!(
+            encodings,
+            vec![
+                Some(AddressEncoding::Absolute),
+                Some(AddressEncoding::Long),
+                Some(AddressEncoding::Direct),
+            ]
+        );
+    }
+
     #[test]
     fn illegal_combinations_are_rejected() {
-        assert_eq!(spec(Mnemonic::Lda, AddressingMode::Implied), None);
+        // No direct-page jump exists, and ca65 rejects `jmp z:$12` too.
+        assert_eq!(spec(Mnemonic::Jmp, AddressingMode::Direct), None);
         assert_eq!(spec(Mnemonic::Sta, AddressingMode::Immediate), None);
         assert_eq!(spec(Mnemonic::Rts, AddressingMode::Absolute), None);
         assert_eq!(spec(Mnemonic::Sep, AddressingMode::Absolute), None);
-        assert_eq!(spec(Mnemonic::Rep, AddressingMode::Implied), None);
+        assert_eq!(spec(Mnemonic::Inx, AddressingMode::Accumulator), None);
+        assert_eq!(spec(Mnemonic::Ldx, AddressingMode::DirectIndexedX), None);
+        assert_eq!(spec(Mnemonic::Ldy, AddressingMode::DirectIndexedY), None);
     }
 
     #[test]
     fn mnemonics_parse_case_insensitively_and_round_trip() {
-        for spec in all_specs() {
-            let spelling = spec.mnemonic.ca65();
-            assert_eq!(Mnemonic::parse(spelling), Some(spec.mnemonic));
+        for mnemonic in Mnemonic::ALL {
+            let spelling = mnemonic.ca65();
+            assert_eq!(Mnemonic::parse(spelling), Some(*mnemonic));
             assert_eq!(
                 Mnemonic::parse(&spelling.to_ascii_uppercase()),
-                Some(spec.mnemonic)
+                Some(*mnemonic)
             );
         }
-        assert_eq!(Mnemonic::parse("nop"), None);
+        assert_eq!(Mnemonic::parse("lax"), None);
         assert_eq!(Mnemonic::parse(""), None);
     }
 }

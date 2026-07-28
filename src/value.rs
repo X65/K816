@@ -197,6 +197,28 @@ impl KExpr {
         }
     }
 
+    /// Applies `op`, collapsing to a number when the operand is absolute and
+    /// keeping the tree for ld65 when it is not.
+    pub fn fold_unary(op: UnaryOp, operand: KExpr) -> Self {
+        match operand.value() {
+            Some(value) => Self::Number(apply_unary(op, value)),
+            None => Self::unary(op, operand),
+        }
+    }
+
+    /// Applies `op`, collapsing to a number when both operands are absolute.
+    ///
+    /// A link-time operand keeps the whole expression symbolic — including
+    /// multiplication and the named bitwise and shift operators, which ca65
+    /// stores and ld65 evaluates after placement. K816 does not reject
+    /// `label * 2` merely because ld65 owns `label`.
+    pub fn fold_binary(op: BinaryOp, left: KExpr, right: KExpr) -> Self {
+        match (left.value(), right.value()) {
+            (Some(left), Some(right)) => Self::Number(apply_binary(op, left, right)),
+            _ => Self::binary(op, left, right),
+        }
+    }
+
     /// The folded value, when this expression is already absolute.
     ///
     /// Structural, not an evaluator: folding happens before a `KExpr` is
@@ -228,9 +250,48 @@ impl KExpr {
     }
 }
 
+/// Applies a unary operator to an absolute value.
+pub fn apply_unary(op: UnaryOp, value: Value) -> Value {
+    let value = value.get();
+    Value::new(match op {
+        UnaryOp::Negate => value.wrapping_neg(),
+        UnaryOp::BitNot => !value,
+        UnaryOp::LowByte => value & 0xFF,
+        UnaryOp::HighByte => (value >> 8) & 0xFF,
+        UnaryOp::BankByte => (value >> 16) & 0xFF,
+        UnaryOp::Word => value & 0xFFFF,
+        UnaryOp::Long => value & 0xFF_FFFF,
+    })
+}
+
+/// Applies a binary operator to two absolute values.
+///
+/// Arithmetic runs in `u64` and truncates, so an over-wide intermediate
+/// cannot panic in a debug build; a shift count past the value's width
+/// produces zero rather than wrapping the count, which is what a reader of
+/// `1 << 40` expects. Whether the result still fits its operand field is a
+/// separate check at the use site.
+pub fn apply_binary(op: BinaryOp, left: Value, right: Value) -> Value {
+    let (a, b) = (left.get() as u64, right.get() as u64);
+    match op {
+        BinaryOp::Mul => Value::wrapping(a.wrapping_mul(b)),
+        BinaryOp::Add => Value::wrapping(a.wrapping_add(b)),
+        BinaryOp::Sub => Value::wrapping(a.wrapping_sub(b)),
+        BinaryOp::Shl => Value::new(left.get().checked_shl(right.get()).unwrap_or(0)),
+        BinaryOp::Shr => Value::new(left.get().checked_shr(right.get()).unwrap_or(0)),
+        BinaryOp::BitAnd => Value::new(left.get() & right.get()),
+        BinaryOp::BitXor => Value::new(left.get() ^ right.get()),
+        BinaryOp::BitOr => Value::new(left.get() | right.get()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn folded(op: BinaryOp, left: u32, right: u32) -> u32 {
+        apply_binary(op, Value::new(left), Value::new(right)).get()
+    }
 
     #[test]
     fn values_render_at_their_natural_width() {
@@ -257,6 +318,50 @@ mod tests {
         let tree = KExpr::binary(BinaryOp::Add, KExpr::number(1), KExpr::number(2));
         assert!(tree.is_link_time(), "an unfolded tree belongs to ld65");
         assert_eq!(tree.value(), None);
+    }
+
+    #[test]
+    fn binary_operators_fold_as_documented() {
+        // `doc/syntax-reference.md`, "Binary operators".
+        assert_eq!(folded(BinaryOp::BitOr, 0x80, 0x40), 0xC0);
+        assert_eq!(folded(BinaryOp::BitXor, 0x80, 0x40), 0xC0);
+        assert_eq!(folded(BinaryOp::BitAnd, 0x80, !0x40), 0x80);
+        assert_eq!(folded(BinaryOp::Shl, 1, 3), 0x08);
+        assert_eq!(folded(BinaryOp::Shr, 0xFF, 4), 0x0F);
+        assert_eq!(folded(BinaryOp::Mul, 6, 7), 42);
+        assert_eq!(folded(BinaryOp::Sub, 1, 2), u32::MAX);
+    }
+
+    #[test]
+    fn oversized_shifts_produce_zero_rather_than_wrapping_the_count() {
+        assert_eq!(folded(BinaryOp::Shl, 1, 40), 0);
+        assert_eq!(folded(BinaryOp::Shr, 0xFFFF, 32), 0);
+    }
+
+    #[test]
+    fn address_byte_operators_select_the_documented_byte() {
+        let address = Value::new(0x12_3456);
+        assert_eq!(apply_unary(UnaryOp::LowByte, address).get(), 0x56);
+        assert_eq!(apply_unary(UnaryOp::HighByte, address).get(), 0x34);
+        assert_eq!(apply_unary(UnaryOp::BankByte, address).get(), 0x12);
+        assert_eq!(apply_unary(UnaryOp::Word, address).get(), 0x3456);
+        assert_eq!(apply_unary(UnaryOp::Long, address).get(), 0x12_3456);
+    }
+
+    #[test]
+    fn folding_collapses_absolute_trees_and_preserves_symbolic_ones() {
+        let absolute = KExpr::fold_binary(BinaryOp::Add, KExpr::number(1), KExpr::number(2));
+        assert_eq!(absolute, KExpr::number(3));
+
+        let symbol = KExpr::Symbol(crate::symbol::SymbolId::from_index(0));
+        // `label * 2` stays whole: ca65 stores it and ld65 finishes it.
+        let relocatable = KExpr::fold_binary(BinaryOp::Mul, symbol.clone(), KExpr::number(2));
+        assert!(relocatable.is_link_time());
+        assert_eq!(
+            relocatable,
+            KExpr::binary(BinaryOp::Mul, symbol.clone(), KExpr::number(2))
+        );
+        assert!(KExpr::fold_unary(UnaryOp::LowByte, symbol).is_link_time());
     }
 
     #[test]

@@ -167,3 +167,198 @@ fn functions_are_not_entry_points_unless_named_main() {
     assert_eq!(model.functions.len(), 1);
     assert!(!model.functions[0].is_entry_point);
 }
+
+// ---------------------------------------------------------------------------
+// The value and expression layer (sub-plan C, task C1).
+// ---------------------------------------------------------------------------
+
+/// The folded value of `name` after analyzing `source`.
+fn const_value(source: &str, name: &str) -> u32 {
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "unexpected diagnostics");
+    let id = model
+        .symbols
+        .lookup(name)
+        .unwrap_or_else(|| panic!("`{name}` is declared"));
+    match model.symbols.symbol(id).kind {
+        k816::symbol::SymbolKind::Const { value } => value,
+        other => panic!("`{name}` is {other:?}, not a const"),
+    }
+}
+
+#[test]
+fn constants_fold_with_c_precedence() {
+    // `doc/syntax-reference.md`, "Binary operators": the tree B builds
+    // already encodes the precedence, so folding must not reorder anything.
+    let source = "const FLAG_NMI = $80
+const FLAG_DLI = $40
+const FLAG_VBI = $20
+const ALL_IRQ = FLAG_NMI | FLAG_DLI | FLAG_VBI
+const NMI_NOT_DLI = FLAG_NMI & ~FLAG_DLI
+const NMI_XOR_DLI = FLAG_NMI ^ FLAG_DLI
+const BIT_3 = 1 << 3
+const HIGH_NIBBLE = $FF >> 4
+const OR_BINDS_LOOSEST = $01 | $06 & $04
+const AND_BINDS_LOOSER_THAN_ADD = 1 + 2 & 2
+";
+    assert_eq!(const_value(source, "ALL_IRQ"), 0xE0);
+    assert_eq!(const_value(source, "NMI_NOT_DLI"), 0x80);
+    assert_eq!(const_value(source, "NMI_XOR_DLI"), 0xC0);
+    assert_eq!(const_value(source, "BIT_3"), 0x08);
+    assert_eq!(const_value(source, "HIGH_NIBBLE"), 0x0F);
+    // `A | B & C` is `A | (B & C)`, not `(A | B) & C` — which would be $04.
+    assert_eq!(const_value(source, "OR_BINDS_LOOSEST"), 0x05);
+    // `A + B & C` is `(A + B) & C`, not `A + (B & C)` — which would be 3.
+    assert_eq!(const_value(source, "AND_BINDS_LOOSER_THAN_ADD"), 2);
+}
+
+#[test]
+fn unary_operators_repeat_in_the_order_written() {
+    // `-~FOO` is Negate(BitNot(FOO)) and `~-FOO` is BitNot(Negate(FOO)).
+    let source = "const FOO = 5\nconst A = -~FOO\nconst B = ~-FOO\n";
+    assert_eq!(const_value(source, "A"), 6);
+    assert_eq!(const_value(source, "B"), 4);
+}
+
+#[test]
+fn character_literals_fold_as_atoms() {
+    let source = "const A = 'A'\nconst NEXT = 'A' + 1\n";
+    assert_eq!(const_value(source, "A"), u32::from(b'A'));
+    assert_eq!(const_value(source, "NEXT"), u32::from(b'A') + 1);
+}
+
+#[test]
+fn address_byte_operators_fold_over_absolute_values() {
+    let source = "const FAR = $123456
+const LO = &<FAR
+const HI = &>FAR
+const W = &&FAR
+const L = &&&FAR
+";
+    assert_eq!(const_value(source, "LO"), 0x56);
+    assert_eq!(const_value(source, "HI"), 0x34);
+    assert_eq!(const_value(source, "W"), 0x3456);
+    assert_eq!(const_value(source, "L"), 0x123456);
+}
+
+#[test]
+fn const_groups_auto_increment() {
+    // `doc/syntax-reference.md`, "Constant Declaration".
+    let source = "const A = 0, B, C
+const D, E, F
+const BASE = 10
+const X = BASE, Y, Z
+const M = 0, N, O = 10, P
+";
+    for (name, expected) in [
+        ("A", 0),
+        ("B", 1),
+        ("C", 2),
+        ("D", 0),
+        ("E", 1),
+        ("F", 2),
+        ("X", 10),
+        ("Y", 11),
+        ("Z", 12),
+        ("M", 0),
+        ("N", 1),
+        ("O", 10),
+        ("P", 11),
+    ] {
+        assert_eq!(const_value(source, name), expected, "`{name}`");
+    }
+}
+
+#[test]
+fn a_standalone_const_without_an_initializer_is_an_error() {
+    let (_, diagnostics) = analyze("const LIMIT\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::NOT_CONSTANT);
+    assert_eq!(diagnostic.title, "`const LIMIT` has no value");
+    assert_eq!(diagnostic.fixes.len(), 1);
+    assert_eq!(diagnostic.fixes[0].edits[0].replacement, " = 0");
+
+    // The group form of the same shorthand stays legal.
+    let (_, diagnostics) = analyze("const LIMIT, OTHER\n");
+    assert_eq!(diagnostics, vec![]);
+}
+
+#[test]
+fn a_link_time_value_is_rejected_only_where_an_absolute_one_is_required() {
+    // A `var` address becomes a ca65 equate, so it has to be a number.
+    let (_, diagnostics) = analyze("func f @a8 {\n    return\n}\nvar X = f + 1\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_CONSTANT);
+    assert_eq!(
+        diagnostics[0].title,
+        "variable addresses must be known at compile time"
+    );
+    assert_eq!(
+        diagnostics[0].notes,
+        ["`f` gets its address from ld65"],
+        "the note names the symbol ld65 owns"
+    );
+}
+
+#[test]
+fn a_const_cannot_stand_in_for_a_memory_location() {
+    let (_, diagnostics) = analyze("const K = $10\nfunc f @a8 {\n    sta K\n}\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::CONST_IN_ADDRESS_POSITION);
+    assert_eq!(
+        diagnostic.secondary.len(),
+        1,
+        "it points at the declaration"
+    );
+    assert_eq!(diagnostic.fixes[0].edits[0].replacement, "#");
+
+    // …but it is exactly what an immediate wants.
+    let (_, diagnostics) = analyze("const K = $10\nfunc f @a8 {\n    lda #K\n}\n");
+    assert_eq!(diagnostics, vec![]);
+}
+
+#[test]
+fn an_undeclared_name_inside_an_expression_names_itself() {
+    let (_, diagnostics) = analyze("const A = MISSING + 1\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::UNDECLARED_SYMBOL);
+    assert_eq!(diagnostics[0].title, "`MISSING` is not declared");
+}
+
+#[test]
+fn both_sides_of_a_binary_expression_are_diagnosed() {
+    // One undeclared name must not hide another.
+    let (_, diagnostics) = analyze("const A = LEFT + RIGHT\n");
+    let names: Vec<&str> = diagnostics.iter().map(|d| d.title.as_str()).collect();
+    assert_eq!(names, ["`LEFT` is not declared", "`RIGHT` is not declared"]);
+}
+
+#[test]
+fn a_compound_expression_in_a_data_value_list_is_rejected() {
+    // The grammar closes most of this; parentheses are the hole it cannot,
+    // because `&<(A | B)` is a legal parse of an illegal value.
+    let (_, diagnostics) = analyze("const A = 1\nconst B = 2\ndata D {\n    byte &<(A | B)\n}\n");
+    let compound: Vec<&k816::diagnostic::Diagnostic> = diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::COMPOUND_DATA_VALUE)
+        .collect();
+    assert_eq!(compound.len(), 1, "{diagnostics:?}");
+    assert!(
+        compound[0]
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("`const`")),
+        "the help points at the documented workaround"
+    );
+
+    // Offset arithmetic under an address-byte operator stays an atom.
+    let (_, diagnostics) = analyze("var P = $80\ndata D {\n    byte &<P+1\n}\n");
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::COMPOUND_DATA_VALUE),
+        "{diagnostics:?}"
+    );
+}

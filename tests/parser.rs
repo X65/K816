@@ -880,23 +880,21 @@ fn grouping_keeps_the_span_of_the_parentheses() {
 }
 
 #[test]
-fn a_compound_address_reports_itself_as_unimplemented() {
-    // The parser accepts it; folding it is the native translator's job, so
-    // the arm has to say so rather than stay silent.
+fn a_compound_address_folds_through_the_const_table() {
+    // The grouped-expression shape the previous test pins down has to reach
+    // a value, not just an AST: this is that shape end to end.
     let mut map = SourceMap::new();
-    let id = map.add_file("fold.k65", "var X = BASE + 3\n");
+    let id = map.add_file("fold.k65", "const BASE = $0400\nvar X = BASE + 3\n");
     let parsed = parse_source(map.file(id), None);
     assert_eq!(parsed.diagnostics, vec![]);
 
-    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let (model, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+    assert_eq!(diagnostics, vec![]);
+    let x = model.symbols.lookup("X").expect("X is declared");
     assert_eq!(
-        diagnostics[0].code,
-        DiagnosticCode::NOT_YET_IMPLEMENTED,
-        "{:?}",
-        diagnostics[0]
+        model.symbols.symbol(x).kind,
+        k816::symbol::SymbolKind::FixedAddressVar { address: 0x0403 }
     );
-    assert_eq!(map.span_text(diagnostics[0].primary.span), "BASE + 3");
 }
 
 #[test]
@@ -1007,7 +1005,6 @@ fn every_new_declaration_form_names_its_owner() {
             DiagnosticCode::NOT_YET_IMPLEMENTED,
         ),
         ("var s:byte * 32\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        ("const LIMIT = 10\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         ("segment code\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         ("func f { .loop: }\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         (

@@ -29,18 +29,19 @@
 //! diagnostics.
 
 use crate::ast::{
-    AstFile, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr,
+    self, AstFile, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr,
     ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand,
     RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
 };
 use crate::compat;
-use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
+use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::isa::{
     AddressingMode, ImmediateWidthClass, Mnemonic, RegisterWidth, operandless_mode, spec,
 };
 use crate::op::WidthContract;
 use crate::source::{Provenance, Span};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
+use crate::value::{BinaryOp, KExpr, UnaryOp};
 
 /// The result of analyzing one file: symbols plus per-function facts.
 #[derive(Debug, Default)]
@@ -110,11 +111,7 @@ impl Analysis {
                         var.name.span,
                     );
                 }
-                ItemKind::Const(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "`const` declarations",
-                    compat::Owner::NativeTranslator,
-                )),
+                ItemKind::Const(declaration) => self.declare_const_group(declaration),
                 ItemKind::Data(data) => {
                     self.diagnostics.push(compat::unimplemented(
                         item.span,
@@ -413,7 +410,19 @@ impl Analysis {
         contract: WidthContract,
         mnemonic: Mnemonic,
     ) {
-        let Some(number) = self.constant(value, "immediate operands") else {
+        let Some(folded) = self.fold(value) else {
+            return;
+        };
+        let Some(number) = folded.value().map(|value| value.get()) else {
+            // A link-time immediate such as `#&&label` is legal — ca65
+            // relocates it — but K816 cannot range-check an address ld65
+            // has not placed, and lowering does not carry a symbolic
+            // immediate until operand classification lands (task C4).
+            self.diagnostics.push(compat::unimplemented(
+                value.span,
+                "link-time values in immediate operands",
+                compat::Owner::NativeTranslator,
+            ));
             return;
         };
         let Some(width) = width else {
@@ -481,10 +490,14 @@ impl Analysis {
                     for value in values {
                         if let DataValue::Expr(expr) = value {
                             self.report_reserved_in_expr(expr);
+                            self.check_data_atom(expr);
                         }
                     }
                 }
-                DataEntryKind::Value(DataValue::Expr(expr)) => self.report_reserved_in_expr(expr),
+                DataEntryKind::Value(DataValue::Expr(expr)) => {
+                    self.report_reserved_in_expr(expr);
+                    self.check_data_atom(expr);
+                }
                 DataEntryKind::Repeat { count, body } => {
                     self.report_reserved_in_expr(count);
                     self.report_reserved_in_data(body);
@@ -511,6 +524,34 @@ impl Analysis {
                 | DataEntryKind::Error => {}
             }
         }
+    }
+
+    /// Enforces the atom-only rule for data-block value lists.
+    ///
+    /// Each value must be a single atom: a literal, an identifier, an
+    /// address-byte operator over a symbol with at most `+`/`-` offset
+    /// arithmetic, or `?` (`doc/syntax-reference.md`, "Where compound
+    /// expressions are accepted"). The grammar already refuses most compound
+    /// shapes; parentheses are the escape hatch it cannot close, because
+    /// `&<(A | B)` is a legal *parse* of an illegal value. A compound
+    /// expression belongs in a `const` that pre-folds it.
+    fn check_data_atom(&mut self, expr: &Expr) {
+        let Some(compound) = first_compound(expr) else {
+            return;
+        };
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::COMPOUND_DATA_VALUE,
+                "data value lists take single atoms, not compound expressions",
+                Label::new(compound, "this operator is not allowed in a value list"),
+            )
+            .with_note(
+                "a value list separates entries by whitespace, so an operator between \
+                 two of them would silently merge them into one",
+            )
+            .with_help("declare a `const` that folds the expression and list the `const`")
+            .with_docs("doc/syntax-reference.md#where-compound-expressions-are-accepted"),
+        );
     }
 
     /// Reports reserved evaluator calls anywhere inside `expr`.
@@ -592,40 +633,170 @@ impl Analysis {
         }
     }
 
-    /// The value of `expr`, which must already be a literal.
+    /// Folds `expr` into a lowered expression.
     ///
-    /// Constant folding — symbol references, arithmetic, and the compile-time
-    /// evaluator — belongs to the native translator, so every other shape
-    /// reports itself as not-yet-implemented instead of being silently
-    /// ignored. `position` names where the expression appeared, in plural form
-    /// ("immediate operands"). Returns `None` for malformed expressions, whose
-    /// syntax diagnostic was already reported.
-    fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
+    /// Absolute sub-expressions collapse to numbers; anything rooted in a
+    /// symbol ld65 places stays a tree, because K816 never resolves an
+    /// address the linker owns. Every operator the K65 expression layer has
+    /// is preserved symbolically — ca65 stores unresolved expressions in the
+    /// object file and ld65 evaluates them after placement, so `label * 2`
+    /// is not an error merely because a label is involved.
+    ///
+    /// Returns `None` when the expression is malformed or names something
+    /// undeclared; both are reported here, so callers stay quiet.
+    fn fold(&mut self, expr: &Expr) -> Option<KExpr> {
         match &expr.kind {
-            ExprKind::Number(value) => Some(*value),
-            ExprKind::Error => None,
-            ExprKind::Symbol(_)
-            | ExprKind::LocalSymbol(_)
-            | ExprKind::Unary(_)
-            | ExprKind::Binary(_)
-            | ExprKind::Field(_)
-            | ExprKind::Subscript(_)
-            | ExprKind::Metadata(_)
-            | ExprKind::TypedView(_)
-            | ExprKind::Eval(_) => {
+            ExprKind::Number(value) => Some(KExpr::number(*value)),
+            ExprKind::Symbol(name) => {
+                let id = self.resolve(&name.text, name.span)?;
+                Some(match self.model.symbols.symbol(id).kind {
+                    // A `const` has no storage, so it can only ever be its
+                    // value; a variable or function keeps its name, and
+                    // ca65/ld65 resolve it.
+                    SymbolKind::Const { value } => KExpr::number(value),
+                    SymbolKind::FixedAddressVar { .. } | SymbolKind::Function => KExpr::Symbol(id),
+                })
+            }
+            ExprKind::Unary(unary) => {
+                let operand = self.fold(&unary.operand)?;
+                Some(KExpr::fold_unary(lowered_unary_op(unary.op), operand))
+            }
+            ExprKind::Binary(binary) => {
+                // Both sides are folded even when the first fails, so one
+                // undeclared name does not hide another.
+                let left = self.fold(&binary.left);
+                let right = self.fold(&binary.right);
+                Some(KExpr::fold_binary(
+                    lowered_binary_op(binary.op),
+                    left?,
+                    right?,
+                ))
+            }
+            // Local labels are function-scoped, which means resolution needs
+            // the enclosing scope; that lands with task C2.
+            ExprKind::LocalSymbol(_) => {
                 self.diagnostics.push(compat::unimplemented(
                     expr.span,
-                    &format!("compound expressions in {position}"),
+                    "local label references",
                     compat::Owner::NativeTranslator,
                 ));
+                None
+            }
+            ExprKind::Field(_)
+            | ExprKind::Subscript(_)
+            | ExprKind::Metadata(_)
+            | ExprKind::TypedView(_) => {
+                self.diagnostics.push(compat::unimplemented(
+                    expr.span,
+                    "symbolic subscripts, metadata queries, and typed views",
+                    compat::Owner::HlaLowering,
+                ));
+                None
+            }
+            ExprKind::Eval(inner) => {
+                self.diagnostics.push(compat::unimplemented(
+                    expr.span,
+                    "compile-time evaluator brackets",
+                    compat::Owner::Compatibility,
+                ));
+                self.report_reserved_in_eval(inner);
+                None
+            }
+            // A syntax diagnostic was already reported for this node.
+            ExprKind::Error => None,
+        }
+    }
+
+    /// The absolute value of `expr` in a position that requires one.
+    ///
+    /// `position` names where the expression appeared, in plural form
+    /// ("immediate operands"). A link-time expression is rejected here and
+    /// only here: elsewhere it is preserved and handed to ld65.
+    fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
+        let folded = self.fold(expr)?;
+        match folded.value() {
+            Some(value) => Some(value.get()),
+            None => {
+                let mut symbols = Vec::new();
+                folded.symbols(&mut symbols);
+                let named = symbols
+                    .first()
+                    .map(|id| self.model.symbols.name(*id).to_owned());
+                let mut diagnostic = Diagnostic::error(
+                    DiagnosticCode::NOT_CONSTANT,
+                    format!("{position} must be known at compile time"),
+                    Label::new(expr.span, "this value is not known until link time"),
+                )
+                .with_help("use a numeric literal or a `const` here")
+                .with_docs("doc/syntax-reference.md#constant-declaration");
+                if let Some(name) = named {
+                    diagnostic =
+                        diagnostic.with_note(format!("`{name}` gets its address from ld65"));
+                }
+                self.diagnostics.push(diagnostic);
                 None
             }
         }
     }
 
-    /// Validates a memory operand: the symbol must be a declared variable.
-    fn check_memory_operand(&mut self, name: &str, span: Span) {
+    /// Declares one `const` group, applying the enum-like auto-increment.
+    ///
+    /// An entry without a value continues the previous one; a group that
+    /// starts without one starts at zero. A *standalone* declaration with no
+    /// initializer is an error rather than an implicit zero, because the
+    /// shorthand only exists to number a comma-separated group
+    /// (`doc/syntax-reference.md`, "Constant Declaration").
+    fn declare_const_group(&mut self, declaration: &crate::ast::ConstDeclaration) {
+        let standalone = declaration.entries.len() == 1;
+        // `None` after an entry whose expression did not fold: the sequence
+        // is broken, and guessing a successor would invent a value.
+        let mut next = Some(0u32);
+        for entry in &declaration.entries {
+            let value = match &entry.value {
+                Some(expression) => self.constant(expression, "`const` values"),
+                None if standalone => {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::NOT_CONSTANT,
+                            format!("`const {}` has no value", entry.name.text),
+                            Label::new(entry.span, "a standalone `const` needs an initializer"),
+                        )
+                        .with_note(
+                            "the auto-increment shorthand only applies inside a \
+                             comma-separated group",
+                        )
+                        .with_fix(Fix {
+                            title: "give the constant a value".to_owned(),
+                            applicability: Applicability::MaybeIncorrect,
+                            edits: vec![TextEdit::replace(
+                                Span::empty_at(entry.span.file, entry.span.end),
+                                " = 0",
+                            )],
+                        })
+                        .with_docs("doc/syntax-reference.md#constant-declaration"),
+                    );
+                    None
+                }
+                None => next,
+            };
+            next = value.map(|value| value.wrapping_add(1));
+            if entry.name.provenance == Provenance::Synthetic {
+                continue; // Recovery invented the name; a syntax error covers it.
+            }
+            if let Some(value) = value {
+                self.declare(
+                    &entry.name.text,
+                    SymbolKind::Const { value },
+                    entry.name.span,
+                );
+            }
+        }
+    }
+
+    /// Resolves a name, reporting it as undeclared when nothing defines it.
+    fn resolve(&mut self, name: &str, span: Span) -> Option<SymbolId> {
         match self.model.symbols.lookup(name) {
+            Some(id) => Some(id),
             None => {
                 self.diagnostics.push(
                     Diagnostic::error(
@@ -636,21 +807,127 @@ impl Analysis {
                     .with_help(format!("declare it first, e.g. `var {name} = $0400`"))
                     .with_docs("doc/syntax-reference.md#variable-declaration"),
                 );
-            }
-            Some(id) => {
-                let symbol = self.model.symbols.symbol(id);
-                if symbol.kind == SymbolKind::Function {
-                    self.diagnostics.push(
-                        Diagnostic::error(
-                            DiagnosticCode::INVALID_OPERAND,
-                            format!("`{name}` is a function, not a variable"),
-                            Label::new(span, "cannot be used as a memory operand"),
-                        )
-                        .with_secondary(Label::new(symbol.declaration, "declared here")),
-                    );
-                }
+                None
             }
         }
+    }
+
+    /// Validates a memory operand: the symbol must name a memory location.
+    fn check_memory_operand(&mut self, name: &str, span: Span) {
+        let Some(id) = self.resolve(name, span) else {
+            return;
+        };
+        let symbol = self.model.symbols.symbol(id);
+        let declaration = symbol.declaration;
+        match symbol.kind {
+            SymbolKind::FixedAddressVar { .. } => {}
+            // A `const` names a value, not a memory location. The `&&label`
+            // and `&&&label` forms are the intentional exception, and they
+            // are not bare symbols.
+            SymbolKind::Const { .. } => self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::CONST_IN_ADDRESS_POSITION,
+                    format!("`{name}` is a `const`, not a memory location"),
+                    Label::new(span, "a `const` names a value, not an address"),
+                )
+                .with_secondary(Label::new(declaration, "declared here"))
+                .with_fix(Fix {
+                    title: format!("load the value with `#{name}`"),
+                    applicability: Applicability::MachineApplicable,
+                    edits: vec![TextEdit::insert(span, "#")],
+                })
+                .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
+            ),
+            SymbolKind::Function => self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::INVALID_OPERAND,
+                    format!("`{name}` is a function, not a variable"),
+                    Label::new(span, "cannot be used as a memory operand"),
+                )
+                .with_secondary(Label::new(declaration, "declared here")),
+            ),
+        }
+    }
+}
+
+/// The span of the first operator that makes `expr` compound rather than an
+/// atom, or `None` when it is a legal data-value atom.
+///
+/// An address-byte operator is an atom, and so is symbol±offset arithmetic
+/// underneath one — `&<ptr+1` is the documented spelling. Everything else
+/// with an operator in it is compound.
+fn first_compound(expr: &Expr) -> Option<Span> {
+    match &expr.kind {
+        ExprKind::Number(_)
+        | ExprKind::Symbol(_)
+        | ExprKind::LocalSymbol(_)
+        | ExprKind::Eval(_)
+        | ExprKind::Error => None,
+        ExprKind::Unary(unary) => match unary.op {
+            ast::UnaryOp::LowByte
+            | ast::UnaryOp::HighByte
+            | ast::UnaryOp::Address16
+            | ast::UnaryOp::Address24 => first_non_offset(&unary.operand),
+            ast::UnaryOp::Negate | ast::UnaryOp::BitNot => Some(unary.op_span),
+        },
+        ExprKind::Binary(binary) => Some(binary.op_span),
+        ExprKind::Field(_)
+        | ExprKind::Subscript(_)
+        | ExprKind::Metadata(_)
+        | ExprKind::TypedView(_) => Some(expr.span),
+    }
+}
+
+/// The span of the first operator inside an address-byte operator's operand
+/// that is not plain `+`/`-` offset arithmetic.
+fn first_non_offset(expr: &Expr) -> Option<Span> {
+    match &expr.kind {
+        ExprKind::Number(_) | ExprKind::Symbol(_) | ExprKind::LocalSymbol(_) => None,
+        ExprKind::Binary(binary) => match binary.op {
+            ast::BinaryOp::Add | ast::BinaryOp::Sub => {
+                first_non_offset(&binary.left).or_else(|| first_non_offset(&binary.right))
+            }
+            ast::BinaryOp::Mul
+            | ast::BinaryOp::Shl
+            | ast::BinaryOp::Shr
+            | ast::BinaryOp::BitAnd
+            | ast::BinaryOp::BitXor
+            | ast::BinaryOp::BitOr => Some(binary.op_span),
+        },
+        ExprKind::Unary(unary) => Some(unary.op_span),
+        ExprKind::Field(_)
+        | ExprKind::Subscript(_)
+        | ExprKind::Metadata(_)
+        | ExprKind::TypedView(_)
+        | ExprKind::Eval(_) => Some(expr.span),
+        ExprKind::Error => None,
+    }
+}
+
+/// The lowered form of a source unary operator.
+fn lowered_unary_op(op: ast::UnaryOp) -> UnaryOp {
+    match op {
+        ast::UnaryOp::Negate => UnaryOp::Negate,
+        ast::UnaryOp::BitNot => UnaryOp::BitNot,
+        ast::UnaryOp::LowByte => UnaryOp::LowByte,
+        ast::UnaryOp::HighByte => UnaryOp::HighByte,
+        ast::UnaryOp::Address16 => UnaryOp::Word,
+        ast::UnaryOp::Address24 => UnaryOp::Long,
+    }
+}
+
+/// The lowered form of a source binary operator. K65's C precedence is
+/// already encoded in the tree B built, so nothing here reorders anything.
+fn lowered_binary_op(op: ast::BinaryOp) -> BinaryOp {
+    match op {
+        ast::BinaryOp::Mul => BinaryOp::Mul,
+        ast::BinaryOp::Add => BinaryOp::Add,
+        ast::BinaryOp::Sub => BinaryOp::Sub,
+        ast::BinaryOp::Shl => BinaryOp::Shl,
+        ast::BinaryOp::Shr => BinaryOp::Shr,
+        ast::BinaryOp::BitAnd => BinaryOp::BitAnd,
+        ast::BinaryOp::BitXor => BinaryOp::BitXor,
+        ast::BinaryOp::BitOr => BinaryOp::BitOr,
     }
 }
 

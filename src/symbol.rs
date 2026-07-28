@@ -38,6 +38,13 @@ impl SymbolId {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The identifier at `index`. Only a [`SymbolTable`] hands out real
+    /// identifiers; this exists so tests can name one without building a
+    /// table around it.
+    pub fn from_index(index: usize) -> Self {
+        Self(u32::try_from(index).expect("symbol index fits u32"))
+    }
 }
 
 /// What a symbol denotes.
@@ -47,7 +54,24 @@ pub enum SymbolKind {
     FixedAddressVar {
         address: u32,
     },
+    /// `const NAME = expr` — a compile-time value with no storage and no
+    /// address. Using one in address position is an error: a `const` names
+    /// a value, not a memory location.
+    Const {
+        value: u32,
+    },
     Function,
+}
+
+impl SymbolKind {
+    /// A short noun for diagnostics, e.g. "a `const`".
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::FixedAddressVar { .. } => "a variable",
+            Self::Const { .. } => "a `const`",
+            Self::Function => "a function",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

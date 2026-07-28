@@ -216,3 +216,136 @@ fn functions_without_a_trailing_return_get_a_synthetic_rts() {
     assert_eq!(last.origin, Origin::CompilerGenerated);
     assert!(last.span.is_empty(), "synthetic rts has a zero-width span");
 }
+
+// ---------------------------------------------------------------------------
+// Native lowering (sub-plan C, task C5).
+// ---------------------------------------------------------------------------
+
+/// The IR dump of `text`, which is what `emit-ir` prints.
+fn dump(text: &str) -> String {
+    let mut map = SourceMap::new();
+    let id = map.add_file("native.k816", text);
+    let parse = parse_source(map.file(id), None);
+    assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
+    let (model, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![], "unexpected semantic diagnostics");
+    let (program, diagnostics) = lower(&parse.file, &model);
+    assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
+    program.dump(&model.symbols, &map)
+}
+
+#[test]
+fn the_ir_dump_renders_the_whole_operand_vocabulary() {
+    let text = "var ZP = $80
+var SCREEN = $0400
+const FIELD = 2
+
+func main @a8 @i16 {
+  .spot:
+    lda ZP
+    lda SCREEN,x
+    lda (ZP),y
+    lda [ZP],y
+    lda 4,s
+    lda (4,s),y
+    lda &FIELD,x
+    lda #&<SCREEN
+    mvn $01,$02
+    asl a
+    bne .spot
+}
+";
+    let dump = dump(text);
+    let operations: Vec<&str> = dump
+        .lines()
+        .filter_map(|line| line.split_once(';'))
+        .map(|(text, _)| text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+
+    assert_eq!(
+        operations,
+        vec![
+            "label main",
+            "sep #$20",
+            "rep #$10",
+            "label .spot",
+            // The chosen encoding is part of the dump: it is the decision a
+            // reader most needs to check, and it is invisible in the source.
+            "lda dp ZP",
+            "lda abs SCREEN,x",
+            "lda (dp ZP),y",
+            "lda [dp ZP],y",
+            "lda $04,s",
+            "lda ($04,s),y",
+            "lda dp $02,x",
+            "lda #&<SCREEN",
+            "mvn $01,$02",
+            "asl",
+            "bne .spot",
+            "rts",
+        ]
+    );
+}
+
+#[test]
+fn a_native_only_function_lowers_without_any_hla_statement() {
+    let program = lower_program(
+        "var SCREEN = $0400\nfunc main @a8 @i16 {\n    lda #1\n    sta SCREEN\n    rts\n}\n",
+    );
+    let origins: Vec<Origin> = first_function(&program)
+        .ops
+        .iter()
+        .map(|op| op.origin)
+        .collect();
+    assert_eq!(
+        origins,
+        vec![
+            Origin::User,              // the function label
+            Origin::CompilerGenerated, // sep #$20
+            Origin::CompilerGenerated, // rep #$10
+            Origin::User,              // lda #1
+            Origin::User,              // sta SCREEN
+            Origin::User,              // rts
+        ],
+        "no operation in a native function is an HLA expansion"
+    );
+}
+
+#[test]
+fn a_directive_between_instructions_is_an_optimizer_barrier() {
+    use k816::op::{DataOp, KOp, KOpKind};
+    use k816::optimize::optimize;
+    use k816::value::KExpr;
+
+    // `lda #0` is dead: `lda #1` overwrites A, N, and Z before any read.
+    let mut program = lower_program(HLA_SLICE);
+    assert_eq!(optimize(&mut program).removals.len(), 1);
+
+    // With a directive between them the pass must stop rather than reason
+    // about what the emitted bytes do — the conservative answer for every
+    // new op kind until sub-plan F says otherwise.
+    let mut program = lower_program(HLA_SLICE);
+    let function = program
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            k816::op::KProgramItem::Function(function) => Some(function),
+            k816::op::KProgramItem::Op(_) => None,
+        })
+        .expect("one function");
+    let span = function.ops[3].span;
+    function.ops.insert(
+        4,
+        KOp::new(
+            KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)])),
+            span,
+            Origin::CompilerGenerated,
+        ),
+    );
+    assert_eq!(
+        optimize(&mut program).removals.len(),
+        0,
+        "an emitted directive stops the scan"
+    );
+}

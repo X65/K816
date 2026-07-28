@@ -394,14 +394,16 @@ fn dump_operand(operand: &Operand, symbols: &crate::symbol::SymbolTable) -> Stri
             stack_relative,
         } => {
             let (open, close) = if *long { ("[", "]") } else { ("(", ")") };
-            let inner_text = if *stack_relative {
-                ",s".to_owned()
+            // A stack-relative pointer is one byte by definition, so naming
+            // its encoding would be noise; every other indirection is a
+            // classification decision worth showing.
+            let (inner_text, encoding_text) = if *stack_relative {
+                (",s".to_owned(), String::new())
             } else {
-                dump_index(*inner)
+                (dump_index(*inner), format!("{} ", encoding.k65_keyword()))
             };
             format!(
-                "{open}{} {}{inner_text}{close}{}",
-                encoding.k65_keyword(),
+                "{open}{encoding_text}{}{inner_text}{close}{}",
                 dump_expr(expr, symbols),
                 dump_index(*outer)
             )
@@ -418,19 +420,49 @@ fn dump_index(index: Option<IndexRegister>) -> String {
 }
 
 /// A stable, fully parenthesized rendering of a lowered expression.
+///
+/// The IR dump is read alongside K65 source, so it keeps the K65 operator
+/// spellings rather than the ca65 ones the emitter prints. Grouping is
+/// explicit for the same reason it is in emitted assembly: a reader should
+/// never have to know a precedence table to check the tree.
 fn dump_expr(expr: &KExpr, symbols: &crate::symbol::SymbolTable) -> String {
     match expr {
         KExpr::Number(value) => value.to_string(),
         KExpr::Symbol(symbol) => symbols.name(*symbol).to_owned(),
         KExpr::Unary { op, operand } => {
-            format!("{op:?}({})", dump_expr(operand, symbols))
+            let inner = dump_expr(operand, symbols);
+            match op {
+                crate::value::UnaryOp::Negate => format!("-{inner}"),
+                crate::value::UnaryOp::BitNot => format!("~{inner}"),
+                crate::value::UnaryOp::LowByte => format!("&<{inner}"),
+                crate::value::UnaryOp::HighByte => format!("&>{inner}"),
+                // K65 has no spelling for the bank byte; K816 synthesizes it.
+                crate::value::UnaryOp::BankByte => format!("bank({inner})"),
+                crate::value::UnaryOp::Word => format!("&&{inner}"),
+                crate::value::UnaryOp::Long => format!("&&&{inner}"),
+            }
         }
         KExpr::Binary { op, left, right } => format!(
             "({} {} {})",
             dump_expr(left, symbols),
-            op.ca65_operator(),
+            k65_operator(*op),
             dump_expr(right, symbols)
         ),
+    }
+}
+
+/// The K65 spelling of a lowered binary operator.
+fn k65_operator(op: crate::value::BinaryOp) -> &'static str {
+    use crate::value::BinaryOp;
+    match op {
+        BinaryOp::Mul => "*",
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitXor => "^",
+        BinaryOp::BitOr => "|",
     }
 }
 

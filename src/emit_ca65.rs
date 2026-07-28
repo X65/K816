@@ -149,9 +149,9 @@ fn exported(
 fn linkage_directive(direction: &str, name: &str, size: Option<AddressSize>) -> String {
     match size {
         // ca65 spells the direct-page forms with their own directive.
-        Some(AddressSize::DirectPage) => format!(".{direction}zp {name}\n"),
-        Some(AddressSize::Long) => format!(".{direction} {name}: far\n"),
-        Some(AddressSize::Absolute) | None => format!(".{direction} {name}\n"),
+        Some(AddressSize::DirectPage) => format!(".{direction}zp {name}"),
+        Some(AddressSize::Long) => format!(".{direction} {name}: far"),
+        Some(AddressSize::Absolute) | None => format!(".{direction} {name}"),
     }
 }
 
@@ -227,10 +227,21 @@ pub fn emit(
         if symbol.imported {
             // Only a name this unit actually used needs importing.
             if model.referenced.contains(&id) {
-                linkage_directives.push_str(&linkage_directive("import", &symbol.name, size));
+                let where_from = map.file(symbol.declaration.file);
+                let line = where_from.line_col(symbol.declaration.start).line + 1;
+                linkage_directives.push_str(&annotated(
+                    &linkage_directive("import", &symbol.name, size),
+                    &format!("k816: defined by {}:{line}", where_from.name()),
+                ));
             }
         } else if exported(model, linkage, file, id) {
-            linkage_directives.push_str(&linkage_directive("export", &symbol.name, size));
+            linkage_directives.push_str(&annotated(
+                &linkage_directive("export", &symbol.name, size),
+                &format!(
+                    "k816: {} defined here, visible to other units",
+                    symbol.kind.describe()
+                ),
+            ));
         }
     }
     if !linkage_directives.is_empty() {
@@ -238,7 +249,13 @@ pub fn emit(
         out.push_str(&linkage_directives);
     }
 
-    out.push_str("\n.segment \"CODE\"\n");
+    out.push_str(&format!(
+        "\n{}",
+        annotated(
+            "        .segment \"CODE\"",
+            "k816: the unit's default segment",
+        )
+    ));
 
     let names = Names::new(&model.symbols, program);
     for item in &program.items {
@@ -282,20 +299,34 @@ pub fn emit(
 fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, out: &mut String) {
     match &op.kind {
         KOpKind::Instruction(_) => unreachable!("instructions are emitted with their width state"),
-        KOpKind::Label(symbol) => out.push_str(&format!("{}:\n", names.of(*symbol))),
-        KOpKind::Export(symbol) => out.push_str(&format!(".export {}\n", names.of(*symbol))),
-        KOpKind::Import(symbol) => out.push_str(&format!(".import {}\n", names.of(*symbol))),
+        KOpKind::Label(symbol) => out.push_str(&annotated(
+            &format!("{}:", names.of(*symbol)),
+            &match op.origin {
+                // The whole line, because a function's label sits on its
+                // declaration and the name alone would not show the widths.
+                Origin::User | Origin::HlaExpansion => line_comment(map, op.span),
+                Origin::CompilerGenerated => "k816: generated".to_owned(),
+            },
+        )),
+        KOpKind::Export(symbol) => out.push_str(&annotated(
+            &format!(".export {}", names.of(*symbol)),
+            &annotation(map, op),
+        )),
+        KOpKind::Import(symbol) => out.push_str(&annotated(
+            &format!(".import {}", names.of(*symbol)),
+            &annotation(map, op),
+        )),
         KOpKind::Segment(name) => out.push_str(&annotated(
-            &format!(".segment \"{name}\""),
-            &source_comment(map, op.span),
+            &format!("        .segment \"{name}\""),
+            &annotation(map, op),
         )),
         KOpKind::SkipData => out.push_str(&annotated(
             "        jmp     :+",
-            &source_comment(map, op.span),
+            "k816: step over the inline data below",
         )),
         // A ca65 unnamed label: it names the landing site without touching
         // the cheap-local scope the function's own labels live in.
-        KOpKind::SkipTarget => out.push_str(":\n"),
+        KOpKind::SkipTarget => out.push_str(&annotated(":", "k816: past the inline data")),
         // ld65 evaluates this after placement, which is the only moment
         // the answer exists.
         KOpKind::NocrossGuard { length } => out.push_str(&annotated(
@@ -303,11 +334,11 @@ fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, o
                 "        .assert  .hibyte(* - 1) = .hibyte(* - {length}), error, \
                  \"nocross run crosses a page boundary\""
             ),
-            &source_comment(map, op.span),
+            &annotation(map, op),
         )),
         KOpKind::Align(expr) => out.push_str(&annotated(
             &format!("        .align   {}", format_expr(expr, names)),
-            &source_comment(map, op.span),
+            &annotation(map, op),
         )),
         KOpKind::Data(data) => {
             // Data carries the same debug annotation as an instruction, so
@@ -329,8 +360,36 @@ fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, o
                     format!("        .res     {}", format_expr(count, names))
                 }
             };
-            out.push_str(&annotated(&text, &source_comment(map, op.span)));
+            out.push_str(&annotated(&text, &annotation(map, op)));
         }
+    }
+}
+
+/// The trailing comment for one operation.
+///
+/// A user-written construct quotes its source; a synthesized one says what
+/// K816 made it for. Every emitted operation gets one — instruction, label,
+/// directive, and data alike — because an unannotated line in the output is
+/// a line whose provenance a reader has to guess at (`plans/`
+/// `02-native-translator.md`, phase 6 success criteria).
+fn annotation(map: &SourceMap, op: &KOp) -> String {
+    match op.origin {
+        Origin::User | Origin::HlaExpansion => source_comment(map, op.span),
+        Origin::CompilerGenerated => format!("k816: {}", generated_directive_note(&op.kind)),
+    }
+}
+
+/// A short explanation for a synthesized directive.
+fn generated_directive_note(kind: &KOpKind) -> &'static str {
+    match kind {
+        KOpKind::Segment(_) => "`address` placement needs a segment of its own",
+        KOpKind::NocrossGuard { .. } => "ld65 checks the page after placement",
+        KOpKind::Export(_) => "defined here, visible to other units",
+        KOpKind::Import(_) => "defined by another unit in the workspace",
+        KOpKind::Label(_) | KOpKind::Align(_) | KOpKind::Data(_) => "generated",
+        KOpKind::SkipData => "step over the inline data below",
+        KOpKind::SkipTarget => "past the inline data",
+        KOpKind::Instruction(_) => "generated",
     }
 }
 
@@ -346,30 +405,32 @@ impl WidthState {
     /// Establishes a function's entry contract as the assumed widths.
     fn assume(&mut self, contract: WidthContract, out: &mut String) {
         if let Some(width) = contract.a {
-            self.set_a(width, out);
+            self.set_a(width, "the function's entry contract", out);
         }
         if let Some(width) = contract.i {
-            self.set_i(width, out);
+            self.set_i(width, "the function's entry contract", out);
         }
     }
 
-    fn set_a(&mut self, width: RegisterWidth, out: &mut String) {
+    fn set_a(&mut self, width: RegisterWidth, why: &str, out: &mut String) {
         if self.a != Some(width) {
             self.a = Some(width);
-            out.push_str(match width {
-                RegisterWidth::W8 => "        .a8\n",
-                RegisterWidth::W16 => "        .a16\n",
-            });
+            let directive = match width {
+                RegisterWidth::W8 => "        .a8",
+                RegisterWidth::W16 => "        .a16",
+            };
+            out.push_str(&annotated(directive, &format!("k816: {why}")));
         }
     }
 
-    fn set_i(&mut self, width: RegisterWidth, out: &mut String) {
+    fn set_i(&mut self, width: RegisterWidth, why: &str, out: &mut String) {
         if self.i != Some(width) {
             self.i = Some(width);
-            out.push_str(match width {
-                RegisterWidth::W8 => "        .i8\n",
-                RegisterWidth::W16 => "        .i16\n",
-            });
+            let directive = match width {
+                RegisterWidth::W8 => "        .i8",
+                RegisterWidth::W16 => "        .i16",
+            };
+            out.push_str(&annotated(directive, &format!("k816: {why}")));
         }
     }
 
@@ -385,10 +446,10 @@ impl WidthState {
             WidthEffect::Unchanged => {}
             WidthEffect::Known { a, i } => {
                 if let Some(a) = a {
-                    self.set_a(a, out);
+                    self.set_a(a, "the width the instruction above established", out);
                 }
                 if let Some(i) = i {
-                    self.set_i(i, out);
+                    self.set_i(i, "the width the instruction above established", out);
                 }
             }
             WidthEffect::Unknown => {

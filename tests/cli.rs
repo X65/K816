@@ -193,6 +193,6 @@ fn the_unit_flag_makes_a_sibling_units_names_resolve() {
         String::from_utf8_lossy(&together.stderr)
     );
     let assembly = std::fs::read_to_string(&out).expect("read output");
-    assert!(assembly.contains(".import helper\n"), "{assembly}");
-    assert!(assembly.contains(".export main\n"), "{assembly}");
+    assert!(assembly.contains(".import helper "), "{assembly}");
+    assert!(assembly.contains(".export main "), "{assembly}");
 }

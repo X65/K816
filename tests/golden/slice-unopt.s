@@ -5,13 +5,13 @@
 
 SCREEN          := $0400                ; slice.k816:1: var SCREEN = $0400
 
-.export main
+.export main                            ; k816: a function defined here, visible to other units
 
-.segment "CODE"
+        .segment "CODE"                 ; k816: the unit's default segment
 
-main:
-        .a8
-        .i16
+main:                                   ; slice.k816:3: func main @a8 @i16 {
+        .a8                             ; k816: the function's entry contract
+        .i16                            ; k816: the function's entry contract
         .dbg    line, "slice.k816", 3
         sep     #$20                    ; k816: entry width setup (8-bit)
         .dbg    line, "slice.k816", 3

@@ -76,7 +76,7 @@ fn every_instruction_carries_debug_and_source_annotations() {
 #[test]
 fn functions_are_exported_for_cross_module_references() {
     let assembly = emit("slice.k816", include_str!("golden/slice.k816"));
-    assert!(assembly.contains("\n.export main\n"));
+    assert!(assembly.contains("\n.export main "), "{assembly}");
 }
 
 #[test]
@@ -93,8 +93,8 @@ fn fixed_address_vars_become_equates_not_resolved_addresses() {
 fn width_directives_track_the_entry_contract() {
     let assembly = emit("slice.k816", include_str!("golden/slice.k816"));
     let main_at = assembly.find("main:").expect("main label");
-    let a8_at = assembly.find("        .a8\n").expect(".a8 directive");
-    let i16_at = assembly.find("        .i16\n").expect(".i16 directive");
+    let a8_at = assembly.find("        .a8 ").expect(".a8 directive");
+    let i16_at = assembly.find("        .i16 ").expect(".i16 directive");
     let first_dbg = assembly[main_at..].find(".dbg    line").unwrap() + main_at;
     assert!(main_at < a8_at && a8_at < first_dbg);
     assert!(main_at < i16_at && i16_at < first_dbg);
@@ -110,7 +110,7 @@ fn local_labels_become_ca65_cheap_locals() {
         "labels.k816",
         "var SCREEN = $0400\nfunc main @a8 @i16 {\n  .again:\n    lda #1\n    sta .again\n}\n",
     );
-    assert!(assembly.contains("\n@again:\n"), "{assembly}");
+    assert!(assembly.contains("\n@again:"), "{assembly}");
     assert!(
         assembly.contains("sta     a:@again"),
         "references use the cheap-local spelling too: {assembly}"
@@ -127,11 +127,16 @@ fn a_global_label_inside_a_function_qualifies_its_local_labels() {
         "split.k816",
         "func main @a8 @i16 {\n  .again:\n    lda #1\n  done:\n    sta .again\n}\n",
     );
-    assert!(assembly.contains("\nmain_again:\n"), "{assembly}");
-    assert!(assembly.contains("\ndone:\n"), "{assembly}");
+    assert!(assembly.contains("\nmain_again:"), "{assembly}");
+    assert!(assembly.contains("\ndone:"), "{assembly}");
     assert!(assembly.contains("sta     a:main_again"), "{assembly}");
+    let code_only: String = assembly
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        !assembly.contains('@'),
+        !code_only.contains('@'),
         "no cheap local may survive the split: {assembly}"
     );
 }
@@ -143,7 +148,7 @@ fn two_functions_reusing_a_local_label_name_stay_distinct() {
         "func one @a8 {\n  .loop:\n    lda #1\n}\nfunc two @a8 {\n  .loop:\n    lda #2\n}\n",
     );
     assert_eq!(
-        assembly.matches("\n@loop:\n").count(),
+        assembly.matches("\n@loop:").count(),
         2,
         "each function opens its own cheap-local scope: {assembly}"
     );
@@ -159,8 +164,13 @@ fn instructions(name: &str, text: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| line.split_once(';'))
         .map(|(code, _)| code.trim().to_owned())
-        // Directives and equates are their own tests' business.
-        .filter(|code| !code.is_empty() && !code.starts_with('.') && !code.contains(":="))
+        // Directives, labels, and equates are their own tests' business.
+        .filter(|code| {
+            !code.is_empty()
+                && !code.starts_with('.')
+                && !code.contains(":=")
+                && !code.ends_with(':')
+        })
         .collect()
 }
 
@@ -305,7 +315,7 @@ fn an_unknown_width_transition_emits_no_width_claim() {
     );
     let claims: Vec<&str> = assembly
         .lines()
-        .map(str::trim)
+        .map(|line| line.split(';').next().unwrap_or_default().trim())
         .filter(|line| line.starts_with(".a") || line.starts_with(".i"))
         .collect();
     // The entry contract's two claims, then `sep #$20` re-establishing the
@@ -480,5 +490,108 @@ fn an_inline_data_block_is_jumped_over() {
     assert!(
         emitted.iter().any(|l| l.contains("bne     @again")),
         "{emitted:?}"
+    );
+}
+
+/// Phase 6's criterion is that *every* emitted operation carries a source or
+/// debug annotation — "instruction, label, directive, and data". Checking
+/// only instructions is what let labels and linkage directives go bare, so
+/// this checks the whole file: anything that is not the fixed preamble, a
+/// `.dbg line` directive, or a blank line has to explain where it came from.
+#[test]
+fn every_emitted_line_says_where_it_came_from() {
+    // Everything C emits, in one unit: equates, derived linkage, segments,
+    // labels of both scopes, data, placement directives, the nocross guard,
+    // the inline-data jump, and instructions.
+    let text = "var ZP = $80
+var far BANKED = $030000
+
+segment FAST
+
+data table {
+    align 4
+    inner:
+    1 2
+}
+
+nocross data guarded {
+    3 4
+}
+
+data pinned {
+    address $5000
+    5
+}
+
+func main @a8 @i16 {
+  .spot:
+    data { $EA }
+    lda ZP
+    lda BANKED
+    bne .spot
+  global:
+    sta ZP
+}
+";
+    let mut map = SourceMap::new();
+    let file = map.add_file("annotated.k816", text);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let assembly = result
+        .assembly
+        .expect("a W0116 warning does not stop emission");
+
+    // The fixed preamble is the file header, not an operation.
+    const PREAMBLE: &[&str] = &[
+        "; Generated by k816",
+        ".setcpu",
+        ".debuginfo",
+        ".dbg    file,",
+    ];
+    let bare: Vec<&str> = assembly
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter(|line| {
+            !PREAMBLE
+                .iter()
+                .any(|prefix| line.trim_start().starts_with(prefix))
+        })
+        // A `.dbg line` directive *is* the debug annotation of the operation
+        // beneath it, so it does not need one of its own.
+        .filter(|line| !line.trim_start().starts_with(".dbg    line"))
+        .filter(|line| !line.contains(';'))
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "these emitted operations carry no annotation:\n{}\n\nfull output:\n{assembly}",
+        bare.join("\n")
+    );
+}
+
+#[test]
+fn labels_and_linkage_directives_quote_their_own_source() {
+    let assembly = emit_unoptimized(
+        "labelled.k816",
+        "func main @a8 {\n  spot:\n    bne spot\n}\n",
+    );
+    // A label quotes the line it was written on…
+    assert!(assembly.contains("spot:"), "{assembly}");
+    let label_line = assembly
+        .lines()
+        .find(|line| line.trim_start().starts_with("spot:"))
+        .expect("the label");
+    assert!(
+        label_line.contains("; labelled.k816:2: spot:"),
+        "a label quotes its source: {label_line}"
+    );
+
+    // …and a derived export says why it exists, since nothing in the source
+    // asked for it.
+    let export_line = assembly
+        .lines()
+        .find(|line| line.starts_with(".export"))
+        .expect("the derived export");
+    assert!(
+        export_line.contains("; k816: a function defined here, visible to other units"),
+        "{export_line}"
     );
 }

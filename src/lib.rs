@@ -33,6 +33,7 @@ pub mod diagnostic;
 pub mod effects;
 pub mod emit_ca65;
 pub mod isa;
+pub mod linkage;
 pub mod lower;
 pub mod lsp;
 pub mod op;
@@ -94,10 +95,13 @@ pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<(FileId, 
 /// sub-plan C territory.
 pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
     let _ = options;
-    let mut diagnostics = Vec::new();
+    // Every unit sees every other unit's definitions, which is how a name
+    // one file defines resolves in another without any import syntax.
+    let linkage = linkage::Linkage::resolve(map);
+    let mut diagnostics = linkage.diagnostics().to_vec();
     for source in map.files() {
         let parse = parser::parse_source(source, None);
-        let (_, semantic_diagnostics) = semantic::analyze_file(&parse.file);
+        let (_, semantic_diagnostics) = semantic::analyze_unit(&parse.file, &linkage);
         diagnostics.extend(parse.diagnostics);
         diagnostics.extend(semantic_diagnostics);
     }
@@ -110,9 +114,11 @@ pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
 /// the assembly together with all diagnostics. Errors suppress emission but
 /// never stop diagnostic collection.
 pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> CompileResult {
+    let linkage = linkage::Linkage::resolve(map);
     let parse = parser::parse_source(map.file(file), None);
-    let (model, semantic_diagnostics) = semantic::analyze_file(&parse.file);
-    let mut diagnostics = parse.diagnostics;
+    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, &linkage);
+    let mut diagnostics = linkage.diagnostics().to_vec();
+    diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return CompileResult {
@@ -133,7 +139,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
     if options.optimize {
         optimize::optimize(&mut program);
     }
-    let assembly = emit_ca65::emit(map, file, &model, &program);
+    let assembly = emit_ca65::emit(map, file, &model, &program, &linkage);
     CompileResult {
         assembly: Some(assembly),
         diagnostics,
@@ -151,9 +157,11 @@ pub struct IrResult {
 /// Dumps the lowered [`op::KProgram`] of one file as readable IR, optimized
 /// when `options.optimize` is set (`emit-ir --after-opt`).
 pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
+    let linkage = linkage::Linkage::resolve(map);
     let parse = parser::parse_source(map.file(file), None);
-    let (model, semantic_diagnostics) = semantic::analyze_file(&parse.file);
-    let mut diagnostics = parse.diagnostics;
+    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, &linkage);
+    let mut diagnostics = linkage.diagnostics().to_vec();
+    diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {

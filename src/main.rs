@@ -82,6 +82,9 @@ fn usage(prog_name: &str) {
     eprintln!("  lsp                                  run the language server over stdio");
     eprintln!();
     eprintln!("Options:");
+    eprintln!("  --unit PATH                          a sibling unit whose names this one may");
+    eprintln!("                                       use; repeatable. K816 derives the");
+    eprintln!("                                       imports and exports from them");
     eprintln!("  --message-format FORMAT              diagnostic output of compile and emit-ir:");
     eprintln!("                                       human, compact, json");
     eprintln!("  -V, --version                        print the version number and exit");
@@ -89,6 +92,10 @@ fn usage(prog_name: &str) {
 
 struct CommandLine {
     input: PathBuf,
+    /// Sibling units, whose definitions this unit may refer to. K65 has no
+    /// import syntax, so naming the other units is how a workspace is
+    /// described until sub-plan I gives the driver a project surface.
+    units: Vec<PathBuf>,
     output: Option<PathBuf>,
     options: Options,
     message_format: render::MessageFormat,
@@ -103,6 +110,7 @@ fn parse_command_line(
     opt_flag_enables: bool,
 ) -> Result<CommandLine, ()> {
     let mut input: Option<PathBuf> = None;
+    let mut units: Vec<PathBuf> = Vec::new();
     let mut output: Option<PathBuf> = None;
     let mut options = Options {
         optimize: !opt_flag_enables,
@@ -119,6 +127,20 @@ fn parse_command_line(
                     return Err(());
                 }
             },
+            "--unit" => match iter.next() {
+                Some(path) => units.push(PathBuf::from(path)),
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        "`--unit` needs a file name",
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
+            _ if arg.starts_with("--unit=") => {
+                units.push(PathBuf::from(&arg["--unit=".len()..]));
+            }
             "--message-format" => match iter.next() {
                 Some(text) => set_message_format(prog_name, text, &mut message_format)?,
                 None => {
@@ -156,6 +178,7 @@ fn parse_command_line(
     };
     Ok(CommandLine {
         input,
+        units,
         output,
         options,
         message_format,
@@ -212,6 +235,13 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     let Ok(file) = load(prog_name, &mut map, &command.input, command.message_format) else {
         return ExitCode::FAILURE;
     };
+    // The sibling units go into the same map, which is the whole workspace
+    // as far as name resolution is concerned. Only `input` is emitted.
+    for unit in &command.units {
+        if load(prog_name, &mut map, unit, command.message_format).is_err() {
+            return ExitCode::FAILURE;
+        }
+    }
 
     let result = compile_to_ca65(&map, file, &command.options);
     render::render_diagnostics(&map, &result.diagnostics, command.message_format);
@@ -241,6 +271,13 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
     let Ok(file) = load(prog_name, &mut map, &command.input, command.message_format) else {
         return ExitCode::FAILURE;
     };
+    // The sibling units go into the same map, which is the whole workspace
+    // as far as name resolution is concerned. Only `input` is emitted.
+    for unit in &command.units {
+        if load(prog_name, &mut map, unit, command.message_format).is_err() {
+            return ExitCode::FAILURE;
+        }
+    }
 
     let result = k816::emit_ir(&map, file, &command.options);
     render::render_diagnostics(&map, &result.diagnostics, command.message_format);

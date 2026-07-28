@@ -156,3 +156,43 @@ fn both_flag_spellings_and_bad_values_are_handled() {
     assert!(!success);
     assert!(stderr.contains("unknown message format `yaml`"));
 }
+
+/// K65 has no import syntax, so naming the sibling units is how a workspace
+/// is described until sub-plan I gives the driver a project surface.
+#[test]
+fn the_unit_flag_makes_a_sibling_units_names_resolve() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-unit-flag");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let a = dir.join("a.k816");
+    let b = dir.join("b.k816");
+    let out = dir.join("a.s");
+    std::fs::write(&a, "func main @a8 {\n    jsr helper\n}\n").expect("write a");
+    std::fs::write(&b, "func helper @a8 {\n    nop\n}\n").expect("write b");
+
+    let k816 = |args: &[&std::ffi::OsStr]| {
+        Command::new(env!("CARGO_BIN_EXE_k816"))
+            .arg("compile")
+            .args(args)
+            .args(["-o".as_ref(), out.as_os_str()])
+            .output()
+            .expect("run k816")
+    };
+
+    // Without the sibling, `helper` is simply not declared: K816 does not
+    // invent an import to make an unresolved name someone else's problem.
+    let alone = k816(&[a.as_os_str()]);
+    assert!(!alone.status.success());
+    let stderr = String::from_utf8_lossy(&alone.stderr).into_owned();
+    assert!(stderr.contains("K816-E0101"), "{stderr}");
+
+    // With it, the reference resolves and the linkage is derived.
+    let together = k816(&["--unit".as_ref(), b.as_os_str(), a.as_os_str()]);
+    assert!(
+        together.status.success(),
+        "{}",
+        String::from_utf8_lossy(&together.stderr)
+    );
+    let assembly = std::fs::read_to_string(&out).expect("read output");
+    assert!(assembly.contains(".import helper\n"), "{assembly}");
+    assert!(assembly.contains(".export main\n"), "{assembly}");
+}

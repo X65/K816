@@ -184,7 +184,13 @@ pub struct Symbol {
     /// The function this symbol is scoped to, for local labels only.
     pub scope: Option<SymbolId>,
     /// Span of the declaring name, for "declared here" secondary labels.
+    /// For an imported symbol this points into the unit that defines it.
     pub declaration: Span,
+    /// True when another unit in the workspace defines this name. K816 emits
+    /// an `.import` for it and ld65 resolves it; the kind and address size
+    /// are the defining unit's, because ca65 validates addressing modes
+    /// against an imported symbol's address size.
+    pub imported: bool,
 }
 
 impl Symbol {
@@ -226,6 +232,23 @@ impl SymbolTable {
         Ok(id)
     }
 
+    /// Declares a name another unit defines, if this unit has not declared
+    /// one of its own. Returns the identifier either way.
+    pub fn declare_imported(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        declaration: Span,
+    ) -> SymbolId {
+        if let Some(&existing) = self.unit.get(name) {
+            return existing;
+        }
+        let id = self.intern(name, kind, None, declaration);
+        self.symbols[id.index()].imported = true;
+        self.unit.insert(name.to_owned(), id);
+        id
+    }
+
     /// Declares `name` inside `owner`'s scope. Two functions may declare the
     /// same local label; a repeat within one function is the duplicate.
     pub fn declare_local(
@@ -257,6 +280,7 @@ impl SymbolTable {
             kind,
             scope,
             declaration,
+            imported: false,
         });
         id
     }

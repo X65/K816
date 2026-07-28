@@ -230,3 +230,104 @@ fn a_link_time_multiplication_survives_to_ld65() {
     // ld65 at all rather than being rejected for naming a label.
     assert_eq!(u16::from_le_bytes([bytes[5], bytes[6]]), 0x0008);
 }
+
+// ---------------------------------------------------------------------------
+// Derived linkage across units (sub-plan C, task C7).
+// ---------------------------------------------------------------------------
+
+/// Compiles `main`, assembles both units, links them, and returns the bytes.
+///
+/// K65 has no import syntax, so the two units are handed to the compiler
+/// together and it works out what crosses between them.
+fn link_two_units(test: &str, main: (&str, &str), other: (&str, &str)) -> Vec<u8> {
+    let mut map = SourceMap::new();
+    let main_file = map.add_file(main.0, main.1);
+    let other_file = map.add_file(other.0, other.1);
+
+    let dir = work_dir(test);
+    let mut objects = Vec::new();
+    for (name, file) in [(main.0, main_file), (other.0, other_file)] {
+        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        assert_eq!(
+            result.diagnostics,
+            vec![],
+            "unexpected diagnostics in {name}"
+        );
+        let assembly = result.assembly.expect("compilation succeeds");
+        let asm_path = dir.join(format!("{name}.s"));
+        let obj_path = dir.join(format!("{name}.o"));
+        std::fs::write(&asm_path, assembly).expect("write assembly");
+        run_ok(
+            Command::new(tool("CA65", "ca65"))
+                .arg(&asm_path)
+                .args(["-o".as_ref(), obj_path.as_os_str()]),
+            "ca65",
+        );
+        objects.push(obj_path);
+    }
+
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    let bin_path = dir.join("two-units.bin");
+    let mut link = Command::new(tool("LD65", "ld65"));
+    link.args(["-C".as_ref(), config.as_os_str()])
+        .args(["-o".as_ref(), bin_path.as_os_str()]);
+    for object in &objects {
+        link.arg(object);
+    }
+    run_ok(&mut link, "ld65");
+    std::fs::read(&bin_path).expect("read linked binary")
+}
+
+/// The import and export qualifiers are not decoration: ca65 validates an
+/// addressing mode against the imported symbol's address size, so a
+/// direct-page reference across a unit boundary assembles as one byte only
+/// if the import says `zeropage`.
+#[test]
+fn derived_linkage_carries_each_symbols_address_size() {
+    let bytes = link_two_units(
+        "two-units",
+        (
+            "a.k816",
+            "func main @a8 @i16 {\n    jsr helper\n    lda CURSOR\n    lda BANKED\n}\n",
+        ),
+        (
+            "b.k816",
+            "var dp CURSOR = $10\nvar far BANKED = $030000\nfunc helper @a8 {\n    nop\n}\n",
+        ),
+    );
+
+    assert_eq!(
+        bytes,
+        vec![
+            0xE2, 0x20, // sep #$20  — entry @a8
+            0xC2, 0x10, // rep #$10  — entry @i16
+            0x20, 0x0E, 0x80, // jsr helper — absolute, an ordinary import
+            0xA5, 0x10, // lda $10    — one byte, from `.importzp`
+            0xAF, 0x00, 0x00, 0x03, // lda $030000 — three, from `: far`
+            0x60, // rts
+            0xEA, 0x60, // helper: nop, rts
+        ],
+        "{bytes:02X?}"
+    );
+}
+
+#[test]
+fn two_units_defining_one_name_is_a_frontend_error() {
+    let mut map = SourceMap::new();
+    let file = map.add_file("a.k816", "func shared @a8 {\n    nop\n}\n");
+    map.add_file("b.k816", "func shared @a8 {\n    nop\n}\n");
+
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let duplicates: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == k816::diagnostic::DiagnosticCode::DUPLICATE_SYMBOL)
+        .collect();
+    assert_eq!(duplicates.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(
+        duplicates[0].secondary.len(),
+        1,
+        "the other definition is pointed at too"
+    );
+    assert!(result.assembly.is_none(), "nothing is emitted");
+}

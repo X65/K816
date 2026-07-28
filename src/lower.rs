@@ -36,7 +36,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
-    Instruction, KFunction, KOp, KOpKind, KProgram, Operand, Origin, RegisterWidth, WidthContract,
+    Instruction, KFunction, KOp, KOpKind, KProgram, Operand, Origin, RegisterWidth, SegmentName,
+    WidthContract,
 };
 use crate::resolve::Resolver;
 use crate::semantic::SemanticModel;
@@ -56,8 +57,22 @@ const P_MASK_X: u32 = 0x10;
 pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic>) {
     let mut program = KProgram::default();
     let mut diagnostics = Vec::new();
-    for info in &model.functions {
-        let ItemKind::Func(func) = &file.items[info.item_index].kind else {
+    // Unit-level operations and functions interleave in source order,
+    // because a `segment` selection is lexical state: which segment a
+    // function lands in is decided by what precedes it in the file.
+    for (index, item) in file.items.iter().enumerate() {
+        if let ItemKind::Segment(name) = &item.kind {
+            program.push_op(KOp::new(
+                KOpKind::Segment(SegmentName::new(&name.text)),
+                item.span,
+                Origin::User,
+            ));
+            continue;
+        }
+        let Some(info) = model.functions.iter().find(|info| info.item_index == index) else {
+            continue;
+        };
+        let ItemKind::Func(func) = &item.kind else {
             continue;
         };
 

@@ -41,13 +41,14 @@ use std::collections::HashMap;
 
 use crate::effects::WidthEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
+use crate::linkage::Linkage;
 use crate::op::{
     DataOp, IndexRegister, Instruction, KFunction, KOp, KOpKind, KProgram, KProgramItem, Operand,
     Origin, WidthContract,
 };
 use crate::semantic::SemanticModel;
 use crate::source::{FileId, SourceMap, Span};
-use crate::symbol::{LabelScope, SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
 use crate::value::{KExpr, UnaryOp, Value};
 
 /// The ca65 spelling chosen for every symbol, decided once per unit.
@@ -124,6 +125,36 @@ impl<'a> Names<'a> {
     }
 }
 
+/// True when this unit exports `id`.
+///
+/// A function, a global label, and a data-block label name *places*, and a
+/// place is the only thing another unit can be handed, so they are always
+/// exported. A `const` or a pinned `var` is a value K816 folds; exporting
+/// one nobody reads would put a name in the object file for no reason, so
+/// those wait to be asked for (`plans/feature-manifest.md` §3).
+fn exported(
+    model: &SemanticModel,
+    linkage: &Linkage,
+    file: FileId,
+    id: crate::symbol::SymbolId,
+) -> bool {
+    let symbol = model.symbols.symbol(id);
+    if symbol.imported || !symbol.is_unit_level() {
+        return false;
+    }
+    crate::linkage::always_exported(symbol.kind) || linkage.referenced_elsewhere(&symbol.name, file)
+}
+
+/// One `.import`/`.export` line, qualified by the symbol's address size.
+fn linkage_directive(direction: &str, name: &str, size: Option<AddressSize>) -> String {
+    match size {
+        // ca65 spells the direct-page forms with their own directive.
+        Some(AddressSize::DirectPage) => format!(".{direction}zp {name}\n"),
+        Some(AddressSize::Long) => format!(".{direction} {name}: far\n"),
+        Some(AddressSize::Absolute) | None => format!(".{direction} {name}\n"),
+    }
+}
+
 /// True when `function` emits a non-cheap label other than its own.
 fn splits_cheap_local_scope(symbols: &SymbolTable, function: &KFunction) -> bool {
     function.ops.iter().any(|op| match &op.kind {
@@ -142,7 +173,13 @@ fn splits_cheap_local_scope(symbols: &SymbolTable, function: &KFunction) -> bool
 }
 
 /// Emits the whole lowered `program` as ca65 assembly.
-pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KProgram) -> String {
+pub fn emit(
+    map: &SourceMap,
+    file: FileId,
+    model: &SemanticModel,
+    program: &KProgram,
+    linkage: &Linkage,
+) -> String {
     let source = map.file(file);
     let mut out = String::new();
 
@@ -151,14 +188,22 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
     out.push_str(".debuginfo on\n");
     out.push_str(&format!(".dbg    file, \"{}\", 0, 0\n", source.name()));
 
+    // A pinned variable and an exported constant are both equates: no bytes,
+    // just a name ca65 and ld65 can resolve.
     let mut equates = String::new();
     for (_, symbol) in model.symbols.iter() {
-        if let SymbolKind::Var {
-            address: Some(address),
-            ..
-        } = symbol.kind
-        {
-            let target = format!("{:<15} := {}", symbol.name, format_address(address));
+        if symbol.imported {
+            continue;
+        }
+        let value = match symbol.kind {
+            SymbolKind::Var {
+                address: Some(address),
+                ..
+            } => Some(format_address(address)),
+            _ => None,
+        };
+        if let Some(value) = value {
+            let target = format!("{:<15} := {value}", symbol.name);
             equates.push_str(&annotated(&target, &line_comment(map, symbol.declaration)));
         }
     }
@@ -167,19 +212,30 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
         out.push_str(&equates);
     }
 
-    // Functions are visible across modules, so hand-written ca65 code (and
-    // later K816 units) can reference them; the derived import/export model
-    // lands with task C7.
-    let mut exports = String::new();
-    for function in program.functions() {
-        exports.push_str(&format!(
-            ".export {}\n",
-            model.symbols.name(function.symbol)
-        ));
+    // Linkage is derived from the symbol tables, because K65 has no syntax
+    // to declare it. Both directions carry the symbol's address size: ca65
+    // validates addressing modes against an imported symbol's, so a missing
+    // qualifier is an assembly error rather than a wrong byte.
+    let mut linkage_directives = String::new();
+    for (id, symbol) in model.symbols.iter() {
+        // A `const` has no address, so it has nothing to link: it folds
+        // into its value wherever it is used, in this unit or another.
+        if !symbol.is_unit_level() || matches!(symbol.kind, SymbolKind::Const { .. }) {
+            continue;
+        }
+        let size = symbol.kind.address_size();
+        if symbol.imported {
+            // Only a name this unit actually used needs importing.
+            if model.referenced.contains(&id) {
+                linkage_directives.push_str(&linkage_directive("import", &symbol.name, size));
+            }
+        } else if exported(model, linkage, file, id) {
+            linkage_directives.push_str(&linkage_directive("export", &symbol.name, size));
+        }
     }
-    if !exports.is_empty() {
+    if !linkage_directives.is_empty() {
         out.push('\n');
-        out.push_str(&exports);
+        out.push_str(&linkage_directives);
     }
 
     out.push_str("\n.segment \"CODE\"\n");

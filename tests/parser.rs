@@ -1007,7 +1007,6 @@ fn every_new_declaration_form_names_its_owner() {
             DiagnosticCode::NOT_YET_IMPLEMENTED,
         ),
         ("var s:byte * 32\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        ("segment code\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
         (
             "func f { .LT+1 = a }\n",
             DiagnosticCode::NOT_YET_IMPLEMENTED,

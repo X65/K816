@@ -33,12 +33,15 @@ use crate::ast::{
     ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, RegisterKind,
     ReservedKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
 };
+use std::collections::BTreeSet;
+
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
+use crate::linkage::Linkage;
 use crate::op::WidthContract;
-use crate::resolve::{Classified, Resolver};
+use crate::resolve::{Classified, Resolved, Resolver};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
 use crate::value::KExpr;
@@ -48,6 +51,9 @@ use crate::value::KExpr;
 pub struct SemanticModel {
     pub symbols: SymbolTable,
     pub functions: Vec<FunctionInfo>,
+    /// Every unit-level symbol the unit actually referred to, which is what
+    /// separates an `.import` this unit needs from one it merely could have.
+    pub referenced: BTreeSet<SymbolId>,
 }
 
 /// Facts about one function needed by lowering and emission.
@@ -64,6 +70,16 @@ pub struct FunctionInfo {
 /// Analyzes `file`, returning the semantic model and all semantic
 /// diagnostics. Runs to completion even on errors so tools see everything.
 pub fn analyze_file(file: &AstFile) -> (SemanticModel, Vec<Diagnostic>) {
+    analyze(file, None)
+}
+
+/// Analyzes `file` as one unit of a workspace, so that names other units
+/// define resolve instead of reporting themselves as undeclared.
+pub fn analyze_unit(file: &AstFile, linkage: &Linkage) -> (SemanticModel, Vec<Diagnostic>) {
+    analyze(file, Some(linkage))
+}
+
+fn analyze(file: &AstFile, linkage: Option<&Linkage>) -> (SemanticModel, Vec<Diagnostic>) {
     let mut analysis = Analysis {
         model: SemanticModel::default(),
         diagnostics: Vec::new(),
@@ -71,6 +87,13 @@ pub fn analyze_file(file: &AstFile) -> (SemanticModel, Vec<Diagnostic>) {
     };
     analysis.declare_placed_symbols(file);
     analysis.declare_items(file);
+    // Foreign names are declared *after* the unit's own, so a local
+    // declaration always wins its name. A `const` or `var` initializer
+    // therefore cannot fold a foreign name — which is right anyway: a
+    // foreign symbol's address is ld65's, so it could never fold.
+    if let Some(linkage) = linkage {
+        analysis.declare_imports(linkage);
+    }
     analysis.check_functions(file);
     (analysis.model, analysis.diagnostics)
 }
@@ -298,11 +321,9 @@ impl Analysis {
                     "module-level default widths",
                     compat::Owner::WidthAndContracts,
                 )),
-                ItemKind::Segment(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "`segment` selections",
-                    compat::Owner::NativeTranslator,
-                )),
+                // A `segment` selection is lexical state, carried to
+                // emission as an ordered operation rather than checked here.
+                ItemKind::Segment(_) => {}
                 ItemKind::Func(func) => {
                     if func.name.provenance == Provenance::Synthetic {
                         continue;
@@ -410,7 +431,8 @@ impl Analysis {
                 // disagree about which addressing mode an operand selects.
                 let mut resolver = self.resolver().with_widths(contract);
                 let classified = resolver.classify(native);
-                self.diagnostics.append(&mut resolver.take_diagnostics());
+                let resolved = resolver.finish();
+                self.absorb(resolved);
                 if let Some(classified) = classified {
                     self.check_addressable(native, &classified);
                 }
@@ -754,17 +776,38 @@ impl Analysis {
         }
     }
 
+    /// Declares every workspace name this unit does not define itself.
+    ///
+    /// The kind and address size are the *defining* unit's, because that is
+    /// what ca65 needs to validate an addressing mode against the imported
+    /// symbol. Declaring a name does not import it: only the ones this unit
+    /// goes on to reference reach the emitted `.import` list.
+    fn declare_imports(&mut self, linkage: &Linkage) {
+        for (name, definition) in linkage.definitions() {
+            self.model
+                .symbols
+                .declare_imported(name, definition.kind, definition.declaration);
+        }
+    }
+
     /// A resolver over this unit's symbols, scoped to the function being
     /// checked. Analysis owns the diagnostics it produces.
     fn resolver(&self) -> Resolver<'_> {
         Resolver::new(&self.model.symbols).in_function(self.current_function)
     }
 
+    /// Records what a resolver run found into the model this analysis owns.
+    fn absorb(&mut self, resolved: Resolved) {
+        self.model.referenced.extend(resolved.referenced);
+        self.diagnostics.extend(resolved.diagnostics);
+    }
+
     /// Folds `expr`, reporting whatever the fold turns up.
     fn fold(&mut self, expr: &Expr) -> Option<KExpr> {
         let mut resolver = self.resolver();
         let folded = resolver.fold(expr);
-        self.diagnostics.append(&mut resolver.take_diagnostics());
+        let resolved = resolver.finish();
+        self.absorb(resolved);
         folded
     }
 
@@ -772,7 +815,8 @@ impl Analysis {
     fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
         let mut resolver = self.resolver();
         let value = resolver.constant(expr, position);
-        self.diagnostics.append(&mut resolver.take_diagnostics());
+        let resolved = resolver.finish();
+        self.absorb(resolved);
         value
     }
 
@@ -888,9 +932,11 @@ impl Analysis {
         let Some(id) = self.model.symbols.lookup(name) else {
             let mut resolver = self.resolver();
             resolver.resolve(name, span);
-            self.diagnostics.append(&mut resolver.take_diagnostics());
+            let resolved = resolver.finish();
+            self.absorb(resolved);
             return;
         };
+        self.model.referenced.insert(id);
         let symbol = self.model.symbols.symbol(id);
         let declaration = symbol.declaration;
         match symbol.kind {

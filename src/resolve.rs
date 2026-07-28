@@ -74,6 +74,13 @@ impl Classified {
     }
 }
 
+/// What one resolver run found.
+#[derive(Debug, Default)]
+pub struct Resolved {
+    pub referenced: Vec<SymbolId>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 /// Resolves names, folds expressions, and classifies operands.
 pub struct Resolver<'a> {
     symbols: &'a SymbolTable,
@@ -82,6 +89,9 @@ pub struct Resolver<'a> {
     /// The widths in force, which size the width-dependent immediates.
     widths: WidthContract,
     diagnostics: Vec<Diagnostic>,
+    /// Every symbol this resolver looked up, which is what tells an
+    /// `.import` a unit needs from one it merely could have had.
+    referenced: Vec<SymbolId>,
 }
 
 impl<'a> Resolver<'a> {
@@ -91,6 +101,7 @@ impl<'a> Resolver<'a> {
             function: None,
             widths: WidthContract::default(),
             diagnostics: Vec::new(),
+            referenced: Vec::new(),
         }
     }
 
@@ -108,6 +119,17 @@ impl<'a> Resolver<'a> {
 
     pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
         std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Consumes the resolver and hands back what it found: the symbols it
+    /// resolved and the diagnostics it collected. Consuming it is what
+    /// releases the borrow of the symbol table, so the caller can record
+    /// both into the model it owns.
+    pub fn finish(self) -> Resolved {
+        Resolved {
+            referenced: self.referenced,
+            diagnostics: self.diagnostics,
+        }
     }
 
     pub fn has_diagnostics(&self) -> bool {
@@ -222,7 +244,10 @@ impl<'a> Resolver<'a> {
     /// Resolves a unit-level name, reporting it when nothing declares it.
     pub fn resolve(&mut self, name: &str, span: Span) -> Option<SymbolId> {
         match self.symbols.lookup(name) {
-            Some(id) => Some(id),
+            Some(id) => {
+                self.referenced.push(id);
+                Some(id)
+            }
             None => {
                 self.report(
                     Diagnostic::error(

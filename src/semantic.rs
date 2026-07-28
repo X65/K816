@@ -35,8 +35,10 @@ use crate::ast::{
 };
 use crate::compat;
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
-use crate::isa::{AddressingMode, ImmediateWidthClass, Mnemonic, spec};
-use crate::op::{RegisterWidth, WidthContract};
+use crate::isa::{
+    AddressingMode, ImmediateWidthClass, Mnemonic, RegisterWidth, operandless_mode, spec,
+};
+use crate::op::WidthContract;
 use crate::source::{Provenance, Span};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 
@@ -246,7 +248,7 @@ impl Analysis {
                 // describe yet: indexing, indirection, and the encoding
                 // prefixes all grow with the native translator.
                 let mode = match &native.operand {
-                    None => AddressingMode::Implied,
+                    None => implied_mode(mnemonic),
                     Some(NativeOperand::Immediate(_)) => AddressingMode::Immediate,
                     Some(NativeOperand::Address(address))
                         if address.encoding.is_none() && address.index.is_none() =>
@@ -278,7 +280,7 @@ impl Analysis {
                 };
                 match &native.operand {
                     Some(NativeOperand::Immediate(value)) => {
-                        self.check_immediate(value, spec.immediate_width, contract, mnemonic);
+                        self.check_immediate(value, spec.immediate_width(), contract, mnemonic);
                     }
                     Some(NativeOperand::Address(address)) => match &address.value.kind {
                         ExprKind::Symbol(name) => self.check_memory_operand(&name.text, name.span),
@@ -414,21 +416,24 @@ impl Analysis {
         let Some(number) = self.constant(value, "immediate operands") else {
             return;
         };
-        let (limit, axis) = match width {
-            Some(ImmediateWidthClass::Fixed8) => (0xFF, None),
-            Some(ImmediateWidthClass::MDependent) => match contract.a {
-                Some(RegisterWidth::W8) => (0xFF, None),
-                Some(RegisterWidth::W16) => (0xFFFF, None),
-                None => (0, Some("accumulator")),
-            },
-            Some(ImmediateWidthClass::XDependent) => match contract.i {
-                Some(RegisterWidth::W8) => (0xFF, None),
-                Some(RegisterWidth::W16) => (0xFFFF, None),
-                None => (0, Some("index register")),
-            },
-            None => return,
+        let Some(width) = width else {
+            return;
         };
-        if let Some(axis) = axis {
+        let Some(limit) = width.max_value(contract.a, contract.i) else {
+            // Only the width-dependent classes can fail to report a limit,
+            // and they fail exactly when their axis is unconstrained.
+            let (axis, help) = match width {
+                ImmediateWidthClass::MDependent => {
+                    ("accumulator", "add @a8 or @a16 to the enclosing function")
+                }
+                ImmediateWidthClass::XDependent => (
+                    "index register",
+                    "add @i8 or @i16 to the enclosing function",
+                ),
+                ImmediateWidthClass::Fixed8 | ImmediateWidthClass::Fixed16 => {
+                    unreachable!("fixed immediate widths always report a limit")
+                }
+            };
             self.diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::UNKNOWN_WIDTH,
@@ -438,15 +443,11 @@ impl Analysis {
                     ),
                     Label::new(value.span, "cannot size this immediate"),
                 )
-                .with_help(if axis == "accumulator" {
-                    "add @a8 or @a16 to the enclosing function"
-                } else {
-                    "add @i8 or @i16 to the enclosing function"
-                })
+                .with_help(help)
                 .with_docs("doc/register-width-aware-syntax.md"),
             );
             return;
-        }
+        };
         if number > limit {
             self.diagnostics.push(
                 Diagnostic::error(
@@ -677,6 +678,19 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
         EvalCallName::Print => "print",
         EvalCallName::Error => "error",
     }
+}
+
+/// The hardware mode of a mnemonic written without an operand.
+///
+/// WDC spreads the operandless instructions across `i` (implied), `s`
+/// (stack), and `A` (accumulator), so the mode cannot be read off the absent
+/// operand; it is looked up in the ISA table instead. The general
+/// form-matching classifier lands with task C4.
+fn implied_mode(mnemonic: Mnemonic) -> AddressingMode {
+    // A mnemonic that always takes an operand has no operandless mode;
+    // `Implied` then makes the ISA lookup fail with `INVALID_OPERAND`, which
+    // is exactly the right diagnostic.
+    operandless_mode(mnemonic).unwrap_or(AddressingMode::Implied)
 }
 
 /// Names the first part of a code section that has no semantics yet, or

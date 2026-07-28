@@ -53,7 +53,7 @@ pub struct OptimizationLog {
 /// Runs the (slice-sized) fixed pass sequence over `program`.
 pub fn optimize(program: &mut KProgram) -> OptimizationLog {
     let mut log = OptimizationLog::default();
-    for function in &mut program.functions {
+    for function in program.functions_mut() {
         remove_overwritten_register_values(&mut function.ops, &mut log);
     }
     log
@@ -76,7 +76,14 @@ fn remove_overwritten_register_values(ops: &mut Vec<KOp>, log: &mut Optimization
                 let removed = ops.remove(index);
                 let effects = match &removed.kind {
                     KOpKind::Instruction(instruction) => instruction.effects(),
-                    KOpKind::Label(_) => unreachable!("labels are never removal candidates"),
+                    KOpKind::Label(_)
+                    | KOpKind::Segment(_)
+                    | KOpKind::Data(_)
+                    | KOpKind::Align(_)
+                    | KOpKind::Export(_)
+                    | KOpKind::Import(_) => {
+                        unreachable!("only instructions are removal candidates")
+                    }
                 };
                 log.removals.push(Removal {
                     removed,
@@ -106,7 +113,10 @@ fn removable(ops: &[KOp], index: usize) -> Option<usize> {
     let mut pending = effects.writes;
     for (offset, op) in ops.iter().enumerate().skip(index + 1) {
         let KOpKind::Instruction(next) = &op.kind else {
-            // A label: control may enter here and observe the state.
+            // A label (control may enter here and observe the state), or a
+            // directive whose placement effect this pass cannot reason
+            // about. Every non-instruction op is a barrier until sub-plan F
+            // says otherwise.
             return None;
         };
         let next_effects = next.effects();

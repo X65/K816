@@ -27,13 +27,21 @@
 use k816::effects::{ControlEffect, FlagSet, MemoryEffect, RegisterSet};
 use k816::isa::Mnemonic;
 use k816::lower::lower;
-use k816::op::{KOpKind, KProgram, Operand, Origin};
+use k816::op::{KFunction, KOpKind, KProgram, Operand, Origin};
 use k816::optimize::optimize;
 use k816::parser::parse_source;
 use k816::semantic::analyze_file;
 use k816::source::SourceMap;
+use k816::value::KExpr;
 
 const HLA_SLICE: &str = include_str!("golden/slice.k816");
+
+/// The unit's single lowered function. A `KProgram` is an ordered stream of
+/// unit-level operations and functions, so tests reach in through the same
+/// accessor the compiler uses rather than indexing a bare vector.
+fn first_function(program: &KProgram) -> &KFunction {
+    program.functions().next().expect("one lowered function")
+}
 
 fn lowered(text: &str) -> (SourceMap, k816::semantic::SemanticModel, KProgram) {
     let mut map = SourceMap::new();
@@ -60,7 +68,7 @@ func main @a8 @i16 {
   rep #$10                 ; compiler slice.k816:3
   lda #$00                 ; hla slice.k816:4
   lda #$01                 ; hla slice.k816:5
-  sta SCREEN               ; hla slice.k816:6
+  sta abs SCREEN           ; hla slice.k816:6
   rts                      ; hla slice.k816:7
 }
 "
@@ -76,7 +84,7 @@ func main @a8 @i16 {
   sep #$20                 ; compiler slice.k816:3
   rep #$10                 ; compiler slice.k816:3
   lda #$01                 ; hla slice.k816:5
-  sta SCREEN               ; hla slice.k816:6
+  sta abs SCREEN           ; hla slice.k816:6
   rts                      ; hla slice.k816:7
 }
 "
@@ -96,7 +104,7 @@ fn the_removal_is_justified_by_explicit_effects() {
         panic!("expected an instruction");
     };
     assert_eq!(removed.mnemonic, Mnemonic::Lda);
-    assert_eq!(removed.operand, Some(Operand::Immediate(0)));
+    assert_eq!(removed.operand, Some(Operand::Immediate(KExpr::number(0))));
     assert_eq!(removal.removed.origin, Origin::HlaExpansion);
 
     // The justification: everything it writes (A, N, Z) is overwritten by
@@ -117,20 +125,23 @@ fn the_removal_is_justified_by_explicit_effects() {
         panic!("expected an instruction");
     };
     assert_eq!(overwriter.mnemonic, Mnemonic::Lda);
-    assert_eq!(overwriter.operand, Some(Operand::Immediate(1)));
+    assert_eq!(
+        overwriter.operand,
+        Some(Operand::Immediate(KExpr::number(1)))
+    );
 }
 
 #[test]
 fn reads_and_barriers_keep_live_operations() {
     let (_, _, mut program) = lowered(HLA_SLICE);
     optimize(&mut program);
-    let ops = &program.functions[0].ops;
+    let ops = &first_function(&program).ops;
 
     let mnemonics: Vec<Mnemonic> = ops
         .iter()
         .filter_map(|op| match &op.kind {
             KOpKind::Instruction(instruction) => Some(instruction.mnemonic),
-            KOpKind::Label(_) => None,
+            _ => None,
         })
         .collect();
 
@@ -170,7 +181,7 @@ fn native_and_hla_forms_optimize_identically() {
     assert_eq!(native_log.removals[0].removed.origin, Origin::User);
 
     let kinds = |program: &KProgram| -> Vec<KOpKind> {
-        program.functions[0]
+        first_function(program)
             .ops
             .iter()
             .map(|op| op.kind.clone())

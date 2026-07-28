@@ -55,6 +55,28 @@ impl DiagnosticCode {
     pub const UNKNOWN_MNEMONIC: Self = Self("K816-E0105");
     /// An operand form is not legal for the instruction or symbol kind.
     pub const INVALID_OPERAND: Self = Self("K816-E0106");
+    /// An address-encoding prefix is not legal for this instruction, e.g.
+    /// `dp` on a mnemonic with no direct-page form.
+    pub const INVALID_ENCODING: Self = Self("K816-E0107");
+    /// An expression must fold at compile time here and does not.
+    pub const NOT_CONSTANT: Self = Self("K816-E0108");
+    /// A value does not fit the selected address encoding (`dp $1234`).
+    pub const ADDRESS_RANGE: Self = Self("K816-E0109");
+    /// A bare `const` (or const-rooted expression) in address position.
+    pub const CONST_IN_ADDRESS_POSITION: Self = Self("K816-E0110");
+    /// A `segment` directive is not the first entry of its data block.
+    pub const SEGMENT_PLACEMENT: Self = Self("K816-E0111");
+    /// A `nocross`-guarded run exceeds 256 bytes.
+    pub const NOCROSS_TOO_LARGE: Self = Self("K816-E0112");
+    /// The `&expr` offset marker is used outside a `,X`/`,Y` indexed mode.
+    pub const OFFSET_MARKER_POSITION: Self = Self("K816-E0113");
+    /// A compound expression appears in an atom-only data value list.
+    pub const COMPOUND_DATA_VALUE: Self = Self("K816-E0114");
+    /// A symbol is used in a role its declaration does not allow.
+    pub const SYMBOL_KIND_MISMATCH: Self = Self("K816-E0115");
+    /// `address` placement needs an ld65 config entry; the help carries the
+    /// exact fragment to paste.
+    pub const ADDRESS_NEEDS_CONFIG: Self = Self("K816-W0116");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -246,6 +268,16 @@ mod tests {
         DiagnosticCode::UNKNOWN_WIDTH,
         DiagnosticCode::UNKNOWN_MNEMONIC,
         DiagnosticCode::INVALID_OPERAND,
+        DiagnosticCode::INVALID_ENCODING,
+        DiagnosticCode::NOT_CONSTANT,
+        DiagnosticCode::ADDRESS_RANGE,
+        DiagnosticCode::CONST_IN_ADDRESS_POSITION,
+        DiagnosticCode::SEGMENT_PLACEMENT,
+        DiagnosticCode::NOCROSS_TOO_LARGE,
+        DiagnosticCode::OFFSET_MARKER_POSITION,
+        DiagnosticCode::COMPOUND_DATA_VALUE,
+        DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        DiagnosticCode::ADDRESS_NEEDS_CONFIG,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

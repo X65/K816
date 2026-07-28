@@ -29,12 +29,24 @@
 //! K816 never resolves addresses that belong to ld65: memory operands are
 //! emitted as symbol references; only user-pinned fixed addresses become
 //! equates.
+//!
+//! Emitted expressions are **fully parenthesized** and use ca65's named
+//! operator forms. ca65's precedence table is not K65's — `&`, `^`, `<<`,
+//! and `>>` sit alongside `*` there — so `A + B & C` means `(A+B)&C` in K65
+//! and `A + (B&C)` in ca65. Concatenating operator text without parentheses
+//! would silently change a working program's numbers, which is why
+//! [`format_expr`] never does (sub-plan C, backend decision 1).
 
-use crate::isa::{ImmediateWidthClass, Mnemonic, spec};
-use crate::op::{Instruction, KOpKind, KProgram, Operand, Origin, RegisterWidth, WidthContract};
+use crate::effects::WidthEffect;
+use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
+use crate::op::{
+    DataOp, IndexRegister, Instruction, KOp, KOpKind, KProgram, KProgramItem, Operand, Origin,
+    WidthContract,
+};
 use crate::semantic::SemanticModel;
 use crate::source::{FileId, SourceMap, Span};
-use crate::symbol::SymbolKind;
+use crate::symbol::{SymbolKind, SymbolTable};
+use crate::value::{KExpr, UnaryOp, Value};
 
 /// Emits the whole lowered `program` as ca65 assembly.
 pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KProgram) -> String {
@@ -59,50 +71,104 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
     }
 
     // Functions are visible across modules, so hand-written ca65 code (and
-    // later K816 units) can reference them; the full import/export model is
-    // sub-plan C.
-    if !program.functions.is_empty() {
+    // later K816 units) can reference them; the derived import/export model
+    // lands with task C7.
+    let mut exports = String::new();
+    for function in program.functions() {
+        exports.push_str(&format!(
+            ".export {}\n",
+            model.symbols.name(function.symbol)
+        ));
+    }
+    if !exports.is_empty() {
         out.push('\n');
-        for function in &program.functions {
-            out.push_str(&format!(
-                ".export {}\n",
-                model.symbols.name(function.symbol)
-            ));
-        }
+        out.push_str(&exports);
     }
 
     out.push_str("\n.segment \"CODE\"\n");
 
-    for function in &program.functions {
-        out.push('\n');
-        let mut widths = WidthState::default();
-        let mut assumed = false;
-        for op in &function.ops {
-            // The entry contract's width directives follow the function
-            // label, before the first instruction.
-            if !assumed && !matches!(op.kind, KOpKind::Label(_)) {
-                widths.assume(function.contract, &mut out);
-                assumed = true;
-            }
-            match &op.kind {
-                KOpKind::Label(symbol) => {
-                    out.push_str(&format!("{}:\n", model.symbols.name(*symbol)));
-                }
-                KOpKind::Instruction(instruction) => {
-                    emit_instruction(
-                        map,
-                        source.name(),
-                        model,
-                        instruction,
-                        op,
-                        &mut widths,
-                        &mut out,
-                    );
+    for item in &program.items {
+        match item {
+            KProgramItem::Op(op) => emit_unit_op(map, source.name(), model, op, &mut out),
+            KProgramItem::Function(function) => {
+                out.push('\n');
+                let mut widths = WidthState::default();
+                let mut assumed = false;
+                for op in &function.ops {
+                    // The entry contract's width directives follow the
+                    // function label, before the first instruction.
+                    if !assumed && !matches!(op.kind, KOpKind::Label(_)) {
+                        widths.assume(function.contract, &mut out);
+                        assumed = true;
+                    }
+                    match &op.kind {
+                        KOpKind::Instruction(instruction) => emit_instruction(
+                            map,
+                            source.name(),
+                            model,
+                            instruction,
+                            op,
+                            &mut widths,
+                            &mut out,
+                        ),
+                        _ => emit_unit_op(map, source.name(), model, op, &mut out),
+                    }
                 }
             }
         }
     }
     out
+}
+
+/// Emits a non-instruction operation: a label or one of the directives.
+///
+/// The *decision* to produce these — segment selection, derived linkage,
+/// data blocks, alignment — belongs to tasks C7 and C8; this is only their
+/// ca65 spelling, so both tasks extend the callers rather than the printer.
+fn emit_unit_op(
+    map: &SourceMap,
+    file_name: &str,
+    model: &SemanticModel,
+    op: &KOp,
+    out: &mut String,
+) {
+    let symbols = &model.symbols;
+    match &op.kind {
+        KOpKind::Instruction(_) => unreachable!("instructions are emitted with their width state"),
+        KOpKind::Label(symbol) => out.push_str(&format!("{}:\n", symbols.name(*symbol))),
+        KOpKind::Export(symbol) => out.push_str(&format!(".export {}\n", symbols.name(*symbol))),
+        KOpKind::Import(symbol) => out.push_str(&format!(".import {}\n", symbols.name(*symbol))),
+        KOpKind::Segment(name) => out.push_str(&annotated(
+            &format!(".segment \"{name}\""),
+            &source_comment(map, op.span),
+        )),
+        KOpKind::Align(expr) => out.push_str(&annotated(
+            &format!("        .align   {}", format_expr(expr, symbols)),
+            &source_comment(map, op.span),
+        )),
+        KOpKind::Data(data) => {
+            // Data carries the same debug annotation as an instruction, so
+            // ld65's database records it as K816-owned too.
+            let line = map.line_col(op.span.file, op.span.start).line + 1;
+            out.push_str(&format!("        .dbg    line, \"{file_name}\", {line}\n"));
+            let list = |values: &[KExpr]| {
+                values
+                    .iter()
+                    .map(|value| format_expr(value, symbols))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let text = match data {
+                DataOp::Byte(values) => format!("        .byte    {}", list(values)),
+                DataOp::Word(values) => format!("        .word    {}", list(values)),
+                DataOp::Far(values) => format!("        .faraddr {}", list(values)),
+                DataOp::Reserve(count) => {
+                    format!("        .res     {}", format_expr(count, symbols))
+                }
+            };
+            out.push_str(&annotated(&text, &source_comment(map, op.span)));
+        }
+    }
 }
 
 /// Tracked assembler width state, kept in sync with `.a8`-family directives
@@ -144,18 +210,28 @@ impl WidthState {
         }
     }
 
-    /// Applies the width effect of an executed `sep`/`rep` mask.
-    fn apply_mask(&mut self, mnemonic: Mnemonic, mask: u32, out: &mut String) {
-        let width = match mnemonic {
-            Mnemonic::Sep => RegisterWidth::W8,
-            Mnemonic::Rep => RegisterWidth::W16,
-            Mnemonic::Lda | Mnemonic::Sta | Mnemonic::Rts => return,
-        };
-        if mask & 0x20 != 0 {
-            self.set_a(width, out);
-        }
-        if mask & 0x10 != 0 {
-            self.set_i(width, out);
+    /// Applies the width transition of an executed instruction.
+    ///
+    /// Driven by the effect table's [`WidthEffect`], not by a match over
+    /// mnemonics: a `FlagSet` only says that M or X was written, and a
+    /// mnemonic match would need one arm per instruction. An unknown
+    /// transition drops the tracked widths so nothing downstream emits a
+    /// width claim K816 cannot justify.
+    fn apply(&mut self, width: WidthEffect, out: &mut String) {
+        match width {
+            WidthEffect::Unchanged => {}
+            WidthEffect::Known { a, i } => {
+                if let Some(a) = a {
+                    self.set_a(a, out);
+                }
+                if let Some(i) = i {
+                    self.set_i(i, out);
+                }
+            }
+            WidthEffect::Unknown => {
+                self.a = None;
+                self.i = None;
+            }
         }
     }
 }
@@ -165,7 +241,7 @@ fn emit_instruction(
     file_name: &str,
     model: &SemanticModel,
     instruction: &Instruction,
-    op: &crate::op::KOp,
+    op: &KOp,
     widths: &mut WidthState,
     out: &mut String,
 ) {
@@ -175,7 +251,8 @@ fn emit_instruction(
 
     let operand = instruction
         .operand
-        .map(|operand| format_operand(instruction, operand, widths, model));
+        .as_ref()
+        .map(|operand| format_operand(instruction, operand, widths, &model.symbols));
     let mut text = format!("        {:<7}", instruction.mnemonic.ca65());
     if let Some(operand) = &operand {
         text.push_str(&format!(" {operand}"));
@@ -188,35 +265,122 @@ fn emit_instruction(
     out.push_str(&annotated(text.trim_end(), &comment));
 
     // Keep the assembler's width tracking in sync after mode changes.
-    if let Some(Operand::Immediate(mask)) = instruction.operand {
-        widths.apply_mask(instruction.mnemonic, mask, out);
-    }
+    widths.apply(instruction.effects().width, out);
 }
 
 fn format_operand(
     instruction: &Instruction,
-    operand: Operand,
+    operand: &Operand,
     widths: &WidthState,
-    model: &SemanticModel,
+    symbols: &SymbolTable,
 ) -> String {
     match operand {
-        Operand::Immediate(value) => {
-            let width_class = spec(instruction.mnemonic, instruction.mode())
-                .and_then(|spec| spec.immediate_width);
-            let wide = match width_class {
-                Some(ImmediateWidthClass::MDependent) => widths.a == Some(RegisterWidth::W16),
-                Some(ImmediateWidthClass::XDependent) => widths.i == Some(RegisterWidth::W16),
-                Some(ImmediateWidthClass::Fixed8) | None => false,
+        Operand::Immediate(expr) => {
+            let spec = spec(instruction.mnemonic, instruction.mode);
+            let sigil = spec.is_none_or(|spec| spec.operand.ca65_immediate_sigil);
+            let width_class = spec.and_then(|spec| spec.immediate_width());
+            let text = match expr.value() {
+                Some(value) => format_immediate_value(value, width_class, widths),
+                None => format_expr(expr, symbols),
             };
-            if wide {
-                format!("#${value:04X}")
+            if sigil { format!("#{text}") } else { text }
+        }
+        // The symbol is emitted by name; ca65/ld65 own resolution. The
+        // explicit `z:`/`a:`/`f:` address-size prefix arrives with task C6,
+        // together with the golden it changes.
+        Operand::Address { expr, index, .. } => {
+            format!("{}{}", format_expr(expr, symbols), format_index(*index))
+        }
+        Operand::Label(expr) => format_expr(expr, symbols),
+        Operand::StackRelative(expr) => format!("{},s", format_expr(expr, symbols)),
+        Operand::BlockMove {
+            source,
+            destination,
+        } => format!(
+            "{},{}",
+            format_expr(source, symbols),
+            format_expr(destination, symbols)
+        ),
+        Operand::Indirect {
+            expr,
+            long,
+            inner,
+            outer,
+            stack_relative,
+            ..
+        } => {
+            let (open, close) = if *long { ("[", "]") } else { ("(", ")") };
+            let inner_text = if *stack_relative {
+                ",s".to_owned()
             } else {
-                format!("#${value:02X}")
+                format_index(*inner)
+            };
+            format!(
+                "{open}{}{inner_text}{close}{}",
+                format_expr(expr, symbols),
+                format_index(*outer)
+            )
+        }
+    }
+}
+
+fn format_index(index: Option<IndexRegister>) -> String {
+    match index {
+        Some(IndexRegister::X) => ",x".to_owned(),
+        Some(IndexRegister::Y) => ",y".to_owned(),
+        None => String::new(),
+    }
+}
+
+/// An absolute immediate, printed at the width the instruction encodes.
+fn format_immediate_value(
+    value: Value,
+    width_class: Option<ImmediateWidthClass>,
+    widths: &WidthState,
+) -> String {
+    let wide = match width_class {
+        Some(ImmediateWidthClass::Fixed16) => true,
+        Some(ImmediateWidthClass::MDependent) => widths.a == Some(RegisterWidth::W16),
+        Some(ImmediateWidthClass::XDependent) => widths.i == Some(RegisterWidth::W16),
+        Some(ImmediateWidthClass::Fixed8) | None => false,
+    };
+    if wide {
+        format!("${:04X}", value.get())
+    } else {
+        format!("${:02X}", value.get())
+    }
+}
+
+/// A ca65 expression, fully parenthesized and spelled with ca65's named
+/// operators. See the module documentation for why nothing here relies on
+/// ca65 and K65 agreeing about precedence.
+fn format_expr(expr: &KExpr, symbols: &SymbolTable) -> String {
+    match expr {
+        KExpr::Number(value) => value.to_string(),
+        KExpr::Symbol(symbol) => symbols.name(*symbol).to_owned(),
+        KExpr::Unary { op, operand } => {
+            let inner = format_expr(operand, symbols);
+            match op.ca65_function() {
+                Some(function) => format!("{function}({inner})"),
+                // `&&&x` is already a 24-bit address value in ca65 terms;
+                // negation and complement are the two operators with no
+                // named form.
+                None => match op {
+                    UnaryOp::Negate => format!("(0 - {inner})"),
+                    UnaryOp::BitNot => format!("(~ {inner})"),
+                    UnaryOp::Long => inner,
+                    UnaryOp::LowByte | UnaryOp::HighByte | UnaryOp::BankByte | UnaryOp::Word => {
+                        unreachable!("these operators have a named ca65 form")
+                    }
+                },
             }
         }
-        // Emit the symbol by name; ca65/ld65 own resolution. (The slice
-        // only has fixed-address equates, declared above.)
-        Operand::Address(symbol) => model.symbols.name(symbol).to_owned(),
+        KExpr::Binary { op, left, right } => format!(
+            "({} {} {})",
+            format_expr(left, symbols),
+            op.ca65_operator(),
+            format_expr(right, symbols)
+        ),
     }
 }
 

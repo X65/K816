@@ -35,12 +35,14 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
-use crate::isa::Mnemonic;
+use crate::isa::{AddressEncoding, AddressingMode, Mnemonic, operandless_mode};
 use crate::op::{
     Instruction, KFunction, KOp, KOpKind, KProgram, Operand, Origin, RegisterWidth, WidthContract,
 };
 use crate::semantic::SemanticModel;
 use crate::source::Span;
+use crate::symbol::SymbolId;
+use crate::value::KExpr;
 
 /// The `SEP`/`REP` mask selecting the accumulator width flag (M).
 const P_MASK_M: u32 = 0x20;
@@ -74,7 +76,7 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
         }
         lowering.implicit_return(func.body.span);
 
-        program.functions.push(KFunction {
+        program.push_function(KFunction {
             symbol: info.symbol,
             contract: info.contract,
             ops: lowering.ops,
@@ -98,15 +100,27 @@ impl Lowering<'_> {
     fn instruction(
         &mut self,
         mnemonic: Mnemonic,
+        mode: AddressingMode,
         operand: Option<Operand>,
         span: Span,
         origin: Origin,
     ) {
         self.push(
-            KOpKind::Instruction(Instruction { mnemonic, operand }),
+            KOpKind::Instruction(Instruction::new(mnemonic, mode, operand)),
             span,
             origin,
         );
+    }
+
+    /// An absolute memory reference through a declared symbol — the only
+    /// address operand the slice lowers. Task C4 replaces this with the
+    /// classifier that chooses the encoding.
+    fn absolute(symbol: SymbolId) -> Operand {
+        Operand::Address {
+            encoding: AddressEncoding::Absolute,
+            expr: KExpr::Symbol(symbol),
+            index: None,
+        }
     }
 
     /// `main` has no caller, so its contract is established explicitly at
@@ -121,7 +135,8 @@ impl Lowering<'_> {
             };
             self.instruction(
                 mnemonic,
-                Some(Operand::Immediate(mask)),
+                AddressingMode::Immediate,
+                Some(Operand::Immediate(KExpr::number(mask))),
                 span,
                 Origin::CompilerGenerated,
             );
@@ -138,7 +153,7 @@ impl Lowering<'_> {
                 let operand = match &native.operand {
                     None => None,
                     Some(NativeOperand::Immediate(expr)) => match expr.kind {
-                        ExprKind::Number(value) => Some(Operand::Immediate(value)),
+                        ExprKind::Number(value) => Some(Operand::Immediate(KExpr::number(value))),
                         // Analysis rejects every immediate it cannot reduce to
                         // a number, so nothing else can reach lowering.
                         ExprKind::Error
@@ -161,7 +176,7 @@ impl Lowering<'_> {
                             return self.skipped(span, "an unresolved address operand");
                         };
                         match self.model.symbols.lookup(&name.text) {
-                            Some(symbol) => Some(Operand::Address(symbol)),
+                            Some(symbol) => Some(Self::absolute(symbol)),
                             None => return self.skipped(span, "an unresolved symbol"),
                         }
                     }
@@ -172,7 +187,8 @@ impl Lowering<'_> {
                         return self.skipped(span, "an unsupported operand form");
                     }
                 };
-                self.instruction(mnemonic, operand, span, Origin::User);
+                let mode = mode_of(mnemonic, operand.as_ref());
+                self.instruction(mnemonic, mode, operand, span, Origin::User);
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
                 // Analysis accepts exactly two chain shapes so far; anything
@@ -185,7 +201,8 @@ impl Lowering<'_> {
                         };
                         self.instruction(
                             Mnemonic::Lda,
-                            Some(Operand::Immediate(number)),
+                            AddressingMode::Immediate,
+                            Some(Operand::Immediate(KExpr::number(number))),
                             span,
                             Origin::HlaExpansion,
                         );
@@ -203,7 +220,8 @@ impl Lowering<'_> {
                         };
                         self.instruction(
                             Mnemonic::Sta,
-                            Some(Operand::Address(symbol)),
+                            AddressingMode::Absolute,
+                            Some(Self::absolute(symbol)),
                             span,
                             Origin::HlaExpansion,
                         );
@@ -225,7 +243,13 @@ impl Lowering<'_> {
             }
             StatementKind::Return(ReturnKind::Subroutine) => {
                 // `return` is the HLA spelling of `rts`.
-                self.instruction(Mnemonic::Rts, None, span, Origin::HlaExpansion);
+                self.instruction(
+                    Mnemonic::Rts,
+                    AddressingMode::Stack,
+                    None,
+                    span,
+                    Origin::HlaExpansion,
+                );
             }
             // Analysis reports each of these as not-yet-implemented, so
             // lowering is never reached with one.
@@ -260,12 +284,20 @@ impl Lowering<'_> {
             KOpKind::Instruction(instruction) => {
                 instruction.effects().control == ControlEffect::Return
             }
-            KOpKind::Label(_) => false,
+            // Unit-level directives never end a function body, and a label
+            // is not a return.
+            KOpKind::Label(_)
+            | KOpKind::Segment(_)
+            | KOpKind::Data(_)
+            | KOpKind::Align(_)
+            | KOpKind::Export(_)
+            | KOpKind::Import(_) => false,
         });
         if !ends_returning {
             let brace = body_span.end.saturating_sub(1).max(body_span.start);
             self.instruction(
                 Mnemonic::Rts,
+                AddressingMode::Stack,
                 None,
                 Span::empty_at(body_span.file, brace),
                 Origin::CompilerGenerated,
@@ -282,5 +314,28 @@ impl Lowering<'_> {
             format!("internal: lowering skipped {what} that analysis accepted"),
             Label::new(span, "this construct was not lowered"),
         ));
+    }
+}
+
+/// The hardware mode of a lowered instruction.
+///
+/// Analysis has already validated the (mnemonic, mode) pair, so this repeats
+/// the classification analysis performed rather than deciding anything new.
+/// Task C4 replaces both with one shared classifier.
+fn mode_of(mnemonic: Mnemonic, operand: Option<&Operand>) -> AddressingMode {
+    match operand {
+        None => operandless_mode(mnemonic).unwrap_or(AddressingMode::Implied),
+        Some(Operand::Immediate(_)) => AddressingMode::Immediate,
+        Some(Operand::Address { encoding, .. }) => match encoding {
+            AddressEncoding::Direct => AddressingMode::Direct,
+            AddressEncoding::Absolute => AddressingMode::Absolute,
+            AddressEncoding::Long => AddressingMode::AbsoluteLong,
+        },
+        // The slice lowers no other operand shape; analysis rejects them
+        // before lowering sees them.
+        Some(Operand::Indirect { .. })
+        | Some(Operand::StackRelative(_))
+        | Some(Operand::BlockMove { .. })
+        | Some(Operand::Label(_)) => AddressingMode::Implied,
     }
 }

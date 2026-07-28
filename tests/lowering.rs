@@ -26,10 +26,11 @@
 
 use k816::isa::Mnemonic;
 use k816::lower::lower;
-use k816::op::{KOpKind, KProgram, Operand, Origin};
+use k816::op::{KFunction, KOpKind, KProgram, Operand, Origin};
 use k816::parser::parse_source;
 use k816::semantic::analyze_file;
 use k816::source::SourceMap;
+use k816::value::KExpr;
 
 /// The slice program in HLA form (`doc/design.md` "Recommended first
 /// deliverable", with the fixed-address `SCREEN` declaration).
@@ -55,6 +56,13 @@ func main @a8 @i16 {
 }
 ";
 
+/// The unit's single lowered function. A `KProgram` is an ordered stream of
+/// unit-level operations and functions, so tests reach in through the same
+/// accessor the compiler uses rather than indexing a bare vector.
+fn first_function(program: &KProgram) -> &KFunction {
+    program.functions().next().expect("one lowered function")
+}
+
 fn lower_program(text: &str) -> KProgram {
     let mut map = SourceMap::new();
     let id = map.add_file("test.k816", text);
@@ -72,34 +80,48 @@ fn native_and_hla_lower_to_identical_unoptimized_kops() {
     let hla = lower_program(HLA_SLICE);
     let native = lower_program(NATIVE_SLICE);
 
-    assert_eq!(hla.functions.len(), 1);
-    assert_eq!(native.functions.len(), 1);
-    assert_eq!(hla.functions[0].contract, native.functions[0].contract);
+    assert_eq!(hla.functions().count(), 1);
+    assert_eq!(native.functions().count(), 1);
+    assert_eq!(
+        first_function(&hla).contract,
+        first_function(&native).contract
+    );
 
     // The architectural gate: identical operation streams (kinds and
     // operands). Only the recorded origins may differ between the forms.
-    let hla_kinds: Vec<&KOpKind> = hla.functions[0].ops.iter().map(|op| &op.kind).collect();
-    let native_kinds: Vec<&KOpKind> = native.functions[0].ops.iter().map(|op| &op.kind).collect();
+    let hla_kinds: Vec<&KOpKind> = first_function(&hla).ops.iter().map(|op| &op.kind).collect();
+    let native_kinds: Vec<&KOpKind> = first_function(&native)
+        .ops
+        .iter()
+        .map(|op| &op.kind)
+        .collect();
     assert_eq!(hla_kinds, native_kinds);
 }
 
 #[test]
 fn the_unoptimized_stream_is_exactly_the_expected_slice_sequence() {
     let program = lower_program(HLA_SLICE);
-    let ops = &program.functions[0].ops;
+    let ops = &first_function(&program).ops;
 
     let kinds: Vec<String> = ops
         .iter()
         .map(|op| match &op.kind {
             KOpKind::Label(symbol) => format!("label#{}", symbol.index()),
             KOpKind::Instruction(instruction) => {
-                let operand = match instruction.operand {
+                let operand = match &instruction.operand {
                     None => String::new(),
-                    Some(Operand::Immediate(value)) => format!(" #${value:02X}"),
-                    Some(Operand::Address(symbol)) => format!(" sym#{}", symbol.index()),
+                    Some(Operand::Immediate(expr)) => {
+                        format!(" #${:02X}", expr.value().expect("folded immediate").get())
+                    }
+                    Some(Operand::Address {
+                        expr: KExpr::Symbol(symbol),
+                        ..
+                    }) => format!(" sym#{}", symbol.index()),
+                    Some(other) => panic!("unexpected slice operand {other:?}"),
                 };
                 format!("{}{}", instruction.mnemonic.ca65(), operand)
             }
+            other => panic!("unexpected slice operation {other:?}"),
         })
         .collect();
 
@@ -123,7 +145,7 @@ fn origins_distinguish_user_hla_and_compiler_operations() {
     let native = lower_program(NATIVE_SLICE);
 
     let origins = |program: &KProgram| -> Vec<Origin> {
-        program.functions[0]
+        first_function(program)
             .ops
             .iter()
             .map(|op| op.origin)
@@ -166,14 +188,17 @@ fn every_lowered_op_retains_a_source_span() {
     let (model, _) = analyze_file(&parse.file);
     let (program, _) = lower(&parse.file, &model);
 
-    for op in &program.functions[0].ops {
+    for op in &first_function(&program).ops {
         assert_eq!(op.span.file, id);
         assert!(op.span.end as usize <= HLA_SLICE.len());
     }
     // HLA statements map back to their exact source text.
-    assert_eq!(map.span_text(program.functions[0].ops[3].span), "a = #0");
     assert_eq!(
-        map.span_text(program.functions[0].ops[5].span),
+        map.span_text(first_function(&program).ops[3].span),
+        "a = #0"
+    );
+    assert_eq!(
+        map.span_text(first_function(&program).ops[5].span),
         "SCREEN = a"
     );
 }
@@ -181,7 +206,7 @@ fn every_lowered_op_retains_a_source_span() {
 #[test]
 fn functions_without_a_trailing_return_get_a_synthetic_rts() {
     let program = lower_program("func main @a8 {\n    a = #1\n}\n");
-    let ops = &program.functions[0].ops;
+    let ops = &first_function(&program).ops;
     let last = ops.last().expect("ops exist");
 
     let KOpKind::Instruction(instruction) = &last.kind else {

@@ -708,3 +708,60 @@ fn a_block_move_takes_bank_numbers_not_addresses() {
     assert_eq!(diagnostic.code, DiagnosticCode::ADDRESS_RANGE);
     assert!(diagnostic.title.contains("bank byte"), "{diagnostic:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Data blocks (sub-plan C, task C8).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_segment_directive_must_be_a_blocks_first_entry() {
+    // Its placement relative to bytes already emitted would otherwise be
+    // undefined, which is the whole reason for the rule.
+    let diagnostic = only_diagnostic("data bad {\n    1 2\n    segment OTHER\n    3\n}\n");
+    assert_eq!(diagnostic.code, DiagnosticCode::SEGMENT_PLACEMENT);
+
+    let (_, diagnostics) = analyze("data good {\n    segment OTHER\n    1 2\n}\n");
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+}
+
+#[test]
+fn a_nocross_run_larger_than_a_page_is_rejected_now() {
+    // No placement can save it, so this is decided at compile time rather
+    // than deferred to the link-time assertion.
+    let diagnostic = only_diagnostic("data big {\n    nocross 300\n    1 2\n}\n");
+    assert_eq!(diagnostic.code, DiagnosticCode::NOCROSS_TOO_LARGE);
+    assert!(diagnostic.title.contains("300 bytes"), "{diagnostic:?}");
+
+    let (_, diagnostics) = analyze("data ok {\n    nocross 256\n    1 2\n}\n");
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+}
+
+#[test]
+fn an_untyped_data_value_is_one_byte_wide() {
+    let diagnostic = only_diagnostic("data wide {\n    $1234\n}\n");
+    assert_eq!(diagnostic.code, DiagnosticCode::ADDRESS_RANGE);
+    assert!(
+        diagnostic
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("&<")),
+        "the help names the byte selectors: {diagnostic:?}"
+    );
+}
+
+#[test]
+fn a_data_blocks_names_are_declared_and_addressable() {
+    let source =
+        "data text {\n    hello:\n    1 2\n}\nfunc main @a8 {\n    lda text\n    lda hello\n}\n";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+    for name in ["text", "hello"] {
+        assert!(
+            matches!(
+                kind_of(&model, name),
+                k816::symbol::SymbolKind::DataLabel { .. }
+            ),
+            "`{name}`"
+        );
+    }
+}

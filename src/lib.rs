@@ -101,7 +101,8 @@ pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
     let mut diagnostics = linkage.diagnostics().to_vec();
     for source in map.files() {
         let parse = parser::parse_source(source, None);
-        let (_, semantic_diagnostics) = semantic::analyze_unit(&parse.file, &linkage);
+        let (_, semantic_diagnostics) =
+            semantic::analyze_unit(&parse.file, source.name(), &linkage);
         diagnostics.extend(parse.diagnostics);
         diagnostics.extend(semantic_diagnostics);
     }
@@ -115,8 +116,10 @@ pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
 /// never stop diagnostic collection.
 pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> CompileResult {
     let linkage = linkage::Linkage::resolve(map);
-    let parse = parser::parse_source(map.file(file), None);
-    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, &linkage);
+    let source = map.file(file);
+    let parse = parser::parse_source(source, None);
+    let (model, semantic_diagnostics) =
+        semantic::analyze_unit(&parse.file, source.name(), &linkage);
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
@@ -127,7 +130,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         };
     }
 
-    let (mut program, lower_diagnostics) = lower::lower(&parse.file, &model);
+    let (mut program, lower_diagnostics) = lower::lower_unit(&parse.file, &model, source.name());
     diagnostics.extend(lower_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return CompileResult {
@@ -158,8 +161,10 @@ pub struct IrResult {
 /// when `options.optimize` is set (`emit-ir --after-opt`).
 pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
     let linkage = linkage::Linkage::resolve(map);
-    let parse = parser::parse_source(map.file(file), None);
-    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, &linkage);
+    let source = map.file(file);
+    let parse = parser::parse_source(source, None);
+    let (model, semantic_diagnostics) =
+        semantic::analyze_unit(&parse.file, source.name(), &linkage);
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
@@ -170,7 +175,7 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
         };
     }
 
-    let (mut program, lower_diagnostics) = lower::lower(&parse.file, &model);
+    let (mut program, lower_diagnostics) = lower::lower_unit(&parse.file, &model, source.name());
     diagnostics.extend(lower_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {

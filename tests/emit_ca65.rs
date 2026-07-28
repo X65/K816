@@ -313,3 +313,172 @@ fn an_unknown_width_transition_emits_no_width_claim() {
     // between the `plp` and the `sep`.
     assert_eq!(claims, vec![".a8", ".i16", ".a8"], "{assembly}");
 }
+
+// ---------------------------------------------------------------------------
+// Data blocks (sub-plan C, task C8).
+// ---------------------------------------------------------------------------
+
+/// The emitted lines of `text` without their annotations or debug entries.
+fn lines(name: &str, text: &str) -> Vec<String> {
+    emit_unoptimized(name, text)
+        .lines()
+        .map(|line| {
+            line.split_once(';')
+                .map_or(line, |(code, _)| code)
+                .trim_end()
+        })
+        .filter(|line| !line.is_empty() && !line.trim_start().starts_with(".dbg"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A named block's label marks its *first emitted byte*, so a leading
+/// `align` has to precede it — otherwise the alignment would move the bytes
+/// out from under the label that names them.
+#[test]
+fn placement_directives_precede_the_block_label() {
+    let emitted = lines("place.k816", "data table {\n    align 16\n    1 2\n}\n");
+    let align = emitted.iter().position(|l| l.contains(".align")).unwrap();
+    let label = emitted.iter().position(|l| l == "table:").unwrap();
+    assert!(align < label, "{emitted:?}");
+}
+
+#[test]
+fn raw_values_and_the_placeholder_emit_bytes() {
+    let emitted = lines(
+        "values.k816",
+        "var ptr = $2345\ndata bytes {\n    $7F 1\n    hello:\n    &<ptr &>ptr\n    ? ?\n}\n",
+    );
+    assert!(emitted.contains(&"bytes:".to_owned()), "{emitted:?}");
+    assert!(emitted.contains(&"hello:".to_owned()), "{emitted:?}");
+    for expected in [
+        "        .byte    $7F",
+        "        .byte    $01",
+        "        .byte    .lobyte(ptr)",
+        "        .byte    .hibyte(ptr)",
+        // `?` is a source-level affordance: on the wire it is a zero.
+        "        .byte    $00",
+    ] {
+        assert!(
+            emitted.contains(&expected.to_owned()),
+            "{expected}: {emitted:?}"
+        );
+    }
+}
+
+/// K816 checks the run's size; ld65 checks where it lands, because only
+/// placement knows (sub-plan C, backend decision 6). The legacy linker's
+/// automatic pre-padding is deliberately not recreated.
+#[test]
+fn nocross_emits_a_link_time_page_assertion() {
+    let emitted = lines("nocross.k816", "nocross data guarded {\n    1 2 3 4\n}\n");
+    assert_eq!(
+        emitted.last().map(String::as_str),
+        Some(
+            "        .assert  .hibyte(* - 1) = .hibyte(* - 4), error, \
+             \"nocross run crosses a page boundary\""
+        ),
+        "the guard follows the run it guards: {emitted:?}"
+    );
+}
+
+/// ca65 cannot pin a relocatable block to an address, so the request becomes
+/// a segment the ld65 config gives a fixed `start` — and the warning quotes
+/// the fragment to paste, because K816 does not write linker configs.
+#[test]
+fn address_placement_becomes_a_named_segment_and_says_so() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "place.k816",
+        "data pinned {\n    address $5000\n    1 2\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let warning = &result.diagnostics[0];
+    assert_eq!(
+        warning.code,
+        k816::diagnostic::DiagnosticCode::ADDRESS_NEEDS_CONFIG
+    );
+    assert_eq!(warning.severity, k816::diagnostic::Severity::Warning);
+    assert!(
+        warning.notes[0].contains("K816_AT_5000__PINNED: load = MAIN, type = ro, start = $5000"),
+        "the note is a config fragment to paste: {warning:?}"
+    );
+
+    let assembly = result.assembly.expect("a warning does not stop emission");
+    assert!(
+        assembly.contains(".segment \"K816_AT_5000__PINNED\""),
+        "{assembly}"
+    );
+}
+
+/// The config entry is hand-maintained, so a name that renumbers when an
+/// unrelated block is inserted earlier would be a real failure. A named
+/// block is identified by its name alone; only the anonymous forms carry a
+/// position-derived counter, and the warning says so.
+#[test]
+fn a_named_blocks_address_segment_does_not_renumber() {
+    let name_of = |text: &str| {
+        let mut map = SourceMap::new();
+        let file = map.add_file("stable.k816", text);
+        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        result
+            .assembly
+            .expect("compilation succeeds")
+            .lines()
+            .find(|line| line.contains("K816_AT_"))
+            // The comment names the source line, which is exactly what an
+            // inserted block does move.
+            .map(|line| line.split(';').next().unwrap_or_default().trim().to_owned())
+            .expect("a synthetic segment")
+    };
+
+    let alone = name_of("data pinned {\n    address $5000\n    1\n}\n");
+    let preceded = name_of("data other {\n    1\n}\ndata pinned {\n    address $5000\n    1\n}\n");
+    assert_eq!(
+        alone, preceded,
+        "inserting a block ahead must not rename it"
+    );
+
+    // Two blocks asking for one address get their own segments: the two
+    // intents — overlay them, or concatenate them — are the config's to
+    // choose between, and an accidental collision must stay visible.
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "two.k816",
+        "data a {\n    address $5000\n    1\n}\ndata b {\n    address $5000\n    2\n}\n",
+    );
+    let both = compile_to_ca65(&map, file, &Options { optimize: false });
+    let assembly = both.assembly.expect("compilation succeeds");
+    assert!(assembly.contains("K816_AT_5000__A"), "{assembly}");
+    assert!(assembly.contains("K816_AT_5000__B"), "{assembly}");
+}
+
+/// An anonymous block inside a function emits raw bytes in the middle of
+/// executable code, so control steps over them. The landing site is a ca65
+/// *unnamed* label: a named one would either pollute the unit's namespace
+/// or split the cheap-local scope the function's own labels live in.
+#[test]
+fn an_inline_data_block_is_jumped_over() {
+    let emitted = lines(
+        "inline.k816",
+        "func main @a8 @i16 {\n  .again:\n    data { $EA }\n    lda #1\n    bne .again\n}\n",
+    );
+    let jump = emitted
+        .iter()
+        .position(|l| l.contains("jmp     :+"))
+        .unwrap();
+    let byte = emitted
+        .iter()
+        .position(|l| l.contains(".byte    $EA"))
+        .unwrap();
+    let target = emitted.iter().position(|l| l == ":").unwrap();
+    assert!(jump < byte && byte < target, "{emitted:?}");
+    // The function's own local label survives as a cheap local.
+    assert!(emitted.contains(&"@again:".to_owned()), "{emitted:?}");
+    assert!(
+        emitted.iter().any(|l| l.contains("bne     @again")),
+        "{emitted:?}"
+    );
+}

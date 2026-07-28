@@ -39,7 +39,8 @@ use crate::op::{
     Instruction, KFunction, KOp, KOpKind, KProgram, Operand, Origin, RegisterWidth, SegmentName,
     WidthContract,
 };
-use crate::resolve::Resolver;
+use crate::resolve;
+use crate::resolve::{AnonymousBlocks, Resolver};
 use crate::semantic::SemanticModel;
 use crate::source::Span;
 use crate::symbol::SymbolId;
@@ -55,8 +56,19 @@ const P_MASK_X: u32 = 0x10;
 /// Call after error-free analysis. Constructs the analysis already rejected
 /// are skipped with an internal diagnostic rather than a panic.
 pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic>) {
+    lower_unit(file, model, "")
+}
+
+/// Lowers `file`, naming the unit so `address` placements derive the same
+/// synthetic segment names analysis reported in `W0116`.
+pub fn lower_unit(
+    file: &AstFile,
+    model: &SemanticModel,
+    unit: &str,
+) -> (KProgram, Vec<Diagnostic>) {
     let mut program = KProgram::default();
     let mut diagnostics = Vec::new();
+    let mut anonymous = AnonymousBlocks::default();
     // Unit-level operations and functions interleave in source order,
     // because a `segment` selection is lexical state: which segment a
     // function lands in is decided by what precedes it in the file.
@@ -69,6 +81,14 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
             ));
             continue;
         }
+        if let ItemKind::Data(data) = &item.kind {
+            let site = resolve::data_site(&mut anonymous, unit, data, None);
+            let mut resolver = Resolver::new(&model.symbols);
+            for op in resolver.data_block(data, item.span, &site) {
+                program.push_op(op);
+            }
+            continue;
+        }
         let Some(info) = model.functions.iter().find(|info| info.item_index == index) else {
             continue;
         };
@@ -79,6 +99,9 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
         let mut lowering = Lowering {
             model,
             function: Some(info.symbol),
+            function_name: func.name.text.clone(),
+            unit: unit.to_owned(),
+            anonymous: &mut anonymous,
             contract: info.contract,
             ops: Vec::new(),
             diagnostics: Vec::new(),
@@ -107,6 +130,12 @@ struct Lowering<'a> {
     model: &'a SemanticModel,
     /// The function being lowered, which local labels are scoped to.
     function: Option<SymbolId>,
+    /// Its name, which an inline data block's segment names derive from.
+    function_name: String,
+    unit: String,
+    /// The per-site anonymous-block counters, shared with the unit walk so
+    /// the names match the ones analysis reported.
+    anonymous: &'a mut AnonymousBlocks,
     /// Its entry contract, which sizes width-dependent immediates.
     contract: WidthContract,
     ops: Vec<KOp>,
@@ -260,7 +289,22 @@ impl Lowering<'_> {
             | StatementKind::Break
             | StatementKind::Repeat
             | StatementKind::Nocross(_) => self.skipped(span, "a branch or loop statement"),
-            StatementKind::Data(_) => self.skipped(span, "an inline data block"),
+            // An inline block emits raw bytes in the middle of executable
+            // code, so control has to step over them.
+            StatementKind::Data(data) => {
+                let site =
+                    resolve::data_site(self.anonymous, &self.unit, data, Some(&self.function_name));
+                let mut resolver = Resolver::new(&self.model.symbols)
+                    .in_function(self.function)
+                    .with_widths(self.contract);
+                let ops = resolver.data_block(data, span, &site);
+                if resolver.has_diagnostics() {
+                    return self.skipped(span, "an unresolved inline data block");
+                }
+                self.push(KOpKind::SkipData, span, Origin::CompilerGenerated);
+                self.ops.extend(ops);
+                self.push(KOpKind::SkipTarget, span, Origin::CompilerGenerated);
+            }
             StatementKind::Preprocessor(_) => self.skipped(span, "a preprocessor directive"),
             StatementKind::Label(label) => {
                 // Analysis declared both scopes; a local label lives in the
@@ -295,7 +339,10 @@ impl Lowering<'_> {
             | KOpKind::Data(_)
             | KOpKind::Align(_)
             | KOpKind::Export(_)
-            | KOpKind::Import(_) => false,
+            | KOpKind::Import(_)
+            | KOpKind::NocrossGuard { .. }
+            | KOpKind::SkipData
+            | KOpKind::SkipTarget => false,
         });
         if !ends_returning {
             let brace = body_span.end.saturating_sub(1).max(body_span.start);

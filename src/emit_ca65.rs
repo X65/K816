@@ -289,6 +289,22 @@ fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, o
             &format!(".segment \"{name}\""),
             &source_comment(map, op.span),
         )),
+        KOpKind::SkipData => out.push_str(&annotated(
+            "        jmp     :+",
+            &source_comment(map, op.span),
+        )),
+        // A ca65 unnamed label: it names the landing site without touching
+        // the cheap-local scope the function's own labels live in.
+        KOpKind::SkipTarget => out.push_str(":\n"),
+        // ld65 evaluates this after placement, which is the only moment
+        // the answer exists.
+        KOpKind::NocrossGuard { length } => out.push_str(&annotated(
+            &format!(
+                "        .assert  .hibyte(* - 1) = .hibyte(* - {length}), error, \
+                 \"nocross run crosses a page boundary\""
+            ),
+            &source_comment(map, op.span),
+        )),
         KOpKind::Align(expr) => out.push_str(&annotated(
             &format!("        .align   {}", format_expr(expr, names)),
             &source_comment(map, op.span),
@@ -587,6 +603,11 @@ fn annotated(text: &str, comment: &str) -> String {
 }
 
 /// `file:line: source text` for a user-written operation.
+///
+/// A construct may span several source lines — a data block's `nocross`
+/// entry reaches into the next one — and a comment that contains a newline
+/// would split the instruction it annotates in two. The quoted text is
+/// therefore collapsed onto one line.
 fn source_comment(map: &SourceMap, span: Span) -> String {
     let source = map.file(span.file);
     let line = source.line_col(span.start).line;
@@ -594,8 +615,13 @@ fn source_comment(map: &SourceMap, span: Span) -> String {
         "{}:{}: {}",
         source.name(),
         line + 1,
-        source.span_text(span).trim()
+        one_line(source.span_text(span))
     )
+}
+
+/// `text` with every run of whitespace collapsed to a single space.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `file:line: whole source line`, for declarations whose recorded span
@@ -607,7 +633,7 @@ fn line_comment(map: &SourceMap, span: Span) -> String {
         "{}:{}: {}",
         source.name(),
         line + 1,
-        source.line_text(line).trim()
+        one_line(source.line_text(line))
     )
 }
 

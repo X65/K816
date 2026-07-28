@@ -41,7 +41,7 @@ use crate::effects::ControlEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
 use crate::linkage::Linkage;
 use crate::op::WidthContract;
-use crate::resolve::{Classified, Resolved, Resolver};
+use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
 use crate::value::KExpr;
@@ -70,20 +70,36 @@ pub struct FunctionInfo {
 /// Analyzes `file`, returning the semantic model and all semantic
 /// diagnostics. Runs to completion even on errors so tools see everything.
 pub fn analyze_file(file: &AstFile) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(file, None)
+    analyze(file, "", None)
+}
+
+/// Analyzes `file`, naming the unit so `address` placements can derive
+/// stable segment names from it.
+pub fn analyze_named(file: &AstFile, unit: &str) -> (SemanticModel, Vec<Diagnostic>) {
+    analyze(file, unit, None)
 }
 
 /// Analyzes `file` as one unit of a workspace, so that names other units
 /// define resolve instead of reporting themselves as undeclared.
-pub fn analyze_unit(file: &AstFile, linkage: &Linkage) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(file, Some(linkage))
+pub fn analyze_unit(
+    file: &AstFile,
+    unit: &str,
+    linkage: &Linkage,
+) -> (SemanticModel, Vec<Diagnostic>) {
+    analyze(file, unit, Some(linkage))
 }
 
-fn analyze(file: &AstFile, linkage: Option<&Linkage>) -> (SemanticModel, Vec<Diagnostic>) {
+fn analyze(
+    file: &AstFile,
+    unit_name: &str,
+    linkage: Option<&Linkage>,
+) -> (SemanticModel, Vec<Diagnostic>) {
     let mut analysis = Analysis {
         model: SemanticModel::default(),
         diagnostics: Vec::new(),
         current_function: None,
+        unit: unit_name.to_owned(),
+        anonymous_blocks: AnonymousBlocks::default(),
     };
     analysis.declare_placed_symbols(file);
     analysis.declare_items(file);
@@ -103,6 +119,10 @@ struct Analysis {
     diagnostics: Vec<Diagnostic>,
     /// The function whose body is being walked, for local label scope.
     current_function: Option<SymbolId>,
+    /// The unit's name, for the synthetic segment names of `address`.
+    unit: String,
+    /// Anonymous data blocks seen so far, per site.
+    anonymous_blocks: AnonymousBlocks,
 }
 
 impl Analysis {
@@ -285,11 +305,11 @@ impl Analysis {
                 }
                 ItemKind::Const(declaration) => self.declare_const_group(declaration),
                 ItemKind::Data(data) => {
-                    self.diagnostics.push(compat::unimplemented(
-                        item.span,
-                        "`data` blocks",
-                        compat::Owner::NativeTranslator,
-                    ));
+                    let site = self.data_site(data, None);
+                    let mut resolver = self.resolver();
+                    resolver.data_block(data, item.span, &site);
+                    let resolved = resolver.finish();
+                    self.absorb(resolved);
                     self.report_reserved_in_data(data);
                 }
                 ItemKind::EvalBlock(expression) => {
@@ -522,11 +542,14 @@ impl Analysis {
                 compat::Owner::HlaLowering,
             )),
             StatementKind::Data(data) => {
-                self.diagnostics.push(compat::unimplemented(
-                    statement.span,
-                    "inline `data` blocks",
-                    compat::Owner::NativeTranslator,
-                ));
+                let function = self
+                    .current_function
+                    .map(|id| self.model.symbols.name(id).to_owned());
+                let site = self.data_site(data, function.as_deref());
+                let mut resolver = self.resolver();
+                resolver.data_block(data, statement.span, &site);
+                let resolved = resolver.finish();
+                self.absorb(resolved);
                 self.report_reserved_in_data(data);
             }
             StatementKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
@@ -788,6 +811,17 @@ impl Analysis {
                 .symbols
                 .declare_imported(name, definition.kind, definition.declaration);
         }
+    }
+
+    /// The site of one data block, which its synthetic `address` segment
+    /// names derive from.
+    ///
+    /// Analysis and lowering both walk the unit in source order and count
+    /// anonymous blocks the same way per site, so both compute the same
+    /// names — which is what an ld65 config entry needs of them.
+    fn data_site(&mut self, data: &DataBlock, function: Option<&str>) -> DataSite {
+        let unit = self.unit.clone();
+        data_site(&mut self.anonymous_blocks, &unit, data, function)
     }
 
     /// A resolver over this unit's symbols, scoped to the function being

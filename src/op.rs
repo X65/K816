@@ -89,6 +89,29 @@ pub enum KOpKind {
     Export(SymbolId),
     /// Another unit in the workspace defines the symbol.
     Import(SymbolId),
+    /// A jump over inline data, and the anchor it lands on.
+    ///
+    /// An anonymous data block inside a function body emits raw bytes in the
+    /// middle of executable code, so control has to step over them
+    /// (`doc/syntax-reference.md`, "Data Blocks"). The target is written as a
+    /// ca65 *unnamed* label rather than a synthesized one: a named label
+    /// here would either pollute the unit's namespace or split the
+    /// cheap-local scope the enclosing function's `.name` labels live in,
+    /// which is backend decision 4's caveat.
+    SkipData,
+    /// The landing site of the [`KOpKind::SkipData`] above it.
+    SkipTarget,
+    /// `nocross`: a link-time check that the `length` bytes just emitted do
+    /// not straddle a 256-byte page.
+    ///
+    /// K816 checks the run's *size* at compile time — a run larger than a
+    /// page can never fit — but only ld65 knows where it lands, so the
+    /// placement half is an assertion ld65 evaluates. The legacy linker's
+    /// automatic pre-padding is deliberately not recreated: K816 does not
+    /// have a linker (sub-plan C, backend decision 6).
+    NocrossGuard {
+        length: u32,
+    },
 }
 
 /// An output segment name, as ld65 sees it.
@@ -336,6 +359,9 @@ fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
         KOpKind::Segment(name) => format!("segment {name}"),
         KOpKind::Align(expr) => format!("align {}", dump_expr(expr, symbols)),
         KOpKind::Export(symbol) => format!("export {}", symbols.name(*symbol)),
+        KOpKind::NocrossGuard { length } => format!("nocross {length}"),
+        KOpKind::SkipData => "skip-data".to_owned(),
+        KOpKind::SkipTarget => "skip-target".to_owned(),
         KOpKind::Import(symbol) => format!("import {}", symbols.name(*symbol)),
         KOpKind::Data(data) => dump_data(data, symbols),
         KOpKind::Instruction(instruction) => {

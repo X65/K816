@@ -46,15 +46,18 @@
 //! — and never to a symbol ld65 places.
 
 use crate::ast::{
-    AddressEncoding as AstEncoding, AddressOperand, Expr, ExprKind, IndexRegisterKind,
-    IndirectOperand, NativeInstruction, NativeOperand, StorageClassKind,
+    AddressEncoding as AstEncoding, AddressOperand, DataBlock, DataEntry, DataEntryKind, DataValue,
+    Expr, ExprKind, IndexRegisterKind, IndirectOperand, NativeInstruction, NativeOperand,
+    StorageClassKind,
 };
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::isa::{
     AddressEncoding, InstructionSpec, Mnemonic, OperandForm, OperandWidth, spec_for_form,
 };
-use crate::op::{IndexRegister, Instruction, Operand, WidthContract};
+use crate::op::{
+    DataOp, IndexRegister, Instruction, KOp, KOpKind, Operand, Origin, SegmentName, WidthContract,
+};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, SymbolId, SymbolKind, SymbolTable};
 use crate::value::{BinaryOp, KExpr, UnaryOp, Value};
@@ -1046,5 +1049,423 @@ fn aliased(mnemonic: Mnemonic, form: OperandForm) -> Mnemonic {
     match (mnemonic, form) {
         (Mnemonic::Jmp, OperandForm::LongIndirect) => Mnemonic::Jml,
         _ => mnemonic,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Data blocks (sub-plan C, task C8).
+// ---------------------------------------------------------------------------
+
+/// Where a data block sits, which is what makes the segment name an
+/// `address` entry needs a pure function of the source.
+///
+/// The ld65 config entry that goes with an `address` block is written by
+/// hand, so a name that renumbers when an unrelated block is inserted
+/// earlier in the file would be a real failure: ld65 would report an
+/// unplaced segment and the user would re-edit a config that was correct.
+/// A *named* block is therefore identified by its name alone and is stable
+/// under any edit that does not rename it; only the anonymous forms carry a
+/// position-derived counter, which is what `W0116`'s help says naming the
+/// block buys you.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataSite {
+    /// `data NAME { … }`. Named blocks are unique across the workspace, so
+    /// no unit prefix is needed.
+    Named(String),
+    /// An anonymous block inline in a function.
+    InFunction {
+        unit: String,
+        function: String,
+        index: usize,
+    },
+    /// An anonymous block at the top level.
+    TopLevel { unit: String, index: usize },
+}
+
+impl DataSite {
+    /// The `<SITE>` half of a synthetic segment name.
+    fn identity(&self) -> String {
+        match self {
+            Self::Named(name) => sanitize(name),
+            Self::InFunction {
+                unit,
+                function,
+                index,
+            } => format!("{}_{}_D{index}", sanitize(unit), sanitize(function)),
+            Self::TopLevel { unit, index } => format!("{}_D{index}", sanitize(unit)),
+        }
+    }
+}
+
+/// Uppercases and reduces a name to `[A-Z0-9_]`, which is how ca65 asks
+/// segment names to be spelled (`doc/ca65.sgml`, `.SEGMENT`).
+fn sanitize(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    cleaned.trim_matches('_').to_owned()
+}
+
+/// The segment an `address $addr` entry places its block into.
+///
+/// ca65 cannot pin a relocatable block to an address, so the request
+/// becomes a segment the ld65 config gives a fixed `start`. A block may
+/// hold more than one `address` entry — it is an entry, not a header — so
+/// the second and later ones append `_A<k>` counting from 2.
+fn address_segment(site: &DataSite, address: u32, occurrence: usize) -> SegmentName {
+    let digits = if address > 0xFFFF { 6 } else { 4 };
+    let suffix = if occurrence > 1 {
+        format!("_A{occurrence}")
+    } else {
+        String::new()
+    };
+    SegmentName::new(format!(
+        "K816_AT_{address:0digits$X}__{}{suffix}",
+        site.identity()
+    ))
+}
+
+/// The index of the last entry in a block's leading statically-sizeable
+/// run, which is where a `nocross` guard goes.
+fn last_index_of_run(block: &DataBlock) -> usize {
+    block
+        .entries
+        .iter()
+        .take_while(|entry| entry_size(entry).is_some())
+        .count()
+        .saturating_sub(1)
+}
+
+/// The bytes one data entry emits, or `None` when the entry is not a
+/// statically-sizeable run member.
+fn entry_size(entry: &DataEntry) -> Option<u32> {
+    match &entry.kind {
+        // A label takes no space and does not interrupt a run.
+        DataEntryKind::Label(_) | DataEntryKind::Nocross(_) | DataEntryKind::Segment(_) => Some(0),
+        DataEntryKind::Value(_) => Some(1),
+        _ => None,
+    }
+}
+
+impl Resolver<'_> {
+    /// Lowers one data block, reporting everything wrong with it.
+    ///
+    /// Analysis calls this for the diagnostics and drops the operations;
+    /// lowering calls it for the operations, having already established that
+    /// there are no diagnostics. One walk, so the two cannot disagree about
+    /// what a block emits.
+    pub fn data_block(&mut self, block: &DataBlock, span: Span, site: &DataSite) -> Vec<KOp> {
+        let mut ops = Vec::new();
+        let mut addresses = 0usize;
+        // A `segment` inside a block is scope-local: it switches segments
+        // for the block's contents and is restored when the block ends.
+        let mut switched = false;
+        // The block's name labels the *first emitted byte*, so it follows
+        // any leading placement directive: an `align` before it would move
+        // the bytes out from under the label.
+        let mut labelled = block.name.is_none();
+        // `nocross data { … }` is the wrapper spelling of a leading bare
+        // `nocross`, so both arrive at the same guard.
+        let mut guard = if block.nocross {
+            self.nocross_run(block, span, None)
+        } else {
+            None
+        };
+        // Where the guard goes: after the last entry of the leading run,
+        // whose page it compares against the run's first byte.
+        let run_ends = last_index_of_run(block);
+
+        for (index, entry) in block.entries.iter().enumerate() {
+            let placement = matches!(
+                entry.kind,
+                DataEntryKind::Segment(_)
+                    | DataEntryKind::Align(_)
+                    | DataEntryKind::Address(_)
+                    | DataEntryKind::Nocross(_)
+            );
+            if !placement && !labelled {
+                labelled = true;
+                if let Some(name) = &block.name
+                    && let Some(id) = self.symbols.lookup(&name.text)
+                {
+                    ops.push(KOp::new(KOpKind::Label(id), name.span, Origin::User));
+                }
+            }
+            match &entry.kind {
+                DataEntryKind::Segment(name) => {
+                    // The rule exists because a segment switch after bytes
+                    // have already been emitted has no defined placement
+                    // relative to them.
+                    if index != 0 {
+                        self.report(
+                            Diagnostic::error(
+                                DiagnosticCode::SEGMENT_PLACEMENT,
+                                "a `segment` directive must be the first entry of its data block",
+                                Label::new(entry.span, "bytes are already placed before this"),
+                            )
+                            .with_note(
+                                "a block-local `segment` switches segments for the whole \
+                                 block and is restored when it ends",
+                            )
+                            .with_docs("doc/syntax-reference.md#segment-placement-rule"),
+                        );
+                        continue;
+                    }
+                    switched = true;
+                    ops.push(KOp::new(
+                        KOpKind::Segment(SegmentName::new(&name.text)),
+                        entry.span,
+                        Origin::User,
+                    ));
+                }
+                DataEntryKind::Align(count) => {
+                    if let Some(value) = self.constant(count, "`align` counts") {
+                        ops.push(KOp::new(
+                            KOpKind::Align(KExpr::number(value)),
+                            entry.span,
+                            Origin::User,
+                        ));
+                    }
+                }
+                DataEntryKind::Address(address) => {
+                    let Some(value) = self.constant(address, "`address` placements") else {
+                        continue;
+                    };
+                    addresses += 1;
+                    let segment = address_segment(site, value, addresses);
+                    self.report_address_placement(entry.span, &segment, value, site);
+                    ops.push(KOp::new(
+                        KOpKind::Segment(segment),
+                        entry.span,
+                        Origin::CompilerGenerated,
+                    ));
+                }
+                DataEntryKind::Nocross(explicit) => {
+                    if let Some(length) = self.nocross_run(block, entry.span, explicit.as_ref()) {
+                        guard = Some(length);
+                    }
+                }
+                DataEntryKind::Label(name) => {
+                    if let Some(id) = self.symbols.lookup(&name.text) {
+                        ops.push(KOp::new(KOpKind::Label(id), name.span, Origin::User));
+                    }
+                }
+                DataEntryKind::Value(value) => {
+                    if let Some(expr) = self.data_value(value, entry.span) {
+                        ops.push(KOp::new(
+                            KOpKind::Data(DataOp::Byte(vec![expr])),
+                            entry.span,
+                            Origin::User,
+                        ));
+                    }
+                }
+                // Typed entries, strings, `charset`, `repeat`, `code`, and
+                // `for … eval` are `HLA-core` rows; C builds the emission
+                // machinery they extend rather than implementing them early.
+                DataEntryKind::Typed { .. }
+                | DataEntryKind::Charset(_)
+                | DataEntryKind::Code { .. }
+                | DataEntryKind::Repeat { .. }
+                | DataEntryKind::ForEval { .. } => self.report(compat::unimplemented(
+                    entry.span,
+                    "typed entries, strings, `charset`, `repeat`, `code`, and `for … eval`",
+                    compat::Owner::HlaLowering,
+                )),
+                DataEntryKind::Preprocessor(_) => self.report(compat::unimplemented(
+                    entry.span,
+                    "preprocessor directives",
+                    compat::Owner::Compatibility,
+                )),
+                DataEntryKind::Binary(_) => self.report(compat::unimplemented(
+                    entry.span,
+                    "`binary` inclusions",
+                    compat::Owner::Compatibility,
+                )),
+                DataEntryKind::Reserved(_) | DataEntryKind::Error => {}
+            }
+            // The guard compares the page of the run's last byte with the
+            // page of its first, so it follows the run rather than leading
+            // it.
+            if let Some(length) = guard
+                && index == run_ends
+            {
+                ops.push(KOp::new(
+                    KOpKind::NocrossGuard { length },
+                    span,
+                    Origin::CompilerGenerated,
+                ));
+                guard = None;
+            }
+        }
+
+        // Restore the outer segment, so a block-local switch really is local.
+        if switched {
+            ops.push(KOp::new(
+                KOpKind::Segment(SegmentName::new(OUTER_SEGMENT)),
+                span,
+                Origin::CompilerGenerated,
+            ));
+        }
+        ops
+    }
+
+    /// One value of an implicit-default (byte-wide) entry.
+    ///
+    /// `?` reserves a slot whose value is deliberately unspecified and emits
+    /// as a zero of the entry's width — the affordance is at the source
+    /// level, not on the wire.
+    fn data_value(&mut self, value: &DataValue, span: Span) -> Option<KExpr> {
+        match value {
+            DataValue::Expr(expr) => {
+                let folded = self.fold(expr)?;
+                if let Some(known) = folded.value()
+                    && known.get() > 0xFF
+                {
+                    self.report(
+                        Diagnostic::error(
+                            DiagnosticCode::ADDRESS_RANGE,
+                            format!("{known} does not fit in a byte"),
+                            Label::new(expr.span, "an untyped data value is one byte wide"),
+                        )
+                        .with_help("use `&<`/`&>` to select a byte, or a `word` entry")
+                        .with_docs("doc/syntax-reference.md#raw-bytes-and-strings"),
+                    );
+                    return None;
+                }
+                Some(folded)
+            }
+            DataValue::Undefined => Some(KExpr::number(0)),
+            // Strings go through the active `charset`, which is E's row.
+            DataValue::String(_) => {
+                self.report(compat::unimplemented(
+                    span,
+                    "string data and `charset` mapping",
+                    compat::Owner::HlaLowering,
+                ));
+                None
+            }
+        }
+    }
+
+    /// The length of a `nocross`-guarded run, once it is known to fit.
+    ///
+    /// The guarded run is the leading stretch of statically-sizeable
+    /// entries; it stops at anything whose size only placement decides. A
+    /// run larger than a page can never fit wherever ld65 puts it, so that
+    /// is rejected here rather than deferred.
+    fn nocross_run(
+        &mut self,
+        block: &DataBlock,
+        span: Span,
+        explicit: Option<&Expr>,
+    ) -> Option<u32> {
+        let run: u32 = match explicit {
+            Some(count) => self.constant(count, "`nocross` run lengths")?,
+            None => block
+                .entries
+                .iter()
+                .map(entry_size)
+                .take_while(Option::is_some)
+                .flatten()
+                .sum(),
+        };
+        if run > 256 {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::NOCROSS_TOO_LARGE,
+                    format!("a `nocross` run of {run} bytes cannot fit one page"),
+                    Label::new(span, "a page is 256 bytes"),
+                )
+                .with_note(
+                    "K816 checks the size; ld65 checks the placement, through an \
+                     assertion in the emitted assembly",
+                )
+                .with_docs("doc/syntax-reference.md#placement-directives"),
+            );
+            return None;
+        }
+        (run > 0).then_some(run)
+    }
+
+    /// `address` needs an ld65 config entry, and K816 does not write linker
+    /// configs — so it says exactly what to paste rather than dropping the
+    /// request silently.
+    fn report_address_placement(
+        &mut self,
+        span: Span,
+        segment: &SegmentName,
+        address: u32,
+        site: &DataSite,
+    ) {
+        let mut diagnostic = Diagnostic::warning(
+            DiagnosticCode::ADDRESS_NEEDS_CONFIG,
+            format!("`address` places this block through the segment `{segment}`"),
+            Label::new(span, "ld65 decides where a segment starts"),
+        )
+        .with_note(format!(
+            "add to your linker config: SEGMENTS {{ {segment}: load = MAIN, \
+             type = ro, start = ${address:04X}; }}"
+        ))
+        .with_docs("doc/syntax-reference.md#placement-directives");
+        if !matches!(site, DataSite::Named(_)) {
+            diagnostic = diagnostic.with_help(
+                "name the block (`data NAME { … }`) to get a segment name that \
+                 does not renumber when an earlier block is added",
+            );
+        }
+        self.report(diagnostic);
+    }
+}
+
+/// The segment a block-local `segment` switch returns to.
+///
+/// K816 emits a unit's code into `CODE` unless a top-level `segment` says
+/// otherwise; restoring to it is what makes a block-local switch local.
+pub const OUTER_SEGMENT: &str = "CODE";
+
+/// How many anonymous data blocks each site has produced so far.
+///
+/// The counters are per site — top level, and each function separately — so
+/// inserting a block in one function cannot renumber another's.
+#[derive(Debug, Default)]
+pub struct AnonymousBlocks {
+    top_level: usize,
+    in_function: std::collections::BTreeMap<String, usize>,
+}
+
+/// The site of one data block, bumping the counter its form uses.
+pub fn data_site(
+    counters: &mut AnonymousBlocks,
+    unit: &str,
+    data: &DataBlock,
+    function: Option<&str>,
+) -> DataSite {
+    if let Some(name) = &data.name {
+        return DataSite::Named(name.text.clone());
+    }
+    match function {
+        Some(function) => {
+            let index = counters.in_function.entry(function.to_owned()).or_insert(0);
+            *index += 1;
+            DataSite::InFunction {
+                unit: unit.to_owned(),
+                function: function.to_owned(),
+                index: *index,
+            }
+        }
+        None => {
+            counters.top_level += 1;
+            DataSite::TopLevel {
+                unit: unit.to_owned(),
+                index: counters.top_level,
+            }
+        }
     }
 }

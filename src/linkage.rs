@@ -76,12 +76,12 @@ impl Linkage {
         let mut linkage = Self::default();
         for source in map.files() {
             let parse = parser::parse_source(source, None);
-            let (model, _) = semantic::analyze_file(&parse.file);
+            let (model, _) = semantic::analyze_named(&parse.file, source.name());
             linkage.collect_definitions(source.id(), &model);
         }
         for source in map.files() {
             let parse = parser::parse_source(source, None);
-            let (model, _) = semantic::analyze_unit(&parse.file, &linkage);
+            let (model, _) = semantic::analyze_unit(&parse.file, source.name(), &linkage);
             linkage.collect_references(source.id(), &model);
         }
         linkage

@@ -172,3 +172,61 @@ fn debug_database_records_k816_source_ownership() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ca65 expression emission (sub-plan C, backend decision 1).
+// ---------------------------------------------------------------------------
+
+/// The failure this guards against produces *wrong numbers in a working
+/// program*, not an error message, so it is checked on the linked bytes.
+///
+/// ca65's precedence table is not K65's: `&`, `^`, `<<`, and `>>` sit at the
+/// same level as `*` there, and `|` at the same level as `+`. So
+/// `spot + 1 & $FF` means `(spot + 1) & $FF` in K65 and `spot + (1 & $FF)`
+/// in ca65 — the same text, two different addresses. Emitting the K65 tree
+/// with explicit grouping is what keeps the two agreeing.
+#[test]
+fn a_mixed_precedence_expression_links_to_the_k65_value() {
+    // `spot` is a label, so ld65 places it and evaluates the expression
+    // after placement: nothing here is folded by K816.
+    let (bytes, _) = compile_and_link(
+        "precedence",
+        "precedence.k816",
+        "func main @a16 @i16 {\n  spot:\n    lda #spot + 1 & $FF\n}\n",
+        &Options { optimize: false },
+    );
+
+    // `main` is the entry point, so its two width-setup instructions come
+    // first; `spot` is therefore at $8004, the config placing CODE at $8000.
+    assert_eq!(
+        &bytes[..4],
+        &[0xC2, 0x20, 0xC2, 0x10],
+        "entry width setup: {bytes:02X?}"
+    );
+    assert_eq!(bytes[4], 0xA9, "lda immediate: {bytes:02X?}");
+    assert_eq!(
+        u16::from_le_bytes([bytes[5], bytes[6]]),
+        0x0005,
+        "K65 groups this as `(spot + 1) & $FF` = ($8004 + 1) & $FF = 5; \
+         ca65's own precedence would have given `spot + (1 & $FF)` = $8005"
+    );
+    assert_eq!(bytes[7], 0x60, "implicit rts");
+}
+
+/// ca65 stores an unresolved expression in the object file and ld65
+/// evaluates it after placement, so K816 does not reject `label * 2` merely
+/// because a label is involved (sub-plan C, backend decision 10).
+#[test]
+fn a_link_time_multiplication_survives_to_ld65() {
+    let (bytes, _) = compile_and_link(
+        "relocatable-multiply",
+        "reloc.k816",
+        "func main @a16 @i16 {\n  spot:\n    lda #&<spot * 2\n}\n",
+        &Options { optimize: false },
+    );
+    assert_eq!(bytes[4], 0xA9, "{bytes:02X?}");
+    // `spot` lands at $8004 after the entry setup, so the low byte is $04
+    // and the product is 8. The point is that the multiplication reached
+    // ld65 at all rather than being rejected for naming a label.
+    assert_eq!(u16::from_le_bytes([bytes[5], bytes[6]]), 0x0008);
+}

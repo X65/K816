@@ -386,6 +386,7 @@ fn format_operand(
             expr,
             index,
         } => {
+            let text = format_operand_expr(expr, names);
             let prefix = if instruction
                 .spec()
                 .is_some_and(|spec| spec.operand.form.takes_address_size_prefix())
@@ -394,14 +395,10 @@ fn format_operand(
             } else {
                 ""
             };
-            format!(
-                "{prefix}{}{}",
-                format_expr(expr, names),
-                format_index(*index)
-            )
+            format!("{prefix}{text}{}", format_index(*index))
         }
-        Operand::Label(expr) => format_expr(expr, names),
-        Operand::StackRelative(expr) => format!("{},s", format_expr(expr, names)),
+        Operand::Label(expr) => format_operand_expr(expr, names),
+        Operand::StackRelative(expr) => format!("{},s", format_operand_expr(expr, names)),
         Operand::BlockMove {
             source,
             destination,
@@ -457,6 +454,33 @@ fn format_immediate_value(
         format!("${:04X}", value.get())
     } else {
         format!("${:02X}", value.get())
+    }
+}
+
+/// A ca65 expression in *operand* position, which is the one place the
+/// outermost parentheses have to go.
+///
+/// `lda a:(spot + 2)` is not the absolute load it looks like: ca65 reads the
+/// parenthesis as an indirection and rejects the line. Dropping only the
+/// outermost pair costs nothing — an operand expression is terminated by the
+/// end of the line or by a `,x` / `,y` / `,s` trailer, and no ca65 operator
+/// binds looser than either — while every nested level stays parenthesized,
+/// so the precedence guarantee is unchanged.
+fn format_operand_expr(expr: &KExpr, names: &Names<'_>) -> String {
+    let text = format_expr(expr, names);
+    match expr {
+        KExpr::Binary { .. } => text
+            .strip_prefix('(')
+            .and_then(|text| text.strip_suffix(')'))
+            .map_or(text.clone(), str::to_owned),
+        // A unary form is either a ca65 function call, which needs its own
+        // parentheses, or `(0 - x)` / `(~ x)`, whose parentheses are the
+        // same outermost pair.
+        KExpr::Unary { op, .. } if op.ca65_function().is_none() => text
+            .strip_prefix('(')
+            .and_then(|text| text.strip_suffix(')'))
+            .map_or(text.clone(), str::to_owned),
+        _ => text,
     }
 }
 

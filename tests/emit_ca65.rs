@@ -148,3 +148,168 @@ fn two_functions_reusing_a_local_label_name_stay_distinct() {
         "each function opens its own cheap-local scope: {assembly}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Operands, expressions, and relocations (sub-plan C, task C6).
+// ---------------------------------------------------------------------------
+
+/// The instruction lines of `text`, without their annotations.
+fn instructions(name: &str, text: &str) -> Vec<String> {
+    emit_unoptimized(name, text)
+        .lines()
+        .filter_map(|line| line.split_once(';'))
+        .map(|(code, _)| code.trim().to_owned())
+        // Directives and equates are their own tests' business.
+        .filter(|code| !code.is_empty() && !code.starts_with('.') && !code.contains(":="))
+        .collect()
+}
+
+fn emit_unoptimized(name: &str, text: &str) -> String {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "unexpected diagnostics");
+    result.assembly.expect("compilation succeeds")
+}
+
+#[test]
+fn every_addressing_mode_emits_its_ca65_syntax() {
+    let text = "var ZP = $80
+var SCREEN = $0400
+const FIELD = 2
+
+func main @a8 @i16 {
+    lda ZP
+    lda SCREEN
+    lda far ZP
+    lda SCREEN,x
+    lda (ZP,x)
+    lda (ZP),y
+    lda [ZP]
+    lda [ZP],y
+    lda 4,s
+    lda (4,s),y
+    lda &FIELD,x
+    lda #1
+    asl a
+    inx
+    pha
+    pea #$1234
+    pei (ZP)
+    per main
+    brk #$42
+    cop #$7F
+    mvn $01,$02
+    jml [SCREEN]
+    jmp (SCREEN)
+    jsr main
+    bne main
+}
+";
+    assert_eq!(
+        instructions("modes.k816", text),
+        vec![
+            "sep     #$20",
+            "rep     #$10",
+            "lda     z:ZP",
+            "lda     a:SCREEN",
+            "lda     f:ZP",
+            "lda     a:SCREEN,x",
+            "lda     (ZP,x)",
+            "lda     (ZP),y",
+            "lda     [ZP]",
+            "lda     [ZP],y",
+            "lda     $04,s",
+            "lda     ($04,s),y",
+            "lda     z:$02,x",
+            "lda     #$01",
+            // The accumulator modes are spelled without the register.
+            "asl",
+            "inx",
+            "pha",
+            // K65 writes these three with a `#`; ca65 spells them without.
+            "pea     $1234",
+            "pei     (ZP)",
+            "per     main",
+            "brk     $42",
+            "cop     $7F",
+            "mvn     $01,$02",
+            "jml     [SCREEN]",
+            "jmp     (SCREEN)",
+            "jsr     a:main",
+            "bne     main",
+            "rts",
+        ]
+    );
+}
+
+#[test]
+fn expressions_use_ca65s_named_operators_and_explicit_grouping() {
+    let text = "func main @a16 @i16 {
+  spot:
+    lda #spot + 1 & $FF
+    lda #spot * 2
+    lda #spot << 1 | 3
+    lda #~spot
+    lda #-spot
+    lda #&<spot
+    lda #&>spot
+    lda #&&spot
+}
+";
+    assert_eq!(
+        instructions("expr.k816", text),
+        vec![
+            "rep     #$20",
+            "rep     #$10",
+            // `&`, `^`, `<<`, and `>>` sit at ca65's precedence 2 and `|` at
+            // 3, so only explicit grouping keeps the K65 meaning.
+            "lda     #((spot + $01) .bitand $FF)",
+            "lda     #(spot * $02)",
+            "lda     #((spot .shl $01) .bitor $03)",
+            "lda     #(~ spot)",
+            "lda     #(0 - spot)",
+            "lda     #.lobyte(spot)",
+            "lda     #.hibyte(spot)",
+            "lda     #.loword(spot)",
+            "rts",
+        ]
+    );
+}
+
+/// `lda a:(spot + 2)` is not the absolute load it looks like — ca65 reads
+/// the parenthesis as an indirection and rejects the line. The outermost
+/// pair is dropped in operand position for exactly that reason; every
+/// nested level keeps its own.
+#[test]
+fn an_address_operand_drops_only_its_outermost_parentheses() {
+    let text = "func main @a16 @i16 {\n  spot:\n    lda spot + 2 & $FF\n    lda spot + 2\n}\n";
+    let lines = instructions("outer.k816", text);
+    assert!(
+        lines.contains(&"lda     a:spot + $02".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"lda     a:(spot + $02) .bitand $FF".to_owned()),
+        "{lines:?}"
+    );
+}
+
+/// A width transition K816 cannot resolve must produce no `.a…`/`.i…` claim
+/// at all: a wrong one changes how ca65 sizes every immediate that follows.
+#[test]
+fn an_unknown_width_transition_emits_no_width_claim() {
+    let assembly = emit_unoptimized(
+        "unknown.k816",
+        "func main @a8 @i16 {\n    plp\n    sep #$20\n}\n",
+    );
+    let claims: Vec<&str> = assembly
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with(".a") || line.starts_with(".i"))
+        .collect();
+    // The entry contract's two claims, then `sep #$20` re-establishing the
+    // accumulator width after `plp` made it unknown. Nothing claims a width
+    // between the `plp` and the `sep`.
+    assert_eq!(claims, vec![".a8", ".i16", ".a8"], "{assembly}");
+}

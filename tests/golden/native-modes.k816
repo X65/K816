@@ -1,0 +1,139 @@
+// Every addressing mode the native translator claims to support, written in
+// K65 and assembled through ca65. One function per instruction family, so a
+// failure names the family rather than the file.
+//
+// This is the operand-vocabulary gate: it proves the modes are *reachable
+// from source*, where tests/isa.rs proves the table's 256 rows are legal.
+
+var ZP     = $80
+var SCREEN = $0400
+var far FAR_SLOT = $030000
+
+const FIELD_HP = 2
+
+func loads @a8 @i16 {
+    lda ZP                  // auto: page zero picks direct
+    lda SCREEN              // auto: absolute
+    lda FAR_SLOT            // the declaration prefix picks long
+    lda dp ZP               // forced encodings
+    lda abs ZP
+    lda far ZP
+    lda #1
+    ldx #1
+    ldy #1
+    lda SCREEN,x
+    lda SCREEN,y
+    lda ZP,x
+    ldx ZP,y
+    lda &FIELD_HP,x         // a const as a field offset
+    lda abs &FIELD_HP,x
+}
+
+func indirection @a8 @i16 {
+    lda (ZP,x)
+    lda (ZP),y
+    lda (ZP)
+    lda [ZP]
+    lda [ZP],y
+    lda 4,s
+    lda (4,s),y
+}
+
+func read_modify_write @a8 @i16 {
+    asl a                   // the accumulator, named…
+    lsr                     // …and left out
+    rol SCREEN
+    ror ZP,x
+    inc a
+    dec SCREEN,x
+    trb ZP
+    tsb SCREEN
+}
+
+func stack_forms @a8 @i16 {
+    pha
+    phx
+    phy
+    php
+    phb
+    phd
+    phk
+    pla
+    plx
+    ply
+    plp
+    plb
+    pld
+    pea #$1234              // written with a `#`, spelled without one
+    pei (ZP)
+    per stack_forms
+}
+
+func transfers @a8 @i16 {
+    tax
+    tay
+    txa
+    tya
+    txy
+    tyx
+    tsx
+    txs
+    tcd
+    tdc
+    tcs
+    tsc
+    xba
+}
+
+func flags_and_modes @a8 @i16 {
+    clc
+    sec
+    cld
+    sed
+    cli
+    sei
+    clv
+    sep #$20
+    rep #$20
+    xce
+    nop
+    wdm #$00
+}
+
+func control @a8 @i16 {
+  .again:
+    bcc .again
+    bcs .again
+    beq .again
+    bne .again
+    bmi .again
+    bpl .again
+    bvc .again
+    bvs .again
+    bra .again
+    brl .again
+    jmp control
+    jmp (SCREEN)
+    jmp (SCREEN,x)
+    jml [SCREEN]
+    jml FAR_SLOT
+    jsr control
+    jsl FAR_SLOT
+    brk #$42
+    cop #$7F
+}
+
+func block_moves @a8 @i16 {
+    mvn $01,$02
+    mvp $01,$02
+}
+
+func main @a8 @i16 {
+    jsr loads
+    jsr indirection
+    jsr read_modify_write
+    jsr stack_forms
+    jsr transfers
+    jsr flags_and_modes
+    jsr block_moves
+}

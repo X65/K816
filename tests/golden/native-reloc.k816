@@ -1,0 +1,54 @@
+// The relocation gate: everything here gets its address from ld65, and
+// nothing in the emitted assembly may depend on which address that is.
+//
+// Compiling this against two linker configs with different `start` values
+// must produce a byte-identical `.s` file and two different binaries. That
+// is what "K816 never resolves an address owned by ld65" looks like as a
+// test rather than as a promise.
+
+var PORT = $C000
+
+const MASK = $0F
+
+segment RELOC
+
+data table {
+    align 4
+    entry:
+    1 2 3 4
+}
+
+data vectors {
+    &<table &>table
+    &<entry+1 &>entry+1
+    &&table
+    &&&table
+}
+
+// `&&table` is a 16-bit value, so loading it needs a 16-bit accumulator —
+// which only ca65 can check, because ld65 has not placed `table` yet.
+func wide @a16 @i16 {
+    lda #&&table
+}
+
+func helper @a8 @i16 {
+  .spin:
+    bne .spin
+}
+
+func main @a8 @i16 {
+  top:
+    lda table
+    lda table,x
+    lda #&<table
+    lda #&>table
+    // Symbol + offset, and a mixed-precedence expression over a relocatable
+    // symbol: K65 groups this as `(table + 1) & MASK`, which is not how
+    // ca65 would group the same text.
+    lda table + 1
+    lda #table + 1 & MASK
+    lda PORT
+    jsr helper
+    jsr wide
+    bra top
+}

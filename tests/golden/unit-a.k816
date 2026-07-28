@@ -1,0 +1,10 @@
+// One half of the two-unit pair. Nothing here declares that `helper`,
+// `CURSOR`, or `BANKED` come from somewhere else — K65 has no syntax for
+// that — so the imports below are derived from the other unit's symbols.
+
+func main @a8 @i16 {
+    jsr helper              // a call into the sibling unit
+    lda CURSOR              // a direct-page symbol: one operand byte
+    lda BANKED              // a far symbol: three
+    sta CURSOR
+}

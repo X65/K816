@@ -331,3 +331,173 @@ fn two_units_defining_one_name_is_a_frontend_error() {
     );
     assert!(result.assembly.is_none(), "nothing is emitted");
 }
+
+// ---------------------------------------------------------------------------
+// The end-to-end gates (sub-plan C, task C9).
+// ---------------------------------------------------------------------------
+
+/// Compiles `path` and returns the emitted assembly.
+fn compile_fixture(name: &str, text: &str) -> String {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
+    assert!(errors.is_empty(), "{name}: {errors:?}");
+    result.assembly.expect("compilation succeeds")
+}
+
+/// Assembles `assembly` and links it with `config`, returning the bytes.
+fn assemble_and_link(test: &str, assembly: &str, config: &str) -> Vec<u8> {
+    let dir = work_dir(test);
+    let asm_path = dir.join("out.s");
+    let obj_path = dir.join("out.o");
+    let bin_path = dir.join(format!("{config}.bin"));
+    std::fs::write(&asm_path, assembly).expect("write assembly");
+    run_ok(
+        Command::new(tool("CA65", "ca65"))
+            .arg(&asm_path)
+            .args(["-o".as_ref(), obj_path.as_os_str()]),
+        "ca65",
+    );
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(format!("{config}.cfg"));
+    run_ok(
+        Command::new(tool("LD65", "ld65"))
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), bin_path.as_os_str()])
+            .arg(&obj_path),
+        "ld65",
+    );
+    std::fs::read(&bin_path).expect("read linked binary")
+}
+
+/// The operand-vocabulary gate: every addressing mode K816 claims, written
+/// in K65 rather than synthesized from the table, assembles and links.
+#[test]
+fn native_modes_assembles_and_links() {
+    let assembly = compile_fixture(
+        "native-modes.k816",
+        include_str!("golden/native-modes.k816"),
+    );
+    let bytes = assemble_and_link("native-modes", &assembly, "slice");
+    assert!(!bytes.is_empty(), "the fixture links to something");
+}
+
+/// **K816 never resolves an address owned by ld65**, proven rather than
+/// asserted: the same object file, linked against two configs that place it
+/// differently, gives two different binaries — and the assembly K816 emitted
+/// is byte-identical either way, because it never contained an address at
+/// all.
+#[test]
+fn the_emitted_assembly_does_not_depend_on_where_ld65_puts_it() {
+    let assembly = compile_fixture(
+        "native-reloc.k816",
+        include_str!("golden/native-reloc.k816"),
+    );
+    // Compiling is deterministic and config-blind: nothing K816 does can
+    // depend on a linker config it never reads.
+    let again = compile_fixture(
+        "native-reloc.k816",
+        include_str!("golden/native-reloc.k816"),
+    );
+    assert_eq!(assembly, again);
+
+    let low = assemble_and_link("reloc-low", &assembly, "reloc-low");
+    let high = assemble_and_link("reloc-high", &assembly, "reloc-high");
+    assert_eq!(low.len(), high.len(), "the same program, placed twice");
+    assert_ne!(
+        low, high,
+        "if the two binaries matched, no address in them came from ld65"
+    );
+}
+
+/// The two-unit pair as committed fixtures, rather than as strings in a
+/// test: they are what a reader looks at to see what derived linkage means.
+#[test]
+fn the_committed_unit_pair_links() {
+    let bytes = link_two_units(
+        "unit-pair",
+        ("unit-a.k816", include_str!("golden/unit-a.k816")),
+        ("unit-b.k816", include_str!("golden/unit-b.k816")),
+    );
+    assert_eq!(
+        bytes,
+        vec![
+            0xE2, 0x20, // sep #$20 — entry @a8
+            0xC2, 0x10, // rep #$10 — entry @i16
+            0x20, 0x10, 0x80, // jsr helper
+            0xA5, 0x10, // lda $10       — one byte, from `.importzp`
+            0xAF, 0x00, 0x00, 0x03, // lda $030000 — three, from `: far`
+            0x85, 0x10, // sta $10
+            0x60, // rts
+            0xEA, 0x60, // helper: nop, rts
+        ],
+        "{bytes:02X?}"
+    );
+}
+
+/// The legacy-source gate. 213 lines of real `var NAME = 0xADDR;`
+/// declarations, semicolons and all, have to analyze with *zero*
+/// diagnostics — and every symbol has to get the address size a reference
+/// to it would encode.
+#[test]
+fn the_legacy_hardware_definitions_analyze_clean() {
+    use k816::symbol::{AddressSize, SymbolKind};
+
+    let text = include_str!("../examples/k65/atari-xl/include/defs.k65");
+    let mut map = SourceMap::new();
+    let file = map.add_file("defs.k65", text);
+    let result = compile_to_ca65(&map, file, &Options::default());
+    assert_eq!(result.diagnostics, vec![], "defs.k65 is not clean");
+
+    let parse = k816::parser::parse_source(map.file(file), None);
+    let (model, _) = k816::semantic::analyze_file(&parse.file);
+    let mut variables = 0;
+    for (_, symbol) in model.symbols.iter() {
+        let SymbolKind::Var { address, size } = symbol.kind else {
+            continue;
+        };
+        variables += 1;
+        let address = address.expect("every declaration here is pinned");
+        // They are all `$Dxxx` hardware registers and `$02xx` OS vectors,
+        // so every one of them is absolute — none auto-shrinks to page zero
+        // and none needs a bank byte.
+        assert_eq!(
+            size,
+            AddressSize::Absolute,
+            "{} at ${address:04X}",
+            symbol.name
+        );
+    }
+    assert!(variables > 100, "only {variables} declarations were read");
+}
+
+/// The data half of the `dli-example`: `nocross`, raw bytes, and
+/// address-byte operators over both an external label and the block's own.
+/// Its `naked` and `main` bodies stay sub-plan E's, so the block is
+/// compiled on its own.
+#[test]
+fn the_legacy_display_list_data_block_compiles() {
+    let source = include_str!("../examples/k65/atari-xl/dli-example/main.k65");
+    let block = source
+        .split_once("data displist")
+        .map(|(_, rest)| rest.split_once("\n}").expect("the block closes").0)
+        .expect("the display list is still there");
+    let text = format!("var screen = 0x8000\n\ndata displist{block}\n}}\n");
+
+    let assembly = compile_fixture("displist.k65", &text);
+    // The block's own label, an address-byte operator over an external
+    // symbol, and one over the block itself.
+    assert!(assembly.contains("displist:"), "{assembly}");
+    assert!(assembly.contains(".byte    .lobyte(screen)"), "{assembly}");
+    assert!(
+        assembly.contains(".byte    .hibyte(displist)"),
+        "{assembly}"
+    );
+    // The block's own `nocross` is not asserted here, and the link step is
+    // left off with it: the grammar reads a bare `nocross` followed by a
+    // value as the older `nocross EXPR` form, so the first `0x70` of this
+    // display list becomes the run length. Fixing that is a grammar change
+    // with its own review (sub-plan C, contract 2), not a semantics change.
+}

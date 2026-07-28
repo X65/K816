@@ -747,3 +747,153 @@ fn every_manifest_syntax_group_has_a_corpus_case() {
         missing.join("\n")
     );
 }
+
+/// The rows sub-plan C implements, and a snippet that must now *compile*
+/// rather than merely parse.
+///
+/// This is the audit's second axis. Parsing proves the grammar recognizes a
+/// form; it says nothing about whether the compiler does anything with it,
+/// and a group can sit "covered" for a whole sub-plan while every use of it
+/// reports itself as not-yet-implemented. Each row here is a
+/// `native-translator` group whose semantics have landed, so the claim is
+/// checked at the level the manifest actually makes it.
+const COMPILES: &[(&str, &str)] = &[
+    (
+        "Character literals",
+        "const A = 'A'\nconst NEXT = 'A' + 1\n",
+    ),
+    (
+        "Expression operators, binary",
+        "const A = $80\nconst B = A | 1 & 3 ^ 2 + 1 * 2 << 1 >> 1\n",
+    ),
+    ("Expression operators, unary", "const A = -~5\n"),
+    (
+        "`const` and enum-like auto-increment groups",
+        "const A = 0, B, C\nconst D, E\n",
+    ),
+    (
+        "Address-encoding operand prefixes and auto-shrink",
+        "var ZP = $80\nfunc f @a8 { lda ZP  lda dp ZP  lda abs ZP  lda far ZP }\n",
+    ),
+    (
+        "`segment NAME` selection",
+        "segment FAST\nfunc f @a8 { nop }\n",
+    ),
+    ("Global labels", "func f @a8 {\n  spot:\n    bne spot\n}\n"),
+    (
+        "Local labels (function-scoped)",
+        "func one @a8 {\n  .loop:\n    bne .loop\n}\nfunc two @a8 {\n  .loop:\n    bne .loop\n}\n",
+    ),
+    (
+        "65816 operand additions",
+        "var ZP = $80\nconst F = 2\nfunc f @a8 @i16 { lda 4,s  lda (4,s),y  lda [ZP]  lda [ZP],y  lda &F,x }\n",
+    ),
+    (
+        "65C02 additions",
+        "var ZP = $80\nfunc f @a8 {\n  spot:\n    bra spot\n    phx\n    ply\n    stz ZP\n    tsb ZP\n    trb ZP\n}\n",
+    ),
+    (
+        "65816 transfer raw mnemonics",
+        "func f @a8 { tcd  tcs  tdc  tsc  txy  tyx  xba }\n",
+    ),
+    (
+        "65816 bank/mode raw mnemonics",
+        "func f @a8 { phb  plb  phd  pld  phk  xce }\n",
+    ),
+    (
+        "65816 control flow, mode and stack raw mnemonics",
+        "var ZP = $80\nfunc f @a8 {\n  spot:\n    brl spot\n    rep #$20\n    sep #$20\n    pea #$1234\n    pei (ZP)\n    per spot\n    cop #$7F\n    wdm #$00\n}\n",
+    ),
+    ("Block moves", "func f @a8 { mvn $01,$02  mvp $01,$02 }\n"),
+    (
+        "Data blocks, named and anonymous",
+        "data named {\n    1 2\n}\ndata {\n    3 4\n}\n",
+    ),
+    (
+        "`segment` placement rule inside data blocks",
+        "data d {\n    segment OTHER\n    1 2\n}\n",
+    ),
+    (
+        "Placement directives `align N`",
+        "data d {\n    align 16\n    1 2\n}\n",
+    ),
+    (
+        "Raw byte values and labels in data blocks",
+        "data d {\n    $7F 1\n    inner:\n    2 3\n}\n",
+    ),
+    (
+        "Address byte operators",
+        "var ptr = $2345\ndata d {\n    &<ptr &>ptr\n    &&ptr\n    &&&ptr\n}\n",
+    ),
+    ("`?` undefined byte placeholder", "data d {\n    ? ?\n}\n"),
+    (
+        "Optional semicolons and empty statements",
+        "var A = $10;\nvar B = $20;\n",
+    ),
+    (
+        "Variable+offset compile-time address arithmetic",
+        "var base = $0400\nfunc f @a8 { lda base + 3 }\n",
+    ),
+];
+
+/// The audit tracks *semantic* coverage as it lands, not only syntactic:
+/// a group whose row says the native translator owns it has to compile.
+#[test]
+fn every_implemented_manifest_group_compiles() {
+    let failures: Vec<String> = COMPILES
+        .iter()
+        .filter_map(|(group, source)| {
+            let mut map = SourceMap::new();
+            let id = map.add_file("audit.k65", *source);
+            let parsed = parse_source(map.file(id), None);
+            if !parsed.diagnostics.is_empty() {
+                return Some(format!("  {group}\n    did not parse: {source:?}"));
+            }
+            let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            let errors: Vec<&str> = diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect();
+            (!errors.is_empty())
+                .then(|| format!("  {group}\n    {errors:?}\n    source: {source:?}"))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "feature-manifest groups the native translator owns but does not compile:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// No `native-translator` row may still report itself as not-yet-implemented.
+///
+/// The manifest contract is that the owner column means something; a group
+/// C owns that still names sub-plan C in a diagnostic is a row that was
+/// counted and not done.
+#[test]
+fn no_implemented_group_still_names_the_native_translator() {
+    let failures: Vec<String> = COMPILES
+        .iter()
+        .filter_map(|(group, source)| {
+            let mut map = SourceMap::new();
+            let id = map.add_file("audit.k65", *source);
+            let parsed = parse_source(map.file(id), None);
+            let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            diagnostics
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic
+                        .notes
+                        .iter()
+                        .any(|note| note.contains("sub-plan C"))
+                })
+                .then(|| format!("  {group}\n    still defers to sub-plan C"))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "groups C owns that still defer to C:\n{}",
+        failures.join("\n")
+    );
+}

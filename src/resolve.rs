@@ -470,7 +470,7 @@ impl<'a> Resolver<'a> {
             _ => unreachable!("an addressed form always carries an address expression"),
         };
 
-        self.check_const_in_address_position(value, native);
+        self.check_const_in_address_position(mnemonic, value, native);
         let spec = self.select_encoding(mnemonic, form, native, value, forced)?;
         let expr = self.fold(value)?;
         self.check_fits(spec, &expr, value.span);
@@ -710,7 +710,12 @@ impl<'a> Resolver<'a> {
     /// The `&expr` marker is the way to use one as a small field offset in
     /// an indexed mode, and `&&label` / `&&&label` are the address-of
     /// exception; neither reaches here as a bare const-rooted expression.
-    fn check_const_in_address_position(&mut self, value: &Expr, native: &NativeInstruction) {
+    fn check_const_in_address_position(
+        &mut self,
+        mnemonic: Mnemonic,
+        value: &Expr,
+        native: &NativeInstruction,
+    ) {
         if let Some(NativeOperand::Address(address)) = native.operand.as_ref()
             && address.offset_marker.is_some()
         {
@@ -728,13 +733,24 @@ impl<'a> Resolver<'a> {
             format!("`{name}` is a `const`, not a memory location"),
             Label::new(span, "a `const` names a value, not an address"),
         )
-        .with_fix(Fix {
-            title: format!("load the value with `#{name}`"),
-            applicability: Applicability::MachineApplicable,
-            edits: vec![TextEdit::insert(span, "#")],
-        })
-        .with_help("or write `&` before it to use it as an indexed field offset")
         .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65");
+        // The immediate is only a fix where the instruction has one: `sta #K`
+        // is not a store, so offering it would trade one error for another.
+        if spec_for_form(mnemonic, OperandForm::Immediate)
+            .next()
+            .is_some()
+        {
+            diagnostic = diagnostic
+                .with_fix(Fix {
+                    title: format!("load the value with `#{name}`"),
+                    applicability: Applicability::MachineApplicable,
+                    edits: vec![TextEdit::insert(span, "#")],
+                })
+                .with_help("or write `&` before it to use it as an indexed field offset");
+        } else {
+            diagnostic =
+                diagnostic.with_help("declare a `var` or a label for the location to address");
+        }
         if let Some(declaration) = declaration {
             diagnostic = diagnostic.with_secondary(Label::new(declaration, "declared here"));
         }
@@ -1149,7 +1165,21 @@ fn entry_size(entry: &DataEntry) -> Option<u32> {
     match &entry.kind {
         // A label takes no space and does not interrupt a run.
         DataEntryKind::Label(_) | DataEntryKind::Nocross(_) | DataEntryKind::Segment(_) => Some(0),
+        DataEntryKind::Value(DataValue::Expr(expr)) => Some(address_of_width(expr).unwrap_or(1)),
         DataEntryKind::Value(_) => Some(1),
+        _ => None,
+    }
+}
+
+/// The width in bytes an address-of operator gives a data value, or `None`
+/// when the value takes the one-byte default.
+fn address_of_width(expr: &Expr) -> Option<u32> {
+    match &expr.kind {
+        ExprKind::Unary(unary) => match unary.op {
+            crate::ast::UnaryOp::Address16 => Some(2),
+            crate::ast::UnaryOp::Address24 => Some(3),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1258,12 +1288,8 @@ impl Resolver<'_> {
                     }
                 }
                 DataEntryKind::Value(value) => {
-                    if let Some(expr) = self.data_value(value, entry.span) {
-                        ops.push(KOp::new(
-                            KOpKind::Data(DataOp::Byte(vec![expr])),
-                            entry.span,
-                            Origin::User,
-                        ));
+                    if let Some(data) = self.data_value(value, entry.span) {
+                        ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
                     }
                 }
                 // Typed entries, strings, `charset`, `repeat`, `code`, and
@@ -1316,16 +1342,25 @@ impl Resolver<'_> {
         ops
     }
 
-    /// One value of an implicit-default (byte-wide) entry.
+    /// One value of an implicit-default entry.
+    ///
+    /// The default is one byte, with one documented exception: the
+    /// address-of operators carry their own width, so `&&ptr` is "the full
+    /// 16-bit address (two bytes, little-endian)" and `&&&ptr` a 24-bit one
+    /// (`doc/syntax-reference.md`, "Address Byte Operators"). Emitting
+    /// either as a byte would be a range error at best and a truncated
+    /// address at worst.
     ///
     /// `?` reserves a slot whose value is deliberately unspecified and emits
     /// as a zero of the entry's width — the affordance is at the source
     /// level, not on the wire.
-    fn data_value(&mut self, value: &DataValue, span: Span) -> Option<KExpr> {
+    fn data_value(&mut self, value: &DataValue, span: Span) -> Option<DataOp> {
         match value {
             DataValue::Expr(expr) => {
+                let width = address_of_width(expr);
                 let folded = self.fold(expr)?;
-                if let Some(known) = folded.value()
+                if width.is_none()
+                    && let Some(known) = folded.value()
                     && known.get() > 0xFF
                 {
                     self.report(
@@ -1339,9 +1374,13 @@ impl Resolver<'_> {
                     );
                     return None;
                 }
-                Some(folded)
+                Some(match width {
+                    Some(2) => DataOp::Word(vec![folded]),
+                    Some(_) => DataOp::Far(vec![folded]),
+                    None => DataOp::Byte(vec![folded]),
+                })
             }
-            DataValue::Undefined => Some(KExpr::number(0)),
+            DataValue::Undefined => Some(DataOp::Byte(vec![KExpr::number(0)])),
             // Strings go through the active `charset`, which is E's row.
             DataValue::String(_) => {
                 self.report(compat::unimplemented(

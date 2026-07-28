@@ -306,9 +306,7 @@ fn a_link_time_value_is_rejected_only_where_an_absolute_one_is_required() {
 
 #[test]
 fn a_const_cannot_stand_in_for_a_memory_location() {
-    let (_, diagnostics) = analyze("const K = $10\nfunc f @a8 {\n    sta K\n}\n");
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    let diagnostic = &diagnostics[0];
+    let diagnostic = only_diagnostic("const K = $10\nfunc f @a8 {\n    lda K\n}\n");
     assert_eq!(diagnostic.code, DiagnosticCode::CONST_IN_ADDRESS_POSITION);
     assert_eq!(
         diagnostic.secondary.len(),
@@ -317,7 +315,13 @@ fn a_const_cannot_stand_in_for_a_memory_location() {
     );
     assert_eq!(diagnostic.fixes[0].edits[0].replacement, "#");
 
-    // …but it is exactly what an immediate wants.
+    // A store has no immediate form, so no fix is offered there: `sta #K`
+    // would trade one error for another.
+    let diagnostic = only_diagnostic("const K = $10\nfunc f @a8 {\n    sta K\n}\n");
+    assert_eq!(diagnostic.code, DiagnosticCode::CONST_IN_ADDRESS_POSITION);
+    assert!(diagnostic.fixes.is_empty(), "{diagnostic:?}");
+
+    // …but a `const` is exactly what an immediate wants.
     let (_, diagnostics) = analyze("const K = $10\nfunc f @a8 {\n    lda #K\n}\n");
     assert_eq!(diagnostics, vec![]);
 }

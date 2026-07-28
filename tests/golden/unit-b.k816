@@ -1,0 +1,11 @@
+// The other half. These definitions are exported because the sibling unit
+// asks for them, with the address size each reference needs: ca65 validates
+// an addressing mode against an imported symbol's address size, so the
+// qualifier is what makes `lda CURSOR` a one-byte instruction over there.
+
+var dp CURSOR    = $10
+var far BANKED   = $030000
+
+func helper @a8 @i16 {
+    nop
+}

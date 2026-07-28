@@ -581,13 +581,14 @@ impl Analysis {
         };
         let Some(number) = folded.value().map(|value| value.get()) else {
             // A link-time immediate such as `#&&label` is legal — ca65
-            // relocates it — but K816 cannot range-check an address ld65
-            // has not placed, and lowering does not carry a symbolic
-            // immediate until operand classification lands (task C4).
+            // relocates it — and the native path carries one through
+            // classification. This is the HLA slice's own immediate check;
+            // it goes away when HLA operands lower through the shared
+            // classifier, which is sub-plan E's work, not C's.
             self.diagnostics.push(compat::unimplemented(
                 value.span,
-                "link-time values in immediate operands",
-                compat::Owner::NativeTranslator,
+                "link-time values in HLA immediate operands",
+                compat::Owner::HlaLowering,
             ));
             return;
         };

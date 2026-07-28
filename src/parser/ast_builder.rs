@@ -1316,10 +1316,7 @@ impl AstBuilder<'_> {
             "address_directive" => {
                 DataEntryKind::Address(self.expr(node.child_by_field_name("address"), node))
             }
-            "nocross_directive" => DataEntryKind::Nocross(
-                node.child_by_field_name("size")
-                    .map(|size| self.expr(Some(size), node)),
-            ),
+            "nocross_directive" => DataEntryKind::Nocross,
             "charset_directive" => DataEntryKind::Charset(
                 node.child_by_field_name("mapping")
                     .map(|mapping| decode_string(self.text(mapping)))

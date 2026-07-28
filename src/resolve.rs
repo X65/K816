@@ -1164,7 +1164,7 @@ fn last_index_of_run(block: &DataBlock) -> usize {
 fn entry_size(entry: &DataEntry) -> Option<u32> {
     match &entry.kind {
         // A label takes no space and does not interrupt a run.
-        DataEntryKind::Label(_) | DataEntryKind::Nocross(_) | DataEntryKind::Segment(_) => Some(0),
+        DataEntryKind::Label(_) | DataEntryKind::Nocross | DataEntryKind::Segment(_) => Some(0),
         DataEntryKind::Value(DataValue::Expr(expr)) => Some(address_of_width(expr).unwrap_or(1)),
         DataEntryKind::Value(_) => Some(1),
         _ => None,
@@ -1204,7 +1204,7 @@ impl Resolver<'_> {
         // `nocross data { … }` is the wrapper spelling of a leading bare
         // `nocross`, so both arrive at the same guard.
         let mut guard = if block.nocross {
-            self.nocross_run(block, span, None)
+            self.nocross_run(block, span)
         } else {
             None
         };
@@ -1218,7 +1218,7 @@ impl Resolver<'_> {
                 DataEntryKind::Segment(_)
                     | DataEntryKind::Align(_)
                     | DataEntryKind::Address(_)
-                    | DataEntryKind::Nocross(_)
+                    | DataEntryKind::Nocross
             );
             if !placement && !labelled {
                 labelled = true;
@@ -1277,8 +1277,8 @@ impl Resolver<'_> {
                         Origin::CompilerGenerated,
                     ));
                 }
-                DataEntryKind::Nocross(explicit) => {
-                    if let Some(length) = self.nocross_run(block, entry.span, explicit.as_ref()) {
+                DataEntryKind::Nocross => {
+                    if let Some(length) = self.nocross_run(block, entry.span) {
                         guard = Some(length);
                     }
                 }
@@ -1399,22 +1399,14 @@ impl Resolver<'_> {
     /// entries; it stops at anything whose size only placement decides. A
     /// run larger than a page can never fit wherever ld65 puts it, so that
     /// is rejected here rather than deferred.
-    fn nocross_run(
-        &mut self,
-        block: &DataBlock,
-        span: Span,
-        explicit: Option<&Expr>,
-    ) -> Option<u32> {
-        let run: u32 = match explicit {
-            Some(count) => self.constant(count, "`nocross` run lengths")?,
-            None => block
-                .entries
-                .iter()
-                .map(entry_size)
-                .take_while(Option::is_some)
-                .flatten()
-                .sum(),
-        };
+    fn nocross_run(&mut self, block: &DataBlock, span: Span) -> Option<u32> {
+        let run: u32 = block
+            .entries
+            .iter()
+            .map(entry_size)
+            .take_while(Option::is_some)
+            .flatten()
+            .sum();
         if run > 256 {
             self.report(
                 Diagnostic::error(

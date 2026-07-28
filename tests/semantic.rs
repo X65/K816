@@ -732,11 +732,13 @@ fn a_segment_directive_must_be_a_blocks_first_entry() {
 fn a_nocross_run_larger_than_a_page_is_rejected_now() {
     // No placement can save it, so this is decided at compile time rather
     // than deferred to the link-time assertion.
-    let diagnostic = only_diagnostic("data big {\n    nocross 300\n    1 2\n}\n");
+    let diagnostic = only_diagnostic(include_str!("golden/nocross-oversized.k816"));
     assert_eq!(diagnostic.code, DiagnosticCode::NOCROSS_TOO_LARGE);
-    assert!(diagnostic.title.contains("300 bytes"), "{diagnostic:?}");
+    assert!(diagnostic.title.contains("257 bytes"), "{diagnostic:?}");
 
-    let (_, diagnostics) = analyze("data ok {\n    nocross 256\n    1 2\n}\n");
+    // A run that fits is guarded rather than rejected, and `nocross` takes
+    // no operand: every value after it belongs to the run.
+    let (_, diagnostics) = analyze("data ok {\n    nocross\n    1 2\n}\n");
     assert_eq!(diagnostics, vec![], "{diagnostics:?}");
 }
 

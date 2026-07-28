@@ -650,9 +650,9 @@ impl Analysis {
                     let diagnostic = reserved_diagnostic(reserved);
                     self.diagnostics.push(diagnostic);
                 }
-                DataEntryKind::Align(expr)
-                | DataEntryKind::Address(expr)
-                | DataEntryKind::Nocross(Some(expr)) => self.report_reserved_in_expr(expr),
+                DataEntryKind::Align(expr) | DataEntryKind::Address(expr) => {
+                    self.report_reserved_in_expr(expr)
+                }
                 DataEntryKind::Typed { values, .. } => {
                     for value in values {
                         if let DataValue::Expr(expr) = value {
@@ -682,7 +682,7 @@ impl Analysis {
                     }
                 }
                 DataEntryKind::Segment(_)
-                | DataEntryKind::Nocross(None)
+                | DataEntryKind::Nocross
                 | DataEntryKind::Charset(_)
                 | DataEntryKind::Label(_)
                 | DataEntryKind::Value(_)

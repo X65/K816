@@ -1052,29 +1052,8 @@
       ]
     },
     "nocross_directive": {
-      "type": "SEQ",
-      "members": [
-        {
-          "type": "STRING",
-          "value": "nocross"
-        },
-        {
-          "type": "CHOICE",
-          "members": [
-            {
-              "type": "FIELD",
-              "name": "size",
-              "content": {
-                "type": "SYMBOL",
-                "name": "_expression"
-              }
-            },
-            {
-              "type": "BLANK"
-            }
-          ]
-        }
-      ]
+      "type": "STRING",
+      "value": "nocross"
     },
     "charset_directive": {
       "type": "SEQ",
@@ -5938,9 +5917,6 @@
     [
       "_eval_argument",
       "_eval_expression"
-    ],
-    [
-      "nocross_directive"
     ],
     [
       "nocross_directive",

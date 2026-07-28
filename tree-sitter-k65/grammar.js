@@ -210,10 +210,9 @@ export default grammar({
     // A comma inside `f(a, b)` separates arguments; elsewhere it is the
     // evaluator's expression-list operator.
     [$._eval_argument, $._eval_expression],
-    // Bare `nocross` guards the following run, `nocross EXPR` sizes one
-    // chunk, and `nocross code { }` wraps a subblock — three readings of the
-    // same keyword, separated by what comes after it.
-    [$.nocross_directive],
+    // `nocross` guards the following run and `nocross code { }` wraps a
+    // subblock — two readings of the same keyword, separated by what comes
+    // after it.
     [$.nocross_directive, $.code_subblock],
     // A value list runs until something that is not a value; an eval bracket
     // could equally be the next entry on its own.
@@ -453,9 +452,18 @@ export default grammar({
 
     address_directive: $ => seq('address', field('address', $._expression)),
 
-    // Bare `nocross` guards the following run; `nocross EXPR` is the older
-    // next-chunk-only form.
-    nocross_directive: $ => seq('nocross', optional(field('size', $._expression))),
+    // `nocross` guards the run of statically-sizeable entries that follows
+    // it, and takes no operand.
+    //
+    // The older `nocross EXPR` form is deliberately gone. K65 is
+    // newline-insensitive, so `nocross` followed by a value could be read
+    // either way, and the greedy reading swallowed the first byte of the
+    // run — including in `examples/k65/atari-xl/dli-example/main.k65`, where
+    // the display list starts `nocross` then `0x70 0x70 0x70`. The bare form
+    // is the only one attested anywhere in `doc/k65/` or `examples/k65/`;
+    // the sized one appeared solely in the syntax reference, which no longer
+    // documents it.
+    nocross_directive: _ => 'nocross',
 
     charset_directive: $ => seq('charset', field('mapping', $.string)),
 

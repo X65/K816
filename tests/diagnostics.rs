@@ -74,9 +74,9 @@ const FAMILY: &[Case] = &[
         caret: "segment OTHER",
     },
     Case {
-        source: "data big {\n    nocross 300\n    1\n}\n",
+        source: include_str!("golden/nocross-oversized.k816"),
         code: DiagnosticCode::NOCROSS_TOO_LARGE,
-        caret: "nocross 300",
+        caret: "nocross",
     },
     Case {
         source: "const F = 2\nfunc main @a8 { lda &F }\n",

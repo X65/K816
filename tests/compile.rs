@@ -495,9 +495,20 @@ fn the_legacy_display_list_data_block_compiles() {
         assembly.contains(".byte    .hibyte(displist)"),
         "{assembly}"
     );
-    // The block's own `nocross` is not asserted here, and the link step is
-    // left off with it: the grammar reads a bare `nocross` followed by a
-    // value as the older `nocross EXPR` form, so the first `0x70` of this
-    // display list becomes the run length. Fixing that is a grammar change
-    // with its own review (sub-plan C, contract 2), not a semantics change.
+
+    // The list is 17 bytes and opens with `nocross`, so every one of them is
+    // in the guarded run — including the first `0x70`, which the grammar
+    // used to swallow as a run length.
+    assert_eq!(
+        assembly.matches(".byte").count(),
+        17,
+        "no byte of the display list may go missing: {assembly}"
+    );
+    assert!(
+        assembly.contains(".hibyte(* - 1) = .hibyte(* - 17)"),
+        "the guard covers the whole list: {assembly}"
+    );
+
+    // …and it assembles and links, guard included.
+    assemble_and_link("displist", &assembly, "slice");
 }

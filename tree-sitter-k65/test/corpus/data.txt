@@ -55,7 +55,6 @@ data MyData {
   align 16
   address 0x5000
   nocross
-  nocross 8
   1 2 3
 }
 
@@ -72,8 +71,29 @@ data MyData {
       (address_directive
         address: (number))
       (nocross_directive)
-      (nocross_directive
-        size: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number)))))
+
+================================================================================
+nocross takes no operand, so the run that follows it stays intact
+================================================================================
+
+data displist {
+  nocross
+  0x70 0x70 0x70
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (nocross_directive)
       (data_value
         value: (number))
       (data_value

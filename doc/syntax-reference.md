@@ -718,14 +718,24 @@ data MyData3 {
 }
 ```
 
-A bare `nocross` (or the wrapper form `nocross data { ... }`) guards the
-leading run of statically-sizeable data entries: the linker pads before the
-block, if needed, so the whole run lands inside one 256-byte page. A run
-larger than a page is rejected at compile time. Enforcement covers data
-runs (`byte`/`word`/`far` values, strings, `for … eval`); it stops at a
-`code`, `address`, `align`, or `charset` entry, and `nocross` around a
+`nocross` (or the wrapper form `nocross data { ... }`) guards the leading
+run of statically-sizeable data entries, so the whole run lands inside one
+256-byte page. A run larger than a page is rejected at compile time; where
+it lands is checked at link time. Enforcement covers data runs
+(`byte`/`word`/`far` values, strings, `for … eval`); it stops at a `code`,
+`address`, `align`, or `charset` entry, and `nocross` around a
 `code { ... }` subblock stays advisory (instruction sizes are not known
-until placement). Use `nocross EXPR` for the older next-chunk-only form.
+until placement).
+
+`nocross` takes **no operand**. The older `nocross EXPR` form, which sized
+one chunk rather than the run, has been withdrawn: K65 is
+newline-insensitive, so `nocross` followed by a value can be read either
+way, and the reading that took the value swallowed the first byte of the
+run. Nothing in the K65 corpus or examples used the sized form, and
+everything that uses `nocross` at all writes it bare. A source that still
+carries `nocross 8` now reads as `nocross` followed by a data value `8`,
+which emits one extra byte — the two spellings cannot be told apart, so
+this is a migration to check by eye rather than one the compiler can flag.
 
 ```k65
 

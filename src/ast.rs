@@ -844,8 +844,10 @@ pub enum DataEntryKind {
     Align(Expr),
     /// `address $addr`
     Address(Expr),
-    /// `nocross`, or the older `nocross EXPR`.
-    Nocross(Option<Expr>),
+    /// `nocross` — guards the run of statically-sizeable entries that
+    /// follows it, and takes no operand. See `grammar.js` for why the older
+    /// `nocross EXPR` form is gone.
+    Nocross,
     /// `charset "..."`
     Charset(String),
     /// `hello:`

@@ -1,0 +1,1025 @@
+/*****************************************************************************/
+/*                                                                           */
+/*                                resolve.rs                                 */
+/*                                                                           */
+/*        Name resolution, expression folding, operand classification        */
+/*                                                                           */
+/*                                                                           */
+/* Copyright (c) 2026 Tomasz Sterna (smokku)                                 */
+/*                                                                           */
+/* Permission to use, copy, modify, and/or distribute this software for any  */
+/* purpose with or without fee is hereby granted.                            */
+/*                                                                           */
+/* THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES  */
+/* WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF          */
+/* MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR   */
+/* ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES    */
+/* WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN     */
+/* ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF   */
+/* OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.            */
+/*                                                                           */
+/*****************************************************************************/
+
+//! The shared read-only layer between analysis and lowering.
+//!
+//! Resolving a name, folding an expression, and choosing an instruction's
+//! addressing mode are the same questions whether the caller is producing
+//! diagnostics or producing [`KOp`](crate::op::KOp)s, and the two must not
+//! answer them differently. Both go through a [`Resolver`]: analysis reports
+//! the diagnostics it collects, and lowering — which runs only after
+//! error-free analysis — treats any as an internal error.
+//!
+//! # Classification has two steps, not one
+//!
+//! K65 does not spell direct, absolute, and long differently: `lda addr` is
+//! one source shape covering three hardware modes
+//! (`doc/syntax-reference.md`, "Address-encoding (prefixes)"). So the
+//! mnemonic and the AST shape narrow the candidates by
+//! [`OperandForm`](crate::isa::OperandForm), and the *encoding* is chosen
+//! after that — from an operand prefix when one is written, and otherwise
+//! from what K816 actually knows about the address.
+//!
+//! Auto-shrink is the correctness cliff here. Picking a direct-page encoding
+//! for an address K816 only *thinks* is in page zero changes the
+//! instruction's length and corrupts everything after it, so it applies to
+//! compile-time-known addresses only — numeric literals and pinned variables
+//! — and never to a symbol ld65 places.
+
+use crate::ast::{
+    AddressEncoding as AstEncoding, AddressOperand, Expr, ExprKind, IndexRegisterKind,
+    IndirectOperand, NativeInstruction, NativeOperand, StorageClassKind,
+};
+use crate::compat;
+use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
+use crate::isa::{
+    AddressEncoding, InstructionSpec, Mnemonic, OperandForm, OperandWidth, spec_for_form,
+};
+use crate::op::{IndexRegister, Instruction, Operand, WidthContract};
+use crate::source::{Provenance, Span};
+use crate::symbol::{AddressSize, SymbolId, SymbolKind, SymbolTable};
+use crate::value::{BinaryOp, KExpr, UnaryOp, Value};
+
+/// One classified native instruction: the ISA row it matched and the typed
+/// operand built from the source expression.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Classified {
+    pub spec: &'static InstructionSpec,
+    pub operand: Option<Operand>,
+}
+
+impl Classified {
+    /// The lowered instruction this classification produces.
+    pub fn instruction(&self) -> Instruction {
+        Instruction::new(self.spec.mnemonic, self.spec.mode, self.operand.clone())
+    }
+}
+
+/// Resolves names, folds expressions, and classifies operands.
+pub struct Resolver<'a> {
+    symbols: &'a SymbolTable,
+    /// The function whose scope `.name` labels resolve in.
+    function: Option<SymbolId>,
+    /// The widths in force, which size the width-dependent immediates.
+    widths: WidthContract,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<'a> Resolver<'a> {
+    pub fn new(symbols: &'a SymbolTable) -> Self {
+        Self {
+            symbols,
+            function: None,
+            widths: WidthContract::default(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Scopes local label resolution to `function`.
+    pub fn in_function(mut self, function: Option<SymbolId>) -> Self {
+        self.function = function;
+        self
+    }
+
+    /// Sizes width-dependent immediates with `widths`.
+    pub fn with_widths(mut self, widths: WidthContract) -> Self {
+        self.widths = widths;
+        self
+    }
+
+    pub fn take_diagnostics(&mut self) -> Vec<Diagnostic> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    pub fn has_diagnostics(&self) -> bool {
+        !self.diagnostics.is_empty()
+    }
+
+    fn report(&mut self, diagnostic: Diagnostic) {
+        self.diagnostics.push(diagnostic);
+    }
+
+    // ---------------------------------------------------------- expressions
+
+    /// Folds `expr` into a lowered expression.
+    ///
+    /// Absolute sub-expressions collapse to numbers; anything rooted in a
+    /// symbol ld65 places stays a tree, because K816 never resolves an
+    /// address the linker owns. Every operator the K65 expression layer has
+    /// is preserved symbolically — ca65 stores unresolved expressions in the
+    /// object file and ld65 evaluates them after placement, so `label * 2`
+    /// is not an error merely because a label is involved.
+    ///
+    /// Returns `None` when the expression is malformed or names something
+    /// undeclared; both are reported here, so callers stay quiet.
+    pub fn fold(&mut self, expr: &Expr) -> Option<KExpr> {
+        match &expr.kind {
+            ExprKind::Number(value) => Some(KExpr::number(*value)),
+            ExprKind::Symbol(name) => {
+                let id = self.resolve(&name.text, name.span)?;
+                Some(match self.symbols.kind(id) {
+                    // A `const` has no storage, so it can only ever be its
+                    // value; everything else keeps its name for ca65/ld65.
+                    SymbolKind::Const { value } => KExpr::number(value),
+                    SymbolKind::Var { .. }
+                    | SymbolKind::Label { .. }
+                    | SymbolKind::DataLabel { .. }
+                    | SymbolKind::Function { .. } => KExpr::Symbol(id),
+                })
+            }
+            ExprKind::LocalSymbol(name) => {
+                let id = self.resolve_local(&name.text, name.span)?;
+                Some(KExpr::Symbol(id))
+            }
+            ExprKind::Unary(unary) => {
+                let operand = self.fold(&unary.operand)?;
+                Some(KExpr::fold_unary(lowered_unary_op(unary.op), operand))
+            }
+            ExprKind::Binary(binary) => {
+                // Both sides are folded even when the first fails, so one
+                // undeclared name does not hide another.
+                let left = self.fold(&binary.left);
+                let right = self.fold(&binary.right);
+                Some(KExpr::fold_binary(
+                    lowered_binary_op(binary.op),
+                    left?,
+                    right?,
+                ))
+            }
+            ExprKind::Field(_)
+            | ExprKind::Subscript(_)
+            | ExprKind::Metadata(_)
+            | ExprKind::TypedView(_) => {
+                self.report(compat::unimplemented(
+                    expr.span,
+                    "symbolic subscripts, metadata queries, and typed views",
+                    compat::Owner::HlaLowering,
+                ));
+                None
+            }
+            ExprKind::Eval(_) => {
+                self.report(compat::unimplemented(
+                    expr.span,
+                    "compile-time evaluator brackets",
+                    compat::Owner::Compatibility,
+                ));
+                None
+            }
+            // A syntax diagnostic was already reported for this node.
+            ExprKind::Error => None,
+        }
+    }
+
+    /// The absolute value of `expr` in a position that requires one.
+    ///
+    /// `position` names where the expression appeared, in plural form
+    /// ("immediate operands"). A link-time expression is rejected here and
+    /// only here: elsewhere it is preserved and handed to ld65.
+    pub fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
+        let folded = self.fold(expr)?;
+        match folded.value() {
+            Some(value) => Some(value.get()),
+            None => {
+                let mut symbols = Vec::new();
+                folded.symbols(&mut symbols);
+                let named = symbols.first().map(|id| self.symbols.name(*id).to_owned());
+                let mut diagnostic = Diagnostic::error(
+                    DiagnosticCode::NOT_CONSTANT,
+                    format!("{position} must be known at compile time"),
+                    Label::new(expr.span, "this value is not known until link time"),
+                )
+                .with_help("use a numeric literal or a `const` here")
+                .with_docs("doc/syntax-reference.md#constant-declaration");
+                if let Some(name) = named {
+                    diagnostic =
+                        diagnostic.with_note(format!("`{name}` gets its address from ld65"));
+                }
+                self.report(diagnostic);
+                None
+            }
+        }
+    }
+
+    /// Resolves a unit-level name, reporting it when nothing declares it.
+    pub fn resolve(&mut self, name: &str, span: Span) -> Option<SymbolId> {
+        match self.symbols.lookup(name) {
+            Some(id) => Some(id),
+            None => {
+                self.report(
+                    Diagnostic::error(
+                        DiagnosticCode::UNDECLARED_SYMBOL,
+                        format!("`{name}` is not declared"),
+                        Label::new(span, "used here without a declaration"),
+                    )
+                    .with_help(format!("declare it first, e.g. `var {name} = $0400`"))
+                    .with_docs("doc/syntax-reference.md#variable-declaration"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Resolves a `.name` label in the enclosing function's scope.
+    fn resolve_local(&mut self, name: &str, span: Span) -> Option<SymbolId> {
+        let owner = self.function?;
+        match self.symbols.lookup_local(owner, name) {
+            Some(id) => Some(id),
+            None => {
+                let function = self.symbols.name(owner).to_owned();
+                self.report(
+                    Diagnostic::error(
+                        DiagnosticCode::UNDECLARED_SYMBOL,
+                        format!("`{name}` is not declared in `{function}`"),
+                        Label::new(span, "no such local label in this function"),
+                    )
+                    .with_note("local labels are scoped to their enclosing function")
+                    .with_docs("doc/syntax-reference.md#local"),
+                );
+                None
+            }
+        }
+    }
+
+    // --------------------------------------------------------- instructions
+
+    /// Classifies one native instruction against the ISA table.
+    pub fn classify(&mut self, native: &NativeInstruction) -> Option<Classified> {
+        if native.mnemonic.provenance == Provenance::Synthetic {
+            return None;
+        }
+        if let Some(count) = &native.repeat {
+            self.report(compat::unimplemented(
+                count.span,
+                "instruction repetition counts",
+                compat::Owner::HlaLowering,
+            ));
+            return None;
+        }
+        // The grammar produces only real 65816 mnemonics, so an unresolved
+        // spelling is a typo the ISA table can name precisely.
+        let Some(mnemonic) = Mnemonic::parse(&native.mnemonic.text) else {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::UNKNOWN_MNEMONIC,
+                    format!("`{}` is not a 65816 instruction", native.mnemonic.text),
+                    Label::new(native.mnemonic.span, "unknown mnemonic"),
+                )
+                .with_docs("doc/w65c816s.md"),
+            );
+            return None;
+        };
+        self.classify_operand(mnemonic, native)
+    }
+
+    fn classify_operand(
+        &mut self,
+        mnemonic: Mnemonic,
+        native: &NativeInstruction,
+    ) -> Option<Classified> {
+        let span = native.mnemonic.span;
+        let operand = native.operand.as_ref();
+
+        // `&&label` and `&&&label` produce immediate relocations even in
+        // address position — the one documented exception to "an unprefixed
+        // value operand is an address operand".
+        if let Some(NativeOperand::Address(address)) = operand
+            && address.index.is_none()
+            && address.encoding.is_none()
+            && is_address_of(&address.value)
+        {
+            return self.immediate(mnemonic, span, &address.value);
+        }
+
+        let Some(form) = source_form(operand) else {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::INVALID_OPERAND,
+                    format!("`{}` cannot take this operand shape", mnemonic.ca65()),
+                    Label::new(
+                        operand_span(native),
+                        "no 65816 addressing mode is written like this",
+                    ),
+                )
+                .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
+            );
+            return None;
+        };
+
+        self.check_offset_marker(operand, form);
+        let form = accumulator_default(mnemonic, form);
+        let mnemonic = aliased(mnemonic, form);
+
+        match form {
+            OperandForm::Immediate => {
+                let Some(NativeOperand::Immediate(value)) = operand else {
+                    unreachable!("only an immediate operand has the immediate form");
+                };
+                self.immediate(mnemonic, span, value)
+            }
+            OperandForm::Nothing | OperandForm::Accumulator => {
+                let spec = self.select(mnemonic, form, span, operand_span(native))?;
+                Some(Classified {
+                    spec,
+                    operand: None,
+                })
+            }
+            OperandForm::BlockMove => {
+                let Some(NativeOperand::BlockMove(banks)) = operand else {
+                    unreachable!("only a block move has the block-move form");
+                };
+                let spec = self.select(mnemonic, form, span, operand_span(native))?;
+                let source = self.bank_byte(&banks.source)?;
+                let destination = self.bank_byte(&banks.destination)?;
+                Some(Classified {
+                    spec,
+                    operand: Some(Operand::BlockMove {
+                        source,
+                        destination,
+                    }),
+                })
+            }
+            _ => self.addressed(mnemonic, form, native),
+        }
+    }
+
+    /// Classifies `#expr`, and the `&&label` forms that behave like one.
+    fn immediate(&mut self, mnemonic: Mnemonic, span: Span, value: &Expr) -> Option<Classified> {
+        let spec = self.select(mnemonic, OperandForm::Immediate, span, value.span)?;
+        let expr = self.fold(value)?;
+        // A link-time immediate is legal — ca65 relocates it — and simply
+        // cannot be range-checked here, because ld65 has not placed it yet.
+        if let Some(folded) = expr.value()
+            && let Some(class) = spec.immediate_width()
+        {
+            match class.max_value(self.widths.a, self.widths.i) {
+                Some(limit) if folded.get() > limit => self.report(
+                    Diagnostic::error(
+                        DiagnosticCode::IMMEDIATE_RANGE,
+                        format!("immediate {folded} does not fit in the selected width"),
+                        Label::new(value.span, format!("maximum here is ${limit:X}")),
+                    )
+                    .with_docs("doc/register-width-aware-syntax.md"),
+                ),
+                Some(_) => {}
+                None => {
+                    let (axis, help) = match class {
+                        crate::isa::ImmediateWidthClass::XDependent => (
+                            "index register",
+                            "add @i8 or @i16 to the enclosing function",
+                        ),
+                        _ => ("accumulator", "add @a8 or @a16 to the enclosing function"),
+                    };
+                    self.report(
+                        Diagnostic::error(
+                            DiagnosticCode::UNKNOWN_WIDTH,
+                            format!(
+                                "`{}` uses a width-dependent immediate but {axis} width is unknown",
+                                mnemonic.ca65()
+                            ),
+                            Label::new(value.span, "cannot size this immediate"),
+                        )
+                        .with_help(help)
+                        .with_docs("doc/register-width-aware-syntax.md"),
+                    );
+                }
+            }
+        }
+        Some(Classified {
+            spec,
+            operand: Some(Operand::Immediate(expr)),
+        })
+    }
+
+    /// One bank byte of a block move, which is always a compile-time value.
+    fn bank_byte(&mut self, expr: &Expr) -> Option<KExpr> {
+        let value = self.constant(expr, "block move bank bytes")?;
+        if value > 0xFF {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::ADDRESS_RANGE,
+                    format!("bank byte ${value:X} does not fit in one byte"),
+                    Label::new(expr.span, "a block move takes bank numbers, not addresses"),
+                )
+                .with_docs("doc/syntax-reference.md#65816-block-moves"),
+            );
+            return None;
+        }
+        Some(KExpr::number(value))
+    }
+
+    /// Classifies every operand form that carries an address.
+    fn addressed(
+        &mut self,
+        mnemonic: Mnemonic,
+        form: OperandForm,
+        native: &NativeInstruction,
+    ) -> Option<Classified> {
+        let (value, forced, index) = match native.operand.as_ref() {
+            Some(NativeOperand::Address(address)) => {
+                (&address.value, address.encoding, address.index)
+            }
+            Some(NativeOperand::Indirect(indirect)) => (&indirect.value, indirect.encoding, None),
+            Some(NativeOperand::LongIndirect(long)) => (&long.value, long.encoding, None),
+            _ => unreachable!("an addressed form always carries an address expression"),
+        };
+
+        self.check_const_in_address_position(value, native);
+        let spec = self.select_encoding(mnemonic, form, native, value, forced)?;
+        let expr = self.fold(value)?;
+        self.check_fits(spec, &expr, value.span);
+
+        let index = index.and_then(|index| match index.kind {
+            IndexRegisterKind::X => Some(IndexRegister::X),
+            IndexRegisterKind::Y => Some(IndexRegister::Y),
+            // `expr,S` is a mode of its own, not an index.
+            IndexRegisterKind::Stack => None,
+        });
+        let operand = match form {
+            OperandForm::Address => match spec.operand.width {
+                // A branch or `per` target is a displacement ca65 computes.
+                OperandWidth::Displacement => Operand::Label(expr),
+                _ => Operand::Address {
+                    encoding: spec.encoding().expect("an address form encodes an address"),
+                    expr,
+                    index: None,
+                },
+            },
+            OperandForm::AddressIndexedX | OperandForm::AddressIndexedY => Operand::Address {
+                encoding: spec.encoding().expect("an address form encodes an address"),
+                expr,
+                index,
+            },
+            OperandForm::StackRelative => Operand::StackRelative(expr),
+            OperandForm::Indirect
+            | OperandForm::IndirectIndexedX
+            | OperandForm::IndirectIndexedY
+            | OperandForm::StackRelativeIndirectIndexedY
+            | OperandForm::LongIndirect
+            | OperandForm::LongIndirectIndexedY => Operand::Indirect {
+                encoding: spec.encoding().expect("an indirect form encodes a pointer"),
+                expr,
+                long: matches!(
+                    form,
+                    OperandForm::LongIndirect | OperandForm::LongIndirectIndexedY
+                ),
+                inner: matches!(form, OperandForm::IndirectIndexedX).then_some(IndexRegister::X),
+                outer: matches!(
+                    form,
+                    OperandForm::IndirectIndexedY
+                        | OperandForm::LongIndirectIndexedY
+                        | OperandForm::StackRelativeIndirectIndexedY
+                )
+                .then_some(IndexRegister::Y),
+                stack_relative: form == OperandForm::StackRelativeIndirectIndexedY,
+            },
+            OperandForm::Nothing
+            | OperandForm::Accumulator
+            | OperandForm::Immediate
+            | OperandForm::BlockMove => {
+                unreachable!("these forms carry no address")
+            }
+        };
+        Some(Classified {
+            spec,
+            operand: Some(operand),
+        })
+    }
+
+    /// Narrows a mnemonic's specs to one by source form, for the forms whose
+    /// shape already fixes the mode.
+    fn select(
+        &mut self,
+        mnemonic: Mnemonic,
+        form: OperandForm,
+        mnemonic_span: Span,
+        operand_span: Span,
+    ) -> Option<&'static InstructionSpec> {
+        let mut candidates = spec_for_form(mnemonic, form);
+        match candidates.next() {
+            Some(spec) => {
+                debug_assert!(
+                    candidates.next().is_none(),
+                    "{mnemonic:?} has two {form:?} specs; only the address family may"
+                );
+                Some(spec)
+            }
+            None => {
+                self.report_invalid_form(mnemonic, form, mnemonic_span, operand_span);
+                None
+            }
+        }
+    }
+
+    /// Chooses both the spec and its address encoding.
+    ///
+    /// An operand prefix forces the encoding outright; without one the
+    /// narrowest encoding that provably holds the address wins, and "provably"
+    /// is the whole point — see the module documentation.
+    fn select_encoding(
+        &mut self,
+        mnemonic: Mnemonic,
+        form: OperandForm,
+        native: &NativeInstruction,
+        value: &Expr,
+        forced: Option<AstEncoding>,
+    ) -> Option<&'static InstructionSpec> {
+        let candidates: Vec<&'static InstructionSpec> = spec_for_form(mnemonic, form).collect();
+        if candidates.is_empty() {
+            self.report_invalid_form(mnemonic, form, native.mnemonic.span, operand_span(native));
+            return None;
+        }
+        // A displacement operand has no encoding to choose.
+        if candidates.iter().all(|spec| spec.encoding().is_none()) {
+            if let Some(forced) = forced {
+                self.report_invalid_encoding(mnemonic, forced, &candidates);
+                return None;
+            }
+            return Some(candidates[0]);
+        }
+
+        if let Some(prefix) = forced {
+            let wanted = encoding_of(prefix.kind);
+            return match candidates
+                .iter()
+                .find(|spec| spec.encoding() == Some(wanted))
+            {
+                Some(spec) => Some(spec),
+                None => {
+                    self.report_invalid_encoding(mnemonic, prefix, &candidates);
+                    None
+                }
+            };
+        }
+
+        // Auto-shrink: only an address K816 knows now may narrow.
+        let preferred = encoding_of_size(self.preferred_size(value));
+        // Widening is always safe, narrowing never is, so the choice is the
+        // narrowest available encoding that is at least as wide as needed.
+        let mut usable: Vec<&'static InstructionSpec> = candidates
+            .iter()
+            .copied()
+            .filter(|spec| {
+                spec.encoding()
+                    .is_some_and(|encoding| encoding >= preferred)
+            })
+            .collect();
+        usable.sort_by_key(|spec| spec.encoding());
+        if let Some(spec) = usable.first() {
+            return Some(*spec);
+        }
+
+        // Nothing this instruction offers is wide enough for the value.
+        let widest = candidates
+            .iter()
+            .filter_map(|spec| spec.encoding())
+            .max()
+            .expect("at least one candidate encodes an address");
+        self.report(
+            Diagnostic::error(
+                DiagnosticCode::ADDRESS_RANGE,
+                format!(
+                    "`{}` cannot reach this address in any of its forms",
+                    mnemonic.ca65()
+                ),
+                Label::new(
+                    value.span,
+                    format!(
+                        "needs a {} encoding; the widest available is {}",
+                        size_name(size_of_encoding(preferred)),
+                        size_name(size_of_encoding(widest))
+                    ),
+                ),
+            )
+            .with_docs("doc/syntax-reference.md#address-encoding-prefixes"),
+        );
+        None
+    }
+
+    /// The address size a plain reference to `value` should take.
+    ///
+    /// A folded literal reports its own magnitude and a pinned variable its
+    /// declared size. Everything else — a label, a linker-allocated
+    /// variable, any expression over one — is placed by ld65, so K816 cannot
+    /// prove page-zero fit and must not narrow.
+    fn preferred_size(&mut self, value: &Expr) -> AddressSize {
+        if let ExprKind::Symbol(name) = &value.kind
+            && let Some(id) = self.symbols.lookup(&name.text)
+            && let Some(size) = self.symbols.kind(id).address_size()
+        {
+            return size;
+        }
+        // Folding here must stay quiet: any diagnostic the expression
+        // deserves is reported when it is folded for real.
+        let mut probe = Resolver::new(self.symbols)
+            .in_function(self.function)
+            .with_widths(self.widths);
+        match probe.fold(value).and_then(|expr| expr.value()) {
+            Some(folded) => AddressSize::of_value(folded.get()),
+            None => AddressSize::Absolute,
+        }
+    }
+
+    /// The address an expression denotes, when K816 knows it now.
+    ///
+    /// A pinned variable keeps its name in the emitted assembly — ca65 owns
+    /// resolution — but its address is still known here, which is what lets
+    /// a forced `dp` prefix on a `$0400` variable be rejected rather than
+    /// silently handed to ca65 to encode differently.
+    fn known_address(&self, expr: &KExpr) -> Option<Value> {
+        match expr {
+            KExpr::Number(value) => Some(*value),
+            KExpr::Symbol(id) => self.symbols.kind(*id).known_address().map(Value::new),
+            KExpr::Unary { .. } | KExpr::Binary { .. } => None,
+        }
+    }
+
+    /// Rejects a value the chosen encoding cannot hold.
+    fn check_fits(&mut self, spec: &InstructionSpec, expr: &KExpr, span: Span) {
+        let (Some(encoding), Some(value)) = (spec.encoding(), self.known_address(expr)) else {
+            return; // A link-time address is ld65's to check.
+        };
+        if value.get() <= encoding.max_value() {
+            return;
+        }
+        self.report(
+            Diagnostic::error(
+                DiagnosticCode::ADDRESS_RANGE,
+                format!(
+                    "{value} does not fit a {} address",
+                    size_name(size_of_encoding(encoding))
+                ),
+                Label::new(span, format!("maximum here is ${:X}", encoding.max_value())),
+            )
+            .with_help(format!(
+                "drop the `{}` prefix, or use an address that fits",
+                encoding.k65_keyword()
+            ))
+            .with_docs("doc/syntax-reference.md#address-encoding-prefixes"),
+        );
+    }
+
+    /// A `const` names a value, not a memory location.
+    ///
+    /// The `&expr` marker is the way to use one as a small field offset in
+    /// an indexed mode, and `&&label` / `&&&label` are the address-of
+    /// exception; neither reaches here as a bare const-rooted expression.
+    fn check_const_in_address_position(&mut self, value: &Expr, native: &NativeInstruction) {
+        if let Some(NativeOperand::Address(address)) = native.operand.as_ref()
+            && address.offset_marker.is_some()
+        {
+            return;
+        }
+        let Some((name, span)) = self.first_const(value) else {
+            return;
+        };
+        let declaration = self
+            .symbols
+            .lookup(&name)
+            .map(|id| self.symbols.symbol(id).declaration);
+        let mut diagnostic = Diagnostic::error(
+            DiagnosticCode::CONST_IN_ADDRESS_POSITION,
+            format!("`{name}` is a `const`, not a memory location"),
+            Label::new(span, "a `const` names a value, not an address"),
+        )
+        .with_fix(Fix {
+            title: format!("load the value with `#{name}`"),
+            applicability: Applicability::MachineApplicable,
+            edits: vec![TextEdit::insert(span, "#")],
+        })
+        .with_help("or write `&` before it to use it as an indexed field offset")
+        .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65");
+        if let Some(declaration) = declaration {
+            diagnostic = diagnostic.with_secondary(Label::new(declaration, "declared here"));
+        }
+        self.report(diagnostic);
+    }
+
+    /// The first `const` name anywhere in `expr`, with its span.
+    fn first_const(&self, expr: &Expr) -> Option<(String, Span)> {
+        match &expr.kind {
+            ExprKind::Symbol(name) => {
+                let id = self.symbols.lookup(&name.text)?;
+                matches!(self.symbols.kind(id), SymbolKind::Const { .. })
+                    .then(|| (name.text.clone(), name.span))
+            }
+            ExprKind::Unary(unary) => self.first_const(&unary.operand),
+            ExprKind::Binary(binary) => self
+                .first_const(&binary.left)
+                .or_else(|| self.first_const(&binary.right)),
+            _ => None,
+        }
+    }
+
+    /// The `&expr` marker is legal only in the `,X` and `,Y` indexed modes.
+    fn check_offset_marker(&mut self, operand: Option<&NativeOperand>, form: OperandForm) {
+        let Some(NativeOperand::Address(address)) = operand else {
+            return;
+        };
+        let Some(marker) = address.offset_marker else {
+            return;
+        };
+        if matches!(
+            form,
+            OperandForm::AddressIndexedX | OperandForm::AddressIndexedY
+        ) {
+            return;
+        }
+        self.report(
+            Diagnostic::error(
+                DiagnosticCode::OFFSET_MARKER_POSITION,
+                "the `&` offset marker is only legal in a `,x` or `,y` indexed mode",
+                Label::new(marker, "no index register to offset from"),
+            )
+            .with_note(
+                "the marker exists so a `const` can serve as a field offset \
+                 when the struct base is in X or Y",
+            )
+            .with_fix(Fix {
+                title: "remove the offset marker".to_owned(),
+                applicability: Applicability::MaybeIncorrect,
+                edits: vec![TextEdit::delete(marker)],
+            })
+            .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
+        );
+    }
+
+    fn report_invalid_form(
+        &mut self,
+        mnemonic: Mnemonic,
+        form: OperandForm,
+        mnemonic_span: Span,
+        operand_span: Span,
+    ) {
+        let legal: Vec<&'static str> = crate::isa::specs_for(mnemonic)
+            .map(|spec| spec.mode.symbol())
+            .collect();
+        let mut diagnostic = Diagnostic::error(
+            DiagnosticCode::INVALID_OPERAND,
+            format!("`{}` does not support this operand form", mnemonic.ca65()),
+            Label::new(
+                operand_span,
+                format!("{} is not legal here", form_name(form)),
+            ),
+        )
+        .with_secondary(Label::new(mnemonic_span, "this instruction"))
+        .with_docs("doc/w65c816s.md");
+        if !legal.is_empty() {
+            diagnostic = diagnostic.with_note(format!(
+                "`{}` accepts: {}",
+                mnemonic.ca65(),
+                legal.join(", ")
+            ));
+        }
+        self.report(diagnostic);
+    }
+
+    fn report_invalid_encoding(
+        &mut self,
+        mnemonic: Mnemonic,
+        prefix: AstEncoding,
+        candidates: &[&'static InstructionSpec],
+    ) {
+        let mut legal: Vec<&'static str> = candidates
+            .iter()
+            .filter_map(|spec| spec.encoding())
+            .map(AddressEncoding::k65_keyword)
+            .collect();
+        legal.sort_unstable();
+        legal.dedup();
+        let wanted = encoding_of(prefix.kind);
+        let mut diagnostic = Diagnostic::error(
+            DiagnosticCode::INVALID_ENCODING,
+            format!(
+                "`{}` has no {} form",
+                mnemonic.ca65(),
+                size_name(size_of_encoding(wanted))
+            ),
+            Label::new(prefix.span, "this encoding prefix is not available here"),
+        )
+        .with_docs("doc/syntax-reference.md#address-encoding-prefixes");
+        match legal.as_slice() {
+            [] => {
+                diagnostic = diagnostic
+                    .with_note("this operand form encodes no address, so it takes no prefix")
+                    .with_fix(Fix {
+                        title: "remove the encoding prefix".to_owned(),
+                        applicability: Applicability::MachineApplicable,
+                        edits: vec![TextEdit::delete(prefix.span)],
+                    });
+            }
+            [only] => {
+                diagnostic = diagnostic
+                    .with_help(format!("the only legal prefix here is `{only}`"))
+                    .with_fix(Fix {
+                        title: format!("use `{only}` instead"),
+                        applicability: Applicability::MaybeIncorrect,
+                        edits: vec![TextEdit::replace(prefix.span, *only)],
+                    });
+            }
+            several => {
+                diagnostic =
+                    diagnostic.with_help(format!("legal prefixes here: {}", several.join(", ")));
+            }
+        }
+        self.report(diagnostic);
+    }
+}
+
+/// The source operand shape, or `None` when no 65816 mode is written that
+/// way (`(expr,Y)`, say, which no instruction has).
+fn source_form(operand: Option<&NativeOperand>) -> Option<OperandForm> {
+    use IndexRegisterKind as I;
+    let index = |register: Option<crate::ast::IndexRegister>| register.map(|index| index.kind);
+    Some(match operand {
+        None => OperandForm::Nothing,
+        Some(NativeOperand::Register(register)) => {
+            if register.kind == crate::ast::RegisterKind::A {
+                OperandForm::Accumulator
+            } else {
+                return None;
+            }
+        }
+        Some(NativeOperand::Immediate(_)) => OperandForm::Immediate,
+        Some(NativeOperand::BlockMove(_)) => OperandForm::BlockMove,
+        Some(NativeOperand::Address(AddressOperand { index: idx, .. })) => match index(*idx) {
+            None => OperandForm::Address,
+            Some(I::X) => OperandForm::AddressIndexedX,
+            Some(I::Y) => OperandForm::AddressIndexedY,
+            Some(I::Stack) => OperandForm::StackRelative,
+        },
+        Some(NativeOperand::Indirect(IndirectOperand {
+            inner_index,
+            outer_index,
+            ..
+        })) => match (index(*inner_index), index(*outer_index)) {
+            (None, None) => OperandForm::Indirect,
+            (Some(I::X), None) => OperandForm::IndirectIndexedX,
+            (None, Some(I::Y)) => OperandForm::IndirectIndexedY,
+            (Some(I::Stack), Some(I::Y)) => OperandForm::StackRelativeIndirectIndexedY,
+            _ => return None,
+        },
+        Some(NativeOperand::LongIndirect(long)) => match index(long.outer_index) {
+            None => OperandForm::LongIndirect,
+            Some(I::Y) => OperandForm::LongIndirectIndexedY,
+            Some(_) => return None,
+        },
+    })
+}
+
+/// True when the expression's outermost operator is `&&` or `&&&`, the
+/// address-of forms that produce an immediate even in address position.
+fn is_address_of(expr: &Expr) -> bool {
+    matches!(
+        &expr.kind,
+        ExprKind::Unary(unary)
+            if matches!(
+                unary.op,
+                crate::ast::UnaryOp::Address16 | crate::ast::UnaryOp::Address24
+            )
+    )
+}
+
+/// The span to blame for an operand problem: the operand itself when there
+/// is one, and the mnemonic when there is not.
+fn operand_span(native: &NativeInstruction) -> Span {
+    match native.operand.as_ref() {
+        None => native.mnemonic.span,
+        Some(NativeOperand::Immediate(expr)) => expr.span,
+        Some(NativeOperand::Register(register)) => register.span,
+        Some(NativeOperand::Address(address)) => address.value.span,
+        Some(NativeOperand::Indirect(indirect)) => indirect.value.span,
+        Some(NativeOperand::LongIndirect(long)) => long.value.span,
+        Some(NativeOperand::BlockMove(banks)) => banks.source.span,
+    }
+}
+
+fn encoding_of(kind: StorageClassKind) -> AddressEncoding {
+    match kind {
+        StorageClassKind::DirectPage => AddressEncoding::Direct,
+        StorageClassKind::Absolute => AddressEncoding::Absolute,
+        StorageClassKind::Far => AddressEncoding::Long,
+    }
+}
+
+fn encoding_of_size(size: AddressSize) -> AddressEncoding {
+    match size {
+        AddressSize::DirectPage => AddressEncoding::Direct,
+        AddressSize::Absolute => AddressEncoding::Absolute,
+        AddressSize::Long => AddressEncoding::Long,
+    }
+}
+
+fn size_of_encoding(encoding: AddressEncoding) -> AddressSize {
+    match encoding {
+        AddressEncoding::Direct => AddressSize::DirectPage,
+        AddressEncoding::Absolute => AddressSize::Absolute,
+        AddressEncoding::Long => AddressSize::Long,
+    }
+}
+
+fn size_name(size: AddressSize) -> &'static str {
+    match size {
+        AddressSize::DirectPage => "direct-page",
+        AddressSize::Absolute => "absolute",
+        AddressSize::Long => "long",
+    }
+}
+
+fn form_name(form: OperandForm) -> &'static str {
+    match form {
+        OperandForm::Nothing => "no operand",
+        OperandForm::Accumulator => "the accumulator",
+        OperandForm::Immediate => "an immediate",
+        OperandForm::Address => "an address",
+        OperandForm::AddressIndexedX => "`,x` indexing",
+        OperandForm::AddressIndexedY => "`,y` indexing",
+        OperandForm::StackRelative => "stack-relative addressing",
+        OperandForm::Indirect => "indirection",
+        OperandForm::IndirectIndexedX => "`(expr,x)` indirection",
+        OperandForm::IndirectIndexedY => "`(expr),y` indirection",
+        OperandForm::StackRelativeIndirectIndexedY => "`(expr,s),y` indirection",
+        OperandForm::LongIndirect => "`[expr]` long indirection",
+        OperandForm::LongIndirectIndexedY => "`[expr],y` long indirection",
+        OperandForm::BlockMove => "a block move",
+    }
+}
+
+/// The lowered form of a source unary operator.
+fn lowered_unary_op(op: crate::ast::UnaryOp) -> UnaryOp {
+    match op {
+        crate::ast::UnaryOp::Negate => UnaryOp::Negate,
+        crate::ast::UnaryOp::BitNot => UnaryOp::BitNot,
+        crate::ast::UnaryOp::LowByte => UnaryOp::LowByte,
+        crate::ast::UnaryOp::HighByte => UnaryOp::HighByte,
+        crate::ast::UnaryOp::Address16 => UnaryOp::Word,
+        crate::ast::UnaryOp::Address24 => UnaryOp::Long,
+    }
+}
+
+/// The lowered form of a source binary operator. K65's C precedence is
+/// already encoded in the tree B built, so nothing here reorders anything.
+fn lowered_binary_op(op: crate::ast::BinaryOp) -> BinaryOp {
+    match op {
+        crate::ast::BinaryOp::Mul => BinaryOp::Mul,
+        crate::ast::BinaryOp::Add => BinaryOp::Add,
+        crate::ast::BinaryOp::Sub => BinaryOp::Sub,
+        crate::ast::BinaryOp::Shl => BinaryOp::Shl,
+        crate::ast::BinaryOp::Shr => BinaryOp::Shr,
+        crate::ast::BinaryOp::BitAnd => BinaryOp::BitAnd,
+        crate::ast::BinaryOp::BitXor => BinaryOp::BitXor,
+        crate::ast::BinaryOp::BitOr => BinaryOp::BitOr,
+    }
+}
+
+/// `asl` with no operand means `asl a`.
+///
+/// The accumulator modes are written with or without naming the register:
+/// `doc/syntax-reference.md` ("Address Modes") calls `OPC A` an "implied
+/// single byte instruction". Only a mnemonic that has no operandless form of
+/// its own can mean the accumulator, so `nop` and `pha` are untouched.
+fn accumulator_default(mnemonic: Mnemonic, form: OperandForm) -> OperandForm {
+    if form == OperandForm::Nothing
+        && spec_for_form(mnemonic, OperandForm::Nothing)
+            .next()
+            .is_none()
+        && spec_for_form(mnemonic, OperandForm::Accumulator)
+            .next()
+            .is_some()
+    {
+        OperandForm::Accumulator
+    } else {
+        form
+    }
+}
+
+/// The mnemonic a source spelling resolves to when a synonym is written.
+///
+/// ca65 also accepts `jmp [addr]` for the absolute indirect long jump. The
+/// table files that opcode under `JML`, where `doc/w65c816s.md` §3.5.5 puts
+/// it, so the synonym is resolved here rather than duplicating the row and
+/// breaking the one-spec-per-opcode key.
+fn aliased(mnemonic: Mnemonic, form: OperandForm) -> Mnemonic {
+    match (mnemonic, form) {
+        (Mnemonic::Jmp, OperandForm::LongIndirect) => Mnemonic::Jml,
+        _ => mnemonic,
+    }
+}

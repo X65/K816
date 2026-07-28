@@ -38,6 +38,7 @@ pub mod lsp;
 pub mod op;
 pub mod optimize;
 pub mod parser;
+pub mod resolve;
 pub mod semantic;
 pub mod source;
 pub mod symbol;

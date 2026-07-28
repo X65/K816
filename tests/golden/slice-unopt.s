@@ -21,6 +21,6 @@ main:
         .dbg    line, "slice.k816", 5
         lda     #$01                    ; slice.k816:5: a = #1
         .dbg    line, "slice.k816", 6
-        sta     SCREEN                  ; slice.k816:6: SCREEN = a
+        sta     a:SCREEN                ; slice.k816:6: SCREEN = a
         .dbg    line, "slice.k816", 7
         rts                             ; slice.k816:7: return

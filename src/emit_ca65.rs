@@ -376,11 +376,29 @@ fn format_operand(
             };
             if sigil { format!("#{text}") } else { text }
         }
-        // The symbol is emitted by name; ca65/ld65 own resolution. The
-        // explicit `z:`/`a:`/`f:` address-size prefix arrives with task C6,
-        // together with the golden it changes.
-        Operand::Address { expr, index, .. } => {
-            format!("{}{}", format_expr(expr, names), format_index(*index))
+        // The symbol is emitted by name — ca65 and ld65 own resolution —
+        // but the *encoding* is K816's, so it is stated rather than left for
+        // ca65 to infer from its own symbol knowledge. Without the prefix a
+        // `far`-forced reference to a page-zero equate would silently
+        // assemble as a one-byte instruction (sub-plan C, decision 3).
+        Operand::Address {
+            encoding,
+            expr,
+            index,
+        } => {
+            let prefix = if instruction
+                .spec()
+                .is_some_and(|spec| spec.operand.form.takes_address_size_prefix())
+            {
+                encoding.ca65_prefix()
+            } else {
+                ""
+            };
+            format!(
+                "{prefix}{}{}",
+                format_expr(expr, names),
+                format_index(*index)
+            )
         }
         Operand::Label(expr) => format_expr(expr, names),
         Operand::StackRelative(expr) => format!("{},s", format_expr(expr, names)),

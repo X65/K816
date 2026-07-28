@@ -30,18 +30,18 @@
 
 use crate::ast::{
     self, AstFile, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr,
-    ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand,
-    RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
+    ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, RegisterKind,
+    ReservedKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
 };
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
-use crate::isa::{
-    AddressingMode, ImmediateWidthClass, Mnemonic, RegisterWidth, operandless_mode, spec,
-};
+use crate::effects::ControlEffect;
+use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
 use crate::op::WidthContract;
+use crate::resolve::{Classified, Resolver};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
-use crate::value::{BinaryOp, KExpr, UnaryOp};
+use crate::value::KExpr;
 
 /// The result of analyzing one file: symbols plus per-function facts.
 #[derive(Debug, Default)]
@@ -406,89 +406,13 @@ impl Analysis {
     fn check_statement(&mut self, statement: &Statement, contract: WidthContract) {
         match &statement.kind {
             StatementKind::Native(native) => {
-                if native.mnemonic.provenance == Provenance::Synthetic {
-                    return;
-                }
-                if native.repeat.is_some() {
-                    self.diagnostics.push(compat::unimplemented(
-                        statement.span,
-                        "instruction repetition counts",
-                        compat::Owner::HlaLowering,
-                    ));
-                    return;
-                }
-                // The grammar only produces mnemonics the CPU has, so a
-                // mnemonic the ISA table does not carry is one the native
-                // translator has yet to add, not a typo.
-                let Some(mnemonic) = Mnemonic::parse(&native.mnemonic.text) else {
-                    self.diagnostics.push(compat::unimplemented(
-                        native.mnemonic.span,
-                        &format!("`{}` instructions", native.mnemonic.text),
-                        compat::Owner::NativeTranslator,
-                    ));
-                    return;
-                };
-                // Likewise for the operand shapes the frozen ISA table cannot
-                // describe yet: indexing, indirection, and the encoding
-                // prefixes all grow with the native translator.
-                let mode = match &native.operand {
-                    None => implied_mode(mnemonic),
-                    Some(NativeOperand::Immediate(_)) => AddressingMode::Immediate,
-                    Some(NativeOperand::Address(address))
-                        if address.encoding.is_none() && address.index.is_none() =>
-                    {
-                        AddressingMode::Absolute
-                    }
-                    Some(_) => {
-                        self.diagnostics.push(compat::unimplemented(
-                            statement.span,
-                            "these operand addressing modes",
-                            compat::Owner::NativeTranslator,
-                        ));
-                        return;
-                    }
-                };
-                let Some(spec) = spec(mnemonic, mode) else {
-                    self.diagnostics.push(
-                        Diagnostic::error(
-                            DiagnosticCode::INVALID_OPERAND,
-                            format!(
-                                "`{}` does not support this operand form",
-                                native.mnemonic.text
-                            ),
-                            Label::new(statement.span, format!("{mode:?} mode is not legal here")),
-                        )
-                        .with_docs("doc/w65c816s.md"),
-                    );
-                    return;
-                };
-                match &native.operand {
-                    Some(NativeOperand::Immediate(value)) => {
-                        self.check_immediate(value, spec.immediate_width(), contract, mnemonic);
-                    }
-                    Some(NativeOperand::Address(address)) => match &address.value.kind {
-                        ExprKind::Symbol(name) => self.check_memory_operand(&name.text, name.span),
-                        // A local label resolves in the enclosing function's
-                        // scope and, like any label, gets its address from
-                        // ld65 — so it is checked, not folded.
-                        ExprKind::LocalSymbol(_) => {
-                            self.fold(&address.value);
-                        }
-                        // Literal and compound address operands need the
-                        // encoding choice operand classification makes, so
-                        // they wait for it rather than being folded into an
-                        // absolute the auto-shrink rule has not looked at.
-                        _ => self.diagnostics.push(compat::unimplemented(
-                            address.value.span,
-                            "these address operand forms",
-                            compat::Owner::NativeTranslator,
-                        )),
-                    },
-                    Some(NativeOperand::Register(_))
-                    | Some(NativeOperand::Indirect(_))
-                    | Some(NativeOperand::LongIndirect(_))
-                    | Some(NativeOperand::BlockMove(_))
-                    | None => {}
+                // Classification is shared with lowering, so the two cannot
+                // disagree about which addressing mode an operand selects.
+                let mut resolver = self.resolver().with_widths(contract);
+                let classified = resolver.classify(native);
+                self.diagnostics.append(&mut resolver.take_diagnostics());
+                if let Some(classified) = classified {
+                    self.check_addressable(native, &classified);
                 }
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
@@ -830,122 +754,26 @@ impl Analysis {
         }
     }
 
-    /// Folds `expr` into a lowered expression.
-    ///
-    /// Absolute sub-expressions collapse to numbers; anything rooted in a
-    /// symbol ld65 places stays a tree, because K816 never resolves an
-    /// address the linker owns. Every operator the K65 expression layer has
-    /// is preserved symbolically — ca65 stores unresolved expressions in the
-    /// object file and ld65 evaluates them after placement, so `label * 2`
-    /// is not an error merely because a label is involved.
-    ///
-    /// Returns `None` when the expression is malformed or names something
-    /// undeclared; both are reported here, so callers stay quiet.
+    /// A resolver over this unit's symbols, scoped to the function being
+    /// checked. Analysis owns the diagnostics it produces.
+    fn resolver(&self) -> Resolver<'_> {
+        Resolver::new(&self.model.symbols).in_function(self.current_function)
+    }
+
+    /// Folds `expr`, reporting whatever the fold turns up.
     fn fold(&mut self, expr: &Expr) -> Option<KExpr> {
-        match &expr.kind {
-            ExprKind::Number(value) => Some(KExpr::number(*value)),
-            ExprKind::Symbol(name) => {
-                let id = self.resolve(&name.text, name.span)?;
-                Some(match self.model.symbols.symbol(id).kind {
-                    // A `const` has no storage, so it can only ever be its
-                    // value; a variable or function keeps its name, and
-                    // ca65/ld65 resolve it.
-                    SymbolKind::Const { value } => KExpr::number(value),
-                    SymbolKind::Var { .. }
-                    | SymbolKind::Label { .. }
-                    | SymbolKind::DataLabel { .. }
-                    | SymbolKind::Function { .. } => KExpr::Symbol(id),
-                })
-            }
-            ExprKind::Unary(unary) => {
-                let operand = self.fold(&unary.operand)?;
-                Some(KExpr::fold_unary(lowered_unary_op(unary.op), operand))
-            }
-            ExprKind::Binary(binary) => {
-                // Both sides are folded even when the first fails, so one
-                // undeclared name does not hide another.
-                let left = self.fold(&binary.left);
-                let right = self.fold(&binary.right);
-                Some(KExpr::fold_binary(
-                    lowered_binary_op(binary.op),
-                    left?,
-                    right?,
-                ))
-            }
-            ExprKind::LocalSymbol(name) => {
-                let owner = self.current_function?;
-                match self.model.symbols.lookup_local(owner, &name.text) {
-                    Some(id) => Some(KExpr::Symbol(id)),
-                    None => {
-                        let function = self.model.symbols.name(owner).to_owned();
-                        self.diagnostics.push(
-                            Diagnostic::error(
-                                DiagnosticCode::UNDECLARED_SYMBOL,
-                                format!("`{}` is not declared in `{function}`", name.text),
-                                Label::new(name.span, "no such local label in this function"),
-                            )
-                            .with_note("local labels are scoped to their enclosing function")
-                            .with_docs("doc/syntax-reference.md#local"),
-                        );
-                        None
-                    }
-                }
-            }
-            ExprKind::Field(_)
-            | ExprKind::Subscript(_)
-            | ExprKind::Metadata(_)
-            | ExprKind::TypedView(_) => {
-                self.diagnostics.push(compat::unimplemented(
-                    expr.span,
-                    "symbolic subscripts, metadata queries, and typed views",
-                    compat::Owner::HlaLowering,
-                ));
-                None
-            }
-            ExprKind::Eval(inner) => {
-                self.diagnostics.push(compat::unimplemented(
-                    expr.span,
-                    "compile-time evaluator brackets",
-                    compat::Owner::Compatibility,
-                ));
-                self.report_reserved_in_eval(inner);
-                None
-            }
-            // A syntax diagnostic was already reported for this node.
-            ExprKind::Error => None,
-        }
+        let mut resolver = self.resolver();
+        let folded = resolver.fold(expr);
+        self.diagnostics.append(&mut resolver.take_diagnostics());
+        folded
     }
 
     /// The absolute value of `expr` in a position that requires one.
-    ///
-    /// `position` names where the expression appeared, in plural form
-    /// ("immediate operands"). A link-time expression is rejected here and
-    /// only here: elsewhere it is preserved and handed to ld65.
     fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
-        let folded = self.fold(expr)?;
-        match folded.value() {
-            Some(value) => Some(value.get()),
-            None => {
-                let mut symbols = Vec::new();
-                folded.symbols(&mut symbols);
-                let named = symbols
-                    .first()
-                    .map(|id| self.model.symbols.name(*id).to_owned());
-                let mut diagnostic = Diagnostic::error(
-                    DiagnosticCode::NOT_CONSTANT,
-                    format!("{position} must be known at compile time"),
-                    Label::new(expr.span, "this value is not known until link time"),
-                )
-                .with_help("use a numeric literal or a `const` here")
-                .with_docs("doc/syntax-reference.md#constant-declaration");
-                if let Some(name) = named {
-                    diagnostic =
-                        diagnostic.with_note(format!("`{name}` gets its address from ld65"));
-                }
-                self.diagnostics.push(diagnostic);
-                None
-            }
-        }
+        let mut resolver = self.resolver();
+        let value = resolver.constant(expr, position);
+        self.diagnostics.append(&mut resolver.take_diagnostics());
+        value
     }
 
     /// Declares one `const` group, applying the enum-like auto-increment.
@@ -1002,40 +830,71 @@ impl Analysis {
         }
     }
 
-    /// Resolves a name, reporting it as undeclared when nothing defines it.
-    fn resolve(&mut self, name: &str, span: Span) -> Option<SymbolId> {
-        match self.model.symbols.lookup(name) {
-            Some(id) => Some(id),
-            None => {
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        DiagnosticCode::UNDECLARED_SYMBOL,
-                        format!("`{name}` is not declared"),
-                        Label::new(span, "used here without a declaration"),
-                    )
-                    .with_help(format!("declare it first, e.g. `var {name} = $0400`"))
-                    .with_docs("doc/syntax-reference.md#variable-declaration"),
-                );
-                None
+    /// Rejects a symbol used in a role its declaration does not allow.
+    ///
+    /// Classification already checked the *shape* of an operand against the
+    /// ISA table; this is the other axis — whether the name in it denotes
+    /// something an operand may address at all. A `const` in address
+    /// position is its own diagnostic, reported during classification.
+    fn check_addressable(
+        &mut self,
+        native: &crate::ast::NativeInstruction,
+        classified: &Classified,
+    ) {
+        let Some(operand) = &classified.operand else {
+            return;
+        };
+        // A jump, call, or branch target names code, so a function is
+        // exactly what belongs there. Only an operand the instruction reads
+        // or writes as data has to name storage.
+        if classified.instruction().effects().control != ControlEffect::FallThrough {
+            return;
+        }
+        let expr = match operand {
+            crate::op::Operand::Address { expr, .. }
+            | crate::op::Operand::Indirect { expr, .. }
+            | crate::op::Operand::StackRelative(expr) => expr,
+            // An immediate, a branch target, and a block move's bank bytes
+            // name values rather than storage.
+            crate::op::Operand::Immediate(_)
+            | crate::op::Operand::Label(_)
+            | crate::op::Operand::BlockMove { .. } => return,
+        };
+        let mut referenced = Vec::new();
+        expr.symbols(&mut referenced);
+        for id in referenced {
+            let symbol = self.model.symbols.symbol(id);
+            if symbol.kind.is_addressable() {
+                continue;
             }
+            let name = symbol.name.clone();
+            let declaration = symbol.declaration;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::SYMBOL_KIND_MISMATCH,
+                    format!("`{name}` is a function, not a variable"),
+                    Label::new(native.mnemonic.span, "cannot be used as a memory operand"),
+                )
+                .with_secondary(Label::new(declaration, "declared here"))
+                .with_help(format!(
+                    "call it with `call {name}`, or take its address with `&&{name}`"
+                )),
+            );
         }
     }
 
-    /// Validates a memory operand: the symbol must name a memory location.
+    /// Validates a memory operand named by an HLA statement.
     fn check_memory_operand(&mut self, name: &str, span: Span) {
-        let Some(id) = self.resolve(name, span) else {
+        let Some(id) = self.model.symbols.lookup(name) else {
+            let mut resolver = self.resolver();
+            resolver.resolve(name, span);
+            self.diagnostics.append(&mut resolver.take_diagnostics());
             return;
         };
         let symbol = self.model.symbols.symbol(id);
         let declaration = symbol.declaration;
         match symbol.kind {
-            // Variables and labels all name memory: a data label is how one
-            // unit hands another the address of some bytes, and a code label
-            // is the target of the legacy self-modifying-code idiom.
             SymbolKind::Var { .. } | SymbolKind::Label { .. } | SymbolKind::DataLabel { .. } => {}
-            // A `const` names a value, not a memory location. The `&&label`
-            // and `&&&label` forms are the intentional exception, and they
-            // are not bare symbols.
             SymbolKind::Const { .. } => self.diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::CONST_IN_ADDRESS_POSITION,
@@ -1050,9 +909,6 @@ impl Analysis {
                 })
                 .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
             ),
-            // Reading a function's first byte is legal on the hardware and
-            // is almost never what the writer meant; a call goes through
-            // `call`, and its address through `&&name`.
             SymbolKind::Function { .. } => self.diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::SYMBOL_KIND_MISMATCH,
@@ -1122,33 +978,6 @@ fn first_non_offset(expr: &Expr) -> Option<Span> {
     }
 }
 
-/// The lowered form of a source unary operator.
-fn lowered_unary_op(op: ast::UnaryOp) -> UnaryOp {
-    match op {
-        ast::UnaryOp::Negate => UnaryOp::Negate,
-        ast::UnaryOp::BitNot => UnaryOp::BitNot,
-        ast::UnaryOp::LowByte => UnaryOp::LowByte,
-        ast::UnaryOp::HighByte => UnaryOp::HighByte,
-        ast::UnaryOp::Address16 => UnaryOp::Word,
-        ast::UnaryOp::Address24 => UnaryOp::Long,
-    }
-}
-
-/// The lowered form of a source binary operator. K65's C precedence is
-/// already encoded in the tree B built, so nothing here reorders anything.
-fn lowered_binary_op(op: ast::BinaryOp) -> BinaryOp {
-    match op {
-        ast::BinaryOp::Mul => BinaryOp::Mul,
-        ast::BinaryOp::Add => BinaryOp::Add,
-        ast::BinaryOp::Sub => BinaryOp::Sub,
-        ast::BinaryOp::Shl => BinaryOp::Shl,
-        ast::BinaryOp::Shr => BinaryOp::Shr,
-        ast::BinaryOp::BitAnd => BinaryOp::BitAnd,
-        ast::BinaryOp::BitXor => BinaryOp::BitXor,
-        ast::BinaryOp::BitOr => BinaryOp::BitOr,
-    }
-}
-
 /// The `K816-K65-####` diagnostic for a reserved legacy construct.
 fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
     let (code, construct) = match reserved.kind {
@@ -1173,19 +1002,6 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
         EvalCallName::Print => "print",
         EvalCallName::Error => "error",
     }
-}
-
-/// The hardware mode of a mnemonic written without an operand.
-///
-/// WDC spreads the operandless instructions across `i` (implied), `s`
-/// (stack), and `A` (accumulator), so the mode cannot be read off the absent
-/// operand; it is looked up in the ISA table instead. The general
-/// form-matching classifier lands with task C4.
-fn implied_mode(mnemonic: Mnemonic) -> AddressingMode {
-    // A mnemonic that always takes an operand has no operandless mode;
-    // `Implied` then makes the ISA lookup fail with `INVALID_OPERAND`, which
-    // is exactly the right diagnostic.
-    operandless_mode(mnemonic).unwrap_or(AddressingMode::Implied)
 }
 
 /// Names the first part of a code section that has no semantics yet, or

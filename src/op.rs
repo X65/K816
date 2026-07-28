@@ -206,6 +206,11 @@ impl Instruction {
         Self::new(mnemonic, mode, None)
     }
 
+    /// The ISA row this instruction matched.
+    pub fn spec(&self) -> Option<&'static crate::isa::InstructionSpec> {
+        crate::isa::spec(self.mnemonic, self.mode)
+    }
+
     /// The conservative CPU effects of this instruction, derived from the
     /// ISA table (never stored on the op itself).
     pub fn effects(&self) -> Effects {

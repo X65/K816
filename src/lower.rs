@@ -30,15 +30,15 @@
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
 use crate::ast::{
-    AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, NativeOperand, ReturnKind,
-    StatementKind,
+    AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, ReturnKind, StatementKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
-use crate::isa::{AddressEncoding, AddressingMode, Mnemonic, operandless_mode};
+use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
     Instruction, KFunction, KOp, KOpKind, KProgram, Operand, Origin, RegisterWidth, WidthContract,
 };
+use crate::resolve::Resolver;
 use crate::semantic::SemanticModel;
 use crate::source::Span;
 use crate::symbol::SymbolId;
@@ -64,6 +64,7 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
         let mut lowering = Lowering {
             model,
             function: Some(info.symbol),
+            contract: info.contract,
             ops: Vec::new(),
             diagnostics: Vec::new(),
         };
@@ -91,6 +92,8 @@ struct Lowering<'a> {
     model: &'a SemanticModel,
     /// The function being lowered, which local labels are scoped to.
     function: Option<SymbolId>,
+    /// Its entry contract, which sizes width-dependent immediates.
+    contract: WidthContract,
     ops: Vec<KOp>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -150,52 +153,20 @@ impl Lowering<'_> {
         let span = statement.span;
         match &statement.kind {
             StatementKind::Native(native) => {
-                let Some(mnemonic) = Mnemonic::parse(&native.mnemonic.text) else {
-                    return self.skipped(span, "an unresolved mnemonic");
-                };
-                let operand = match &native.operand {
-                    None => None,
-                    Some(NativeOperand::Immediate(expr)) => match expr.kind {
-                        ExprKind::Number(value) => Some(Operand::Immediate(KExpr::number(value))),
-                        // Analysis rejects every immediate it cannot reduce to
-                        // a number, so nothing else can reach lowering.
-                        ExprKind::Error
-                        | ExprKind::Symbol(_)
-                        | ExprKind::LocalSymbol(_)
-                        | ExprKind::Unary(_)
-                        | ExprKind::Binary(_)
-                        | ExprKind::Field(_)
-                        | ExprKind::Subscript(_)
-                        | ExprKind::Metadata(_)
-                        | ExprKind::TypedView(_)
-                        | ExprKind::Eval(_) => {
-                            return self.skipped(span, "an unresolved immediate");
-                        }
-                    },
-                    // Analysis rejects every address operand that is not a
-                    // plain symbol in the ISA table's absolute mode.
-                    Some(NativeOperand::Address(address)) => {
-                        let symbol = match &address.value.kind {
-                            ExprKind::Symbol(name) => self.model.symbols.lookup(&name.text),
-                            ExprKind::LocalSymbol(name) => self.function.and_then(|owner| {
-                                self.model.symbols.lookup_local(owner, &name.text)
-                            }),
-                            _ => return self.skipped(span, "an unresolved address operand"),
-                        };
-                        match symbol {
-                            Some(symbol) => Some(Self::absolute(symbol)),
-                            None => return self.skipped(span, "an unresolved symbol"),
-                        }
-                    }
-                    Some(NativeOperand::Register(_))
-                    | Some(NativeOperand::Indirect(_))
-                    | Some(NativeOperand::LongIndirect(_))
-                    | Some(NativeOperand::BlockMove(_)) => {
-                        return self.skipped(span, "an unsupported operand form");
-                    }
-                };
-                let mode = mode_of(mnemonic, operand.as_ref());
-                self.instruction(mnemonic, mode, operand, span, Origin::User);
+                // Analysis already classified this instruction and reported
+                // anything wrong with it, so a second answer here would be a
+                // compiler bug rather than user error.
+                let mut resolver = Resolver::new(&self.model.symbols)
+                    .in_function(self.function)
+                    .with_widths(self.contract);
+                match resolver.classify(native) {
+                    Some(classified) if !resolver.has_diagnostics() => self.push(
+                        KOpKind::Instruction(classified.instruction()),
+                        span,
+                        Origin::User,
+                    ),
+                    _ => self.skipped(span, "an unclassified instruction"),
+                }
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
                 // Analysis accepts exactly two chain shapes so far; anything
@@ -332,28 +303,5 @@ impl Lowering<'_> {
             format!("internal: lowering skipped {what} that analysis accepted"),
             Label::new(span, "this construct was not lowered"),
         ));
-    }
-}
-
-/// The hardware mode of a lowered instruction.
-///
-/// Analysis has already validated the (mnemonic, mode) pair, so this repeats
-/// the classification analysis performed rather than deciding anything new.
-/// Task C4 replaces both with one shared classifier.
-fn mode_of(mnemonic: Mnemonic, operand: Option<&Operand>) -> AddressingMode {
-    match operand {
-        None => operandless_mode(mnemonic).unwrap_or(AddressingMode::Implied),
-        Some(Operand::Immediate(_)) => AddressingMode::Immediate,
-        Some(Operand::Address { encoding, .. }) => match encoding {
-            AddressEncoding::Direct => AddressingMode::Direct,
-            AddressEncoding::Absolute => AddressingMode::Absolute,
-            AddressEncoding::Long => AddressingMode::AbsoluteLong,
-        },
-        // The slice lowers no other operand shape; analysis rejects them
-        // before lowering sees them.
-        Some(Operand::Indirect { .. })
-        | Some(Operand::StackRelative(_))
-        | Some(Operand::BlockMove { .. })
-        | Some(Operand::Label(_)) => AddressingMode::Implied,
     }
 }

@@ -494,3 +494,217 @@ fn duplicate_reports_point_at_the_earlier_declaration() {
         "`first declared here` must point at the earlier line"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Operand classification and address encoding (sub-plan C, task C4).
+// ---------------------------------------------------------------------------
+
+/// The single diagnostic `source` produces, or a panic naming what it did.
+fn only_diagnostic(source: &str) -> k816::diagnostic::Diagnostic {
+    let (_, mut diagnostics) = analyze(source);
+    assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+    diagnostics.remove(0)
+}
+
+/// A function body wrapped around `body`, with both widths pinned.
+fn body(body: &str) -> String {
+    format!("var ZP = $80\nvar SCREEN = $0400\nfunc main @a8 @i16 {{\n    {body}\n}}\n")
+}
+
+#[test]
+fn one_source_shape_picks_the_narrowest_encoding_that_holds_the_address() {
+    use k816::isa::AddressingMode;
+    // `lda ZP` and `lda SCREEN` are written identically and are different
+    // instructions; the value decides, and only because K816 knows it.
+    for (source, expected) in [
+        ("lda ZP", AddressingMode::Direct),
+        ("lda SCREEN", AddressingMode::Absolute),
+        ("lda dp ZP", AddressingMode::Direct),
+        ("lda abs ZP", AddressingMode::Absolute),
+        ("lda far ZP", AddressingMode::AbsoluteLong),
+        ("lda SCREEN,x", AddressingMode::AbsoluteIndexedX),
+        ("lda ZP,x", AddressingMode::DirectIndexedX),
+        // LDA has no direct-page `,y`, so the absolute form is the narrowest
+        // one that exists at all.
+        ("lda ZP,y", AddressingMode::AbsoluteIndexedY),
+        ("lda (ZP,x)", AddressingMode::DirectIndexedIndirect),
+        ("lda (ZP),y", AddressingMode::DirectIndirectIndexed),
+        ("lda [ZP]", AddressingMode::DirectIndirectLong),
+        ("lda [ZP],y", AddressingMode::DirectIndirectLongIndexed),
+        ("lda 4,s", AddressingMode::StackRelative),
+        ("lda (4,s),y", AddressingMode::StackRelativeIndirectIndexed),
+        ("lda #1", AddressingMode::Immediate),
+        ("asl a", AddressingMode::Accumulator),
+        ("asl", AddressingMode::Accumulator),
+        ("inx", AddressingMode::Implied),
+        ("pha", AddressingMode::Stack),
+        ("bne main", AddressingMode::Relative),
+        ("brl main", AddressingMode::RelativeLong),
+        ("mvn $01,$02", AddressingMode::BlockMove),
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("mode.k816", body(source));
+        let parse = parse_source(map.file(id), None);
+        assert_eq!(parse.diagnostics, vec![], "`{source}` did not parse");
+        let (model, diagnostics) = analyze_file(&parse.file);
+        assert_eq!(diagnostics, vec![], "`{source}`");
+
+        let (program, lowered) = k816::lower::lower(&parse.file, &model);
+        assert_eq!(lowered, vec![], "`{source}`");
+        let modes: Vec<AddressingMode> = program
+            .functions()
+            .flat_map(|function| function.ops.iter())
+            .filter_map(|op| match &op.kind {
+                k816::op::KOpKind::Instruction(instruction) => Some(instruction.mode),
+                _ => None,
+            })
+            .collect();
+        assert!(modes.contains(&expected), "`{source}`: got {modes:?}");
+    }
+}
+
+#[test]
+fn a_label_never_auto_shrinks_to_the_direct_page() {
+    // ld65 places the label, so K816 cannot prove page-zero fit — and
+    // guessing would change the instruction's length.
+    use k816::isa::AddressingMode;
+    let source = "func main @a8 {\n  spot:\n    lda spot\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("label.k816", source);
+    let parse = parse_source(map.file(id), None);
+    let (model, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![]);
+    let (program, _) = k816::lower::lower(&parse.file, &model);
+    let modes: Vec<AddressingMode> = program
+        .functions()
+        .flat_map(|function| function.ops.iter())
+        .filter_map(|op| match &op.kind {
+            k816::op::KOpKind::Instruction(instruction) => Some(instruction.mode),
+            _ => None,
+        })
+        .collect();
+    assert!(modes.contains(&AddressingMode::Absolute), "{modes:?}");
+    assert!(!modes.contains(&AddressingMode::Direct), "{modes:?}");
+}
+
+#[test]
+fn an_encoding_prefix_the_instruction_lacks_is_rejected_with_the_legal_ones() {
+    // `stx` has no absolute-indexed form at all, and no `,x` form either.
+    let diagnostic = only_diagnostic(&body("lda dp SCREEN"));
+    assert_eq!(diagnostic.code, DiagnosticCode::ADDRESS_RANGE);
+
+    // `jmp` has no direct-page form, so `dp` names an encoding it lacks.
+    let diagnostic = only_diagnostic(&body("jmp dp ZP"));
+    assert_eq!(diagnostic.code, DiagnosticCode::INVALID_ENCODING);
+    assert!(
+        diagnostic
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("abs")),
+        "the help names the legal prefixes: {diagnostic:?}"
+    );
+    assert_eq!(diagnostic.fixes.len(), 1);
+}
+
+#[test]
+fn an_operand_shape_the_instruction_lacks_lists_what_it_accepts() {
+    let diagnostic = only_diagnostic(&body("inx #1"));
+    assert_eq!(diagnostic.code, DiagnosticCode::INVALID_OPERAND);
+    assert!(
+        diagnostic.notes[0].contains("`inx` accepts: i"),
+        "{diagnostic:?}"
+    );
+}
+
+#[test]
+fn a_const_in_address_position_is_rejected_but_the_offset_marker_is_not() {
+    let source = "const FIELD = 2\nvar ZP = $80\nfunc main @a8 @i16 {\n    lda FIELD\n}\n";
+    let diagnostic = only_diagnostic(source);
+    assert_eq!(diagnostic.code, DiagnosticCode::CONST_IN_ADDRESS_POSITION);
+    assert_eq!(diagnostic.fixes[0].edits[0].replacement, "#");
+
+    // The `&` marker is exactly how a const becomes a field offset.
+    let source = "const FIELD = 2\nfunc main @a8 @i16 {\n    lda &FIELD,x\n}\n";
+    let (_, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+}
+
+#[test]
+fn the_offset_marker_needs_an_index_register() {
+    let source = "const FIELD = 2\nfunc main @a8 @i16 {\n    lda &FIELD\n}\n";
+    let diagnostic = only_diagnostic(source);
+    assert_eq!(diagnostic.code, DiagnosticCode::OFFSET_MARKER_POSITION);
+    assert_eq!(diagnostic.fixes[0].edits[0].replacement, "");
+}
+
+#[test]
+fn the_address_of_operators_produce_an_immediate_without_a_hash() {
+    // `doc/syntax-reference.md`: "&&label and &&&label are the intentional
+    // exception: they produce immediate relocations even without `#`".
+    use k816::isa::AddressingMode;
+    let source = "func main @a16 {\n  spot:\n    lda &&spot\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("addrof.k816", source);
+    let parse = parse_source(map.file(id), None);
+    let (model, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+    let (program, _) = k816::lower::lower(&parse.file, &model);
+    let modes: Vec<AddressingMode> = program
+        .functions()
+        .flat_map(|function| function.ops.iter())
+        .filter_map(|op| match &op.kind {
+            k816::op::KOpKind::Instruction(instruction) => Some(instruction.mode),
+            _ => None,
+        })
+        .collect();
+    assert!(modes.contains(&AddressingMode::Immediate), "{modes:?}");
+}
+
+#[test]
+fn a_link_time_immediate_is_accepted_and_simply_not_range_checked() {
+    // ca65 relocates it; K816 has no address to check it against.
+    let source = "func main @a8 {\n  spot:\n    lda #&<spot\n}\n";
+    let (_, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+}
+
+#[test]
+fn a_call_target_may_name_a_function_but_a_load_may_not() {
+    let source = "func helper @a8 {\n    return\n}\nfunc main @a8 {\n    jsr helper\n}\n";
+    let (_, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+
+    let source = "func helper @a8 {\n    return\n}\nfunc main @a8 {\n    lda helper\n}\n";
+    let diagnostic = only_diagnostic(source);
+    assert_eq!(diagnostic.code, DiagnosticCode::SYMBOL_KIND_MISMATCH);
+}
+
+#[test]
+fn jmp_through_brackets_resolves_to_the_long_jump() {
+    use k816::isa::{AddressingMode, Mnemonic};
+    let source = "var VEC = $0400\nfunc main @a8 {\n    jmp [VEC]\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("alias.k816", source);
+    let parse = parse_source(map.file(id), None);
+    let (model, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
+    let (program, _) = k816::lower::lower(&parse.file, &model);
+    let found = program
+        .functions()
+        .flat_map(|function| function.ops.iter())
+        .any(|op| match &op.kind {
+            k816::op::KOpKind::Instruction(instruction) => {
+                instruction.mnemonic == Mnemonic::Jml
+                    && instruction.mode == AddressingMode::AbsoluteIndirect
+            }
+            _ => false,
+        });
+    assert!(found, "`jmp [vec]` is the `jml [vec]` opcode");
+}
+
+#[test]
+fn a_block_move_takes_bank_numbers_not_addresses() {
+    let diagnostic = only_diagnostic(&body("mvn $1234,$02"));
+    assert_eq!(diagnostic.code, DiagnosticCode::ADDRESS_RANGE);
+    assert!(diagnostic.title.contains("bank byte"), "{diagnostic:?}");
+}

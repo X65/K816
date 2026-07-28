@@ -1264,26 +1264,16 @@ fn every_operandless_mnemonic_the_grammar_accepts_is_in_the_isa_table() {
 }
 
 #[test]
-fn operand_shapes_beyond_the_isa_table_name_the_translator() {
-    for source in [
-        "func main @a8 { lda SCREEN,x }\n",
-        "func main @a8 { lda (SCREEN),y }\n",
-        "func main @a8 { lda dp SCREEN }\n",
-        "func main @a8 { asl a }\n",
-        "func main @a8 { rts * 2 }\n",
-    ] {
-        let mut map = SourceMap::new();
-        let id = map.add_file("shape.k65", format!("var SCREEN = $0400\n{source}"));
-        let parsed = parse_source(map.file(id), None);
-        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
-        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-        assert_eq!(
-            diagnostics[0].code,
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-            "`{source}`"
-        );
-    }
+fn instruction_repetition_still_names_its_owner() {
+    // `<mnemonic> * N` is an HLA shorthand, not an operand shape, so it
+    // stays E's even though every addressing mode around it now compiles.
+    let mut map = SourceMap::new();
+    let id = map.add_file("repeat.k65", "func main @a8 { rts * 2 }\n");
+    let parsed = parse_source(map.file(id), None);
+    assert_eq!(parsed.diagnostics, vec![]);
+    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_YET_IMPLEMENTED);
 }
 
 #[test]

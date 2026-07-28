@@ -85,7 +85,7 @@ fn fixed_address_vars_become_equates_not_resolved_addresses() {
     assert!(assembly.contains("SCREEN          := $0400"));
     // The store references the symbol, never a numeric address: ca65/ld65
     // own resolution.
-    assert!(assembly.contains("sta     SCREEN"));
+    assert!(assembly.contains("sta     a:SCREEN"));
     assert!(!assembly.contains("sta     $0400"));
 }
 
@@ -112,7 +112,7 @@ fn local_labels_become_ca65_cheap_locals() {
     );
     assert!(assembly.contains("\n@again:\n"), "{assembly}");
     assert!(
-        assembly.contains("sta     @again"),
+        assembly.contains("sta     a:@again"),
         "references use the cheap-local spelling too: {assembly}"
     );
 }
@@ -129,7 +129,7 @@ fn a_global_label_inside_a_function_qualifies_its_local_labels() {
     );
     assert!(assembly.contains("\nmain_again:\n"), "{assembly}");
     assert!(assembly.contains("\ndone:\n"), "{assembly}");
-    assert!(assembly.contains("sta     main_again"), "{assembly}");
+    assert!(assembly.contains("sta     a:main_again"), "{assembly}");
     assert!(
         !assembly.contains('@'),
         "no cheap local may survive the split: {assembly}"

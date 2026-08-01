@@ -154,6 +154,21 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::WIDTH_BLOCK_LEAK,
         caret: "bra .out",
     },
+    Case {
+        source: "func f @a8 (#factor) {\n    nop\n}\n",
+        code: DiagnosticCode::ALIAS_NOT_INLINE,
+        caret: "factor",
+    },
+    Case {
+        source: "func add @a8 (a) -> a {\n    nop\n}\n\nfunc f @a8 {\n    add\n}\n",
+        code: DiagnosticCode::CALL_FLOW_MISMATCH,
+        caret: "add",
+    },
+    Case {
+        source: "func callee @a8 {\n    nop\n}\n\nfunc f @a16 {\n    jsr callee\n}\n",
+        code: DiagnosticCode::UNBRIDGED_NATIVE_CALL,
+        caret: "jsr callee",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.
@@ -208,6 +223,10 @@ fn every_diagnostic_says_something_beyond_its_title() {
 
 /// Every code the width model introduces is reachable from source, which is
 /// what keeps a registered code from quietly becoming unused.
+///
+/// `W0123` is the exception, and deliberately: damage tracking is computed
+/// after lowering, so it cannot be reached through `analyze_file` the way
+/// every case here is. `tests/width.rs` drives it through the full pipeline.
 #[test]
 fn every_width_code_is_reachable() {
     for code in [
@@ -217,6 +236,9 @@ fn every_width_code_is_reachable() {
         DiagnosticCode::EXIT_WIDTH_MISMATCH,
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::WIDTH_BLOCK_LEAK,
+        DiagnosticCode::ALIAS_NOT_INLINE,
+        DiagnosticCode::CALL_FLOW_MISMATCH,
+        DiagnosticCode::UNBRIDGED_NATIVE_CALL,
     ] {
         assert!(
             FAMILY.iter().any(|case| case.code == code),
@@ -240,6 +262,7 @@ fn only_the_compile_through_conditions_are_warnings() {
         DiagnosticCode::ADDRESS_NEEDS_CONFIG,
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::WIDTH_BLOCK_LEAK,
+        DiagnosticCode::UNBRIDGED_NATIVE_CALL,
     ];
     for case in FAMILY {
         let (_, diagnostic) = diagnostic_for(case.source, case.code);

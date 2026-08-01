@@ -1783,7 +1783,6 @@ fn section_forms_and_contracts_name_their_owner() {
         "naked f { }\n",
         "inline f { }\n",
         "far func f { }\n",
-        "func f () { }\n",
         "func main @a8 { far other }\n",
         "func main @a8 { return_i }\n",
     ] {

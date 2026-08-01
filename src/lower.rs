@@ -33,8 +33,7 @@ use crate::ast::{
     AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, ReturnKind, StatementKind,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
-use crate::effects::ControlEffect;
-use crate::effects::{Effects, WidthEffect};
+use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
     AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin,
@@ -71,6 +70,7 @@ pub fn lower_unit(
     let mut program = KProgram::default();
     let mut diagnostics = Vec::new();
     let mut anonymous = AnonymousBlocks::default();
+    let mut checked_calls: Vec<(usize, Vec<CheckedCall>)> = Vec::new();
     // Unit-level operations and functions interleave in source order,
     // because a `segment` selection is lexical state: which segment a
     // function lands in is decided by what precedes it in the file.
@@ -106,6 +106,7 @@ pub fn lower_unit(
             anonymous: &mut anonymous,
             widths: model.width(info.symbol),
             ops: Vec::new(),
+            checked_calls: Vec::new(),
             diagnostics: Vec::new(),
         };
 
@@ -116,6 +117,7 @@ pub fn lower_unit(
         }
         lowering.implicit_return(func.body.span);
 
+        checked_calls.push((program.functions().count(), lowering.checked_calls));
         program.push_function(KFunction {
             symbol: info.symbol,
             contract: info.contract,
@@ -124,7 +126,128 @@ pub fn lower_unit(
         });
         diagnostics.append(&mut lowering.diagnostics);
     }
+    diagnostics.extend(report_damaged_registers(&program, model, &checked_calls));
     (program, diagnostics)
+}
+
+/// Reports registers a checked call clobbers that its caller still reads.
+///
+/// Computed after lowering rather than over AST statements, so the reads and
+/// writes come from the effect table uniformly: the check grows as more
+/// statement forms lower, instead of needing a second effect model for HLA
+/// syntax.
+///
+/// A *warning* rather than an error, because a callee's damage set is a
+/// summary of its lowered body and is simply unavailable for a cross-unit or
+/// recursive callee. Code that errors in a one-unit build and passes in a
+/// two-unit build is worse than code that warns in one and is silent in the
+/// other.
+fn report_damaged_registers(
+    program: &KProgram,
+    model: &SemanticModel,
+    checked_calls: &[(usize, Vec<CheckedCall>)],
+) -> Vec<Diagnostic> {
+    let functions: Vec<&KFunction> = program.functions().collect();
+    // The damage set of each function: every register its lowered body
+    // writes. A callee K816 did not lower has none, and is silent.
+    let damage: std::collections::BTreeMap<SymbolId, RegisterSet> = functions
+        .iter()
+        .map(|function| {
+            let written = function
+                .ops
+                .iter()
+                .fold(RegisterSet::NONE, |set, op| match &op.kind {
+                    KOpKind::Instruction(instruction) => {
+                        set.union(instruction.effects().writes.registers)
+                    }
+                    _ => set,
+                });
+            // The stack pointer is not damage: the `JSR`/`RTS` pair moves it
+            // and puts it back, so every subroutine writes it and naming that
+            // would bury the registers a caller can actually lose.
+            (function.symbol, written.without(RegisterSet::S))
+        })
+        .collect();
+
+    let mut diagnostics = Vec::new();
+    for (index, calls) in checked_calls {
+        let Some(function) = functions.get(*index) else {
+            continue;
+        };
+        for call in calls {
+            let Some(damaged) = damage.get(&call.callee).copied() else {
+                continue;
+            };
+            let declared = model
+                .contracts
+                .get(&call.callee)
+                .map_or(RegisterSet::NONE, |flow| registers_of(&flow.outputs));
+            // A register the contract hands back is not damage: the caller
+            // asked for it.
+            let at_risk = damaged.without(declared);
+            if at_risk.is_empty() {
+                continue;
+            }
+            if let Some(read) = first_live_read(&function.ops, call.op, at_risk) {
+                diagnostics.push(clobbered_register(call.span, read, at_risk));
+            }
+        }
+    }
+    diagnostics
+}
+
+/// The span of the first operation after `call` in the same basic block that
+/// reads one of `at_risk` before writing it again.
+fn first_live_read(ops: &[KOp], call: usize, at_risk: RegisterSet) -> Option<Span> {
+    let mut pending = at_risk;
+    for op in ops.iter().skip(call + 1) {
+        let KOpKind::Instruction(instruction) = &op.kind else {
+            // A width claim emits no bytes and observes nothing; anything
+            // else ends the block, and this scan is deliberately block-local.
+            if matches!(op.kind, KOpKind::ModeAssumption(_)) {
+                continue;
+            }
+            return None;
+        };
+        let effects = instruction.effects();
+        if effects.reads.registers.intersects(pending) {
+            return Some(op.span);
+        }
+        pending = pending.without(effects.writes.registers);
+        if pending.is_empty() || effects.control != ControlEffect::FallThrough {
+            return None;
+        }
+    }
+    None
+}
+
+fn registers_of(registers: &[crate::ast::RegisterKind]) -> RegisterSet {
+    use crate::ast::RegisterKind;
+    registers
+        .iter()
+        .fold(RegisterSet::NONE, |set, register| match register {
+            RegisterKind::A | RegisterKind::B | RegisterKind::C => set.union(RegisterSet::A),
+            RegisterKind::X => set.union(RegisterSet::X),
+            RegisterKind::Y => set.union(RegisterSet::Y),
+            RegisterKind::S => set.union(RegisterSet::S),
+            RegisterKind::D => set.union(RegisterSet::D),
+            RegisterKind::P => set,
+        })
+}
+
+fn clobbered_register(call: Span, read: Span, damaged: RegisterSet) -> Diagnostic {
+    Diagnostic::warning(
+        DiagnosticCode::CLOBBERED_REGISTER,
+        format!("this call writes {damaged}, and the value is read again below"),
+        Label::new(call, "the callee does not hand this register back"),
+    )
+    .with_secondary(Label::new(read, "read here, after the call wrote it"))
+    .with_note(
+        "the callee's contract names what it returns; anything else it writes is \
+         damage the caller has to expect",
+    )
+    .with_help("save the value across the call, or declare the register as an output")
+    .with_docs("doc/syntax-reference.md#code-sections")
 }
 
 struct Lowering<'a> {
@@ -142,7 +265,18 @@ struct Lowering<'a> {
     /// with analysis about how wide an immediate is.
     widths: Option<&'a crate::width::WidthAnalysis>,
     ops: Vec<KOp>,
+    /// Calls that stated a register flow, for the damage scan after lowering.
+    checked_calls: Vec<CheckedCall>,
     diagnostics: Vec<Diagnostic>,
+}
+
+/// A checked call, recorded while lowering so the block-local scan can find
+/// its operation without matching by position afterwards.
+struct CheckedCall {
+    /// Index of the `jsr` within its function's operation stream.
+    op: usize,
+    callee: SymbolId,
+    span: Span,
 }
 
 impl Lowering<'_> {
@@ -387,8 +521,13 @@ impl Lowering<'_> {
             // The bridge for the callee's entry contract was emitted above;
             // what is left is the transfer itself and the claim about what
             // the callee left behind.
-            StatementKind::Call(call) => self.call(statement, &call.target),
-            StatementKind::BareCall(call) => self.call(statement, &call.target),
+            // `call NAME` opts out of the contract checks entirely, damage
+            // tracking included: that is what the keyword is for.
+            StatementKind::Call(call) => self.call(statement, &call.target, false),
+            StatementKind::BareCall(call) => {
+                let checked = call.arguments.is_some() || call.outputs.is_some();
+                self.call(statement, &call.target, checked);
+            }
             StatementKind::Conditional(_)
             | StatementKind::ConditionalJump(_)
             | StatementKind::Loop(_)
@@ -449,11 +588,23 @@ impl Lowering<'_> {
     /// widths, and after one whose callee K816 cannot see, where the
     /// annotation records that the preserving answer was assumed rather than
     /// derived.
-    fn call(&mut self, statement: &crate::ast::Statement, target: &crate::ast::Name) {
+    fn call(
+        &mut self,
+        statement: &crate::ast::Statement,
+        target: &crate::ast::Name,
+        checked: bool,
+    ) {
         let Some(symbol) = self.model.symbols.lookup(&target.text) else {
             return self.skipped(statement.span, "a call to an undeclared function");
         };
         let before = self.widths_at(statement);
+        if checked {
+            self.checked_calls.push(CheckedCall {
+                op: self.ops.len(),
+                callee: symbol,
+                span: statement.span,
+            });
+        }
         // The same operand shape the classifier gives a hand-written
         // `jsr NAME`, so the managed and native forms emit identically.
         self.instruction(

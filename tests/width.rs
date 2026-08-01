@@ -1017,3 +1017,175 @@ fn the_legacy_corpus_calls_produce_no_bridge_and_no_width_diagnostic() {
         "the width model says nothing about unchecked calls in uncoloured functions"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Call contracts
+// ---------------------------------------------------------------------------
+
+/// The full pipeline, because damage tracking is computed after lowering.
+fn compile_codes(text: &str) -> Vec<String> {
+    let mut map = SourceMap::new();
+    let file = map.add_file("contract.k816", text);
+    k816::compile_to_ca65(&map, file, &k816::Options { optimize: false })
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str().to_owned())
+        .collect()
+}
+
+/// A register parameter is legal on every section kind; an alias is not.
+/// An alias binds during macro expansion, which only an `inline` has, and a
+/// `JSR` has nowhere else to put an argument.
+#[test]
+fn an_alias_parameter_is_inline_only() {
+    let (_, _, diagnostics) = analyze("func f @a8 (#factor) {\n    nop\n}\n");
+    assert_eq!(codes(&diagnostics), ["K816-E0121"]);
+
+    let (_, _, diagnostics) = analyze("func f @a8 (a, x) {\n    nop\n}\n");
+    assert_eq!(
+        codes(&diagnostics),
+        Vec::<&str>::new(),
+        "register parameters are legal here"
+    );
+}
+
+#[test]
+fn a_call_site_flow_must_match_the_declaration() {
+    let text = "\
+func add @a8 (a, x) -> a, y {
+    nop
+}
+
+func caller @a8 {
+    add a, x -> a, y
+}
+";
+    assert_eq!(codes(&analyze(text).2), Vec::<&str>::new());
+}
+
+#[test]
+fn a_call_site_with_the_wrong_registers_is_rejected() {
+    let text = "\
+func add @a8 (a, x) -> a, y {
+    nop
+}
+
+func caller @a8 {
+    add a -> a
+}
+";
+    // Both halves of the flow disagree, and both are named.
+    assert_eq!(codes(&analyze(text).2), ["K816-E0122", "K816-E0122"]);
+}
+
+/// A bare call with no flow clause to a contract-bearing function is the
+/// silent form of the same mistake: the callee states what it takes and the
+/// call site says nothing about it.
+#[test]
+fn a_bare_call_to_a_contract_bearing_function_must_state_its_flow() {
+    let text = "\
+func add @a8 (a, x) -> a, y {
+    nop
+}
+
+func caller @a8 {
+    add
+}
+";
+    let (_, _, diagnostics) = analyze(text);
+    assert_eq!(codes(&diagnostics), ["K816-E0122"]);
+    assert!(
+        diagnostics[0]
+            .help
+            .as_ref()
+            .is_some_and(|help| help.contains("call add")),
+        "the escape hatch is offered: {:?}",
+        diagnostics[0].help
+    );
+}
+
+/// `call NAME` turns both checks off. That is what the keyword is for.
+#[test]
+fn the_call_keyword_opts_out_of_the_contract_checks() {
+    let text = "\
+func add @a8 (a, x) -> a, y {
+    nop
+}
+
+func caller @a8 {
+    call add
+}
+";
+    assert_eq!(codes(&analyze(text).2), Vec::<&str>::new());
+}
+
+/// A register the callee writes, that the caller reads before writing it
+/// again, and that the contract does not hand back, is damage.
+#[test]
+fn a_clobbered_register_read_after_a_checked_call_is_reported() {
+    let text = "\
+func clobbers @a8 @i8 (a) -> a {
+    ldy #$00
+}
+
+func caller @a8 @i8 {
+    ldy #$01
+    clobbers a -> a
+    sty $0400
+}
+";
+    assert_eq!(compile_codes(text), ["K816-W0123"]);
+}
+
+/// A register the contract hands back is not damage: the caller asked for it.
+#[test]
+fn a_declared_output_register_is_not_damage() {
+    let text = "\
+func gives_y @a8 @i8 (a) -> a, y {
+    ldy #$00
+}
+
+func caller @a8 @i8 {
+    gives_y a -> a, y
+    sty $0400
+}
+";
+    assert_eq!(compile_codes(text), Vec::<String>::new());
+}
+
+/// Damage tracking is block-local: past a label, control may arrive from
+/// somewhere else and the scan has nothing to say.
+#[test]
+fn damage_tracking_stops_at_the_end_of_the_block() {
+    let text = "\
+func clobbers @a8 @i8 (a) -> a {
+    ldy #$00
+}
+
+func caller @a8 @i8 {
+    ldy #$01
+    clobbers a -> a
+.elsewhere:
+    sty $0400
+}
+";
+    assert_eq!(compile_codes(text), Vec::<String>::new());
+}
+
+/// `call NAME` opts out of damage tracking too, which is the whole point of
+/// the escape hatch: the legacy corpus calls without declaring anything.
+#[test]
+fn the_call_keyword_opts_out_of_damage_tracking() {
+    let text = "\
+func clobbers @a8 @i8 {
+    ldy #$00
+}
+
+func caller @a8 @i8 {
+    ldy #$01
+    call clobbers
+    sty $0400
+}
+";
+    assert_eq!(compile_codes(text), Vec::<String>::new());
+}

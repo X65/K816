@@ -29,9 +29,9 @@
 //! diagnostics.
 
 use crate::ast::{
-    self, AstFile, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr,
-    ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, RegisterKind,
-    ReservedKind, ReturnKind, Statement, StatementKind,
+    self, AstFile, ContractParameter, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr,
+    EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind,
+    RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -55,6 +55,12 @@ pub struct SemanticModel {
     /// Every unit-level symbol the unit actually referred to, which is what
     /// separates an `.import` this unit needs from one it merely could have.
     pub referenced: BTreeSet<SymbolId>,
+    /// The declared register flow of each contract-bearing function.
+    ///
+    /// Separate from [`FunctionInfo`] because most functions have none: a
+    /// legacy K65 call declares nothing, and the unchecked form stays the
+    /// default.
+    pub contracts: BTreeMap<SymbolId, CallFlow>,
     /// The width dataflow's output, per function.
     ///
     /// Stored rather than recomputed: lowering looks a statement's state up
@@ -101,6 +107,18 @@ pub struct FunctionInfo {
     /// True when the inferred exit fell back to the language's
     /// `Unknown ⇒ Preserve` rule rather than being derived from the body.
     pub exit_is_assumed: bool,
+}
+
+/// The register flow a `func NAME (a, x) -> a, y` header declares.
+///
+/// Only the registers: the exit *widths* of the same clause are the width
+/// model's, and are checked against the body's reachable returns.
+#[derive(Clone, Debug)]
+pub struct CallFlow {
+    pub inputs: Vec<RegisterKind>,
+    pub outputs: Vec<RegisterKind>,
+    /// The clause itself, for the "declared here" label.
+    pub span: Span,
 }
 
 /// Which width axes a function body's immediates depend on.
@@ -432,6 +450,7 @@ impl Analysis {
                         continue; // Another declaration won this name.
                     }
                     let declared = width::fold_annotations(&func.width, &mut self.diagnostics);
+                    self.check_contract(func, symbol);
                     self.model.functions.push(FunctionInfo {
                         symbol,
                         item_index,
@@ -446,6 +465,133 @@ impl Analysis {
                     });
                 }
                 ItemKind::Error => {}
+            }
+        }
+    }
+
+    /// Validates a section's call contract and records its register flow.
+    ///
+    /// The rules are keyed on *what the parameter is*, not on which section
+    /// kind is currently implemented. `doc/syntax-reference.md` is explicit
+    /// that a `naked` function may carry entry-mode annotations and an input
+    /// parameter list, so register parameters are legal everywhere; aliases
+    /// are `inline`-only because they bind during expansion rather than
+    /// being passed at a call.
+    fn check_contract(&mut self, func: &Function, symbol: SymbolId) {
+        let Some(contract) = &func.contract else {
+            return;
+        };
+        let mut inputs = Vec::new();
+        for parameter in contract.inputs.iter().flatten() {
+            match parameter {
+                ContractParameter::Register(register) => inputs.push(register.kind),
+                ContractParameter::ImmediateAlias { name, .. } | ContractParameter::Alias(name) => {
+                    if func.kind != FunctionKind::Inline {
+                        self.diagnostics.push(alias_not_inline(name, func));
+                    }
+                }
+            }
+        }
+        let outputs: Vec<RegisterKind> = contract
+            .outputs
+            .iter()
+            .flat_map(|outputs| outputs.registers.iter())
+            .map(|register| register.kind)
+            .collect();
+        // Only a clause that names registers asks anything of a call site; an
+        // exit-width-only clause is checked against the body instead.
+        if contract.inputs.is_some() || !outputs.is_empty() {
+            self.model.contracts.insert(
+                symbol,
+                CallFlow {
+                    inputs,
+                    outputs,
+                    span: contract.span,
+                },
+            );
+        }
+    }
+
+    /// Checks a bare call's register flow against the callee's declaration.
+    ///
+    /// `call NAME` opts out of both directions of this check — it is the
+    /// documented escape hatch — which is why it never reaches here.
+    fn check_call_flow(&mut self, statement: &Statement, call: &crate::ast::BareCall) {
+        let Some(symbol) = self.model.symbols.lookup(&call.target.text) else {
+            return; // Undeclared; the target check reported it.
+        };
+        let flow = self.model.contracts.get(&symbol).cloned();
+        let written: Option<Vec<RegisterKind>> = call.arguments.as_ref().map(|arguments| {
+            arguments
+                .iter()
+                .filter_map(|argument| match argument {
+                    crate::ast::CallArgument::Register(register) => Some(register.kind),
+                    crate::ast::CallArgument::Immediate(_) => None,
+                })
+                .collect()
+        });
+        let immediates = call
+            .arguments
+            .iter()
+            .flatten()
+            .any(|argument| matches!(argument, crate::ast::CallArgument::Immediate(_)));
+        let declared_outputs: Option<Vec<RegisterKind>> = call
+            .outputs
+            .as_ref()
+            .map(|outputs| outputs.iter().map(|register| register.kind).collect());
+
+        match flow {
+            None if written.is_none() && declared_outputs.is_none() => {}
+            None => self.diagnostics.push(call_flow_mismatch(
+                statement.span,
+                format!(
+                    "`{}` declares no register flow, so this call cannot state one",
+                    call.target.text
+                ),
+                "drop the flow clause, or declare it on the section",
+                None,
+            )),
+            Some(flow) if written.is_none() && declared_outputs.is_none() => {
+                self.diagnostics.push(call_flow_mismatch(
+                    statement.span,
+                    format!(
+                        "`{}` declares a register flow, and this call states none",
+                        call.target.text
+                    ),
+                    format!(
+                        "write `{} {}` to state the flow, or `call {}` to opt out of the check",
+                        call.target.text,
+                        describe_flow(&flow),
+                        call.target.text
+                    ),
+                    Some(flow.span),
+                ));
+            }
+            Some(flow) => {
+                let inputs = written.unwrap_or_default();
+                if immediates || inputs != flow.inputs {
+                    self.diagnostics.push(call_flow_mismatch(
+                        statement.span,
+                        format!(
+                            "this call hands `{}` different registers than it declares",
+                            call.target.text
+                        ),
+                        format!("the declaration reads `{}`", describe_flow(&flow)),
+                        Some(flow.span),
+                    ));
+                }
+                let outputs = declared_outputs.unwrap_or_default();
+                if outputs != flow.outputs {
+                    self.diagnostics.push(call_flow_mismatch(
+                        statement.span,
+                        format!(
+                            "this call expects different registers back from `{}` than it declares",
+                            call.target.text
+                        ),
+                        format!("the declaration reads `{}`", describe_flow(&flow)),
+                        Some(flow.span),
+                    ));
+                }
             }
         }
     }
@@ -953,17 +1099,8 @@ impl Analysis {
                 self.check_call_target(&call.target);
             }
             StatementKind::BareCall(call) => {
-                // A flow clause makes the call *checked*, which is contract
-                // validation rather than bridging.
-                if call.arguments.is_some() || call.outputs.is_some() {
-                    self.diagnostics.push(compat::unimplemented(
-                        statement.span,
-                        "call contracts",
-                        compat::Owner::WidthAndContracts,
-                    ));
-                    return;
-                }
                 self.check_call_target(&call.target);
+                self.check_call_flow(statement, call);
             }
         }
     }
@@ -1542,12 +1679,6 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
 fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat::Owner)> {
     if func.is_far {
         Some(("`far func` sections", compat::Owner::HlaLowering))
-    } else if func
-        .contract
-        .as_ref()
-        .is_some_and(|contract| !is_exit_width_only(contract))
-    {
-        Some(("call contracts", compat::Owner::WidthAndContracts))
     } else {
         match func.kind {
             FunctionKind::Func | FunctionKind::Main => None,
@@ -1555,19 +1686,6 @@ fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat
             FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
         }
     }
-}
-
-/// True when a contract is nothing but an exit-width clause.
-///
-/// `func f -> @a8 { }` declares what the body already does and asks nothing
-/// of a call site, so it is checked here. Register flow and aliases are the
-/// call-contract work proper and still report their owner.
-fn is_exit_width_only(contract: &crate::ast::CallContract) -> bool {
-    contract.inputs.is_none()
-        && contract
-            .outputs
-            .as_ref()
-            .is_some_and(|outputs| outputs.registers.is_empty() && !outputs.width.is_empty())
 }
 
 /// True when this operand is the accumulator, the only register the slice
@@ -1740,6 +1858,75 @@ fn divergent_exit(name: &str, divergence: width::Divergence) -> Diagnostic {
     .with_note("a caller has one tracked width, so it cannot follow both paths")
     .with_help("re-establish the same width on every path before returning")
     .with_docs("doc/register-width-aware-syntax.md#unknown-exit-contracts-preserve-caller-mode")
+}
+
+/// An alias parameter on a section that is not `inline`.
+///
+/// An alias binds during macro expansion, which only an `inline` has: a
+/// `JSR` hands over registers and nothing else, because K816 has no
+/// parameter-passing mechanism.
+fn alias_not_inline(name: &crate::ast::Name, func: &Function) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::ALIAS_NOT_INLINE,
+        format!(
+            "`{}` can only declare an alias on an `inline` section",
+            func.name.text
+        ),
+        Label::new(name.span, "an alias binds during expansion"),
+    )
+    .with_secondary(Label::new(func.name.span, "this section is not `inline`"))
+    .with_note(
+        "a call hands over registers and immediates only, because a `JSR` has \
+         nowhere else to put an argument",
+    )
+    .with_help("pass a register instead, or make the section `inline`")
+    .with_docs("doc/syntax-reference.md#why-aliases-are-inline-only")
+}
+
+/// A call site whose register flow disagrees with the callee's declaration.
+fn call_flow_mismatch(
+    span: Span,
+    title: impl Into<String>,
+    help: impl Into<String>,
+    declared: Option<Span>,
+) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error(
+        DiagnosticCode::CALL_FLOW_MISMATCH,
+        title,
+        Label::new(span, "the register flow here"),
+    )
+    .with_help(help)
+    .with_docs("doc/syntax-reference.md#code-sections");
+    if let Some(declared) = declared {
+        diagnostic = diagnostic.with_secondary(Label::new(declared, "declared here"));
+    }
+    diagnostic
+}
+
+/// The source spelling of a declared register flow, for the help line.
+fn describe_flow(flow: &CallFlow) -> String {
+    let list = |registers: &[RegisterKind]| {
+        registers
+            .iter()
+            .map(|register| match register {
+                RegisterKind::A => "a",
+                RegisterKind::X => "x",
+                RegisterKind::Y => "y",
+                RegisterKind::S => "s",
+                RegisterKind::D => "d",
+                RegisterKind::B => "b",
+                RegisterKind::P => "p",
+                RegisterKind::C => "c",
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let inputs = list(&flow.inputs);
+    if flow.outputs.is_empty() {
+        inputs
+    } else {
+        format!("{inputs} -> {}", list(&flow.outputs))
+    }
 }
 
 /// A module-level width annotation that a code section already precedes.

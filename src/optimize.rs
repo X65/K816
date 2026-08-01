@@ -84,7 +84,8 @@ fn remove_overwritten_register_values(ops: &mut Vec<KOp>, log: &mut Optimization
                     | KOpKind::Import(_)
                     | KOpKind::NocrossGuard { .. }
                     | KOpKind::SkipData
-                    | KOpKind::SkipTarget => {
+                    | KOpKind::SkipTarget
+                    | KOpKind::ModeAssumption(_) => {
                         unreachable!("only instructions are removal candidates")
                     }
                 };
@@ -116,10 +117,12 @@ fn removable(ops: &[KOp], index: usize) -> Option<usize> {
     let mut pending = effects.writes;
     for (offset, op) in ops.iter().enumerate().skip(index + 1) {
         let KOpKind::Instruction(next) = &op.kind else {
-            // A label (control may enter here and observe the state), or a
+            // A label (control may enter here and observe the state), a
             // directive whose placement effect this pass cannot reason
-            // about. Every non-instruction op is a barrier until sub-plan F
-            // says otherwise.
+            // about, or a mode assumption — which states what the width
+            // model concluded, so removing an op across one could leave the
+            // claim false. Every non-instruction op is a barrier until
+            // sub-plan F says otherwise.
             return None;
         };
         let next_effects = next.effects();

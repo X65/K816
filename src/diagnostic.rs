@@ -77,6 +77,35 @@ impl DiagnosticCode {
     /// `address` placement needs an ld65 config entry; the help carries the
     /// exact fragment to paste.
     pub const ADDRESS_NEEDS_CONFIG: Self = Self("K816-W0116");
+    /// A module-level width annotation appears after a code section. A
+    /// module default is a file-wide statement, so a positional reading would
+    /// make the same annotation mean different things.
+    pub const MODULE_WIDTH_PLACEMENT: Self = Self("K816-E0117");
+    /// Two width annotations constrain the same axis differently, e.g.
+    /// `func f @a8 @a16`. Repeating the *same* annotation is accepted.
+    pub const CONFLICTING_WIDTH: Self = Self("K816-E0118");
+    /// Reachable returns exit at different fixed widths (a divergent exit).
+    pub const DIVERGENT_EXIT: Self = Self("K816-E0119");
+    /// A declared exit width (`-> @a8`) disagrees with a reachable return.
+    pub const EXIT_WIDTH_MISMATCH: Self = Self("K816-E0120");
+    /// A call contract declares an alias on a section that is not `inline`.
+    pub const ALIAS_NOT_INLINE: Self = Self("K816-E0121");
+    /// A call site's register flow disagrees with the callee's declared
+    /// contract — wrong registers, or a bare call with no flow clause to a
+    /// contract-bearing function.
+    pub const CALL_FLOW_MISMATCH: Self = Self("K816-E0122");
+    /// A register live past a checked call is clobbered by the callee.
+    pub const CLOBBERED_REGISTER: Self = Self("K816-W0123");
+    /// K816 read this function's body, can see it may change width, and
+    /// cannot say to what; callers will assume it preserves widths. An
+    /// *invisible* callee gets a call-site annotation instead of this.
+    pub const ASSUMED_EXIT: Self = Self("K816-W0124");
+    /// A native `jsr`/`jsl` reaches a function whose declared entry contract
+    /// the tracked width does not satisfy; raw native calls are not bridged.
+    pub const UNBRIDGED_NATIVE_CALL: Self = Self("K816-W0125");
+    /// A branch or jump leaves a scoped width block, so the block's width
+    /// escapes to the target instead of being restored.
+    pub const WIDTH_BLOCK_LEAK: Self = Self("K816-W0126");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -278,6 +307,16 @@ mod tests {
         DiagnosticCode::COMPOUND_DATA_VALUE,
         DiagnosticCode::SYMBOL_KIND_MISMATCH,
         DiagnosticCode::ADDRESS_NEEDS_CONFIG,
+        DiagnosticCode::MODULE_WIDTH_PLACEMENT,
+        DiagnosticCode::CONFLICTING_WIDTH,
+        DiagnosticCode::DIVERGENT_EXIT,
+        DiagnosticCode::EXIT_WIDTH_MISMATCH,
+        DiagnosticCode::ALIAS_NOT_INLINE,
+        DiagnosticCode::CALL_FLOW_MISMATCH,
+        DiagnosticCode::CLOBBERED_REGISTER,
+        DiagnosticCode::ASSUMED_EXIT,
+        DiagnosticCode::UNBRIDGED_NATIVE_CALL,
+        DiagnosticCode::WIDTH_BLOCK_LEAK,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

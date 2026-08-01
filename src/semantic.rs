@@ -40,7 +40,7 @@ use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, T
 use crate::effects::ControlEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
 use crate::linkage::Linkage;
-use crate::op::WidthContract;
+use crate::op::{ExitContract, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
@@ -57,7 +57,11 @@ pub struct SemanticModel {
 }
 
 /// Facts about one function needed by lowering and emission.
-#[derive(Clone, Copy, Debug)]
+///
+/// Deliberately not `Copy`: `callees` is a `Vec`, and keeping the per-function
+/// facts in one struct is worth a clone per function at the one site that
+/// relied on the copy to end a borrow.
+#[derive(Clone, Debug)]
 pub struct FunctionInfo {
     pub symbol: SymbolId,
     /// Index of the corresponding [`ItemKind::Func`] in `AstFile::items`.
@@ -65,6 +69,33 @@ pub struct FunctionInfo {
     pub contract: WidthContract,
     /// `main` is the program entry point and receives entry-mode setup.
     pub is_entry_point: bool,
+    /// What callers may believe about their widths after calling it.
+    ///
+    /// Consumed by call-site lowering, by the workspace exit classification,
+    /// and by native-call handling. Until exit inference lands this is the
+    /// language's `Unknown ⇒ Preserve` fallback for every function.
+    pub exit: ExitContract,
+    /// Whether the body contains a width-dependent immediate on each axis.
+    ///
+    /// D computes it and does not act on it: it is the seed of the
+    /// optimizer's transitive dead-mode-elimination pass (sub-plan F).
+    pub needs: WidthNeeds,
+    /// Call edges, from both `call NAME` and a native `jsr`/`jsl` with a
+    /// resolvable target. Consumed by exit inference, by the workspace exit
+    /// classification, by damage tracking, and by F's transitive pass.
+    pub callees: Vec<SymbolId>,
+    /// True when the inferred exit fell back to the language's
+    /// `Unknown ⇒ Preserve` rule rather than being derived from the body.
+    pub exit_is_assumed: bool,
+}
+
+/// Which width axes a function body's immediates depend on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WidthNeeds {
+    /// The body contains an `ImmediateM` instruction.
+    pub m: bool,
+    /// The body contains an `ImmediateX` instruction.
+    pub x: bool,
 }
 
 /// Analyzes `file`, returning the semantic model and all semantic
@@ -350,12 +381,9 @@ impl Analysis {
                     }
                     // Only a plain `func` (or the legacy bare `main`) with no
                     // call contract has semantics so far.
-                    if let Some(feature) = unsupported_function_feature(func) {
-                        self.diagnostics.push(compat::unimplemented(
-                            item.span,
-                            feature,
-                            compat::Owner::WidthAndContracts,
-                        ));
+                    if let Some((feature, owner)) = unsupported_function_feature(func) {
+                        self.diagnostics
+                            .push(compat::unimplemented(item.span, feature, owner));
                         continue;
                     }
                     // The first pass declared the name; a duplicate reported
@@ -372,6 +400,12 @@ impl Analysis {
                         item_index,
                         contract: contract_of(func),
                         is_entry_point: func.name.text == "main",
+                        // Nothing derives an exit yet, so every function
+                        // takes the documented fallback and says so.
+                        exit: ExitContract::preserving(),
+                        exit_is_assumed: true,
+                        needs: WidthNeeds::default(),
+                        callees: Vec::new(),
                     });
                 }
                 ItemKind::Error => {}
@@ -432,7 +466,9 @@ impl Analysis {
 
     fn check_functions(&mut self, file: &AstFile) {
         for info in 0..self.model.functions.len() {
-            let function = self.model.functions[info];
+            // Cloned to end the borrow of `self.model` before the body walk,
+            // which the dropped `Copy` derive used to do for free.
+            let function = self.model.functions[info].clone();
             let ItemKind::Func(func) = &file.items[function.item_index].kind else {
                 continue;
             };
@@ -1085,18 +1121,22 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
     }
 }
 
-/// Names the first part of a code section that has no semantics yet, or
-/// `None` for the plain `func` the slice compiles.
-fn unsupported_function_feature(func: &Function) -> Option<&'static str> {
+/// Names the first part of a code section that has no semantics yet and the
+/// sub-plan that owns it, or `None` for the plain `func` K816 compiles.
+///
+/// The owner is per feature rather than per call site: `plans/`
+/// `feature-manifest.md` §2 gives `naked`, `inline`, and `far func` to E — the
+/// function *kinds* — while the call contract is D's width work.
+fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat::Owner)> {
     if func.is_far {
-        Some("`far func` sections")
+        Some(("`far func` sections", compat::Owner::HlaLowering))
     } else if func.contract.is_some() {
-        Some("call contracts")
+        Some(("call contracts", compat::Owner::WidthAndContracts))
     } else {
         match func.kind {
             FunctionKind::Func | FunctionKind::Main => None,
-            FunctionKind::Naked => Some("`naked` sections"),
-            FunctionKind::Inline => Some("`inline` sections"),
+            FunctionKind::Naked => Some(("`naked` sections", compat::Owner::HlaLowering)),
+            FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
         }
     }
 }

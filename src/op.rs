@@ -67,13 +67,24 @@ impl KOp {
     }
 }
 
-/// The operation itself. `ModeAssumption` — the assembler-visible width claim
-/// of `doc/design.md` §7 — arrives with sub-plan D, which owns the width
-/// model that decides when a claim is justified.
+/// The operation itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum KOpKind {
     Instruction(Instruction),
     Label(SymbolId),
+    /// The assembler-visible width claim of `doc/design.md` §7: "from here,
+    /// A is 8-bit and X is 16-bit".
+    ///
+    /// It emits no bytes. It is what the width model concluded, as opposed to
+    /// what an instruction's own [`crate::effects::WidthEffect`] establishes,
+    /// and it is the authoritative of the two — the model emits one wherever
+    /// its conclusion cannot be derived from the preceding instruction: at a
+    /// function's entry, after a call, and at every reachable label.
+    ///
+    /// The standing invariant for the optimizer: a `ModeAssumption` states
+    /// what the width model concluded, so a pass that removes or narrows mode
+    /// operations must keep the assumptions true or delete them with the ops.
+    ModeAssumption(ModeState),
     /// `segment NAME` — selects the output segment for what follows.
     ///
     /// Carries the name rather than a [`SymbolId`] as sketched in
@@ -249,19 +260,215 @@ impl Instruction {
 /// A function's entry-mode contract: the widths its body assumes on entry.
 /// `None` on an axis means the contract leaves that width unspecified.
 ///
-/// This is the minimal slice of the width model (sub-plan A contract 6);
-/// scoped blocks, exit inference, and call-site bridging land in sub-plan D.
+/// A contract is a *requirement* a caller must satisfy. The width the
+/// compiler believes holds at a given operation is a [`ModeState`], and the
+/// two are deliberately separate types even though their width fields
+/// resemble each other: conflating them is how an entry contract silently
+/// substitutes itself for a state the compiler does not actually know.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WidthContract {
     pub a: Option<RegisterWidth>,
     pub i: Option<RegisterWidth>,
 }
 
-/// One lowered function: its symbol, entry contract, and operation stream.
+/// One element of the per-axis width lattice: `Bottom ⊑ Known(w) ⊑ Unknown`.
+///
+/// Three values, not two. A dataflow solver that starts every label at
+/// `Unknown` converges immediately to unknown-everywhere and is useless,
+/// while one that starts at `Known` is unsound. `Bottom` is the identity of
+/// the join and the only correct initial value for a block no edge has been
+/// processed for; a block still at `Bottom` at the fixpoint is unreachable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AxisState {
+    /// No path reaches here yet.
+    #[default]
+    Bottom,
+    Known(RegisterWidth),
+    /// Some path leaves this width unknowable. Sticky: only an annotation, an
+    /// entry contract, a permitted `REP`/`SEP`, or a callee's `Fixed` exit
+    /// clears it, and nothing may substitute a plausible default for it.
+    Unknown,
+}
+
+impl AxisState {
+    /// The lattice join. `Bottom` is the identity; two equal `Known` join to
+    /// themselves; everything else joins to `Unknown`.
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Bottom, state) | (state, Self::Bottom) => state,
+            (Self::Known(left), Self::Known(right)) if left == right => Self::Known(left),
+            _ => Self::Unknown,
+        }
+    }
+
+    /// The width this axis is known to have, or `None` when it is unknown or
+    /// unreached. Callers must handle `None` explicitly rather than default.
+    pub fn width(self) -> Option<RegisterWidth> {
+        match self {
+            Self::Known(width) => Some(width),
+            Self::Bottom | Self::Unknown => None,
+        }
+    }
+
+    /// True when no path has reached this axis yet.
+    pub fn is_bottom(self) -> bool {
+        self == Self::Bottom
+    }
+}
+
+/// What the compiler knows about the CPU's emulation flag.
+///
+/// It is tracked because `REP` cannot widen a register in emulation mode:
+/// `doc/w65c816s.md` says "the M and X flags are always equal to one in
+/// Emulation mode", so after an `XCE` whose result is not known, a `rep #$20`
+/// establishes nothing. A walk that records 16-bit there would accept an
+/// immediate the CPU executes as 8-bit.
+///
+/// K65 has no syntax to declare or exchange emulation mode, so there is
+/// nothing to propagate across a call and nothing to annotate: every function
+/// entry is `Native`, and `XCE` makes it `Unknown` for the rest of the body.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EmulationState {
+    #[default]
+    Native,
+    Unknown,
+}
+
+impl EmulationState {
+    /// The join: native only where both sides are native.
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Native, Self::Native) => Self::Native,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// The width fact the compiler believes at one point in a function body.
+///
+/// Its default is the join identity — both axes `Bottom`, emulation
+/// `Native` — which is what a block no edge has reached yet starts at.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModeState {
+    pub a: AxisState,
+    pub i: AxisState,
+    pub e: EmulationState,
+}
+
+impl ModeState {
+    /// The join identity: no path has reached here.
+    pub fn bottom() -> Self {
+        Self::default()
+    }
+
+    /// Both axes unknown — the state of a function entered with no contract.
+    pub fn unknown() -> Self {
+        Self {
+            a: AxisState::Unknown,
+            i: AxisState::Unknown,
+            e: EmulationState::Native,
+        }
+    }
+
+    /// The entry state a contract establishes: a declared axis is known, an
+    /// undeclared one is unknown. Never `Bottom` — the entry block is reached
+    /// by definition.
+    pub fn from_contract(contract: WidthContract) -> Self {
+        Self {
+            a: contract.a.map_or(AxisState::Unknown, AxisState::Known),
+            i: contract.i.map_or(AxisState::Unknown, AxisState::Known),
+            e: EmulationState::Native,
+        }
+    }
+
+    /// The per-axis join, used at every merge point.
+    pub fn join(self, other: Self) -> Self {
+        // A `Bottom` side contributes nothing at all, emulation included:
+        // joining an unreached edge must not pull a reached one to unknown.
+        if self.is_bottom() {
+            return other;
+        }
+        if other.is_bottom() {
+            return self;
+        }
+        Self {
+            a: self.a.join(other.a),
+            i: self.i.join(other.i),
+            e: self.e.join(other.e),
+        }
+    }
+
+    /// True when no path reaches this point.
+    pub fn is_bottom(self) -> bool {
+        self.a.is_bottom() && self.i.is_bottom()
+    }
+}
+
+/// What one axis does to the caller's width across a call.
+///
+/// Per axis rather than per function: partial contracts already exist per
+/// axis, and a body that does `sep #$20` and never touches an index register
+/// is exactly `Fixed(W8)` on A and `Preserve` on X. Collapsing the two into
+/// one classification would force `Unknown` and pessimize every caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AxisExit {
+    /// Every reachable return leaves this axis at the same width.
+    Fixed(RegisterWidth),
+    /// The axis is untouched on every path, so it exits as it entered.
+    Preserve,
+    /// Not classifiable. `doc/register-width-aware-syntax.md` requires
+    /// callers to treat this as [`Self::Preserve`]; the callee is warned
+    /// wherever K816 can see that the assumption may be false.
+    #[default]
+    Unknown,
+}
+
+impl AxisExit {
+    /// The width a caller may believe after the call, given the width it
+    /// believed before it. `Unknown` preserves, per the language rule.
+    pub fn apply(self, before: AxisState) -> AxisState {
+        match self {
+            Self::Fixed(width) => AxisState::Known(width),
+            Self::Preserve | Self::Unknown => before,
+        }
+    }
+}
+
+/// A function's outbound width contract, per axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExitContract {
+    pub a: AxisExit,
+    pub i: AxisExit,
+}
+
+impl ExitContract {
+    /// The language's fallback for a callee K816 cannot classify: leave the
+    /// caller's tracked widths alone.
+    pub fn preserving() -> Self {
+        Self {
+            a: AxisExit::Preserve,
+            i: AxisExit::Preserve,
+        }
+    }
+
+    /// The state a caller tracks after this call.
+    pub fn apply(self, before: ModeState) -> ModeState {
+        ModeState {
+            a: self.a.apply(before.a),
+            i: self.i.apply(before.i),
+            e: before.e,
+        }
+    }
+}
+
+/// One lowered function: its symbol, entry contract, inferred exit contract,
+/// and operation stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KFunction {
     pub symbol: SymbolId,
     pub contract: WidthContract,
+    /// What callers may believe about their widths after calling it.
+    pub exit: ExitContract,
     pub ops: Vec<KOp>,
 }
 
@@ -364,6 +571,7 @@ fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
         KOpKind::SkipTarget => "skip-target".to_owned(),
         KOpKind::Import(symbol) => format!("import {}", symbols.name(*symbol)),
         KOpKind::Data(data) => dump_data(data, symbols),
+        KOpKind::ModeAssumption(state) => dump_mode_state(*state),
         KOpKind::Instruction(instruction) => {
             let operand = match &instruction.operand {
                 None => String::new(),
@@ -372,6 +580,33 @@ fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
             format!("{}{}", instruction.mnemonic.ca65(), operand)
         }
     }
+}
+
+/// The IR text of a mode assumption: `mode-assume @a8 @i16`.
+///
+/// An unknown axis renders as `@a?`, because "the model does not know" and
+/// "the model did not say" are different claims and only the first of them
+/// forbids a width-dependent immediate. An axis still at `Bottom` renders as
+/// `@a!`: the model never emits an assumption in an unreachable block, so
+/// seeing one in a dump is a compiler bug worth being able to name.
+fn dump_mode_state(state: ModeState) -> String {
+    fn axis(state: AxisState, names: [&'static str; 4]) -> &'static str {
+        match state {
+            AxisState::Known(RegisterWidth::W8) => names[0],
+            AxisState::Known(RegisterWidth::W16) => names[1],
+            AxisState::Unknown => names[2],
+            AxisState::Bottom => names[3],
+        }
+    }
+    let emulation = match state.e {
+        EmulationState::Native => "",
+        EmulationState::Unknown => " emu?",
+    };
+    format!(
+        "mode-assume {} {}{emulation}",
+        axis(state.a, ["@a8", "@a16", "@a?", "@a!"]),
+        axis(state.i, ["@i8", "@i16", "@i?", "@i!"]),
+    )
 }
 
 fn dump_data(data: &DataOp, symbols: &crate::symbol::SymbolTable) -> String {
@@ -502,4 +737,92 @@ fn origin_note(op: &KOp, map: &crate::source::SourceMap) -> String {
         Origin::CompilerGenerated => "compiler",
     };
     format!("{origin} {}:{line}", source.name())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AxisExit, AxisState, EmulationState, ExitContract, ModeState, RegisterWidth};
+
+    #[test]
+    fn bottom_is_the_join_identity() {
+        for state in [
+            AxisState::Bottom,
+            AxisState::Known(RegisterWidth::W8),
+            AxisState::Known(RegisterWidth::W16),
+            AxisState::Unknown,
+        ] {
+            assert_eq!(state.join(AxisState::Bottom), state);
+            assert_eq!(AxisState::Bottom.join(state), state);
+        }
+    }
+
+    #[test]
+    fn equal_widths_join_to_themselves_and_differing_ones_to_unknown() {
+        let eight = AxisState::Known(RegisterWidth::W8);
+        let sixteen = AxisState::Known(RegisterWidth::W16);
+        assert_eq!(eight.join(eight), eight);
+        assert_eq!(eight.join(sixteen), AxisState::Unknown);
+        // Unknown is sticky: nothing joins its way back out.
+        assert_eq!(eight.join(AxisState::Unknown), AxisState::Unknown);
+    }
+
+    #[test]
+    fn an_unreached_edge_contributes_nothing_to_a_merge() {
+        // Joining a block no path has reached must not pull a reached one to
+        // unknown — that is the whole reason `Bottom` exists.
+        let reached = ModeState::from_contract(super::WidthContract {
+            a: Some(RegisterWidth::W8),
+            i: None,
+        });
+        assert_eq!(reached.join(ModeState::bottom()), reached);
+        assert_eq!(ModeState::bottom().join(reached), reached);
+    }
+
+    #[test]
+    fn emulation_is_native_only_where_both_sides_are() {
+        let native = EmulationState::Native;
+        assert_eq!(native.join(native), native);
+        assert_eq!(
+            native.join(EmulationState::Unknown),
+            EmulationState::Unknown
+        );
+    }
+
+    #[test]
+    fn an_unknown_exit_preserves_the_callers_state() {
+        // The documented `Unknown ⇒ Preserve` rule, at the type level.
+        let before = ModeState::from_contract(super::WidthContract {
+            a: Some(RegisterWidth::W16),
+            i: Some(RegisterWidth::W8),
+        });
+        assert_eq!(ExitContract::default().apply(before), before);
+        assert_eq!(ExitContract::preserving().apply(before), before);
+        let fixes_a = ExitContract {
+            a: AxisExit::Fixed(RegisterWidth::W8),
+            i: AxisExit::Preserve,
+        };
+        let after = fixes_a.apply(before);
+        assert_eq!(after.a, AxisState::Known(RegisterWidth::W8));
+        assert_eq!(after.i, before.i);
+    }
+
+    #[test]
+    fn a_mode_assumption_dumps_every_axis_state() {
+        assert_eq!(
+            super::dump_mode_state(ModeState {
+                a: AxisState::Known(RegisterWidth::W8),
+                i: AxisState::Known(RegisterWidth::W16),
+                e: EmulationState::Native,
+            }),
+            "mode-assume @a8 @i16"
+        );
+        assert_eq!(
+            super::dump_mode_state(ModeState {
+                a: AxisState::Unknown,
+                i: AxisState::Bottom,
+                e: EmulationState::Unknown,
+            }),
+            "mode-assume @a? @i! emu?"
+        );
+    }
 }

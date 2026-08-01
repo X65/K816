@@ -119,6 +119,7 @@ pub fn lower_unit(
         program.push_function(KFunction {
             symbol: info.symbol,
             contract: info.contract,
+            exit: info.exit,
             ops: lowering.ops,
         });
         diagnostics.append(&mut lowering.diagnostics);
@@ -342,7 +343,9 @@ impl Lowering<'_> {
             | KOpKind::Import(_)
             | KOpKind::NocrossGuard { .. }
             | KOpKind::SkipData
-            | KOpKind::SkipTarget => false,
+            | KOpKind::SkipTarget
+            // A width claim emits no bytes, so it never ends a body either.
+            | KOpKind::ModeAssumption(_) => false,
         });
         if !ends_returning {
             let brace = body_span.end.saturating_sub(1).max(body_span.start);

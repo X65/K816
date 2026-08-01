@@ -299,6 +299,10 @@ pub fn emit(
 fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, out: &mut String) {
     match &op.kind {
         KOpKind::Instruction(_) => unreachable!("instructions are emitted with their width state"),
+        // A mode assumption is a claim about the assembler's tracked widths,
+        // so it is emitted by the width state inside a function and means
+        // nothing at unit level. Sub-plan D task D4 gives it its directives.
+        KOpKind::ModeAssumption(_) => {}
         KOpKind::Label(symbol) => out.push_str(&annotated(
             &format!("{}:", names.of(*symbol)),
             &match op.origin {
@@ -389,7 +393,7 @@ fn generated_directive_note(kind: &KOpKind) -> &'static str {
         KOpKind::Label(_) | KOpKind::Align(_) | KOpKind::Data(_) => "generated",
         KOpKind::SkipData => "step over the inline data below",
         KOpKind::SkipTarget => "past the inline data",
-        KOpKind::Instruction(_) => "generated",
+        KOpKind::Instruction(_) | KOpKind::ModeAssumption(_) => "generated",
     }
 }
 

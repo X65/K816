@@ -56,7 +56,7 @@ use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, T
 use crate::effects::{ControlEffect, WidthEffect};
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
 use crate::op::{
-    AxisExit, AxisState, EmulationState, ExitContract, ModeState, Operand, WidthContract,
+    AxisExit, AxisState, EmulationState, ExitContract, ModeState, Operand, Reason, WidthContract,
 };
 use crate::resolve::Resolver;
 use crate::semantic::WidthNeeds;
@@ -152,6 +152,9 @@ pub struct Bridge {
     /// optimizer's job, so the model emits the unfolded stream.
     pub mask: u32,
     pub anchor: BridgeAnchor,
+    /// What the model emitted it for, which the emitted line and the IR dump
+    /// both state rather than restating the instruction.
+    pub reason: Reason,
 }
 
 /// Where a bridge sits relative to the statement it is keyed on.
@@ -473,6 +476,7 @@ struct Flattener<'a> {
 /// The flattened graph plus everything the solver needs beside it.
 struct Graph {
     nodes: Vec<Node>,
+    blocks: Vec<BlockRange>,
     /// True when some transfer in the function goes somewhere K816 cannot
     /// name, which makes every label reachable from an unknown width.
     opaque_transfer: bool,
@@ -510,6 +514,7 @@ impl Flattener<'_> {
         self.report_block_leaks();
         Graph {
             nodes: self.nodes,
+            blocks: self.blocks,
             opaque_transfer,
             diagnostics: self.diagnostics,
             needs: self.needs,
@@ -1168,7 +1173,7 @@ fn solve(
         }
     }
     let mut diagnostics = graph.diagnostics;
-    record_bridges(&mut analysis, nodes, &r#in, callees);
+    record_bridges(&mut analysis, nodes, &r#in, &graph.blocks, callees);
     report_unbridged_calls(nodes, &r#in, callees, &mut diagnostics);
     (analysis, diagnostics)
 }
@@ -1360,23 +1365,25 @@ fn record_bridges(
     analysis: &mut WidthAnalysis,
     nodes: &[Node],
     r#in: &[Fact],
+    blocks: &[BlockRange],
     callees: &BTreeMap<SymbolId, CalleeContract>,
 ) {
     for (index, node) in nodes.iter().enumerate() {
         if r#in[index].is_bottom() {
             continue; // Unreachable: the model makes no claim here.
         }
-        let (axes, anchor) = match &node.transfer {
+        let (axes, anchor, reason) = match &node.transfer {
             Transfer::Set(axes) => {
                 // A width established right after a label is the label
                 // bridge, and its adjacency to the label operation is what
                 // marks it fixed for the optimizer.
-                let anchor = if index > 0 && nodes[index - 1].label.is_some() {
-                    BridgeAnchor::AfterLabel
+                if index > 0 && nodes[index - 1].label.is_some() {
+                    (*axes, BridgeAnchor::AfterLabel, Reason::LabelBridge)
+                } else if blocks.iter().any(|block| block.enter == index) {
+                    (*axes, BridgeAnchor::Before, Reason::BlockEnter)
                 } else {
-                    BridgeAnchor::Before
-                };
-                (*axes, anchor)
+                    (*axes, BridgeAnchor::Before, Reason::ModeSet)
+                }
             }
             Transfer::Restore { enter, axes } => {
                 let saved = r#in[*enter];
@@ -1389,6 +1396,7 @@ fn record_bridges(
                         i: axes.i.and(saved.mode.i.width()),
                     },
                     BridgeAnchor::After,
+                    Reason::BlockRestore,
                 )
             }
             // A managed call establishes the callee's entry contract before
@@ -1406,7 +1414,8 @@ fn record_bridges(
                     continue;
                 }
                 let entry = contract.map(|contract| contract.entry).unwrap_or_default();
-                (entry, BridgeAnchor::Before)
+                let Some(callee) = *callee else { continue };
+                (entry, BridgeAnchor::Before, Reason::CallBridge(callee))
             }
             Transfer::Identity | Transfer::Instruction { .. } => continue,
         };
@@ -1421,6 +1430,7 @@ fn record_bridges(
                 width,
                 mask,
                 anchor,
+                reason,
             });
         }
         if !bridges.is_empty() {

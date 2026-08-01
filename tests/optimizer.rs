@@ -64,8 +64,8 @@ fn ir_dump_shows_the_dead_load_before_and_after_optimization() {
         "\
 func main @a8 @i16 -> a:preserve i:preserve {
   label main               ; user slice.k816:3
-  rep #$10                 ; compiler slice.k816:3
-  mode-assume @a8 @i16     ; compiler slice.k816:3
+  rep #$10                 ; compiler slice.k816:3 — entry-point width setup
+  mode-assume @a8 @i16     ; compiler slice.k816:3 — the function's entry contract, assumed
   lda #$00                 ; hla slice.k816:4
   lda #$01                 ; hla slice.k816:5
   sta abs SCREEN           ; hla slice.k816:6
@@ -81,8 +81,8 @@ func main @a8 @i16 -> a:preserve i:preserve {
         "\
 func main @a8 @i16 -> a:preserve i:preserve {
   label main               ; user slice.k816:3
-  rep #$10                 ; compiler slice.k816:3
-  mode-assume @a8 @i16     ; compiler slice.k816:3
+  rep #$10                 ; compiler slice.k816:3 — entry-point width setup
+  mode-assume @a8 @i16     ; compiler slice.k816:3 — the function's entry contract, assumed
   lda #$01                 ; hla slice.k816:5
   sta abs SCREEN           ; hla slice.k816:6
   rts                      ; hla slice.k816:7

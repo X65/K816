@@ -11,9 +11,9 @@ SCREEN          := $0400                ; slice.k816:1: var SCREEN = $0400
 
 main:                                   ; slice.k816:3: func main @a8 @i16 {
         .dbg    line, "slice.k816", 3
-        rep     #$10                    ; k816: entry width setup (16-bit)
+        rep     #$10                    ; k816: entry-point width setup
         .i16                            ; k816: the width the instruction above established
-        .a8                             ; k816: the function's entry contract
+        .a8                             ; k816: the function's entry contract, assumed
         .dbg    line, "slice.k816", 4
         lda     #$00                    ; slice.k816:4: a = #0
         .dbg    line, "slice.k816", 5

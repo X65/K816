@@ -59,11 +59,98 @@ pub struct KOp {
     pub kind: KOpKind,
     pub span: Span,
     pub origin: Origin,
+    /// Why the compiler produced this operation, where [`Origin`] alone does
+    /// not say enough for a reader to check it.
+    ///
+    /// `Origin::CompilerGenerated` answers *who* wrote an operation; this
+    /// answers *what for*, and only the model that decided it can say. A
+    /// `rep #$20` is a bridge for one callee's contract, or a scoped block's
+    /// entry, or a label bridge every arrival needs, and the instruction is
+    /// identical in all three. Deriving the answer at emission from the
+    /// operations around it worked while there was one producer of mode
+    /// operations; carrying it is what keeps that true once there are
+    /// several.
+    pub reason: Option<Reason>,
 }
 
 impl KOp {
     pub fn new(kind: KOpKind, span: Span, origin: Origin) -> Self {
-        Self { kind, span, origin }
+        Self {
+            kind,
+            span,
+            origin,
+            reason: None,
+        }
+    }
+
+    /// The same operation, recording what the compiler produced it for.
+    pub fn because(mut self, reason: Reason) -> Self {
+        self.reason = Some(reason);
+        self
+    }
+}
+
+/// What a compiler-generated operation is for.
+///
+/// Every variant names a decision some model made, so the annotation on an
+/// emitted line and the line in an IR dump both state the decision rather
+/// than restating the instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reason {
+    /// `main` has no caller, so its contract is established at entry.
+    EntryPoint,
+    /// The function's declared entry contract, assumed rather than executed:
+    /// its caller is what bridges to it.
+    EntryContract,
+    /// A bare `@a16` statement.
+    ModeSet,
+    /// Entering a scoped width block.
+    BlockEnter,
+    /// Restoring the width a scoped block changed.
+    BlockRestore,
+    /// Establishing an annotated width at a label, so that arrivals by
+    /// branch get it too.
+    LabelBridge,
+    /// The width every path to a label agrees on.
+    LabelMerge,
+    /// Satisfying a callee's entry contract before transferring to it.
+    CallBridge(SymbolId),
+    /// What a callee's exit contract promises about the caller's widths.
+    CalleeExit(SymbolId),
+    /// A callee K816 cannot see. The language requires such a function to
+    /// leave the caller's widths alone, so the answer is assumed rather than
+    /// derived — which is worth saying, because nothing else distinguishes
+    /// it from a callee that was read and found to preserve them.
+    AssumedExit,
+    /// The width model refused what the instruction's own effect implies —
+    /// a widening `REP` executed with the emulation flag unknown establishes
+    /// nothing — so the claim the instruction would carry is withdrawn.
+    WithdrawnClaim,
+    /// A function returns implicitly.
+    ImplicitReturn,
+}
+
+impl Reason {
+    /// The annotation text, given a way to name a symbol.
+    pub fn describe(self, name: impl Fn(SymbolId) -> String) -> String {
+        match self {
+            Self::EntryPoint => "entry-point width setup".to_owned(),
+            Self::EntryContract => "the function's entry contract, assumed".to_owned(),
+            Self::ModeSet => "the width set here".to_owned(),
+            Self::BlockEnter => "entering the width block".to_owned(),
+            Self::BlockRestore => "restoring the width the block changed".to_owned(),
+            Self::LabelBridge => "the width established at this label".to_owned(),
+            Self::LabelMerge => "the width every path to this label agrees on".to_owned(),
+            Self::CallBridge(callee) => format!("bridge for {}", name(callee)),
+            Self::CalleeExit(callee) => format!("{}'s exit contract", name(callee)),
+            Self::AssumedExit => {
+                "the callee's exit widths are unknown; assumed to preserve these".to_owned()
+            }
+            Self::WithdrawnClaim => {
+                "the width above is not established, so no claim is carried".to_owned()
+            }
+            Self::ImplicitReturn => "implicit return".to_owned(),
+        }
     }
 }
 
@@ -532,7 +619,11 @@ impl KProgram {
             match item {
                 KProgramItem::Op(op) => {
                     let text = dump_op(op, symbols);
-                    out.push_str(&format!("{:<26} ; {}\n", text, origin_note(op, map)));
+                    out.push_str(&format!(
+                        "{:<26} ; {}\n",
+                        text,
+                        origin_note(op, symbols, map)
+                    ));
                 }
                 KProgramItem::Function(function) => {
                     out.push_str(&format!("func {}", symbols.name(function.symbol)));
@@ -550,7 +641,11 @@ impl KProgram {
                     out.push_str(" {\n");
                     for op in &function.ops {
                         let text = dump_op(op, symbols);
-                        out.push_str(&format!("  {:<24} ; {}\n", text, origin_note(op, map)));
+                        out.push_str(&format!(
+                            "  {:<24} ; {}\n",
+                            text,
+                            origin_note(op, symbols, map)
+                        ));
                     }
                     out.push_str("}\n");
                 }
@@ -749,8 +844,17 @@ fn k65_operator(op: crate::value::BinaryOp) -> &'static str {
     }
 }
 
-/// `origin file:line` annotation for one dumped op.
-fn origin_note(op: &KOp, map: &crate::source::SourceMap) -> String {
+/// `origin file:line` annotation for one dumped op, with the reason the
+/// compiler produced it when there is one.
+///
+/// The reason is the same text the emitted assembly carries, from the same
+/// field, so the dump and the output cannot disagree about why an operation
+/// exists.
+fn origin_note(
+    op: &KOp,
+    symbols: &crate::symbol::SymbolTable,
+    map: &crate::source::SourceMap,
+) -> String {
     let source = map.file(op.span.file);
     let line = source.line_col(op.span.start).line + 1;
     let origin = match op.origin {
@@ -758,7 +862,14 @@ fn origin_note(op: &KOp, map: &crate::source::SourceMap) -> String {
         Origin::HlaExpansion => "hla",
         Origin::CompilerGenerated => "compiler",
     };
-    format!("{origin} {}:{line}", source.name())
+    match op.reason {
+        Some(reason) => format!(
+            "{origin} {}:{line} — {}",
+            source.name(),
+            reason.describe(|symbol| symbols.name(symbol).to_owned())
+        ),
+        None => format!("{origin} {}:{line}", source.name()),
+    }
 }
 
 #[cfg(test)]

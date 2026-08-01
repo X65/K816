@@ -537,3 +537,66 @@ func main @a8 {
     let rep = ops.iter().position(|op| op == "rep #$20").expect("the rep");
     assert_eq!(ops[rep + 1], "mode-assume @a? @i? emu?", "{ops:?}");
 }
+
+/// An operation records what the compiler produced it for, and both surfaces
+/// read the same field.
+///
+/// `Origin` answers *who* wrote an operation; the reason answers *what for*,
+/// and only the model that decided it can say. A `rep #$20` is a bridge for
+/// one callee's contract, a scoped block's entry, or a label bridge, and the
+/// instruction is identical in all three — so deriving the answer afterwards
+/// from the operations around it is guesswork the moment there is more than
+/// one producer of mode operations.
+#[test]
+fn a_generated_operation_says_what_it_is_for() {
+    let text = "\
+func widens @a16 {
+    nop
+}
+
+func main {
+    call widens
+    lda #$01
+}
+";
+    let dump = dump(text);
+    assert!(
+        dump.contains("rep #$20                 ; compiler native.k816:6 — bridge for widens"),
+        "the bridge names the callee whose contract it satisfies: {dump}"
+    );
+    assert!(
+        dump.contains("— widens's exit contract"),
+        "the claim after the call names where the width came from: {dump}"
+    );
+    assert!(
+        dump.contains("— the function's entry contract, assumed"),
+        "{dump}"
+    );
+    assert!(dump.contains("— implicit return"), "{dump}");
+}
+
+/// A callee K816 cannot see is annotated as *assumed*, in the IR dump as
+/// well as in the emitted assembly.
+///
+/// Nothing else distinguishes it from a callee that was read and found to
+/// preserve the caller's widths, which is exactly the distinction the
+/// language's fallback rule turns on.
+#[test]
+fn an_invisible_callee_is_recorded_as_assumed_in_both_surfaces() {
+    let text = "var VEC = $80\n\nfunc main @a8 {\n    jsr (VEC,x)\n    lda #$01\n}\n";
+    assert!(
+        dump(text).contains("— the callee's exit widths are unknown; assumed to preserve these"),
+        "{}",
+        dump(text)
+    );
+
+    let mut map = SourceMap::new();
+    let file = map.add_file("assumed.k816", text);
+    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false })
+        .assembly
+        .expect("compiles");
+    assert!(
+        assembly.contains("k816: the callee's exit widths are unknown; assumed to preserve these"),
+        "{assembly}"
+    );
+}

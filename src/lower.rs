@@ -36,7 +36,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
-    AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin,
+    AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin, Reason,
     RegisterWidth, SegmentName, WidthContract,
 };
 use crate::resolve;
@@ -276,7 +276,28 @@ struct CheckedCall {
 
 impl Lowering<'_> {
     fn push(&mut self, kind: KOpKind, span: Span, origin: Origin) {
-        self.ops.push(KOp { kind, span, origin });
+        self.ops.push(KOp::new(kind, span, origin));
+    }
+
+    /// Pushes a compiler-generated operation, recording what for.
+    fn generated(&mut self, kind: KOpKind, span: Span, reason: Reason) {
+        self.ops
+            .push(KOp::new(kind, span, Origin::CompilerGenerated).because(reason));
+    }
+
+    fn generated_instruction(
+        &mut self,
+        mnemonic: Mnemonic,
+        mode: AddressingMode,
+        operand: Option<Operand>,
+        span: Span,
+        reason: Reason,
+    ) {
+        self.generated(
+            KOpKind::Instruction(Instruction::new(mnemonic, mode, operand)),
+            span,
+            reason,
+        );
     }
 
     fn instruction(
@@ -324,34 +345,30 @@ impl Lowering<'_> {
                 if width != Some(RegisterWidth::W16) {
                     continue;
                 }
-                self.instruction(
+                self.generated_instruction(
                     Mnemonic::Rep,
                     AddressingMode::Immediate,
                     Some(Operand::Immediate(KExpr::number(mask))),
                     span,
-                    Origin::CompilerGenerated,
+                    Reason::EntryPoint,
                 );
             }
         }
         let entry = self.widths.map_or_else(ModeState::unknown, |a| a.entry);
-        self.assume(entry, span);
+        self.assume(entry, span, Reason::EntryContract);
     }
 
     /// States what the width model concluded, which is authoritative for the
     /// assembler wherever the conclusion cannot be derived from the preceding
     /// instruction.
-    fn assume(&mut self, state: ModeState, span: Span) {
+    fn assume(&mut self, state: ModeState, span: Span, reason: Reason) {
         if state.is_bottom() {
             // No path reaches here, so there is nothing to claim. A block the
             // model never entered still emits its instructions — K816 does not
             // delete user code — but it makes no width claim over them.
             return;
         }
-        self.push(
-            KOpKind::ModeAssumption(state),
-            span,
-            Origin::CompilerGenerated,
-        );
+        self.generated(KOpKind::ModeAssumption(state), span, reason);
     }
 
     /// Emits the model's own `REP`/`SEP` for `statement` at one anchor.
@@ -372,12 +389,12 @@ impl Lowering<'_> {
                 RegisterWidth::W8 => Mnemonic::Sep,
                 RegisterWidth::W16 => Mnemonic::Rep,
             };
-            self.instruction(
+            self.generated_instruction(
                 mnemonic,
                 AddressingMode::Immediate,
                 Some(Operand::Immediate(KExpr::number(bridge.mask))),
                 statement.span,
-                Origin::CompilerGenerated,
+                bridge.reason,
             );
         }
     }
@@ -569,7 +586,7 @@ impl Lowering<'_> {
                 // next instruction then changes.
                 self.bridges(statement, BridgeAnchor::AfterLabel);
                 if let Some(state) = self.widths_after(statement) {
-                    self.assume(state, span);
+                    self.assume(state, span, Reason::LabelMerge);
                 }
             }
             StatementKind::Error => {}
@@ -616,7 +633,12 @@ impl Lowering<'_> {
             .widths
             .is_some_and(|analysis| analysis.assumed_calls.contains(&statement.id));
         if after != before || assumed {
-            self.assume(after, statement.span);
+            let reason = if assumed {
+                Reason::AssumedExit
+            } else {
+                Reason::CalleeExit(symbol)
+            };
+            self.assume(after, statement.span, reason);
         }
     }
 
@@ -668,7 +690,12 @@ impl Lowering<'_> {
             .widths
             .is_some_and(|analysis| analysis.assumed_calls.contains(&statement.id));
         if carried != after || assumed {
-            self.assume(after, statement.span);
+            let reason = if assumed {
+                Reason::AssumedExit
+            } else {
+                Reason::WithdrawnClaim
+            };
+            self.assume(after, statement.span, reason);
         }
     }
 
@@ -696,12 +723,12 @@ impl Lowering<'_> {
         });
         if !ends_returning {
             let brace = body_span.end.saturating_sub(1).max(body_span.start);
-            self.instruction(
+            self.generated_instruction(
                 Mnemonic::Rts,
                 AddressingMode::Stack,
                 None,
                 Span::empty_at(body_span.file, brace),
-                Origin::CompilerGenerated,
+                Reason::ImplicitReturn,
             );
         }
     }

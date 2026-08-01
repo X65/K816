@@ -39,12 +39,12 @@
 
 use std::collections::HashMap;
 
-use crate::effects::{ControlEffect, WidthEffect};
-use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
+use crate::effects::WidthEffect;
+use crate::isa::{ImmediateWidthClass, RegisterWidth, spec};
 use crate::linkage::Linkage;
 use crate::op::{
     AxisState, DataOp, EmulationState, IndexRegister, Instruction, KFunction, KOp, KOpKind,
-    KProgram, KProgramItem, ModeState, Operand, Origin,
+    KProgram, KProgramItem, ModeState, Operand, Origin, Reason,
 };
 use crate::semantic::SemanticModel;
 use crate::source::{FileId, SourceMap, Span};
@@ -269,18 +269,18 @@ pub fn emit(
             KProgramItem::Function(function) => {
                 out.push('\n');
                 let mut widths = WidthState::default();
-                let mut site = Site::default();
                 for op in &function.ops {
                     match &op.kind {
                         KOpKind::Instruction(instruction) => {
-                            emit_instruction(&unit, instruction, op, &site, &mut widths, &mut out);
+                            emit_instruction(&unit, instruction, op, &mut widths, &mut out);
                         }
                         // The model's claim is authoritative: it overrides
                         // whatever the preceding instructions carried.
-                        KOpKind::ModeAssumption(state) => widths.claim(*state, &site, &mut out),
+                        KOpKind::ModeAssumption(state) => {
+                            widths.claim(*state, op, &unit, &mut out);
+                        }
                         _ => emit_unit_op(&unit, op, &mut out),
                     }
-                    site.observe(op);
                 }
             }
         }
@@ -411,64 +411,6 @@ enum Axis {
     I,
 }
 
-/// Where in a function an operation sits, which is what the annotation on a
-/// width claim explains.
-///
-/// The claim itself carries only the widths — the model's conclusion, not its
-/// reasoning — so the reason is read off the operations around it.
-#[derive(Default)]
-struct Site {
-    /// Some operation other than a compiler-generated mode change has been
-    /// emitted since the last label.
-    past_label: bool,
-    /// No label other than the function's own has been seen yet.
-    at_function_entry: bool,
-    /// The operation just emitted was a call, so what follows describes the
-    /// callee's exit rather than this function's own code.
-    after_call: bool,
-    started: bool,
-}
-
-impl Site {
-    fn observe(&mut self, op: &KOp) {
-        match &op.kind {
-            KOpKind::Label(_) => {
-                self.at_function_entry = !self.started;
-                self.past_label = false;
-                self.after_call = false;
-            }
-            KOpKind::Instruction(instruction) => {
-                // A mode change the compiler generated is part of the entry
-                // setup or of a label bridge, so it does not end either.
-                let is_bridge = op.origin == Origin::CompilerGenerated
-                    && matches!(instruction.mnemonic, Mnemonic::Sep | Mnemonic::Rep);
-                self.past_label |= !is_bridge;
-                self.after_call = instruction.effects().control == ControlEffect::Call;
-            }
-            KOpKind::ModeAssumption(_) => {}
-            _ => {
-                self.past_label = true;
-                self.after_call = false;
-            }
-        }
-        self.started = true;
-    }
-
-    fn reason(&self) -> &'static str {
-        match self {
-            _ if !self.past_label && self.at_function_entry => "the function's entry contract",
-            _ if !self.past_label => "the width every path to this label establishes",
-            _ if self.after_call => "the callee's exit contract",
-            _ => "the width the model tracks here",
-        }
-    }
-
-    /// True while the operations belong to the function's entry setup.
-    fn is_entry_setup(&self) -> bool {
-        !self.past_label && self.at_function_entry
-    }
-}
-
 /// Tracked assembler width state, kept in sync with `.a8`-family directives
 /// so ca65 sizes width-dependent immediates exactly as the width model does.
 #[derive(Default)]
@@ -486,8 +428,9 @@ impl WidthState {
     /// width-dependent immediates while the state is unknown, so the two
     /// have to be tested together: a change that removes the refusal must
     /// fail on this side too.
-    fn claim(&mut self, state: ModeState, site: &Site, out: &mut String) {
-        let why = site.reason();
+    fn claim(&mut self, state: ModeState, op: &KOp, unit: &Unit<'_>, out: &mut String) {
+        let why = reason_text(op, unit);
+        let why = why.as_str();
         let before = out.len();
         match state.a {
             AxisState::Known(width) => self.set_a(width, why, out),
@@ -502,16 +445,12 @@ impl WidthState {
             AxisState::Unknown => self.forget(Axis::I, state.e, out),
             AxisState::Bottom => {}
         }
-        // A claim after a call that changes nothing is the one the model
-        // emits where it could not see the callee: the widths are unchanged
-        // because the language says such a callee must leave them alone, not
-        // because K816 worked out that it does. Saying so is the whole point
-        // of the operation being there.
-        if out.len() == before && site.after_call {
-            out.push_str(&annotated(
-                "",
-                "k816: the callee's exit widths are unknown; assumed to preserve these",
-            ));
+        // A claim that changed no directive still has something to say when
+        // it exists *because* the model could not see a callee: the widths
+        // are unchanged because the language says such a callee must leave
+        // them alone, not because K816 worked out that it does.
+        if out.len() == before && op.reason == Some(Reason::AssumedExit) {
+            out.push_str(&annotated("", &format!("k816: {why}")));
         }
     }
 
@@ -594,7 +533,6 @@ fn emit_instruction(
     unit: &Unit<'_>,
     instruction: &Instruction,
     op: &KOp,
-    site: &Site,
     widths: &mut WidthState,
     out: &mut String,
 ) {
@@ -614,7 +552,7 @@ fn emit_instruction(
 
     let comment = match op.origin {
         Origin::User | Origin::HlaExpansion => source_comment(map, op.span),
-        Origin::CompilerGenerated => format!("k816: {}", generated_note(instruction, site)),
+        Origin::CompilerGenerated => format!("k816: {}", reason_text(op, unit)),
     };
     out.push_str(&annotated(text.trim_end(), &comment));
 
@@ -834,14 +772,11 @@ fn line_comment(map: &SourceMap, span: Span) -> String {
 /// text rather than semantics — the one place a wildcard over [`Mnemonic`]
 /// costs nothing, because a missing arm produces a vaguer comment and not a
 /// wrong instruction.
-fn generated_note(instruction: &Instruction, site: &Site) -> &'static str {
-    let entry = site.is_entry_setup();
-    match instruction.mnemonic {
-        Mnemonic::Sep if entry => "entry width setup (8-bit)",
-        Mnemonic::Rep if entry => "entry width setup (16-bit)",
-        Mnemonic::Sep => "the width model establishes 8-bit here",
-        Mnemonic::Rep => "the width model establishes 16-bit here",
-        Mnemonic::Rts | Mnemonic::Rtl => "implicit return",
-        _ => "generated",
+fn reason_text(op: &KOp, unit: &Unit<'_>) -> String {
+    match op.reason {
+        Some(reason) => reason.describe(|symbol| unit.names.of(symbol)),
+        // An operation with no recorded reason says only that the compiler
+        // made it, which is what every pre-width generated operation said.
+        None => generated_directive_note(&op.kind).to_owned(),
     }
 }

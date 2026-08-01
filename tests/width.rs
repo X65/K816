@@ -1241,3 +1241,22 @@ fn contract_unit_fixtures_export_a_derived_cross_unit_exit() {
         "the exit is derived through the foreign callee, not assumed"
     );
 }
+
+/// `RTI` restores a status byte K816 has not tracked, exactly as `PLP` does.
+///
+/// Unlike `PLP` it is also a *return*, so what it destroys shows up at the
+/// function's exit rather than downstream: a body that returns through one
+/// promises its caller nothing. It reaches the model through the effect
+/// table rather than through a mnemonic match, which is what makes the four
+/// unknown-transition instructions one case rather than four; this pins the
+/// fourth.
+#[test]
+fn rti_leaves_no_width_a_caller_can_rely_on() {
+    let source = "func handler @a8 @i8 {\n    rti\n}\n";
+    assert_eq!(
+        exit_of(source, "handler"),
+        (AxisExit::Unknown, AxisExit::Unknown)
+    );
+    let (_, _, diagnostics) = analyze(source);
+    assert_eq!(codes(&diagnostics), ["K816-W0124", "K816-W0124"]);
+}

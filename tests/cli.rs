@@ -196,3 +196,46 @@ fn the_unit_flag_makes_a_sibling_units_names_resolve() {
     assert!(assembly.contains(".import helper "), "{assembly}");
     assert!(assembly.contains(".export main "), "{assembly}");
 }
+
+/// The `--unit` surface carries width contracts across the boundary too, not
+/// just names.
+///
+/// A callee in a sibling unit that leaves the accumulator 8-bit has to reach
+/// the caller's *encoding*: without the sibling the reference does not
+/// resolve at all, and with it the immediate after the call is the two-byte
+/// form rather than the three-byte one the caller's own `@a16` would imply.
+#[test]
+fn the_unit_flag_carries_width_contracts_across_the_boundary() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-unit-contract");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let caller = dir.join("caller.k816");
+    let callee = dir.join("callee.k816");
+    let out = dir.join("caller.s");
+    std::fs::write(
+        &caller,
+        "func caller @a16 {\n    call narrows\n    lda #$01\n}\n",
+    )
+    .expect("write caller");
+    std::fs::write(&callee, "func narrows @a16 -> @a8 {\n    sep #$20\n}\n").expect("write callee");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .args(["--unit".as_ref(), callee.as_os_str()])
+        .args(["-o".as_ref(), out.as_os_str()])
+        .arg(&caller)
+        .output()
+        .expect("run k816");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let assembly = std::fs::read_to_string(&out).expect("read output");
+    let call = assembly.find("jsr").expect("the call");
+    let load = assembly.find("lda").expect("the load");
+    assert!(
+        assembly[call..load].contains("        .a8"),
+        "the sibling's exit contract is claimed before the load: {assembly}"
+    );
+}

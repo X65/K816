@@ -1,0 +1,27 @@
+// Sub-plan D fixture: the width solver reaches a fixpoint over backward
+// edges.
+//
+// A backward branch is an edge from later in the instruction stream to
+// earlier, so a loop head can be reached at one width on the first arrival
+// and another on the back edge. A single forward traversal accepts
+// `agreeing` and silently mis-sizes `diverging`, which is why this file
+// exists: the two differ only in the direction of the mode change inside the
+// loop.
+
+// The head is entered at @a8 and closed from @a16, so no width holds there.
+// The `lda` is rejected rather than sized against either arrival.
+func diverging @a8 {
+.head:
+    lda #$01
+    rep #$20
+    bra .head
+}
+
+// The back edge agrees with the entry contract, so the head stays 8-bit and
+// the same `lda` is accepted.
+func agreeing @a8 {
+.head:
+    lda #$01
+    sep #$20
+    bra .head
+}

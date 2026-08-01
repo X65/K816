@@ -31,20 +31,21 @@
 use crate::ast::{
     self, AstFile, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr,
     ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind, RegisterKind,
-    ReservedKind, ReturnKind, Statement, StatementKind, WidthAnnotationKind,
+    ReservedKind, ReturnKind, Statement, StatementKind,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
-use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
+use crate::isa::{ImmediateWidthClass, Mnemonic};
 use crate::linkage::Linkage;
-use crate::op::{ExitContract, WidthContract};
+use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
 use crate::value::KExpr;
+use crate::width::{self, WidthAnalysis};
 
 /// The result of analyzing one file: symbols plus per-function facts.
 #[derive(Debug, Default)]
@@ -54,6 +55,19 @@ pub struct SemanticModel {
     /// Every unit-level symbol the unit actually referred to, which is what
     /// separates an `.import` this unit needs from one it merely could have.
     pub referenced: BTreeSet<SymbolId>,
+    /// The width dataflow's output, per function.
+    ///
+    /// Stored rather than recomputed: lowering looks a statement's state up
+    /// here instead of walking the body a second time, which is what keeps
+    /// analysis and lowering from arriving at two different widths.
+    pub widths: BTreeMap<SymbolId, WidthAnalysis>,
+}
+
+impl SemanticModel {
+    /// The width analysis of one function.
+    pub fn width(&self, function: SymbolId) -> Option<&WidthAnalysis> {
+        self.widths.get(&function)
+    }
 }
 
 /// Facts about one function needed by lowering and emission.
@@ -131,8 +145,12 @@ fn analyze(
         current_function: None,
         unit: unit_name.to_owned(),
         anonymous_blocks: AnonymousBlocks::default(),
+        defaults: WidthContract::default(),
     };
     analysis.declare_placed_symbols(file);
+    // Module defaults are file-wide, so they are known before any function's
+    // contract is folded.
+    analysis.defaults = analysis.module_defaults(file);
     analysis.declare_items(file);
     // Foreign names are declared *after* the unit's own, so a local
     // declaration always wins its name. A `const` or `var` initializer
@@ -141,6 +159,9 @@ fn analyze(
     if let Some(linkage) = linkage {
         analysis.declare_imports(linkage);
     }
+    // The width dataflow runs before the checks that consume it, and after
+    // imports so that a foreign callee resolves.
+    analysis.solve_widths(file);
     analysis.check_functions(file);
     (analysis.model, analysis.diagnostics)
 }
@@ -154,6 +175,9 @@ struct Analysis {
     unit: String,
     /// Anonymous data blocks seen so far, per site.
     anonymous_blocks: AnonymousBlocks,
+    /// The module's default widths, merged into every function that does not
+    /// declare the axis itself.
+    defaults: WidthContract,
 }
 
 impl Analysis {
@@ -368,11 +392,9 @@ impl Analysis {
                     let diagnostic = reserved_diagnostic(reserved);
                     self.diagnostics.push(diagnostic);
                 }
-                ItemKind::ModuleWidth(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "module-level default widths",
-                    compat::Owner::WidthAndContracts,
-                )),
+                // Module defaults were folded before this pass; their
+                // placement and conflicts were reported there.
+                ItemKind::ModuleWidth(_) => {}
                 // A `segment` selection is lexical state, carried to
                 // emission as an ordered operation rather than checked here.
                 ItemKind::Segment(_) => {}
@@ -396,10 +418,11 @@ impl Analysis {
                     if self.model.symbols.symbol(symbol).declaration != func.name.span {
                         continue; // Another declaration won this name.
                     }
+                    let declared = width::fold_annotations(&func.width, &mut self.diagnostics);
                     self.model.functions.push(FunctionInfo {
                         symbol,
                         item_index,
-                        contract: contract_of(func),
+                        contract: width::merge_defaults(self.defaults, declared),
                         is_entry_point: func.name.text == "main",
                         // Nothing derives an exit yet, so every function
                         // takes the documented fallback and says so.
@@ -465,6 +488,64 @@ impl Analysis {
         None
     }
 
+    /// Folds the file's module-level default widths.
+    ///
+    /// A module default is a file-wide statement, so it must precede every
+    /// code section: a positional reading would make the same annotation mean
+    /// different things depending on where an unrelated function was inserted.
+    fn module_defaults(&mut self, file: &AstFile) -> WidthContract {
+        let mut annotations = Vec::new();
+        let mut first_section: Option<Span> = None;
+        for item in &file.items {
+            match &item.kind {
+                ItemKind::Func(_) => {
+                    first_section.get_or_insert(item.span);
+                }
+                ItemKind::ModuleWidth(annotation) => match first_section {
+                    Some(section) => self.diagnostics.push(late_module_width(
+                        item.span,
+                        annotation.span,
+                        section,
+                    )),
+                    None => annotations.push(annotation.clone()),
+                },
+                _ => {}
+            }
+        }
+        width::fold_annotations(&annotations, &mut self.diagnostics)
+    }
+
+    /// Runs the width dataflow over every function, and records what it found.
+    ///
+    /// Every call takes the language's `Unknown ⇒ Preserve` rule here, which
+    /// is sound precisely because nothing yet reads a callee's exit or emits a
+    /// bridge: the placeholder and the emitted code agree. Exit inference
+    /// replaces this analysis wholesale rather than patching it, so no stage
+    /// ever mixes a resolved exit with a state computed from the placeholder.
+    fn solve_widths(&mut self, file: &AstFile) {
+        let exits = BTreeMap::new();
+        for index in 0..self.model.functions.len() {
+            let info = self.model.functions[index].clone();
+            let ItemKind::Func(func) = &file.items[info.item_index].kind else {
+                continue;
+            };
+            let (analysis, diagnostics) = width::analyze_function(
+                &func.body,
+                ModeState::from_contract(info.contract),
+                &self.model.symbols,
+                Some(info.symbol),
+                &exits,
+            );
+            self.diagnostics.extend(diagnostics);
+            let function = &mut self.model.functions[index];
+            function.needs = analysis.needs;
+            function.callees.clone_from(&analysis.callees);
+            function.exit = analysis.exit;
+            function.exit_is_assumed = analysis.exit_is_assumed;
+            self.model.widths.insert(info.symbol, analysis);
+        }
+    }
+
     fn check_functions(&mut self, file: &AstFile) {
         for info in 0..self.model.functions.len() {
             // Cloned to end the borrow of `self.model` before the body walk,
@@ -475,18 +556,42 @@ impl Analysis {
             };
             self.current_function = Some(function.symbol);
             for statement in &func.body.statements {
-                self.check_statement(statement, function.contract);
+                let widths = self.widths_at(function.symbol, statement);
+                self.check_statement(statement, widths);
             }
             self.current_function = None;
         }
     }
 
-    fn check_statement(&mut self, statement: &Statement, contract: WidthContract) {
+    /// The width state the model tracks before `statement`.
+    ///
+    /// A statement the analysis does not describe is a compiler bug, not a
+    /// case to fall back from: substituting the entry contract there is
+    /// exactly how one question comes to have two answers.
+    fn widths_at(&mut self, function: SymbolId, statement: &Statement) -> ModeState {
+        match self
+            .model
+            .width(function)
+            .and_then(|analysis| analysis.before(statement.id))
+        {
+            Some(state) => state,
+            None => {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticCode::INTERNAL,
+                    "internal: the width model has no state for this statement",
+                    Label::new(statement.span, "no tracked width here"),
+                ));
+                ModeState::unknown()
+            }
+        }
+    }
+
+    fn check_statement(&mut self, statement: &Statement, widths: ModeState) {
         match &statement.kind {
             StatementKind::Native(native) => {
                 // Classification is shared with lowering, so the two cannot
                 // disagree about which addressing mode an operand selects.
-                let mut resolver = self.resolver().with_widths(contract);
+                let mut resolver = self.resolver().with_widths(widths);
                 let classified = resolver.classify(native);
                 let resolved = resolver.finish();
                 self.absorb(resolved);
@@ -503,7 +608,7 @@ impl Analysis {
                         self.check_immediate(
                             value,
                             Some(ImmediateWidthClass::MDependent),
-                            contract,
+                            widths,
                             Mnemonic::Lda,
                         );
                     }
@@ -609,13 +714,13 @@ impl Analysis {
         }
     }
 
-    /// Validates an immediate operand against its width class and the
-    /// function's entry contract (the minimal slice width model).
+    /// Validates an immediate operand against its width class and the width
+    /// the model tracks *here*.
     fn check_immediate(
         &mut self,
         value: &Expr,
         width: Option<ImmediateWidthClass>,
-        contract: WidthContract,
+        widths: ModeState,
         mnemonic: Mnemonic,
     ) {
         let Some(folded) = self.fold(value) else {
@@ -637,7 +742,7 @@ impl Analysis {
         let Some(width) = width else {
             return;
         };
-        let Some(limit) = width.max_value(contract.a, contract.i) else {
+        let Some(limit) = width.max_value(widths.a.width(), widths.i.width()) else {
             // Only the width-dependent classes can fail to report a limit,
             // and they fail exactly when their axis is unconstrained.
             let (axis, help) = match width {
@@ -1194,19 +1299,28 @@ fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static 
     }
 }
 
-/// Folds a function's width annotations into its entry contract. On repeated
-/// annotations for one axis the last one wins (refined in sub-plan D).
-fn contract_of(func: &Function) -> WidthContract {
-    let mut contract = WidthContract::default();
-    for annotation in &func.width {
-        match annotation.kind {
-            WidthAnnotationKind::A8 => contract.a = Some(RegisterWidth::W8),
-            WidthAnnotationKind::A16 => contract.a = Some(RegisterWidth::W16),
-            WidthAnnotationKind::I8 => contract.i = Some(RegisterWidth::W8),
-            WidthAnnotationKind::I16 => contract.i = Some(RegisterWidth::W16),
-        }
-    }
-    contract
+/// A module-level width annotation that a code section already precedes.
+fn late_module_width(item: Span, annotation: Span, section: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::MODULE_WIDTH_PLACEMENT,
+        "a module-level width default must come before every code section",
+        Label::new(annotation, "this default arrives too late"),
+    )
+    .with_secondary(Label::new(section, "the first code section"))
+    .with_note(
+        "a module default is a file-wide statement, so reading it positionally \
+         would make it mean different things depending on what was inserted above it",
+    )
+    .with_help("move the annotation to the top of the file")
+    .with_fix(Fix {
+        title: "move the default to the top of the file".to_owned(),
+        applicability: Applicability::MachineApplicable,
+        edits: vec![
+            TextEdit::replace(Span::empty_at(item.file, 0), "@a8\n"),
+            TextEdit::delete(item),
+        ],
+    })
+    .with_docs("doc/register-width-aware-syntax.md#module-level-default-coloring")
 }
 
 /// The address size a `dp` / `abs` / `far` prefix forces.

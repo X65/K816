@@ -56,7 +56,8 @@ use crate::isa::{
     AddressEncoding, InstructionSpec, Mnemonic, OperandForm, OperandWidth, spec_for_form,
 };
 use crate::op::{
-    DataOp, IndexRegister, Instruction, KOp, KOpKind, Operand, Origin, SegmentName, WidthContract,
+    AxisState, DataOp, EmulationState, IndexRegister, Instruction, KOp, KOpKind, ModeState,
+    Operand, Origin, SegmentName,
 };
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, SymbolId, SymbolKind, SymbolTable};
@@ -77,6 +78,52 @@ impl Classified {
     }
 }
 
+/// The width-dependent immediate K816 cannot size, and why.
+///
+/// The width is the one tracked *here*, so the reason an axis is unknown is
+/// worth stating: a `plp` or an unresolved merge destroys a width the
+/// enclosing function does declare, and emulation mode neutralizes a widening
+/// `rep` outright. Each case gets the annotation that would fix it.
+fn unknown_width(
+    mnemonic: Mnemonic,
+    span: Span,
+    class: crate::isa::ImmediateWidthClass,
+    widths: ModeState,
+) -> Diagnostic {
+    let (axis, help, state) = match class {
+        crate::isa::ImmediateWidthClass::XDependent => (
+            "index register",
+            "add @i8 or @i16 to the enclosing function, or set the width here",
+            widths.i,
+        ),
+        _ => (
+            "accumulator",
+            "add @a8 or @a16 to the enclosing function, or set the width here",
+            widths.a,
+        ),
+    };
+    let mut diagnostic = Diagnostic::error(
+        DiagnosticCode::UNKNOWN_WIDTH,
+        format!(
+            "`{}` uses a width-dependent immediate but {axis} width is unknown",
+            mnemonic.ca65()
+        ),
+        Label::new(span, "cannot size this immediate"),
+    )
+    .with_help(help)
+    .with_docs("doc/register-width-aware-syntax.md");
+    if state == AxisState::Bottom {
+        diagnostic = diagnostic
+            .with_note("no path reaches this instruction, so there is no width to size it against");
+    } else if widths.e == EmulationState::Unknown {
+        diagnostic = diagnostic.with_note(
+            "emulation mode is unknown after `xce`, and the M and X flags are always \
+             set in emulation mode, so a widening `rep` establishes nothing",
+        );
+    }
+    diagnostic
+}
+
 /// What one resolver run found.
 #[derive(Debug, Default)]
 pub struct Resolved {
@@ -89,8 +136,11 @@ pub struct Resolver<'a> {
     symbols: &'a SymbolTable,
     /// The function whose scope `.name` labels resolve in.
     function: Option<SymbolId>,
-    /// The widths in force, which size the width-dependent immediates.
-    widths: WidthContract,
+    /// The widths the model tracks *here*, which size the width-dependent
+    /// immediates. A state rather than the enclosing function's contract: a
+    /// `rep #$20` two lines above changes the answer, and a `plp` destroys it
+    /// even inside a function that declares the axis.
+    widths: ModeState,
     diagnostics: Vec<Diagnostic>,
     /// Every symbol this resolver looked up, which is what tells an
     /// `.import` a unit needs from one it merely could have had.
@@ -102,7 +152,7 @@ impl<'a> Resolver<'a> {
         Self {
             symbols,
             function: None,
-            widths: WidthContract::default(),
+            widths: ModeState::unknown(),
             diagnostics: Vec::new(),
             referenced: Vec::new(),
         }
@@ -114,8 +164,9 @@ impl<'a> Resolver<'a> {
         self
     }
 
-    /// Sizes width-dependent immediates with `widths`.
-    pub fn with_widths(mut self, widths: WidthContract) -> Self {
+    /// Sizes width-dependent immediates with the widths tracked at this
+    /// point, which the width model — never the entry contract — supplies.
+    pub fn with_widths(mut self, widths: ModeState) -> Self {
         self.widths = widths;
         self
     }
@@ -398,7 +449,7 @@ impl<'a> Resolver<'a> {
         if let Some(folded) = expr.value()
             && let Some(class) = spec.immediate_width()
         {
-            match class.max_value(self.widths.a, self.widths.i) {
+            match class.max_value(self.widths.a.width(), self.widths.i.width()) {
                 Some(limit) if folded.get() > limit => self.report(
                     Diagnostic::error(
                         DiagnosticCode::IMMEDIATE_RANGE,
@@ -409,25 +460,8 @@ impl<'a> Resolver<'a> {
                 ),
                 Some(_) => {}
                 None => {
-                    let (axis, help) = match class {
-                        crate::isa::ImmediateWidthClass::XDependent => (
-                            "index register",
-                            "add @i8 or @i16 to the enclosing function",
-                        ),
-                        _ => ("accumulator", "add @a8 or @a16 to the enclosing function"),
-                    };
-                    self.report(
-                        Diagnostic::error(
-                            DiagnosticCode::UNKNOWN_WIDTH,
-                            format!(
-                                "`{}` uses a width-dependent immediate but {axis} width is unknown",
-                                mnemonic.ca65()
-                            ),
-                            Label::new(value.span, "cannot size this immediate"),
-                        )
-                        .with_help(help)
-                        .with_docs("doc/register-width-aware-syntax.md"),
-                    );
+                    let diagnostic = unknown_width(mnemonic, value.span, class, self.widths);
+                    self.report(diagnostic);
                 }
             }
         }

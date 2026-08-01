@@ -36,8 +36,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
-    Instruction, KFunction, KOp, KOpKind, KProgram, Operand, Origin, RegisterWidth, SegmentName,
-    WidthContract,
+    Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin, RegisterWidth,
+    SegmentName, WidthContract,
 };
 use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
@@ -102,7 +102,7 @@ pub fn lower_unit(
             function_name: func.name.text.clone(),
             unit: unit.to_owned(),
             anonymous: &mut anonymous,
-            contract: info.contract,
+            widths: model.width(info.symbol),
             ops: Vec::new(),
             diagnostics: Vec::new(),
         };
@@ -137,8 +137,10 @@ struct Lowering<'a> {
     /// The per-site anonymous-block counters, shared with the unit walk so
     /// the names match the ones analysis reported.
     anonymous: &'a mut AnonymousBlocks,
-    /// Its entry contract, which sizes width-dependent immediates.
-    contract: WidthContract,
+    /// The width the model tracks at each statement. Lowering *looks up* the
+    /// answer and never computes one, which is what keeps it from disagreeing
+    /// with analysis about how wide an immediate is.
+    widths: Option<&'a crate::width::WidthAnalysis>,
     ops: Vec<KOp>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -194,6 +196,29 @@ impl Lowering<'_> {
         }
     }
 
+    /// The width state the model tracks before `statement`.
+    ///
+    /// A statement the analysis does not describe is a compiler bug, so it
+    /// reports one instead of substituting the entry contract — which would
+    /// be right most of the time, and the one time it is wrong every byte
+    /// after it shifts.
+    fn widths_at(&mut self, statement: &crate::ast::Statement) -> ModeState {
+        match self
+            .widths
+            .and_then(|analysis| analysis.before(statement.id))
+        {
+            Some(state) => state,
+            None => {
+                self.diagnostics.push(Diagnostic::error(
+                    DiagnosticCode::INTERNAL,
+                    "internal: the width model has no state for this statement",
+                    Label::new(statement.span, "no tracked width here"),
+                ));
+                ModeState::unknown()
+            }
+        }
+    }
+
     fn statement(&mut self, statement: &crate::ast::Statement) {
         let span = statement.span;
         match &statement.kind {
@@ -203,7 +228,7 @@ impl Lowering<'_> {
                 // compiler bug rather than user error.
                 let mut resolver = Resolver::new(&self.model.symbols)
                     .in_function(self.function)
-                    .with_widths(self.contract);
+                    .with_widths(self.widths_at(statement));
                 match resolver.classify(native) {
                     Some(classified) if !resolver.has_diagnostics() => self.push(
                         KOpKind::Instruction(classified.instruction()),
@@ -298,7 +323,7 @@ impl Lowering<'_> {
                     resolve::data_site(self.anonymous, &self.unit, data, Some(&self.function_name));
                 let mut resolver = Resolver::new(&self.model.symbols)
                     .in_function(self.function)
-                    .with_widths(self.contract);
+                    .with_widths(self.widths_at(statement));
                 let ops = resolver.data_block(data, span, &site);
                 if resolver.has_diagnostics() {
                     return self.skipped(span, "an unresolved inline data block");

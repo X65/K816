@@ -44,6 +44,7 @@ pub mod semantic;
 pub mod source;
 pub mod symbol;
 pub mod value;
+pub mod width;
 pub mod workspace;
 
 use std::path::Path;

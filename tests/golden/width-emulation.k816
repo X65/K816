@@ -1,0 +1,35 @@
+// Sub-plan D fixture: a widening `REP` is not believed where emulation mode
+// is unknown.
+//
+// `doc/w65c816s.md`: "The M and X flags are always equal to one in Emulation
+// mode." After an `xce` whose resulting E is not known to be clear, a
+// `rep #$20` establishes nothing — the accumulator may still be 8 bits — and
+// a walk that records 16-bit there accepts an immediate the CPU executes as
+// 8-bit, shifting every byte after it.
+//
+// `xce` appears in no source in `examples/`, so nothing else in the suite
+// exercises this rule.
+
+// Rejected: the `rep` may have been executed in emulation mode.
+func widen_after_xce {
+    xce
+    rep #$20
+    lda #$1234
+}
+
+// Accepted: 8-bit is the answer in both modes, so a narrowing `sep` is safe
+// to believe even when emulation is unknown.
+func narrow_after_xce {
+    xce
+    sep #$20
+    lda #$01
+}
+
+// Accepted: the annotation is a user assertion that native mode holds, which
+// is the documented escape hatch for the `xce`-then-widen pattern. It emits
+// its own `REP` and the emitted width claim says so.
+func asserted_after_xce {
+    xce
+    @a16
+    lda #$1234
+}

@@ -38,9 +38,9 @@ use crate::ast::{
     LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery,
     MetadataQueryKind, Name, NativeInstruction, NativeOperand, PreprocessorDirective,
     PreprocessorKind, Register, RegisterKind, ReservedCall, ReservedConstruct, ReservedKind,
-    ReturnKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StorageClass, StorageClassKind,
-    SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp,
-    VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
+    ReturnKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StmtId, StorageClass,
+    StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr,
+    UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
@@ -54,8 +54,99 @@ pub(super) fn build(root: Node<'_>, source: &SourceFile) -> (AstFile, Vec<Diagno
         source,
         diagnostics: Vec::new(),
     };
-    let file = builder.file(root);
+    let mut file = builder.file(root);
+    assign_statement_ids(&mut file);
     (file, builder.diagnostics)
+}
+
+/// Numbers every statement in `file`, in source order.
+///
+/// A separate pass rather than a counter inside the builder: the builder
+/// finishes a nested block before the statement that contains it, so
+/// construction order is not source order. One pre-order walk here gives the
+/// stable key analysis and lowering both look up
+/// (`plans/03-width-and-contracts.md` contract 8).
+fn assign_statement_ids(file: &mut AstFile) {
+    let mut next = 0u32;
+    for item in &mut file.items {
+        match &mut item.kind {
+            ItemKind::Func(func) => number_block(&mut func.body, &mut next),
+            ItemKind::Data(data) => number_data(data, &mut next),
+            ItemKind::Var(_)
+            | ItemKind::Const(_)
+            | ItemKind::Segment(_)
+            | ItemKind::EvalBlock(_)
+            | ItemKind::Preprocessor(_)
+            | ItemKind::Binary(_)
+            | ItemKind::Reserved(_)
+            | ItemKind::ModuleWidth(_)
+            | ItemKind::Error => {}
+        }
+    }
+}
+
+fn number_block(block: &mut Block, next: &mut u32) {
+    for statement in &mut block.statements {
+        number_statement(statement, next);
+    }
+}
+
+/// Numbers one statement and, before moving on, everything nested inside it.
+///
+/// The match is exhaustive so that a statement form added later cannot carry
+/// nested statements the numbering silently skips — an unnumbered statement
+/// is a lookup failure far from its cause.
+fn number_statement(statement: &mut Statement, next: &mut u32) {
+    statement.id = StmtId::new(*next);
+    *next += 1;
+    match &mut statement.kind {
+        StatementKind::WidthBlock(width) => number_block(&mut width.body, next),
+        StatementKind::Nocross(body) => number_block(body, next),
+        StatementKind::Loop(loop_statement) => number_block(&mut loop_statement.body, next),
+        StatementKind::Conditional(conditional) => {
+            number_block(&mut conditional.body, next);
+            if let Some(otherwise) = &mut conditional.otherwise {
+                number_block(otherwise, next);
+            }
+        }
+        StatementKind::ConditionalJump(jump) => number_statement(&mut jump.jump, next),
+        StatementKind::Data(data) => number_data(data, next),
+        StatementKind::Label(_)
+        | StatementKind::Native(_)
+        | StatementKind::Hla(_)
+        | StatementKind::ModeSet(_)
+        | StatementKind::Call(_)
+        | StatementKind::BareCall(_)
+        | StatementKind::Goto(_)
+        | StatementKind::Break
+        | StatementKind::Repeat
+        | StatementKind::Preprocessor(_)
+        | StatementKind::Return(_)
+        | StatementKind::Error => {}
+    }
+}
+
+/// A data block's `code { ... }` entries hold statements too.
+fn number_data(data: &mut DataBlock, next: &mut u32) {
+    for entry in &mut data.entries {
+        match &mut entry.kind {
+            DataEntryKind::Code { body, .. } => number_block(body, next),
+            DataEntryKind::Repeat { body, .. } => number_data(body, next),
+            DataEntryKind::Label(_)
+            | DataEntryKind::Value(_)
+            | DataEntryKind::Typed { .. }
+            | DataEntryKind::Align(_)
+            | DataEntryKind::Address(_)
+            | DataEntryKind::Segment(_)
+            | DataEntryKind::Nocross
+            | DataEntryKind::Charset(_)
+            | DataEntryKind::ForEval { .. }
+            | DataEntryKind::Preprocessor(_)
+            | DataEntryKind::Binary(_)
+            | DataEntryKind::Reserved(_)
+            | DataEntryKind::Error => {}
+        }
+    }
 }
 
 struct AstBuilder<'a> {
@@ -433,26 +524,26 @@ impl AstBuilder<'_> {
                 "hla_step" => statements.push(self.hla_step(child)),
                 "hla_flag" => statements.push(self.hla_flag(child)),
                 "hla_stack" => statements.push(self.hla_stack(child)),
-                "hla_nop" => statements.push(Statement {
-                    kind: StatementKind::Hla(HlaStatement::Nop {
+                "hla_nop" => statements.push(Statement::new(
+                    StatementKind::Hla(HlaStatement::Nop {
                         count: child
                             .child_by_field_name("count")
                             .map(|count| self.expr(Some(count), child)),
                     }),
-                    span: self.span(child),
-                }),
-                "hla_break" => statements.push(Statement {
-                    kind: StatementKind::Hla(HlaStatement::Break),
-                    span: self.span(child),
-                }),
-                "return_statement" => statements.push(Statement {
-                    kind: StatementKind::Return(if self.text(child) == "return_i" {
+                    self.span(child),
+                )),
+                "hla_break" => statements.push(Statement::new(
+                    StatementKind::Hla(HlaStatement::Break),
+                    self.span(child),
+                )),
+                "return_statement" => statements.push(Statement::new(
+                    StatementKind::Return(if self.text(child) == "return_i" {
                         ReturnKind::Interrupt
                     } else {
                         ReturnKind::Subroutine
                     }),
-                    span: self.span(child),
-                }),
+                    self.span(child),
+                )),
                 "width_block" => {
                     let width = self.width_annotations(child);
                     let body = match child.child_by_field_name("body") {
@@ -462,54 +553,53 @@ impl AstBuilder<'_> {
                             span: self.span(child),
                         },
                     };
-                    statements.push(Statement {
-                        kind: StatementKind::WidthBlock(WidthBlock { width, body }),
-                        span: self.span(child),
-                    });
+                    statements.push(Statement::new(
+                        StatementKind::WidthBlock(WidthBlock { width, body }),
+                        self.span(child),
+                    ));
                 }
-                "call_statement" => statements.push(Statement {
-                    kind: StatementKind::Call(CallStatement {
+                "mode_set" => {
+                    let width = self.width_annotations(child);
+                    statements.push(Statement::new(
+                        StatementKind::ModeSet(width),
+                        self.span(child),
+                    ));
+                }
+                "call_statement" => statements.push(Statement::new(
+                    StatementKind::Call(CallStatement {
                         target: self.name(child.child_by_field_name("target"), child),
                         is_far: self.far_marker(child),
                     }),
-                    span: self.span(child),
-                }),
+                    self.span(child),
+                )),
                 "conditional_block" => statements.push(self.conditional_block(child)),
                 "conditional_jump" => statements.push(self.conditional_jump(child)),
                 "postfix_loop" => statements.push(self.postfix_loop(child)),
                 "goto_statement" => statements.push(self.goto_statement(child)),
-                "break_statement" => statements.push(Statement {
-                    kind: StatementKind::Break,
-                    span: self.span(child),
-                }),
-                "repeat_statement" => statements.push(Statement {
-                    kind: StatementKind::Repeat,
-                    span: self.span(child),
-                }),
-                "preprocessor_directive" => statements.push(Statement {
-                    kind: StatementKind::Preprocessor(self.preprocessor_directive(child)),
-                    span: self.span(child),
-                }),
-                "data_block" => statements.push(Statement {
-                    kind: StatementKind::Data(self.data_block(child)),
-                    span: self.span(child),
-                }),
-                "nocross_block" => statements.push(Statement {
-                    kind: StatementKind::Nocross(self.body_of(child)),
-                    span: self.span(child),
-                }),
+                "break_statement" => {
+                    statements.push(Statement::new(StatementKind::Break, self.span(child)))
+                }
+                "repeat_statement" => {
+                    statements.push(Statement::new(StatementKind::Repeat, self.span(child)))
+                }
+                "preprocessor_directive" => statements.push(Statement::new(
+                    StatementKind::Preprocessor(self.preprocessor_directive(child)),
+                    self.span(child),
+                )),
+                "data_block" => statements.push(Statement::new(
+                    StatementKind::Data(self.data_block(child)),
+                    self.span(child),
+                )),
+                "nocross_block" => statements.push(Statement::new(
+                    StatementKind::Nocross(self.body_of(child)),
+                    self.span(child),
+                )),
                 "bare_call" => statements.push(self.bare_call(child)),
                 "line_comment" | "block_comment" => {}
-                "ERROR" => statements.push(Statement {
-                    kind: StatementKind::Error,
-                    span: self.span(child),
-                }),
+                "ERROR" => statements.push(Statement::new(StatementKind::Error, self.span(child))),
                 _ => {
                     self.unexpected(child, "a block");
-                    statements.push(Statement {
-                        kind: StatementKind::Error,
-                        span: self.span(child),
-                    });
+                    statements.push(Statement::new(StatementKind::Error, self.span(child)));
                 }
             }
         }
@@ -527,14 +617,14 @@ impl AstBuilder<'_> {
         let repeat = node
             .child_by_field_name("repeat")
             .map(|repeat| self.expr(Some(repeat), node));
-        Statement {
-            kind: StatementKind::Native(NativeInstruction {
+        Statement::new(
+            StatementKind::Native(NativeInstruction {
                 mnemonic,
                 operand,
                 repeat,
             }),
-            span: self.span(node),
-        }
+            self.span(node),
+        )
     }
 
     fn block_move(&mut self, node: Node<'_>) -> Statement {
@@ -543,14 +633,14 @@ impl AstBuilder<'_> {
             source: self.expr(node.child_by_field_name("source"), node),
             destination: self.expr(node.child_by_field_name("destination"), node),
         });
-        Statement {
-            kind: StatementKind::Native(NativeInstruction {
+        Statement::new(
+            StatementKind::Native(NativeInstruction {
                 mnemonic,
                 operand: Some(operand),
                 repeat: None,
             }),
-            span: self.span(node),
-        }
+            self.span(node),
+        )
     }
 
     fn native_operand(&mut self, node: Node<'_>) -> NativeOperand {
@@ -647,13 +737,13 @@ impl AstBuilder<'_> {
                 span: Span::empty_at(span.file, span.end),
             }
         });
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Assign(HlaAssignment {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Assign(HlaAssignment {
                 targets: operands,
                 source,
             })),
             span,
-        }
+        )
     }
 
     fn hla_operand(&mut self, node: Node<'_>) -> HlaOperand {
@@ -698,10 +788,7 @@ impl AstBuilder<'_> {
     fn hla_arithmetic(&mut self, node: Node<'_>) -> Statement {
         let span = self.span(node);
         let Some((operator, op_span)) = self.operator(node, "an arithmetic statement") else {
-            return Statement {
-                kind: StatementKind::Error,
-                span,
-            };
+            return Statement::new(StatementKind::Error, span);
         };
         let op = match operator.as_str() {
             "+" => ArithmeticOp::Add,
@@ -713,10 +800,7 @@ impl AstBuilder<'_> {
             "&?" => ArithmeticOp::BitTest,
             _ => {
                 self.unexpected(node, "an arithmetic statement");
-                return Statement {
-                    kind: StatementKind::Error,
-                    span,
-                };
+                return Statement::new(StatementKind::Error, span);
             }
         };
         let operand = match node.child_by_field_name("operand") {
@@ -726,24 +810,21 @@ impl AstBuilder<'_> {
                 span: Span::empty_at(span.file, span.end),
             },
         };
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Arithmetic(HlaArithmetic {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Arithmetic(HlaArithmetic {
                 register: self.register(node.child_by_field_name("register"), node),
                 op,
                 operand,
                 op_span,
             })),
             span,
-        }
+        )
     }
 
     fn hla_shift(&mut self, node: Node<'_>) -> Statement {
         let span = self.span(node);
         let Some((operator, op_span)) = self.operator(node, "a shift statement") else {
-            return Statement {
-                kind: StatementKind::Error,
-                span,
-            };
+            return Statement::new(StatementKind::Error, span);
         };
         let op = match operator.as_str() {
             "<<" => ShiftOp::Left,
@@ -752,49 +833,40 @@ impl AstBuilder<'_> {
             ">>>" => ShiftOp::RotateRight,
             _ => {
                 self.unexpected(node, "a shift statement");
-                return Statement {
-                    kind: StatementKind::Error,
-                    span,
-                };
+                return Statement::new(StatementKind::Error, span);
             }
         };
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Shift(HlaShift {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Shift(HlaShift {
                 target: self.hla_target(node, span),
                 op,
                 op_span,
             })),
             span,
-        }
+        )
     }
 
     fn hla_step(&mut self, node: Node<'_>) -> Statement {
         let span = self.span(node);
         let Some((operator, op_span)) = self.operator(node, "an increment statement") else {
-            return Statement {
-                kind: StatementKind::Error,
-                span,
-            };
+            return Statement::new(StatementKind::Error, span);
         };
         let op = match operator.as_str() {
             "++" => StepOp::Increment,
             "--" => StepOp::Decrement,
             _ => {
                 self.unexpected(node, "an increment statement");
-                return Statement {
-                    kind: StatementKind::Error,
-                    span,
-                };
+                return Statement::new(StatementKind::Error, span);
             }
         };
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Step(HlaStep {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Step(HlaStep {
                 target: self.hla_target(node, span),
                 op,
                 op_span,
             })),
             span,
-        }
+        )
     }
 
     fn hla_target(&mut self, node: Node<'_>, span: Span) -> HlaOperand {
@@ -813,10 +885,7 @@ impl AstBuilder<'_> {
         let span = self.span(node);
         let flag_node = node.child_by_field_name("flag");
         let Some((operator, _)) = self.operator(node, "a flag statement") else {
-            return Statement {
-                kind: StatementKind::Error,
-                span,
-            };
+            return Statement::new(StatementKind::Error, span);
         };
         let name = flag_node.map(|flag| self.text(flag).to_ascii_lowercase());
         let flag = match name.as_deref() {
@@ -836,32 +905,26 @@ impl AstBuilder<'_> {
                     )
                     .with_docs("doc/syntax-reference.md#sr-flags-nvmxdizc"),
                 );
-                return Statement {
-                    kind: StatementKind::Error,
-                    span,
-                };
+                return Statement::new(StatementKind::Error, span);
             }
         };
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Flag(HlaFlag {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Flag(HlaFlag {
                 flag,
                 set: operator == "+",
                 flag_span: flag_node.map(|flag| self.span(flag)).unwrap_or(span),
             })),
             span,
-        }
+        )
     }
 
     fn hla_stack(&mut self, node: Node<'_>) -> Statement {
         let span = self.span(node);
         let Some((operator, op_span)) = self.operator(node, "a stack statement") else {
-            return Statement {
-                kind: StatementKind::Error,
-                span,
-            };
+            return Statement::new(StatementKind::Error, span);
         };
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Stack(HlaStack {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Stack(HlaStack {
                 register: self.register(node.child_by_field_name("register"), node),
                 op: if operator == "!!" {
                     StackOp::Push
@@ -871,17 +934,17 @@ impl AstBuilder<'_> {
                 op_span,
             })),
             span,
-        }
+        )
     }
 
     fn hla_exchange(&mut self, node: Node<'_>) -> Statement {
-        Statement {
-            kind: StatementKind::Hla(HlaStatement::Exchange(HlaExchange {
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Exchange(HlaExchange {
                 left: self.register(node.child_by_field_name("left"), node),
                 right: self.register(node.child_by_field_name("right"), node),
             })),
-            span: self.span(node),
-        }
+            self.span(node),
+        )
     }
 
     /// The `body` block of `node`, or an empty one anchored at its end when
@@ -952,14 +1015,14 @@ impl AstBuilder<'_> {
         let otherwise = node
             .child_by_field_name("else")
             .map(|clause| self.body_of(clause));
-        Statement {
-            kind: StatementKind::Conditional(ConditionalBlock {
+        Statement::new(
+            StatementKind::Conditional(ConditionalBlock {
                 condition: self.branch_condition(node.child_by_field_name("condition"), node),
                 body: self.body_of(node),
                 otherwise,
             }),
-            span: self.span(node),
-        }
+            self.span(node),
+        )
     }
 
     fn conditional_jump(&mut self, node: Node<'_>) -> Statement {
@@ -968,34 +1031,22 @@ impl AstBuilder<'_> {
         let jump = match node.child_by_field_name("jump") {
             Some(jump) => match jump.kind() {
                 "goto_statement" => self.goto_statement(jump),
-                "break_statement" => Statement {
-                    kind: StatementKind::Break,
-                    span: self.span(jump),
-                },
-                "repeat_statement" => Statement {
-                    kind: StatementKind::Repeat,
-                    span: self.span(jump),
-                },
+                "break_statement" => Statement::new(StatementKind::Break, self.span(jump)),
+                "repeat_statement" => Statement::new(StatementKind::Repeat, self.span(jump)),
                 _ => {
                     self.unexpected(jump, "a conditional jump");
-                    Statement {
-                        kind: StatementKind::Error,
-                        span: self.span(jump),
-                    }
+                    Statement::new(StatementKind::Error, self.span(jump))
                 }
             },
-            None => Statement {
-                kind: StatementKind::Error,
-                span: Span::empty_at(span.file, span.end),
-            },
+            None => Statement::new(StatementKind::Error, Span::empty_at(span.file, span.end)),
         };
-        Statement {
-            kind: StatementKind::ConditionalJump(ConditionalJump {
+        Statement::new(
+            StatementKind::ConditionalJump(ConditionalJump {
                 condition,
                 jump: Box::new(jump),
             }),
             span,
-        }
+        )
     }
 
     fn postfix_loop(&mut self, node: Node<'_>) -> Statement {
@@ -1016,14 +1067,14 @@ impl AstBuilder<'_> {
             Some("never") => LoopCondition::Never,
             _ => LoopCondition::Branch(self.branch_condition(condition_node, node)),
         };
-        Statement {
-            kind: StatementKind::Loop(LoopStatement {
+        Statement::new(
+            StatementKind::Loop(LoopStatement {
                 body,
                 nocross,
                 condition,
             }),
             span,
-        }
+        )
     }
 
     fn goto_statement(&mut self, node: Node<'_>) -> Statement {
@@ -1032,14 +1083,14 @@ impl AstBuilder<'_> {
         // `goto (vec)` keeps its parentheses in the source text, which is how
         // the indirect form is told from the direct one.
         let indirect = self.text(node).contains('(');
-        Statement {
-            kind: StatementKind::Goto(GotoStatement {
+        Statement::new(
+            StatementKind::Goto(GotoStatement {
                 target,
                 indirect,
                 is_far: self.far_marker(node),
             }),
             span,
-        }
+        )
     }
 
     fn bare_call(&mut self, node: Node<'_>) -> Statement {
@@ -1064,14 +1115,14 @@ impl AstBuilder<'_> {
             }
             registers
         });
-        Statement {
-            kind: StatementKind::BareCall(BareCall {
+        Statement::new(
+            StatementKind::BareCall(BareCall {
                 target: self.name(node.child_by_field_name("target"), node),
                 arguments,
                 outputs,
             }),
-            span: self.span(node),
-        }
+            self.span(node),
+        )
     }
 
     fn label(&mut self, node: Node<'_>) -> Statement {
@@ -1080,13 +1131,13 @@ impl AstBuilder<'_> {
             Some("local_identifier") => LabelScope::Local,
             _ => LabelScope::Global,
         };
-        Statement {
-            kind: StatementKind::Label(LabelStatement {
+        Statement::new(
+            StatementKind::Label(LabelStatement {
                 name: self.name(name_node, node),
                 scope,
             }),
-            span: self.span(node),
-        }
+            self.span(node),
+        )
     }
 
     /// The numeric value of an `immediate` CST node (`#` followed by a number).

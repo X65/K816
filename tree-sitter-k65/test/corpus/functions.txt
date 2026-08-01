@@ -166,6 +166,80 @@ func main {
         body: (block)))))
 
 ================================================================================
+Bare mode-set statements
+================================================================================
+
+func main {
+  @a16
+.loop:
+  lda #1
+  @a8 @i16
+  nop
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (mode_set
+        width: (width_annotation))
+      (label
+        name: (local_identifier))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (number)))
+      (mode_set
+        width: (width_annotation)
+        width: (width_annotation))
+      (native_instruction
+        mnemonic: (mnemonic)))))
+
+================================================================================
+A brace after annotations always opens a width block
+================================================================================
+
+func main {
+  @a16 { lda #1 }
+  @a16 { { lda #1 } != }
+  @a8 ;
+  @a16 { nop }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (width_block
+        width: (width_annotation)
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic)
+            operand: (immediate
+              value: (number)))))
+      (width_block
+        width: (width_annotation)
+        body: (block
+          (postfix_loop
+            body: (block
+              (native_instruction
+                mnemonic: (mnemonic)
+                operand: (immediate
+                  value: (number))))
+            condition: (branch_condition))))
+      (mode_set
+        width: (width_annotation))
+      (width_block
+        width: (width_annotation)
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic)))))))
+
+================================================================================
 Call statements
 ================================================================================
 

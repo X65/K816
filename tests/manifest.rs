@@ -248,6 +248,12 @@ const AUDIT: &[Row] = &[
         case: "Scoped width blocks",
     },
     Row {
+        group: "Bare mode-set statements",
+        source: "func f {\n  @a16\n  lda #1\n}\n",
+        expect: Expect::Parses,
+        case: "Bare mode-set statements",
+    },
+    Row {
         group: "Function call contracts, declaration",
         source: "func add @a16 (a, x) -> @a8 a, y { }\n",
         expect: Expect::Parses,

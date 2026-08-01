@@ -790,6 +790,10 @@
           "named": true
         },
         {
+          "type": "mode_set",
+          "named": true
+        },
+        {
           "type": "native_instruction",
           "named": true
         },
@@ -4034,6 +4038,22 @@
           {
             "type": "sizeof",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "mode_set",
+    "named": true,
+    "fields": {
+      "width": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "width_annotation",
+            "named": true
           }
         ]
       }

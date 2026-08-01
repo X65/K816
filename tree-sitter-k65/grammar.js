@@ -384,6 +384,24 @@ export default grammar({
     width_block: $ =>
       seq(repeat1(field('width', $.width_annotation)), field('body', $.block)),
 
+    // A bare `@a16` between statements sets the mode for the rest of the
+    // enclosing block, with no restore — the difference from `width_block`,
+    // and what makes the label-site bridging example in
+    // `doc/register-width-aware-syntax.md` work.
+    //
+    // `@a16 {` is ambiguous between the two: a mode set may be followed by a
+    // postfix loop, which also starts with `{`. A `{` after annotations always
+    // opens a width block, which is the reading that already existed; the
+    // negative dynamic precedence here is what settles it. A moded loop is
+    // written `@a16 { { ... } != }`.
+    //
+    // A run of annotations is one mode set rather than several, so `prec.right`
+    // keeps the repetition greedy. Statements have no terminator, so *every*
+    // annotation before a `{` belongs to the width block it opens; a mode set
+    // directly followed by a width block takes the `;` separator between them.
+    mode_set: $ =>
+      prec.dynamic(-1, prec.right(repeat1(field('width', $.width_annotation)))),
+
     // `call NAME` and `call far NAME`. A bare name is also a call; see
     // `bare_call`.
     //
@@ -735,6 +753,7 @@ export default grammar({
         $.hla_nop,
         $.hla_break,
         $.width_block,
+        $.mode_set,
         $.call_statement,
         $.bare_call,
         $.conditional_block,

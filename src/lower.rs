@@ -280,6 +280,7 @@ impl Lowering<'_> {
                 self.skipped(span, "a `return_i`");
             }
             StatementKind::WidthBlock(_) => self.skipped(span, "a scoped width block"),
+            StatementKind::ModeSet(_) => self.skipped(span, "a bare mode set"),
             StatementKind::Call(_) | StatementKind::BareCall(_) => {
                 self.skipped(span, "a function call");
             }

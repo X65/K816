@@ -246,6 +246,7 @@ impl Analysis {
                 StatementKind::Data(data) => self.declare_data_labels(data),
                 StatementKind::Native(_)
                 | StatementKind::Hla(_)
+                | StatementKind::ModeSet(_)
                 | StatementKind::Call(_)
                 | StatementKind::BareCall(_)
                 | StatementKind::ConditionalJump(_)
@@ -563,6 +564,11 @@ impl Analysis {
             StatementKind::WidthBlock(_) => self.diagnostics.push(compat::unimplemented(
                 statement.span,
                 "scoped width blocks",
+                compat::Owner::WidthAndContracts,
+            )),
+            StatementKind::ModeSet(_) => self.diagnostics.push(compat::unimplemented(
+                statement.span,
+                "bare mode-set statements",
                 compat::Owner::WidthAndContracts,
             )),
             // Branches, loops, and jumps are recognized but not lowered yet.

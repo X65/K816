@@ -303,6 +303,14 @@ fn dump_ast(file: &AstFile) -> String {
                         StatementKind::Return(ReturnKind::Subroutine) => "return".to_owned(),
                         StatementKind::Return(ReturnKind::Interrupt) => "return_i".to_owned(),
                         StatementKind::WidthBlock(_) => "width block".to_owned(),
+                        StatementKind::ModeSet(width) => format!(
+                            "mode set {}",
+                            width
+                                .iter()
+                                .map(|annotation| dump_width(annotation.kind))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
                         StatementKind::Call(call) => {
                             format!(
                                 "call {}{}",
@@ -706,6 +714,139 @@ func main @a8 @i16 @20..113
   native rts @108..111
 "
     );
+}
+
+/// The bare mode set is the statement `doc/register-width-aware-syntax.md`
+/// uses in its label-site bridging example, and it did not parse before.
+#[test]
+fn a_bare_mode_set_is_a_statement() {
+    let source = "func main {\n  @a16\n.loop:\n  lda #1\n  @a8 @i16\n  nop\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("modes.k816", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    assert_eq!(
+        dump_ast(&result.file),
+        "\
+func main @0..53
+  mode set @a16 @14..18
+  local label .loop @19..25
+  native lda #1 @28..34
+  mode set @a8 @i16 @37..45
+  native nop @48..51
+"
+    );
+    // The two annotations of one run are one statement, not two.
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a function");
+    };
+    let StatementKind::ModeSet(width) = &func.body.statements[3].kind else {
+        panic!(
+            "expected a mode set, got {:?}",
+            func.body.statements[3].kind
+        );
+    };
+    assert_eq!(
+        width.iter().map(|w| w.kind).collect::<Vec<_>>(),
+        [WidthAnnotationKind::A8, WidthAnnotationKind::I16]
+    );
+}
+
+/// Decision 14: a `{` after annotations always opens a width block, so a
+/// moded loop is written `@a16 { { ... } != }` and a mode set that precedes a
+/// width block takes the `;` separator.
+#[test]
+fn a_brace_after_annotations_always_opens_a_width_block() {
+    let source =
+        "func main {\n  @a16 { lda #1 }\n  @a16 { { lda #1 } != }\n  @a8 ;\n  @a16 { nop }\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("modes.k816", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[0].kind else {
+        panic!("expected a function");
+    };
+    let kinds: Vec<&str> = func
+        .body
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::WidthBlock(_) => "width block",
+            StatementKind::ModeSet(_) => "mode set",
+            other => panic!("unexpected statement {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["width block", "width block", "mode set", "width block"]
+    );
+    // The middle block's body is the postfix loop, which is the reading the
+    // mode-set spelling would otherwise have stolen.
+    let StatementKind::WidthBlock(moded_loop) = &func.body.statements[1].kind else {
+        unreachable!("checked above");
+    };
+    assert!(matches!(
+        moded_loop.body.statements[0].kind,
+        StatementKind::Loop(_)
+    ));
+}
+
+/// Statement identity is what lets the width solver and lowering name the
+/// same statement instead of re-deriving it by position.
+#[test]
+fn statements_are_numbered_in_source_order_including_nested_blocks() {
+    let source = "\
+func main {
+  nop
+  @a16 {
+    nop
+    nop
+  }
+  nop
+}
+
+func other {
+  nop
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("ids.k816", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let mut seen: Vec<(u32, u32)> = Vec::new();
+    for item in &result.file.items {
+        let ItemKind::Func(func) = &item.kind else {
+            continue;
+        };
+        collect_ids(&func.body, &mut seen);
+    }
+    // Pre-order: the width block is numbered before the statements inside it,
+    // and the numbering is a single sequence across the whole file.
+    assert_eq!(
+        seen.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4, 5]
+    );
+    assert_eq!(
+        seen.iter().map(|(_, start)| *start).collect::<Vec<_>>(),
+        // `nop`, `@a16 {`, the two nested `nop`s, the trailing `nop`, and
+        // `other`'s `nop`, in the order they appear in the source.
+        vec![14, 20, 31, 39, 49, 71]
+    );
+}
+
+fn collect_ids(block: &k816::ast::Block, out: &mut Vec<(u32, u32)>) {
+    for statement in &block.statements {
+        assert!(
+            statement.id.is_assigned(),
+            "statement at {} was never numbered",
+            statement.span.start
+        );
+        out.push((statement.id.index(), statement.span.start));
+        if let StatementKind::WidthBlock(width) = &statement.kind {
+            collect_ids(&width.body, out);
+        }
+    }
 }
 
 #[test]

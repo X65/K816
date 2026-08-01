@@ -242,6 +242,51 @@ pub struct Block {
 pub struct Statement {
     pub kind: StatementKind,
     pub span: Span,
+    /// This statement's identity within its file.
+    pub id: StmtId,
+}
+
+impl Statement {
+    /// A statement whose identity has not been assigned yet.
+    ///
+    /// The builder constructs statements as it recognizes them, which is not
+    /// source order once blocks nest, so `assign_statement_ids` numbers them
+    /// afterwards in one pre-order walk.
+    pub fn new(kind: StatementKind, span: Span) -> Self {
+        Self {
+            kind,
+            span,
+            id: StmtId::UNASSIGNED,
+        }
+    }
+}
+
+/// Identifies one statement within its file.
+///
+/// Analysis and lowering walk the AST independently, so a per-statement fact
+/// — the width state before a statement, most of all — needs a key both
+/// stages can name. Re-deriving one by position is what lets the two stages
+/// silently disagree, which is the failure this identity exists to prevent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StmtId(u32);
+
+impl StmtId {
+    /// The value a freshly built statement carries until the numbering pass
+    /// reaches it. Deliberately not a valid key: a lookup that finds it is a
+    /// compiler bug, not a statement whose state happens to be missing.
+    pub const UNASSIGNED: Self = Self(u32::MAX);
+
+    pub fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> u32 {
+        self.0
+    }
+
+    pub fn is_assigned(self) -> bool {
+        self != Self::UNASSIGNED
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,6 +297,10 @@ pub enum StatementKind {
     Hla(HlaStatement),
     /// `@a16 { ... }` — a width scoped to a block, restored after it.
     WidthBlock(WidthBlock),
+    /// A bare `@a16` between statements — sets the width for the rest of the
+    /// enclosing block, with no restore. That is the whole difference from a
+    /// [`StatementKind::WidthBlock`].
+    ModeSet(Vec<WidthAnnotation>),
     /// `call NAME`, `call far NAME`, `far NAME`.
     Call(CallStatement),
     /// `inc_x` on its own — a call or an inline expansion — and the

@@ -405,12 +405,13 @@ export default grammar({
     // `call NAME` and `call far NAME`. A bare name is also a call; see
     // `bare_call`.
     //
-    // The keyword-less `far NAME` spelling is *not* here. It is two
+    // The keyword-less `far NAME` spelling is the second arm. It is two
     // identifiers in a row, which is also `lda far addr` with the operand
     // prefix, an assignment target followed by a bare call, and half a dozen
-    // other statement shapes; every attempt to prefer one reading broke
-    // another. It belongs with the rest of the statement-boundary work in the
-    // control-flow group, where the whole statement grammar is in view.
+    // other statement shapes; every attempt to *prefer* one reading broke
+    // another, so it takes a negative dynamic precedence instead and wins only
+    // where nothing else parses. The declared conflicts above list the readings
+    // it is explored against.
     //
     // `far` is an aliased identifier here and on a section header, not a
     // keyword, for the same reason the encoding prefixes are: a keyword token

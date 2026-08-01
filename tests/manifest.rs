@@ -46,6 +46,9 @@ use k816::source::SourceMap;
 enum Expect {
     /// Parses with no syntax diagnostics.
     Parses,
+    /// Parses *and compiles*: the group's semantics have landed, so a
+    /// snippet in that syntax reaches emitted assembly with no errors.
+    Compiles,
     /// Parses, and reports itself as reserved legacy syntax.
     Reserved,
 }
@@ -232,37 +235,37 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Width annotations on functions",
         source: "func main @a8 @i16 { }\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Empty function with width annotations",
     },
     Row {
         group: "Module-level default widths",
         source: "@a8\n@i16\nfunc main { }\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Module-level default widths",
     },
     Row {
         group: "Scoped width blocks",
-        source: "func f {\n  @a16 { a = #1 }\n}\n",
-        expect: Expect::Parses,
+        source: "func f {\n  @a16 { lda #1 }\n}\n",
+        expect: Expect::Compiles,
         case: "Scoped width blocks",
     },
     Row {
         group: "Bare mode-set statements",
         source: "func f {\n  @a16\n  lda #1\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Bare mode-set statements",
     },
     Row {
         group: "Function call contracts, declaration",
-        source: "func add @a16 (a, x) -> @a8 a, y { }\n",
-        expect: Expect::Parses,
+        source: "func add @a16 (a, x) -> @a8 a, y {\n  sep #$20\n}\n",
+        expect: Expect::Compiles,
         case: "Call contracts on a section header",
     },
     Row {
         group: "Function call contracts, call site",
-        source: "func f {\n  add a, x -> a, y\n  scale a, #16 -> a\n}\n",
-        expect: Expect::Parses,
+        source: "func add (a, x) -> a, y {\n  nop\n}\n\nfunc f {\n  add a, x -> a, y\n}\n",
+        expect: Expect::Compiles,
         case: "Call-site contracts",
     },
     Row {
@@ -708,6 +711,24 @@ fn every_manifest_syntax_group_parses() {
                     .collect::<Vec<_>>(),
                 row.source
             ));
+            continue;
+        }
+        if row.expect == Expect::Compiles {
+            // The group's semantics have landed, so its own syntax has to
+            // survive the whole pipeline rather than merely parse.
+            let result = k816::compile_to_ca65(&map, id, &k816::Options { optimize: false });
+            let errors: Vec<&str> = result
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.is_error())
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect();
+            if !errors.is_empty() {
+                failures.push(format!(
+                    "  {}\n    expected it to compile, got {errors:?}\n    source: {:?}",
+                    row.group, row.source
+                ));
+            }
             continue;
         }
         if row.expect != Expect::Reserved {

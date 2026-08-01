@@ -1,0 +1,21 @@
+// Sub-plan D fixture, unit B of the cross-unit staleness gate.
+//
+// Analyzed alone, `foreign` does not resolve, its call falls back to the
+// language's preserving rule, and `wrapper` exports `Preserve` — so a caller
+// keeps believing 16-bit after calling it. Analyzed with unit A visible,
+// `foreign` is `Fixed(@a8)`, so `wrapper` *really* returns 8-bit. A summary
+// taken before resolution is therefore not merely imprecise: every caller
+// that consumed it sizes its immediates one byte too wide, and every byte
+// after them shifts.
+//
+// The gate is that compiling this unit alone and compiling it with `--unit`
+// naming A must not disagree about `wrapper`'s emitted code.
+
+func wrapper @a16 {
+    call foreign
+}
+
+func third @a16 {
+    call wrapper
+    lda #$01        // 8-bit: `wrapper` exits at whatever `foreign` left
+}

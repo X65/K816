@@ -1,0 +1,9 @@
+// Sub-plan D fixture, unit A of the cross-unit staleness gate.
+//
+// `foreign` leaves the accumulator 8-bit. Unit B's `wrapper` calls it, and
+// what B exports for `wrapper` depends on knowing that — which B cannot work
+// out on its own.
+
+func foreign @a16 -> @a8 {
+    sep #$20
+}

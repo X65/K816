@@ -679,3 +679,83 @@ fn call_site_bridges_are_the_minimum_for_each_contract() {
         "{bytes:02X?}"
     );
 }
+
+/// A summary taken before cross-unit resolution is not merely imprecise, it
+/// is unsound.
+///
+/// `wrapper @a16` calls a `foreign` that leaves the accumulator 8-bit.
+/// Analyzed alone, `foreign` does not resolve, its call falls back to the
+/// language's preserving rule, and `wrapper` looks like it exits 16-bit —
+/// so a caller sizes its next immediate one byte too wide and every byte
+/// after it shifts. The workspace phase classifies exits over the whole
+/// call graph, so what a unit exports and what it emits are one answer.
+#[test]
+fn a_cross_unit_exit_reaches_the_callers_encoded_immediate() {
+    let bytes = link_two_units(
+        "cross-unit-exit",
+        (
+            "contract-unit-b.k816",
+            include_str!("golden/contract-unit-b.k816"),
+        ),
+        (
+            "contract-unit-a.k816",
+            include_str!("golden/contract-unit-a.k816"),
+        ),
+    );
+    assert_eq!(
+        bytes,
+        vec![
+            // wrapper: jsr foreign, rts
+            0x20, 0x0A, 0x80, 0x60,
+            // third: jsr wrapper, lda #$01 — two bytes, from `foreign`'s exit
+            0x20, 0x00, 0x80, 0xA9, 0x01, 0x60, // foreign: sep #$20, rts
+            0xE2, 0x20, 0x60,
+        ],
+        "{bytes:02X?}"
+    );
+}
+
+/// The exported contract and the emitted code come from the same run.
+///
+/// The summary a unit hands the workspace is the one its own code was
+/// generated against; if the two could differ, a caller would bridge from
+/// one and size its immediates from the other.
+#[test]
+fn an_exported_contract_matches_the_code_the_unit_emits() {
+    use k816::linkage::Linkage;
+    use k816::op::{AxisExit, RegisterWidth};
+
+    let mut map = SourceMap::new();
+    map.add_file(
+        "contract-unit-a.k816",
+        include_str!("golden/contract-unit-a.k816"),
+    );
+    let b = map.add_file(
+        "contract-unit-b.k816",
+        include_str!("golden/contract-unit-b.k816"),
+    );
+    let linkage = Linkage::resolve(&map);
+
+    // `wrapper` exports the exit it inherits from `foreign`, not the
+    // `Preserve` a single-unit summary would produce.
+    let contract = linkage
+        .contract("wrapper")
+        .expect("wrapper has a classified contract");
+    assert_eq!(contract.exit.a, AxisExit::Fixed(RegisterWidth::W8));
+    assert_eq!(
+        linkage.contract("foreign").expect("foreign").exit.a,
+        AxisExit::Fixed(RegisterWidth::W8)
+    );
+
+    // And the code the unit emits says the same thing: the load after the
+    // call to `wrapper` sits under an 8-bit claim.
+    let result = compile_to_ca65(&map, b, &Options { optimize: false });
+    let assembly = result.assembly.expect("compiles");
+    let call = assembly.find("jsr     a:wrapper").expect("the call");
+    let load = assembly.find("lda     #$01").expect("the load");
+    let claim = assembly[call..load].find("        .a8").is_some();
+    assert!(
+        claim,
+        "the callee's exit is claimed before the load: {assembly}"
+    );
+}

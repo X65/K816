@@ -1619,3 +1619,78 @@ pub fn unclassifiable_return(analysis: &WidthAnalysis, axis: Axis) -> Option<Spa
         .find(|site| !matches!(axis.state(site), AxisState::Known(_)))
         .map(|site| site.span)
 }
+
+/// Condenses a directed graph into its strongly connected components, in
+/// reverse topological order — every component's successors come before it.
+///
+/// Tarjan's algorithm, which emits a component only once everything it can
+/// reach has been emitted, so the order is the one exit classification needs
+/// without a separate topological sort. Exit classification depends on the
+/// order rather than on convergence: `AxisExit` has no order that would make
+/// an iterate-until-stable scheme monotone, so an iterating implementation
+/// would converge by luck on the inputs it was tested on.
+pub fn strongly_connected_components(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    struct Tarjan<'a> {
+        adjacency: &'a [Vec<usize>],
+        /// Discovery index per node, `None` until visited.
+        order: Vec<Option<usize>>,
+        /// The lowest discovery index reachable from the node's subtree.
+        low: Vec<usize>,
+        on_stack: Vec<bool>,
+        stack: Vec<usize>,
+        next: usize,
+        components: Vec<Vec<usize>>,
+    }
+
+    impl Tarjan<'_> {
+        fn visit(&mut self, node: usize) {
+            self.order[node] = Some(self.next);
+            self.low[node] = self.next;
+            self.next += 1;
+            self.stack.push(node);
+            self.on_stack[node] = true;
+
+            for edge in 0..self.adjacency[node].len() {
+                let target = self.adjacency[node][edge];
+                match self.order[target] {
+                    None => {
+                        self.visit(target);
+                        self.low[node] = self.low[node].min(self.low[target]);
+                    }
+                    Some(discovered) if self.on_stack[target] => {
+                        self.low[node] = self.low[node].min(discovered);
+                    }
+                    Some(_) => {}
+                }
+            }
+
+            if self.low[node] == self.order[node].expect("visited") {
+                let mut component = Vec::new();
+                while let Some(member) = self.stack.pop() {
+                    self.on_stack[member] = false;
+                    component.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                self.components.push(component);
+            }
+        }
+    }
+
+    let mut tarjan = Tarjan {
+        adjacency,
+        order: vec![None; adjacency.len()],
+        low: vec![0; adjacency.len()],
+        on_stack: vec![false; adjacency.len()],
+        stack: Vec::new(),
+        next: 0,
+        components: Vec::new(),
+    };
+    for node in 0..adjacency.len() {
+        if tarjan.order[node].is_none() {
+            tarjan.visit(node);
+        }
+    }
+    tarjan.components
+}

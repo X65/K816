@@ -166,6 +166,8 @@ fn analyze(
         defaults: WidthContract::default(),
         externally_reachable: BTreeSet::new(),
         deferred_sections: BTreeMap::new(),
+        workspace_contracts: BTreeMap::new(),
+        workspace_recursive: BTreeSet::new(),
     };
     analysis.declare_placed_symbols(file);
     // Module defaults are file-wide, so they are known before any function's
@@ -179,6 +181,14 @@ fn analyze(
     if let Some(linkage) = linkage {
         analysis.declare_imports(linkage);
         analysis.collect_externally_reachable(linkage);
+        analysis.workspace_contracts = analysis.collect_workspace_contracts(linkage);
+        analysis.workspace_recursive = analysis
+            .model
+            .symbols
+            .iter()
+            .filter(|(_, symbol)| linkage.is_recursive(&symbol.name))
+            .map(|(id, _)| id)
+            .collect();
     }
     // The width dataflow runs before the checks that consume it, and after
     // imports so that a foreign callee resolves.
@@ -205,6 +215,15 @@ struct Analysis {
     /// Code sections the parser recognized but no sub-plan compiles yet, by
     /// name, so a call that names one says what is actually missing.
     deferred_sections: BTreeMap<String, (&'static str, compat::Owner)>,
+    /// Every function's contract as the workspace classified it, translated
+    /// into this unit's symbol ids.
+    ///
+    /// Empty when this unit is analyzed alone, in which case the unit's own
+    /// classification is the authority.
+    workspace_contracts: BTreeMap<SymbolId, width::CalleeContract>,
+    /// Functions the workspace call graph put in a cycle, including ones
+    /// that only close through another unit.
+    workspace_recursive: BTreeSet<SymbolId>,
 }
 
 impl Analysis {
@@ -698,6 +717,22 @@ impl Analysis {
         }
     }
 
+    /// The workspace's classified contract for every name this unit can see.
+    fn collect_workspace_contracts(
+        &self,
+        linkage: &Linkage,
+    ) -> BTreeMap<SymbolId, width::CalleeContract> {
+        self.model
+            .symbols
+            .iter()
+            .filter_map(|(id, symbol)| {
+                linkage
+                    .contract(&symbol.name)
+                    .map(|contract| (id, contract))
+            })
+            .collect()
+    }
+
     /// Runs the width dataflow over every function, and records what it found.
     ///
     /// Every call takes the language's `Unknown ⇒ Preserve` rule here, which
@@ -751,14 +786,23 @@ impl Analysis {
     /// while the immediates after the call were sized from the placeholder —
     /// two answers again, arriving by staging rather than by duplication.
     fn classify_exits(&mut self, file: &AstFile) {
-        let mut callees: BTreeMap<SymbolId, width::CalleeContract> = BTreeMap::new();
-        for component in strongly_connected_components(&self.model.functions) {
+        // With a workspace to consult, its classification is the authority:
+        // it saw every callee, cross-unit cycles included, so the code this
+        // unit emits and the contract it exports come from one answer rather
+        // than from two that agree only by luck.
+        let mut callees: BTreeMap<SymbolId, width::CalleeContract> =
+            self.workspace_contracts.clone();
+        let adjacency = call_graph(&self.model.functions);
+        for component in width::strongly_connected_components(&adjacency) {
             // A non-trivial component, or a self-loop, is recursion: there is
             // no fixpoint to find and no answer better than the fallback.
             let recursive = component.len() > 1 || {
                 let index = component[0];
                 let symbol = self.model.functions[index].symbol;
                 self.model.functions[index].callees.contains(&symbol)
+                    // A cycle that closes through another unit is invisible
+                    // from here, so the workspace answer carries it.
+                    || self.workspace_recursive.contains(&symbol)
             };
             for index in component {
                 let info = self.model.functions[index].clone();
@@ -782,10 +826,18 @@ impl Analysis {
                     self.diagnostics
                         .push(divergent_exit(&func.name.text, *divergence));
                 }
-                let (exit, assumed) = if recursive {
-                    (ExitContract::preserving(), true)
-                } else {
-                    (classified.exit, classified.assumed)
+                let (exit, assumed) = match self.workspace_contracts.get(&info.symbol) {
+                    // The workspace already classified this function, over a
+                    // graph that includes the callers and callees this unit
+                    // cannot see.
+                    Some(_) if recursive => (ExitContract::preserving(), true),
+                    Some(contract) => (
+                        contract.exit,
+                        contract.exit.a == crate::op::AxisExit::Unknown
+                            || contract.exit.i == crate::op::AxisExit::Unknown,
+                    ),
+                    None if recursive => (ExitContract::preserving(), true),
+                    None => (classified.exit, classified.assumed),
                 };
                 if assumed {
                     // An axis whose divergence was already reported needs no
@@ -1735,96 +1787,33 @@ fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static 
     }
 }
 
+/// The unit's call graph as adjacency lists over `functions`' indices.
+///
+/// A callee this unit does not define is not a node: it contributes the
+/// language rule at the call site, or the workspace's answer for it.
+fn call_graph(functions: &[FunctionInfo]) -> Vec<Vec<usize>> {
+    let index_of: std::collections::HashMap<SymbolId, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, info)| (info.symbol, index))
+        .collect();
+    functions
+        .iter()
+        .map(|info| {
+            info.callees
+                .iter()
+                .filter_map(|callee| index_of.get(callee).copied())
+                .collect()
+        })
+        .collect()
+}
+
 /// The [`ItemKind::Func`] one [`FunctionInfo`] describes.
 fn function_of<'a>(file: &'a AstFile, info: &FunctionInfo) -> Option<&'a Function> {
     match &file.items.get(info.item_index)?.kind {
         ItemKind::Func(func) => Some(func),
         _ => None,
     }
-}
-
-/// The unit's call graph, condensed into strongly connected components in
-/// reverse topological order — every component's callees come before it.
-///
-/// Tarjan's algorithm, which emits a component only once everything it can
-/// reach has been emitted, so the order is the one exit classification needs
-/// without a separate topological sort.
-fn strongly_connected_components(functions: &[FunctionInfo]) -> Vec<Vec<usize>> {
-    let index_of: std::collections::HashMap<SymbolId, usize> = functions
-        .iter()
-        .enumerate()
-        .map(|(index, info)| (info.symbol, index))
-        .collect();
-
-    struct Tarjan<'a> {
-        functions: &'a [FunctionInfo],
-        index_of: &'a std::collections::HashMap<SymbolId, usize>,
-        /// Discovery index per node, `None` until visited.
-        order: Vec<Option<usize>>,
-        /// The lowest discovery index reachable from the node's subtree.
-        low: Vec<usize>,
-        on_stack: Vec<bool>,
-        stack: Vec<usize>,
-        next: usize,
-        components: Vec<Vec<usize>>,
-    }
-
-    impl Tarjan<'_> {
-        fn visit(&mut self, node: usize) {
-            self.order[node] = Some(self.next);
-            self.low[node] = self.next;
-            self.next += 1;
-            self.stack.push(node);
-            self.on_stack[node] = true;
-
-            for callee in &self.functions[node].callees {
-                // A callee this unit does not define is not a node: it
-                // contributes the language rule at the call site instead.
-                let Some(&target) = self.index_of.get(callee) else {
-                    continue;
-                };
-                match self.order[target] {
-                    None => {
-                        self.visit(target);
-                        self.low[node] = self.low[node].min(self.low[target]);
-                    }
-                    Some(discovered) if self.on_stack[target] => {
-                        self.low[node] = self.low[node].min(discovered);
-                    }
-                    Some(_) => {}
-                }
-            }
-
-            if self.low[node] == self.order[node].expect("visited") {
-                let mut component = Vec::new();
-                while let Some(member) = self.stack.pop() {
-                    self.on_stack[member] = false;
-                    component.push(member);
-                    if member == node {
-                        break;
-                    }
-                }
-                self.components.push(component);
-            }
-        }
-    }
-
-    let mut tarjan = Tarjan {
-        functions,
-        index_of: &index_of,
-        order: vec![None; functions.len()],
-        low: vec![0; functions.len()],
-        on_stack: vec![false; functions.len()],
-        stack: Vec::new(),
-        next: 0,
-        components: Vec::new(),
-    };
-    for node in 0..functions.len() {
-        if tarjan.order[node].is_none() {
-            tarjan.visit(node);
-        }
-    }
-    tarjan.components
 }
 
 /// Two reachable returns of one function that leave an axis at different

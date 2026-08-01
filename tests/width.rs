@@ -1189,3 +1189,55 @@ func caller @a8 @i8 {
 ";
     assert_eq!(compile_codes(text), Vec::<String>::new());
 }
+
+// ---------------------------------------------------------------------------
+// Cross-unit contracts
+// ---------------------------------------------------------------------------
+
+/// A cycle that closes through another unit is still a cycle, and neither
+/// unit can see it on its own.
+#[test]
+fn a_cross_unit_recursion_cycle_is_pinned_and_reported() {
+    let mut map = SourceMap::new();
+    let left = map.add_file(
+        "left.k816",
+        "func left @a8 {\n    rep #$20\n    call right\n}\n",
+    );
+    map.add_file(
+        "right.k816",
+        "func right @a8 {\n    rep #$20\n    call left\n}\n",
+    );
+    let linkage = k816::linkage::Linkage::resolve(&map);
+    assert!(linkage.is_recursive("left"));
+    assert!(linkage.is_recursive("right"));
+    assert_eq!(
+        linkage.contract("left").expect("classified").exit,
+        k816::op::ExitContract::preserving(),
+        "a cycle has no exit contract to compute"
+    );
+
+    let parse = parse_source(map.file(left), None);
+    let (_, diagnostics) = k816::semantic::analyze_unit(&parse.file, "left.k816", &linkage);
+    assert_eq!(codes(&diagnostics), ["K816-W0124"]);
+}
+
+/// The staleness gate: `wrapper` exports the exit it inherits from a callee
+/// in another unit, not the `Preserve` a single-unit summary produces.
+#[test]
+fn contract_unit_fixtures_export_a_derived_cross_unit_exit() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "contract-unit-a.k816",
+        fixture("contract-unit-a.k816").as_str(),
+    );
+    map.add_file(
+        "contract-unit-b.k816",
+        fixture("contract-unit-b.k816").as_str(),
+    );
+    let linkage = k816::linkage::Linkage::resolve(&map);
+    assert_eq!(
+        linkage.contract("wrapper").expect("classified").exit.a,
+        AxisExit::Fixed(RegisterWidth::W8),
+        "the exit is derived through the foreign callee, not assumed"
+    );
+}

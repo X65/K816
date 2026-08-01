@@ -182,11 +182,22 @@ fn instructions(name: &str, text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Compiles without the optimizer, tolerating warnings.
+///
+/// Several fixtures here deliberately do things that are worth warning about
+/// — a `plp` before a return, a `jsr` back into the function itself — because
+/// what is being examined is the *emitted text* around them. The warnings
+/// themselves have their own tests; an error still fails the run.
 fn emit_unoptimized(name: &str, text: &str) -> String {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
     let result = compile_to_ca65(&map, file, &Options { optimize: false });
-    assert_eq!(result.diagnostics, vec![], "unexpected diagnostics");
+    let errors: Vec<&k816::diagnostic::Diagnostic> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     result.assembly.expect("compilation succeeds")
 }
 
@@ -675,14 +686,13 @@ fn an_unknown_axis_emits_an_explanation_rather_than_a_directive() {
         "func main @a8 {\n    plp\n    lda #$01\n}\n",
     );
     let result = compile_to_ca65(&map, file, &Options { optimize: false });
-    assert_eq!(
-        result
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.code.as_str())
-            .collect::<Vec<_>>(),
-        ["K816-E0104"]
-    );
+    let errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(errors, ["K816-E0104"]);
 }
 
 /// Where emulation mode is why a width became unknown, the emitted

@@ -1399,7 +1399,15 @@ fn every_operandless_mnemonic_the_grammar_accepts_is_in_the_isa_table() {
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "`{mnemonic}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-        assert_eq!(diagnostics, vec![], "`{mnemonic}`");
+        // `xce` and `rtl` leave widths a caller cannot rely on, which is
+        // worth a warning and is not what this test is about.
+        let errors: Vec<&k816::diagnostic::Diagnostic> =
+            diagnostics.iter().filter(|d| d.is_error()).collect();
+        assert_eq!(
+            errors,
+            Vec::<&k816::diagnostic::Diagnostic>::new(),
+            "`{mnemonic}`"
+        );
     }
 }
 

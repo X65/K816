@@ -230,7 +230,11 @@ fn dump(text: &str) -> String {
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
     let (model, diagnostics) = analyze_file(&parse.file);
-    assert_eq!(diagnostics, vec![], "unexpected semantic diagnostics");
+    // Warnings are output, not failure: a fixture that deliberately does an
+    // `xce` is worth warning about and is still exactly what is being dumped.
+    let errors: Vec<&k816::diagnostic::Diagnostic> =
+        diagnostics.iter().filter(|d| d.is_error()).collect();
+    assert!(errors.is_empty(), "unexpected semantic errors: {errors:?}");
     let (program, diagnostics) = lower(&parse.file, &model);
     assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
     program.dump(&model.symbols, &map)

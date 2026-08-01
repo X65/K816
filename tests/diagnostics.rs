@@ -123,6 +123,37 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::DUPLICATE_SYMBOL,
         caret: "A",
     },
+    // The width family, sub-plan D.
+    Case {
+        source: "func main {\n    nop\n}\n\n@a16\n",
+        code: DiagnosticCode::MODULE_WIDTH_PLACEMENT,
+        caret: "@a16",
+    },
+    Case {
+        source: "func main @a8 @a16 {\n    nop\n}\n",
+        code: DiagnosticCode::CONFLICTING_WIDTH,
+        caret: "@a16",
+    },
+    Case {
+        source: "func f @a8 {\n    bcc .wide\n    sep #$20\n    rts\n.wide:\n    rep #$20\n    rts\n}\n",
+        code: DiagnosticCode::DIVERGENT_EXIT,
+        caret: "rts",
+    },
+    Case {
+        source: "func f @a8 -> @a16 {\n    nop\n}\n",
+        code: DiagnosticCode::EXIT_WIDTH_MISMATCH,
+        caret: "nop",
+    },
+    Case {
+        source: "func f @a8 @i8 {\n    plp\n}\n",
+        code: DiagnosticCode::ASSUMED_EXIT,
+        caret: "plp",
+    },
+    Case {
+        source: "func f @a8 {\n    @a16 {\n        bra .out\n    }\n.out:\n    nop\n}\n",
+        code: DiagnosticCode::WIDTH_BLOCK_LEAK,
+        caret: "bra .out",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.
@@ -175,13 +206,44 @@ fn every_diagnostic_says_something_beyond_its_title() {
     }
 }
 
+/// Every code the width model introduces is reachable from source, which is
+/// what keeps a registered code from quietly becoming unused.
 #[test]
-fn only_the_config_warning_is_a_warning() {
-    // `address` placement is the one condition K816 can compile through: it
-    // emits the segment and tells the user what to add to the config.
+fn every_width_code_is_reachable() {
+    for code in [
+        DiagnosticCode::MODULE_WIDTH_PLACEMENT,
+        DiagnosticCode::CONFLICTING_WIDTH,
+        DiagnosticCode::DIVERGENT_EXIT,
+        DiagnosticCode::EXIT_WIDTH_MISMATCH,
+        DiagnosticCode::ASSUMED_EXIT,
+        DiagnosticCode::WIDTH_BLOCK_LEAK,
+    ] {
+        assert!(
+            FAMILY.iter().any(|case| case.code == code),
+            "{} has no case in the family",
+            code.as_str()
+        );
+    }
+}
+
+/// The conditions K816 compiles *through* are exactly the ones where the
+/// program is still well defined and the author has something to decide.
+///
+/// `address` placement emits its segment and tells the user what to add to
+/// the config. An assumed exit and an escaping block width are both cases
+/// where the emitted code is correct — the language rule or the dataflow
+/// carries the truth — and what is wrong is that the source reads as if
+/// something else were true.
+#[test]
+fn only_the_compile_through_conditions_are_warnings() {
+    const WARNINGS: &[DiagnosticCode] = &[
+        DiagnosticCode::ADDRESS_NEEDS_CONFIG,
+        DiagnosticCode::ASSUMED_EXIT,
+        DiagnosticCode::WIDTH_BLOCK_LEAK,
+    ];
     for case in FAMILY {
         let (_, diagnostic) = diagnostic_for(case.source, case.code);
-        let expected = if case.code == DiagnosticCode::ADDRESS_NEEDS_CONFIG {
+        let expected = if WARNINGS.contains(&case.code) {
             Severity::Warning
         } else {
             Severity::Error

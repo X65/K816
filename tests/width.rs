@@ -31,7 +31,7 @@
 
 use k816::ast::{AstFile, ItemKind, StatementKind, StmtId};
 use k816::diagnostic::{Diagnostic, DiagnosticCode};
-use k816::op::{AxisState, EmulationState, RegisterWidth};
+use k816::op::{AxisExit, AxisState, EmulationState, RegisterWidth};
 use k816::parser::parse_source;
 use k816::semantic::{SemanticModel, analyze_file};
 use k816::source::SourceMap;
@@ -103,6 +103,16 @@ fn known(width: RegisterWidth) -> AxisState {
 fn codes(diagnostics: &[Diagnostic]) -> Vec<&str> {
     diagnostics
         .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect()
+}
+
+/// The error codes only: a body that does a `plp` also earns the
+/// assumed-exit warning, which is a separate claim with its own tests.
+fn error_codes(diagnostics: &[Diagnostic]) -> Vec<&str> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
         .map(|diagnostic| diagnostic.code.as_str())
         .collect()
 }
@@ -543,7 +553,7 @@ fn an_immediate_is_sized_by_the_tracked_state_not_the_contract() {
 #[test]
 fn an_immediate_after_plp_is_refused_inside_an_annotated_function() {
     let (_, _, diagnostics) = analyze("func main @a8 {\n    plp\n    lda #$01\n}\n");
-    assert_eq!(codes(&diagnostics), ["K816-E0104"]);
+    assert_eq!(error_codes(&diagnostics), ["K816-E0104"]);
 }
 
 /// The unknown-width error names emulation mode when that is the reason, so
@@ -552,7 +562,8 @@ fn an_immediate_after_plp_is_refused_inside_an_annotated_function() {
 fn the_unknown_width_error_names_emulation_when_that_is_the_cause() {
     let (_, _, diagnostics) =
         analyze("func main @a8 {\n    xce\n    rep #$20\n    lda #$1234\n}\n");
-    assert_eq!(codes(&diagnostics), ["K816-E0104"]);
+    assert_eq!(error_codes(&diagnostics), ["K816-E0104"]);
+    let diagnostics: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.is_error()).collect();
     assert!(
         diagnostics[0]
             .notes
@@ -668,4 +679,174 @@ fn width_module_fixture_colors_each_function() {
         before(&source, "half", 0),
         (known(RegisterWidth::W8), known(RegisterWidth::W16))
     );
+}
+
+// ---------------------------------------------------------------------------
+// Exit inference
+// ---------------------------------------------------------------------------
+
+/// The exit contract of `name`, as `(accumulator, index)`.
+fn exit_of(text: &str, name: &str) -> (AxisExit, AxisExit) {
+    let (_, model, _) = analyze(text);
+    let symbol = model
+        .symbols
+        .lookup(name)
+        .unwrap_or_else(|| panic!("`{name}` is not declared"));
+    let info = model
+        .functions
+        .iter()
+        .find(|info| info.symbol == symbol)
+        .expect("the function was analyzed");
+    (info.exit.a, info.exit.i)
+}
+
+/// `Preserve` comes from an untouched axis, not from comparing the entry and
+/// return states. Deriving it by comparison would make this — the most
+/// ordinary shape in the language — exit `Unknown`, warn about it, and push
+/// every caller into a needless bridge.
+#[test]
+fn a_body_that_touches_nothing_preserves_both_widths() {
+    assert_eq!(
+        exit_of("func f {\n    nop\n}\n", "f"),
+        (AxisExit::Preserve, AxisExit::Preserve)
+    );
+}
+
+#[test]
+fn a_body_that_sets_one_axis_fixes_it_and_preserves_the_other() {
+    assert_eq!(
+        exit_of("func f @a8 {\n    rep #$20\n}\n", "f"),
+        (AxisExit::Fixed(RegisterWidth::W16), AxisExit::Preserve)
+    );
+}
+
+/// Two reachable returns at different fixed widths is a hard error at the
+/// callee: a caller has one tracked width, so it cannot follow both paths.
+/// The `Unknown ⇒ Preserve` rule never silently masks this.
+#[test]
+fn returns_at_two_fixed_widths_are_rejected() {
+    let (_, _, diagnostics) = analyze(
+        "func f @a8 {\n    bcc .wide\n    sep #$20\n    rts\n.wide:\n    rep #$20\n    rts\n}\n",
+    );
+    assert_eq!(codes(&diagnostics), ["K816-E0119"]);
+    assert_eq!(
+        diagnostics[0].secondary.len(),
+        1,
+        "both returns are pointed at"
+    );
+}
+
+/// An exit-width clause is checked, never established: it states what the
+/// body already does, so a mismatch is the body's to fix.
+#[test]
+fn a_declared_exit_width_a_return_contradicts_is_rejected() {
+    let (_, _, diagnostics) = analyze("func f @a8 -> @a16 {\n    nop\n}\n");
+    assert_eq!(codes(&diagnostics), ["K816-E0120"]);
+}
+
+#[test]
+fn a_declared_exit_width_the_body_establishes_is_accepted() {
+    let (_, _, diagnostics) = analyze("func f @a8 -> @a16 {\n    rep #$20\n}\n");
+    assert_eq!(codes(&diagnostics), Vec::<&str>::new());
+}
+
+/// Recursion has no fixpoint to find and no sound answer better than the
+/// language's fallback, so its members are pinned to it and told so.
+#[test]
+fn a_recursion_cycle_is_pinned_to_the_language_rule() {
+    let text = "\
+func ping @a8 {
+    rep #$20
+    jsr pong
+}
+
+func pong @a8 {
+    rep #$20
+    jsr ping
+}
+";
+    assert_eq!(codes(&text_warnings(text)), ["K816-W0124", "K816-W0124"]);
+    assert_eq!(
+        exit_of(text, "ping"),
+        (AxisExit::Preserve, AxisExit::Preserve),
+        "a cycle member takes the fallback rather than a derived exit"
+    );
+}
+
+/// Self-recursion is a cycle of one, and the same rule applies.
+#[test]
+fn a_self_call_is_a_cycle() {
+    let text = "func f @a8 {\n    rep #$20\n    jsr f\n}\n";
+    assert_eq!(codes(&text_warnings(text)), ["K816-W0124"]);
+    assert_eq!(exit_of(text, "f"), (AxisExit::Preserve, AxisExit::Preserve));
+}
+
+fn text_warnings(text: &str) -> Vec<Diagnostic> {
+    let (_, _, diagnostics) = analyze(text);
+    diagnostics
+}
+
+/// Callees are classified before their callers, so a caller's tracker
+/// advances by an exit that is already final rather than by a placeholder.
+/// The order comes from condensing the call graph, not from source order:
+/// `caller` is written first here and still sees `callee`'s derived exit.
+#[test]
+fn a_caller_written_first_still_sees_its_callees_derived_exit() {
+    let text = "\
+func caller @a8 {
+    jsr callee
+    lda #$1234
+}
+
+func callee @a8 {
+    rep #$20
+}
+";
+    let (_, _, diagnostics) = analyze(text);
+    assert_eq!(
+        codes(&diagnostics),
+        Vec::<&str>::new(),
+        "the 16-bit immediate is accepted because the callee widens"
+    );
+    assert_eq!(before(text, "caller", 1).0, known(RegisterWidth::W16));
+}
+
+#[test]
+fn width_exit_fixture_derives_one_exit_per_shape() {
+    let source = fixture("width-exit.k816");
+    assert_eq!(
+        exit_of(&source, "fixes_both"),
+        (
+            AxisExit::Fixed(RegisterWidth::W16),
+            AxisExit::Fixed(RegisterWidth::W16)
+        )
+    );
+    assert_eq!(
+        exit_of(&source, "fixes_a_only"),
+        (AxisExit::Fixed(RegisterWidth::W16), AxisExit::Preserve)
+    );
+    assert_eq!(
+        exit_of(&source, "preserves"),
+        (AxisExit::Preserve, AxisExit::Preserve)
+    );
+    assert_eq!(
+        exit_of(&source, "loses_both"),
+        (AxisExit::Unknown, AxisExit::Unknown)
+    );
+
+    // The caller's immediates after each call are the proof that the stored
+    // analysis was rebuilt with the derived exits rather than left at the
+    // placeholder every call started from.
+    let (_, _, diagnostics) = analyze(&source);
+    assert_eq!(
+        error_codes(&diagnostics),
+        Vec::<&str>::new(),
+        "every 16-bit immediate in `caller` is accepted: {:?}",
+        codes(&diagnostics)
+    );
+    assert_eq!(before(&source, "caller", 1).0, known(RegisterWidth::W16));
+    assert_eq!(before(&source, "caller", 2).1, known(RegisterWidth::W16));
+    // A preserving callee moves nothing, so the width before the last load is
+    // still the one the previous call left.
+    assert_eq!(before(&source, "caller", 6).0, known(RegisterWidth::W16));
 }

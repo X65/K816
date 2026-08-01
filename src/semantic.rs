@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
-use crate::isa::{ImmediateWidthClass, Mnemonic};
+use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
 use crate::linkage::Linkage;
 use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
@@ -146,6 +146,7 @@ fn analyze(
         unit: unit_name.to_owned(),
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
+        externally_reachable: BTreeSet::new(),
     };
     analysis.declare_placed_symbols(file);
     // Module defaults are file-wide, so they are known before any function's
@@ -158,6 +159,7 @@ fn analyze(
     // foreign symbol's address is ld65's, so it could never fold.
     if let Some(linkage) = linkage {
         analysis.declare_imports(linkage);
+        analysis.collect_externally_reachable(linkage);
     }
     // The width dataflow runs before the checks that consume it, and after
     // imports so that a foreign callee resolves.
@@ -178,6 +180,9 @@ struct Analysis {
     /// The module's default widths, merged into every function that does not
     /// declare the axis itself.
     defaults: WidthContract,
+    /// Global labels another unit refers to, which the width solver treats
+    /// as reachable from a width nothing in this unit establishes.
+    externally_reachable: BTreeSet<SymbolId>,
 }
 
 impl Analysis {
@@ -515,6 +520,30 @@ impl Analysis {
         width::fold_annotations(&annotations, &mut self.diagnostics)
     }
 
+    /// Records which of this unit's global labels another unit refers to.
+    ///
+    /// Such a label may be branched to from code K816 is not looking at, so
+    /// the width solver cannot claim anything about the widths that reach it.
+    /// A global label nobody else names is an ordinary merge point.
+    fn collect_externally_reachable(&mut self, linkage: &Linkage) {
+        for (id, symbol) in self.model.symbols.iter() {
+            if symbol.imported
+                || !matches!(
+                    symbol.kind,
+                    SymbolKind::Label {
+                        scope: LabelScope::Global,
+                        ..
+                    }
+                )
+            {
+                continue;
+            }
+            if linkage.referenced_elsewhere(&symbol.name, symbol.declaration.file) {
+                self.externally_reachable.insert(id);
+            }
+        }
+    }
+
     /// Runs the width dataflow over every function, and records what it found.
     ///
     /// Every call takes the language's `Unknown ⇒ Preserve` rule here, which
@@ -523,26 +552,216 @@ impl Analysis {
     /// replaces this analysis wholesale rather than patching it, so no stage
     /// ever mixes a resolved exit with a state computed from the placeholder.
     fn solve_widths(&mut self, file: &AstFile) {
-        let exits = BTreeMap::new();
+        // Summarize: one solver run per function with every call taking the
+        // language's fallback. It yields `needs` and the call edges, and
+        // nothing else — its per-statement states are provisional and its
+        // diagnostics are dropped, because the run that classifies each
+        // function reports them for real.
+        let fallback = BTreeMap::new();
         for index in 0..self.model.functions.len() {
             let info = self.model.functions[index].clone();
-            let ItemKind::Func(func) = &file.items[info.item_index].kind else {
+            let Some(func) = function_of(file, &info) else {
                 continue;
             };
-            let (analysis, diagnostics) = width::analyze_function(
+            let (analysis, _) = width::analyze_function(
                 &func.body,
                 ModeState::from_contract(info.contract),
-                &self.model.symbols,
-                Some(info.symbol),
-                &exits,
+                &width::Context {
+                    symbols: &self.model.symbols,
+                    function: Some(info.symbol),
+                    exits: &fallback,
+                    externally_reachable: &self.externally_reachable,
+                },
             );
-            self.diagnostics.extend(diagnostics);
             let function = &mut self.model.functions[index];
             function.needs = analysis.needs;
             function.callees.clone_from(&analysis.callees);
-            function.exit = analysis.exit;
-            function.exit_is_assumed = analysis.exit_is_assumed;
-            self.model.widths.insert(info.symbol, analysis);
+        }
+        self.classify_exits(file);
+    }
+
+    /// Classifies every function's exit, in an order that has each function's
+    /// callees final before it is reached.
+    ///
+    /// The graph is condensed into strongly connected components and
+    /// processed in reverse topological order rather than iterated to a
+    /// fixpoint. `AxisExit` has no order that would make an
+    /// iterate-until-stable scheme monotone — `Fixed` and `Preserve` are
+    /// incomparable claims and `Unknown` is not a sound top — so an iterating
+    /// implementation would converge by luck on the inputs it was tested on.
+    /// One pass, no iteration count, no cap.
+    ///
+    /// Classifying a function *re-runs* the solver with its callees' final
+    /// exits, and that run's analysis is the one stored. Reading a stale
+    /// analysis instead would let call-site bridging use a resolved exit
+    /// while the immediates after the call were sized from the placeholder —
+    /// two answers again, arriving by staging rather than by duplication.
+    fn classify_exits(&mut self, file: &AstFile) {
+        let mut exits: BTreeMap<SymbolId, ExitContract> = BTreeMap::new();
+        for component in strongly_connected_components(&self.model.functions) {
+            // A non-trivial component, or a self-loop, is recursion: there is
+            // no fixpoint to find and no answer better than the fallback.
+            let recursive = component.len() > 1 || {
+                let index = component[0];
+                let symbol = self.model.functions[index].symbol;
+                self.model.functions[index].callees.contains(&symbol)
+            };
+            for index in component {
+                let info = self.model.functions[index].clone();
+                let Some(func) = function_of(file, &info) else {
+                    continue;
+                };
+                let (analysis, diagnostics) = width::analyze_function(
+                    &func.body,
+                    ModeState::from_contract(info.contract),
+                    &width::Context {
+                        symbols: &self.model.symbols,
+                        function: Some(info.symbol),
+                        exits: &exits,
+                        externally_reachable: &self.externally_reachable,
+                    },
+                );
+                self.diagnostics.extend(diagnostics);
+
+                let classified = width::classify_exit(&analysis);
+                for divergence in &classified.divergent {
+                    self.diagnostics
+                        .push(divergent_exit(&func.name.text, *divergence));
+                }
+                let (exit, assumed) = if recursive {
+                    (ExitContract::preserving(), true)
+                } else {
+                    (classified.exit, classified.assumed)
+                };
+                if assumed {
+                    // An axis whose divergence was already reported needs no
+                    // second diagnostic: the hard error at the callee is the
+                    // whole story, and the fallback is what follows from it.
+                    self.report_assumed_exit(
+                        func,
+                        &analysis,
+                        &exit,
+                        recursive,
+                        &classified.divergent,
+                    );
+                }
+                self.check_declared_exit(func, &analysis);
+
+                exits.insert(info.symbol, exit);
+                let function = &mut self.model.functions[index];
+                function.exit = exit;
+                function.exit_is_assumed = assumed;
+                self.model.widths.insert(info.symbol, analysis);
+            }
+        }
+    }
+
+    /// Warns where K816 read the body, can see it may change width, and
+    /// cannot say to what.
+    ///
+    /// Only for bodies K816 has actually read: a callee it cannot see gets a
+    /// call-site annotation instead, because there is nothing at the callee
+    /// to point at and nothing the author of *this* unit could do about it.
+    /// Keeping the warning to visible bodies is what makes it worth reading.
+    fn report_assumed_exit(
+        &mut self,
+        func: &Function,
+        analysis: &WidthAnalysis,
+        exit: &ExitContract,
+        recursive: bool,
+        divergent: &[width::Divergence],
+    ) {
+        let name = &func.name.text;
+        if recursive {
+            self.diagnostics.push(
+                Diagnostic::warning(
+                    DiagnosticCode::ASSUMED_EXIT,
+                    format!("`{name}` is part of a recursion cycle, so its exit widths cannot be derived"),
+                    Label::new(func.name.span, "callers will assume it preserves their widths"),
+                )
+                .with_note(
+                    "a cycle has no exit contract to compute: every member's answer \
+                     depends on every other's",
+                )
+                .with_help("declare the exit widths with `-> @a8` or re-establish them before returning")
+                .with_docs("doc/register-width-aware-syntax.md#unknown-exit-contracts-preserve-caller-mode"),
+            );
+            return;
+        }
+        for axis in [width::Axis::Accumulator, width::Axis::Index] {
+            let unknown = match axis {
+                width::Axis::Accumulator => exit.a == crate::op::AxisExit::Unknown,
+                width::Axis::Index => exit.i == crate::op::AxisExit::Unknown,
+            };
+            if !unknown || divergent.iter().any(|divergence| divergence.axis == axis) {
+                continue;
+            }
+            let evidence = width::unclassifiable_return(analysis, axis).unwrap_or(func.name.span);
+            self.diagnostics.push(
+                Diagnostic::warning(
+                    DiagnosticCode::ASSUMED_EXIT,
+                    format!(
+                        "`{name}` may change the {} width, and K816 cannot say to what",
+                        axis.name()
+                    ),
+                    Label::new(evidence, "this return leaves no width a caller can rely on"),
+                )
+                .with_secondary(Label::new(func.name.span, "the function it returns from"))
+                .with_note(
+                    "the language requires callers to assume such a function preserves \
+                     their widths, which this body may not do",
+                )
+                .with_help(format!(
+                    "declare the exit width with `-> {}`, or re-establish it before returning",
+                    axis.annotation(RegisterWidth::W8)
+                ))
+                .with_docs("doc/register-width-aware-syntax.md#unknown-exit-contracts-preserve-caller-mode"),
+            );
+        }
+    }
+
+    /// Checks a declared `-> @aN` against the widths the body actually
+    /// returns at. The declaration is check-only: it never establishes a
+    /// width, so a mismatch is the body's to fix.
+    fn check_declared_exit(&mut self, func: &Function, analysis: &WidthAnalysis) {
+        let Some(contract) = &func.contract else {
+            return;
+        };
+        let Some(outputs) = &contract.outputs else {
+            return;
+        };
+        let declared = width::fold_annotations(&outputs.width, &mut self.diagnostics);
+        for (axis, width) in [
+            (width::Axis::Accumulator, declared.a),
+            (width::Axis::Index, declared.i),
+        ] {
+            let Some(width) = width else { continue };
+            let Some(site) = analysis.returns.iter().find(|site| {
+                let state = match axis {
+                    width::Axis::Accumulator => site.state.a,
+                    width::Axis::Index => site.state.i,
+                };
+                state != crate::op::AxisState::Known(width)
+            }) else {
+                continue;
+            };
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::EXIT_WIDTH_MISMATCH,
+                    format!(
+                        "`{}` declares it exits at {} but a reachable return does not",
+                        func.name.text,
+                        axis.annotation(width)
+                    ),
+                    Label::new(site.span, "this return leaves a different width"),
+                )
+                .with_secondary(Label::new(outputs.span, "the declared exit width"))
+                .with_note(
+                    "an exit-width clause is checked, never established: it states what \
+                     the body already does",
+                )
+                .with_docs("doc/syntax-reference.md#code-sections"),
+            );
         }
     }
 
@@ -1245,7 +1464,11 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
 fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat::Owner)> {
     if func.is_far {
         Some(("`far func` sections", compat::Owner::HlaLowering))
-    } else if func.contract.is_some() {
+    } else if func
+        .contract
+        .as_ref()
+        .is_some_and(|contract| !is_exit_width_only(contract))
+    {
         Some(("call contracts", compat::Owner::WidthAndContracts))
     } else {
         match func.kind {
@@ -1254,6 +1477,19 @@ fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat
             FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
         }
     }
+}
+
+/// True when a contract is nothing but an exit-width clause.
+///
+/// `func f -> @a8 { }` declares what the body already does and asks nothing
+/// of a call site, so it is checked here. Register flow and aliases are the
+/// call-contract work proper and still report their owner.
+fn is_exit_width_only(contract: &crate::ast::CallContract) -> bool {
+    contract.inputs.is_none()
+        && contract
+            .outputs
+            .as_ref()
+            .is_some_and(|outputs| outputs.registers.is_empty() && !outputs.width.is_empty())
 }
 
 /// True when this operand is the accumulator, the only register the slice
@@ -1301,6 +1537,131 @@ fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static 
     } else {
         None
     }
+}
+
+/// The [`ItemKind::Func`] one [`FunctionInfo`] describes.
+fn function_of<'a>(file: &'a AstFile, info: &FunctionInfo) -> Option<&'a Function> {
+    match &file.items.get(info.item_index)?.kind {
+        ItemKind::Func(func) => Some(func),
+        _ => None,
+    }
+}
+
+/// The unit's call graph, condensed into strongly connected components in
+/// reverse topological order — every component's callees come before it.
+///
+/// Tarjan's algorithm, which emits a component only once everything it can
+/// reach has been emitted, so the order is the one exit classification needs
+/// without a separate topological sort.
+fn strongly_connected_components(functions: &[FunctionInfo]) -> Vec<Vec<usize>> {
+    let index_of: std::collections::HashMap<SymbolId, usize> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, info)| (info.symbol, index))
+        .collect();
+
+    struct Tarjan<'a> {
+        functions: &'a [FunctionInfo],
+        index_of: &'a std::collections::HashMap<SymbolId, usize>,
+        /// Discovery index per node, `None` until visited.
+        order: Vec<Option<usize>>,
+        /// The lowest discovery index reachable from the node's subtree.
+        low: Vec<usize>,
+        on_stack: Vec<bool>,
+        stack: Vec<usize>,
+        next: usize,
+        components: Vec<Vec<usize>>,
+    }
+
+    impl Tarjan<'_> {
+        fn visit(&mut self, node: usize) {
+            self.order[node] = Some(self.next);
+            self.low[node] = self.next;
+            self.next += 1;
+            self.stack.push(node);
+            self.on_stack[node] = true;
+
+            for callee in &self.functions[node].callees {
+                // A callee this unit does not define is not a node: it
+                // contributes the language rule at the call site instead.
+                let Some(&target) = self.index_of.get(callee) else {
+                    continue;
+                };
+                match self.order[target] {
+                    None => {
+                        self.visit(target);
+                        self.low[node] = self.low[node].min(self.low[target]);
+                    }
+                    Some(discovered) if self.on_stack[target] => {
+                        self.low[node] = self.low[node].min(discovered);
+                    }
+                    Some(_) => {}
+                }
+            }
+
+            if self.low[node] == self.order[node].expect("visited") {
+                let mut component = Vec::new();
+                while let Some(member) = self.stack.pop() {
+                    self.on_stack[member] = false;
+                    component.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                self.components.push(component);
+            }
+        }
+    }
+
+    let mut tarjan = Tarjan {
+        functions,
+        index_of: &index_of,
+        order: vec![None; functions.len()],
+        low: vec![0; functions.len()],
+        on_stack: vec![false; functions.len()],
+        stack: Vec::new(),
+        next: 0,
+        components: Vec::new(),
+    };
+    for node in 0..functions.len() {
+        if tarjan.order[node].is_none() {
+            tarjan.visit(node);
+        }
+    }
+    tarjan.components
+}
+
+/// Two reachable returns of one function that leave an axis at different
+/// fixed widths.
+///
+/// A hard error at the callee rather than something a caller absorbs: the
+/// `Unknown ⇒ Preserve` rule never silently masks a genuinely divergent exit,
+/// because there is no width a caller could be told to expect.
+fn divergent_exit(name: &str, divergence: width::Divergence) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DIVERGENT_EXIT,
+        format!(
+            "`{name}` returns at two different {} widths",
+            divergence.axis.name()
+        ),
+        Label::new(
+            divergence.second,
+            format!(
+                "this return leaves {}",
+                divergence.axis.annotation(divergence.second_width)
+            ),
+        ),
+    )
+    .with_secondary(Label::new(
+        divergence.first,
+        format!(
+            "this one leaves {}",
+            divergence.axis.annotation(divergence.first_width)
+        ),
+    ))
+    .with_note("a caller has one tracked width, so it cannot follow both paths")
+    .with_help("re-establish the same width on every path before returning")
+    .with_docs("doc/register-width-aware-syntax.md#unknown-exit-contracts-preserve-caller-mode")
 }
 
 /// A module-level width annotation that a code section already precedes.

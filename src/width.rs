@@ -46,7 +46,7 @@
 //! `SEP` is still believed — 8-bit is the answer in both modes — and only the
 //! widening direction is refused.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast::{
     self, Block, DataEntryKind, LoopCondition, Statement, StatementKind, StmtId, WidthAnnotation,
@@ -394,20 +394,40 @@ pub fn merge_defaults(defaults: WidthContract, declared: WidthContract) -> Width
     }
 }
 
+/// What the solver needs to know beyond the body it is walking.
+pub struct Context<'a> {
+    pub symbols: &'a SymbolTable,
+    /// The function whose scope `.name` labels resolve in.
+    pub function: Option<SymbolId>,
+    /// The classified exit contract of each callee. A callee absent from it
+    /// takes the language's `Unknown ⇒ Preserve` rule.
+    pub exits: &'a BTreeMap<SymbolId, ExitContract>,
+    /// Global labels another unit in the workspace refers to.
+    ///
+    /// Such a label may be branched to from code K816 is not looking at, so
+    /// it is reachable at a width nothing here establishes. A global label
+    /// nobody else names is an ordinary merge point: treating every one of
+    /// them as opaque would make a plain forward label inside a function
+    /// destroy the widths around it.
+    pub externally_reachable: &'a BTreeSet<SymbolId>,
+}
+
 /// Runs the width dataflow over one function body.
-///
-/// `exits` supplies the classified exit contract of each callee; a callee
-/// absent from it takes the language's `Unknown ⇒ Preserve` rule.
 pub fn analyze_function(
     body: &Block,
     entry: ModeState,
-    symbols: &SymbolTable,
-    function: Option<SymbolId>,
-    exits: &BTreeMap<SymbolId, ExitContract>,
+    context: &Context<'_>,
 ) -> (WidthAnalysis, Vec<Diagnostic>) {
+    let Context {
+        symbols,
+        function,
+        exits,
+        externally_reachable,
+    } = *context;
     let mut flattener = Flattener {
         symbols,
         function,
+        externally_reachable,
         nodes: Vec::new(),
         labels: HashMap::new(),
         blocks: Vec::new(),
@@ -425,6 +445,7 @@ pub fn analyze_function(
 struct Flattener<'a> {
     symbols: &'a SymbolTable,
     function: Option<SymbolId>,
+    externally_reachable: &'a BTreeSet<SymbolId>,
     nodes: Vec<Node>,
     labels: HashMap<SymbolId, usize>,
     blocks: Vec<BlockRange>,
@@ -769,13 +790,14 @@ impl Flattener<'_> {
         );
         self.nodes[node].label = symbol;
         self.nodes[node].label_is_global = symbol.is_some_and(|symbol| {
-            matches!(
-                self.symbols.kind(symbol),
-                SymbolKind::Label {
-                    scope: LabelScope::Global,
-                    ..
-                }
-            )
+            self.externally_reachable.contains(&symbol)
+                && matches!(
+                    self.symbols.kind(symbol),
+                    SymbolKind::Label {
+                        scope: LabelScope::Global,
+                        ..
+                    }
+                )
         });
         if let Some(symbol) = symbol {
             self.labels.insert(symbol, node);
@@ -1292,4 +1314,155 @@ fn record_bridges(
                 .extend(bridges);
         }
     }
+}
+
+/// One width axis, named for the diagnostics that talk about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Accumulator,
+    Index,
+}
+
+impl Axis {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Accumulator => "accumulator",
+            Self::Index => "index register",
+        }
+    }
+
+    /// The annotation that declares this axis at `width`.
+    pub fn annotation(self, width: RegisterWidth) -> &'static str {
+        match (self, width) {
+            (Self::Accumulator, RegisterWidth::W8) => "@a8",
+            (Self::Accumulator, RegisterWidth::W16) => "@a16",
+            (Self::Index, RegisterWidth::W8) => "@i8",
+            (Self::Index, RegisterWidth::W16) => "@i16",
+        }
+    }
+
+    fn state(self, site: &ReturnSite) -> AxisState {
+        match self {
+            Self::Accumulator => site.state.a,
+            Self::Index => site.state.i,
+        }
+    }
+
+    fn touched(self, site: &ReturnSite) -> bool {
+        match self {
+            Self::Accumulator => site.touched.a,
+            Self::Index => site.touched.i,
+        }
+    }
+}
+
+/// What classifying one function's exit found.
+#[derive(Clone, Debug)]
+pub struct ExitClassification {
+    pub exit: ExitContract,
+    /// True when some axis fell back to the language's `Unknown ⇒ Preserve`
+    /// rule rather than being derived.
+    pub assumed: bool,
+    /// Axes whose reachable returns exit at different fixed widths, which is
+    /// a hard error at the callee rather than something a caller can absorb.
+    pub divergent: Vec<Divergence>,
+}
+
+/// Two reachable returns of one function that leave an axis at different
+/// fixed widths.
+#[derive(Clone, Copy, Debug)]
+pub struct Divergence {
+    pub axis: Axis,
+    pub first: Span,
+    pub first_width: RegisterWidth,
+    pub second: Span,
+    pub second_width: RegisterWidth,
+}
+
+/// Classifies one function's exit contract from the return sites the solver
+/// found, given callee exits that are already final.
+///
+/// The join is per axis over the *reachable* returns — `rts`/`rtl`, `return`,
+/// and falling off the end of the body:
+///
+/// | Return sites agree on | Exit |
+/// | --- | --- |
+/// | the axis is untouched on every path | `Preserve` |
+/// | the same width on every path, at least one touched | `Fixed(w)` |
+/// | different widths on different paths | a divergence, reported |
+/// | anything else | `Unknown`, and callers fall back to preserving |
+///
+/// `Preserve` comes from an *untouched* axis rather than from comparing
+/// values. Deriving it by comparison would make every uncoloured function
+/// exit `Unknown` — its entry state is unknown, so its return state is too —
+/// which then warns about the most ordinary shape in the language and pushes
+/// its callers into needless bridges.
+pub fn classify_exit(analysis: &WidthAnalysis) -> ExitClassification {
+    let mut exit = ExitContract::default();
+    let mut divergent = Vec::new();
+    let mut assumed = false;
+    for axis in [Axis::Accumulator, Axis::Index] {
+        let classified = classify_axis(axis, &analysis.returns, &mut divergent);
+        assumed |= classified == AxisExit::Unknown;
+        match axis {
+            Axis::Accumulator => exit.a = classified,
+            Axis::Index => exit.i = classified,
+        }
+    }
+    ExitClassification {
+        exit,
+        assumed,
+        divergent,
+    }
+}
+
+fn classify_axis(axis: Axis, sites: &[ReturnSite], divergent: &mut Vec<Divergence>) -> AxisExit {
+    // A function with no reachable return — one that ends in `stp`, or loops
+    // forever — has no exit for a caller to observe, so the language rule is
+    // both the honest answer and a vacuous one.
+    if sites.is_empty() {
+        return AxisExit::Preserve;
+    }
+    if sites.iter().all(|site| !axis.touched(site)) {
+        return AxisExit::Preserve;
+    }
+    let mut fixed: Option<(RegisterWidth, Span)> = None;
+    for site in sites {
+        let AxisState::Known(width) = axis.state(site) else {
+            // Some path leaves the axis unknowable, or unreached; either way
+            // there is no width to promise.
+            return AxisExit::Unknown;
+        };
+        match fixed {
+            Some((first, first_span)) if first != width => {
+                divergent.push(Divergence {
+                    axis,
+                    first: first_span,
+                    first_width: first,
+                    second: site.span,
+                    second_width: width,
+                });
+                return AxisExit::Unknown;
+            }
+            Some(_) => {}
+            None => fixed = Some((width, site.span)),
+        }
+    }
+    // At least one path touched the axis, so an untouched one alongside a
+    // fixed one is not `Fixed` — the width a caller sees would depend on
+    // which path ran.
+    if sites.iter().any(|site| !axis.touched(site)) {
+        return AxisExit::Unknown;
+    }
+    fixed.map_or(AxisExit::Unknown, |(width, _)| AxisExit::Fixed(width))
+}
+
+/// The span of the first return site whose axis is not a known width, which
+/// is the evidence `W0124` points at.
+pub fn unclassifiable_return(analysis: &WidthAnalysis, axis: Axis) -> Option<Span> {
+    analysis
+        .returns
+        .iter()
+        .find(|site| !matches!(axis.state(site), AxisState::Known(_)))
+        .map(|site| site.span)
 }

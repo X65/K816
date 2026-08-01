@@ -1,0 +1,57 @@
+// Sub-plan D fixture: one function per inferred exit shape, and a caller
+// whose immediates after each call prove the tracker advanced by them.
+//
+// A function's exit contract is what a caller may believe about its own
+// widths once the call returns. It is derived from the widths at the
+// function's reachable returns, per axis:
+//
+//   untouched on every path                      -> Preserve
+//   the same width on every path, at least one    -> Fixed(w)
+//     of them touched
+//   different widths on different paths           -> a hard error (E0119)
+//   anything else                                 -> Unknown, and callers
+//                                                    fall back to preserving
+//
+// `Preserve` comes from an *untouched* axis rather than from comparing the
+// entry and return states. Comparing would make every uncoloured function
+// exit `Unknown`, which then warns about the most ordinary shape in the
+// language and pushes its callers into needless bridges.
+
+// Fixed on both axes: the body sets each one and returns.
+func fixes_both @a8 @i8 {
+    rep #$20
+    rep #$10
+}
+
+// Fixed on the accumulator, preserving the index register: the body never
+// touches X, so it exits as it entered whatever that was.
+func fixes_a_only @a8 {
+    rep #$20
+}
+
+// Preserving on both: nothing in the body touches either width.
+func preserves {
+    nop
+}
+
+// Unknown: `plp` restores a status byte K816 has not tracked, so there is no
+// width to promise. Callers assume it preserves theirs, and `W0124` says so
+// at the body K816 can see.
+func loses_both @a8 @i8 {
+    plp
+}
+
+// The caller. Each immediate after a call is sized by what that callee's
+// exit contract said, which is the assertion that the exits were derived and
+// then applied rather than merely computed.
+func caller @a8 @i8 {
+    jsr fixes_both
+    lda #$1234          // 16-bit: `fixes_both` leaves the accumulator wide
+    ldx #$1234          // 16-bit: and the index register too
+
+    jsr fixes_a_only
+    lda #$1234          // still 16-bit, from this call's own exit
+
+    jsr preserves
+    lda #$1234          // unchanged: a preserving callee moves nothing
+}

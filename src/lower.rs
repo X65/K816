@@ -45,12 +45,7 @@ use crate::semantic::SemanticModel;
 use crate::source::Span;
 use crate::symbol::SymbolId;
 use crate::value::KExpr;
-use crate::width::{Bridge, BridgeAnchor};
-
-/// The `SEP`/`REP` mask selecting the accumulator width flag (M).
-const P_MASK_M: u32 = 0x20;
-/// The `SEP`/`REP` mask selecting the index register width flag (X).
-const P_MASK_X: u32 = 0x10;
+use crate::width::{Bridge, BridgeAnchor, P_MASK_M, P_MASK_X};
 
 /// Lowers every analyzed function of `file` into [`KOp`] streams.
 ///

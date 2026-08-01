@@ -152,7 +152,6 @@ pub struct Bridge {
     /// optimizer's job, so the model emits the unfolded stream.
     pub mask: u32,
     pub anchor: BridgeAnchor,
-    pub reason: BridgeReason,
 }
 
 /// Where a bridge sits relative to the statement it is keyed on.
@@ -168,23 +167,6 @@ pub enum BridgeAnchor {
     /// At the end of the statement's own operations — a width block's
     /// restore.
     After,
-}
-
-/// Why the model emitted a bridge, for the annotation on the emitted line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BridgeReason {
-    /// `main` has no caller, so its contract is established at entry.
-    EntryPoint,
-    /// A bare `@a16` statement.
-    ModeSet,
-    /// Entering a scoped width block.
-    BlockEnter,
-    /// Restoring the width a scoped block changed.
-    BlockRestore,
-    /// Establishing an annotated width at a label, for every arrival.
-    LabelBridge,
-    /// Satisfying a callee's entry contract before transferring to it.
-    Call,
 }
 
 /// The per-axis "may differ from the value at function entry" bit that
@@ -491,7 +473,6 @@ struct Flattener<'a> {
 /// The flattened graph plus everything the solver needs beside it.
 struct Graph {
     nodes: Vec<Node>,
-    blocks: Vec<BlockRange>,
     /// True when some transfer in the function goes somewhere K816 cannot
     /// name, which makes every label reachable from an unknown width.
     opaque_transfer: bool,
@@ -529,7 +510,6 @@ impl Flattener<'_> {
         self.report_block_leaks();
         Graph {
             nodes: self.nodes,
-            blocks: self.blocks,
             opaque_transfer,
             diagnostics: self.diagnostics,
             needs: self.needs,
@@ -1188,7 +1168,7 @@ fn solve(
         }
     }
     let mut diagnostics = graph.diagnostics;
-    record_bridges(&mut analysis, nodes, &r#in, &graph.blocks, callees);
+    record_bridges(&mut analysis, nodes, &r#in, callees);
     report_unbridged_calls(nodes, &r#in, callees, &mut diagnostics);
     (analysis, diagnostics)
 }
@@ -1380,37 +1360,23 @@ fn record_bridges(
     analysis: &mut WidthAnalysis,
     nodes: &[Node],
     r#in: &[Fact],
-    blocks: &[BlockRange],
     callees: &BTreeMap<SymbolId, CalleeContract>,
 ) {
     for (index, node) in nodes.iter().enumerate() {
         if r#in[index].is_bottom() {
             continue; // Unreachable: the model makes no claim here.
         }
-        let (axes, anchor, reason) = match &node.transfer {
+        let (axes, anchor) = match &node.transfer {
             Transfer::Set(axes) => {
-                let is_block_enter = blocks.iter().any(|block| block.enter == index);
-                let after_label = index > 0 && nodes[index - 1].label.is_some();
-                let reason = if is_block_enter {
-                    BridgeReason::BlockEnter
-                } else if after_label {
-                    BridgeReason::LabelBridge
-                } else {
-                    BridgeReason::ModeSet
-                };
-                let anchor = if after_label {
+                // A width established right after a label is the label
+                // bridge, and its adjacency to the label operation is what
+                // marks it fixed for the optimizer.
+                let anchor = if index > 0 && nodes[index - 1].label.is_some() {
                     BridgeAnchor::AfterLabel
                 } else {
                     BridgeAnchor::Before
                 };
-                (
-                    WidthContract {
-                        a: axes.a,
-                        i: axes.i,
-                    },
-                    anchor,
-                    reason,
-                )
+                (*axes, anchor)
             }
             Transfer::Restore { enter, axes } => {
                 let saved = r#in[*enter];
@@ -1423,7 +1389,6 @@ fn record_bridges(
                         i: axes.i.and(saved.mode.i.width()),
                     },
                     BridgeAnchor::After,
-                    BridgeReason::BlockRestore,
                 )
             }
             // A managed call establishes the callee's entry contract before
@@ -1441,7 +1406,7 @@ fn record_bridges(
                     continue;
                 }
                 let entry = contract.map(|contract| contract.entry).unwrap_or_default();
-                (entry, BridgeAnchor::Before, BridgeReason::Call)
+                (entry, BridgeAnchor::Before)
             }
             Transfer::Identity | Transfer::Instruction { .. } => continue,
         };
@@ -1456,7 +1421,6 @@ fn record_bridges(
                 width,
                 mask,
                 anchor,
-                reason,
             });
         }
         if !bridges.is_empty() {

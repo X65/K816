@@ -13,8 +13,6 @@ main:                                   ; slice.k816:3: func main @a8 @i16 {
         .a8                             ; k816: the function's entry contract
         .i16                            ; k816: the function's entry contract
         .dbg    line, "slice.k816", 3
-        sep     #$20                    ; k816: entry width setup (8-bit)
-        .dbg    line, "slice.k816", 3
         rep     #$10                    ; k816: entry width setup (16-bit)
         .dbg    line, "slice.k816", 4
         lda     #$00                    ; slice.k816:4: a = #0

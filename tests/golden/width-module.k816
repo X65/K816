@@ -1,0 +1,26 @@
+// Sub-plan D fixture: module-level default coloring, and overriding it.
+//
+// `doc/register-width-aware-syntax.md`, "Module-level default coloring" and
+// "Overriding module defaults". The immediate sizes the document's listings
+// show are what the byte-length gate checks: `inherits` assembles three-byte
+// loads and `narrow` two-byte ones, from the same `#1` in the source.
+
+@a16
+@i16
+
+func inherits {
+    lda #1              // inherits @a16 — three-byte immediate
+    ldx #1              // inherits @i16 — three-byte immediate
+}
+
+// A function-level annotation takes precedence, per axis.
+func narrow @a8 @i8 {
+    lda #1              // 8-bit — overridden
+    ldx #1              // 8-bit — overridden
+}
+
+// A partial override leaves the other axis inheriting.
+func half @a8 {
+    lda #1              // 8-bit — overridden
+    ldx #1              // 16-bit — still the module default
+}

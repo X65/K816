@@ -54,7 +54,8 @@ fn every_instruction_carries_debug_and_source_annotations() {
                 .any(|mnemonic| trimmed.starts_with(mnemonic))
         })
         .collect();
-    assert_eq!(instruction_lines.len(), 6);
+    // Five: `main @a8 @i16` emits only the `REP` half of its entry setup.
+    assert_eq!(instruction_lines.len(), 5);
     for line in &instruction_lines {
         assert!(
             line.contains("; slice.k816:") || line.contains("; k816:"),
@@ -67,7 +68,7 @@ fn every_instruction_carries_debug_and_source_annotations() {
         .lines()
         .filter(|line| line.trim_start().starts_with(".dbg    line"))
         .count();
-    assert_eq!(dbg_lines, 6);
+    assert_eq!(dbg_lines, 5);
 
     // The debug file table names the K816 source.
     assert!(assembly.contains(".dbg    file, \"slice.k816\", 0, 0"));
@@ -219,7 +220,8 @@ func main @a8 @i16 {
     assert_eq!(
         instructions("modes.k816", text),
         vec![
-            "sep     #$20",
+            // `main @a8 @i16` emits only the `REP` half at entry; the CPU is
+            // already 8-bit after reset.
             "rep     #$10",
             "lda     z:ZP",
             "lda     a:SCREEN",

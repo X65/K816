@@ -40,6 +40,13 @@ const ROM_SIZE: usize = 0x8000;
 /// The startup stub at $8000 followed by main's *optimized* code at $8008.
 /// The `jsr $8008` operand is the linker-resolved cross-module reference to
 /// the K816 `main`; the dead `lda #$00` is absent.
+///
+/// `main @a8 @i16` emits only the `REP` half of its entry setup, and this is
+/// the program that shows why that is sound on real linked bytes: the
+/// `clc`/`xce` pair above leaves emulation mode, where the M and X flags are
+/// forced to one, so the accumulator is already 8-bit when `main` is entered.
+/// The `lda #$42` below is still assembled as the two-byte form, from the
+/// width claim rather than from an instruction.
 const CODE_PREFIX: &[u8] = &[
     0x78, // sei
     0x18, // clc
@@ -47,8 +54,7 @@ const CODE_PREFIX: &[u8] = &[
     0x20, 0x08, 0x80, // jsr $8008  — k816 main, resolved across modules
     0xDB, // stp
     0x40, // rti               — shared stray-interrupt handler ($8007)
-    0xE2, 0x20, // sep #$20    — main: entry @a8
-    0xC2, 0x10, // rep #$10    — main: entry @i16
+    0xC2, 0x10, // rep #$10    — main: entry @i16; @a8 needs no instruction
     0xA9, 0x42, // lda #$42    — the dead lda #$00 is optimized away
     0x8D, 0x00, 0x02, // sta $0200
     0x60, // rts

@@ -1776,8 +1776,6 @@ fn section_forms_and_contracts_name_their_owner() {
         "inline f { }\n",
         "far func f { }\n",
         "func f () { }\n",
-        "func main @a8 { @a16 { } }\n",
-        "func main @a8 { @a16 }\n",
         "func main @a8 { call other }\n",
         "func main @a8 { other }\n",
         "func main @a8 { return_i }\n",

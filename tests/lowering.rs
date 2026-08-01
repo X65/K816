@@ -121,6 +121,7 @@ fn the_unoptimized_stream_is_exactly_the_expected_slice_sequence() {
                 };
                 format!("{}{}", instruction.mnemonic.ca65(), operand)
             }
+            KOpKind::ModeAssumption(state) => format!("assume {state:?}"),
             other => panic!("unexpected slice operation {other:?}"),
         })
         .collect();
@@ -129,8 +130,9 @@ fn the_unoptimized_stream_is_exactly_the_expected_slice_sequence() {
         kinds,
         vec![
             "label#0",  // main
-            "sep #$20", // entry @a8
-            "rep #$10", // entry @i16
+            "rep #$10", // entry @i16 — the @a8 half needs no instruction
+            // The 8-bit half of the contract is claimed rather than executed.
+            "assume ModeState { a: Known(W8), i: Known(W16), e: Native }",
             "lda #$00", // the dead load — removed only by the optimizer
             "lda #$01",
             "sta sym#1", // SCREEN
@@ -267,9 +269,12 @@ func main @a8 @i16 {
         operations,
         vec![
             "label main",
-            "sep #$20",
             "rep #$10",
+            "mode-assume @a8 @i16",
             "label .spot",
+            // Every reachable label carries the model's conclusion, because a
+            // branch arrival cannot be read off the preceding instruction.
+            "mode-assume @a8 @i16",
             // The chosen encoding is part of the dump: it is the decision a
             // reader most needs to check, and it is invisible in the source.
             "lda dp ZP",
@@ -348,4 +353,183 @@ fn a_directive_between_instructions_is_an_optimizer_barrier() {
         0,
         "an emitted directive stops the scan"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The width model's own operations (sub-plan D, task D3).
+// ---------------------------------------------------------------------------
+
+/// The lowered operations of `text`, as the IR dump renders them, with the
+/// origin annotations stripped.
+fn operations(text: &str) -> Vec<String> {
+    dump(text)
+        .lines()
+        .filter_map(|line| line.split_once(';'))
+        .map(|(text, _)| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+/// The order at a label is normative, and the optimizer depends on it.
+///
+/// The bridge is *immediately* after the label operation with nothing
+/// between: that adjacency is how a fixed label bridge is recognized and kept
+/// out of dead mode elimination. The assumption comes after the bridge,
+/// because it states the width that holds once the bridge has run — emitting
+/// it first would claim a width the next instruction then changes.
+#[test]
+fn a_label_bridge_sits_between_the_label_and_its_assumption() {
+    let text = "\
+func main @a8 {
+    bcc .target
+    @a16
+.target:
+    nop
+}
+";
+    let ops = operations(text);
+    let label = ops
+        .iter()
+        .position(|op| op == "label .target")
+        .expect("the label was lowered");
+    assert_eq!(
+        &ops[label..label + 3],
+        [
+            "label .target".to_owned(),
+            "rep #$20".to_owned(),
+            "mode-assume @a16 @i?".to_owned(),
+        ],
+        "{ops:?}"
+    );
+}
+
+/// The bridge covers exactly the axes that need it: a label all of whose
+/// arrivals already agree with the annotation needs no instruction at all,
+/// and not emitting one is not an optimization — the model knows the state,
+/// so there is nothing to emit.
+#[test]
+fn a_label_whose_arrivals_already_agree_gets_no_bridge() {
+    let text = "\
+func main @a16 {
+    bcc .target
+    @a16
+.target:
+    nop
+}
+";
+    let ops = operations(text);
+    let label = ops
+        .iter()
+        .position(|op| op == "label .target")
+        .expect("the label was lowered");
+    assert_eq!(ops[label + 1], "mode-assume @a16 @i?", "{ops:?}");
+}
+
+/// A scoped block emits its entry bridge before the body and its restore
+/// after it, per axis and only where the axis differs.
+#[test]
+fn a_scoped_block_brackets_its_body_with_enter_and_restore() {
+    let text = "\
+func main @a8 @i8 {
+    @a16 {
+        nop
+    }
+    nop
+}
+";
+    assert_eq!(
+        operations(text),
+        [
+            "label main",
+            "mode-assume @a8 @i8",
+            "rep #$20",
+            "nop",
+            "sep #$20",
+            "nop",
+            "rts",
+        ]
+    );
+}
+
+/// `main` establishes its contract at entry; every other function assumes it
+/// and emits nothing, because its caller bridges to it.
+#[test]
+fn only_main_emits_entry_setup() {
+    let text = "\
+func main @a16 @i16 {
+    nop
+}
+
+func helper @a16 @i16 {
+    nop
+}
+";
+    let ops = operations(text);
+    let entry: Vec<&String> = ops.iter().take_while(|op| *op != "nop").collect();
+    assert_eq!(
+        entry,
+        [
+            "label main",
+            // Only the `REP` half: the CPU is already 8-bit after reset, so a
+            // `SEP` at entry would be redundant.
+            "rep #$20",
+            "rep #$10",
+            "mode-assume @a16 @i16",
+        ]
+    );
+    let helper = ops
+        .iter()
+        .position(|op| op == "label helper")
+        .expect("the second function");
+    assert_eq!(
+        &ops[helper..helper + 3],
+        [
+            "label helper".to_owned(),
+            "mode-assume @a16 @i16".to_owned(),
+            "nop".to_owned(),
+        ],
+        "a non-entry function assumes its contract: {ops:?}"
+    );
+}
+
+/// A block no path reaches still emits its instructions — K816 does not
+/// delete user code — but it makes no width claim over them.
+#[test]
+fn an_unreachable_block_emits_its_code_without_a_width_claim() {
+    let text = "\
+func main @a8 {
+    bra .past
+    nop
+.past:
+    nop
+}
+";
+    let ops = operations(text);
+    let unreachable = ops
+        .iter()
+        .position(|op| op == "bra .past")
+        .expect("the branch");
+    assert_eq!(
+        ops[unreachable + 1],
+        "nop",
+        "the unreachable instruction is kept, with no assumption before it: {ops:?}"
+    );
+}
+
+/// Where the width model refuses what an instruction's own effect implies,
+/// the model wins and says so: a widening `rep` executed with the emulation
+/// flag unknown establishes nothing, so the claim it would otherwise carry
+/// is withdrawn.
+#[test]
+fn a_rep_the_model_does_not_believe_withdraws_its_claim() {
+    let text = "\
+func main @a8 {
+    xce
+    rep #$20
+    nop
+}
+";
+    let ops = operations(text);
+    let rep = ops.iter().position(|op| op == "rep #$20").expect("the rep");
+    assert_eq!(ops[rep + 1], "mode-assume @a? @i? emu?", "{ops:?}");
 }

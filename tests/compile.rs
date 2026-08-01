@@ -75,9 +75,14 @@ fn compile_and_link(test: &str, name: &str, text: &str, options: &Options) -> (V
 }
 
 /// The unoptimized slice: entry setup, both loads, store, return.
+///
+/// Only the `REP` half of `main @a8 @i16` is emitted. The CPU is already
+/// 8-bit after reset, so a `SEP` at entry would be redundant
+/// (`doc/register-width-aware-syntax.md`, "Entry-point mode setup"); the
+/// 8-bit half is claimed by a mode assumption instead, which is why the
+/// `lda #$00` below is still the two-byte form.
 const UNOPTIMIZED_BYTES: &[u8] = &[
-    0xE2, 0x20, // sep #$20  — entry @a8
-    0xC2, 0x10, // rep #$10  — entry @i16
+    0xC2, 0x10, // rep #$10  — entry @i16, the only half worth emitting
     0xA9, 0x00, // lda #$00  — the dead load (removed only by the optimizer)
     0xA9, 0x01, // lda #$01
     0x8D, 0x00, 0x04, // sta $0400
@@ -108,8 +113,7 @@ fn native_slice_links_to_identical_bytes() {
 
 /// The optimized slice: the dead `lda #$00` is gone, nothing else changes.
 const OPTIMIZED_BYTES: &[u8] = &[
-    0xE2, 0x20, // sep #$20
-    0xC2, 0x10, // rep #$10
+    0xC2, 0x10, // rep #$10  — entry @i16
     0xA9, 0x01, // lda #$01
     0x8D, 0x00, 0x04, // sta $0400
     0x60, // rts
@@ -299,9 +303,8 @@ fn derived_linkage_carries_each_symbols_address_size() {
     assert_eq!(
         bytes,
         vec![
-            0xE2, 0x20, // sep #$20  — entry @a8
-            0xC2, 0x10, // rep #$10  — entry @i16
-            0x20, 0x0E, 0x80, // jsr helper — absolute, an ordinary import
+            0xC2, 0x10, // rep #$10  — entry @i16; @a8 needs no instruction
+            0x20, 0x0C, 0x80, // jsr helper — absolute, an ordinary import
             0xA5, 0x10, // lda $10    — one byte, from `.importzp`
             0xAF, 0x00, 0x00, 0x03, // lda $030000 — three, from `: far`
             0x60, // rts
@@ -424,9 +427,8 @@ fn the_committed_unit_pair_links() {
     assert_eq!(
         bytes,
         vec![
-            0xE2, 0x20, // sep #$20 — entry @a8
-            0xC2, 0x10, // rep #$10 — entry @i16
-            0x20, 0x10, 0x80, // jsr helper
+            0xC2, 0x10, // rep #$10 — entry @i16; @a8 needs no instruction
+            0x20, 0x0E, 0x80, // jsr helper
             0xA5, 0x10, // lda $10       — one byte, from `.importzp`
             0xAF, 0x00, 0x00, 0x03, // lda $030000 — three, from `: far`
             0x85, 0x10, // sta $10

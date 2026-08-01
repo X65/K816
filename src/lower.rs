@@ -34,10 +34,11 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
+use crate::effects::WidthEffect;
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
-    Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin, RegisterWidth,
-    SegmentName, WidthContract,
+    AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin,
+    RegisterWidth, SegmentName, WidthContract,
 };
 use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
@@ -45,6 +46,7 @@ use crate::semantic::SemanticModel;
 use crate::source::Span;
 use crate::symbol::SymbolId;
 use crate::value::KExpr;
+use crate::width::{Bridge, BridgeAnchor};
 
 /// The `SEP`/`REP` mask selecting the accumulator width flag (M).
 const P_MASK_M: u32 = 0x20;
@@ -108,9 +110,7 @@ pub fn lower_unit(
         };
 
         lowering.push(KOpKind::Label(info.symbol), func.name.span, Origin::User);
-        if info.is_entry_point {
-            lowering.entry_setup(info.contract, func.name.span);
-        }
+        lowering.entry(info.is_entry_point, info.contract, func.name.span);
         for statement in &func.body.statements {
             lowering.statement(statement);
         }
@@ -176,24 +176,87 @@ impl Lowering<'_> {
         }
     }
 
-    /// `main` has no caller, so its contract is established explicitly at
-    /// entry. Each declared axis gets its own `sep`/`rep`; folding them into
-    /// one instruction is the optimizer's job (sub-plan F), not lowering's.
-    fn entry_setup(&mut self, contract: WidthContract, span: Span) {
-        for (width, mask) in [(contract.a, P_MASK_M), (contract.i, P_MASK_X)] {
-            let mnemonic = match width {
-                Some(RegisterWidth::W8) => Mnemonic::Sep,
-                Some(RegisterWidth::W16) => Mnemonic::Rep,
-                None => continue,
+    /// Establishes the function's entry widths.
+    ///
+    /// Only `main` emits instructions, and only the `REP` half of them: the
+    /// 65816 starts in 8-bit emulation mode after reset, so a `SEP` at entry
+    /// would be redundant (`doc/register-width-aware-syntax.md`, "Entry-point
+    /// mode setup"). The 8-bit half of the contract is *claimed* instead, by
+    /// the assumption below.
+    ///
+    /// Every other function assumes its contract and emits nothing: its
+    /// caller bridges to it. A function called from hand-written assembly
+    /// therefore trusts its caller, which is the same trust an `.a8` in a
+    /// hand-written `.s` file expresses — stated in the annotation rather
+    /// than defended against.
+    fn entry(&mut self, is_entry_point: bool, contract: WidthContract, span: Span) {
+        if is_entry_point {
+            for (width, mask) in [(contract.a, P_MASK_M), (contract.i, P_MASK_X)] {
+                if width != Some(RegisterWidth::W16) {
+                    continue;
+                }
+                self.instruction(
+                    Mnemonic::Rep,
+                    AddressingMode::Immediate,
+                    Some(Operand::Immediate(KExpr::number(mask))),
+                    span,
+                    Origin::CompilerGenerated,
+                );
+            }
+        }
+        let entry = self.widths.map_or_else(ModeState::unknown, |a| a.entry);
+        self.assume(entry, span);
+    }
+
+    /// States what the width model concluded, which is authoritative for the
+    /// assembler wherever the conclusion cannot be derived from the preceding
+    /// instruction.
+    fn assume(&mut self, state: ModeState, span: Span) {
+        if state.is_bottom() {
+            // No path reaches here, so there is nothing to claim. A block the
+            // model never entered still emits its instructions — K816 does not
+            // delete user code — but it makes no width claim over them.
+            return;
+        }
+        self.push(
+            KOpKind::ModeAssumption(state),
+            span,
+            Origin::CompilerGenerated,
+        );
+    }
+
+    /// Emits the model's own `REP`/`SEP` for `statement` at one anchor.
+    fn bridges(&mut self, statement: &crate::ast::Statement, anchor: BridgeAnchor) {
+        let bridges: Vec<Bridge> = self
+            .widths
+            .map(|analysis| {
+                analysis
+                    .bridges(statement.id)
+                    .iter()
+                    .filter(|bridge| bridge.anchor == anchor)
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for bridge in bridges {
+            let mnemonic = match bridge.width {
+                RegisterWidth::W8 => Mnemonic::Sep,
+                RegisterWidth::W16 => Mnemonic::Rep,
             };
             self.instruction(
                 mnemonic,
                 AddressingMode::Immediate,
-                Some(Operand::Immediate(KExpr::number(mask))),
-                span,
+                Some(Operand::Immediate(KExpr::number(bridge.mask))),
+                statement.span,
                 Origin::CompilerGenerated,
             );
         }
+    }
+
+    /// The state after `statement`, as the model concluded it.
+    fn widths_after(&self, statement: &crate::ast::Statement) -> Option<ModeState> {
+        self.widths
+            .and_then(|analysis| analysis.after(statement.id))
     }
 
     /// The width state the model tracks before `statement`.
@@ -221,6 +284,10 @@ impl Lowering<'_> {
 
     fn statement(&mut self, statement: &crate::ast::Statement) {
         let span = statement.span;
+        // Whatever the model decided to establish here runs before the
+        // statement's own operations, except at a label — where it runs after
+        // the label so that arrivals by branch get it too.
+        self.bridges(statement, BridgeAnchor::Before);
         match &statement.kind {
             StatementKind::Native(native) => {
                 // Analysis already classified this instruction and reported
@@ -230,11 +297,12 @@ impl Lowering<'_> {
                     .in_function(self.function)
                     .with_widths(self.widths_at(statement));
                 match resolver.classify(native) {
-                    Some(classified) if !resolver.has_diagnostics() => self.push(
-                        KOpKind::Instruction(classified.instruction()),
-                        span,
-                        Origin::User,
-                    ),
+                    Some(classified) if !resolver.has_diagnostics() => {
+                        let instruction = classified.instruction();
+                        let effect = instruction.effects().width;
+                        self.push(KOpKind::Instruction(instruction), span, Origin::User);
+                        self.reconcile(statement, effect);
+                    }
                     _ => self.skipped(span, "an unclassified instruction"),
                 }
             }
@@ -304,8 +372,18 @@ impl Lowering<'_> {
             StatementKind::Return(ReturnKind::Interrupt) => {
                 self.skipped(span, "a `return_i`");
             }
-            StatementKind::WidthBlock(_) => self.skipped(span, "a scoped width block"),
-            StatementKind::ModeSet(_) => self.skipped(span, "a bare mode set"),
+            // The block's entry bridge was emitted above; its restore is
+            // emitted after the body, and only for axes the block changed.
+            StatementKind::WidthBlock(width) => {
+                for nested in &width.body.statements {
+                    self.statement(nested);
+                }
+                self.bridges(statement, BridgeAnchor::After);
+            }
+            // A bare mode set is nothing but its bridge, which the anchor
+            // above already emitted — unless the model moved it past a
+            // following label, in which case the label emits it.
+            StatementKind::ModeSet(_) => {}
             StatementKind::Call(_) | StatementKind::BareCall(_) => {
                 self.skipped(span, "a function call");
             }
@@ -344,10 +422,58 @@ impl Lowering<'_> {
                 };
                 match symbol {
                     Some(symbol) => self.push(KOpKind::Label(symbol), span, Origin::User),
-                    None => self.skipped(span, "an undeclared label"),
+                    None => return self.skipped(span, "an undeclared label"),
+                }
+                // The order here is normative. The bridge is *immediately*
+                // after the label operation with nothing between, because that
+                // adjacency is how the optimizer recognizes a fixed label
+                // bridge it must not eliminate. The assumption comes after the
+                // bridge because it states the width that holds once the
+                // bridge has run; emitting it first would claim a width the
+                // next instruction then changes.
+                self.bridges(statement, BridgeAnchor::AfterLabel);
+                if let Some(state) = self.widths_after(statement) {
+                    self.assume(state, span);
                 }
             }
             StatementKind::Error => {}
+        }
+    }
+
+    /// States the model's conclusion whenever it differs from what the
+    /// instruction just emitted implies on its own.
+    ///
+    /// The assembler's tracked width has two sources — an executed
+    /// instruction's own effect, and a mode assumption — and they usually
+    /// agree. Where they do not, the model wins: a `rep #$20` executed with
+    /// the emulation flag unknown establishes nothing, so the claim the
+    /// instruction would otherwise carry has to be withdrawn rather than
+    /// left standing.
+    fn reconcile(&mut self, statement: &crate::ast::Statement, effect: WidthEffect) {
+        let (Some(before), Some(after)) = (
+            self.widths.and_then(|a| a.before(statement.id)),
+            self.widths_after(statement),
+        ) else {
+            return;
+        };
+        if before.is_bottom() {
+            return; // Unreachable code makes no claim either way.
+        }
+        let carried = match effect {
+            WidthEffect::Unchanged => before,
+            WidthEffect::Known { a, i } => ModeState {
+                a: a.map_or(before.a, AxisState::Known),
+                i: i.map_or(before.i, AxisState::Known),
+                e: after.e,
+            },
+            WidthEffect::Unknown => ModeState {
+                a: AxisState::Unknown,
+                i: AxisState::Unknown,
+                e: after.e,
+            },
+        };
+        if carried != after {
+            self.assume(after, statement.span);
         }
     }
 

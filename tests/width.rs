@@ -616,3 +616,50 @@ fn width_emulation_fixture_refuses_only_the_widening_case() {
         known(RegisterWidth::W16)
     );
 }
+
+/// The document's block-scoping example, with the emitted mode operations
+/// checked against what the *model* produces rather than what the document's
+/// listing shows: that listing is post-optimization, and dead mode
+/// elimination and REP/SEP folding belong to the optimizer.
+#[test]
+fn width_blocks_fixture_restores_per_axis_and_reports_the_leak() {
+    let source = fixture("width-blocks.k816");
+    let (_, _, diagnostics) = analyze(&source);
+    assert_eq!(
+        codes(&diagnostics),
+        ["K816-W0126"],
+        "the escaping branch is the only thing worth saying about this file"
+    );
+
+    // `scoped`: statements are the four `lda`s and the two blocks.
+    // Before the block's `lda`, 16-bit; after the block, 8-bit again.
+    assert_eq!(before(&source, "scoped", 2).0, known(RegisterWidth::W16));
+    assert_eq!(before(&source, "scoped", 3).0, known(RegisterWidth::W8));
+
+    // The target of the escaping branch is sized against the width that
+    // actually reaches it, which is the block's.
+    assert_eq!(before(&source, "leaking", 3).0, known(RegisterWidth::W16));
+}
+
+/// Module defaults reach a function that declares nothing, and a
+/// function-level annotation overrides them one axis at a time.
+#[test]
+fn width_module_fixture_colors_each_function() {
+    let source = fixture("width-module.k816");
+    let (_, _, diagnostics) = analyze(&source);
+    assert_eq!(codes(&diagnostics), Vec::<&str>::new());
+
+    assert_eq!(
+        before(&source, "inherits", 0),
+        (known(RegisterWidth::W16), known(RegisterWidth::W16))
+    );
+    assert_eq!(
+        before(&source, "narrow", 0),
+        (known(RegisterWidth::W8), known(RegisterWidth::W8))
+    );
+    // A partial override leaves the other axis inheriting.
+    assert_eq!(
+        before(&source, "half", 0),
+        (known(RegisterWidth::W8), known(RegisterWidth::W16))
+    );
+}

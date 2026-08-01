@@ -555,11 +555,22 @@ impl Analysis {
                 continue;
             };
             self.current_function = Some(function.symbol);
-            for statement in &func.body.statements {
-                let widths = self.widths_at(function.symbol, statement);
-                self.check_statement(statement, widths);
-            }
+            self.check_block(function.symbol, &func.body);
             self.current_function = None;
+        }
+    }
+
+    /// Checks one block's statements, and the blocks nested in them.
+    fn check_block(&mut self, function: SymbolId, block: &crate::ast::Block) {
+        for statement in &block.statements {
+            let widths = self.widths_at(function, statement);
+            self.check_statement(statement, widths);
+            // A scoped width block's body is ordinary code at the block's
+            // width, so it is checked with the state the solver tracks inside
+            // it rather than skipped along with the statement that opens it.
+            if let StatementKind::WidthBlock(width) = &statement.kind {
+                self.check_block(function, &width.body);
+            }
         }
     }
 
@@ -666,16 +677,9 @@ impl Analysis {
                     compat::Owner::HlaLowering,
                 ));
             }
-            StatementKind::WidthBlock(_) => self.diagnostics.push(compat::unimplemented(
-                statement.span,
-                "scoped width blocks",
-                compat::Owner::WidthAndContracts,
-            )),
-            StatementKind::ModeSet(_) => self.diagnostics.push(compat::unimplemented(
-                statement.span,
-                "bare mode-set statements",
-                compat::Owner::WidthAndContracts,
-            )),
+            // Both establish widths, which the solver has already tracked;
+            // the body of a block is checked by the walk that got here.
+            StatementKind::WidthBlock(_) | StatementKind::ModeSet(_) => {}
             // Branches, loops, and jumps are recognized but not lowered yet.
             StatementKind::Conditional(_)
             | StatementKind::ConditionalJump(_)

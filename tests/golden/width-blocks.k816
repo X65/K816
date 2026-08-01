@@ -1,0 +1,56 @@
+// Sub-plan D fixture: block-level mode scoping.
+//
+// The first function is `doc/register-width-aware-syntax.md`, "Block-level
+// mode scoping", verbatim. Its listing in the document is *post*-optimization:
+// dead mode elimination and REP/SEP folding are the optimizer's, so K816 emits
+// more mode operations here than the document shows. Anyone "fixing" this
+// fixture's expected output to match the listing is re-implementing the
+// optimizer inside the width model.
+
+func scoped @a8 @i8 {
+    lda #1              // 8-bit
+
+    @a16 {
+        lda #1          // 16-bit inside the block
+    }
+    lda #1              // 8-bit — restored
+
+    @a16 @i16 {
+        lda #1          // 16-bit
+        ldx #1          // 16-bit
+    }
+    lda #1              // 8-bit — restored
+}
+
+// Blocks nest, and each level saves and restores independently.
+func nested @a8 @i8 {
+    @a16 {
+        @i16 {
+            lda #1      // 16-bit accumulator, 16-bit index
+        }
+        ldx #1          // 8-bit index again
+    }
+    lda #1              // 8-bit accumulator again
+}
+
+// A block whose body ends in a `return` restores nothing: control leaves the
+// function, so there is nothing to restore to. Silent, and correct.
+func returning @a8 {
+    @a16 {
+        lda #$1234
+        return
+    }
+}
+
+// A branch out of a block leaks the block's width to its target. No restore
+// is emitted — one after the branch would be dead code, and one before it
+// would also run on the paths that stay in the block — so the target is sized
+// against the width that actually reaches it. That is reported, because the
+// source reads as if `.out` were 8-bit and it is not.
+func leaking @a8 {
+    @a16 {
+        bra .out
+    }
+.out:
+    lda #$1234          // 16-bit: the block's width arrived here
+}

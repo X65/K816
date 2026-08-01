@@ -546,6 +546,7 @@ impl KProgram {
                             None => {}
                         }
                     }
+                    out.push_str(&format!(" -> {}", dump_exit(function.exit)));
                     out.push_str(" {\n");
                     for op in &function.ops {
                         let text = dump_op(op, symbols);
@@ -580,6 +581,27 @@ fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
             format!("{}{}", instruction.mnemonic.ca65(), operand)
         }
     }
+}
+
+/// The IR text of a function's inferred exit contract.
+///
+/// Rendered on every header rather than only where it is interesting: what a
+/// caller may believe after a call is the fact call-site bridging turns into
+/// instructions, so a reader checking the bridges needs to see it stated.
+fn dump_exit(exit: ExitContract) -> String {
+    fn axis(exit: AxisExit, names: [&'static str; 4]) -> &'static str {
+        match exit {
+            AxisExit::Fixed(RegisterWidth::W8) => names[0],
+            AxisExit::Fixed(RegisterWidth::W16) => names[1],
+            AxisExit::Preserve => names[2],
+            AxisExit::Unknown => names[3],
+        }
+    }
+    format!(
+        "{} {}",
+        axis(exit.a, ["@a8", "@a16", "a:preserve", "a:?"]),
+        axis(exit.i, ["@i8", "@i16", "i:preserve", "i:?"]),
+    )
 }
 
 /// The IR text of a mode assumption: `mode-assume @a8 @i16`.

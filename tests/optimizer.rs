@@ -62,10 +62,10 @@ fn ir_dump_shows_the_dead_load_before_and_after_optimization() {
     assert_eq!(
         program.dump(&model.symbols, &map),
         "\
-func main @a8 @i16 {
+func main @a8 @i16 -> a:preserve i:preserve {
   label main               ; user slice.k816:3
-  sep #$20                 ; compiler slice.k816:3
   rep #$10                 ; compiler slice.k816:3
+  mode-assume @a8 @i16     ; compiler slice.k816:3
   lda #$00                 ; hla slice.k816:4
   lda #$01                 ; hla slice.k816:5
   sta abs SCREEN           ; hla slice.k816:6
@@ -79,10 +79,10 @@ func main @a8 @i16 {
     assert_eq!(
         program.dump(&model.symbols, &map),
         "\
-func main @a8 @i16 {
+func main @a8 @i16 -> a:preserve i:preserve {
   label main               ; user slice.k816:3
-  sep #$20                 ; compiler slice.k816:3
   rep #$10                 ; compiler slice.k816:3
+  mode-assume @a8 @i16     ; compiler slice.k816:3
   lda #$01                 ; hla slice.k816:5
   sta abs SCREEN           ; hla slice.k816:6
   rts                      ; hla slice.k816:7
@@ -145,19 +145,14 @@ fn reads_and_barriers_keep_live_operations() {
         })
         .collect();
 
-    // `lda #$01` survives: `sta` reads A. `sep #$20` survives: `lda`/`sta`
-    // read the M width flag. `rep #$10` survives: `rts` is a control
-    // barrier before the X flag could be proven dead. `sta`/`rts` are
-    // observable (memory write, stack + return) and are never candidates.
+    // `lda #$01` survives: `sta` reads A. `rep #$10` survives: `rts` is a
+    // control barrier before the X flag could be proven dead. `sta`/`rts` are
+    // observable (memory write, stack + return) and are never candidates. The
+    // 8-bit half of the contract is a width claim rather than an instruction,
+    // so there is no `sep` here to keep or remove.
     assert_eq!(
         mnemonics,
-        vec![
-            Mnemonic::Sep,
-            Mnemonic::Rep,
-            Mnemonic::Lda,
-            Mnemonic::Sta,
-            Mnemonic::Rts
-        ]
+        vec![Mnemonic::Rep, Mnemonic::Lda, Mnemonic::Sta, Mnemonic::Rts]
     );
 }
 

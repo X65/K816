@@ -33,3 +33,24 @@ func asserted_after_xce {
     @a16
     lda #$1234
 }
+
+// Accepted, and the reason is worth stating separately: a 16-bit register
+// cannot exist in emulation mode, so asserting one asserts native mode too.
+// The `rep` *after* the annotation is therefore believed. Without that the
+// hatch opens and closes again immediately, which is no hatch at all.
+func asserted_then_widened {
+    xce
+    @a16
+    rep #$20
+    lda #$1234
+}
+
+// Refused: an 8-bit assertion says nothing about emulation mode, because
+// 8-bit is exactly what emulation mode forces. The `rep` below is not
+// believed on the strength of a claim that never mentioned it.
+func narrow_assertion_is_not_an_escape_hatch @a16 {
+    xce
+    @a8
+    rep #$20
+    lda #$1234
+}

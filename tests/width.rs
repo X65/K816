@@ -407,6 +407,54 @@ func main @a8 {
     assert_eq!(before(source, "main", 2).0, known(RegisterWidth::W16));
 }
 
+/// The escape hatch has to stay open for the instruction *after* it.
+///
+/// A 16-bit register cannot exist in emulation mode, so asserting one
+/// asserts native mode too. Without that, the annotation is believed and the
+/// very next `rep` is not — the hatch opens and closes again immediately,
+/// which is no hatch at all.
+#[test]
+fn an_asserted_width_keeps_a_later_rep_believable() {
+    let source = "\
+func main @a8 {
+    xce
+    @a16
+    rep #$20
+    lda #$1234
+}
+";
+    assert_eq!(error_codes(&analyze(source).2), Vec::<&str>::new());
+    // Statements: xce, the mode set, the rep, the load.
+    assert_eq!(before(source, "main", 2).0, known(RegisterWidth::W16));
+    // The load is sized 16-bit, which is the whole point of asserting.
+    assert_eq!(before(source, "main", 3).0, known(RegisterWidth::W16));
+}
+
+/// An *8-bit* assertion says nothing about emulation mode, so it does not
+/// open the hatch.
+///
+/// 8-bit is exactly what emulation mode forces, so `@a8` is equally true in
+/// both and carries no evidence. Reading it as an assertion of native mode
+/// would let the `rep` below be believed on the strength of a claim that
+/// never mentioned it — which is the unsoundness the emulation axis exists
+/// to prevent.
+#[test]
+fn an_eight_bit_assertion_does_not_assert_native_mode() {
+    let source = "\
+func main @a16 {
+    xce
+    @a8
+    rep #$20
+    lda #$1234
+}
+";
+    assert_eq!(error_codes(&analyze(source).2), ["K816-E0104"]);
+    // The assertion itself is believed — it is 8-bit either way.
+    assert_eq!(before(source, "main", 2).0, known(RegisterWidth::W8));
+    // The `rep` after it is not: nothing said emulation mode was off.
+    assert_eq!(before(source, "main", 3).0, AxisState::Unknown);
+}
+
 #[test]
 fn xce_leaves_emulation_unknown_for_the_rest_of_the_function() {
     let source = "func main @a8 {\n    xce\n    nop\n}\n";
@@ -618,11 +666,25 @@ fn width_emulation_fixture_refuses_only_the_widening_case() {
         .collect();
     assert_eq!(
         width_errors.len(),
-        1,
-        "only the widening `rep` is refused: {:?}",
+        2,
+        "the two widenings with no evidence of native mode: {:?}",
         codes(&diagnostics)
     );
-    assert_eq!(width_errors[0].code, DiagnosticCode::UNKNOWN_WIDTH);
+    assert!(
+        width_errors
+            .iter()
+            .all(|diagnostic| diagnostic.code == DiagnosticCode::UNKNOWN_WIDTH)
+    );
+    // The assertion opens the hatch for what follows it, and a narrow one
+    // does not open it at all.
+    assert_eq!(
+        before(&source, "asserted_then_widened", 3).0,
+        known(RegisterWidth::W16)
+    );
+    assert_eq!(
+        before(&source, "narrow_assertion_is_not_an_escape_hatch", 3).0,
+        AxisState::Unknown
+    );
     // The narrowing and asserted cases both track a known width.
     assert_eq!(
         before(&source, "narrow_after_xce", 2).0,

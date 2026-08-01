@@ -1198,6 +1198,23 @@ fn apply(
         } => apply_effect(incoming, effect, exchanges_emulation),
         Transfer::Set(axes) => {
             let mut fact = incoming;
+            // An annotation is a user assertion, so it establishes its width
+            // outright rather than through the emulation state — that is the
+            // documented escape hatch for the `xce`-then-widen pattern.
+            //
+            // A *16-bit* assertion says something about emulation mode as
+            // well: `doc/w65c816s.md` has the M and X flags forced to one in
+            // emulation mode, so a 16-bit register can only exist in native
+            // mode, and asserting one asserts that. Without this the escape
+            // hatch opens and closes again immediately — the annotation is
+            // believed and the very next `rep` is not.
+            //
+            // An 8-bit assertion says nothing: 8-bit is what emulation mode
+            // forces, so `@a8` is equally true either way and leaves the
+            // emulation state exactly as unknown as it found it.
+            if axes.a == Some(RegisterWidth::W16) || axes.i == Some(RegisterWidth::W16) {
+                fact.mode.e = EmulationState::Native;
+            }
             if let Some(width) = axes.a {
                 fact.mode.a = AxisState::Known(width);
                 fact.touched.a = true;

@@ -3,22 +3,28 @@
 //
 // A backward branch is an edge from later in the instruction stream to
 // earlier, so a loop head can be reached at one width on the first arrival
-// and another on the back edge. A single forward traversal accepts
-// `agreeing` and silently mis-sizes `diverging`, which is why this file
-// exists: the two differ only in the direction of the mode change inside the
-// loop.
+// and another on the back edge. A single forward traversal never sees the
+// second arrival: it assembles `agreeing` correctly by luck and claims a
+// width at `diverging`'s head that only one of its two predecessors supports.
+//
+// The two functions differ only in the direction of the mode change inside
+// the loop.
 
 // The head is entered at @a8 and closed from @a16, so no width holds there.
-// The `lda` is rejected rather than sized against either arrival.
+// Nothing width-dependent may be written at the head — a `lda #$01` there is
+// `K816-E0104`, which `tests/width.rs` pins — and `nop` does not care, so the
+// rest of the function still assembles.
 func diverging @a8 {
 .head:
-    lda #$01
+    nop
     rep #$20
     bra .head
 }
 
 // The back edge agrees with the entry contract, so the head stays 8-bit and
-// the same `lda` is accepted.
+// the `lda #$01` there is the two-byte form. Under a solver that lost the
+// back edge this would still be two bytes, which is why `diverging` above is
+// the half that catches the mistake.
 func agreeing @a8 {
 .head:
     lda #$01

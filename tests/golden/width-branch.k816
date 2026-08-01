@@ -1,0 +1,43 @@
+// Sub-plan D fixture: a branch that skips a mode change must not leave the
+// assembler believing the skipped width.
+//
+// This is a wrong-bytes bug, not a cosmetic one. The emitter used to walk a
+// function's operations linearly and apply each instruction's width effect,
+// so in `skipped` below it applied the `rep #$20` that no path to `.after`
+// executes, claimed `.a16` at the label, and assembled the following
+// `lda #$01` as the three-byte `lda #$0001`. The CPU decodes `A9 01 00` as
+// `lda #$01` plus a stray `$00`, and every byte after it shifts.
+//
+// The gate on this file is the encoded length of each immediate, not the
+// emitted text: text can look right while the assembler sizes it differently.
+
+// The mode change is not on any path to `.after`, so the label is still
+// 8-bit and the load is two bytes.
+func skipped @a8 {
+    lda #$01
+    bra .after
+    rep #$20
+.after:
+    lda #$01
+}
+
+// The same mode change *before* the branch is on every path, so the label is
+// 16-bit and the load is three bytes.
+func taken @a8 {
+    lda #$01
+    rep #$20
+    bra .after
+.after:
+    lda #$01
+}
+
+// An annotation at the label resolves a merge that would otherwise be
+// unknown: the two arrivals disagree, and the bridge establishes 16-bit for
+// both of them.
+func resolved @a8 {
+    bcc .after
+    rep #$20
+    @a16
+.after:
+    lda #$0102
+}

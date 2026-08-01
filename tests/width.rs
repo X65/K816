@@ -575,17 +575,23 @@ fn fixture(name: &str) -> String {
 }
 
 #[test]
-fn width_loop_fixture_rejects_only_the_diverging_head() {
+fn width_loop_fixture_separates_the_two_loop_heads() {
     let source = fixture("width-loop.k816");
     let (_, _, diagnostics) = analyze(&source);
-    assert_eq!(
-        codes(&diagnostics),
-        ["K816-E0104"],
-        "only the diverging loop's head has no width"
-    );
-    // The agreeing loop's head keeps its 8-bit width, so the rejection above
-    // is a conclusion about that program rather than about loops.
+    assert_eq!(codes(&diagnostics), Vec::<&str>::new());
+    // The diverging head has no width; the agreeing one keeps 8-bit. Both
+    // conclusions come from the same solver run over the same shape.
+    assert_eq!(before(&source, "diverging", 1).0, AxisState::Unknown);
     assert_eq!(before(&source, "agreeing", 1).0, known(RegisterWidth::W8));
+}
+
+/// The rejection the fixture's comment refers to: a width-dependent
+/// immediate at a head no arrival agrees about cannot be sized.
+#[test]
+fn a_width_dependent_immediate_at_a_diverging_loop_head_is_rejected() {
+    let (_, _, diagnostics) =
+        analyze("func diverging @a8 {\n.head:\n    lda #$01\n    rep #$20\n    bra .head\n}\n");
+    assert_eq!(codes(&diagnostics), ["K816-E0104"]);
 }
 
 #[test]

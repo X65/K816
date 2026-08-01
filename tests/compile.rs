@@ -514,3 +514,135 @@ fn the_legacy_display_list_data_block_compiles() {
     // …and it assembles and links, guard included.
     assemble_and_link("displist", &assembly, "slice");
 }
+
+// ---------------------------------------------------------------------------
+// Immediate sizes agree with tracked modes (sub-plan D, phase 7 criterion).
+// ---------------------------------------------------------------------------
+
+/// Assembles `text` and returns the linked bytes, without asserting a layout.
+///
+/// The gate below is on *encoded lengths*, so it has to go through the tool
+/// that owns encoding. Comparing emitted text would pass on output that ca65
+/// then sizes differently, which is exactly the class of mistake the width
+/// model exists to prevent.
+fn linked(test: &str, name: &str, text: &str) -> Vec<u8> {
+    let (bytes, _) = compile_and_link(test, name, text, &Options { optimize: false });
+    bytes
+}
+
+/// The regression the emitter used to have: a branch that skips a mode change
+/// left the assembler believing the skipped width, so the immediate after the
+/// label was assembled three bytes wide and everything after it shifted.
+#[test]
+fn a_skipped_mode_change_does_not_widen_the_immediate_after_the_label() {
+    let bytes = linked(
+        "width-branch",
+        "width-branch.k816",
+        include_str!("golden/width-branch.k816"),
+    );
+
+    // `skipped`: lda #$01 (2), bra (2), rep #$20 (2), lda #$01 (2), rts (1).
+    assert_eq!(
+        &bytes[..9],
+        &[0xA9, 0x01, 0x80, 0x02, 0xC2, 0x20, 0xA9, 0x01, 0x60],
+        "the load after the label is the two-byte form: {bytes:02X?}"
+    );
+
+    // `taken`: the same mode change *before* the branch is on every path, so
+    // the same source line assembles three bytes wide.
+    assert_eq!(
+        &bytes[9..19],
+        &[0xA9, 0x01, 0xC2, 0x20, 0x80, 0x00, 0xA9, 0x01, 0x00, 0x60],
+        "the load after the label is the three-byte form: {bytes:02X?}"
+    );
+
+    // `resolved`: the annotation at the label bridges both arrivals to 16-bit,
+    // so the load is three bytes and the bridge is adjacent to the label.
+    assert_eq!(
+        &bytes[19..],
+        &[0x90, 0x02, 0xC2, 0x20, 0xC2, 0x20, 0xA9, 0x02, 0x01, 0x60],
+        "{bytes:02X?}"
+    );
+}
+
+/// A plain `rep` before an immediate is believed: the tracked state, not the
+/// entry contract, decides the size.
+#[test]
+fn a_rep_before_an_immediate_widens_it() {
+    let bytes = linked(
+        "width-rep",
+        "rep.k816",
+        "func main @a8 {\n    rep #$20\n    lda #$1234\n}\n",
+    );
+    assert_eq!(
+        bytes,
+        vec![0xC2, 0x20, 0xA9, 0x34, 0x12, 0x60],
+        "{bytes:02X?}"
+    );
+}
+
+/// Module defaults reach the encoded length: the same `#1` is three bytes in
+/// the inheriting function and two in the one that overrides.
+#[test]
+fn module_defaults_reach_the_encoded_immediate_length() {
+    let bytes = linked(
+        "width-module",
+        "width-module.k816",
+        include_str!("golden/width-module.k816"),
+    );
+    assert_eq!(
+        bytes,
+        vec![
+            // inherits: lda #$0001, ldx #$0001, rts
+            0xA9, 0x01, 0x00, 0xA2, 0x01, 0x00, 0x60, // narrow: lda #$01, ldx #$01, rts
+            0xA9, 0x01, 0xA2, 0x01, 0x60,
+            // half: lda #$01 (overridden), ldx #$0001 (inherited), rts
+            0xA9, 0x01, 0xA2, 0x01, 0x00, 0x60,
+        ],
+        "{bytes:02X?}"
+    );
+}
+
+/// A loop head every arrival agrees about keeps its width all the way to the
+/// encoded byte.
+#[test]
+fn a_loop_head_its_arrivals_agree_about_keeps_its_width() {
+    let bytes = linked(
+        "width-loop",
+        "width-loop.k816",
+        include_str!("golden/width-loop.k816"),
+    );
+    assert_eq!(
+        bytes,
+        vec![
+            // diverging: nop, rep #$20, bra .head
+            0xEA, 0xC2, 0x20, 0x80, 0xFB, 0x60,
+            // agreeing: lda #$01 — two bytes, from the 8-bit head
+            0xA9, 0x01, 0xE2, 0x20, 0x80, 0xFA, 0x60,
+        ],
+        "{bytes:02X?}"
+    );
+}
+
+/// A scoped block's width reaches the encoded length inside it and is gone
+/// again after it.
+#[test]
+fn a_scoped_block_changes_the_encoded_length_only_inside_itself() {
+    let bytes = linked(
+        "width-block-bytes",
+        "block.k816",
+        "func main @a8 {\n    lda #$01\n    @a16 {\n        lda #$01\n    }\n    lda #$01\n}\n",
+    );
+    assert_eq!(
+        bytes,
+        vec![
+            0xA9, 0x01, // lda #$01 — 8-bit
+            0xC2, 0x20, // rep #$20 — enter the block
+            0xA9, 0x01, 0x00, // lda #$0001 — 16-bit inside it
+            0xE2, 0x20, // sep #$20 — restore
+            0xA9, 0x01, // lda #$01 — 8-bit again
+            0x60,
+        ],
+        "{bytes:02X?}"
+    );
+}

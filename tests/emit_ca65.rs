@@ -90,15 +90,22 @@ fn fixed_address_vars_become_equates_not_resolved_addresses() {
     assert!(!assembly.contains("sta     $0400"));
 }
 
+/// The entry contract's directives sit between the function label and the
+/// first instruction that depends on a width.
+///
+/// They come *after* the entry setup rather than before it, because the claim
+/// states the width that holds once the setup has run. The setup's own
+/// operand is a fixed-width immediate, so nothing between the two depends on
+/// the claim.
 #[test]
 fn width_directives_track_the_entry_contract() {
     let assembly = emit("slice.k816", include_str!("golden/slice.k816"));
     let main_at = assembly.find("main:").expect("main label");
     let a8_at = assembly.find("        .a8 ").expect(".a8 directive");
     let i16_at = assembly.find("        .i16 ").expect(".i16 directive");
-    let first_dbg = assembly[main_at..].find(".dbg    line").unwrap() + main_at;
-    assert!(main_at < a8_at && a8_at < first_dbg);
-    assert!(main_at < i16_at && i16_at < first_dbg);
+    let first_load = assembly.find("        lda ").expect("the first load");
+    assert!(main_at < a8_at && a8_at < first_load, "{assembly}");
+    assert!(main_at < i16_at && i16_at < first_load, "{assembly}");
 }
 
 // ---------------------------------------------------------------------------
@@ -320,10 +327,12 @@ fn an_unknown_width_transition_emits_no_width_claim() {
         .map(|line| line.split(';').next().unwrap_or_default().trim())
         .filter(|line| line.starts_with(".a") || line.starts_with(".i"))
         .collect();
-    // The entry contract's two claims, then `sep #$20` re-establishing the
-    // accumulator width after `plp` made it unknown. Nothing claims a width
-    // between the `plp` and the `sep`.
-    assert_eq!(claims, vec![".a8", ".i16", ".a8"], "{assembly}");
+    // The entry setup's `.i16` (from the `rep`), the contract's `.a8`, then
+    // `sep #$20` re-establishing the accumulator width after `plp` made it
+    // unknown. Nothing claims a width between the `plp` and the `sep`, and
+    // the index width is never re-claimed: the `plp` dropped it and only an
+    // annotation could bring it back.
+    assert_eq!(claims, vec![".i16", ".a8", ".a8"], "{assembly}");
 }
 
 // ---------------------------------------------------------------------------
@@ -595,5 +604,98 @@ fn labels_and_linkage_directives_quote_their_own_source() {
     assert!(
         export_line.contains("; k816: a function defined here, visible to other units"),
         "{export_line}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The width model's claims (sub-plan D, task D4).
+// ---------------------------------------------------------------------------
+
+/// The emitter has exactly two sources for its tracked width, and they are
+/// both needed: an ordinary user-written `rep` still updates ca65's
+/// assumption, so the load below assembles three bytes wide.
+#[test]
+fn an_ordinary_rep_still_updates_the_assemblers_assumption() {
+    let assembly = emit_unoptimized(
+        "rep.k816",
+        "func main @a8 {\n    rep #$20\n    lda #$1234\n}\n",
+    );
+    let rep_at = assembly.find("rep     #$20").expect("the rep");
+    let a16_at = assembly.find("        .a16").expect(".a16");
+    let lda_at = assembly.find("lda     #$1234").expect("the load");
+    assert!(rep_at < a16_at && a16_at < lda_at, "{assembly}");
+}
+
+/// A branch that skips a mode change must not leave a width claim behind it.
+/// The model says the label is 8-bit; the emitter says what the model says,
+/// rather than what its own linear walk over the operations would imply.
+#[test]
+fn a_skipped_mode_change_does_not_claim_a_width_at_the_label() {
+    let assembly = emit_unoptimized(
+        "branch.k816",
+        "func main @a8 {\n    bra .after\n    rep #$20\n.after:\n    lda #$01\n}\n",
+    );
+    let label_at = assembly.find("@after:").expect("the label");
+    let after = &assembly[label_at..];
+    let a8_at = after.find("        .a8").expect("the label's claim");
+    let lda_at = after.find("lda     #$01").expect("the load");
+    assert!(a8_at < lda_at, "the claim precedes the load: {assembly}");
+    assert!(
+        !after[..lda_at].contains(".a16"),
+        "the skipped width must not reach the label: {assembly}"
+    );
+}
+
+/// An unknown axis emits *no* directive, because ca65 has no way to un-assume
+/// one, and says so instead.
+///
+/// That silence is sound only because K816 refuses width-dependent immediates
+/// while the state is unknown, so the two are asserted together here: a
+/// change that removes the refusal has to fail on this side as well.
+#[test]
+fn an_unknown_axis_emits_an_explanation_rather_than_a_directive() {
+    let source = "func main @a8 @i8 {\n    plp\n    nop\n}\n";
+    let assembly = emit_unoptimized("unknown.k816", source);
+    let plp_at = assembly.find("plp").expect("the plp");
+    let after = &assembly[plp_at..];
+    assert!(
+        !after.contains(".a8") && !after.contains(".a16"),
+        "no directive can un-assume a width: {assembly}"
+    );
+    assert!(
+        after.contains("accumulator width is unknown from here"),
+        "the silence explains itself: {assembly}"
+    );
+
+    // The other half of the pair: the immediate that would need that width is
+    // refused, which is what makes emitting nothing sound.
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "unknown.k816",
+        "func main @a8 {\n    plp\n    lda #$01\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(
+        result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["K816-E0104"]
+    );
+}
+
+/// Where emulation mode is why a width became unknown, the emitted
+/// explanation says so — the reader is otherwise left looking for a missing
+/// annotation.
+#[test]
+fn the_explanation_names_emulation_mode_when_that_is_the_cause() {
+    let assembly = emit_unoptimized(
+        "emu.k816",
+        "func main @a8 @i8 {\n    xce\n    rep #$20\n    nop\n}\n",
+    );
+    assert!(
+        assembly.contains("because emulation mode is unknown here"),
+        "{assembly}"
     );
 }

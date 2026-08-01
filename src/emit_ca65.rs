@@ -39,12 +39,12 @@
 
 use std::collections::HashMap;
 
-use crate::effects::WidthEffect;
+use crate::effects::{ControlEffect, WidthEffect};
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
 use crate::linkage::Linkage;
 use crate::op::{
-    DataOp, IndexRegister, Instruction, KFunction, KOp, KOpKind, KProgram, KProgramItem, Operand,
-    Origin, WidthContract,
+    AxisState, DataOp, EmulationState, IndexRegister, Instruction, KFunction, KOp, KOpKind,
+    KProgram, KProgramItem, ModeState, Operand, Origin,
 };
 use crate::semantic::SemanticModel;
 use crate::source::{FileId, SourceMap, Span};
@@ -258,32 +258,31 @@ pub fn emit(
     ));
 
     let names = Names::new(&model.symbols, program);
+    let unit = Unit {
+        map,
+        file_name: source.name(),
+        names: &names,
+    };
     for item in &program.items {
         match item {
-            KProgramItem::Op(op) => emit_unit_op(map, source.name(), &names, op, &mut out),
+            KProgramItem::Op(op) => emit_unit_op(&unit, op, &mut out),
             KProgramItem::Function(function) => {
                 out.push('\n');
                 let mut widths = WidthState::default();
-                let mut assumed = false;
+                let mut site = Site::default();
                 for op in &function.ops {
-                    // The entry contract's width directives follow the
-                    // function label, before the first instruction.
-                    if !assumed && !matches!(op.kind, KOpKind::Label(_)) {
-                        widths.assume(function.contract, &mut out);
-                        assumed = true;
-                    }
                     match &op.kind {
-                        KOpKind::Instruction(instruction) => emit_instruction(
-                            map,
-                            source.name(),
-                            &names,
-                            instruction,
-                            op,
-                            &mut widths,
-                            &mut out,
-                        ),
-                        _ => emit_unit_op(map, source.name(), &names, op, &mut out),
+                        KOpKind::Instruction(instruction) => {
+                            emit_instruction(&unit, instruction, op, &site, &mut widths, &mut out);
+                        }
+                        // The model's claim is authoritative: it overrides
+                        // whatever the preceding instructions carried.
+                        KOpKind::ModeAssumption(state) => {
+                            widths.claim(*state, site.reason(), &mut out);
+                        }
+                        _ => emit_unit_op(&unit, op, &mut out),
                     }
+                    site.observe(op);
                 }
             }
         }
@@ -291,12 +290,22 @@ pub fn emit(
     out
 }
 
+/// The per-unit context every emitted operation needs: the source it came
+/// from, the file name the debug directives carry, and the ca65 spelling
+/// chosen for each symbol.
+struct Unit<'a> {
+    map: &'a SourceMap,
+    file_name: &'a str,
+    names: &'a Names<'a>,
+}
+
 /// Emits a non-instruction operation: a label or one of the directives.
 ///
 /// The *decision* to produce these — segment selection, derived linkage,
 /// data blocks, alignment — belongs to tasks C7 and C8; this is only their
 /// ca65 spelling, so both tasks extend the callers rather than the printer.
-fn emit_unit_op(map: &SourceMap, file_name: &str, names: &Names<'_>, op: &KOp, out: &mut String) {
+fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
+    let (map, file_name, names) = (unit.map, unit.file_name, unit.names);
     match &op.kind {
         KOpKind::Instruction(_) => unreachable!("instructions are emitted with their width state"),
         // A mode assumption is a claim about the assembler's tracked widths,
@@ -397,6 +406,71 @@ fn generated_directive_note(kind: &KOpKind) -> &'static str {
     }
 }
 
+/// One of the two width axes, for the code that treats them alike.
+#[derive(Clone, Copy)]
+enum Axis {
+    A,
+    I,
+}
+
+/// Where in a function an operation sits, which is what the annotation on a
+/// width claim explains.
+///
+/// The claim itself carries only the widths — the model's conclusion, not its
+/// reasoning — so the reason is read off the operations around it.
+#[derive(Default)]
+struct Site {
+    /// Some operation other than a compiler-generated mode change has been
+    /// emitted since the last label.
+    past_label: bool,
+    /// No label other than the function's own has been seen yet.
+    at_function_entry: bool,
+    /// The operation just emitted was a call, so what follows describes the
+    /// callee's exit rather than this function's own code.
+    after_call: bool,
+    started: bool,
+}
+
+impl Site {
+    fn observe(&mut self, op: &KOp) {
+        match &op.kind {
+            KOpKind::Label(_) => {
+                self.at_function_entry = !self.started;
+                self.past_label = false;
+                self.after_call = false;
+            }
+            KOpKind::Instruction(instruction) => {
+                // A mode change the compiler generated is part of the entry
+                // setup or of a label bridge, so it does not end either.
+                let is_bridge = op.origin == Origin::CompilerGenerated
+                    && matches!(instruction.mnemonic, Mnemonic::Sep | Mnemonic::Rep);
+                self.past_label |= !is_bridge;
+                self.after_call = instruction.effects().control == ControlEffect::Call;
+            }
+            KOpKind::ModeAssumption(_) => {}
+            _ => {
+                self.past_label = true;
+                self.after_call = false;
+            }
+        }
+        self.started = true;
+    }
+
+    fn reason(&self) -> &'static str {
+        match self {
+            _ if !self.past_label && self.at_function_entry => "the function's entry contract",
+            _ if !self.past_label => "the width every path to this label establishes",
+            _ if self.after_call => "the callee's exit contract",
+            _ => "the width the model tracks here",
+        }
+    }
+
+    /// True while the operations belong to the function's entry setup.
+    fn is_entry_setup(&self) -> bool {
+        !self.past_label && self.at_function_entry
+    }
+}
+
 /// Tracked assembler width state, kept in sync with `.a8`-family directives
 /// so ca65 sizes width-dependent immediates exactly as the width model does.
 #[derive(Default)]
@@ -406,14 +480,52 @@ struct WidthState {
 }
 
 impl WidthState {
-    /// Establishes a function's entry contract as the assumed widths.
-    fn assume(&mut self, contract: WidthContract, out: &mut String) {
-        if let Some(width) = contract.a {
-            self.set_a(width, "the function's entry contract", out);
+    /// Applies a width claim from the model, which overrides whatever the
+    /// preceding instructions carried.
+    ///
+    /// An unknown axis emits *no* directive, because ca65 has no way to
+    /// un-assume one. That silence is sound only because K816 refuses
+    /// width-dependent immediates while the state is unknown, so the two
+    /// have to be tested together: a change that removes the refusal must
+    /// fail on this side too.
+    fn claim(&mut self, state: ModeState, why: &'static str, out: &mut String) {
+        match state.a {
+            AxisState::Known(width) => self.set_a(width, why, out),
+            AxisState::Unknown => self.forget(Axis::A, state.e, out),
+            // The model emits no claim in an unreachable block, so a `Bottom`
+            // axis here would be a compiler bug rather than a silence to
+            // honour; either way there is nothing to say about it.
+            AxisState::Bottom => {}
         }
-        if let Some(width) = contract.i {
-            self.set_i(width, "the function's entry contract", out);
+        match state.i {
+            AxisState::Known(width) => self.set_i(width, why, out),
+            AxisState::Unknown => self.forget(Axis::I, state.e, out),
+            AxisState::Bottom => {}
         }
+    }
+
+    /// Drops a tracked width and says why, without a directive.
+    fn forget(&mut self, axis: Axis, emulation: EmulationState, out: &mut String) {
+        let tracked = match axis {
+            Axis::A => &mut self.a,
+            Axis::I => &mut self.i,
+        };
+        if tracked.is_none() {
+            return;
+        }
+        *tracked = None;
+        let name = match axis {
+            Axis::A => "accumulator",
+            Axis::I => "index register",
+        };
+        let cause = match emulation {
+            EmulationState::Native => "",
+            EmulationState::Unknown => ", because emulation mode is unknown here",
+        };
+        out.push_str(&annotated(
+            "",
+            &format!("k816: {name} width is unknown from here{cause}; ca65 has no directive to un-assume one"),
+        ));
     }
 
     fn set_a(&mut self, width: RegisterWidth, why: &str, out: &mut String) {
@@ -456,23 +568,26 @@ impl WidthState {
                     self.set_i(i, "the width the instruction above established", out);
                 }
             }
+            // The instruction destroyed both tracked widths. ca65 has no
+            // directive to un-assume one, so the drop is stated in a comment
+            // and the next claim is what brings a width back.
             WidthEffect::Unknown => {
-                self.a = None;
-                self.i = None;
+                self.forget(Axis::A, EmulationState::Native, out);
+                self.forget(Axis::I, EmulationState::Native, out);
             }
         }
     }
 }
 
 fn emit_instruction(
-    map: &SourceMap,
-    file_name: &str,
-    names: &Names<'_>,
+    unit: &Unit<'_>,
     instruction: &Instruction,
     op: &KOp,
+    site: &Site,
     widths: &mut WidthState,
     out: &mut String,
 ) {
+    let (map, file_name, names) = (unit.map, unit.file_name, unit.names);
     // Debug annotation: ld65 records this op as owned by the K816 source.
     let line = map.line_col(op.span.file, op.span.start).line + 1;
     out.push_str(&format!("        .dbg    line, \"{file_name}\", {line}\n"));
@@ -488,7 +603,7 @@ fn emit_instruction(
 
     let comment = match op.origin {
         Origin::User | Origin::HlaExpansion => source_comment(map, op.span),
-        Origin::CompilerGenerated => format!("k816: {}", generated_note(instruction)),
+        Origin::CompilerGenerated => format!("k816: {}", generated_note(instruction, site)),
     };
     out.push_str(&annotated(text.trim_end(), &comment));
 
@@ -708,10 +823,13 @@ fn line_comment(map: &SourceMap, span: Span) -> String {
 /// text rather than semantics — the one place a wildcard over [`Mnemonic`]
 /// costs nothing, because a missing arm produces a vaguer comment and not a
 /// wrong instruction.
-fn generated_note(instruction: &Instruction) -> &'static str {
+fn generated_note(instruction: &Instruction, site: &Site) -> &'static str {
+    let entry = site.is_entry_setup();
     match instruction.mnemonic {
-        Mnemonic::Sep => "entry width setup (8-bit)",
-        Mnemonic::Rep => "entry width setup (16-bit)",
+        Mnemonic::Sep if entry => "entry width setup (8-bit)",
+        Mnemonic::Rep if entry => "entry width setup (16-bit)",
+        Mnemonic::Sep => "the width model establishes 8-bit here",
+        Mnemonic::Rep => "the width model establishes 16-bit here",
         Mnemonic::Rts | Mnemonic::Rtl => "implicit return",
         _ => "generated",
     }

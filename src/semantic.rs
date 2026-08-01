@@ -147,6 +147,7 @@ fn analyze(
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
         externally_reachable: BTreeSet::new(),
+        deferred_sections: BTreeMap::new(),
     };
     analysis.declare_placed_symbols(file);
     // Module defaults are file-wide, so they are known before any function's
@@ -183,6 +184,9 @@ struct Analysis {
     /// Global labels another unit refers to, which the width solver treats
     /// as reachable from a width nothing in this unit establishes.
     externally_reachable: BTreeSet<SymbolId>,
+    /// Code sections the parser recognized but no sub-plan compiles yet, by
+    /// name, so a call that names one says what is actually missing.
+    deferred_sections: BTreeMap<String, (&'static str, compat::Owner)>,
 }
 
 impl Analysis {
@@ -412,6 +416,10 @@ impl Analysis {
                     if let Some((feature, owner)) = unsupported_function_feature(func) {
                         self.diagnostics
                             .push(compat::unimplemented(item.span, feature, owner));
+                        // Remembered so that a call naming it says which
+                        // section kind is missing rather than "undeclared".
+                        self.deferred_sections
+                            .insert(func.name.text.clone(), (feature, owner));
                         continue;
                     }
                     // The first pass declared the name; a duplicate reported
@@ -557,7 +565,7 @@ impl Analysis {
         // nothing else — its per-statement states are provisional and its
         // diagnostics are dropped, because the run that classifies each
         // function reports them for real.
-        let fallback = BTreeMap::new();
+        let fallback: BTreeMap<SymbolId, width::CalleeContract> = BTreeMap::new();
         for index in 0..self.model.functions.len() {
             let info = self.model.functions[index].clone();
             let Some(func) = function_of(file, &info) else {
@@ -569,7 +577,7 @@ impl Analysis {
                 &width::Context {
                     symbols: &self.model.symbols,
                     function: Some(info.symbol),
-                    exits: &fallback,
+                    callees: &fallback,
                     externally_reachable: &self.externally_reachable,
                 },
             );
@@ -597,7 +605,7 @@ impl Analysis {
     /// while the immediates after the call were sized from the placeholder —
     /// two answers again, arriving by staging rather than by duplication.
     fn classify_exits(&mut self, file: &AstFile) {
-        let mut exits: BTreeMap<SymbolId, ExitContract> = BTreeMap::new();
+        let mut callees: BTreeMap<SymbolId, width::CalleeContract> = BTreeMap::new();
         for component in strongly_connected_components(&self.model.functions) {
             // A non-trivial component, or a self-loop, is recursion: there is
             // no fixpoint to find and no answer better than the fallback.
@@ -617,7 +625,7 @@ impl Analysis {
                     &width::Context {
                         symbols: &self.model.symbols,
                         function: Some(info.symbol),
-                        exits: &exits,
+                        callees: &callees,
                         externally_reachable: &self.externally_reachable,
                     },
                 );
@@ -647,7 +655,13 @@ impl Analysis {
                 }
                 self.check_declared_exit(func, &analysis);
 
-                exits.insert(info.symbol, exit);
+                callees.insert(
+                    info.symbol,
+                    width::CalleeContract {
+                        entry: info.contract,
+                        exit,
+                    },
+                );
                 let function = &mut self.model.functions[index];
                 function.exit = exit;
                 function.exit_is_assumed = assumed;
@@ -927,12 +941,29 @@ impl Analysis {
                 "preprocessor directives",
                 compat::Owner::Compatibility,
             )),
-            StatementKind::Call(_) | StatementKind::BareCall(_) => {
-                self.diagnostics.push(compat::unimplemented(
-                    statement.span,
-                    "function calls",
-                    compat::Owner::WidthAndContracts,
-                ));
+            StatementKind::Call(call) => {
+                if call.is_far {
+                    self.diagnostics.push(compat::unimplemented(
+                        statement.span,
+                        "far calls",
+                        compat::Owner::HlaLowering,
+                    ));
+                    return;
+                }
+                self.check_call_target(&call.target);
+            }
+            StatementKind::BareCall(call) => {
+                // A flow clause makes the call *checked*, which is contract
+                // validation rather than bridging.
+                if call.arguments.is_some() || call.outputs.is_some() {
+                    self.diagnostics.push(compat::unimplemented(
+                        statement.span,
+                        "call contracts",
+                        compat::Owner::WidthAndContracts,
+                    ));
+                    return;
+                }
+                self.check_call_target(&call.target);
             }
         }
     }
@@ -1330,6 +1361,53 @@ impl Analysis {
                 )),
             );
         }
+    }
+
+    /// Validates the name a call transfers to.
+    ///
+    /// A code section K816 recognizes but does not compile yet was never
+    /// declared, so its name would otherwise report itself as undeclared —
+    /// true, and useless. Naming the section kind instead points at the work
+    /// that is actually missing.
+    fn check_call_target(&mut self, target: &crate::ast::Name) {
+        if target.provenance == Provenance::Synthetic {
+            return;
+        }
+        if let Some((feature, owner)) = self.deferred_sections.get(&target.text).copied() {
+            self.diagnostics
+                .push(compat::unimplemented(target.span, feature, owner));
+            return;
+        }
+        let Some(id) = self.model.symbols.lookup(&target.text) else {
+            let mut resolver = self.resolver();
+            resolver.resolve(&target.text, target.span);
+            let resolved = resolver.finish();
+            self.absorb(resolved);
+            return;
+        };
+        self.model.referenced.insert(id);
+        let symbol = self.model.symbols.symbol(id);
+        // A call transfers to an *address*, and a K65 program routinely
+        // names one that is not a section of its own: `var openmode = $EF9C`
+        // and `call openmode` is how the legacy corpus reaches a ROM routine.
+        // Only a `const` has no address to transfer to.
+        if !matches!(symbol.kind, SymbolKind::Const { .. }) {
+            return;
+        }
+        let declaration = symbol.declaration;
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SYMBOL_KIND_MISMATCH,
+                format!("`{}` is a `const`, not a place to call", target.text),
+                Label::new(target.span, "a call transfers to an address"),
+            )
+            .with_secondary(Label::new(declaration, "declared here"))
+            .with_help(format!(
+                "declare it as an address instead, e.g. `var {} = ...`",
+                target.text
+            ))
+            .with_docs("doc/syntax-reference.md#code-sections"),
+        );
     }
 
     /// Validates a memory operand named by an HLA statement.

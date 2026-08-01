@@ -1,0 +1,41 @@
+// Sub-plan D fixture: a native `jsr` is transparent, and its callee's exit
+// still applies.
+//
+// `Jsr` carries an unchanged width effect, which is correct for an effect
+// table keyed on the mnemonic and the addressing mode and wrong as a width
+// conclusion: the callee runs, and what it leaves behind is what the caller
+// continues with. A walk that trusted the effect table alone would carry the
+// caller's pre-call width straight through a callee that changes it.
+//
+// No bridge is emitted, though. Raw native code is transparent — K816 emits
+// what the user wrote — so `call NAME` is the managed form and `jsr NAME` is
+// the escape hatch. Where the tracked width does not satisfy the callee's
+// declared entry contract, that is worth saying, and `K816-W0125` says it.
+
+func widens @a8 -> @a16 {
+    rep #$20
+}
+
+func wants_narrow @a8 {
+    nop
+}
+
+// The callee's exit reaches the caller: the load after the `jsr` is sized
+// 16-bit even though `jsr` itself changes nothing.
+func applies_the_exit @a8 {
+    jsr widens
+    lda #$1234
+}
+
+// The tracked width is 16-bit here and `wants_narrow` declares `@a8`, which
+// a native call does not establish. Reported, not bridged.
+func does_not_bridge @a16 {
+    jsr wants_narrow
+    nop
+}
+
+// A tail transfer leaves this function through another one, so the exit it
+// reports is that function's.
+func tail_transfers @a8 {
+    jmp widens
+}

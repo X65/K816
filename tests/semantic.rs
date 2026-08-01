@@ -551,7 +551,12 @@ fn one_source_shape_picks_the_narrowest_encoding_that_holds_the_address() {
         let parse = parse_source(map.file(id), None);
         assert_eq!(parse.diagnostics, vec![], "`{source}` did not parse");
         let (model, diagnostics) = analyze_file(&parse.file);
-        assert_eq!(diagnostics, vec![], "`{source}`");
+        // `brl main` tail-transfers into the function itself, which is
+        // recursion and warns about its exit widths; the encoding is what
+        // this test is about.
+        let errors: Vec<&k816::diagnostic::Diagnostic> =
+            diagnostics.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "`{source}`: {errors:?}");
 
         let (program, lowered) = k816::lower::lower(&parse.file, &model);
         assert_eq!(lowered, vec![], "`{source}`");

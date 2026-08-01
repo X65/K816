@@ -277,9 +277,7 @@ pub fn emit(
                         }
                         // The model's claim is authoritative: it overrides
                         // whatever the preceding instructions carried.
-                        KOpKind::ModeAssumption(state) => {
-                            widths.claim(*state, site.reason(), &mut out);
-                        }
+                        KOpKind::ModeAssumption(state) => widths.claim(*state, &site, &mut out),
                         _ => emit_unit_op(&unit, op, &mut out),
                     }
                     site.observe(op);
@@ -488,7 +486,9 @@ impl WidthState {
     /// width-dependent immediates while the state is unknown, so the two
     /// have to be tested together: a change that removes the refusal must
     /// fail on this side too.
-    fn claim(&mut self, state: ModeState, why: &'static str, out: &mut String) {
+    fn claim(&mut self, state: ModeState, site: &Site, out: &mut String) {
+        let why = site.reason();
+        let before = out.len();
         match state.a {
             AxisState::Known(width) => self.set_a(width, why, out),
             AxisState::Unknown => self.forget(Axis::A, state.e, out),
@@ -501,6 +501,17 @@ impl WidthState {
             AxisState::Known(width) => self.set_i(width, why, out),
             AxisState::Unknown => self.forget(Axis::I, state.e, out),
             AxisState::Bottom => {}
+        }
+        // A claim after a call that changes nothing is the one the model
+        // emits where it could not see the callee: the widths are unchanged
+        // because the language says such a callee must leave them alone, not
+        // because K816 worked out that it does. Saying so is the whole point
+        // of the operation being there.
+        if out.len() == before && site.after_call {
+            out.push_str(&annotated(
+                "",
+                "k816: the callee's exit widths are unknown; assumed to preserve these",
+            ));
         }
     }
 

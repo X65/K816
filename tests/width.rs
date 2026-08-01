@@ -757,12 +757,12 @@ fn a_recursion_cycle_is_pinned_to_the_language_rule() {
     let text = "\
 func ping @a8 {
     rep #$20
-    jsr pong
+    call pong
 }
 
 func pong @a8 {
     rep #$20
-    jsr ping
+    call ping
 }
 ";
     assert_eq!(codes(&text_warnings(text)), ["K816-W0124", "K816-W0124"]);
@@ -776,7 +776,7 @@ func pong @a8 {
 /// Self-recursion is a cycle of one, and the same rule applies.
 #[test]
 fn a_self_call_is_a_cycle() {
-    let text = "func f @a8 {\n    rep #$20\n    jsr f\n}\n";
+    let text = "func f @a8 {\n    rep #$20\n    call f\n}\n";
     assert_eq!(codes(&text_warnings(text)), ["K816-W0124"]);
     assert_eq!(exit_of(text, "f"), (AxisExit::Preserve, AxisExit::Preserve));
 }
@@ -849,4 +849,171 @@ fn width_exit_fixture_derives_one_exit_per_shape() {
     // A preserving callee moves nothing, so the width before the last load is
     // still the one the previous call left.
     assert_eq!(before(&source, "caller", 6).0, known(RegisterWidth::W16));
+}
+
+// ---------------------------------------------------------------------------
+// Calls
+// ---------------------------------------------------------------------------
+
+/// The bridge before a call establishes the callee's entry contract, and the
+/// tracker afterwards is what the callee's exit promises.
+#[test]
+fn a_call_bridges_to_the_callee_and_advances_by_its_exit() {
+    let text = "\
+func callee @a16 {
+    nop
+}
+
+func main @a8 {
+    call callee
+    lda #$1234
+}
+";
+    let (_, _, diagnostics) = analyze(text);
+    assert_eq!(
+        codes(&diagnostics),
+        Vec::<&str>::new(),
+        "the 16-bit immediate is accepted: the bridge left the accumulator wide"
+    );
+    assert_eq!(before(text, "main", 1).0, known(RegisterWidth::W16));
+}
+
+/// A native `jsr` is the escape hatch: no bridge, and the mismatch it leaves
+/// is reported rather than silently repaired.
+#[test]
+fn a_native_call_is_not_bridged_and_says_so() {
+    let text = "\
+func callee @a8 {
+    nop
+}
+
+func main @a16 {
+    jsr callee
+    nop
+}
+";
+    let (_, _, diagnostics) = analyze(text);
+    assert_eq!(codes(&diagnostics), ["K816-W0125"]);
+    assert!(
+        diagnostics[0]
+            .help
+            .as_ref()
+            .is_some_and(|help| help.contains("`call`")),
+        "the fix is to use the managed form: {:?}",
+        diagnostics[0].help
+    );
+}
+
+/// A native call whose callee the tracked width already satisfies is silent:
+/// the warning is about a mismatch, not about using `jsr`.
+#[test]
+fn a_native_call_that_already_satisfies_the_contract_is_silent() {
+    let text = "\
+func callee @a8 {
+    nop
+}
+
+func main @a8 {
+    jsr callee
+    nop
+}
+";
+    let (_, _, diagnostics) = analyze(text);
+    assert_eq!(codes(&diagnostics), Vec::<&str>::new());
+}
+
+/// A `jmp` to a *function* leaves this one through that one, so the exit it
+/// reports is that function's rather than its own.
+#[test]
+fn a_tail_transfer_carries_the_target_functions_exit() {
+    let text = "\
+func widens @a8 -> @a16 {
+    rep #$20
+}
+
+func tail @a8 {
+    jmp widens
+}
+";
+    assert_eq!(
+        exit_of(text, "tail"),
+        (AxisExit::Fixed(RegisterWidth::W16), AxisExit::Preserve)
+    );
+}
+
+#[test]
+fn width_bridging_fixture_matches_the_documented_example() {
+    let source = fixture("width-bridging.k816");
+    let (_, _, diagnostics) = analyze(&source);
+    assert_eq!(codes(&diagnostics), Vec::<&str>::new());
+    // `main` is uncoloured, so each call's bridge is what establishes the
+    // callee's contract; the state after each one is that contract, because
+    // every callee here preserves.
+    assert_eq!(
+        before(&source, "main", 1),
+        (known(RegisterWidth::W16), AxisState::Unknown)
+    );
+    assert_eq!(
+        before(&source, "main", 2),
+        (known(RegisterWidth::W8), known(RegisterWidth::W8))
+    );
+    assert_eq!(
+        before(&source, "main", 3),
+        (known(RegisterWidth::W16), known(RegisterWidth::W16))
+    );
+}
+
+#[test]
+fn width_native_call_fixture_applies_exits_without_bridging() {
+    let source = fixture("width-native-call.k816");
+    let (_, _, diagnostics) = analyze(&source);
+    assert_eq!(
+        codes(&diagnostics),
+        ["K816-W0125"],
+        "only the unsatisfied entry contract is worth saying"
+    );
+    // The callee's exit reaches the caller even though `jsr` itself changes
+    // nothing.
+    assert_eq!(
+        before(&source, "applies_the_exit", 1).0,
+        known(RegisterWidth::W16)
+    );
+    assert_eq!(
+        exit_of(&source, "tail_transfers"),
+        (AxisExit::Fixed(RegisterWidth::W16), AxisExit::Preserve)
+    );
+}
+
+/// The only calls in the legacy corpus are unchecked, in uncoloured
+/// functions, so the expected outcome is no bridge and no diagnostic: the
+/// width model must not make legacy code louder.
+///
+/// The HLA statements around them are still sub-plan E's, so the assertion
+/// is on the call statements' own analysis rather than on compiling the file.
+#[test]
+fn the_legacy_corpus_calls_produce_no_bridge_and_no_width_diagnostic() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/k65/atari-xl/landscape/main.k65");
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let mut map = SourceMap::new();
+    let id = map.add_file("landscape.k65", source);
+    let parse = parse_source(map.file(id), None);
+    assert_eq!(parse.diagnostics, vec![], "the legacy source still parses");
+    let (_, diagnostics) = analyze_file(&parse.file);
+
+    let width_codes: Vec<&str> = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .filter(|code| {
+            code.starts_with("K816-E011")
+                || code.starts_with("K816-W012")
+                || *code == "K816-E0103"
+                || *code == "K816-E0104"
+        })
+        .collect();
+    assert_eq!(
+        width_codes,
+        Vec::<&str>::new(),
+        "the width model says nothing about unchecked calls in uncoloured functions"
+    );
 }

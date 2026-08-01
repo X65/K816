@@ -34,7 +34,7 @@ use crate::ast::{
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::ControlEffect;
-use crate::effects::WidthEffect;
+use crate::effects::{Effects, WidthEffect};
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
     AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin,
@@ -299,9 +299,9 @@ impl Lowering<'_> {
                 match resolver.classify(native) {
                     Some(classified) if !resolver.has_diagnostics() => {
                         let instruction = classified.instruction();
-                        let effect = instruction.effects().width;
+                        let effects = instruction.effects();
                         self.push(KOpKind::Instruction(instruction), span, Origin::User);
-                        self.reconcile(statement, effect);
+                        self.reconcile(statement, effects);
                     }
                     _ => self.skipped(span, "an unclassified instruction"),
                 }
@@ -384,9 +384,11 @@ impl Lowering<'_> {
             // above already emitted — unless the model moved it past a
             // following label, in which case the label emits it.
             StatementKind::ModeSet(_) => {}
-            StatementKind::Call(_) | StatementKind::BareCall(_) => {
-                self.skipped(span, "a function call");
-            }
+            // The bridge for the callee's entry contract was emitted above;
+            // what is left is the transfer itself and the claim about what
+            // the callee left behind.
+            StatementKind::Call(call) => self.call(statement, &call.target),
+            StatementKind::BareCall(call) => self.call(statement, &call.target),
             StatementKind::Conditional(_)
             | StatementKind::ConditionalJump(_)
             | StatementKind::Loop(_)
@@ -440,6 +442,38 @@ impl Lowering<'_> {
         }
     }
 
+    /// Lowers a call to `jsr`, and claims what the callee's exit promises.
+    ///
+    /// The claim is emitted whenever the model concluded something a reader
+    /// of the instruction stream could not: after a call that changes the
+    /// widths, and after one whose callee K816 cannot see, where the
+    /// annotation records that the preserving answer was assumed rather than
+    /// derived.
+    fn call(&mut self, statement: &crate::ast::Statement, target: &crate::ast::Name) {
+        let Some(symbol) = self.model.symbols.lookup(&target.text) else {
+            return self.skipped(statement.span, "a call to an undeclared function");
+        };
+        let before = self.widths_at(statement);
+        // The same operand shape the classifier gives a hand-written
+        // `jsr NAME`, so the managed and native forms emit identically.
+        self.instruction(
+            Mnemonic::Jsr,
+            AddressingMode::Absolute,
+            Some(Self::absolute(symbol)),
+            statement.span,
+            Origin::HlaExpansion,
+        );
+        let Some(after) = self.widths_after(statement) else {
+            return;
+        };
+        let assumed = self
+            .widths
+            .is_some_and(|analysis| analysis.assumed_calls.contains(&statement.id));
+        if after != before || assumed {
+            self.assume(after, statement.span);
+        }
+    }
+
     /// States the model's conclusion whenever it differs from what the
     /// instruction just emitted implies on its own.
     ///
@@ -449,7 +483,15 @@ impl Lowering<'_> {
     /// the emulation flag unknown establishes nothing, so the claim the
     /// instruction would otherwise carry has to be withdrawn rather than
     /// left standing.
-    fn reconcile(&mut self, statement: &crate::ast::Statement, effect: WidthEffect) {
+    fn reconcile(&mut self, statement: &crate::ast::Statement, effects: Effects) {
+        // Nothing follows an instruction that leaves for good, so there is
+        // nothing for a claim there to describe.
+        if matches!(
+            effects.control,
+            ControlEffect::Jump | ControlEffect::Return | ControlEffect::Halt
+        ) {
+            return;
+        }
         let (Some(before), Some(after)) = (
             self.widths.and_then(|a| a.before(statement.id)),
             self.widths_after(statement),
@@ -459,7 +501,7 @@ impl Lowering<'_> {
         if before.is_bottom() {
             return; // Unreachable code makes no claim either way.
         }
-        let carried = match effect {
+        let carried = match effects.width {
             WidthEffect::Unchanged => before,
             WidthEffect::Known { a, i } => ModeState {
                 a: a.map_or(before.a, AxisState::Known),
@@ -472,7 +514,14 @@ impl Lowering<'_> {
                 e: after.e,
             },
         };
-        if carried != after {
+        // A native call to a target K816 cannot name takes the language's
+        // preserving rule, which is an assumption rather than a conclusion.
+        // The claim is emitted so the emitted line can say so, even though it
+        // changes nothing.
+        let assumed = self
+            .widths
+            .is_some_and(|analysis| analysis.assumed_calls.contains(&statement.id));
+        if carried != after || assumed {
             self.assume(after, statement.span);
         }
     }

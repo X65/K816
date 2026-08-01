@@ -646,3 +646,36 @@ fn a_scoped_block_changes_the_encoded_length_only_inside_itself() {
         "{bytes:02X?}"
     );
 }
+
+/// The documented call-site bridging example, checked as bytes.
+///
+/// Each bridge is the minimum for its callee's contract: one instruction per
+/// axis that differs, none for an axis the callee leaves unspecified, and
+/// none at all for the uncoloured callee. The masks are unfolded — merging
+/// `rep #$20` and `rep #$10` into `rep #$30` is the optimizer's, so the
+/// document's listing shows fewer instructions than this.
+#[test]
+fn call_site_bridges_are_the_minimum_for_each_contract() {
+    let bytes = linked(
+        "width-bridging",
+        "width-bridging.k816",
+        include_str!("golden/width-bridging.k816"),
+    );
+    // The four callees come first: `nop`, `rts` each.
+    let main_at = 4 * 2;
+    assert_eq!(
+        &bytes[main_at..main_at + 20],
+        &[
+            0xC2, 0x20, // rep #$20 — bridge for wide_a @a16
+            0x20, 0x00, 0x80, // jsr wide_a
+            0xE2, 0x20, // sep #$20 — bridge for narrow @a8 @i8
+            0xE2, 0x10, // sep #$10
+            0x20, 0x02, 0x80, // jsr narrow
+            0xC2, 0x20, // rep #$20 — bridge for wide_all @a16 @i16
+            0xC2, 0x10, // rep #$10
+            0x20, 0x04, 0x80, // jsr wide_all
+            0x20, // jsr uncolored — no bridge at all
+        ],
+        "{bytes:02X?}"
+    );
+}

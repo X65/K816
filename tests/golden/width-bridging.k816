@@ -1,0 +1,42 @@
+// Sub-plan D fixture: call-site bridging.
+//
+// `doc/register-width-aware-syntax.md`, "Call-site bridging". Calling a
+// function with a mode contract emits the minimum `REP`/`SEP` before the
+// `JSR` to satisfy it: nothing for an axis the callee leaves unspecified,
+// nothing for an axis the caller's tracked width already agrees with, and one
+// instruction where it differs or is unknown.
+//
+// Not emitting a bridge that is provably unnecessary is not an optimization.
+// The tracker knows the state, so there is nothing to emit; the optimizer's
+// harder claim is that a mode change no *subsequent* instruction depends on
+// may go, transitively through calls.
+
+func wide_a @a16 {
+    nop
+}
+
+func narrow @a8 @i8 {
+    nop
+}
+
+func wide_all @a16 @i16 {
+    nop
+}
+
+func uncolored {
+    nop
+}
+
+func main {
+    call wide_a         // rep #$20
+    call narrow         // sep #$20, sep #$10
+    call wide_all       // rep #$20, rep #$10
+    call uncolored      // nothing to satisfy
+}
+
+// A second caller whose tracked width already satisfies the callee, so the
+// bridge that the document's example emits is absent here.
+func already_wide @a16 {
+    call wide_a         // no bridge: the accumulator is already 16-bit
+    lda #$1234
+}

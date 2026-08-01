@@ -93,6 +93,14 @@ pub struct WidthAnalysis {
     pub exit_is_assumed: bool,
     pub needs: WidthNeeds,
     pub callees: Vec<SymbolId>,
+    /// Call statements whose callee K816 cannot see, and which therefore
+    /// take the language's `Unknown ⇒ Preserve` rule.
+    ///
+    /// They are annotated at the call site rather than warned about: there
+    /// is nothing at the callee to point a label at, and nothing the author
+    /// of *this* unit could do about it, so a warning would be noise on
+    /// every cross-boundary call while saying nothing new.
+    pub assumed_calls: std::collections::BTreeSet<StmtId>,
     /// Every reachable point where control leaves the function.
     ///
     /// The solver knows where they are and what the widths are there;
@@ -175,6 +183,8 @@ pub enum BridgeReason {
     BlockRestore,
     /// Establishing an annotated width at a label, for every arrival.
     LabelBridge,
+    /// Satisfying a callee's entry contract before transferring to it.
+    Call,
 }
 
 /// The per-axis "may differ from the value at function entry" bit that
@@ -261,7 +271,15 @@ enum Transfer {
     /// axis exactly as it found it.
     Restore { enter: usize, axes: WidthContract },
     /// A call, whose callee's exit contract advances the tracker.
-    Call { callee: Option<SymbolId> },
+    Call {
+        callee: Option<SymbolId>,
+        /// True for the managed forms — `call NAME` and the bare call —
+        /// which establish the callee's entry contract before transferring.
+        /// A native `jsr` is the escape hatch and is transparent: K816 emits
+        /// what the user wrote, which is the whole premise of raw native
+        /// code.
+        bridged: bool,
+    },
 }
 
 /// Where a transfer's control goes next.
@@ -394,14 +412,26 @@ pub fn merge_defaults(defaults: WidthContract, declared: WidthContract) -> Width
     }
 }
 
+/// What a call site needs to know about its callee.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CalleeContract {
+    /// The widths the callee's body assumes on entry, which a managed call
+    /// bridges to.
+    pub entry: WidthContract,
+    /// What the caller may believe about its widths afterwards.
+    pub exit: ExitContract,
+}
+
 /// What the solver needs to know beyond the body it is walking.
 pub struct Context<'a> {
     pub symbols: &'a SymbolTable,
     /// The function whose scope `.name` labels resolve in.
     pub function: Option<SymbolId>,
-    /// The classified exit contract of each callee. A callee absent from it
-    /// takes the language's `Unknown ⇒ Preserve` rule.
-    pub exits: &'a BTreeMap<SymbolId, ExitContract>,
+    /// The contract of each callee K816 can see. A callee absent from it is
+    /// invisible — an unresolved indirect call, or a foreign name no
+    /// analyzed unit defines — and takes the language's `Unknown ⇒ Preserve`
+    /// rule with a call-site annotation rather than a diagnostic.
+    pub callees: &'a BTreeMap<SymbolId, CalleeContract>,
     /// Global labels another unit in the workspace refers to.
     ///
     /// Such a label may be branched to from code K816 is not looking at, so
@@ -421,7 +451,7 @@ pub fn analyze_function(
     let Context {
         symbols,
         function,
-        exits,
+        callees,
         externally_reachable,
     } = *context;
     let mut flattener = Flattener {
@@ -439,7 +469,7 @@ pub fn analyze_function(
     };
     flattener.block(body);
     let graph = flattener.finish();
-    solve(graph, entry, exits)
+    solve(graph, entry, callees)
 }
 
 struct Flattener<'a> {
@@ -609,11 +639,11 @@ impl Flattener<'_> {
             }
             StatementKind::Call(call) => {
                 let callee = self.lookup_callee(&call.target.text);
-                self.call(id, span, callee);
+                self.call(id, span, callee, true);
             }
             StatementKind::BareCall(call) => {
                 let callee = self.lookup_callee(&call.target.text);
-                self.call(id, span, callee);
+                self.call(id, span, callee, true);
             }
             StatementKind::Return(_) => {
                 self.push(
@@ -847,7 +877,34 @@ impl Flattener<'_> {
                 let callee = symbol.filter(|symbol| {
                     matches!(self.symbols.kind(*symbol), SymbolKind::Function { .. })
                 });
-                self.call(id, span, callee);
+                self.call(id, span, callee, false);
+            }
+            // A `jmp`/`jml` whose operand names a *function* leaves this
+            // function through that one, so it is a return path carrying that
+            // function's exit rather than an edge in this graph.
+            ControlEffect::Jump
+                if symbol.is_some_and(|symbol| {
+                    matches!(self.symbols.kind(symbol), SymbolKind::Function { .. })
+                }) =>
+            {
+                if let Some(callee) = symbol
+                    && !self.callees.contains(&callee)
+                {
+                    self.callees.push(callee);
+                }
+                self.push(
+                    id,
+                    span,
+                    Transfer::Call {
+                        callee: symbol,
+                        bridged: false,
+                    },
+                    Control {
+                        fall_through: false,
+                        target: None,
+                        returns: true,
+                    },
+                );
             }
             ControlEffect::Branch | ControlEffect::Jump => {
                 let target = match symbol {
@@ -908,7 +965,7 @@ impl Flattener<'_> {
         }
     }
 
-    fn call(&mut self, statement: StmtId, span: Span, callee: Option<SymbolId>) {
+    fn call(&mut self, statement: StmtId, span: Span, callee: Option<SymbolId>, bridged: bool) {
         if let Some(callee) = callee
             && !self.callees.contains(&callee)
         {
@@ -917,7 +974,7 @@ impl Flattener<'_> {
         self.push(
             statement,
             span,
-            Transfer::Call { callee },
+            Transfer::Call { callee, bridged },
             Control::fall_through(),
         );
     }
@@ -1025,7 +1082,7 @@ fn describe_axes(axes: WidthContract) -> String {
 fn solve(
     graph: Graph,
     entry: ModeState,
-    exits: &BTreeMap<SymbolId, ExitContract>,
+    callees: &BTreeMap<SymbolId, CalleeContract>,
 ) -> (WidthAnalysis, Vec<Diagnostic>) {
     let nodes = &graph.nodes;
     let count = nodes.len();
@@ -1080,7 +1137,7 @@ fn solve(
         if opaque_labels[index] {
             incoming = incoming.join(opaque_arrival());
         }
-        let produced = apply(&nodes[index].transfer, incoming, &r#in, exits);
+        let produced = apply(&nodes[index].transfer, incoming, &r#in, callees);
         if incoming == r#in[index] && produced == out[index] {
             continue;
         }
@@ -1130,8 +1187,10 @@ fn solve(
             });
         }
     }
-    record_bridges(&mut analysis, nodes, &r#in, &graph.blocks);
-    (analysis, graph.diagnostics)
+    let mut diagnostics = graph.diagnostics;
+    record_bridges(&mut analysis, nodes, &r#in, &graph.blocks, callees);
+    report_unbridged_calls(nodes, &r#in, callees, &mut diagnostics);
+    (analysis, diagnostics)
 }
 
 /// One node's transfer function.
@@ -1139,7 +1198,7 @@ fn apply(
     transfer: &Transfer,
     incoming: Fact,
     r#in: &[Fact],
-    exits: &BTreeMap<SymbolId, ExitContract>,
+    callees: &BTreeMap<SymbolId, CalleeContract>,
 ) -> Fact {
     if incoming.is_bottom() {
         // No path reaches this node, so it produces nothing rather than
@@ -1182,14 +1241,30 @@ fn apply(
             }
             fact
         }
-        Transfer::Call { callee } => {
-            let exit = callee
-                .and_then(|callee| exits.get(&callee).copied())
-                .unwrap_or_else(ExitContract::preserving);
+        Transfer::Call { callee, bridged } => {
+            let contract = callee
+                .and_then(|callee| callees.get(&callee).copied())
+                .unwrap_or_else(|| CalleeContract {
+                    entry: WidthContract::default(),
+                    exit: ExitContract::preserving(),
+                });
             let mut fact = incoming;
-            fact.mode = exit.apply(incoming.mode);
-            fact.touched.a |= matches!(exit.a, AxisExit::Fixed(_));
-            fact.touched.i |= matches!(exit.i, AxisExit::Fixed(_));
+            // A managed call establishes the callee's entry contract first;
+            // the exit then applies to the state the callee actually started
+            // from.
+            if bridged {
+                if let Some(width) = contract.entry.a {
+                    fact.mode.a = AxisState::Known(width);
+                    fact.touched.a = true;
+                }
+                if let Some(width) = contract.entry.i {
+                    fact.mode.i = AxisState::Known(width);
+                    fact.touched.i = true;
+                }
+            }
+            fact.mode = contract.exit.apply(fact.mode);
+            fact.touched.a |= matches!(contract.exit.a, AxisExit::Fixed(_));
+            fact.touched.i |= matches!(contract.exit.i, AxisExit::Fixed(_));
             fact
         }
     }
@@ -1241,11 +1316,72 @@ fn believe(width: RegisterWidth, emulation: EmulationState) -> AxisState {
 /// Records the `REP`/`SEP` the model itself contributes, once the states are
 /// final: a bridge exists exactly where the tracked state differs from the
 /// width being established, so an already-satisfied annotation emits nothing.
+/// A native `jsr`/`jsl` is transparent — K816 emits what the user wrote —
+/// but a callee whose declared entry contract the tracked width does not
+/// satisfy will run with the wrong widths, so the mismatch is named.
+///
+/// The managed `call NAME` bridges instead; this is the escape hatch, and
+/// the fix it offers is to stop using it.
+fn report_unbridged_calls(
+    nodes: &[Node],
+    r#in: &[Fact],
+    callees: &BTreeMap<SymbolId, CalleeContract>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (index, node) in nodes.iter().enumerate() {
+        let Transfer::Call {
+            callee: Some(callee),
+            bridged: false,
+        } = node.transfer
+        else {
+            continue;
+        };
+        if r#in[index].is_bottom() {
+            continue;
+        }
+        let Some(contract) = callees.get(&callee) else {
+            continue;
+        };
+        let state = r#in[index].mode;
+        for (axis, required, tracked) in [
+            (Axis::Accumulator, contract.entry.a, state.a),
+            (Axis::Index, contract.entry.i, state.i),
+        ] {
+            let Some(required) = required else { continue };
+            if tracked == AxisState::Known(required) {
+                continue;
+            }
+            diagnostics.push(unbridged_native_call(node.span, axis, required));
+        }
+    }
+}
+
+fn unbridged_native_call(span: Span, axis: Axis, required: RegisterWidth) -> Diagnostic {
+    Diagnostic::warning(
+        DiagnosticCode::UNBRIDGED_NATIVE_CALL,
+        format!(
+            "this call reaches a function that expects {}, and the tracked width is not that",
+            axis.annotation(required)
+        ),
+        Label::new(span, "a native call is not bridged"),
+    )
+    .with_note(
+        "`jsr` is the escape hatch: K816 emits raw native code as written, so it \
+         establishes nothing before transferring",
+    )
+    .with_help(format!(
+        "write `call` instead, which bridges, or establish {} before this line",
+        axis.annotation(required)
+    ))
+    .with_docs("doc/register-width-aware-syntax.md#call-site-bridging")
+}
+
 fn record_bridges(
     analysis: &mut WidthAnalysis,
     nodes: &[Node],
     r#in: &[Fact],
     blocks: &[BlockRange],
+    callees: &BTreeMap<SymbolId, CalleeContract>,
 ) {
     for (index, node) in nodes.iter().enumerate() {
         if r#in[index].is_bottom() {
@@ -1290,7 +1426,24 @@ fn record_bridges(
                     BridgeReason::BlockRestore,
                 )
             }
-            Transfer::Identity | Transfer::Instruction { .. } | Transfer::Call { .. } => continue,
+            // A managed call establishes the callee's entry contract before
+            // transferring: no bridge for an axis the callee leaves
+            // unspecified, none for one the tracker already agrees with, one
+            // where it differs or is unknown.
+            Transfer::Call { callee, bridged } => {
+                let contract = callee.and_then(|callee| callees.get(&callee));
+                if contract.is_none() {
+                    // An invisible callee is annotated at the call site
+                    // rather than warned about.
+                    analysis.assumed_calls.insert(node.statement);
+                }
+                if !bridged {
+                    continue;
+                }
+                let entry = contract.map(|contract| contract.entry).unwrap_or_default();
+                (entry, BridgeAnchor::Before, BridgeReason::Call)
+            }
+            Transfer::Identity | Transfer::Instruction { .. } => continue,
         };
         let state = r#in[index].mode;
         let mut bridges = Vec::new();

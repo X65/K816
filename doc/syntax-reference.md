@@ -3231,9 +3231,9 @@ Prefix form emits a branch *over* the block, so the parser uses the opposite bra
 
 ```k65
 a?10
->={ x++ }             // executes x++ only when A < 10 (BCS skips over)
+>={ x++ }             // executes x++ only when A >= 10 (BCC skips over)
 
-c-?{ mem++ }          // executes mem++ only when carry is clear
+c-?{ mem++ }          // executes mem++ only when carry is clear (BCS skips over)
 ```
 
 ### Goto Form

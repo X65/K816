@@ -33,10 +33,10 @@ use crate::ast::{AstFile, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
 use crate::hla;
-use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
+use crate::isa::{AddressEncoding, AddressingMode, ImmediateWidthClass, Mnemonic, OperandWidth};
 use crate::op::{
-    AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin, Reason,
-    RegisterWidth, SegmentName, WidthContract,
+    AnchorId, AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand,
+    Origin, Reason, RegisterWidth, SegmentName, WidthContract,
 };
 use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
@@ -102,14 +102,15 @@ pub fn lower_unit(
             ops: Vec::new(),
             checked_calls: Vec::new(),
             diagnostics: Vec::new(),
+            anchors: 0,
+            loops: Vec::new(),
         };
 
         lowering.push(KOpKind::Label(info.symbol), func.name.span, Origin::User);
         lowering.entry(info.is_entry_point, info.contract, func.name.span);
-        for statement in &func.body.statements {
-            lowering.statement(statement);
-        }
+        lowering.block(&func.body);
         lowering.implicit_return(func.body.span);
+        lowering.relax_branches();
 
         checked_calls.push((program.functions().count(), lowering.checked_calls));
         program.push_function(KFunction {
@@ -122,6 +123,79 @@ pub fn lower_unit(
     }
     diagnostics.extend(report_damaged_registers(&program, model, &checked_calls));
     (program, diagnostics)
+}
+
+/// The branch that is taken exactly when `mnemonic` is not.
+///
+/// Only the conditional branches have one: `BRA` is always taken, so the long
+/// form of an unconditional branch is the jump alone.
+fn inverse_branch(mnemonic: Mnemonic) -> Option<Mnemonic> {
+    Some(match mnemonic {
+        Mnemonic::Bcc => Mnemonic::Bcs,
+        Mnemonic::Bcs => Mnemonic::Bcc,
+        Mnemonic::Beq => Mnemonic::Bne,
+        Mnemonic::Bne => Mnemonic::Beq,
+        Mnemonic::Bmi => Mnemonic::Bpl,
+        Mnemonic::Bpl => Mnemonic::Bmi,
+        Mnemonic::Bvc => Mnemonic::Bvs,
+        Mnemonic::Bvs => Mnemonic::Bvc,
+        _ => return None,
+    })
+}
+
+/// The bytes an operation encodes, over-estimated where the answer depends on
+/// something K816 does not know yet.
+///
+/// Over-estimating is the safe direction for every consumer: a branch that
+/// thinks the distance is longer than it is emits a longer form and still
+/// assembles, and a `nocross` run that thinks it is bigger than it is reports
+/// a fit problem that does not exist rather than missing one that does. An
+/// under-estimate does neither (sub-plan E, decision 7).
+fn byte_length(op: &KOp) -> u32 {
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        return match &op.kind {
+            KOpKind::Data(data) => data_length(data),
+            // Labels, anchors, width claims, and directives emit no bytes.
+            _ => 0,
+        };
+    };
+    let Some(spec) = instruction.spec() else {
+        return 0;
+    };
+    1 + match spec.operand.width {
+        OperandWidth::None => 0,
+        OperandWidth::Immediate(class) => match class {
+            ImmediateWidthClass::Fixed8 => 1,
+            ImmediateWidthClass::Fixed16 => 2,
+            // The width may be unknown here, and the longer form is the one
+            // that cannot make an estimate too small.
+            ImmediateWidthClass::MDependent | ImmediateWidthClass::XDependent => 2,
+        },
+        OperandWidth::Address(encoding) => match encoding {
+            AddressEncoding::Direct => 1,
+            AddressEncoding::Absolute => 2,
+            AddressEncoding::Long => 3,
+        },
+        OperandWidth::BankPair => 2,
+        OperandWidth::Displacement => match instruction.mode {
+            AddressingMode::RelativeLong => 2,
+            _ => 1,
+        },
+    }
+}
+
+/// The bytes a data directive emits.
+fn data_length(data: &crate::op::DataOp) -> u32 {
+    use crate::op::DataOp;
+    let count = |values: &[crate::value::KExpr]| u32::try_from(values.len()).unwrap_or(u32::MAX);
+    match data {
+        DataOp::Byte(values) => count(values),
+        DataOp::Word(values) => 2 * count(values),
+        DataOp::Far(values) => 3 * count(values),
+        // A reservation whose size did not fold is not emittable, so the
+        // only honest estimate is that it may be anything.
+        DataOp::Reserve(bytes) => bytes.value().map_or(u32::MAX, |value| value.get()),
+    }
 }
 
 /// Reports registers a checked call clobbers that its caller still reads.
@@ -262,6 +336,20 @@ struct Lowering<'a> {
     /// Calls that stated a register flow, for the damage scan after lowering.
     checked_calls: Vec<CheckedCall>,
     diagnostics: Vec<Diagnostic>,
+    /// How many branch targets this function has generated so far.
+    anchors: u32,
+    /// The loops enclosing the statement being lowered, innermost last, which
+    /// is what `break` and `repeat` bind to.
+    loops: Vec<LoopAnchors>,
+}
+
+/// The two targets a loop offers the statements inside it.
+#[derive(Clone, Copy)]
+struct LoopAnchors {
+    /// Where `repeat` goes, and where a postfix condition branches back to.
+    head: AnchorId,
+    /// Where `break` goes: past the loop's back edge.
+    exit: AnchorId,
 }
 
 /// A checked call, recorded while lowering so the block-local scan can find
@@ -274,6 +362,379 @@ struct CheckedCall {
 }
 
 impl Lowering<'_> {
+    /// Lowers every statement of a block, which is how a body nested in a
+    /// conditional or a loop reaches the same per-statement machinery — its
+    /// bridges, its width state, its origins — as a top-level one.
+    fn block(&mut self, block: &crate::ast::Block) {
+        for statement in &block.statements {
+            self.statement(statement);
+        }
+    }
+
+    /// A `nocross` run has to fit in a page, and an edge split can be what
+    /// stops it fitting.
+    ///
+    /// The guard is evaluated *after* splitting, because that is when the run
+    /// has its final size — which is the consequence decision 13 of sub-plan D
+    /// named and review accepted along with the split itself
+    /// (`postmortem.md` §D.6.2).
+    fn check_nocross_fits(&mut self, start: usize, length: u32, span: Span) {
+        if length <= 256 {
+            return;
+        }
+        let split: u32 = self.ops[start..]
+            .iter()
+            .filter(|op| {
+                matches!(op.reason, Some(Reason::SplitEdge | Reason::BlockRestore))
+                    && op.origin != Origin::User
+            })
+            .map(byte_length)
+            .sum();
+        if split == 0 {
+            // Nothing K816 added is to blame: the run was written too big,
+            // which is the check sub-plan C already owns.
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::NOCROSS_TOO_LARGE,
+                    format!("this `nocross` run is {length} bytes, which cannot fit a page"),
+                    Label::new(span, "a page is 256 bytes"),
+                )
+                .with_docs("doc/syntax-reference.md#nocross-code-wrappers"),
+            );
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::NOCROSS_SPLIT_OVERFLOW,
+                format!("this `nocross` run grew to {length} bytes and no longer fits a page"),
+                Label::new(span, "a page is 256 bytes"),
+            )
+            .with_note(format!(
+                "{split} of those bytes restore a width block a branch inside this run \
+                 leaves; the restore has to go on the taken edge, so it lands here"
+            ))
+            .with_help(
+                "move the width block or the branch out of the `nocross` run, or take the \
+                 branch's target inside the block",
+            )
+            .with_docs("doc/register-width-aware-syntax.md#block-level-mode-scoping"),
+        );
+    }
+
+    /// Gives a transfer that leaves a scoped width block somewhere to restore
+    /// it: the taken edge, which lowering has to create.
+    ///
+    /// ```text
+    ///     bcc .out          ->      bcc .pad
+    ///                               jmp .past
+    ///                       .pad:   sep #$20
+    ///                               jmp .out
+    ///                       .past:
+    /// ```
+    ///
+    /// Every transfer the statement emitted whose target is *outside* what it
+    /// emitted goes through the pad; a branch to a target the statement
+    /// defines itself — the guard of a compound comparison — stays where it
+    /// is, because it never leaves the block (sub-plan E, decision 9).
+    fn split_taken_edges(&mut self, statement: &crate::ast::Statement, start: usize, span: Span) {
+        let restores: Vec<Bridge> = self
+            .widths
+            .map(|analysis| {
+                analysis
+                    .bridges(statement.id)
+                    .iter()
+                    .filter(|bridge| bridge.anchor == BridgeAnchor::TakenEdge)
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if restores.is_empty() {
+            return;
+        }
+        // Targets the statement defines are internal to it; anything else
+        // leaves.
+        let internal: Vec<AnchorId> = self.ops[start..]
+            .iter()
+            .filter_map(|op| match op.kind {
+                KOpKind::Anchor(anchor) => Some(anchor),
+                _ => None,
+            })
+            .collect();
+        let leaves = |operand: &Option<Operand>| match operand {
+            Some(Operand::Anchor(anchor)) => !internal.contains(anchor),
+            Some(Operand::Label(_)) => true,
+            _ => false,
+        };
+
+        let mut outgoing: Vec<(usize, Option<Operand>)> = Vec::new();
+        for (offset, op) in self.ops[start..].iter().enumerate() {
+            let KOpKind::Instruction(instruction) = &op.kind else {
+                continue;
+            };
+            if instruction.effects().control == ControlEffect::FallThrough {
+                continue;
+            }
+            if leaves(&instruction.operand) {
+                outgoing.push((start + offset, instruction.operand.clone()));
+            }
+        }
+        if outgoing.is_empty() {
+            return;
+        }
+
+        // One pad per distinct target: two branches of a compound comparison
+        // leave through the same edge and share the restore.
+        let mut pads: Vec<(Option<Operand>, AnchorId)> = Vec::new();
+        for (index, target) in outgoing {
+            let pad = match pads.iter().find(|(pad_target, _)| *pad_target == target) {
+                Some((_, pad)) => *pad,
+                None => {
+                    let pad = self.anchor();
+                    pads.push((target.clone(), pad));
+                    pad
+                }
+            };
+            let KOpKind::Instruction(instruction) = &mut self.ops[index].kind else {
+                unreachable!("only instructions were collected");
+            };
+            instruction.operand = Some(Operand::Anchor(pad));
+        }
+
+        // The statement's own fall-through has to step over the pads, unless
+        // the last thing it emitted leaves for good anyway.
+        let past = self.anchor();
+        let falls_through = self.ops.last().is_some_and(|op| match &op.kind {
+            KOpKind::Instruction(instruction) => {
+                instruction.effects().control != ControlEffect::Jump
+            }
+            _ => true,
+        });
+        if falls_through {
+            self.jump_to(past, span, Some(Reason::SplitEdge));
+        }
+        for (target, pad) in pads {
+            self.place(pad, span);
+            for restore in &restores {
+                let mnemonic = match restore.width {
+                    RegisterWidth::W8 => Mnemonic::Sep,
+                    RegisterWidth::W16 => Mnemonic::Rep,
+                };
+                self.generated_instruction(
+                    mnemonic,
+                    AddressingMode::Immediate,
+                    Some(Operand::Immediate(KExpr::number(restore.mask))),
+                    span,
+                    restore.reason,
+                );
+            }
+            self.expanded_instruction(
+                Mnemonic::Jmp,
+                AddressingMode::Absolute,
+                target,
+                span,
+                Some(Reason::SplitEdge),
+            );
+        }
+        self.place(past, span);
+    }
+
+    /// Rewrites every branch the short form cannot reach.
+    ///
+    /// ca65 does not relax branches — a `bcc` over 200 bytes is a range
+    /// error, not a silently widened instruction — so the choice is K816's
+    /// (sub-plan E, decision 7). The estimate over-counts wherever it is
+    /// unsure, because an over-estimate costs a byte and always assembles
+    /// while an under-estimate does not assemble at all.
+    ///
+    /// Each rewrite makes the function longer, which can put a second branch
+    /// out of reach, so this runs to a fixed point. It terminates because a
+    /// branch is only ever rewritten once: the long form contains no relative
+    /// branch to the far target.
+    fn relax_branches(&mut self) {
+        while let Some(index) = self.first_unreachable_branch() {
+            self.widen_branch(index);
+        }
+    }
+
+    /// The first branch whose target the relative form cannot hold.
+    fn first_unreachable_branch(&self) -> Option<usize> {
+        let mut offsets = Vec::with_capacity(self.ops.len());
+        let mut offset: i64 = 0;
+        for op in &self.ops {
+            offsets.push(offset);
+            offset += i64::from(byte_length(op));
+        }
+        self.ops.iter().enumerate().find_map(|(index, op)| {
+            let KOpKind::Instruction(instruction) = &op.kind else {
+                return None;
+            };
+            if instruction.mode != AddressingMode::Relative {
+                return None;
+            }
+            let Some(Operand::Anchor(anchor)) = &instruction.operand else {
+                return None;
+            };
+            let target = self
+                .ops
+                .iter()
+                .position(|op| op.kind == KOpKind::Anchor(*anchor))?;
+            // A relative branch counts from the instruction after it.
+            let from = offsets[index] + i64::from(byte_length(op));
+            let distance = offsets[target] - from;
+            (!(-128..=127).contains(&distance)).then_some(index)
+        })
+    }
+
+    /// Replaces one branch with the inverted-branch-over-a-jump idiom.
+    fn widen_branch(&mut self, index: usize) {
+        let op = self.ops[index].clone();
+        let KOpKind::Instruction(instruction) = &op.kind else {
+            unreachable!("only an instruction is chosen for widening");
+        };
+        let Some(inverse) = inverse_branch(instruction.mnemonic) else {
+            // An unconditional relative branch needs no guard: the jump goes
+            // where it went. Nothing emits one today, so this is the shape
+            // the rule takes rather than a path with a producer.
+            self.ops[index] = KOp::new(
+                KOpKind::Instruction(Instruction::new(
+                    Mnemonic::Jmp,
+                    AddressingMode::Absolute,
+                    instruction.operand.clone(),
+                )),
+                op.span,
+                op.origin,
+            )
+            .because(Reason::LongBranch);
+            return;
+        };
+        let past = self.anchor();
+        let target = instruction.operand.clone();
+        let guard = KOp::new(
+            KOpKind::Instruction(Instruction::new(
+                inverse,
+                AddressingMode::Relative,
+                Some(Operand::Anchor(past)),
+            )),
+            op.span,
+            op.origin,
+        )
+        .because(Reason::LongBranch);
+        let jump = KOp::new(
+            KOpKind::Instruction(Instruction::new(
+                Mnemonic::Jmp,
+                AddressingMode::Absolute,
+                target,
+            )),
+            op.span,
+            op.origin,
+        )
+        .because(Reason::LongBranch);
+        let landing = KOp::new(KOpKind::Anchor(past), op.span, Origin::CompilerGenerated);
+        self.ops.splice(index..=index, [guard, jump, landing]);
+    }
+
+    /// True when anything emitted since `start` branches to `anchor`.
+    fn references(&self, anchor: AnchorId, start: usize) -> bool {
+        self.ops[start..].iter().any(|op| {
+            matches!(
+                &op.kind,
+                KOpKind::Instruction(Instruction {
+                    operand: Some(Operand::Anchor(target)),
+                    ..
+                }) if *target == anchor
+            )
+        })
+    }
+
+    /// A fresh branch target for this function.
+    fn anchor(&mut self) -> AnchorId {
+        let id = AnchorId::new(self.anchors);
+        self.anchors += 1;
+        id
+    }
+
+    /// Marks where a generated branch lands.
+    fn place(&mut self, anchor: AnchorId, span: Span) {
+        self.push(KOpKind::Anchor(anchor), span, Origin::CompilerGenerated);
+    }
+
+    /// The unconditional jump a generated transfer uses.
+    ///
+    /// `JMP` rather than `BRA`, because `doc/syntax-reference.md` spells both
+    /// documented cases that way — "`{ ... } always` // unconditional loop
+    /// (JMP back to start)" and "`break` // unconditional exit (JMP forward)"
+    /// — and preserving a documented expansion is worth a byte
+    /// (`doc/k65-compat.md`). It also always reaches, so branch range never
+    /// applies to it. Shrinking one to `BRA` is a peephole, and F's.
+    fn jump_to(&mut self, anchor: AnchorId, span: Span, reason: Option<Reason>) {
+        self.expanded_instruction(
+            Mnemonic::Jmp,
+            AddressingMode::Absolute,
+            Some(Operand::Anchor(anchor)),
+            span,
+            reason,
+        );
+    }
+
+    /// An instruction an HLA statement expands to, optionally recording what
+    /// the compiler produced it for.
+    fn expanded_instruction(
+        &mut self,
+        mnemonic: Mnemonic,
+        mode: AddressingMode,
+        operand: Option<Operand>,
+        span: Span,
+        reason: Option<Reason>,
+    ) {
+        let mut op = KOp::new(
+            KOpKind::Instruction(Instruction::new(mnemonic, mode, operand)),
+            span,
+            Origin::HlaExpansion,
+        );
+        op.reason = reason;
+        self.ops.push(op);
+    }
+
+    /// Emits the branches a condition means, all landing on `anchor`.
+    fn branch_to(
+        &mut self,
+        condition: crate::ast::BranchCondition,
+        sense: hla::BranchSense,
+        anchor: AnchorId,
+        span: Span,
+    ) {
+        // A taken branch needs no explanation: it tests what the source
+        // says. An inverted one is the surprise worth annotating.
+        let reason = match sense {
+            hla::BranchSense::Skip => Some(Reason::InvertedBranch),
+            hla::BranchSense::Take => None,
+        };
+        let branch = |lowering: &mut Self, mnemonic: Mnemonic, target: AnchorId| {
+            lowering.expanded_instruction(
+                mnemonic,
+                AddressingMode::Relative,
+                Some(Operand::Anchor(target)),
+                span,
+                reason,
+            );
+        };
+        match hla::branch(condition.kind, sense) {
+            hla::BranchPlan::Single(mnemonic) => branch(self, mnemonic, anchor),
+            hla::BranchPlan::Pair(first, second) => {
+                branch(self, first, anchor);
+                branch(self, second, anchor);
+            }
+            // The guard jumps over the branch that takes the target, so it
+            // needs a target of its own.
+            hla::BranchPlan::Guarded { over, take } => {
+                let past = self.anchor();
+                branch(self, over, past);
+                branch(self, take, anchor);
+                self.place(past, span);
+            }
+        }
+    }
+
     fn push(&mut self, kind: KOpKind, span: Span, origin: Origin) {
         self.ops.push(KOp::new(kind, span, origin));
     }
@@ -479,6 +940,12 @@ impl Lowering<'_> {
         // statement's own operations, except at a label — where it runs after
         // the label so that arrivals by branch get it too.
         self.bridges(statement, BridgeAnchor::Before);
+        let start = self.ops.len();
+        self.statement_kind(statement, span);
+        self.split_taken_edges(statement, start, span);
+    }
+
+    fn statement_kind(&mut self, statement: &crate::ast::Statement, span: Span) {
         match &statement.kind {
             StatementKind::Native(native) => {
                 // Analysis already classified this instruction and reported
@@ -529,9 +996,7 @@ impl Lowering<'_> {
             // The block's entry bridge was emitted above; its restore is
             // emitted after the body, and only for axes the block changed.
             StatementKind::WidthBlock(width) => {
-                for nested in &width.body.statements {
-                    self.statement(nested);
-                }
+                self.block(&width.body);
                 self.bridges(statement, BridgeAnchor::After);
             }
             // A bare mode set is nothing but its bridge, which the anchor
@@ -548,13 +1013,89 @@ impl Lowering<'_> {
                 let checked = call.arguments.is_some() || call.outputs.is_some();
                 self.call(statement, &call.target, checked);
             }
-            StatementKind::Conditional(_)
-            | StatementKind::ConditionalJump(_)
-            | StatementKind::Loop(_)
-            | StatementKind::Goto(_)
-            | StatementKind::Break
-            | StatementKind::Repeat
-            | StatementKind::Nocross(_) => self.skipped(span, "a branch or loop statement"),
+            // A conditional branches *past* its body: the instruction tests
+            // the complement of what is written, which is why the sense is
+            // `Skip` (sub-plan E, decision 4).
+            StatementKind::Conditional(conditional) => {
+                let end = self.anchor();
+                let otherwise = conditional.otherwise.as_ref().map(|_| self.anchor());
+                self.branch_to(
+                    conditional.condition,
+                    hla::BranchSense::Skip,
+                    otherwise.unwrap_or(end),
+                    span,
+                );
+                self.block(&conditional.body);
+                if let (Some(alternative), Some(body)) = (otherwise, &conditional.otherwise) {
+                    self.jump_to(end, span, Some(Reason::InvertedBranch));
+                    self.place(alternative, span);
+                    self.block(body);
+                }
+                self.place(end, span);
+            }
+            // A postfix loop is do-while: the body runs, then the condition
+            // decides whether to run it again. `always` is an unconditional
+            // back edge and `never` is a block with no back edge at all,
+            // which exists so `break` has somewhere to go (decision 5).
+            StatementKind::Loop(loop_statement) => {
+                let head = self.anchor();
+                let exit = self.anchor();
+                let head_at = self.ops.len();
+                self.place(head, span);
+                self.loops.push(LoopAnchors { head, exit });
+                self.block(&loop_statement.body);
+                match loop_statement.condition {
+                    crate::ast::LoopCondition::Branch(condition) => {
+                        self.branch_to(condition, hla::BranchSense::Take, head, span);
+                    }
+                    crate::ast::LoopCondition::Always => {
+                        self.jump_to(head, span, None);
+                    }
+                    crate::ast::LoopCondition::Never => {}
+                }
+                self.loops.pop();
+                // The exit exists so `break` has somewhere to go. A loop
+                // nothing breaks out of needs no landing site, and emitting
+                // one would put a label in the stream that nothing names.
+                if self.references(exit, head_at) {
+                    self.place(exit, span);
+                }
+            }
+            StatementKind::Break => match self.loops.last() {
+                Some(loop_anchors) => self.jump_to(loop_anchors.exit, span, None),
+                None => self.skipped(span, "a `break` outside a loop"),
+            },
+            StatementKind::Repeat => match self.loops.last() {
+                Some(loop_anchors) => self.jump_to(loop_anchors.head, span, None),
+                None => self.skipped(span, "a `repeat` outside a loop"),
+            },
+            // The conditional forms of the same two. A conditional `goto` is
+            // sub-plan E5's, with the rest of the jump family.
+            StatementKind::ConditionalJump(jump) => {
+                let anchor = match (&jump.jump.kind, self.loops.last()) {
+                    (StatementKind::Break, Some(loop_anchors)) => loop_anchors.exit,
+                    (StatementKind::Repeat, Some(loop_anchors)) => loop_anchors.head,
+                    (StatementKind::Break | StatementKind::Repeat, None) => {
+                        return self.skipped(span, "a conditional jump outside a loop");
+                    }
+                    _ => return self.skipped(span, "a conditional jump"),
+                };
+                self.branch_to(jump.condition, hla::BranchSense::Take, anchor, span);
+            }
+            // `nocross` on code is advisory: the body is ordinary code, and
+            // the guard is a link-time assertion about where it lands.
+            StatementKind::Nocross(body) => {
+                let start = self.ops.len();
+                self.block(body);
+                let length: u32 = self.ops[start..].iter().map(byte_length).sum();
+                self.check_nocross_fits(start, length, span);
+                self.push(
+                    KOpKind::NocrossGuard { length },
+                    span,
+                    Origin::CompilerGenerated,
+                );
+            }
+            StatementKind::Goto(_) => self.skipped(span, "a `goto` statement"),
             // An inline block emits raw bytes in the middle of executable
             // code, so control has to step over them.
             StatementKind::Data(data) => {
@@ -726,6 +1267,7 @@ impl Lowering<'_> {
             | KOpKind::NocrossGuard { .. }
             | KOpKind::SkipData
             | KOpKind::SkipTarget
+            | KOpKind::Anchor(_)
             // A width claim emits no bytes, so it never ends a body either.
             | KOpKind::ModeAssumption(_) => false,
         });

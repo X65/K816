@@ -759,3 +759,48 @@ fn an_exported_contract_matches_the_code_the_unit_emits() {
         "the callee's exit is claimed before the load: {assembly}"
     );
 }
+
+/// A branch whose target the relative form cannot reach still assembles.
+///
+/// This is the fixture whose whole purpose is that ca65 accepts it: the
+/// assembler reports a range error rather than widening a branch itself, so a
+/// compiler that emits the short form and hopes produces a program that does
+/// not build (sub-plan E, decision 7).
+#[test]
+fn a_branch_past_a_relative_branchs_reach_still_assembles() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "branch-range.k816",
+        include_str!("golden/branch-range.k816"),
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // The long form is the inverted branch over a jump, so the emitted
+    // conditional carries the branch the source did *not* write.
+    assert!(
+        assembly.contains("bcs") && assembly.contains("jmp"),
+        "expected the inverted-branch-over-a-jump idiom:\n{assembly}"
+    );
+    assemble_and_link("branch_range", &assembly, "slice");
+}
+
+/// A transfer out of a scoped width block restores it on the taken edge, and
+/// the result assembles and links.
+#[test]
+fn a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge() {
+    let mut map = SourceMap::new();
+    let file = map.add_file("block-exit.k816", include_str!("golden/block-exit.k816"));
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // Three exits, each with its own restore: the native branch, the
+    // generated one, and the nested pair — which restores twice.
+    let restores = assembly
+        .matches("restoring the width the block changed")
+        .count();
+    assert_eq!(restores, 4, "one per axis left behind:\n{assembly}");
+    assemble_and_link("block_exit", &assembly, "slice");
+}

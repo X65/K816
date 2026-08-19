@@ -270,16 +270,31 @@ pub fn emit(
             KProgramItem::Function(function) => {
                 out.push('\n');
                 let mut widths = WidthState::default();
-                for op in &function.ops {
+                let references = unnamed_references(&function.ops);
+                for (index, op) in function.ops.iter().enumerate() {
                     match &op.kind {
                         KOpKind::Instruction(instruction) => {
-                            emit_instruction(&unit, instruction, op, &mut widths, &mut out);
+                            emit_instruction(
+                                &unit,
+                                instruction,
+                                op,
+                                references[index].as_deref(),
+                                &mut widths,
+                                &mut out,
+                            );
                         }
                         // The model's claim is authoritative: it overrides
                         // whatever the preceding instructions carried.
                         KOpKind::ModeAssumption(state) => {
                             widths.claim(*state, op, &unit, &mut out);
                         }
+                        KOpKind::SkipData => out.push_str(&annotated(
+                            &format!(
+                                "        jmp     {}",
+                                references[index].as_deref().unwrap_or(":+")
+                            ),
+                            "k816: step over the inline data below",
+                        )),
                         _ => emit_unit_op(&unit, op, &mut out),
                     }
                 }
@@ -332,6 +347,8 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
             &format!("        .segment \"{name}\""),
             &annotation(map, op),
         )),
+        // Emitted with the function's ops, where the reference count is
+        // known; at unit level there is no inline data to step over.
         KOpKind::SkipData => out.push_str(&annotated(
             "        jmp     :+",
             "k816: step over the inline data below",
@@ -339,6 +356,10 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
         // A ca65 unnamed label: it names the landing site without touching
         // the cheap-local scope the function's own labels live in.
         KOpKind::SkipTarget => out.push_str(&annotated(":", "k816: past the inline data")),
+        // The same, for the targets branch lowering generates. What it is
+        // *for* rides on the branch that names it, so the annotation here
+        // says only that something lands.
+        KOpKind::Anchor(_) => out.push_str(&annotated(":", "k816: a branch lands here")),
         // ld65 evaluates this after placement, which is the only moment
         // the answer exists.
         KOpKind::NocrossGuard { length } => out.push_str(&annotated(
@@ -401,6 +422,7 @@ fn generated_directive_note(kind: &KOpKind) -> &'static str {
         KOpKind::Label(_) | KOpKind::Align(_) | KOpKind::Data(_) => "generated",
         KOpKind::SkipData => "step over the inline data below",
         KOpKind::SkipTarget => "past the inline data",
+        KOpKind::Anchor(_) => "a branch lands here",
         KOpKind::Instruction(_) | KOpKind::ModeAssumption(_) => "generated",
     }
 }
@@ -530,10 +552,64 @@ impl WidthState {
     }
 }
 
+/// The ca65 unnamed-label reference each operation needs, by position.
+///
+/// ca65 spells a reference to an unnamed label by *counting* the ones between
+/// it and the target — `:+`, `:++`, `:-` — so the text depends on where the
+/// referring operation sits, not only on which target it names. Computing it
+/// once per function keeps the counting in one place and out of the printer.
+///
+/// Anchors and skip targets are counted together, because ca65 counts every
+/// unnamed label it has seen and does not know which pass emitted one.
+fn unnamed_references(ops: &[KOp]) -> Vec<Option<String>> {
+    let sites: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, op)| matches!(op.kind, KOpKind::Anchor(_) | KOpKind::SkipTarget))
+        .map(|(index, _)| index)
+        .collect();
+    let reference = |from: usize, to: usize| -> String {
+        if to > from {
+            let count = sites
+                .iter()
+                .filter(|&&site| site > from && site <= to)
+                .count();
+            format!(":{}", "+".repeat(count.max(1)))
+        } else {
+            let count = sites
+                .iter()
+                .filter(|&&site| site >= to && site < from)
+                .count();
+            format!(":{}", "-".repeat(count.max(1)))
+        }
+    };
+    ops.iter()
+        .enumerate()
+        .map(|(index, op)| match &op.kind {
+            KOpKind::Instruction(Instruction {
+                operand: Some(Operand::Anchor(anchor)),
+                ..
+            }) => {
+                let target = ops
+                    .iter()
+                    .position(|op| op.kind == KOpKind::Anchor(*anchor))?;
+                Some(reference(index, target))
+            }
+            // The jump around inline data names the skip target below it.
+            KOpKind::SkipData => {
+                let target = sites.iter().find(|&&site| site > index)?;
+                Some(reference(index, *target))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn emit_instruction(
     unit: &Unit<'_>,
     instruction: &Instruction,
     op: &KOp,
+    anchor: Option<&str>,
     widths: &mut WidthState,
     out: &mut String,
 ) {
@@ -545,7 +621,7 @@ fn emit_instruction(
     let operand = instruction
         .operand
         .as_ref()
-        .map(|operand| format_operand(instruction, operand, widths, names));
+        .map(|operand| format_operand(instruction, operand, anchor, widths, names));
     let mut text = format!("        {:<7}", instruction.mnemonic.ca65());
     if let Some(operand) = &operand {
         text.push_str(&format!(" {operand}"));
@@ -564,6 +640,7 @@ fn emit_instruction(
 fn format_operand(
     instruction: &Instruction,
     operand: &Operand,
+    anchor: Option<&str>,
     widths: &WidthState,
     names: &Names<'_>,
 ) -> String {
@@ -600,6 +677,10 @@ fn format_operand(
             format!("{prefix}{text}{}", format_index(*index))
         }
         Operand::Label(expr) => format_operand_expr(expr, names),
+        // The reference text was counted with the function's other unnamed
+        // labels; an anchor with no reference is a lowering bug, and `:+`
+        // keeps the output assemblable while the internal error reports it.
+        Operand::Anchor(_) => anchor.unwrap_or(":+").to_owned(),
         Operand::StackRelative(expr) => format!("{},s", format_operand_expr(expr, names)),
         Operand::BlockMove {
             source,

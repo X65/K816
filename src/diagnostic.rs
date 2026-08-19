@@ -103,9 +103,6 @@ impl DiagnosticCode {
     /// A native `jsr`/`jsl` reaches a function whose declared entry contract
     /// the tracked width does not satisfy; raw native calls are not bridged.
     pub const UNBRIDGED_NATIVE_CALL: Self = Self("K816-W0125");
-    /// A branch or jump leaves a scoped width block, so the block's width
-    /// escapes to the target instead of being restored.
-    pub const WIDTH_BLOCK_LEAK: Self = Self("K816-W0126");
     /// An HLA statement the 65816 has no instruction for: a register transfer
     /// it does not have, a register memory cannot be loaded into or stored
     /// from, a store that names no register to carry the value, or a
@@ -358,7 +355,6 @@ mod tests {
         DiagnosticCode::CLOBBERED_REGISTER,
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
-        DiagnosticCode::WIDTH_BLOCK_LEAK,
         DiagnosticCode::NO_SUCH_INSTRUCTION,
         DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
         DiagnosticCode::GOTO_FOREIGN_LABEL,

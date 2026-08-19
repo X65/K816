@@ -1,0 +1,41 @@
+// Sub-plan E4's edge-split fixture (sub-plan E decision 9, `postmortem.md`
+// §D.6.2). A transfer leaving a scoped width block lands on a pad that puts
+// the width back before control reaches the target — and that holds for a
+// hand-written native branch too, which is the one place K816 deliberately
+// stops emitting raw native code as written.
+
+var mem = $10
+
+// The documented shape: a native branch out of a block.
+func native_exit @a8 {
+    @a16 {
+        bra .out
+    }
+.out:
+    lda #$12
+}
+
+// The same for a branch the compiler generated, here a `break` out of a loop
+// wrapped in a width block.
+func generated_exit @a8 @i8 {
+    {
+        @a16 {
+            a?0
+            == break
+            mem++
+        }
+    } always
+}
+
+// Two nested blocks, left in one branch: each one's axes go back, innermost
+// first.
+func nested_exit @a8 @i8 {
+    @a16 {
+        @i16 {
+            bra .out
+        }
+    }
+.out:
+    lda #$12
+    ldx #$34
+}

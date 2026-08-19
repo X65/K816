@@ -42,15 +42,14 @@ func returning @a8 {
     }
 }
 
-// A branch out of a block leaks the block's width to its target. No restore
-// is emitted — one after the branch would be dead code, and one before it
-// would also run on the paths that stay in the block — so the target is sized
-// against the width that actually reaches it. That is reported, because the
-// source reads as if `.out` were 8-bit and it is not.
-func leaking @a8 {
+// A branch out of a scoped block used to carry the block's width to its
+// target. It now lands on a pad that puts the width back first, hand-written
+// native branches included (sub-plan E, decision 9), so the target runs at
+// the function's width and a 16-bit immediate there would not fit.
+func splitting @a8 {
     @a16 {
         bra .out
     }
 .out:
-    lda #$1234          // 16-bit: the block's width arrived here
+    lda #$12            // 8-bit: the restore on the taken edge got here first
 }

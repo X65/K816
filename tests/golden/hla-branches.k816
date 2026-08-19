@@ -1,0 +1,167 @@
+// Sub-plan E4's fixture: every branch operator in every form, paired with the
+// native sequence it must lower to.
+//
+// The pairing is what checks the *direction* of each mapping, which is the
+// half a golden of emitted text would not catch: `doc/k65/instructions.md`
+// lists `>={ ... }` among `BCC`'s spellings, so a prefix block names the
+// condition its body runs under and K816 emits the complement to skip it.
+
+var mem = $10
+
+// The prefix form inverts: the body runs when the written condition holds.
+func prefix @a8 @i8 {
+    a?10
+    >= { mem++ }
+    < { mem++ }
+    == { mem++ }
+    != { mem++ }
+    <0 { mem++ }
+    >=0 { mem++ }
+    <<= { mem++ }
+    >>= { mem++ }
+    return
+}
+
+func prefix_native @a8 @i8 {
+    cmp #10
+    bcc .a
+    inc mem
+.a:
+    bcs .b
+    inc mem
+.b:
+    bne .c
+    inc mem
+.c:
+    beq .d
+    inc mem
+.d:
+    bpl .e
+    inc mem
+.e:
+    bmi .f
+    inc mem
+.f:
+    bvc .g
+    inc mem
+.g:
+    bvs .h
+    inc mem
+.h:
+    rts
+}
+
+// The flag tests, which invert the same way.
+func flags @a8 @i8 {
+    c+? { mem++ }
+    c-? { mem++ }
+    z+? { mem++ }
+    n-? { mem++ }
+    v+? { mem++ }
+    return
+}
+
+func flags_native @a8 @i8 {
+    bcc .a
+    inc mem
+.a:
+    bcs .b
+    inc mem
+.b:
+    bne .c
+    inc mem
+.c:
+    bmi .d
+    inc mem
+.d:
+    bvc .e
+    inc mem
+.e:
+    rts
+}
+
+// The postfix form does not invert: it branches back while the condition
+// holds. `always` and `never` are its degenerate cases.
+func postfix @a8 @i8 {
+    { mem++ } !=
+    { mem++ } <
+    { mem++ } always
+    { mem++ } never
+    return
+}
+
+func postfix_native @a8 @i8 {
+.a:
+    inc mem
+    bne .a
+.b:
+    inc mem
+    bcc .b
+.c:
+    inc mem
+    jmp .c
+.d:
+    inc mem
+    rts
+}
+
+// `break` leaves the loop and `repeat` restarts it, conditionally or not.
+func loop_control @a8 @i8 {
+    {
+        mem++
+        < break
+        != repeat
+        break
+    } always
+    return
+}
+
+func loop_control_native @a8 @i8 {
+.head:
+    inc mem
+    bcc .out
+    bne .head
+    jmp .out
+    jmp .head
+.out:
+    rts
+}
+
+// If-else: the skip lands on the alternative, and the consequent jumps past
+// it.
+func alternatives @a8 @i8 {
+    == { mem++ } else { mem-- }
+    return
+}
+
+func alternatives_native @a8 @i8 {
+    bne .other
+    inc mem
+    jmp .done
+.other:
+    dec mem
+.done:
+    rts
+}
+
+// The two comparisons with no single branch. Unsigned `>` is "carry set and
+// not equal", so an equality test guards the branch that takes the target;
+// unsigned `<=` is "carry clear or equal", which is two branches to it.
+func compound @a8 @i8 {
+    { mem++ } >
+    { mem++ } <=
+    return
+}
+
+func compound_native @a8 @i8 {
+.a:
+    inc mem
+    beq .past
+    bcs .a
+.past:
+.b:
+    inc mem
+    bcc .b
+    beq .b
+    rts
+}

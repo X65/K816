@@ -85,6 +85,7 @@ fn remove_overwritten_register_values(ops: &mut Vec<KOp>, log: &mut Optimization
                     | KOpKind::NocrossGuard { .. }
                     | KOpKind::SkipData
                     | KOpKind::SkipTarget
+                    | KOpKind::Anchor(_)
                     | KOpKind::ModeAssumption(_) => {
                         unreachable!("only instructions are removal candidates")
                     }

@@ -160,6 +160,7 @@ fn analyze(
         model: SemanticModel::default(),
         diagnostics: Vec::new(),
         current_function: None,
+        loops: 0,
         unit: unit_name.to_owned(),
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
@@ -201,6 +202,9 @@ struct Analysis {
     diagnostics: Vec<Diagnostic>,
     /// The function whose body is being walked, for local label scope.
     current_function: Option<SymbolId>,
+    /// How many loops enclose the statement being checked, which is what
+    /// `break` and `repeat` need one of.
+    loops: usize,
     /// The unit's name, for the synthetic segment names of `address`.
     unit: String,
     /// Anonymous data blocks seen so far, per site.
@@ -999,13 +1003,47 @@ impl Analysis {
         for statement in &block.statements {
             let widths = self.widths_at(function, statement);
             self.check_statement(statement, widths);
-            // A scoped width block's body is ordinary code at the block's
-            // width, so it is checked with the state the solver tracks inside
-            // it rather than skipped along with the statement that opens it.
-            if let StatementKind::WidthBlock(width) = &statement.kind {
-                self.check_block(function, &width.body);
+            // A nested body is ordinary code, checked with the state the
+            // solver tracks inside it rather than skipped along with the
+            // statement that opens it — a scoped width block's body at the
+            // block's width, a conditional's and a loop's at theirs.
+            match &statement.kind {
+                StatementKind::WidthBlock(width) => self.check_block(function, &width.body),
+                StatementKind::Conditional(conditional) => {
+                    self.check_block(function, &conditional.body);
+                    if let Some(otherwise) = &conditional.otherwise {
+                        self.check_block(function, otherwise);
+                    }
+                }
+                StatementKind::Loop(loop_statement) => {
+                    self.loops += 1;
+                    self.check_block(function, &loop_statement.body);
+                    self.loops -= 1;
+                }
+                StatementKind::Nocross(body) => self.check_block(function, body),
+                _ => {}
             }
         }
+    }
+
+    /// `break` and `repeat` bind to the innermost enclosing loop, so outside
+    /// one there is nothing for them to bind to (sub-plan E, decision 6).
+    fn check_loop_control(&mut self, statement: &Statement, keyword: &str) {
+        if self.loops > 0 {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
+                format!("`{keyword}` is not inside a loop"),
+                Label::new(statement.span, format!("no loop for `{keyword}` to leave")),
+            )
+            .with_help(
+                "`break` and `repeat` bind to the innermost enclosing `{ ... }` loop; \
+                 `goto` leaves a function body",
+            )
+            .with_docs("doc/syntax-reference.md#break-and-repeat"),
+        );
     }
 
     /// The width state the model tracks before `statement`.
@@ -1063,16 +1101,25 @@ impl Analysis {
             // Both establish widths, which the solver has already tracked;
             // the body of a block is checked by the walk that got here.
             StatementKind::WidthBlock(_) | StatementKind::ModeSet(_) => {}
-            // Branches, loops, and jumps are recognized but not lowered yet.
-            StatementKind::Conditional(_)
-            | StatementKind::ConditionalJump(_)
-            | StatementKind::Loop(_)
-            | StatementKind::Goto(_)
-            | StatementKind::Break
-            | StatementKind::Repeat
-            | StatementKind::Nocross(_) => self.diagnostics.push(compat::unimplemented(
+            // The condition itself needs no checking beyond what the grammar
+            // did: every operator maps to a branch, and the bodies are walked
+            // by `check_block`.
+            StatementKind::Conditional(_) | StatementKind::Loop(_) | StatementKind::Nocross(_) => {}
+            StatementKind::Break => self.check_loop_control(statement, "break"),
+            StatementKind::Repeat => self.check_loop_control(statement, "repeat"),
+            StatementKind::ConditionalJump(jump) => match &jump.jump.kind {
+                StatementKind::Break => self.check_loop_control(&jump.jump, "break"),
+                StatementKind::Repeat => self.check_loop_control(&jump.jump, "repeat"),
+                // A conditional `goto` waits for the jump family.
+                _ => self.diagnostics.push(compat::unimplemented(
+                    statement.span,
+                    "`goto` statements",
+                    compat::Owner::HlaLowering,
+                )),
+            },
+            StatementKind::Goto(_) => self.diagnostics.push(compat::unimplemented(
                 statement.span,
-                "branch and loop statements",
+                "`goto` statements",
                 compat::Owner::HlaLowering,
             )),
             StatementKind::Data(data) => {
@@ -1413,6 +1460,7 @@ impl Analysis {
             // name values rather than storage.
             crate::op::Operand::Immediate(_)
             | crate::op::Operand::Label(_)
+            | crate::op::Operand::Anchor(_)
             | crate::op::Operand::BlockMove { .. } => return,
         };
         let mut referenced = Vec::new();

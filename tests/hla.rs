@@ -33,10 +33,11 @@
 
 use k816::diagnostic::{Diagnostic, DiagnosticCode};
 use k816::lower::lower;
-use k816::op::{KOpKind, Origin};
+use k816::op::{KOpKind, Operand, Origin};
 use k816::parser::parse_source;
 use k816::semantic::analyze_file;
 use k816::source::SourceMap;
+use k816::value::KExpr;
 
 /// The lowered operations of `text`'s single function, and their origins.
 fn lower_ops(text: &str) -> Vec<(KOpKind, Origin)> {
@@ -190,6 +191,18 @@ fn every_shorthand_matches_the_native_sequence_beside_it() {
     paired_fixture("hla-alu.k816", include_str!("golden/hla-alu.k816"), 6);
 }
 
+/// Every branch operator in every form, against the native branch it must
+/// emit — which is the assertion that catches an inverted *direction*, the
+/// one thing a golden of emitted text would happily agree with.
+#[test]
+fn every_branch_form_matches_the_native_sequence_beside_it() {
+    paired_fixture(
+        "hla-branches.k816",
+        include_str!("golden/hla-branches.k816"),
+        6,
+    );
+}
+
 fn paired_fixture(name: &str, text: &str, expected_pairs: usize) {
     let mut map = SourceMap::new();
     let id = map.add_file(name, text);
@@ -200,21 +213,76 @@ fn paired_fixture(name: &str, text: &str, expected_pairs: usize) {
     let (program, diagnostics) = lower(&parse.file, &model);
     assert_eq!(diagnostics, vec![], "the fixture must lower cleanly");
 
-    // A function's own label names a different symbol in each half of a pair,
-    // so the comparison is over what the two *do*.
-    let body = |name: &str| -> Vec<KOpKind> {
+    // Two halves of a pair name their branch targets differently — the HLA
+    // form generates anchors, the native form is written with labels — so the
+    // comparison normalizes a target to *where it is*: a branch becomes its
+    // mnemonic and the distance to the operation it lands on.
+    //
+    // Width claims are left out of it. They emit no bytes, and the two forms
+    // place them at different granularities: a written label is a merge point
+    // the model annotates, and a generated anchor is not a label. What a
+    // statement does to the widths is checked in `tests/width.rs` and by
+    // `a_shorthand_that_destroys_the_widths_is_seen_by_the_width_model`.
+    let body = |name: &str| -> Vec<String> {
         let symbol = model
             .symbols
             .lookup(name)
             .unwrap_or_else(|| panic!("`{name}` is declared"));
-        program
+        let ops = &program
             .functions()
             .find(|function| function.symbol == symbol)
             .unwrap_or_else(|| panic!("`{name}` was lowered"))
-            .ops
+            .ops;
+
+        // Positions are counted over the operations that survive the filter,
+        // so a distance means "how many emitted operations away" in both
+        // halves rather than how many the model happened to annotate.
+        let kept: Vec<usize> = ops
             .iter()
-            .filter(|op| !matches!(op.kind, KOpKind::Label(_)))
-            .map(|op| op.kind.clone())
+            .enumerate()
+            .filter(|(_, op)| match &op.kind {
+                KOpKind::Label(id) => *id != symbol,
+                KOpKind::ModeAssumption(_) => false,
+                _ => true,
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let position = |raw: usize| kept.iter().position(|&kept| kept == raw);
+        let site = |target: &KOpKind| {
+            ops.iter()
+                .position(|op| &op.kind == target)
+                .and_then(position)
+        };
+
+        kept.iter()
+            .enumerate()
+            .map(|(index, &raw)| match &ops[raw].kind {
+                KOpKind::Label(_) | KOpKind::Anchor(_) => "target".to_owned(),
+                KOpKind::Instruction(instruction) => {
+                    let target = match &instruction.operand {
+                        Some(Operand::Anchor(anchor)) => site(&KOpKind::Anchor(*anchor)),
+                        // A written `jmp label` classifies as an address and a
+                        // written `bcc label` as a branch target; both name a
+                        // place this function defines.
+                        Some(Operand::Label(KExpr::Symbol(id)))
+                        | Some(Operand::Address {
+                            expr: KExpr::Symbol(id),
+                            index: None,
+                            ..
+                        }) => site(&KOpKind::Label(*id)),
+                        _ => None,
+                    };
+                    match target {
+                        Some(target) => format!(
+                            "{} ->{}",
+                            instruction.mnemonic.ca65(),
+                            target as isize - index as isize
+                        ),
+                        None => format!("{instruction:?}"),
+                    }
+                }
+                other => format!("{other:?}"),
+            })
             .collect()
     };
 
@@ -300,4 +368,48 @@ fn a_shorthand_that_destroys_the_widths_is_seen_by_the_width_model() {
     // And the pair that changes nothing stays quiet in both spellings.
     assert!(codes("a!!").is_empty());
     assert_eq!(codes("a!!"), codes("pha"));
+}
+
+/// A `nocross` run that stopped fitting its page because the split grew it
+/// says so, and one that never fitted keeps the answer it always had.
+///
+/// The guard is evaluated *after* splitting, which is the consequence
+/// sub-plan D's decision 13 named and review accepted along with the split
+/// (`postmortem.md` §D.6.2).
+#[test]
+fn a_nocross_run_the_split_grew_names_the_split() {
+    let filler = |count: usize| "    mem++\n".repeat(count);
+    let with_split = format!(
+        "var mem = $10\nfunc main @a8 @i8 {{\n  nocross {{\n    @a16 {{\n      bra .out\n    }}\n.out:\n{}  }}\n  return\n}}\n",
+        filler(124)
+    );
+    let without = format!(
+        "var mem = $10\nfunc main @a8 @i8 {{\n  nocross {{\n{}  }}\n  return\n}}\n",
+        filler(130)
+    );
+
+    let codes = |source: &str| -> Vec<&'static str> {
+        let mut map = SourceMap::new();
+        let id = map.add_file("nocross.k816", source.to_owned());
+        let parse = parse_source(map.file(id), None);
+        assert_eq!(parse.diagnostics, vec![]);
+        let (model, diagnostics) = analyze_file(&parse.file);
+        assert_eq!(
+            diagnostics,
+            vec![],
+            "analysis has nothing to say about size"
+        );
+        lower(&parse.file, &model)
+            .1
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect()
+    };
+
+    assert_eq!(codes(&with_split), ["K816-E0130"]);
+    assert_eq!(
+        codes(&without),
+        ["K816-E0112"],
+        "a run nothing grew is the size it was written"
+    );
 }

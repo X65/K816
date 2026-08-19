@@ -170,6 +170,15 @@ pub enum BridgeAnchor {
     /// At the end of the statement's own operations — a width block's
     /// restore.
     After,
+    /// On the *taken edge* of the statement's transfer, which is a place no
+    /// operation stream has until lowering makes one.
+    ///
+    /// A branch leaving a scoped width block cannot restore it before the
+    /// branch — that would also run on the paths that stay — and cannot
+    /// restore it after, where the code is dead. So the restore goes on the
+    /// edge, and lowering splits the edge to give it somewhere to be
+    /// (sub-plan E, decision 9).
+    TakenEdge,
 }
 
 /// The per-axis "may differ from the value at function entry" bit that
@@ -301,6 +310,9 @@ enum Target {
 /// One node of the flattened control-flow graph.
 #[derive(Clone, Debug)]
 struct Node {
+    /// True for a node lowering created by splitting an edge: its restore
+    /// belongs on that edge rather than after the statement.
+    edge_split: bool,
     /// The statement this node belongs to; several nodes may share one.
     statement: StmtId,
     span: Span,
@@ -322,7 +334,6 @@ struct Node {
 struct BlockRange {
     enter: usize,
     exit: usize,
-    span: Span,
     axes: WidthContract,
 }
 
@@ -511,7 +522,7 @@ impl Flattener<'_> {
         for index in last.into_values() {
             self.nodes[index].last_of_statement = true;
         }
-        self.report_block_leaks();
+        self.split_block_exits();
         Graph {
             nodes: self.nodes,
             blocks: self.blocks,
@@ -522,28 +533,68 @@ impl Flattener<'_> {
         }
     }
 
-    /// Reports every transfer that leaves a scoped width block.
+    /// Splits every edge that leaves a scoped width block.
     ///
-    /// No restore is emitted on such an edge — one placed after the branch is
-    /// dead code, and one placed before it would also run on the paths that
-    /// stay in the block — so the block's width arrives at the target. The
-    /// dataflow carries that truth, so nothing is ever mis-sized; what is
-    /// wrong is the surprise, and that is what the warning names.
-    fn report_block_leaks(&mut self) {
-        let mut reports = Vec::new();
+    /// The restore needs a node of its own: placed before the branch it would
+    /// also run on the paths that stay in the block, and placed after it the
+    /// code is dead. So the edge gets a node, the dataflow carries the
+    /// restored width to the target, and lowering emits the landing pad that
+    /// gives the node somewhere to be (sub-plan E, decision 9;
+    /// `postmortem.md` §D.6.2).
+    ///
+    /// The new nodes go on the end. Nothing falls through to them — every one
+    /// names its target — and appending keeps the positions the block ranges
+    /// are expressed in valid.
+    fn split_block_exits(&mut self) {
+        let mut splits: Vec<(usize, usize, Vec<BlockRange>)> = Vec::new();
         for (index, node) in self.nodes.iter().enumerate() {
             let Some(Target::Node(target)) = node.control.target else {
                 continue;
             };
-            for block in &self.blocks {
-                let inside = |position: usize| position > block.enter && position < block.exit;
-                if inside(index) && !inside(target) {
-                    reports.push((node.span, *block));
-                }
+            // A branch may leave several nested blocks at once, and each one
+            // has its own axes to put back. Innermost first: a later `enter`
+            // is a deeper block.
+            let mut left: Vec<BlockRange> = self
+                .blocks
+                .iter()
+                .filter(|block| {
+                    let inside = |position: usize| position > block.enter && position < block.exit;
+                    inside(index) && !inside(target)
+                })
+                .copied()
+                .collect();
+            if left.is_empty() {
+                continue;
             }
+            left.sort_by_key(|block| std::cmp::Reverse(block.enter));
+            splits.push((index, target, left));
         }
-        for (span, block) in reports {
-            self.diagnostics.push(block_leak(span, block));
+        for (index, target, blocks) in splits {
+            let mut next = target;
+            // Built from the target backwards, so the first pad the branch
+            // reaches is the innermost block's.
+            for block in blocks.iter().rev() {
+                let pad = self.nodes.len();
+                self.nodes.push(Node {
+                    edge_split: true,
+                    statement: self.nodes[index].statement,
+                    span: self.nodes[index].span,
+                    transfer: Transfer::Restore {
+                        enter: block.enter,
+                        axes: block.axes,
+                    },
+                    control: Control {
+                        fall_through: false,
+                        target: Some(Target::Node(next)),
+                        returns: false,
+                    },
+                    label: None,
+                    label_is_global: false,
+                    last_of_statement: false,
+                });
+                next = pad;
+            }
+            self.nodes[index].control.target = Some(Target::Node(next));
         }
     }
 
@@ -555,6 +606,7 @@ impl Flattener<'_> {
         control: Control,
     ) -> usize {
         self.nodes.push(Node {
+            edge_split: false,
             statement,
             span,
             transfer,
@@ -610,12 +662,7 @@ impl Flattener<'_> {
                     Transfer::Restore { enter, axes },
                     Control::fall_through(),
                 );
-                self.blocks.push(BlockRange {
-                    enter,
-                    exit,
-                    span,
-                    axes,
-                });
+                self.blocks.push(BlockRange { enter, exit, axes });
             }
             // A `nocross` wrapper is a placement request, not control flow.
             StatementKind::Nocross(body) => {
@@ -1056,47 +1103,10 @@ fn operand_target(operand: &Operand) -> Option<&KExpr> {
         | Operand::Immediate(_)
         | Operand::Indirect { .. }
         | Operand::StackRelative(_)
-        | Operand::BlockMove { .. } => None,
-    }
-}
-
-fn block_leak(span: Span, block: BlockRange) -> Diagnostic {
-    let axes = describe_axes(block.axes);
-    Diagnostic::warning(
-        DiagnosticCode::WIDTH_BLOCK_LEAK,
-        "this transfer leaves a scoped width block",
-        Label::new(span, format!("{axes} escapes to the target")),
-    )
-    .with_secondary(Label::new(
-        block.span,
-        "the block whose width is not restored",
-    ))
-    .with_note(
-        "a restore after the transfer would be dead code, and one before it would \
-         also run on the paths that stay in the block, so none is emitted",
-    )
-    .with_help("move the target inside the block, or annotate it with the width it should have")
-    .with_docs("doc/register-width-aware-syntax.md#block-level-mode-scoping")
-}
-
-fn describe_axes(axes: WidthContract) -> String {
-    let mut parts = Vec::new();
-    if let Some(width) = axes.a {
-        parts.push(match width {
-            RegisterWidth::W8 => "@a8",
-            RegisterWidth::W16 => "@a16",
-        });
-    }
-    if let Some(width) = axes.i {
-        parts.push(match width {
-            RegisterWidth::W8 => "@i8",
-            RegisterWidth::W16 => "@i16",
-        });
-    }
-    if parts.is_empty() {
-        "the block's width".to_owned()
-    } else {
-        format!("the block's {}", parts.join(" "))
+        | Operand::BlockMove { .. }
+        // A generated target names no symbol; the model's own structure is
+        // where its edges come from.
+        | Operand::Anchor(_) => None,
     }
 }
 
@@ -1444,12 +1454,17 @@ fn record_bridges(
                 if saved.is_bottom() {
                     continue;
                 }
+                let anchor = if node.edge_split {
+                    BridgeAnchor::TakenEdge
+                } else {
+                    BridgeAnchor::After
+                };
                 (
                     WidthContract {
                         a: axes.a.and(saved.mode.a.width()),
                         i: axes.i.and(saved.mode.i.width()),
                     },
-                    BridgeAnchor::After,
+                    anchor,
                     Reason::BlockRestore,
                 )
             }

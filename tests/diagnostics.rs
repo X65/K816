@@ -150,11 +150,6 @@ const FAMILY: &[Case] = &[
         caret: "plp",
     },
     Case {
-        source: "func f @a8 {\n    @a16 {\n        bra .out\n    }\n.out:\n    nop\n}\n",
-        code: DiagnosticCode::WIDTH_BLOCK_LEAK,
-        caret: "bra .out",
-    },
-    Case {
         source: "func f @a8 (#factor) {\n    nop\n}\n",
         code: DiagnosticCode::ALIAS_NOT_INLINE,
         caret: "factor",
@@ -252,7 +247,6 @@ fn every_width_code_is_reachable() {
         DiagnosticCode::DIVERGENT_EXIT,
         DiagnosticCode::EXIT_WIDTH_MISMATCH,
         DiagnosticCode::ASSUMED_EXIT,
-        DiagnosticCode::WIDTH_BLOCK_LEAK,
         DiagnosticCode::ALIAS_NOT_INLINE,
         DiagnosticCode::CALL_FLOW_MISMATCH,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
@@ -269,16 +263,18 @@ fn every_width_code_is_reachable() {
 /// program is still well defined and the author has something to decide.
 ///
 /// `address` placement emits its segment and tells the user what to add to
-/// the config. An assumed exit and an escaping block width are both cases
-/// where the emitted code is correct — the language rule or the dataflow
-/// carries the truth — and what is wrong is that the source reads as if
-/// something else were true.
+/// the config. An assumed exit is a case where the emitted code is correct —
+/// the language rule carries the truth — and what is wrong is that the source
+/// reads as if something else were true.
+///
+/// A width block a branch left used to be on this list. Sub-plan E4 replaced
+/// that warning with a synthesized restore on the taken edge, so there is
+/// nothing left to warn about (`postmortem.md` §D.6.2).
 #[test]
 fn only_the_compile_through_conditions_are_warnings() {
     const WARNINGS: &[DiagnosticCode] = &[
         DiagnosticCode::ADDRESS_NEEDS_CONFIG,
         DiagnosticCode::ASSUMED_EXIT,
-        DiagnosticCode::WIDTH_BLOCK_LEAK,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
     ];
     for case in FAMILY {

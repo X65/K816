@@ -137,6 +137,10 @@ pub enum Reason {
     /// the target. The restore itself is a [`Self::BlockRestore`]; this names
     /// the control flow K816 grew around it.
     SplitEdge,
+    /// The target is too far for a relative branch, so the short form was
+    /// replaced by the inverted-branch-over-a-jump idiom. ca65 does not relax
+    /// branches, so the choice is K816's and worth naming where it made one.
+    LongBranch,
     /// Expanded from an `inline` section's body. The operation's span points
     /// into the `inline`, so the reason is what says which call site put it
     /// here.
@@ -164,6 +168,7 @@ impl Reason {
             }
             Self::ImplicitReturn => "implicit return".to_owned(),
             Self::InvertedBranch => "the source condition, inverted to skip the body".to_owned(),
+            Self::LongBranch => "the target is out of a relative branch's reach".to_owned(),
             Self::SplitEdge => {
                 "the landing pad this transfer restores the block's width on".to_owned()
             }
@@ -217,6 +222,8 @@ pub enum KOpKind {
     SkipData,
     /// The landing site of the [`KOpKind::SkipData`] above it.
     SkipTarget,
+    /// The site a generated branch or jump names. Emits no bytes.
+    Anchor(AnchorId),
     /// `nocross`: a link-time check that the `length` bytes just emitted do
     /// not straddle a 256-byte page.
     ///
@@ -314,6 +321,30 @@ pub enum Operand {
     BlockMove { source: KExpr, destination: KExpr },
     /// A branch, jump, or `PER` target.
     Label(KExpr),
+    /// A branch or jump to a target the compiler generated: the end of a
+    /// conditional's body, a loop's head, the landing pad of a split edge.
+    ///
+    /// It is not a `Label(KExpr)` because there is no symbol to name — a
+    /// generated target has no source name to take, and inventing one would
+    /// either pollute the unit's namespace or land in the cheap-local scope
+    /// the function's own `.name` labels live in (sub-plan C, backend
+    /// decision 4). Emission spells it as a ca65 unnamed label, which is what
+    /// `SkipData` already does for the jump around inline data.
+    Anchor(AnchorId),
+}
+
+/// A branch target the compiler generated, numbered within its function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct AnchorId(u32);
+
+impl AnchorId {
+    pub fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> u32 {
+        self.0
+    }
 }
 
 impl Operand {
@@ -326,7 +357,8 @@ impl Operand {
             | Self::Indirect { .. }
             | Self::StackRelative(_)
             | Self::BlockMove { .. }
-            | Self::Label(_) => None,
+            | Self::Label(_)
+            | Self::Anchor(_) => None,
         }
     }
 }
@@ -683,6 +715,7 @@ fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
         KOpKind::NocrossGuard { length } => format!("nocross {length}"),
         KOpKind::SkipData => "skip-data".to_owned(),
         KOpKind::SkipTarget => "skip-target".to_owned(),
+        KOpKind::Anchor(anchor) => format!("anchor#{}", anchor.index()),
         KOpKind::Import(symbol) => format!("import {}", symbols.name(*symbol)),
         KOpKind::Data(data) => dump_data(data, symbols),
         KOpKind::ModeAssumption(state) => dump_mode_state(*state),
@@ -762,6 +795,7 @@ fn dump_operand(operand: &Operand, symbols: &crate::symbol::SymbolTable) -> Stri
     match operand {
         Operand::Immediate(expr) => format!("#{}", dump_expr(expr, symbols)),
         Operand::Label(expr) => dump_expr(expr, symbols),
+        Operand::Anchor(anchor) => format!("anchor#{}", anchor.index()),
         Operand::StackRelative(expr) => format!("{},s", dump_expr(expr, symbols)),
         Operand::BlockMove {
             source,

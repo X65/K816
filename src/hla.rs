@@ -34,9 +34,9 @@
 //! instructions run.
 
 use crate::ast::{
-    ArithmeticOp, Expr, ExprKind, FlagKind, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag,
-    HlaOperand, HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, RegisterKind, ShiftOp,
-    StackOp, StepOp,
+    ArithmeticOp, BranchConditionKind, ComparisonKind, Expr, ExprKind, FlagKind, HlaArithmetic,
+    HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
+    HlaStatement, HlaStep, RegisterKind, ShiftOp, StackOp, StepOp, TestableFlag,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::isa::Mnemonic;
@@ -729,4 +729,111 @@ fn no_instruction(title: String, primary: Label, secondary: Option<Label>) -> Di
         diagnostic = diagnostic.with_secondary(secondary);
     }
     diagnostic
+}
+
+// ---------------------------------------------------------------- branches
+
+/// Which way a form reads the condition written on it.
+///
+/// The inversion is a property of the *form*, not of the condition
+/// (`doc/syntax-reference.md`, "Branch Operator Mapping", and sub-plan E
+/// decision 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchSense {
+    /// `< goto label`, `{ … } <`, `< break` — branch when the condition
+    /// holds.
+    Take,
+    /// `>= { … }` and `else` — the branch goes *past* the body, so it tests
+    /// the complement of what is written: `>= { … }` runs its body when the
+    /// carry is set, and the instruction that skips it is `BCC`.
+    Skip,
+}
+
+/// The branch instructions a condition means, in the sense the form gives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BranchPlan {
+    /// One branch to the target.
+    Single(Mnemonic),
+    /// Two branches to the same target. Unsigned `<=` is "carry clear or
+    /// equal" and the CPU has no single instruction for it.
+    Pair(Mnemonic, Mnemonic),
+    /// A branch over the branch that takes the target. Unsigned `>` is
+    /// "carry set *and* not equal", so an equality test guards it.
+    Guarded { over: Mnemonic, take: Mnemonic },
+}
+
+/// The branches `condition` lowers to.
+///
+/// `doc/k65/instructions.md` is the authority that settles the direction:
+/// `BCC` lists `>={ … }`, `< goto label`, `{ … } <`, and `c+?{ … }` among its
+/// spellings, so a prefix block names the condition its *body* runs under and
+/// K816 emits the complement to skip it.
+pub fn branch(condition: BranchConditionKind, sense: BranchSense) -> BranchPlan {
+    let taken = match sense {
+        BranchSense::Take => condition,
+        BranchSense::Skip => negate(condition),
+    };
+    match taken {
+        BranchConditionKind::Comparison(ComparisonKind::Greater) => BranchPlan::Guarded {
+            over: Mnemonic::Beq,
+            take: Mnemonic::Bcs,
+        },
+        BranchConditionKind::Comparison(ComparisonKind::LessEqual) => {
+            BranchPlan::Pair(Mnemonic::Bcc, Mnemonic::Beq)
+        }
+        simple => BranchPlan::Single(single(simple)),
+    }
+}
+
+/// The condition that holds exactly when `condition` does not.
+fn negate(condition: BranchConditionKind) -> BranchConditionKind {
+    use ComparisonKind as C;
+    match condition {
+        BranchConditionKind::Comparison(comparison) => {
+            BranchConditionKind::Comparison(match comparison {
+                C::Less => C::GreaterEqual,
+                C::GreaterEqual => C::Less,
+                C::Equal => C::NotEqual,
+                C::NotEqual => C::Equal,
+                C::Negative => C::NotNegative,
+                C::NotNegative => C::Negative,
+                C::OverflowSet => C::OverflowClear,
+                C::OverflowClear => C::OverflowSet,
+                C::Greater => C::LessEqual,
+                C::LessEqual => C::Greater,
+            })
+        }
+        BranchConditionKind::Flag { flag, set } => BranchConditionKind::Flag { flag, set: !set },
+    }
+}
+
+/// The one branch that tests `condition`, for the eight that have one.
+///
+/// `>` and `<=` are not among them and are handled by their compound plans;
+/// they are the forms `doc/syntax-reference.md` warns about the cost of.
+fn single(condition: BranchConditionKind) -> Mnemonic {
+    use ComparisonKind as C;
+    match condition {
+        BranchConditionKind::Comparison(C::Less) => Mnemonic::Bcc,
+        BranchConditionKind::Comparison(C::GreaterEqual) => Mnemonic::Bcs,
+        BranchConditionKind::Comparison(C::Equal) => Mnemonic::Beq,
+        BranchConditionKind::Comparison(C::NotEqual) => Mnemonic::Bne,
+        BranchConditionKind::Comparison(C::Negative) => Mnemonic::Bmi,
+        BranchConditionKind::Comparison(C::NotNegative) => Mnemonic::Bpl,
+        BranchConditionKind::Comparison(C::OverflowSet) => Mnemonic::Bvs,
+        BranchConditionKind::Comparison(C::OverflowClear) => Mnemonic::Bvc,
+        BranchConditionKind::Flag { flag, set } => match (flag, set) {
+            (TestableFlag::Carry, true) => Mnemonic::Bcs,
+            (TestableFlag::Carry, false) => Mnemonic::Bcc,
+            (TestableFlag::Zero, true) => Mnemonic::Beq,
+            (TestableFlag::Zero, false) => Mnemonic::Bne,
+            (TestableFlag::Negative, true) => Mnemonic::Bmi,
+            (TestableFlag::Negative, false) => Mnemonic::Bpl,
+            (TestableFlag::Overflow, true) => Mnemonic::Bvs,
+            (TestableFlag::Overflow, false) => Mnemonic::Bvc,
+        },
+        BranchConditionKind::Comparison(C::Greater | C::LessEqual) => {
+            unreachable!("the compound comparisons have their own plans")
+        }
+    }
 }

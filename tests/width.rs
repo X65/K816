@@ -534,12 +534,15 @@ func main @a8 {
     assert_eq!(before(source, "main", 2).0, known(RegisterWidth::W16));
 }
 
-/// A branch out of a scoped block carries the block's width to its target:
-/// a restore after the branch would be dead code and one before it would
-/// also run on the paths that stay in the block. Nothing is mis-sized —
-/// the dataflow carries the truth — but the surprise is worth naming.
+/// A branch out of a scoped block lands on a pad that restores the width
+/// first, so the target runs at the width its source reads as.
+///
+/// A restore after the branch would be dead code and one before it would also
+/// run on the paths that stay in the block, which is why the edge itself is
+/// the only place it can go — and why lowering has to make one
+/// (`postmortem.md` §D.6.2).
 #[test]
-fn a_branch_out_of_a_block_leaks_its_width_and_says_so() {
+fn a_branch_out_of_a_block_is_restored_on_the_taken_edge() {
     let source = "\
 func main @a8 {
     @a16 {
@@ -550,14 +553,14 @@ func main @a8 {
 }
 ";
     let (_, _, diagnostics) = analyze(source);
-    assert!(
-        codes(&diagnostics).contains(&"K816-W0126"),
-        "expected the leak warning, got {:?}",
-        codes(&diagnostics)
+    assert_eq!(
+        codes(&diagnostics),
+        Vec::<&str>::new(),
+        "the restore is synthesized, so there is nothing to warn about"
     );
-    // The target is sized against the width that actually reaches it, which
-    // is the block's rather than the function's.
-    assert_eq!(before(source, "main", 3).0, known(RegisterWidth::W16));
+    // The width that reaches the target is the function's: the pad put it
+    // back before the jump got there.
+    assert_eq!(before(source, "main", 3).0, known(RegisterWidth::W8));
 }
 
 /// Leaving through a `return` restores nothing and warns about nothing:
@@ -706,8 +709,8 @@ fn width_blocks_fixture_restores_per_axis_and_reports_the_leak() {
     let (_, _, diagnostics) = analyze(&source);
     assert_eq!(
         codes(&diagnostics),
-        ["K816-W0126"],
-        "the escaping branch is the only thing worth saying about this file"
+        Vec::<&str>::new(),
+        "every block in this file restores, the split edge included"
     );
 
     // `scoped`: statements are the four `lda`s and the two blocks.
@@ -717,7 +720,7 @@ fn width_blocks_fixture_restores_per_axis_and_reports_the_leak() {
 
     // The target of the escaping branch is sized against the width that
     // actually reaches it, which is the block's.
-    assert_eq!(before(&source, "leaking", 3).0, known(RegisterWidth::W16));
+    assert_eq!(before(&source, "splitting", 3).0, known(RegisterWidth::W8));
 }
 
 /// Module defaults reach a function that declares nothing, and a
@@ -1087,13 +1090,18 @@ fn the_legacy_corpus_calls_produce_no_bridge_and_no_width_diagnostic() {
     // corpus cannot compile until that is settled, so it is asserted here —
     // this test fails the day the default lands, which is when someone should
     // be looking at it.
+    //
+    // The count climbs as more of the file compiles: three when sub-plan E2
+    // opened the chains, five once E4 opened the branch bodies around them. A
+    // change in the number means more of the corpus reached the width model,
+    // which is progress; a change to *none* means J landed.
     let unsizable: Vec<&str> = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.code.as_str())
         .filter(|code| *code == "K816-E0104")
         .collect();
     assert_eq!(
-        unsizable, ["K816-E0104"; 3],
+        unsizable, ["K816-E0104"; 5],
         "the immediates in an uncoloured legacy `main` are still unsizable"
     );
 }

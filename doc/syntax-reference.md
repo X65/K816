@@ -628,11 +628,30 @@ far func lib_init @a8 @i8 {
 }
 ```
 
-The linker validates calling convention consistency across units:
+K816 validates calling convention consistency, within a unit and across units alike. A foreign section's declaration is read from the units the compiler is given, so a call to one is checked exactly like a call to a section next door:
 
-- A near `call` to a `far func` produces a linker error.
-- A `call far` to a regular (near) `func` produces a linker error.
-- Register width mismatches (caller's A/I width differs from callee's declared `@a8`/`@a16`/`@i8`/`@i16` contract) produce linker errors.
+- A near `call` to a `far func` is `K816-E0138`.
+- A `call far` to a regular (near) `func` is `K816-E0138`.
+- Register width mismatches (caller's A/I width differs from callee's declared `@a8`/`@a16`/`@i8`/`@i16` contract) are bridged where K816 can bridge them and reported where it cannot; see [Register Width Contracts](register-width-aware-syntax.md).
+
+The check is the frontend's rather than the linker's because that is where the callee's declaration is still in hand: ld65 sees an address and a name, not a convention. The mismatch is worth an error rather than a silent correction because it is a stack-depth bug — `JSR` pushes two bytes and the callee's `RTL` pops three, so control returns to an address that was never a return address.
+
+### Jumping without calling
+
+A `goto` transfers without pushing a return address. Its target may be a label of the same function, a function's own name — the tail jump the [`naked`](#naked) example uses — or, in the indirect form, an address held in memory:
+
+```k65
+func dispatch @a8 @i8 {
+  goto .direct          // JMP to a label of this function
+.direct:
+  goto (vec)            // JMP (vec) — the destination is read from memory
+  goto far handler      // JML, carrying a bank byte
+}
+```
+
+The direct form's length follows the target the same way every other address operand does: a `goto` naming a `far func` is a `JML` whether or not `far` is written, and writing `far` forces the long form for a target that would otherwise be near.
+
+A `goto` may not name a label of *another* function (`K816-E0129`). Arriving in the middle of a function means arriving with register widths that function's contract never promised, which is not a shape the width model can describe — call the function instead.
 
 ## Data Blocks
 

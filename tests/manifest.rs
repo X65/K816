@@ -288,14 +288,14 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`far func` and the `far NAME` call",
-        source: "far func long { x++ }\nfunc f {\n  far long\n}\n",
-        expect: Expect::Parses,
+        source: "far func long @a8 @i8 { x++ }\nfunc f @a8 @i8 {\n  far long\n}\n",
+        expect: Expect::Compiles,
         case: "The keyword-less far call",
     },
     Row {
         group: "`call far` cross-unit calls",
-        source: "func f {\n  call far lib_init\n}\n",
-        expect: Expect::Parses,
+        source: "far func lib_init @a8 @i8 { nop }\nfunc f @a8 @i8 {\n  call far lib_init\n}\n",
+        expect: Expect::Compiles,
         case: "Call statements",
     },
     Row {
@@ -390,8 +390,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Conditional goto form",
-        source: "func f {\n  < goto done\n  c-? goto done\n}\n",
-        expect: Expect::Parses,
+        source: "func f @a8 @i8 {\n  < goto .done\n  c-? goto .done\n.done:\n}\n",
+        expect: Expect::Compiles,
         case: "Conditional goto, break, and repeat",
     },
     Row {
@@ -420,8 +420,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`goto` and `call`",
-        source: "func f {\n  goto label\n  goto (vec)\n  goto far label\n  call label\n}\n",
-        expect: Expect::Parses,
+        source: "var vec = $80\nfunc f @a8 @i8 {\n  goto .label\n.label:\n  goto (vec)\n  goto far .label\n  call f\n}\n",
+        expect: Expect::Compiles,
         case: "Flow control instructions",
     },
     Row {

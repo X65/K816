@@ -1,0 +1,170 @@
+// Sub-plan E5's fixture: the jump family and the far family.
+//
+// The two are one task because they are one question — how far away is the
+// thing control is going to — asked at a call, at a tail jump, and at a
+// branch. A `far func` is reached with `jsl` and returns with `rtl`; a
+// `goto far` is `jml`; and the near/far pairing is checked at the call site
+// rather than left to the linker, which no longer performs it.
+
+var vec = $0080
+var mem = $0400
+
+// A far section: every return is `rtl`, the written one and the implicit one,
+// because callers arrive by `jsl` and have three bytes on the stack.
+far func banked @a8 @i8 {
+    x++
+    == { return }
+    y++
+}
+
+// Both spellings of the far call. `far NAME` and `call far NAME` are the same
+// transfer; the second exists because a cross-unit callee reads better with
+// the keyword.
+func calls_far @a8 @i8 {
+    far banked
+    call far banked
+}
+
+// A near call to a near section stays `jsr`, which is what keeps the far
+// arm from being a change to every other call.
+func calls_near @a8 @i8 {
+    calls_far
+    call calls_far
+}
+
+// The three `goto` shapes. The direct one is a jump to a label of this
+// function; the indirect one reads its destination out of memory; the far one
+// carries a bank byte.
+func jumps @a8 @i8 {
+    goto .direct
+.direct:
+    goto far banked
+}
+
+func indirect_jump @a8 @i8 {
+    goto (vec)
+}
+
+// A `goto` naming a `far func` is long whether or not the keyword is written:
+// the encoding follows the target's own address size, exactly as it does for
+// every other address operand.
+func tail_jump @a8 @i8 {
+    goto banked
+}
+
+// The conditional form. A near target is the branch itself — `< goto .loop`
+// is one `bcc` — which is what the documented branch table promises.
+func conditional_jump @a8 @i8 {
+.loop:
+    mem++
+    != goto .loop
+    < goto .done
+.done:
+    y++
+}
+
+// A conditional whose target no branch can reach: the condition branches over
+// the long jump instead, and the sense inverts.
+func conditional_far @a8 @i8 {
+    == goto far banked
+    x++
+}
+
+// A conditional `goto` is a branch K816 chose, so its range is K816's problem
+// too: a target the short form cannot reach becomes the inverted branch over a
+// jump, exactly as a conditional's body does.
+func distant_goto @a8 @i8 {
+    < goto .out
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+    mem++
+.out:
+    y++
+}

@@ -1986,6 +1986,14 @@
               }
             },
             {
+              "type": "FIELD",
+              "name": "target",
+              "content": {
+                "type": "SYMBOL",
+                "name": "local_identifier"
+              }
+            },
+            {
               "type": "SEQ",
               "members": [
                 {

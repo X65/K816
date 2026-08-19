@@ -178,6 +178,7 @@ Flow control instructions
 
 func main {
   goto label
+  goto .loop
   goto (vec)
   goto far label
 }
@@ -190,6 +191,8 @@ func main {
     body: (block
       (goto_statement
         target: (identifier))
+      (goto_statement
+        target: (local_identifier))
       (goto_statement
         target: (identifier))
       (goto_statement

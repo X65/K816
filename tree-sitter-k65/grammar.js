@@ -689,12 +689,17 @@ export default grammar({
 
     loop_condition: _ => choice('always', 'never'),
 
+    // `goto done`, `goto .loop`, `goto (vec)`, `goto far handler`. A local
+    // label is as ordinary a target as a global one — the documentation's
+    // own local-label example is `!= goto .loop` — so both name forms are
+    // listed here rather than only the unit-level one.
     goto_statement: $ =>
       seq(
         'goto',
         optional(field('far', alias('far', $.far_marker))),
         choice(
           field('target', $.identifier),
+          field('target', $.local_identifier),
           seq('(', field('target', $._expression), ')'),
         ),
       ),

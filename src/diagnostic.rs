@@ -145,6 +145,18 @@ impl DiagnosticCode {
     /// layout for metadata queries and reserves nothing, so it has no address
     /// to load, store, or transfer to.
     pub const ABSTRACT_HAS_NO_STORAGE: Self = Self("K816-E0136");
+    /// A call site and its callee disagree about the calling convention: a
+    /// near `call` to a `far func`, or a `call far` to a near one.
+    ///
+    /// The legacy linker reported this; K816 reports it in the frontend,
+    /// where the callee's declaration is still in hand
+    /// (`plans/feature-manifest.md` §3). It is an error rather than a silent
+    /// correction because the mismatch is a stack-depth bug: a `jsr` pushes
+    /// two bytes and the callee's `rtl` pops three.
+    ///
+    /// Code `0137` is skipped — it was registered for an unreachable case
+    /// during E0 and burned when E2 retired it.
+    pub const CALL_CONVENTION_MISMATCH: Self = Self("K816-E0138");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -365,6 +377,7 @@ mod tests {
         DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
         DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
         DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        DiagnosticCode::CALL_CONVENTION_MISMATCH,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

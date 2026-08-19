@@ -104,6 +104,7 @@ pub fn lower_unit(
             diagnostics: Vec::new(),
             anchors: 0,
             loops: Vec::new(),
+            is_far: func.is_far,
         };
 
         lowering.push(KOpKind::Label(info.symbol), func.name.span, Origin::User);
@@ -141,6 +142,24 @@ fn inverse_branch(mnemonic: Mnemonic) -> Option<Mnemonic> {
         Mnemonic::Bvs => Mnemonic::Bvc,
         _ => return None,
     })
+}
+
+/// The same target, spelled the way a `jmp` takes it.
+///
+/// A branch's operand is a displacement ca65 computes, so a named target is
+/// an [`Operand::Label`]; the jump that replaces an out-of-range branch takes
+/// an address instead, and has to say which encoding — otherwise ca65 picks
+/// one from what it knows at that point in the file, which for a forward
+/// label is not the same answer.
+fn jump_target(operand: Option<Operand>) -> Option<Operand> {
+    match operand {
+        Some(Operand::Label(expr)) => Some(Operand::Address {
+            encoding: AddressEncoding::Absolute,
+            expr,
+            index: None,
+        }),
+        other => other,
+    }
 }
 
 /// The bytes an operation encodes, over-estimated where the answer depends on
@@ -341,6 +360,17 @@ struct Lowering<'a> {
     /// The loops enclosing the statement being lowered, innermost last, which
     /// is what `break` and `repeat` bind to.
     loops: Vec<LoopAnchors>,
+    /// `far func` — every return from this body is `rtl`, because callers
+    /// reached it with `jsl`.
+    is_far: bool,
+}
+
+/// The instruction a `goto` is, before it is decided whether the condition
+/// branches to it or over it.
+struct Jump {
+    mnemonic: Mnemonic,
+    mode: AddressingMode,
+    operand: Operand,
 }
 
 /// The two targets a loop offers the statements inside it.
@@ -571,13 +601,34 @@ impl Lowering<'_> {
             if instruction.mode != AddressingMode::Relative {
                 return None;
             }
-            let Some(Operand::Anchor(anchor)) = &instruction.operand else {
+            // Only a branch K816 chose. A hand-written `bcc` says `bcc`, and
+            // the native translator's whole contract is that it emits the
+            // instruction it was given (sub-plan C); a range error there is
+            // ca65 telling the author about their own branch.
+            if op.origin == Origin::User {
                 return None;
+            }
+            let target = match &instruction.operand {
+                Some(Operand::Anchor(anchor)) => self
+                    .ops
+                    .iter()
+                    .position(|op| op.kind == KOpKind::Anchor(*anchor))?,
+                // A conditional `goto`'s target is a named label. One this
+                // function contains has a distance to measure; anything else
+                // is placed by ld65, so the short form cannot be shown to
+                // reach and the over-estimate rule widens it.
+                Some(Operand::Label(KExpr::Symbol(symbol))) => {
+                    match self
+                        .ops
+                        .iter()
+                        .position(|op| op.kind == KOpKind::Label(*symbol))
+                    {
+                        Some(at) => at,
+                        None => return Some(index),
+                    }
+                }
+                _ => return None,
             };
-            let target = self
-                .ops
-                .iter()
-                .position(|op| op.kind == KOpKind::Anchor(*anchor))?;
             // A relative branch counts from the instruction after it.
             let from = offsets[index] + i64::from(byte_length(op));
             let distance = offsets[target] - from;
@@ -591,6 +642,7 @@ impl Lowering<'_> {
         let KOpKind::Instruction(instruction) = &op.kind else {
             unreachable!("only an instruction is chosen for widening");
         };
+        let target = jump_target(instruction.operand.clone());
         let Some(inverse) = inverse_branch(instruction.mnemonic) else {
             // An unconditional relative branch needs no guard: the jump goes
             // where it went. Nothing emits one today, so this is the shape
@@ -599,7 +651,7 @@ impl Lowering<'_> {
                 KOpKind::Instruction(Instruction::new(
                     Mnemonic::Jmp,
                     AddressingMode::Absolute,
-                    instruction.operand.clone(),
+                    target,
                 )),
                 op.span,
                 op.origin,
@@ -608,7 +660,6 @@ impl Lowering<'_> {
             return;
         };
         let past = self.anchor();
-        let target = instruction.operand.clone();
         let guard = KOp::new(
             KOpKind::Instruction(Instruction::new(
                 inverse,
@@ -703,33 +754,45 @@ impl Lowering<'_> {
         anchor: AnchorId,
         span: Span,
     ) {
+        self.branch_to_operand(condition, sense, &Operand::Anchor(anchor), span);
+    }
+
+    /// The same, landing on a target that is a named label rather than a
+    /// generated anchor — which is what a conditional `goto` branches to.
+    fn branch_to_operand(
+        &mut self,
+        condition: crate::ast::BranchCondition,
+        sense: hla::BranchSense,
+        target: &Operand,
+        span: Span,
+    ) {
         // A taken branch needs no explanation: it tests what the source
         // says. An inverted one is the surprise worth annotating.
         let reason = match sense {
             hla::BranchSense::Skip => Some(Reason::InvertedBranch),
             hla::BranchSense::Take => None,
         };
-        let branch = |lowering: &mut Self, mnemonic: Mnemonic, target: AnchorId| {
+        let branch = |lowering: &mut Self, mnemonic: Mnemonic, target: Operand| {
             lowering.expanded_instruction(
                 mnemonic,
                 AddressingMode::Relative,
-                Some(Operand::Anchor(target)),
+                Some(target),
                 span,
                 reason,
             );
         };
         match hla::branch(condition.kind, sense) {
-            hla::BranchPlan::Single(mnemonic) => branch(self, mnemonic, anchor),
+            hla::BranchPlan::Single(mnemonic) => branch(self, mnemonic, target.clone()),
             hla::BranchPlan::Pair(first, second) => {
-                branch(self, first, anchor);
-                branch(self, second, anchor);
+                branch(self, first, target.clone());
+                branch(self, second, target.clone());
             }
             // The guard jumps over the branch that takes the target, so it
             // needs a target of its own.
             hla::BranchPlan::Guarded { over, take } => {
                 let past = self.anchor();
-                branch(self, over, past);
-                branch(self, take, anchor);
+                branch(self, over, Operand::Anchor(past));
+                branch(self, take, target.clone());
                 self.place(past, span);
             }
         }
@@ -775,14 +838,16 @@ impl Lowering<'_> {
         );
     }
 
-    /// The absolute address operand a near call transfers to.
+    /// The address operand a call or jump transfers to.
     ///
     /// Every other address operand goes through the classifier, which chooses
-    /// the encoding; a `jsr` has only this one, so there is nothing to choose
-    /// (`postmortem.md` §D.1.6).
-    fn absolute(symbol: SymbolId) -> Operand {
+    /// the encoding; `jsr`, `jsl`, `jmp`, and `jml` each accept exactly one,
+    /// so there is nothing to choose (`postmortem.md` §D.1.6) — the mnemonic
+    /// and the encoding are picked together at the one call site that knows
+    /// whether the target is far.
+    fn addressed(symbol: SymbolId, encoding: AddressEncoding) -> Operand {
         Operand::Address {
-            encoding: AddressEncoding::Absolute,
+            encoding,
             expr: KExpr::Symbol(symbol),
             index: None,
         }
@@ -979,9 +1044,10 @@ impl Lowering<'_> {
                 }
             }
             StatementKind::Return(ReturnKind::Subroutine) => {
-                // `return` is the HLA spelling of `rts`.
+                // `return` is the HLA spelling of `rts` — of `rtl` in a
+                // `far func`, which callers reached with `jsl`.
                 self.instruction(
-                    Mnemonic::Rts,
+                    self.return_mnemonic(),
                     AddressingMode::Stack,
                     None,
                     span,
@@ -1069,14 +1135,16 @@ impl Lowering<'_> {
                 Some(loop_anchors) => self.jump_to(loop_anchors.head, span, None),
                 None => self.skipped(span, "a `repeat` outside a loop"),
             },
-            // The conditional forms of the same two. A conditional `goto` is
-            // sub-plan E5's, with the rest of the jump family.
+            // The conditional forms of the same two, and of `goto`.
             StatementKind::ConditionalJump(jump) => {
                 let anchor = match (&jump.jump.kind, self.loops.last()) {
                     (StatementKind::Break, Some(loop_anchors)) => loop_anchors.exit,
                     (StatementKind::Repeat, Some(loop_anchors)) => loop_anchors.head,
                     (StatementKind::Break | StatementKind::Repeat, None) => {
                         return self.skipped(span, "a conditional jump outside a loop");
+                    }
+                    (StatementKind::Goto(goto), _) => {
+                        return self.conditional_goto(statement, jump.condition, goto, span);
                     }
                     _ => return self.skipped(span, "a conditional jump"),
                 };
@@ -1095,7 +1163,12 @@ impl Lowering<'_> {
                     Origin::CompilerGenerated,
                 );
             }
-            StatementKind::Goto(_) => self.skipped(span, "a `goto` statement"),
+            StatementKind::Goto(goto) => {
+                let Some(jump) = self.goto_jump(statement, goto) else {
+                    return self.skipped(span, "a `goto` with an unresolved target");
+                };
+                self.expanded_instruction(jump.mnemonic, jump.mode, Some(jump.operand), span, None);
+            }
             // An inline block emits raw bytes in the middle of executable
             // code, so control has to step over them.
             StatementKind::Data(data) => {
@@ -1142,6 +1215,122 @@ impl Lowering<'_> {
         }
     }
 
+    /// The instruction a `goto` is.
+    ///
+    /// Three shapes, and the encoding of each follows the same rule the rest
+    /// of the compiler uses for an address operand: the target's own address
+    /// size decides, unless the source forces it. `goto far` is that forcing
+    /// prefix — it is the operand-position `far` keyword, spelled where the
+    /// statement can carry it — so a `goto` naming a `far func` reaches it
+    /// with `jml` whether or not the keyword was written, and a `goto far`
+    /// naming a near label still gets the long form the author asked for.
+    ///
+    /// Returns `None` only when the target does not resolve, which analysis
+    /// has already reported.
+    fn goto_jump(
+        &mut self,
+        statement: &crate::ast::Statement,
+        goto: &crate::ast::GotoStatement,
+    ) -> Option<Jump> {
+        let mut resolver = Resolver::new(&self.model.symbols)
+            .in_function(self.function)
+            .with_widths(self.widths_at(statement));
+        let expr = resolver.fold(&goto.target);
+        if resolver.has_diagnostics() {
+            return None;
+        }
+        let expr = expr?;
+        let long = goto.is_far || self.reaches_another_bank(&expr);
+        Some(match (goto.indirect, long) {
+            // `goto (vec)` and `goto far (vec)`: the pointer's *address* is
+            // sixteen bits either way — what `far` changes is how many bytes
+            // are read through it.
+            (true, false) => Jump {
+                mnemonic: Mnemonic::Jmp,
+                mode: AddressingMode::AbsoluteIndirect,
+                operand: Self::pointer(expr, false),
+            },
+            (true, true) => Jump {
+                mnemonic: Mnemonic::Jml,
+                mode: AddressingMode::AbsoluteIndirect,
+                operand: Self::pointer(expr, true),
+            },
+            (false, false) => Jump {
+                mnemonic: Mnemonic::Jmp,
+                mode: AddressingMode::Absolute,
+                operand: Operand::Address {
+                    encoding: AddressEncoding::Absolute,
+                    expr,
+                    index: None,
+                },
+            },
+            (false, true) => Jump {
+                mnemonic: Mnemonic::Jml,
+                mode: AddressingMode::AbsoluteLong,
+                operand: Operand::Address {
+                    encoding: AddressEncoding::Long,
+                    expr,
+                    index: None,
+                },
+            },
+        })
+    }
+
+    /// True when a jump to `expr` has to carry a bank byte: it names a
+    /// `far func`, or a symbol some declaration gave the long address size.
+    fn reaches_another_bank(&self, expr: &KExpr) -> bool {
+        let KExpr::Symbol(symbol) = expr else {
+            return false;
+        };
+        self.model.symbols.kind(*symbol).address_size() == Some(crate::symbol::AddressSize::Long)
+    }
+
+    /// The `(expr)` or `[expr]` operand an indirect jump reads its
+    /// destination through.
+    fn pointer(expr: KExpr, long: bool) -> Operand {
+        Operand::Indirect {
+            encoding: AddressEncoding::Absolute,
+            expr,
+            long,
+            inner: None,
+            outer: None,
+            stack_relative: false,
+        }
+    }
+
+    /// Lowers `<condition> goto <target>`.
+    ///
+    /// A near jump to a name is the one shape a branch can express by itself,
+    /// and it is the shape `doc/syntax-reference.md`'s branch table promises:
+    /// `< goto label` is `BCC label`, one instruction. Everything else — an
+    /// indirect target, a long one — is not a branch target at all, so the
+    /// condition branches *over* the jump instead, and the sense inverts.
+    fn conditional_goto(
+        &mut self,
+        statement: &crate::ast::Statement,
+        condition: crate::ast::BranchCondition,
+        goto: &crate::ast::GotoStatement,
+        span: Span,
+    ) {
+        let Some(jump) = self.goto_jump(statement, goto) else {
+            return self.skipped(span, "a conditional `goto` with an unresolved target");
+        };
+        if let (Mnemonic::Jmp, Operand::Address { expr, .. }) = (jump.mnemonic, &jump.operand) {
+            let target = Operand::Label(expr.clone());
+            return self.branch_to_operand(condition, hla::BranchSense::Take, &target, span);
+        }
+        let past = self.anchor();
+        self.branch_to(condition, hla::BranchSense::Skip, past, span);
+        self.expanded_instruction(
+            jump.mnemonic,
+            jump.mode,
+            Some(jump.operand),
+            span,
+            Some(Reason::InvertedBranch),
+        );
+        self.place(past, span);
+    }
+
     /// Lowers a call to `jsr`, and claims what the callee's exit promises.
     ///
     /// The claim is emitted whenever the model concluded something a reader
@@ -1166,12 +1355,30 @@ impl Lowering<'_> {
                 span: statement.span,
             });
         }
+        // The callee's declaration decides the convention, not the call's
+        // spelling: analysis has already refused a site that disagrees with
+        // it, so by here the two say the same thing and the declaration is
+        // the one that also covers a bare `far NAME`.
+        let far = self.model.symbols.kind(symbol).is_far_function();
+        let (mnemonic, mode, encoding) = if far {
+            (
+                Mnemonic::Jsl,
+                AddressingMode::AbsoluteLong,
+                AddressEncoding::Long,
+            )
+        } else {
+            (
+                Mnemonic::Jsr,
+                AddressingMode::Absolute,
+                AddressEncoding::Absolute,
+            )
+        };
         // The same operand shape the classifier gives a hand-written
         // `jsr NAME`, so the managed and native forms emit identically.
         self.instruction(
-            Mnemonic::Jsr,
-            AddressingMode::Absolute,
-            Some(Self::absolute(symbol)),
+            mnemonic,
+            mode,
+            Some(Self::addressed(symbol, encoding)),
             statement.span,
             Origin::HlaExpansion,
         );
@@ -1248,6 +1455,20 @@ impl Lowering<'_> {
         }
     }
 
+    /// The return instruction this function's callers are expecting.
+    ///
+    /// `rts` pops the two bytes `jsr` pushed, `rtl` the three `jsl` pushed;
+    /// which one a section uses is fixed by its declaration, not by the
+    /// statement. Analysis has already refused every call site that spells
+    /// the other convention ([`DiagnosticCode::CALL_CONVENTION_MISMATCH`]).
+    fn return_mnemonic(&self) -> Mnemonic {
+        if self.is_far {
+            Mnemonic::Rtl
+        } else {
+            Mnemonic::Rts
+        }
+    }
+
     /// K65 functions return implicitly: append `rts` unless the body already
     /// ends in a returning instruction. The synthetic op carries a zero-width
     /// origin span at the closing brace.
@@ -1274,7 +1495,7 @@ impl Lowering<'_> {
         if !ends_returning {
             let brace = body_span.end.saturating_sub(1).max(body_span.start);
             self.generated_instruction(
-                Mnemonic::Rts,
+                self.return_mnemonic(),
                 AddressingMode::Stack,
                 None,
                 Span::empty_at(body_span.file, brace),

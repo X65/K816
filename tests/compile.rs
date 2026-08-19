@@ -804,3 +804,98 @@ fn a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge() {
     assert_eq!(restores, 4, "one per axis left behind:\n{assembly}");
     assemble_and_link("block_exit", &assembly, "slice");
 }
+
+/// The jump family and the far family, through the assembler.
+///
+/// `jsl`/`rtl` pair up, `jml` carries a bank byte, and every `goto` shape
+/// reaches its target — which is only really established by ca65 accepting
+/// the operand sizes and ld65 resolving the far addresses.
+#[test]
+fn the_far_family_and_every_goto_shape_assemble() {
+    let mut map = SourceMap::new();
+    let file = map.add_file("far-calls.k816", include_str!("golden/far-calls.k816"));
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // A far section is entered long and left long, both returns included.
+    assert_eq!(
+        assembly.matches("jsl     f:banked").count(),
+        2,
+        "both spellings of the far call:\n{assembly}"
+    );
+    assert_eq!(
+        assembly.matches("        rtl").count(),
+        2,
+        "the written return and the implicit one:\n{assembly}"
+    );
+    // A near call to a near section is untouched by any of it.
+    assert!(
+        assembly.contains("jsr     a:calls_far"),
+        "a near call stays near:\n{assembly}"
+    );
+    // The three `goto` shapes, plus the one that gets its length from the
+    // target rather than from a keyword.
+    for expected in [
+        "jmp     a:@direct", // goto .direct
+        "jmp     (vec)",     // goto (vec)
+        "jml     f:banked",  // goto far banked, and the keyword-less tail jump
+        "bne     @loop",     // != goto .loop
+        "bcc     @done",     // < goto .done
+    ] {
+        assert!(
+            assembly.contains(expected),
+            "expected `{expected}`:\n{assembly}"
+        );
+    }
+    // `goto banked` names a `far func`, so it is long without the keyword.
+    assert_eq!(
+        assembly.matches("jml     f:banked").count(),
+        3,
+        "`goto far`, the tail jump, and the conditional one:\n{assembly}"
+    );
+    // A conditional `goto` past the short form's reach widens like any other
+    // branch K816 chose.
+    assert!(
+        assembly.contains("bcs     :+") && assembly.contains("jmp     a:@out"),
+        "the distant conditional goto widened:\n{assembly}"
+    );
+    assemble_and_link("far_calls", &assembly, "slice");
+}
+
+/// A `far func` a caller reaches with `.export`/`.import` keeps its address
+/// size across the unit boundary, and the mismatched convention is refused.
+#[test]
+fn the_near_far_convention_is_checked_across_units() {
+    use k816::diagnostic::DiagnosticCode;
+
+    let mut map = SourceMap::new();
+    map.add_file("far-lib.k816", "far func lib_init @a8 @i8 {\n    nop\n}\n");
+    let user = map.add_file(
+        "far-user.k816",
+        "func main @a8 @i8 {\n    call far lib_init\n}\n",
+    );
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the matching pair compiles");
+    let assembly = result.assembly.expect("compilation succeeds");
+    assert!(
+        assembly.contains(".import lib_init: far"),
+        "the callee's address size crosses the boundary:\n{assembly}"
+    );
+    assert!(
+        assembly.contains("jsl     f:lib_init"),
+        "a foreign far callee is still reached long:\n{assembly}"
+    );
+
+    // The same callee, called near: the frontend refuses it, which is the
+    // check the legacy linker used to make.
+    let mut map = SourceMap::new();
+    map.add_file("far-lib.k816", "far func lib_init @a8 @i8 {\n    nop\n}\n");
+    let user = map.add_file(
+        "far-user.k816",
+        "func main @a8 @i8 {\n    call lib_init\n}\n",
+    );
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, vec![DiagnosticCode::CALL_CONVENTION_MISMATCH]);
+}

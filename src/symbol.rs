@@ -234,9 +234,7 @@ pub enum SymbolKind {
     /// `const NAME = expr` — a compile-time value with no storage and no
     /// address. Using one in address position is an error: a `const` names
     /// a value, not a memory location.
-    Const {
-        value: u32,
-    },
+    Const { value: u32 },
     /// `var NAME [= addr]`. `address` is `None` for a linker-allocated
     /// variable, whose address only ld65 knows.
     Var {
@@ -254,24 +252,48 @@ pub enum SymbolKind {
     /// That is why it is a kind of its own rather than a `Var` with no
     /// address: a linker-allocated `Var` also has no address *yet*, and the
     /// two must not be confused.
-    AbstractVar {
-        layout: LayoutId,
-    },
+    AbstractVar { layout: LayoutId },
     /// A code label, `name:` or `.name:`.
     Label {
         scope: LabelScope,
         size: AddressSize,
     },
     /// A label inside a data block, including a block's own name.
-    DataLabel {
-        size: AddressSize,
-    },
-    Function {
-        size: AddressSize,
-    },
+    DataLabel { size: AddressSize },
+    /// A code section, `func` or `far func`.
+    ///
+    /// `size` carries the calling convention: a `far func` is
+    /// [`AddressSize::Long`] and every other function is
+    /// [`AddressSize::Absolute`]. The two are the same fact — a section
+    /// reached by `jsl` and left by `rtl` is one whose address is 24 bits —
+    /// so there is one field rather than a size and a redundant `is_far`
+    /// that could disagree with it. Ask [`SymbolKind::is_far_function`]
+    /// rather than matching the size, so the intent survives a reader.
+    Function { size: AddressSize },
 }
 
 impl SymbolKind {
+    /// The kind a section declaration produces, near or far.
+    pub fn function(is_far: bool) -> Self {
+        Self::Function {
+            size: if is_far {
+                AddressSize::Long
+            } else {
+                AddressSize::Absolute
+            },
+        }
+    }
+
+    /// True for a `far func`: called with `JSL`, returning with `RTL`.
+    pub fn is_far_function(self) -> bool {
+        matches!(
+            self,
+            Self::Function {
+                size: AddressSize::Long
+            }
+        )
+    }
+
     /// The address size of plain references to this symbol, or `None` when
     /// the symbol has no address at all.
     pub fn address_size(self) -> Option<AddressSize> {

@@ -66,6 +66,14 @@ pub struct SemanticModel {
     /// here instead of walking the body a second time, which is what keeps
     /// analysis and lowering from arriving at two different widths.
     pub widths: BTreeMap<SymbolId, WidthAnalysis>,
+    /// The function each label was written inside.
+    ///
+    /// A local label already records its owner as its scope, but a *global*
+    /// one is a unit-level name that happens to sit in some function's body,
+    /// and nothing else remembers which. `goto` needs the answer:
+    /// [`DiagnosticCode::GOTO_FOREIGN_LABEL`] is exactly the question "is
+    /// this label in the function jumping to it".
+    pub label_owner: BTreeMap<SymbolId, SymbolId>,
 }
 
 impl SemanticModel {
@@ -254,9 +262,7 @@ impl Analysis {
                     }
                     let Some(symbol) = self.declare(
                         &func.name.text,
-                        SymbolKind::Function {
-                            size: AddressSize::Absolute,
-                        },
+                        SymbolKind::function(func.is_far),
                         func.name.span,
                     ) else {
                         continue;
@@ -294,13 +300,16 @@ impl Analysis {
                         },
                         size: AddressSize::Absolute,
                     };
-                    match label.scope {
+                    let declared = match label.scope {
                         crate::ast::LabelScope::Global => {
-                            self.declare(&label.name.text, kind, label.name.span);
+                            self.declare(&label.name.text, kind, label.name.span)
                         }
                         crate::ast::LabelScope::Local => {
-                            self.declare_local(owner, &label.name.text, kind, label.name.span);
+                            self.declare_local(owner, &label.name.text, kind, label.name.span)
                         }
+                    };
+                    if let Some(label) = declared {
+                        self.model.label_owner.insert(label, owner);
                     }
                 }
                 // Labels nest wherever a block does; the scope stays the
@@ -1110,18 +1119,12 @@ impl Analysis {
             StatementKind::ConditionalJump(jump) => match &jump.jump.kind {
                 StatementKind::Break => self.check_loop_control(&jump.jump, "break"),
                 StatementKind::Repeat => self.check_loop_control(&jump.jump, "repeat"),
-                // A conditional `goto` waits for the jump family.
-                _ => self.diagnostics.push(compat::unimplemented(
-                    statement.span,
-                    "`goto` statements",
-                    compat::Owner::HlaLowering,
-                )),
+                StatementKind::Goto(goto) => self.check_goto(goto),
+                // The grammar admits nothing else after a condition; an
+                // `Error` statement is already reported where it was parsed.
+                _ => {}
             },
-            StatementKind::Goto(_) => self.diagnostics.push(compat::unimplemented(
-                statement.span,
-                "`goto` statements",
-                compat::Owner::HlaLowering,
-            )),
+            StatementKind::Goto(goto) => self.check_goto(goto),
             StatementKind::Data(data) => {
                 let function = self
                     .current_function
@@ -1139,18 +1142,12 @@ impl Analysis {
                 compat::Owner::Compatibility,
             )),
             StatementKind::Call(call) => {
-                if call.is_far {
-                    self.diagnostics.push(compat::unimplemented(
-                        statement.span,
-                        "far calls",
-                        compat::Owner::HlaLowering,
-                    ));
-                    return;
-                }
                 self.check_call_target(&call.target);
+                self.check_call_convention(&call.target, call.is_far);
             }
             StatementKind::BareCall(call) => {
                 self.check_call_target(&call.target);
+                self.check_call_convention(&call.target, false);
                 self.check_call_flow(statement, call);
             }
         }
@@ -1532,6 +1529,159 @@ impl Analysis {
             .with_docs("doc/syntax-reference.md#code-sections"),
         );
     }
+
+    /// Checks that a call site and its callee agree on the calling
+    /// convention.
+    ///
+    /// `jsr` pushes two bytes and `rts` pops two; `jsl` pushes three and
+    /// `rtl` pops three. Mixing them does not fail at the call — it fails at
+    /// the return, with the stack off by a byte and control landing wherever
+    /// that points, which is why the legacy linker refused the pairing and
+    /// K816 refuses it here.
+    ///
+    /// This is also the whole cross-unit half of the check: a foreign
+    /// callee's kind is imported verbatim, so a `far func` in another unit
+    /// arrives carrying its convention and is checked the same way as one
+    /// next door (`plans/feature-manifest.md` §3).
+    fn check_call_convention(&mut self, target: &crate::ast::Name, site_is_far: bool) {
+        if target.provenance == Provenance::Synthetic {
+            return;
+        }
+        let Some(id) = self.model.symbols.lookup(&target.text) else {
+            return;
+        };
+        let symbol = self.model.symbols.symbol(id);
+        // Only a section declares a convention. A call to a bare address —
+        // the legacy `var openmode = $EF9C` route into ROM — declares
+        // nothing, so the call site's spelling is all there is and it wins.
+        if !matches!(symbol.kind, SymbolKind::Function { .. }) {
+            return;
+        }
+        let callee_is_far = symbol.kind.is_far_function();
+        if callee_is_far == site_is_far {
+            return;
+        }
+        let declaration = symbol.declaration;
+        let (title, at, help) = if callee_is_far {
+            (
+                format!("`{}` is a `far func`, and this call is near", target.text),
+                "this would `jsr` a section that returns with `rtl`",
+                format!("write `call far {}`", target.text),
+            )
+        } else {
+            (
+                format!("`{}` is a near `func`, and this call is far", target.text),
+                "this would `jsl` a section that returns with `rts`",
+                format!(
+                    "write `call {0}`, or declare the section as `far func {0}`",
+                    target.text
+                ),
+            )
+        };
+        self.diagnostics.push(
+            Diagnostic::error(DiagnosticCode::CALL_CONVENTION_MISMATCH, title, {
+                Label::new(target.span, at)
+            })
+            .with_secondary(Label::new(declaration, "declared here"))
+            .with_note("the call and the return have to push and pop the same number of bytes")
+            .with_help(help)
+            .with_docs("doc/syntax-reference.md#far-calls"),
+        );
+    }
+
+    /// Checks a `goto`'s target: every name in it has to resolve, and a label
+    /// it names has to belong to the function doing the jumping.
+    fn check_goto(&mut self, goto: &crate::ast::GotoStatement) {
+        if let Some((name, label)) = self.foreign_label(&goto.target) {
+            let owner = self.model.label_owner.get(&label).copied();
+            let (name, span) = (name.text.clone(), name.span);
+            let declaration = self.model.symbols.symbol(label).declaration;
+            let owner = owner.map(|owner| self.model.symbols.name(owner).to_owned());
+            self.diagnostics.push(goto_foreign_label(
+                &name,
+                span,
+                declaration,
+                owner.as_deref(),
+            ));
+            return;
+        }
+        let mut resolver = self.resolver();
+        resolver.fold(&goto.target);
+        let resolved = resolver.finish();
+        self.absorb(resolved);
+    }
+
+    /// The label `target` names when it belongs to some *other* function.
+    ///
+    /// Two shapes reach here. A `.name` this function does not declare, where
+    /// another function does — the common typo, and the one a plain
+    /// "not declared" would describe uselessly. And a global label, which is
+    /// a unit-level name and so resolves from anywhere, written inside
+    /// another function's body.
+    fn foreign_label<'a>(&self, target: &'a Expr) -> Option<(&'a crate::ast::Name, SymbolId)> {
+        let (name, label) = match &target.kind {
+            ExprKind::Symbol(name) => (name, self.model.symbols.lookup(&name.text)?),
+            ExprKind::LocalSymbol(name) => {
+                let owner = self.current_function?;
+                match self.model.symbols.lookup_local(owner, &name.text) {
+                    // The function's own local label: exactly what a `goto`
+                    // is for.
+                    Some(_) => return None,
+                    None => (name, self.label_named(&name.text)?),
+                }
+            }
+            // Anything else is an address expression, not a label reference:
+            // `goto (vec)` names the pointer's storage, and arithmetic names
+            // no single declaration to attribute the jump to.
+            _ => return None,
+        };
+        if !matches!(self.model.symbols.kind(label), SymbolKind::Label { .. }) {
+            // A `func` is a legal target — the documented `goto inc_x` tail
+            // jump — and so is a `var` holding an address.
+            return None;
+        }
+        let owner = self.model.label_owner.get(&label).copied();
+        (owner != self.current_function).then_some((name, label))
+    }
+
+    /// Any label declared under `name`, in whichever function declared it.
+    ///
+    /// Local labels are keyed by owner, so this is the only way to ask
+    /// whether a `.name` exists *somewhere* — which is what turns "not
+    /// declared" into "declared, but not here".
+    fn label_named(&self, name: &str) -> Option<SymbolId> {
+        self.model
+            .label_owner
+            .keys()
+            .copied()
+            .find(|&label| self.model.symbols.name(label) == name)
+    }
+}
+
+/// A `goto` naming a label that is not in the function jumping to it.
+fn goto_foreign_label(
+    name: &str,
+    span: Span,
+    declaration: Span,
+    owner: Option<&str>,
+) -> Diagnostic {
+    let title = match owner {
+        Some(owner) => format!("`{name}` is a label of `{owner}`, not of this function"),
+        None => format!("`{name}` is not a label of this function"),
+    };
+    Diagnostic::error(
+        DiagnosticCode::GOTO_FOREIGN_LABEL,
+        title,
+        Label::new(span, "a `goto` stays inside its own function"),
+    )
+    .with_secondary(Label::new(declaration, "declared here"))
+    .with_note(
+        "arriving in the middle of another function means arriving with widths that \
+         function's contract never promised, which is not a shape the width model can \
+         reason about",
+    )
+    .with_help("call the function instead, or move the label into this one")
+    .with_docs("doc/syntax-reference.md#labels")
 }
 
 /// The span of the first operator that makes `expr` compound rather than an
@@ -1618,17 +1768,15 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
 /// sub-plan that owns it, or `None` for the plain `func` K816 compiles.
 ///
 /// The owner is per feature rather than per call site: `plans/`
-/// `feature-manifest.md` §2 gives `naked`, `inline`, and `far func` to E — the
-/// function *kinds* — while the call contract is D's width work.
+/// `feature-manifest.md` §2 gives `naked` and `inline` to E — the function
+/// *kinds* — while the call contract is D's width work. `far func` was on
+/// that list until E5 landed it; a far section is now an ordinary one whose
+/// symbol carries [`SymbolKind::is_far_function`].
 fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat::Owner)> {
-    if func.is_far {
-        Some(("`far func` sections", compat::Owner::HlaLowering))
-    } else {
-        match func.kind {
-            FunctionKind::Func | FunctionKind::Main => None,
-            FunctionKind::Naked => Some(("`naked` sections", compat::Owner::HlaLowering)),
-            FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
-        }
+    match func.kind {
+        FunctionKind::Func | FunctionKind::Main => None,
+        FunctionKind::Naked => Some(("`naked` sections", compat::Owner::HlaLowering)),
+        FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
     }
 }
 

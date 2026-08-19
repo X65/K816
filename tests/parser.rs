@@ -1781,18 +1781,22 @@ fn an_operand_prefix_is_not_a_far_call() {
 
 #[test]
 fn section_forms_and_contracts_name_their_owner() {
+    // E5 landed the far family, so a `far func` and both spellings of the
+    // call it takes are ordinary code now.
+    for source in [
+        "far func other @a8 { }\nfunc main @a8 { far other }\n",
+        "far func other @a8 { }\nfunc main @a8 { call far other }\n",
+    ] {
+        let (_, diagnostics) = analyze_section(source);
+        assert_eq!(diagnostics, vec![], "`{source}`");
+    }
+
     for source in [
         "naked f { }\n",
         "inline f { }\n",
-        "far func f { }\n",
-        "func main @a8 { far other }\n",
         "func main @a8 { return_i }\n",
     ] {
-        let mut map = SourceMap::new();
-        let id = map.add_file("section.k65", source);
-        let parsed = parse_source(map.file(id), None);
-        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
-        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        let (_, diagnostics) = analyze_section(source);
         assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
         assert_eq!(
             diagnostics[0].code,
@@ -1800,6 +1804,20 @@ fn section_forms_and_contracts_name_their_owner() {
             "`{source}`"
         );
     }
+}
+
+/// Parses and analyzes one section snippet, asserting only that it parses.
+fn analyze_section(
+    source: &str,
+) -> (
+    k816::semantic::SemanticModel,
+    Vec<k816::diagnostic::Diagnostic>,
+) {
+    let mut map = SourceMap::new();
+    let id = map.add_file("section.k65", source);
+    let parsed = parse_source(map.file(id), None);
+    assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+    k816::semantic::analyze_file(&parsed.file)
 }
 
 #[test]
@@ -1862,15 +1880,18 @@ fn a_condition_after_a_block_closes_that_block() {
 
 #[test]
 fn control_flow_statements_compile_or_name_their_owner() {
-    // Sub-plan E4 opened the branch family. What is left to name an owner is
-    // the jump family, E5's — and `break` outside a loop is a rejection of
-    // its own rather than an unimplemented construct.
+    // E4 opened the branch family and E5 the jump family, so nothing in
+    // control flow names an owner any more. `break` outside a loop and a
+    // `goto` naming nothing are rejections of their own rather than
+    // unimplemented constructs.
     for source in [
         "func main @a8 { >={ } }\n",
         "func main @a8 { { } always }\n",
         "func main @a8 { nocross { } }\n",
         "func main @a8 { { break } always }\n",
         "func main @a8 { { < repeat } always }\n",
+        "func main @a8 { < goto done\ndone: }\n",
+        "func main @a8 { goto done\ndone: }\n",
     ] {
         let (_, diagnostics) = analyze_control(source);
         assert_eq!(diagnostics, vec![], "`{source}`");
@@ -1884,7 +1905,7 @@ fn control_flow_statements_compile_or_name_their_owner() {
         assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
         assert_eq!(
             diagnostics[0].code,
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            DiagnosticCode::UNDECLARED_SYMBOL,
             "`{source}`"
         );
     }

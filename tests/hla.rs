@@ -66,8 +66,24 @@ fn lower_ops(text: &str) -> Vec<(KOpKind, Origin)> {
 /// can only come from the statements themselves.
 fn equivalent(declarations: &str, hla_body: &str, native_body: &str) {
     let program = |body: &str| format!("{declarations}\nfunc main @a8 @i16 {{\n{body}\n}}\n");
-    let hla = lower_ops(&program(hla_body));
-    let native = lower_ops(&program(native_body));
+    equivalent_programs(
+        &program(hla_body),
+        &program(native_body),
+        hla_body,
+        native_body,
+    );
+}
+
+/// The same, for a pair whose surrounding declarations cannot simply be
+/// prepended.
+///
+/// [`lower_ops`] reads the *first* lowered function, so a section the pair
+/// refers to has to come after `main` rather than before it — which works
+/// because sections are declared in a pass of their own, before any body is
+/// checked.
+fn equivalent_programs(hla_program: &str, native_program: &str, hla_body: &str, native_body: &str) {
+    let hla = lower_ops(hla_program);
+    let native = lower_ops(native_program);
 
     let kinds = |ops: &[(KOpKind, Origin)]| -> Vec<KOpKind> {
         ops.iter().map(|(kind, _)| kind.clone()).collect()
@@ -411,5 +427,66 @@ fn a_nocross_run_the_split_grew_names_the_split() {
         codes(&without),
         ["K816-E0112"],
         "a run nothing grew is the size it was written"
+    );
+}
+
+/// Every jump-family HLA statement is its native mnemonic.
+///
+/// This is the pairing E's discipline asks for, applied to the forms E5
+/// opened: the managed spelling and the raw one must lower to the same
+/// operation, operand encoding included. A `jsl` that came out `a:` rather
+/// than `f:` would assemble and link and jump into the wrong bank.
+#[test]
+fn the_jump_family_matches_its_native_spelling() {
+    equivalent("var vec = $80", "    goto (vec)", "    jmp (vec)");
+
+    let with_sections = |sections: &str, hla_body: &str, native_body: &str| {
+        let program = |body: &str| format!("func main @a8 @i16 {{\n{body}\n}}\n\n{sections}\n");
+        equivalent_programs(
+            &program(hla_body),
+            &program(native_body),
+            hla_body,
+            native_body,
+        );
+    };
+    let banked = "far func banked @a8 @i16 { nop }";
+    with_sections(banked, "    goto far banked", "    jml banked");
+    with_sections(banked, "    far banked", "    jsl banked");
+    with_sections(banked, "    call far banked", "    jsl banked");
+    with_sections(
+        "func near_one @a8 @i16 { nop }",
+        "    call near_one",
+        "    jsr near_one",
+    );
+}
+
+/// A `far func` returns with `rtl`, written or implicit.
+#[test]
+fn a_far_section_returns_the_way_its_callers_arrived() {
+    use k816::isa::Mnemonic;
+
+    let mnemonics = |source: &str| -> Vec<Mnemonic> {
+        lower_ops(source)
+            .into_iter()
+            .filter_map(|(kind, _)| match kind {
+                KOpKind::Instruction(instruction) => Some(instruction.mnemonic),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        mnemonics("far func banked @a8 @i8 {\n    return\n}\n"),
+        [Mnemonic::Rtl],
+        "the written return is `rtl`, and nothing is appended after it"
+    );
+    assert_eq!(
+        mnemonics("far func banked @a8 @i8 {\n    nop\n}\n"),
+        [Mnemonic::Nop, Mnemonic::Rtl],
+        "and the one added at the closing brace is `rtl` too"
+    );
+    assert_eq!(
+        mnemonics("func near_one @a8 @i8 {\n    nop\n}\n"),
+        [Mnemonic::Nop, Mnemonic::Rts],
+        "a near section is untouched by any of it"
     );
 }

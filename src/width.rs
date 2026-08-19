@@ -302,6 +302,16 @@ enum Target {
     /// so that a forward branch works.
     Label(SymbolId),
     Node(usize),
+    /// A transfer that leaves this function for a place K816 *can* name: the
+    /// documented `goto other_function` tail jump, and its far form.
+    ///
+    /// Distinct from [`Target::Unknown`] because the two say different things
+    /// about *this* function's labels. An unknown target could be any of
+    /// them; a named function's entry is none of them. Collapsing the two
+    /// would make one tail jump degrade every label in the body to an
+    /// unknown arrival, which is the shape `doc/syntax-reference.md`'s
+    /// `naked` example is written in.
+    External,
     /// A target K816 cannot enumerate: an indirect jump, or a name that is
     /// not a label of this function.
     Unknown,
@@ -976,14 +986,7 @@ impl Flattener<'_> {
                 );
             }
             ControlEffect::Branch | ControlEffect::Jump => {
-                let target = match symbol {
-                    Some(symbol)
-                        if matches!(self.symbols.kind(symbol), SymbolKind::Label { .. }) =>
-                    {
-                        Target::Label(symbol)
-                    }
-                    _ => Target::Unknown,
-                };
+                let target = symbol.map_or(Target::Unknown, |symbol| self.named_target(symbol));
                 self.push(
                     id,
                     span,
@@ -1069,8 +1072,16 @@ impl Flattener<'_> {
         };
         self.symbols
             .lookup(&name.text)
-            .filter(|symbol| matches!(self.symbols.kind(*symbol), SymbolKind::Label { .. }))
-            .map_or(Target::Unknown, Target::Label)
+            .map_or(Target::Unknown, |symbol| self.named_target(symbol))
+    }
+
+    /// What a transfer to `symbol` is, from this function's point of view.
+    fn named_target(&self, symbol: SymbolId) -> Target {
+        match self.symbols.kind(symbol) {
+            SymbolKind::Label { .. } => Target::Label(symbol),
+            SymbolKind::Function { .. } => Target::External,
+            _ => Target::Unknown,
+        }
     }
 
     fn pending_break(&mut self, node: usize) {

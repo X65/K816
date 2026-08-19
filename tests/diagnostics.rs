@@ -181,6 +181,23 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::NO_SUCH_INSTRUCTION,
         caret: "5",
     },
+    // The jump family: a `goto` reaching into another function, and the two
+    // calling conventions crossed.
+    Case {
+        source: "func one @a8 {\n.loop:\n    nop\n}\n\nfunc two @a8 {\n    goto .loop\n}\n",
+        code: DiagnosticCode::GOTO_FOREIGN_LABEL,
+        caret: ".loop",
+    },
+    Case {
+        source: "far func banked @a8 {\n    nop\n}\n\nfunc f @a8 {\n    call banked\n}\n",
+        code: DiagnosticCode::CALL_CONVENTION_MISMATCH,
+        caret: "banked",
+    },
+    Case {
+        source: "func near_one @a8 {\n    nop\n}\n\nfunc f @a8 {\n    call far near_one\n}\n",
+        code: DiagnosticCode::CALL_CONVENTION_MISMATCH,
+        caret: "near_one",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.

@@ -331,11 +331,12 @@ fn is_exportable(kind: SymbolKind) -> bool {
 /// place is the only thing another unit can be handed. A `const` or a
 /// fixed-address `var` is a value K816 folds, so exporting one that nobody
 /// reads would put a name in the object file for no reason
-/// (`plans/feature-manifest.md` §3).
+/// (`plans/feature-manifest.md` §3). An `abstract var` has no place and no
+/// value: it is a layout, and there is nothing to hand anyone.
 pub fn always_exported(kind: SymbolKind) -> bool {
     match kind {
         SymbolKind::Function { .. } | SymbolKind::DataLabel { .. } => true,
         SymbolKind::Label { scope, .. } => scope == LabelScope::Global,
-        SymbolKind::Const { .. } | SymbolKind::Var { .. } => false,
+        SymbolKind::Const { .. } | SymbolKind::Var { .. } | SymbolKind::AbstractVar { .. } => false,
     }
 }

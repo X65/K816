@@ -106,6 +106,46 @@ impl DiagnosticCode {
     /// A branch or jump leaves a scoped width block, so the block's width
     /// escapes to the target instead of being restored.
     pub const WIDTH_BLOCK_LEAK: Self = Self("K816-W0126");
+    /// An assignment chain implies a register transfer the 65816 does not
+    /// have. The help names the two-step route through the accumulator where
+    /// one exists; K816 suggests it rather than inserting it, because an
+    /// inserted transfer clobbers the accumulator.
+    pub const NO_SUCH_TRANSFER: Self = Self("K816-E0127");
+    /// `break` or `repeat` outside a loop. Both bind to the innermost
+    /// enclosing loop, and outside one there is nothing to bind to.
+    pub const LOOP_CONTROL_OUTSIDE_LOOP: Self = Self("K816-E0128");
+    /// A `goto` names a label of another function. K65 labels are
+    /// function-scoped or unit-level, and jumping into the middle of another
+    /// function is not a control-flow form the width model can reason about.
+    pub const GOTO_FOREIGN_LABEL: Self = Self("K816-E0129");
+    /// A `nocross`-guarded run stopped fitting its page because an edge split
+    /// grew it. The guard is evaluated after splitting, so this names the
+    /// split as the cause rather than the run's written length.
+    pub const NOCROSS_SPLIT_OVERFLOW: Self = Self("K816-E0130");
+    /// A `naked` section declares an exit contract. A section with no return
+    /// has no exit to declare.
+    pub const NAKED_EXIT_CONTRACT: Self = Self("K816-E0131");
+    /// An `inline` section expands into itself, directly or through a cycle,
+    /// so expansion would not terminate. Recursion through a *non*-`inline`
+    /// callee is fine: that one is a call, not an expansion.
+    pub const INLINE_RECURSION: Self = Self("K816-E0132");
+    /// A unit's `var dp` requests exceed the 256-byte direct page. Reported
+    /// by the frontend rather than discovered as an ld65 segment overflow.
+    pub const DIRECT_PAGE_OVERFLOW: Self = Self("K816-E0133");
+    /// A subscript index does not fold to a compile-time constant. Runtime
+    /// indexing is the CPU's indexed addressing modes, not a subscript.
+    pub const SUBSCRIPT_NOT_CONSTANT: Self = Self("K816-E0134");
+    /// A subscript index is outside the extent its declaration gives.
+    pub const SUBSCRIPT_OUT_OF_RANGE: Self = Self("K816-E0135");
+    /// An `abstract var` is used where storage is required. It declares a
+    /// layout for metadata queries and reserves nothing, so it has no address
+    /// to load, store, or transfer to.
+    pub const ABSTRACT_HAS_NO_STORAGE: Self = Self("K816-E0136");
+    /// A chain loads a register from memory a second time because the
+    /// transfer it implies does not exist — `x = y = mem` is two loads,
+    /// because the 65816 has no `Y`-to-`X` transfer. What the author wrote is
+    /// what they get; the warning is that it costs a second memory access.
+    pub const CHAIN_RELOADS_SOURCE: Self = Self("K816-W0137");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -317,6 +357,17 @@ mod tests {
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
         DiagnosticCode::WIDTH_BLOCK_LEAK,
+        DiagnosticCode::NO_SUCH_TRANSFER,
+        DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
+        DiagnosticCode::GOTO_FOREIGN_LABEL,
+        DiagnosticCode::NOCROSS_SPLIT_OVERFLOW,
+        DiagnosticCode::NAKED_EXIT_CONTRACT,
+        DiagnosticCode::INLINE_RECURSION,
+        DiagnosticCode::DIRECT_PAGE_OVERFLOW,
+        DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
+        DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
+        DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        DiagnosticCode::CHAIN_RELOADS_SOURCE,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

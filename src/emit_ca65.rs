@@ -119,6 +119,7 @@ impl<'a> Names<'a> {
             SymbolKind::Label { .. }
             | SymbolKind::DataLabel { .. }
             | SymbolKind::Var { .. }
+            | SymbolKind::AbstractVar { .. }
             | SymbolKind::Function { .. }
             | SymbolKind::Const { .. } => symbol.name.clone(),
         }

@@ -401,6 +401,10 @@ impl Analysis {
                         SymbolKind::Var {
                             address: Some(address),
                             size,
+                            // The fixed-address form has no field list; a
+                            // declaration that carries one is refused above,
+                            // until E8 computes its layout.
+                            layout: None,
                         },
                         var.name.span,
                     );
@@ -1637,6 +1641,18 @@ impl Analysis {
                 .with_help(format!(
                     "call it with `call {name}`, or take its address with `&&{name}`"
                 )),
+            ),
+            SymbolKind::AbstractVar { .. } => self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+                    format!("`{name}` is an `abstract var`, which has no storage"),
+                    Label::new(span, "a layout, not a memory location"),
+                )
+                .with_secondary(Label::new(declaration, "declared here"))
+                .with_help(format!(
+                    "query the layout with `{name}:sizeof`, or declare a `var` with the same fields to give it storage"
+                ))
+                .with_docs("doc/symbolic-subscripts.md#abstract-layout-only-form"),
             ),
         }
     }

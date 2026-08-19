@@ -1037,6 +1037,7 @@ fn a_compound_address_folds_through_the_const_table() {
         k816::symbol::SymbolKind::Var {
             address: Some(0x0403),
             size: k816::symbol::AddressSize::Absolute,
+            layout: None,
         }
     );
 }

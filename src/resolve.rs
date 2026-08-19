@@ -212,15 +212,37 @@ impl<'a> Resolver<'a> {
             ExprKind::Number(value) => Some(KExpr::number(*value)),
             ExprKind::Symbol(name) => {
                 let id = self.resolve(&name.text, name.span)?;
-                Some(match self.symbols.kind(id) {
+                match self.symbols.kind(id) {
                     // A `const` has no storage, so it can only ever be its
                     // value; everything else keeps its name for ca65/ld65.
-                    SymbolKind::Const { value } => KExpr::number(value),
+                    SymbolKind::Const { value } => Some(KExpr::number(value)),
+                    // An `abstract var` has neither a value nor a place, so
+                    // there is nothing for a mention of one to fold to. It is
+                    // reported here rather than at each position that rejects
+                    // it, because this is the single point where a name
+                    // becomes a value.
+                    SymbolKind::AbstractVar { .. } => {
+                        let declaration = self.symbols.symbol(id).declaration;
+                        self.report(
+                            Diagnostic::error(
+                                DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+                                format!("`{}` is an `abstract var`, which has no storage", name.text),
+                                Label::new(name.span, "a layout, not a memory location"),
+                            )
+                            .with_secondary(Label::new(declaration, "declared here"))
+                            .with_help(format!(
+                                "query the layout with `{0}:sizeof` or `{0}.field:offsetof`, or declare a `var` with the same fields to give it storage",
+                                name.text
+                            ))
+                            .with_docs("doc/symbolic-subscripts.md#abstract-layout-only-form"),
+                        );
+                        None
+                    }
                     SymbolKind::Var { .. }
                     | SymbolKind::Label { .. }
                     | SymbolKind::DataLabel { .. }
-                    | SymbolKind::Function { .. } => KExpr::Symbol(id),
-                })
+                    | SymbolKind::Function { .. } => Some(KExpr::Symbol(id)),
+                }
             }
             ExprKind::LocalSymbol(name) => {
                 let id = self.resolve_local(&name.text, name.span)?;

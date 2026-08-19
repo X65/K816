@@ -109,6 +109,7 @@ func main @a8 @i16 {
         k816::symbol::SymbolKind::Var {
             address: Some(0x0400),
             size: k816::symbol::AddressSize::Absolute,
+            layout: None,
         }
     );
 }

@@ -457,7 +457,7 @@ fn the_legacy_hardware_definitions_analyze_clean() {
     let (model, _) = k816::semantic::analyze_file(&parse.file);
     let mut variables = 0;
     for (_, symbol) in model.symbols.iter() {
-        let SymbolKind::Var { address, size } = symbol.kind else {
+        let SymbolKind::Var { address, size, .. } = symbol.kind else {
             continue;
         };
         variables += 1;

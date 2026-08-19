@@ -128,6 +128,19 @@ pub enum Reason {
     WithdrawnClaim,
     /// A function returns implicitly.
     ImplicitReturn,
+    /// The branch a conditional lowers to, which tests the *opposite* of what
+    /// the source condition says: `>={ … }` branches away on carry clear, so
+    /// the emitted `bcc` and the written `>=` disagree by construction.
+    InvertedBranch,
+    /// A landing pad on the taken edge of a transfer that leaves a scoped
+    /// width block, so the block's width is restored before control reaches
+    /// the target. The restore itself is a [`Self::BlockRestore`]; this names
+    /// the control flow K816 grew around it.
+    SplitEdge,
+    /// Expanded from an `inline` section's body. The operation's span points
+    /// into the `inline`, so the reason is what says which call site put it
+    /// here.
+    InlineExpansion(SymbolId),
 }
 
 impl Reason {
@@ -150,6 +163,11 @@ impl Reason {
                 "the width above is not established, so no claim is carried".to_owned()
             }
             Self::ImplicitReturn => "implicit return".to_owned(),
+            Self::InvertedBranch => "the source condition, inverted to skip the body".to_owned(),
+            Self::SplitEdge => {
+                "the landing pad this transfer restores the block's width on".to_owned()
+            }
+            Self::InlineExpansion(section) => format!("expanded from inline {}", name(section)),
         }
     }
 }

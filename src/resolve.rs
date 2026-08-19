@@ -259,7 +259,7 @@ impl<'a> Resolver<'a> {
         !self.diagnostics.is_empty()
     }
 
-    fn report(&mut self, diagnostic: Diagnostic) {
+    pub(crate) fn report(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
     }
 
@@ -464,23 +464,118 @@ impl<'a> Resolver<'a> {
         )
     }
 
-    /// Classifies the operand of an HLA statement against the mnemonic that
-    /// statement's shape selects.
+    /// Classifies an operand the caller has already read into the shared
+    /// vocabulary, against the mnemonic that caller's statement selects.
     ///
-    /// The split is deliberate: which instruction a statement means is HLA's
-    /// to decide, because that is what the spelling says; what its operand is
-    /// is not HLA's to decide, because a native instruction already asked the
-    /// same question (decision 1). `site` is the span to blame when the
+    /// The split is deliberate: which instruction a statement means is the
+    /// HLA statement's to decide, because that is what the spelling says;
+    /// what its operand is is not, because a native instruction already asked
+    /// the same question (decision 1). `site` is the span to blame when the
     /// operand itself is not what is wrong — the statement's, where a native
     /// instruction would give its mnemonic's.
-    pub fn classify_hla(
+    pub fn classify_source(
         &mut self,
         mnemonic: Mnemonic,
-        operand: &HlaOperand,
+        source: OperandSource<'_>,
         site: Span,
     ) -> Option<Classified> {
-        let source = OperandSource::hla(operand)?;
         self.classify_operand(mnemonic, source, site)
+    }
+
+    /// The same, for a mnemonic that may legitimately have no form for this
+    /// operand and whose caller has a documented fallback. Nothing is
+    /// reported: the refusal is the answer, not a diagnostic.
+    pub fn try_classify_source(
+        &mut self,
+        mnemonic: Mnemonic,
+        source: OperandSource<'_>,
+        site: Span,
+    ) -> Option<Classified> {
+        let reported = self.diagnostics.len();
+        let classified = self.classify_operand(mnemonic, source, site);
+        if self.diagnostics.len() > reported {
+            self.diagnostics.truncate(reported);
+            return None;
+        }
+        classified
+    }
+
+    /// Classifies an instruction written with no operand at all — the
+    /// register transfers an HLA chain expands to.
+    pub fn classify_implied(&mut self, mnemonic: Mnemonic, site: Span) -> Option<Classified> {
+        self.classify_operand(mnemonic, OperandSource::Nothing, site)
+    }
+
+    /// How an HLA operand reads in *source* position: the value it denotes
+    /// where it denotes one, and the place it names otherwise.
+    ///
+    /// K65 writes a load's constant without a `#`: `a=0` sets the accumulator
+    /// to zero and `a=RND` reads the byte at `RND`
+    /// (`doc/syntax-reference.md`, "Code Sections"; `doc/k65/syntax.md`).
+    /// Which one a bare operand means is a *statement* question — the same
+    /// text after `lda` is an address — so it is answered here, once, and the
+    /// classifier is handed the answer rather than the text.
+    pub fn hla_source<'b>(&self, operand: &'b HlaOperand) -> Option<OperandSource<'b>> {
+        match self.hla_value(operand) {
+            Some(value) => Some(OperandSource::Immediate(value)),
+            None => OperandSource::hla(operand),
+        }
+    }
+
+    /// How an HLA operand reads in *target* position, where there is nothing
+    /// to decide: a chain stores into a place, and a bare number is the
+    /// address of one.
+    pub fn hla_place<'b>(&self, operand: &'b HlaOperand) -> Option<OperandSource<'b>> {
+        OperandSource::hla(operand)
+    }
+
+    /// The value expression an operand denotes, or `None` when it names a
+    /// place.
+    pub fn hla_value<'b>(&self, operand: &'b HlaOperand) -> Option<&'b Expr> {
+        match &operand.kind {
+            HlaOperandKind::Immediate(expr) => Some(expr),
+            // An index, an encoding prefix, or an offset marker all describe
+            // how to *reach* something, so the operand names a place whatever
+            // its expression says.
+            HlaOperandKind::Memory(address)
+                if address.index.is_none()
+                    && address.encoding.is_none()
+                    && address.offset_marker.is_none()
+                    && self.denotes_value(&address.value) =>
+            {
+                Some(&address.value)
+            }
+            _ => None,
+        }
+    }
+
+    /// True when `expr` denotes a value rather than a place: a literal, a
+    /// `const`, an address-byte operator, or arithmetic over those.
+    ///
+    /// A name K816 cannot resolve counts as a place, so the operand keeps its
+    /// address reading and classification reports the undeclared symbol —
+    /// rather than this deciding a typo is an immediate.
+    fn denotes_value(&self, expr: &Expr) -> bool {
+        use crate::ast::UnaryOp;
+        match &expr.kind {
+            ExprKind::Number(_) => true,
+            ExprKind::Symbol(name) => matches!(
+                self.symbols
+                    .lookup(&name.text)
+                    .map(|id| self.symbols.kind(id)),
+                Some(SymbolKind::Const { .. })
+            ),
+            ExprKind::Unary(unary) => match unary.op {
+                UnaryOp::LowByte | UnaryOp::HighByte | UnaryOp::Address16 | UnaryOp::Address24 => {
+                    true
+                }
+                UnaryOp::Negate | UnaryOp::BitNot => self.denotes_value(&unary.operand),
+            },
+            ExprKind::Binary(binary) => {
+                self.denotes_value(&binary.left) && self.denotes_value(&binary.right)
+            }
+            _ => false,
+        }
     }
 
     fn classify_operand(

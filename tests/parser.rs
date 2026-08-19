@@ -1149,10 +1149,6 @@ fn every_new_declaration_form_names_its_owner() {
             DiagnosticCode::NOT_YET_IMPLEMENTED,
         ),
         ("var s:byte * 32\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        (
-            "func f { .LT+1 = a }\n",
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-        ),
     ] {
         let mut map = SourceMap::new();
         let id = map.add_file("owner.k65", source);
@@ -1626,7 +1622,10 @@ fn the_slice_chain_shapes_still_compile_and_the_rest_name_their_owner() {
     let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
     assert_eq!(diagnostics, vec![], "the slice must stay clean");
 
-    for source in ["x = a\n", "mem,x = a\n", "a = mem\n", "b~a\n"] {
+    // Sub-plan E2 opened the chain family — `x = a`, `mem,x = a`, and
+    // `a = mem` compile now — so what is left to name an owner is the
+    // shorthand family beside it.
+    for source in ["x = a\n", "mem,x = a\n", "a = mem\n"] {
         let mut map = SourceMap::new();
         let id = map.add_file(
             "chain.k65",
@@ -1635,13 +1634,20 @@ fn the_slice_chain_shapes_still_compile_and_the_rest_name_their_owner() {
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-        assert_eq!(
-            diagnostics[0].code,
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-            "`{source}`"
-        );
+        assert_eq!(diagnostics, vec![], "`{source}`: {diagnostics:?}");
     }
+
+    let source = "b~a\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "chain.k65",
+        format!("var mem = $0400\nfunc main @a8 {{\n  {source}}}\n"),
+    );
+    let parsed = parse_source(map.file(id), None);
+    assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+    assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_YET_IMPLEMENTED);
 }
 
 #[test]

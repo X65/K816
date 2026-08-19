@@ -739,6 +739,22 @@ pub enum RegisterKind {
     P,
 }
 
+impl RegisterKind {
+    /// The register's K65 spelling, for diagnostics that quote a chain.
+    pub fn k65(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+            Self::C => "c",
+            Self::D => "d",
+            Self::S => "s",
+            Self::X => "x",
+            Self::Y => "y",
+            Self::P => "p",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expr {
     pub kind: ExprKind,

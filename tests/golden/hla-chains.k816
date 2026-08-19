@@ -1,0 +1,131 @@
+// Sub-plan E2's fixture: every assignment-chain shape `doc/syntax-reference.md`
+// documents, each beside the native sequence it must lower to.
+//
+// `tests/hla.rs::every_chain_matches_the_native_sequence_beside_it` pairs each
+// `NAME` with `NAME_native` and asserts the two produce the same operations.
+// The pairing is the point: a chain is only correct if it is the instructions
+// a programmer would have written by hand.
+
+var dst0 = $10
+var dst1 = $11
+var src  = $12
+var zp   = $20
+var ptr  = $30
+var abs  = $0300
+
+const K = 5
+
+// `doc/syntax-reference.md`, "Assignment Chaining": the value flows from the
+// rightmost operand leftwards through every target.
+func chain @a8 @i8 {
+    dst0=dst1=a=src
+    x=a=dst0
+    return
+}
+
+func chain_native @a8 @i8 {
+    lda src
+    sta dst1
+    sta dst0
+    lda dst0
+    tax
+    rts
+}
+
+// The same section's register-to-register chains, which produce "optimal
+// transfer sequences".
+func transfers @a8 @i8 {
+    y=x=a
+    d=c=s
+    s=x=y
+    return
+}
+
+func transfers_native @a8 @i8 {
+    tax
+    txy
+    tsc
+    tcd
+    tyx
+    txs
+    rts
+}
+
+// A constant written without `#`, which is how K65 spells an immediate on the
+// value side of a chain (`doc/k65/syntax.md`: `a=0` sets the accumulator).
+func constants @a8 @i8 {
+    a=0
+    x=2
+    y=K
+    dst0=a=14
+    return
+}
+
+func constants_native @a8 @i8 {
+    lda #0
+    ldx #2
+    ldy #K
+    lda #14
+    sta dst0
+    rts
+}
+
+// Every operand shape the loads and stores accept.
+func shapes @a8 @i8 {
+    a=abs,x
+    a=(ptr),y
+    x=abs
+    y=abs,x
+    abs,x=a
+    (ptr,x)=a
+    abs=x
+    abs=y
+    return
+}
+
+func shapes_native @a8 @i8 {
+    lda abs,x
+    lda (ptr),y
+    ldx abs
+    ldy abs,x
+    sta abs,x
+    sta (ptr,x)
+    stx abs
+    sty abs
+    rts
+}
+
+// `doc/syntax-reference.md`, "Zero-Store Shortcut": a store of zero needs no
+// accumulator traffic, and `stz` has neither a `,y` form nor a long one — so
+// that one goes through the accumulator instead, silently.
+func zeroes @a8 @i8 {
+    zp = 0
+    zp,x = 0
+    abs = 0
+    abs,x = 0
+    abs,y = 0
+    return
+}
+
+func zeroes_native @a8 @i8 {
+    stz zp
+    stz zp,x
+    stz abs
+    stz abs,x
+    lda #0
+    sta abs,y
+    rts
+}
+
+// A chain that names the accumulator keeps its load: `mem = a = 0` is not the
+// shortcut, and the peephole that shortens it is sub-plan F's.
+func zero_through_the_accumulator @a8 @i8 {
+    dst0 = a = 0
+    return
+}
+
+func zero_through_the_accumulator_native @a8 @i8 {
+    lda #0
+    sta dst0
+    rts
+}

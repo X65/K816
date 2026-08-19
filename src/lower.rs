@@ -29,9 +29,10 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
-use crate::ast::{AstFile, HlaOperandKind, HlaStatement, ItemKind, ReturnKind, StatementKind};
+use crate::ast::{AstFile, HlaStatement, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
+use crate::hla;
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
     AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand, Origin, Reason,
@@ -326,35 +327,45 @@ impl Lowering<'_> {
         }
     }
 
-    /// Lowers one operand an HLA statement wrote, through the classifier the
-    /// native path uses — width reconciliation included, so the width model
-    /// sees the same operation whichever syntax produced it.
+    /// Emits the instructions an HLA statement expands to.
     ///
-    /// Analysis has already classified this operand and reported anything
+    /// Analysis has already expanded this statement and reported anything
     /// wrong with it, so a diagnostic here is a compiler bug rather than user
     /// error, exactly as on the native arm.
-    fn hla_instruction(
+    ///
+    /// The width model tracks one state per *statement*, so an expansion
+    /// reconciles once, against what the whole sequence does rather than what
+    /// its last instruction does. No chain instruction changes a register
+    /// width today; the fold is here so that the one which eventually does is
+    /// not silently dropped.
+    fn expanded(
         &mut self,
         statement: &crate::ast::Statement,
-        mnemonic: Mnemonic,
-        operand: &crate::ast::HlaOperand,
+        steps: Vec<crate::resolve::Classified>,
         span: Span,
     ) {
-        let mut resolver = Resolver::new(&self.model.symbols)
-            .in_function(self.function)
-            .with_widths(self.widths_at(statement));
-        match resolver.classify_hla(mnemonic, operand, span) {
-            Some(classified) if !resolver.has_diagnostics() => {
-                let instruction = classified.instruction();
-                let effects = instruction.effects();
-                self.push(
-                    KOpKind::Instruction(instruction),
-                    span,
-                    Origin::HlaExpansion,
-                );
-                self.reconcile(statement, effects);
-            }
-            _ => self.skipped(span, "an unclassified HLA operand"),
+        let mut combined: Option<Effects> = None;
+        for step in steps {
+            let instruction = step.instruction();
+            let effects = instruction.effects();
+            self.push(
+                KOpKind::Instruction(instruction),
+                span,
+                Origin::HlaExpansion,
+            );
+            combined = Some(match combined {
+                None => effects,
+                Some(carried) => Effects {
+                    width: match effects.width {
+                        WidthEffect::Unchanged => carried.width,
+                        changed => changed,
+                    },
+                    ..effects
+                },
+            });
+        }
+        if let Some(effects) = combined {
+            self.reconcile(statement, effects);
         }
     }
 
@@ -485,17 +496,16 @@ impl Lowering<'_> {
                 }
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
-                // Analysis accepts exactly two chain shapes so far; anything
-                // else never reaches lowering. Which instruction a shape means
-                // is decided here, because that is what the spelling says;
-                // what its operand is is not decided here, because `lda` and
-                // `sta` already asked that question (sub-plan E, decision 1).
-                let (mnemonic, operand) = match (assign.targets.as_slice(), &assign.source.kind) {
-                    ([_], HlaOperandKind::Immediate(_)) => (Mnemonic::Lda, &assign.source),
-                    ([target], HlaOperandKind::Register(_)) => (Mnemonic::Sta, target),
-                    _ => return self.skipped(span, "an unsupported assignment chain"),
-                };
-                self.hla_instruction(statement, mnemonic, operand, span);
+                let mut resolver = Resolver::new(&self.model.symbols)
+                    .in_function(self.function)
+                    .with_widths(self.widths_at(statement));
+                let steps = hla::assignment(&mut resolver, assign, span);
+                match steps {
+                    Some(steps) if !resolver.has_diagnostics() => {
+                        self.expanded(statement, steps, span);
+                    }
+                    _ => self.skipped(span, "an assignment chain"),
+                }
             }
             StatementKind::Hla(
                 HlaStatement::Exchange(_)

@@ -1,0 +1,422 @@
+/*****************************************************************************/
+/*                                                                           */
+/*                                  hla.rs                                   */
+/*                                                                           */
+/*         What an HLA statement means, as 65816 instructions             */
+/*                                                                           */
+/*                                                                           */
+/* Copyright (c) 2026 Tomasz Sterna (smokku)                                 */
+/*                                                                           */
+/* Permission to use, copy, modify, and/or distribute this software for any  */
+/* purpose with or without fee is hereby granted.                            */
+/*                                                                           */
+/* THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES  */
+/* WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF          */
+/* MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR   */
+/* ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES    */
+/* WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN     */
+/* ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF   */
+/* OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.            */
+/*                                                                           */
+/*****************************************************************************/
+
+//! What an HLA statement means, as the instruction sequence it expands to.
+//!
+//! Analysis and lowering both need that answer, and a statement family whose
+//! meaning is written out twice is the failure sub-plan E exists to end. So
+//! the expansion lives here once: analysis reports what it turns up, lowering
+//! emits what it returns, and neither of them owns the rule.
+//!
+//! Operands are not this module's business — they go through [`Resolver`]
+//! exactly as a native instruction's do (sub-plan E, decision 1). What is
+//! this module's business is *statement* knowledge: which mnemonic a spelling
+//! selects, which register carries the value, and in which order the
+//! instructions run.
+
+use crate::ast::{HlaAssignment, HlaOperand, HlaOperandKind, RegisterKind};
+use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
+use crate::isa::Mnemonic;
+use crate::resolve::{Classified, Resolver};
+use crate::source::Span;
+
+/// The instruction sequence an assignment chain expands to, or `None` when it
+/// has none — in which case the resolver carries the diagnostic that says so.
+///
+/// A chain evaluates right to left: the rightmost operand is the source, and
+/// each `=` to its left stores or transfers the value now held
+/// (`doc/syntax-reference.md`, "Assignment Chaining"). The register that
+/// carries it is the one the chain names; K816 never picks one the author did
+/// not write, because an inserted load clobbers a register the author is
+/// entitled to still be using.
+pub fn assignment(
+    resolver: &mut Resolver,
+    assign: &HlaAssignment,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    let mut targets = assign.targets.as_slice();
+    if targets.iter().all(|target| register_of(target).is_none())
+        && register_of(&assign.source).is_none()
+    {
+        return without_a_register(resolver, assign, site);
+    }
+
+    let mut steps = Vec::new();
+    // Where the value is right now.
+    let mut carrier = match register_of(&assign.source) {
+        // `MEM = a`, `y = x = a`: it starts in a register.
+        Some(register) => register,
+        // `a = mem`, `MEM = a = #1`: it starts in memory or as a constant, so
+        // the rightmost target is the register that takes it, and the load
+        // consumes that target.
+        None => {
+            let (destination, rest) = targets.split_last().expect("a chain has a target");
+            let register = register_of(destination).expect("a chain with no register is handled");
+            let mnemonic = load(register).or_else(|| {
+                resolver.report(no_load(register, destination));
+                None
+            })?;
+            steps.push(operand_step(
+                resolver,
+                mnemonic,
+                &assign.source,
+                Role::Source,
+                site,
+            )?);
+            targets = rest;
+            register
+        }
+    };
+
+    // The operand immediately to the right of the target being processed,
+    // which is where a two-step route would be written.
+    let mut right = &assign.source;
+    for target in targets.iter().rev() {
+        match register_of(target) {
+            // `a = a`: the value is already there.
+            Some(destination) if destination == carrier => {}
+            Some(destination) => {
+                let mnemonic = transfer(carrier, destination).or_else(|| {
+                    resolver.report(no_transfer(carrier, destination, target, right));
+                    None
+                })?;
+                steps.push(implied_step(resolver, mnemonic, site)?);
+                carrier = destination;
+            }
+            None => {
+                let mnemonic = store(carrier).or_else(|| {
+                    resolver.report(no_store(carrier, target));
+                    None
+                })?;
+                steps.push(operand_step(
+                    resolver,
+                    mnemonic,
+                    target,
+                    Role::Target,
+                    site,
+                )?);
+            }
+        }
+        right = target;
+    }
+    Some(steps)
+}
+
+/// A chain that names no register at all: either the zero store, or a step
+/// the 65816 has no instruction for.
+fn without_a_register(
+    resolver: &mut Resolver,
+    assign: &HlaAssignment,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    // The shortcut is a store of zero into a declared name. A bare address
+    // literal does not take it — `$10 = 0` is not a spelling of `stz $10`
+    // (`doc/syntax-reference.md`, "Zero-Store Shortcut") — and neither does a
+    // non-zero constant, which has no instruction and must name the register
+    // that carries it.
+    let named = assign
+        .targets
+        .iter()
+        .all(|target| resolver.hla_value(target).is_none());
+    let zero = resolver
+        .hla_value(&assign.source)
+        .and_then(|value| resolver.fold(value))
+        .and_then(|folded| folded.value())
+        .is_some_and(|value| value.get() == 0);
+    if !named || !zero {
+        resolver.report(needs_a_register(assign));
+        return None;
+    }
+
+    // `mem = 0` is an `stz`, with no accumulator traffic to undo
+    // (`doc/syntax-reference.md`, "Zero-Store Shortcut"). Where `stz` has no
+    // form for the target — it has neither `,y` nor a long one — the store
+    // goes through the accumulator instead, and silently: the author wrote a
+    // store of zero and gets one.
+    let mut steps = Vec::new();
+    let mut accumulator_holds_zero = false;
+    for target in assign.targets.iter().rev() {
+        if let Some(stz) = try_target_step(resolver, Mnemonic::Stz, target, site) {
+            steps.push(stz);
+            continue;
+        }
+        if !accumulator_holds_zero {
+            steps.push(immediate_step(
+                resolver,
+                Mnemonic::Lda,
+                &assign.source,
+                site,
+            )?);
+            accumulator_holds_zero = true;
+        }
+        steps.push(operand_step(
+            resolver,
+            Mnemonic::Sta,
+            target,
+            Role::Target,
+            site,
+        )?);
+    }
+    Some(steps)
+}
+
+/// Which side of the `=` an operand sits on, which is what decides whether a
+/// bare constant is a value to load or the address of a place to store into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Source,
+    Target,
+}
+
+/// One step whose operand is written in the source.
+fn operand_step(
+    resolver: &mut Resolver,
+    mnemonic: Mnemonic,
+    operand: &HlaOperand,
+    role: Role,
+    site: Span,
+) -> Option<Classified> {
+    let source = match role {
+        Role::Source => resolver.hla_source(operand)?,
+        Role::Target => resolver.hla_place(operand)?,
+    };
+    resolver.classify_source(mnemonic, source, site)
+}
+
+/// The same, for a mnemonic that may legitimately have no form for this
+/// operand and whose caller has a fallback.
+fn try_target_step(
+    resolver: &mut Resolver,
+    mnemonic: Mnemonic,
+    operand: &HlaOperand,
+    site: Span,
+) -> Option<Classified> {
+    let source = resolver.hla_place(operand)?;
+    resolver.try_classify_source(mnemonic, source, site)
+}
+
+/// One step that loads a constant the chain wrote without a `#`.
+fn immediate_step(
+    resolver: &mut Resolver,
+    mnemonic: Mnemonic,
+    operand: &HlaOperand,
+    site: Span,
+) -> Option<Classified> {
+    let value = resolver.hla_value(operand)?;
+    resolver.classify_source(
+        mnemonic,
+        crate::resolve::OperandSource::Immediate(value),
+        site,
+    )
+}
+
+/// One step with no operand at all: the transfers.
+fn implied_step(resolver: &mut Resolver, mnemonic: Mnemonic, site: Span) -> Option<Classified> {
+    resolver.classify_implied(mnemonic, site)
+}
+
+/// The register an operand names, or `None` when it names memory or a value.
+fn register_of(operand: &HlaOperand) -> Option<RegisterKind> {
+    match &operand.kind {
+        HlaOperandKind::Register(register) => Some(register.kind),
+        _ => None,
+    }
+}
+
+/// The instruction that loads `register` from memory, for the three registers
+/// that have one.
+fn load(register: RegisterKind) -> Option<Mnemonic> {
+    match register {
+        RegisterKind::A => Some(Mnemonic::Lda),
+        RegisterKind::X => Some(Mnemonic::Ldx),
+        RegisterKind::Y => Some(Mnemonic::Ldy),
+        _ => None,
+    }
+}
+
+/// The instruction that stores `register` to memory.
+fn store(register: RegisterKind) -> Option<Mnemonic> {
+    match register {
+        RegisterKind::A => Some(Mnemonic::Sta),
+        RegisterKind::X => Some(Mnemonic::Stx),
+        RegisterKind::Y => Some(Mnemonic::Sty),
+        _ => None,
+    }
+}
+
+/// Every register-to-register move the 65816 has, as data rather than as a
+/// match arm per pair (sub-plan E, decision 3).
+///
+/// `doc/syntax-reference.md`'s "Complete Register Transfer Table" is the
+/// source-level statement of this, and `doc/w65c816s.md` the hardware one.
+/// `b~a` is deliberately absent: `XBA` exchanges the accumulator halves
+/// rather than copying one into the other, so it is spelled `~` and is not a
+/// chain step.
+const TRANSFERS: &[(RegisterKind, RegisterKind, Mnemonic)] = &[
+    (RegisterKind::A, RegisterKind::X, Mnemonic::Tax),
+    (RegisterKind::A, RegisterKind::Y, Mnemonic::Tay),
+    (RegisterKind::X, RegisterKind::A, Mnemonic::Txa),
+    (RegisterKind::Y, RegisterKind::A, Mnemonic::Tya),
+    (RegisterKind::X, RegisterKind::Y, Mnemonic::Txy),
+    (RegisterKind::Y, RegisterKind::X, Mnemonic::Tyx),
+    (RegisterKind::X, RegisterKind::S, Mnemonic::Txs),
+    (RegisterKind::S, RegisterKind::X, Mnemonic::Tsx),
+    (RegisterKind::C, RegisterKind::D, Mnemonic::Tcd),
+    (RegisterKind::D, RegisterKind::C, Mnemonic::Tdc),
+    (RegisterKind::C, RegisterKind::S, Mnemonic::Tcs),
+    (RegisterKind::S, RegisterKind::C, Mnemonic::Tsc),
+];
+
+/// The instruction that moves `from` into `to`, if the CPU has one.
+fn transfer(from: RegisterKind, to: RegisterKind) -> Option<Mnemonic> {
+    TRANSFERS
+        .iter()
+        .find(|(source, destination, _)| *source == from && *destination == to)
+        .map(|(_, _, mnemonic)| *mnemonic)
+}
+
+/// The register a two-step route would pass through, when a direct transfer
+/// does not exist but a pair of them does: `s = y` becomes `s = x = y`.
+fn two_step(from: RegisterKind, to: RegisterKind) -> Option<RegisterKind> {
+    TRANSFERS
+        .iter()
+        .filter(|(source, _, _)| *source == from)
+        .map(|(_, middle, _)| *middle)
+        .find(|middle| transfer(*middle, to).is_some())
+}
+
+/// A register memory cannot be loaded into.
+///
+/// Only `d` and `s` are in that position, and both are reachable from the
+/// accumulator — under the name `c`, because the transfer moves all sixteen
+/// bits of it.
+fn no_load(register: RegisterKind, operand: &HlaOperand) -> Diagnostic {
+    let diagnostic = no_instruction(
+        format!("no instruction loads `{}`", register.k65()),
+        Label::new(operand.span, "nothing loads this register from memory"),
+        None,
+    );
+    if transfer(RegisterKind::C, register).is_none() {
+        return diagnostic;
+    }
+    diagnostic
+        .with_help(format!(
+            "load the accumulator, then transfer it: `a = ...` and `{} = c`",
+            register.k65()
+        ))
+        .with_note("`c` is the accumulator under the name a transfer gives it")
+}
+
+/// A register whose value memory cannot be stored from.
+fn no_store(register: RegisterKind, operand: &HlaOperand) -> Diagnostic {
+    let diagnostic = no_instruction(
+        format!("no instruction stores `{}`", register.k65()),
+        Label::new(operand.span, "nothing stores this register to memory"),
+        None,
+    );
+    if transfer(register, RegisterKind::C).is_none() {
+        return diagnostic;
+    }
+    diagnostic
+        .with_help(format!(
+            "transfer it into the accumulator first: `c = {}` and then store `a`",
+            register.k65()
+        ))
+        .with_note("`c` is the accumulator under the name a transfer gives it")
+}
+
+fn no_transfer(
+    from: RegisterKind,
+    to: RegisterKind,
+    target: &HlaOperand,
+    right: &HlaOperand,
+) -> Diagnostic {
+    let diagnostic = no_instruction(
+        format!(
+            "the 65816 cannot transfer `{}` to `{}`",
+            from.k65(),
+            to.k65()
+        ),
+        Label::new(target.span, "no instruction moves the value here"),
+        None,
+    );
+    // The accumulator has two names and only one of them appears in the
+    // transfer table: the 65816 moves all sixteen bits here, and K65 spells
+    // that `c`.
+    if to == RegisterKind::A && transfer(from, RegisterKind::C).is_some() {
+        return diagnostic.with_help(format!(
+            "this transfer moves the whole accumulator: write `c = {}`",
+            from.k65()
+        ));
+    }
+    if from == RegisterKind::A && transfer(RegisterKind::C, to).is_some() {
+        return diagnostic.with_help(format!(
+            "this transfer moves the whole accumulator: write `{} = c`",
+            to.k65()
+        ));
+    }
+    // The route is suggested, never inserted: an inserted transfer clobbers
+    // the register it passes through, which is the damage `W0123` exists to
+    // report. K816 does not author a bug it also warns about.
+    let Some(middle) = two_step(from, to) else {
+        return diagnostic;
+    };
+    diagnostic
+        .with_help(format!(
+            "route it through `{}`: write `{} = {} = {}`",
+            middle.k65(),
+            to.k65(),
+            middle.k65(),
+            from.k65()
+        ))
+        .with_fix(Fix {
+            title: format!("transfer through `{}`", middle.k65()),
+            applicability: Applicability::MaybeIncorrect,
+            edits: vec![TextEdit::insert(right.span, format!("{} = ", middle.k65()))],
+        })
+}
+
+fn needs_a_register(assign: &HlaAssignment) -> Diagnostic {
+    let target = assign.targets.last().expect("a chain has a target");
+    no_instruction(
+        "this store names no register to carry the value".to_owned(),
+        Label::new(
+            assign.source.span,
+            "nothing moves this into memory by itself",
+        ),
+        Some(Label::new(target.span, "stored here")),
+    )
+    .with_help("carry it in a register, e.g. `mem = a = value`")
+    .with_note(
+        "only a store of zero needs no register, and only when the target is a \
+         declared name rather than a bare address",
+    )
+}
+
+fn no_instruction(title: String, primary: Label, secondary: Option<Label>) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error(DiagnosticCode::NO_SUCH_TRANSFER, title, primary)
+        .with_docs("doc/syntax-reference.md#assignment-chaining");
+    if let Some(secondary) = secondary {
+        diagnostic = diagnostic.with_secondary(secondary);
+    }
+    diagnostic
+}

@@ -30,15 +30,15 @@
 
 use crate::ast::{
     self, AstFile, ContractParameter, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr,
-    EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaOperandKind, HlaStatement, ItemKind,
-    RegisterKind, ReservedKind, ReturnKind, Statement, StatementKind,
+    EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement, ItemKind, RegisterKind,
+    ReservedKind, ReturnKind, Statement, StatementKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
-use crate::isa::{Mnemonic, RegisterWidth};
+use crate::isa::RegisterWidth;
 use crate::linkage::Linkage;
 use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
@@ -1045,47 +1045,7 @@ impl Analysis {
                 }
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
-                match (assign.targets.as_slice(), &assign.source.kind) {
-                    // `a = #imm` is the HLA spelling of `lda #imm`, and its
-                    // operand is that instruction's operand.
-                    ([target], HlaOperandKind::Immediate(_)) if is_accumulator(&target.kind) => {
-                        self.check_hla_operand(
-                            Mnemonic::Lda,
-                            &assign.source,
-                            statement.span,
-                            widths,
-                        );
-                    }
-                    // `MEM = a` is the store the slice compiles. Which target
-                    // shapes are accepted is still the slice's answer — E2
-                    // opens the rest — but what the accepted one *means* is
-                    // the classifier's.
-                    ([target], HlaOperandKind::Register(register))
-                        if register.kind == RegisterKind::A =>
-                    {
-                        match plain_symbol(&target.kind) {
-                            Some(name) if name.provenance != Provenance::Synthetic => {
-                                self.check_hla_operand(
-                                    Mnemonic::Sta,
-                                    target,
-                                    statement.span,
-                                    widths,
-                                );
-                            }
-                            Some(_) => {}
-                            None => self.diagnostics.push(compat::unimplemented(
-                                statement.span,
-                                "these assignment targets",
-                                compat::Owner::HlaLowering,
-                            )),
-                        }
-                    }
-                    _ => self.diagnostics.push(compat::unimplemented(
-                        statement.span,
-                        "these assignment chains",
-                        compat::Owner::HlaLowering,
-                    )),
-                }
+                self.check_chain(assign, statement.span, widths);
             }
             // Everything else in the HLA statement family is recognized but
             // not lowered yet.
@@ -1431,27 +1391,19 @@ impl Analysis {
         }
     }
 
-    /// Classifies one operand an HLA statement wrote, through the classifier
-    /// that answers for the native spelling of the same instruction.
+    /// Checks an assignment chain by expanding it.
     ///
-    /// There is no HLA-side immediate check, no HLA-side range check, and no
-    /// HLA-side symbol-kind check: those were a second operand model, and a
-    /// second model is a second set of answers (sub-plan E, decision 1).
-    /// `mnemonic` is what the statement's shape means; everything else about
-    /// the operand is decided here for both syntaxes at once.
-    fn check_hla_operand(
-        &mut self,
-        mnemonic: Mnemonic,
-        operand: &crate::ast::HlaOperand,
-        site: Span,
-        widths: ModeState,
-    ) {
+    /// The instructions a chain means are the instructions analysis
+    /// validates, so a chain analysis accepts is one lowering can emit — and
+    /// the expansion itself is written once, in `hla.rs`, rather than here
+    /// and again there (sub-plan E, decision 1).
+    fn check_chain(&mut self, assign: &crate::ast::HlaAssignment, site: Span, widths: ModeState) {
         let mut resolver = self.resolver().with_widths(widths);
-        let classified = resolver.classify_hla(mnemonic, operand, site);
+        let steps = crate::hla::assignment(&mut resolver, assign, site);
         let resolved = resolver.finish();
         self.absorb(resolved);
-        if let Some(classified) = classified {
-            self.check_addressable(site, &classified);
+        for step in steps.into_iter().flatten() {
+            self.check_addressable(site, &step);
         }
     }
 
@@ -1647,27 +1599,6 @@ fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat
             FunctionKind::Naked => Some(("`naked` sections", compat::Owner::HlaLowering)),
             FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
         }
-    }
-}
-
-/// True when this operand is the accumulator, the only register the slice
-/// loads.
-fn is_accumulator(kind: &HlaOperandKind) -> bool {
-    matches!(kind, HlaOperandKind::Register(register) if register.kind == RegisterKind::A)
-}
-
-/// The plain symbol an assignment target names, if that is all it is: no
-/// index, no encoding prefix, no arithmetic.
-fn plain_symbol(kind: &HlaOperandKind) -> Option<&crate::ast::Name> {
-    let HlaOperandKind::Memory(memory) = kind else {
-        return None;
-    };
-    if memory.encoding.is_some() || memory.index.is_some() || memory.offset_marker.is_some() {
-        return None;
-    }
-    match &memory.value.kind {
-        ExprKind::Symbol(name) => Some(name),
-        _ => None,
     }
 }
 

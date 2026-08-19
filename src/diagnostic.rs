@@ -106,10 +106,14 @@ impl DiagnosticCode {
     /// A branch or jump leaves a scoped width block, so the block's width
     /// escapes to the target instead of being restored.
     pub const WIDTH_BLOCK_LEAK: Self = Self("K816-W0126");
-    /// An assignment chain implies a register transfer the 65816 does not
-    /// have. The help names the two-step route through the accumulator where
-    /// one exists; K816 suggests it rather than inserting it, because an
-    /// inserted transfer clobbers the accumulator.
+    /// A step of an assignment chain has no instruction: a register transfer
+    /// the 65816 does not have, a register memory cannot be loaded into or
+    /// stored from, or a store that names no register to carry the value.
+    ///
+    /// The help names the route where one exists — the two-step transfer, or
+    /// the register the chain should have named. K816 suggests it rather than
+    /// inserting it, because an inserted transfer clobbers a register the
+    /// author is entitled to still be using.
     pub const NO_SUCH_TRANSFER: Self = Self("K816-E0127");
     /// `break` or `repeat` outside a loop. Both bind to the innermost
     /// enclosing loop, and outside one there is nothing to bind to.
@@ -141,11 +145,6 @@ impl DiagnosticCode {
     /// layout for metadata queries and reserves nothing, so it has no address
     /// to load, store, or transfer to.
     pub const ABSTRACT_HAS_NO_STORAGE: Self = Self("K816-E0136");
-    /// A chain loads a register from memory a second time because the
-    /// transfer it implies does not exist — `x = y = mem` is two loads,
-    /// because the 65816 has no `Y`-to-`X` transfer. What the author wrote is
-    /// what they get; the warning is that it costs a second memory access.
-    pub const CHAIN_RELOADS_SOURCE: Self = Self("K816-W0137");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -367,7 +366,6 @@ mod tests {
         DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
         DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
         DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
-        DiagnosticCode::CHAIN_RELOADS_SOURCE,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

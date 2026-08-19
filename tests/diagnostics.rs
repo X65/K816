@@ -169,6 +169,23 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::UNBRIDGED_NATIVE_CALL,
         caret: "jsr callee",
     },
+    // The chain family: a transfer the CPU does not have, a register memory
+    // cannot reach, and a store with no register to carry the value.
+    Case {
+        source: "func f @a8 @i8 {\n    s=y\n}\n",
+        code: DiagnosticCode::NO_SUCH_TRANSFER,
+        caret: "s",
+    },
+    Case {
+        source: "var mem = $10\nfunc f @a8 @i8 {\n    d = mem\n}\n",
+        code: DiagnosticCode::NO_SUCH_TRANSFER,
+        caret: "d",
+    },
+    Case {
+        source: "var mem = $10\nfunc f @a8 @i8 {\n    mem = 5\n}\n",
+        code: DiagnosticCode::NO_SUCH_TRANSFER,
+        caret: "5",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.

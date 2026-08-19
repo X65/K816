@@ -129,58 +129,33 @@ fn a_store_takes_the_encoding_the_address_earns() {
     equivalent("var SCREEN = $0400", "    SCREEN = a", "    sta SCREEN");
 }
 
-/// The shapes E2 will open classify identically *now*, which is the claim
-/// E1 actually makes: the chain lowering that reaches them later has nothing
-/// left to decide about their operands.
-///
-/// Reached through the classifier directly, because analysis still refuses
-/// these chains — a divergence here would otherwise stay invisible until the
-/// task that opens them, and look like that task's bug.
+/// Every operand shape a load and a store accept, against its native
+/// spelling. The classifier picks the mode and the encoding, so this is one
+/// assertion per *shape* rather than per instruction.
 #[test]
-fn an_indexed_operand_classifies_the_same_from_either_syntax() {
-    use k816::ast::{HlaStatement, ItemKind, StatementKind};
-    use k816::isa::Mnemonic;
-    use k816::resolve::Resolver;
-
-    let source = "var SCREEN = $0400
-func main @a8 @i16 {
-    SCREEN,x = a
-    sta SCREEN,x
-}
-";
-    let mut map = SourceMap::new();
-    let id = map.add_file("test.k816", source);
-    let parse = parse_source(map.file(id), None);
-    assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
-    // Analysis refuses the chain — that is E2's to open — so its diagnostics
-    // are not what this test is about; its symbol table is.
-    let (model, _) = analyze_file(&parse.file);
-
-    let ItemKind::Func(function) = &parse.file.items[1].kind else {
-        panic!("the second item is the function");
-    };
-    let StatementKind::Hla(HlaStatement::Assign(assign)) = &function.body.statements[0].kind else {
-        panic!("the first statement is the assignment");
-    };
-    let StatementKind::Native(native) = &function.body.statements[1].kind else {
-        panic!("the second statement is the native store");
-    };
-
-    let mut resolver = Resolver::new(&model.symbols);
-    let hla = resolver
-        .classify_hla(
-            Mnemonic::Sta,
-            &assign.targets[0],
-            function.body.statements[0].span,
-        )
-        .expect("the HLA target classifies");
-    let native = resolver
-        .classify(native)
-        .expect("the native operand classifies");
-    assert_eq!(
-        hla, native,
-        "`SCREEN,x = a` and `sta SCREEN,x` are one store"
-    );
+fn every_load_and_store_shape_matches_its_native_spelling() {
+    let declarations = "var Z = $10\nvar SCREEN = $0400\nvar PTR = $20";
+    for (hla, native) in [
+        ("    a = SCREEN", "    lda SCREEN"),
+        ("    a = SCREEN,x", "    lda SCREEN,x"),
+        ("    a = SCREEN,y", "    lda SCREEN,y"),
+        ("    a = (PTR,x)", "    lda (PTR,x)"),
+        ("    a = (PTR),y", "    lda (PTR),y"),
+        ("    x = SCREEN", "    ldx SCREEN"),
+        ("    x = SCREEN,y", "    ldx SCREEN,y"),
+        ("    y = SCREEN", "    ldy SCREEN"),
+        ("    y = SCREEN,x", "    ldy SCREEN,x"),
+        ("    SCREEN = a", "    sta SCREEN"),
+        ("    SCREEN,x = a", "    sta SCREEN,x"),
+        ("    SCREEN,y = a", "    sta SCREEN,y"),
+        ("    (PTR,x) = a", "    sta (PTR,x)"),
+        ("    (PTR),y = a", "    sta (PTR),y"),
+        ("    SCREEN = x", "    stx SCREEN"),
+        ("    SCREEN = y", "    sty SCREEN"),
+        ("    Z = a", "    sta Z"),
+    ] {
+        equivalent(declarations, hla, native);
+    }
 }
 
 /// Operand *rejections* are shared too, which is the half that would rot
@@ -195,4 +170,56 @@ fn an_operand_rejection_is_the_same_for_both_spellings() {
     assert_eq!(native[0].code, hla[0].code);
     assert_eq!(native[0].title, hla[0].title);
     assert_eq!(native[0].fixes, hla[0].fixes);
+}
+
+/// The fixture's paired functions: `NAME` written as HLA, `NAME_native`
+/// written as the instructions it must produce.
+///
+/// One file rather than one program per case, because a chain's operands are
+/// resolved against real declarations and the pairing should be readable as a
+/// document — someone checking a chain's expansion reads the two bodies side
+/// by side.
+#[test]
+fn every_chain_matches_the_native_sequence_beside_it() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("hla-chains.k816", include_str!("golden/hla-chains.k816"));
+    let parse = parse_source(map.file(id), None);
+    assert_eq!(parse.diagnostics, vec![], "the fixture must parse");
+    let (model, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![], "the fixture must analyze cleanly");
+    let (program, diagnostics) = lower(&parse.file, &model);
+    assert_eq!(diagnostics, vec![], "the fixture must lower cleanly");
+
+    // A function's own label names a different symbol in each half of a pair,
+    // so the comparison is over what the two *do*.
+    let body = |name: &str| -> Vec<KOpKind> {
+        let symbol = model
+            .symbols
+            .lookup(name)
+            .unwrap_or_else(|| panic!("`{name}` is declared"));
+        program
+            .functions()
+            .find(|function| function.symbol == symbol)
+            .unwrap_or_else(|| panic!("`{name}` was lowered"))
+            .ops
+            .iter()
+            .filter(|op| !matches!(op.kind, KOpKind::Label(_)))
+            .map(|op| op.kind.clone())
+            .collect()
+    };
+
+    let mut pairs = 0;
+    for (symbol, _) in model.symbols.iter() {
+        let Some(hla) = model.symbols.name(symbol).strip_suffix("_native") else {
+            continue;
+        };
+        let hla = hla.to_owned();
+        assert_eq!(
+            body(&hla),
+            body(&format!("{hla}_native")),
+            "`{hla}` and its native sequence must lower alike"
+        );
+        pairs += 1;
+    }
+    assert_eq!(pairs, 6, "every pair in the fixture is compared");
 }

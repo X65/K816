@@ -189,6 +189,28 @@ func main {
         diagnostic: None,
     },
     Row {
+        section: "Leaving a block by a branch",
+        source: "\
+func f @a8 {
+    @a16 {
+        bra .out
+    }
+.out:
+    lda #$12
+}
+",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[
+            "rep     #$20", // enter the block
+            "bra     :+",   // the branch, redirected to the pad
+            "sep     #$20", // the restore, on the taken edge
+            "jmp     @out", // and on to the written target
+            "lda     #$12", // 8-bit, because the pad got there first
+        ],
+        diagnostic: None,
+    },
+    Row {
         section: "Block-level mode scoping",
         source: "\
 func main @a8 @i8 {

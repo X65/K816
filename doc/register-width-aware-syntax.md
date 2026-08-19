@@ -228,6 +228,49 @@ Generated output:
 
 Blocks can be nested.  Each level saves and restores independently.
 
+### Leaving a block by a branch
+
+The restore above runs where control *falls out* of the block.  A branch or
+jump that leaves the block does not pass it, so the compiler splits that edge
+and puts the restore on it: the transfer lands on a generated pad that
+restores the block's width and then continues to the original target.
+
+```k65
+func f @a8 {
+    @a16 {
+        bra .out        // leaves the block
+    }
+.out:
+    lda #$12            // 8-bit: the pad restored it before control arrived
+}
+```
+
+Generated output:
+
+```asm
+        rep     #$20            ; enter @a16 block
+        bra     :+              ; the branch, redirected to the pad
+:                               ; the pad
+        sep     #$20            ; restore @a8 on the taken edge
+        jmp     @out            ; on to the written target
+:
+@out:   lda     #$12            ; 8-bit
+```
+
+The restore cannot go anywhere else.  Placed *before* the branch it would also
+run on the paths that stay in the block; placed *after* it the code is dead.
+
+This applies to a hand-written native branch as well, which is the one place
+the compiler does not emit raw native code exactly as written: a block whose
+width silently escapes is worse than a branch that grew a landing pad.  A
+branch leaving several nested blocks passes one pad per block, innermost
+first.
+
+Two consequences follow from the pad being real code.  A `nocross` run
+containing such a branch is measured *after* the split, so it can stop fitting
+its page and say so; and the extra jump changes branch distances, which is why
+the compiler chooses each branch's form after splitting rather than before.
+
 ## Module-level default coloring
 
 Mode annotations placed at the top of a source file (before any `main`/`func`

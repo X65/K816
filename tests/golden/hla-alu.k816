@@ -1,0 +1,148 @@
+// Sub-plan E3's fixture: every shorthand family in `doc/syntax-reference.md`,
+// each beside the native sequence it must lower to.
+//
+// Paired by name with `NAME_native`, like `hla-chains.k816`, and checked by
+// `tests/hla.rs::every_shorthand_matches_the_native_sequence_beside_it`.
+
+var mem  = $10
+var mask = $11
+var abs  = $0300
+
+const N = 3
+
+// The ALU and compare families. A constant written without `#` is an
+// immediate on the value side of a shorthand, exactly as in a chain.
+func alu @a8 @i8 {
+    a+mem
+    a-#1
+    a&mask
+    a|mask
+    a^abs,x
+    a?60
+    x?#1
+    y?N
+    a&?mem
+    return
+}
+
+func alu_native @a8 @i8 {
+    adc mem
+    sbc #1
+    and mask
+    ora mask
+    eor abs,x
+    cmp #60
+    cpx #1
+    cpy #N
+    bit mem
+    rts
+}
+
+// Shifts and rotates: the accumulator form takes no operand, memory forms
+// take the one they name.
+func shifts @a8 @i8 {
+    a<<
+    a>>
+    a<<<
+    a>>>
+    mem<<
+    mem,x>>
+    abs<<<
+    return
+}
+
+func shifts_native @a8 @i8 {
+    asl
+    lsr
+    rol
+    ror
+    asl mem
+    lsr mem,x
+    rol abs
+    return
+}
+
+// Step by one. The index registers have implied instructions; the
+// accumulator and memory share `INC`/`DEC`.
+func steps @a8 @i8 {
+    x++
+    x--
+    y++
+    y--
+    a++
+    a--
+    mem++
+    mem,x--
+    return
+}
+
+func steps_native @a8 @i8 {
+    inx
+    dex
+    iny
+    dey
+    inc
+    dec
+    inc mem
+    dec mem,x
+    rts
+}
+
+// The flag shorthands. `d` here is the decimal flag; `d!!` below is the
+// direct page register.
+func flags @a8 @i8 {
+    c+ c- d+ d- i+ i- v-
+    return
+}
+
+func flags_native @a8 @i8 {
+    sec clc sed cld sei cli clv
+    rts
+}
+
+// Push and pull, including the two whose letters mean a different register
+// here than they do elsewhere: `b` is the data bank and `d` the direct page.
+//
+// `p??` pulls the processor status and with it the width flags, so both
+// halves re-establish the widths before returning — and that they *both*
+// have to is the point: the width model sees `p??` as the `PLP` it is.
+func stack @a8 @i8 {
+    a!! a??
+    x!! x??
+    y!! y??
+    p!! p??
+    b!! b??
+    d!! d??
+    @a8 @i8
+    return
+}
+
+func stack_native @a8 @i8 {
+    pha pla
+    phx plx
+    phy ply
+    php plp
+    phb plb
+    phd pld
+    @a8 @i8
+    rts
+}
+
+// The one exchange, both spellings, and the two one-character shorthands.
+func markers @a8 @i8 {
+    b~a
+    a~b
+    *
+    * N
+    %
+    return
+}
+
+func markers_native @a8 @i8 {
+    xba
+    xba
+    nop
+    nop * N
+    brk #0
+    rts
+}

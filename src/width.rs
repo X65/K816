@@ -767,18 +767,7 @@ impl Flattener<'_> {
                     }
                 }
             }
-            StatementKind::Hla(hla) => {
-                if let ast::HlaStatement::Assign(assign) = hla
-                    && matches!(assign.source.kind, ast::HlaOperandKind::Immediate(_))
-                    && assign.targets.iter().any(|target| {
-                        matches!(&target.kind, ast::HlaOperandKind::Register(register)
-                            if register.kind == ast::RegisterKind::A)
-                    })
-                {
-                    self.needs.m = true;
-                }
-                self.push(id, span, Transfer::Identity, Control::fall_through());
-            }
+            StatementKind::Hla(hla) => self.hla(statement, hla),
             StatementKind::Preprocessor(_) | StatementKind::Error => {
                 self.push(id, span, Transfer::Identity, Control::fall_through());
             }
@@ -825,6 +814,54 @@ impl Flattener<'_> {
                 Control::fall_through(),
             );
         }
+    }
+
+    /// What an HLA statement does to the widths is what its expansion does.
+    ///
+    /// Running the expansion here — rather than re-deriving a rule per
+    /// statement family — is what keeps `p??` destroying the widths because
+    /// `PLP` destroys them, without this file knowing anything about either.
+    /// Every family sub-plans E2 and E3 opened falls through; the branching
+    /// ones are statement kinds of their own, already flattened above.
+    fn hla(&mut self, statement: &Statement, hla: &ast::HlaStatement) {
+        let id = statement.id;
+        let span = statement.span;
+        // As in `native` below: this run's diagnostics are dropped, because
+        // the analysis walk reports them for real.
+        let mut resolver = Resolver::new(self.symbols).in_function(self.function);
+        let Some(steps) = crate::hla::statement(&mut resolver, hla, span) else {
+            // Already rejected, so it will never be emitted; claiming it
+            // destroys the widths would only add noise to a program that has
+            // already failed.
+            self.push(id, span, Transfer::Identity, Control::fall_through());
+            return;
+        };
+        let mut effect = WidthEffect::Unchanged;
+        for step in &steps {
+            let instruction = step.instruction();
+            if let Some(class) = instruction.spec().and_then(|spec| spec.immediate_width()) {
+                match class {
+                    ImmediateWidthClass::MDependent => self.needs.m = true,
+                    ImmediateWidthClass::XDependent => self.needs.x = true,
+                    ImmediateWidthClass::Fixed8 | ImmediateWidthClass::Fixed16 => {}
+                }
+            }
+            match instruction.effects().width {
+                WidthEffect::Unchanged => {}
+                changed => effect = changed,
+            }
+        }
+        self.push(
+            id,
+            span,
+            Transfer::Instruction {
+                effect,
+                // No HLA spelling reaches `XCE`; leaving emulation is written
+                // with the mnemonic.
+                exchanges_emulation: false,
+            },
+            Control::fall_through(),
+        );
     }
 
     fn native(&mut self, statement: &Statement, native: &ast::NativeInstruction) {

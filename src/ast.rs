@@ -617,6 +617,21 @@ pub enum ArithmeticOp {
     BitTest,
 }
 
+impl ArithmeticOp {
+    /// The operator as written, for diagnostics that quote a statement.
+    pub fn k65(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Subtract => "-",
+            Self::And => "&",
+            Self::Or => "|",
+            Self::Xor => "^",
+            Self::Compare => "?",
+            Self::BitTest => "&?",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HlaShift {
     pub target: HlaOperand,

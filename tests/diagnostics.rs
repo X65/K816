@@ -173,17 +173,17 @@ const FAMILY: &[Case] = &[
     // cannot reach, and a store with no register to carry the value.
     Case {
         source: "func f @a8 @i8 {\n    s=y\n}\n",
-        code: DiagnosticCode::NO_SUCH_TRANSFER,
+        code: DiagnosticCode::NO_SUCH_INSTRUCTION,
         caret: "s",
     },
     Case {
         source: "var mem = $10\nfunc f @a8 @i8 {\n    d = mem\n}\n",
-        code: DiagnosticCode::NO_SUCH_TRANSFER,
+        code: DiagnosticCode::NO_SUCH_INSTRUCTION,
         caret: "d",
     },
     Case {
         source: "var mem = $10\nfunc f @a8 @i8 {\n    mem = 5\n}\n",
-        code: DiagnosticCode::NO_SUCH_TRANSFER,
+        code: DiagnosticCode::NO_SUCH_INSTRUCTION,
         caret: "5",
     },
 ];

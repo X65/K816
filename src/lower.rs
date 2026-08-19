@@ -29,7 +29,7 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
-use crate::ast::{AstFile, HlaStatement, ItemKind, ReturnKind, StatementKind};
+use crate::ast::{AstFile, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
 use crate::hla;
@@ -346,13 +346,15 @@ impl Lowering<'_> {
     ) {
         let mut combined: Option<Effects> = None;
         for step in steps {
-            let instruction = step.instruction();
-            let effects = instruction.effects();
-            self.push(
-                KOpKind::Instruction(instruction),
-                span,
-                Origin::HlaExpansion,
-            );
+            let effects = step.instruction().effects();
+            for _ in 0..step.repeat {
+                let instruction = step.instruction();
+                self.push(
+                    KOpKind::Instruction(instruction),
+                    span,
+                    Origin::HlaExpansion,
+                );
+            }
             combined = Some(match combined {
                 None => effects,
                 Some(carried) => Effects {
@@ -487,37 +489,27 @@ impl Lowering<'_> {
                     .with_widths(self.widths_at(statement));
                 match resolver.classify(native) {
                     Some(classified) if !resolver.has_diagnostics() => {
-                        let instruction = classified.instruction();
-                        let effects = instruction.effects();
-                        self.push(KOpKind::Instruction(instruction), span, Origin::User);
+                        let effects = classified.instruction().effects();
+                        for _ in 0..classified.repeat {
+                            let instruction = classified.instruction();
+                            self.push(KOpKind::Instruction(instruction), span, Origin::User);
+                        }
                         self.reconcile(statement, effects);
                     }
                     _ => self.skipped(span, "an unclassified instruction"),
                 }
             }
-            StatementKind::Hla(HlaStatement::Assign(assign)) => {
+            StatementKind::Hla(hla) => {
                 let mut resolver = Resolver::new(&self.model.symbols)
                     .in_function(self.function)
                     .with_widths(self.widths_at(statement));
-                let steps = hla::assignment(&mut resolver, assign, span);
+                let steps = hla::statement(&mut resolver, hla, span);
                 match steps {
                     Some(steps) if !resolver.has_diagnostics() => {
                         self.expanded(statement, steps, span);
                     }
-                    _ => self.skipped(span, "an assignment chain"),
+                    _ => self.skipped(span, "an HLA statement"),
                 }
-            }
-            StatementKind::Hla(
-                HlaStatement::Exchange(_)
-                | HlaStatement::Arithmetic(_)
-                | HlaStatement::Shift(_)
-                | HlaStatement::Step(_)
-                | HlaStatement::Flag(_)
-                | HlaStatement::Stack(_)
-                | HlaStatement::Nop { .. }
-                | HlaStatement::Break,
-            ) => {
-                self.skipped(span, "an HLA shorthand");
             }
             StatementKind::Return(ReturnKind::Subroutine) => {
                 // `return` is the HLA spelling of `rts`.

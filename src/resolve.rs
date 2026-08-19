@@ -64,15 +64,35 @@ use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, SymbolId, SymbolKind, SymbolTable};
 use crate::value::{BinaryOp, KExpr, UnaryOp, Value};
 
-/// One classified native instruction: the ISA row it matched and the typed
-/// operand built from the source expression.
+/// One classified instruction: the ISA row it matched, the typed operand
+/// built from the source expression, and how many times it is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Classified {
     pub spec: &'static InstructionSpec,
     pub operand: Option<Operand>,
+    /// `<mnemonic> * N` — the repetition count, `1` unless one was written.
+    ///
+    /// It rides on the classification rather than being read again by whoever
+    /// emits, so analysis and lowering cannot fold the count differently
+    /// (`doc/syntax-reference.md`, "NOP and Wait Shorthand").
+    pub repeat: u32,
 }
 
 impl Classified {
+    fn new(spec: &'static InstructionSpec, operand: Option<Operand>) -> Self {
+        Self {
+            spec,
+            operand,
+            repeat: 1,
+        }
+    }
+
+    /// The same classification, emitted `repeat` times.
+    pub fn repeated(mut self, repeat: u32) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
     /// The lowered instruction this classification produces.
     pub fn instruction(&self) -> Instruction {
         Instruction::new(self.spec.mnemonic, self.spec.mode, self.operand.clone())
@@ -436,14 +456,6 @@ impl<'a> Resolver<'a> {
         if native.mnemonic.provenance == Provenance::Synthetic {
             return None;
         }
-        if let Some(count) = &native.repeat {
-            self.report(compat::unimplemented(
-                count.span,
-                "instruction repetition counts",
-                compat::Owner::HlaLowering,
-            ));
-            return None;
-        }
         // The grammar produces only real 65816 mnemonics, so an unresolved
         // spelling is a typo the ISA table can name precisely.
         let Some(mnemonic) = Mnemonic::parse(&native.mnemonic.text) else {
@@ -457,11 +469,19 @@ impl<'a> Resolver<'a> {
             );
             return None;
         };
-        self.classify_operand(
+        // `<mnemonic> * N` repeats what follows it N times. The count folds
+        // here, once, so that the operation stream cannot depend on which
+        // stage did the folding.
+        let repeat = match &native.repeat {
+            None => 1,
+            Some(count) => self.constant(count, "instruction repetition counts")?,
+        };
+        let classified = self.classify_operand(
             mnemonic,
             OperandSource::native(native.operand.as_ref()),
             native.mnemonic.span,
-        )
+        )?;
+        Some(classified.repeated(repeat))
     }
 
     /// Classifies an operand the caller has already read into the shared
@@ -623,10 +643,7 @@ impl<'a> Resolver<'a> {
             }
             OperandForm::Nothing | OperandForm::Accumulator => {
                 let spec = self.select(mnemonic, form, site, source.span(site))?;
-                Some(Classified {
-                    spec,
-                    operand: None,
-                })
+                Some(Classified::new(spec, None))
             }
             OperandForm::BlockMove => {
                 let OperandSource::BlockMove(banks) = source else {
@@ -635,13 +652,13 @@ impl<'a> Resolver<'a> {
                 let spec = self.select(mnemonic, form, site, source.span(site))?;
                 let source = self.bank_byte(&banks.source)?;
                 let destination = self.bank_byte(&banks.destination)?;
-                Some(Classified {
+                Some(Classified::new(
                     spec,
-                    operand: Some(Operand::BlockMove {
+                    Some(Operand::BlockMove {
                         source,
                         destination,
                     }),
-                })
+                ))
             }
             _ => self.addressed(mnemonic, form, source, site),
         }
@@ -672,10 +689,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        Some(Classified {
-            spec,
-            operand: Some(Operand::Immediate(expr)),
-        })
+        Some(Classified::new(spec, Some(Operand::Immediate(expr))))
     }
 
     /// One bank byte of a block move, which is always a compile-time value.
@@ -766,10 +780,7 @@ impl<'a> Resolver<'a> {
                 unreachable!("these forms carry no address")
             }
         };
-        Some(Classified {
-            spec,
-            operand: Some(operand),
-        })
+        Some(Classified::new(spec, Some(operand)))
     }
 
     /// Narrows a mnemonic's specs to one by source form, for the forms whose

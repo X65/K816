@@ -33,14 +33,41 @@
 //! selects, which register carries the value, and in which order the
 //! instructions run.
 
-use crate::ast::{HlaAssignment, HlaOperand, HlaOperandKind, RegisterKind};
+use crate::ast::{
+    ArithmeticOp, Expr, ExprKind, FlagKind, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag,
+    HlaOperand, HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, RegisterKind, ShiftOp,
+    StackOp, StepOp,
+};
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::isa::Mnemonic;
 use crate::resolve::{Classified, Resolver};
 use crate::source::Span;
 
-/// The instruction sequence an assignment chain expands to, or `None` when it
-/// has none — in which case the resolver carries the diagnostic that says so.
+/// The instruction sequence an HLA statement expands to, or `None` when it has
+/// none — in which case the resolver carries the diagnostic that says so.
+///
+/// One entry point for the whole family, because analysis and lowering must
+/// walk every statement the same way and there is nothing to gain from two
+/// dispatches over the same enum.
+pub fn statement(
+    resolver: &mut Resolver,
+    statement: &HlaStatement,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    match statement {
+        HlaStatement::Assign(assign) => assignment(resolver, assign, site),
+        HlaStatement::Exchange(exchange) => exchange_halves(resolver, exchange, site),
+        HlaStatement::Arithmetic(arithmetic) => alu(resolver, arithmetic, site),
+        HlaStatement::Shift(shift) => shift_or_rotate(resolver, shift, site),
+        HlaStatement::Step(step) => step_by_one(resolver, step, site),
+        HlaStatement::Flag(flag) => set_or_clear_flag(resolver, flag, site),
+        HlaStatement::Stack(stack) => push_or_pull(resolver, stack, site),
+        HlaStatement::Nop { count } => nops(resolver, count.as_ref(), site),
+        HlaStatement::Break => breakpoint(resolver, site),
+    }
+}
+
+/// The instruction sequence an assignment chain expands to.
 ///
 /// A chain evaluates right to left: the rightmost operand is the source, and
 /// each `=` to its left stores or transfers the value now held
@@ -48,7 +75,7 @@ use crate::source::Span;
 /// carries it is the one the chain names; K816 never picks one the author did
 /// not write, because an inserted load clobbers a register the author is
 /// entitled to still be using.
-pub fn assignment(
+fn assignment(
     resolver: &mut Resolver,
     assign: &HlaAssignment,
     site: Span,
@@ -119,6 +146,274 @@ pub fn assignment(
         right = target;
     }
     Some(steps)
+}
+
+/// `a~b` and `b~a` — the one exchange the 65816 has.
+fn exchange_halves(
+    resolver: &mut Resolver,
+    exchange: &HlaExchange,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    let halves = [exchange.left.kind, exchange.right.kind];
+    if !halves.contains(&RegisterKind::A) || !halves.contains(&RegisterKind::B) {
+        resolver.report(
+            unavailable(
+                format!(
+                    "the 65816 cannot exchange `{}` with `{}`",
+                    exchange.left.kind.k65(),
+                    exchange.right.kind.k65()
+                ),
+                exchange.left.span.join(exchange.right.span),
+                "no instruction swaps these two",
+            )
+            .with_help("`XBA` swaps the accumulator halves, written `a~b` or `b~a`"),
+        );
+        return None;
+    }
+    Some(vec![resolver.classify_implied(Mnemonic::Xba, site)?])
+}
+
+/// `a+mem`, `a-#1`, `a&mask`, the compares `a?imm` / `x?imm` / `y?imm`, and
+/// the `BIT` form `a&?mem`.
+///
+/// Which mnemonic a spelling selects is `(register, operator)` and nothing
+/// else; the operand goes through the classifier, so which *mode* it selects
+/// is the same question `adc` asks.
+fn alu(resolver: &mut Resolver, arithmetic: &HlaArithmetic, site: Span) -> Option<Vec<Classified>> {
+    let register = arithmetic.register.kind;
+    let mnemonic = match (register, arithmetic.op) {
+        (RegisterKind::A, ArithmeticOp::Add) => Mnemonic::Adc,
+        (RegisterKind::A, ArithmeticOp::Subtract) => Mnemonic::Sbc,
+        (RegisterKind::A, ArithmeticOp::And) => Mnemonic::And,
+        (RegisterKind::A, ArithmeticOp::Or) => Mnemonic::Ora,
+        (RegisterKind::A, ArithmeticOp::Xor) => Mnemonic::Eor,
+        (RegisterKind::A, ArithmeticOp::BitTest) => Mnemonic::Bit,
+        (RegisterKind::A, ArithmeticOp::Compare) => Mnemonic::Cmp,
+        (RegisterKind::X, ArithmeticOp::Compare) => Mnemonic::Cpx,
+        (RegisterKind::Y, ArithmeticOp::Compare) => Mnemonic::Cpy,
+        _ => {
+            let operator = arithmetic.op.k65();
+            let mut diagnostic = unavailable(
+                format!(
+                    "the 65816 has no `{operator}` instruction for `{}`",
+                    register.k65()
+                ),
+                arithmetic.op_span,
+                "this register has no arithmetic of its own",
+            );
+            diagnostic = if arithmetic.op == ArithmeticOp::Compare {
+                diagnostic.with_help("only `a`, `x`, and `y` compare")
+            } else {
+                diagnostic.with_help(format!(
+                    "only the accumulator has `{operator}`; load it first, e.g. `a = {}`",
+                    register.k65()
+                ))
+            };
+            resolver.report(diagnostic);
+            return None;
+        }
+    };
+    Some(vec![operand_step(
+        resolver,
+        mnemonic,
+        &arithmetic.operand,
+        Role::Source,
+        site,
+    )?])
+}
+
+/// `a<<`, `mem>>`, `mem,x>>>` — the shifts and rotates.
+fn shift_or_rotate(
+    resolver: &mut Resolver,
+    shift: &HlaShift,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    let mnemonic = match shift.op {
+        ShiftOp::Left => Mnemonic::Asl,
+        ShiftOp::Right => Mnemonic::Lsr,
+        ShiftOp::RotateLeft => Mnemonic::Rol,
+        ShiftOp::RotateRight => Mnemonic::Ror,
+    };
+    // The accumulator shifts, and so does memory. Any other register would
+    // have to go through one of them first.
+    if let Some(register) = register_of(&shift.target)
+        && register != RegisterKind::A
+    {
+        resolver.report(
+            unavailable(
+                format!("the 65816 cannot shift `{}`", register.k65()),
+                shift.target.span,
+                "no instruction shifts this register",
+            )
+            .with_help("only the accumulator and memory shift"),
+        );
+        return None;
+    }
+    Some(vec![operand_step(
+        resolver,
+        mnemonic,
+        &shift.target,
+        Role::Target,
+        site,
+    )?])
+}
+
+/// `x++`, `y--`, `mem++`, `mem,x--` — increment and decrement by one.
+///
+/// The index registers have instructions of their own; the accumulator and
+/// memory share `INC`/`DEC`, which is the 65C02 addition for the accumulator
+/// form.
+fn step_by_one(resolver: &mut Resolver, step: &HlaStep, site: Span) -> Option<Vec<Classified>> {
+    let increment = step.op == StepOp::Increment;
+    if let Some(register) = register_of(&step.target) {
+        let mnemonic = match (register, increment) {
+            (RegisterKind::X, true) => Mnemonic::Inx,
+            (RegisterKind::X, false) => Mnemonic::Dex,
+            (RegisterKind::Y, true) => Mnemonic::Iny,
+            (RegisterKind::Y, false) => Mnemonic::Dey,
+            (RegisterKind::A, true) => Mnemonic::Inc,
+            (RegisterKind::A, false) => Mnemonic::Dec,
+            _ => {
+                resolver.report(
+                    unavailable(
+                        format!(
+                            "the 65816 cannot {} `{}`",
+                            if increment { "increment" } else { "decrement" },
+                            register.k65()
+                        ),
+                        step.op_span,
+                        "no instruction steps this register",
+                    )
+                    .with_help("only `a`, `x`, `y`, and memory step by one"),
+                );
+                return None;
+            }
+        };
+        // `a++` is the accumulator form of `INC`; the index registers have
+        // implied instructions that take no operand at all.
+        return Some(vec![if register == RegisterKind::A {
+            operand_step(resolver, mnemonic, &step.target, Role::Target, site)?
+        } else {
+            resolver.classify_implied(mnemonic, site)?
+        }]);
+    }
+    let mnemonic = if increment {
+        Mnemonic::Inc
+    } else {
+        Mnemonic::Dec
+    };
+    Some(vec![operand_step(
+        resolver,
+        mnemonic,
+        &step.target,
+        Role::Target,
+        site,
+    )?])
+}
+
+/// `c+`, `c-`, `d+`, `d-`, `i+`, `i-`, `v-` — the flag shorthands.
+///
+/// `d` here is the decimal *flag*, not the direct page register `d` of the
+/// stack shorthands: the suffix decides which one the letter means.
+fn set_or_clear_flag(
+    resolver: &mut Resolver,
+    flag: &HlaFlag,
+    site: Span,
+) -> Option<Vec<Classified>> {
+    let mnemonic = match (flag.flag, flag.set) {
+        (FlagKind::Carry, true) => Mnemonic::Sec,
+        (FlagKind::Carry, false) => Mnemonic::Clc,
+        (FlagKind::Decimal, true) => Mnemonic::Sed,
+        (FlagKind::Decimal, false) => Mnemonic::Cld,
+        (FlagKind::Interrupt, true) => Mnemonic::Sei,
+        (FlagKind::Interrupt, false) => Mnemonic::Cli,
+        (FlagKind::Overflow, false) => Mnemonic::Clv,
+        // The 65816 has `CLV` and no `SEV`: the overflow flag is set by the
+        // hardware and by `BIT`, never by a flag instruction.
+        (FlagKind::Overflow, true) => {
+            resolver.report(
+                unavailable(
+                    "the 65816 cannot set the overflow flag".to_owned(),
+                    flag.flag_span,
+                    "there is no `SEV` instruction",
+                )
+                .with_help(
+                    "only `v-` exists; the overflow flag is set by arithmetic or by `a&?mem`",
+                ),
+            );
+            return None;
+        }
+    };
+    Some(vec![resolver.classify_implied(mnemonic, site)?])
+}
+
+/// `a!!`, `x??`, `p!!`, `b!!`, `d??` — push and pull.
+///
+/// `b` and `d` are the *bank* and *direct page* registers here, not the
+/// accumulator's high byte and the decimal flag: `PHB` pushes the data bank
+/// and `PHD` the direct page (`doc/syntax-reference.md`, "65816 Bank
+/// Registers and Mode Switch").
+fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option<Vec<Classified>> {
+    let push = stack.op == StackOp::Push;
+    let register = stack.register.kind;
+    let mnemonic = match (register, push) {
+        (RegisterKind::A, true) => Mnemonic::Pha,
+        (RegisterKind::A, false) => Mnemonic::Pla,
+        (RegisterKind::X, true) => Mnemonic::Phx,
+        (RegisterKind::X, false) => Mnemonic::Plx,
+        (RegisterKind::Y, true) => Mnemonic::Phy,
+        (RegisterKind::Y, false) => Mnemonic::Ply,
+        (RegisterKind::P, true) => Mnemonic::Php,
+        (RegisterKind::P, false) => Mnemonic::Plp,
+        (RegisterKind::B, true) => Mnemonic::Phb,
+        (RegisterKind::B, false) => Mnemonic::Plb,
+        (RegisterKind::D, true) => Mnemonic::Phd,
+        (RegisterKind::D, false) => Mnemonic::Pld,
+        _ => {
+            resolver.report(
+                unavailable(
+                    format!(
+                        "the 65816 cannot {} `{}`",
+                        if push { "push" } else { "pull" },
+                        register.k65()
+                    ),
+                    stack.op_span,
+                    "no instruction moves this register through the stack",
+                )
+                .with_help("`a`, `x`, `y`, `p`, `b`, and `d` have push and pull"),
+            );
+            return None;
+        }
+    };
+    Some(vec![resolver.classify_implied(mnemonic, site)?])
+}
+
+/// `*` and `* N` — one `NOP`, or N of them.
+fn nops(resolver: &mut Resolver, count: Option<&Expr>, site: Span) -> Option<Vec<Classified>> {
+    let count = match count {
+        None => 1,
+        Some(expr) => resolver.constant(expr, "NOP counts")?,
+    };
+    Some(vec![
+        resolver
+            .classify_implied(Mnemonic::Nop, site)?
+            .repeated(count),
+    ])
+}
+
+/// `%` — the one-character breakpoint, which is `brk #0`.
+fn breakpoint(resolver: &mut Resolver, site: Span) -> Option<Vec<Classified>> {
+    // `BRK` has no implied form in the ISA table: the signature byte is part
+    // of the instruction, and `%` is the spelling that leaves it zero.
+    let zero = Expr {
+        kind: ExprKind::Number(0),
+        span: site,
+    };
+    Some(vec![resolver.classify_source(
+        Mnemonic::Brk,
+        crate::resolve::OperandSource::Immediate(&zero),
+        site,
+    )?])
 }
 
 /// A chain that names no register at all: either the zero store, or a step
@@ -412,8 +707,23 @@ fn needs_a_register(assign: &HlaAssignment) -> Diagnostic {
     )
 }
 
+/// A shorthand the 65816 has no instruction for.
+///
+/// The same code as a chain step with no instruction: from where the author
+/// sits, `s=y` and `v+` are one complaint — the spelling is legal K65 and the
+/// CPU cannot do it — and the specifics belong in the labels rather than in a
+/// second code.
+fn unavailable(title: String, span: Span, label: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::NO_SUCH_INSTRUCTION,
+        title,
+        Label::new(span, label),
+    )
+    .with_docs("doc/syntax-reference.md#standard-6502-instructions")
+}
+
 fn no_instruction(title: String, primary: Label, secondary: Option<Label>) -> Diagnostic {
-    let mut diagnostic = Diagnostic::error(DiagnosticCode::NO_SUCH_TRANSFER, title, primary)
+    let mut diagnostic = Diagnostic::error(DiagnosticCode::NO_SUCH_INSTRUCTION, title, primary)
         .with_docs("doc/syntax-reference.md#assignment-chaining");
     if let Some(secondary) = secondary {
         diagnostic = diagnostic.with_secondary(secondary);

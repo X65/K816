@@ -106,15 +106,18 @@ impl DiagnosticCode {
     /// A branch or jump leaves a scoped width block, so the block's width
     /// escapes to the target instead of being restored.
     pub const WIDTH_BLOCK_LEAK: Self = Self("K816-W0126");
-    /// A step of an assignment chain has no instruction: a register transfer
-    /// the 65816 does not have, a register memory cannot be loaded into or
-    /// stored from, or a store that names no register to carry the value.
+    /// An HLA statement the 65816 has no instruction for: a register transfer
+    /// it does not have, a register memory cannot be loaded into or stored
+    /// from, a store that names no register to carry the value, or a
+    /// shorthand a register does not support — `x+1`, `v+`, `s!!`.
     ///
-    /// The help names the route where one exists — the two-step transfer, or
-    /// the register the chain should have named. K816 suggests it rather than
+    /// One code for the family because it is one complaint from where the
+    /// author sits: the spelling is legal K65 and the CPU cannot do it. The
+    /// help names the route where one exists — the two-step transfer, or the
+    /// register that does have the instruction. K816 suggests it rather than
     /// inserting it, because an inserted transfer clobbers a register the
     /// author is entitled to still be using.
-    pub const NO_SUCH_TRANSFER: Self = Self("K816-E0127");
+    pub const NO_SUCH_INSTRUCTION: Self = Self("K816-E0127");
     /// `break` or `repeat` outside a loop. Both bind to the innermost
     /// enclosing loop, and outside one there is nothing to bind to.
     pub const LOOP_CONTROL_OUTSIDE_LOOP: Self = Self("K816-E0128");
@@ -356,7 +359,7 @@ mod tests {
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
         DiagnosticCode::WIDTH_BLOCK_LEAK,
-        DiagnosticCode::NO_SUCH_TRANSFER,
+        DiagnosticCode::NO_SUCH_INSTRUCTION,
         DiagnosticCode::LOOP_CONTROL_OUTSIDE_LOOP,
         DiagnosticCode::GOTO_FOREIGN_LABEL,
         DiagnosticCode::NOCROSS_SPLIT_OVERFLOW,

@@ -1409,16 +1409,24 @@ fn every_operandless_mnemonic_the_grammar_accepts_is_in_the_isa_table() {
 }
 
 #[test]
-fn instruction_repetition_still_names_its_owner() {
-    // `<mnemonic> * N` is an HLA shorthand, not an operand shape, so it
-    // stays E's even though every addressing mode around it now compiles.
+fn instruction_repetition_reaches_the_ast_and_compiles() {
+    // `<mnemonic> * N` is a shorthand, not an operand shape, so the count
+    // lands beside the instruction rather than inside it.
     let mut map = SourceMap::new();
-    let id = map.add_file("repeat.k65", "func main @a8 { rts * 2 }\n");
+    let id = map.add_file("repeat.k65", "func main @a8 { inx * 2 }\n");
     let parsed = parse_source(map.file(id), None);
     assert_eq!(parsed.diagnostics, vec![]);
+    let ItemKind::Func(func) = &parsed.file.items[0].kind else {
+        panic!("expected a func");
+    };
+    let StatementKind::Native(native) = &func.body.statements[0].kind else {
+        panic!("expected a native instruction");
+    };
+    assert!(native.operand.is_none(), "the repeat is not an operand");
+    assert!(native.repeat.is_some());
+
     let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_YET_IMPLEMENTED);
+    assert_eq!(diagnostics, vec![], "{diagnostics:?}");
 }
 
 #[test]
@@ -1613,19 +1621,18 @@ fn registers_are_case_insensitive() {
 }
 
 #[test]
-fn the_slice_chain_shapes_still_compile_and_the_rest_name_their_owner() {
+fn the_slice_chain_shapes_still_compile_beside_the_family_that_grew_around_them() {
     // The two shapes sub-plan A compiles keep their semantics through the
-    // generalization; every other chain says who owns it.
+    // generalization, and sub-plans E2 and E3 opened the rest of the family
+    // around them: chains, transfers, and every shorthand now compile where
+    // they used to name an owner.
     let mut map = SourceMap::new();
     let slice = map.add_file("slice.k816", HLA_SLICE);
     let parsed = parse_source(map.file(slice), None);
     let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
     assert_eq!(diagnostics, vec![], "the slice must stay clean");
 
-    // Sub-plan E2 opened the chain family — `x = a`, `mem,x = a`, and
-    // `a = mem` compile now — so what is left to name an owner is the
-    // shorthand family beside it.
-    for source in ["x = a\n", "mem,x = a\n", "a = mem\n"] {
+    for source in ["x = a\n", "mem,x = a\n", "a = mem\n", "b~a\n", "a+mem\n"] {
         let mut map = SourceMap::new();
         let id = map.add_file(
             "chain.k65",
@@ -1636,18 +1643,6 @@ fn the_slice_chain_shapes_still_compile_and_the_rest_name_their_owner() {
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
         assert_eq!(diagnostics, vec![], "`{source}`: {diagnostics:?}");
     }
-
-    let source = "b~a\n";
-    let mut map = SourceMap::new();
-    let id = map.add_file(
-        "chain.k65",
-        format!("var mem = $0400\nfunc main @a8 {{\n  {source}}}\n"),
-    );
-    let parsed = parse_source(map.file(id), None);
-    assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
-    let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-    assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_YET_IMPLEMENTED);
 }
 
 #[test]

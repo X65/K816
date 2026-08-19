@@ -181,8 +181,18 @@ fn an_operand_rejection_is_the_same_for_both_spellings() {
 /// by side.
 #[test]
 fn every_chain_matches_the_native_sequence_beside_it() {
+    paired_fixture("hla-chains.k816", include_str!("golden/hla-chains.k816"), 6);
+}
+
+/// The shorthand families, paired the same way.
+#[test]
+fn every_shorthand_matches_the_native_sequence_beside_it() {
+    paired_fixture("hla-alu.k816", include_str!("golden/hla-alu.k816"), 6);
+}
+
+fn paired_fixture(name: &str, text: &str, expected_pairs: usize) {
     let mut map = SourceMap::new();
-    let id = map.add_file("hla-chains.k816", include_str!("golden/hla-chains.k816"));
+    let id = map.add_file(name, text);
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![], "the fixture must parse");
     let (model, diagnostics) = analyze_file(&parse.file);
@@ -214,12 +224,80 @@ fn every_chain_matches_the_native_sequence_beside_it() {
             continue;
         };
         let hla = hla.to_owned();
+        let expanded = body(&hla);
+        assert!(!expanded.is_empty(), "`{hla}` lowered to nothing");
         assert_eq!(
-            body(&hla),
+            expanded,
             body(&format!("{hla}_native")),
             "`{hla}` and its native sequence must lower alike"
         );
         pairs += 1;
     }
-    assert_eq!(pairs, 6, "every pair in the fixture is compared");
+    assert_eq!(
+        pairs, expected_pairs,
+        "every pair in the fixture is compared"
+    );
+}
+
+/// The shorthands the 65816 has no instruction for, all reported the same
+/// way: one code, and a help that names the route where one exists.
+///
+/// These live here rather than in `tests/semantic.rs` for the reason
+/// `postmortem.md` §D.3.2 settled for the width cases — a rejection belongs
+/// next to the behaviour it belongs to.
+#[test]
+fn a_shorthand_the_cpu_cannot_do_is_refused_with_its_route() {
+    for (source, expected_help) in [
+        ("    x+1", Some("only the accumulator")),
+        ("    y&mask", Some("only the accumulator")),
+        ("    d?1", Some("only `a`, `x`, and `y` compare")),
+        ("    v+", Some("only `v-` exists")),
+        ("    s!!", Some("have push and pull")),
+        ("    x~y", Some("`XBA` swaps the accumulator halves")),
+        ("    d<<", Some("only the accumulator and memory shift")),
+        ("    s++", Some("step by one")),
+    ] {
+        let source = format!("var mask = $10\nfunc main @a8 @i8 {{\n{source}\n}}\n");
+        let reported = diagnostics(&source);
+        assert_eq!(reported.len(), 1, "`{source}`: {reported:?}");
+        assert_eq!(
+            reported[0].code,
+            DiagnosticCode::NO_SUCH_INSTRUCTION,
+            "`{source}`"
+        );
+        let help = reported[0].help.as_deref().unwrap_or_default();
+        let expected = expected_help.expect("every case names a route");
+        assert!(
+            help.contains(expected),
+            "`{source}` helps with {help:?}, expected to mention {expected:?}"
+        );
+    }
+}
+
+/// `p??` is `PLP`, so the width model must lose the widths at it exactly as
+/// it does for the mnemonic.
+///
+/// This is the seam the shorthand families put back at risk: an expansion the
+/// model does not look at is an expansion whose effects it does not know, and
+/// the failure is a width K816 keeps believing rather than a wrong opcode.
+#[test]
+fn a_shorthand_that_destroys_the_widths_is_seen_by_the_width_model() {
+    let codes = |body: &str| -> Vec<&'static str> {
+        let source = format!("func f @a8 @i8 {{\n    {body}\n    return\n}}\n");
+        diagnostics(&source)
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect()
+    };
+    let hla = codes("p??");
+    assert_eq!(
+        hla,
+        ["K816-W0124", "K816-W0124"],
+        "pulling the status register leaves no width a caller can rely on"
+    );
+    assert_eq!(hla, codes("plp"), "the two spellings are one instruction");
+
+    // And the pair that changes nothing stays quiet in both spellings.
+    assert!(codes("a!!").is_empty());
+    assert_eq!(codes("a!!"), codes("pha"));
 }

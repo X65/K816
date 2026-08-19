@@ -1044,26 +1044,8 @@ impl Analysis {
                     self.check_addressable(native.mnemonic.span, &classified);
                 }
             }
-            StatementKind::Hla(HlaStatement::Assign(assign)) => {
-                self.check_chain(assign, statement.span, widths);
-            }
-            // Everything else in the HLA statement family is recognized but
-            // not lowered yet.
-            StatementKind::Hla(
-                HlaStatement::Exchange(_)
-                | HlaStatement::Arithmetic(_)
-                | HlaStatement::Shift(_)
-                | HlaStatement::Step(_)
-                | HlaStatement::Flag(_)
-                | HlaStatement::Stack(_)
-                | HlaStatement::Nop { .. }
-                | HlaStatement::Break,
-            ) => {
-                self.diagnostics.push(compat::unimplemented(
-                    statement.span,
-                    "these HLA shorthands",
-                    compat::Owner::HlaLowering,
-                ));
+            StatementKind::Hla(hla) => {
+                self.check_hla(hla, statement.span, widths);
             }
             // Both label scopes were declared by the first pass, so a label
             // statement has nothing left to check here.
@@ -1391,15 +1373,15 @@ impl Analysis {
         }
     }
 
-    /// Checks an assignment chain by expanding it.
+    /// Checks an HLA statement by expanding it.
     ///
-    /// The instructions a chain means are the instructions analysis
-    /// validates, so a chain analysis accepts is one lowering can emit — and
-    /// the expansion itself is written once, in `hla.rs`, rather than here
-    /// and again there (sub-plan E, decision 1).
-    fn check_chain(&mut self, assign: &crate::ast::HlaAssignment, site: Span, widths: ModeState) {
+    /// The instructions a statement means are the instructions analysis
+    /// validates, so a statement analysis accepts is one lowering can emit —
+    /// and the expansion itself is written once, in `hla.rs`, rather than
+    /// here and again there (sub-plan E, decision 1).
+    fn check_hla(&mut self, hla: &HlaStatement, site: Span, widths: ModeState) {
         let mut resolver = self.resolver().with_widths(widths);
-        let steps = crate::hla::assignment(&mut resolver, assign, site);
+        let steps = crate::hla::statement(&mut resolver, hla, site);
         let resolved = resolver.finish();
         self.absorb(resolved);
         for step in steps.into_iter().flatten() {

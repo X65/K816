@@ -46,8 +46,9 @@
 //! — and never to a symbol ld65 places.
 
 use crate::ast::{
-    AddressEncoding as AstEncoding, AddressOperand, DataBlock, DataEntry, DataEntryKind, DataValue,
-    Expr, ExprKind, IndexRegisterKind, IndirectOperand, NativeInstruction, NativeOperand,
+    AddressEncoding as AstEncoding, AddressOperand, BlockMoveOperand, DataBlock, DataEntry,
+    DataEntryKind, DataValue, Expr, ExprKind, HlaOperand, HlaOperandKind, IndexRegisterKind,
+    IndirectOperand, LongIndirectOperand, NativeInstruction, NativeOperand, Register,
     StorageClassKind,
 };
 use crate::compat;
@@ -75,6 +76,74 @@ impl Classified {
     /// The lowered instruction this classification produces.
     pub fn instruction(&self) -> Instruction {
         Instruction::new(self.spec.mnemonic, self.spec.mode, self.operand.clone())
+    }
+}
+
+/// One operand, borrowed from whichever syntax wrote it.
+///
+/// An HLA operand and a native operand that denote the same thing must
+/// produce the same [`Operand`], chosen by the same code (sub-plan E,
+/// decision 1). This is the vocabulary they meet in: `a = SCREEN,x` and
+/// `lda SCREEN,x` reach classification as the same variant, so nothing after
+/// this point *can* classify them differently. The two syntaxes stay distinct
+/// in the AST — `doc/design.md` non-negotiable 7 — and converge here, at the
+/// one question they were never allowed to answer separately.
+#[derive(Clone, Copy, Debug)]
+pub enum OperandSource<'a> {
+    /// No operand at all: an implied instruction.
+    Nothing,
+    Immediate(&'a Expr),
+    Register(&'a Register),
+    Address(&'a AddressOperand),
+    Indirect(&'a IndirectOperand),
+    LongIndirect(&'a LongIndirectOperand),
+    BlockMove(&'a BlockMoveOperand),
+}
+
+impl<'a> OperandSource<'a> {
+    /// What a native instruction wrote, `None` for an implied one.
+    pub fn native(operand: Option<&'a NativeOperand>) -> Self {
+        match operand {
+            None => Self::Nothing,
+            Some(NativeOperand::Immediate(expr)) => Self::Immediate(expr),
+            Some(NativeOperand::Register(register)) => Self::Register(register),
+            Some(NativeOperand::Address(address)) => Self::Address(address),
+            Some(NativeOperand::Indirect(indirect)) => Self::Indirect(indirect),
+            Some(NativeOperand::LongIndirect(long)) => Self::LongIndirect(long),
+            Some(NativeOperand::BlockMove(banks)) => Self::BlockMove(banks),
+        }
+    }
+
+    /// What an HLA statement wrote, or `None` for the error node the parser
+    /// has already reported.
+    ///
+    /// The HLA operand shapes are a subset of the native ones and share their
+    /// types, so this is a rewrapping rather than a translation — which is the
+    /// point: a translation could lose something, and there is nothing here
+    /// that could.
+    pub fn hla(operand: &'a HlaOperand) -> Option<Self> {
+        match &operand.kind {
+            HlaOperandKind::Register(register) => Some(Self::Register(register)),
+            HlaOperandKind::Immediate(expr) => Some(Self::Immediate(expr)),
+            HlaOperandKind::Memory(address) => Some(Self::Address(address)),
+            HlaOperandKind::Indirect(indirect) => Some(Self::Indirect(indirect)),
+            HlaOperandKind::Error => None,
+        }
+    }
+
+    /// The span to blame for an operand problem: the operand itself when
+    /// there is one, and `site` — the mnemonic, or the HLA statement — when
+    /// there is not.
+    fn span(self, site: Span) -> Span {
+        match self {
+            Self::Nothing => site,
+            Self::Immediate(expr) => expr.span,
+            Self::Register(register) => register.span,
+            Self::Address(address) => address.value.span,
+            Self::Indirect(indirect) => indirect.value.span,
+            Self::LongIndirect(long) => long.value.span,
+            Self::BlockMove(banks) => banks.source.span,
+        }
     }
 }
 
@@ -388,35 +457,56 @@ impl<'a> Resolver<'a> {
             );
             return None;
         };
-        self.classify_operand(mnemonic, native)
+        self.classify_operand(
+            mnemonic,
+            OperandSource::native(native.operand.as_ref()),
+            native.mnemonic.span,
+        )
+    }
+
+    /// Classifies the operand of an HLA statement against the mnemonic that
+    /// statement's shape selects.
+    ///
+    /// The split is deliberate: which instruction a statement means is HLA's
+    /// to decide, because that is what the spelling says; what its operand is
+    /// is not HLA's to decide, because a native instruction already asked the
+    /// same question (decision 1). `site` is the span to blame when the
+    /// operand itself is not what is wrong — the statement's, where a native
+    /// instruction would give its mnemonic's.
+    pub fn classify_hla(
+        &mut self,
+        mnemonic: Mnemonic,
+        operand: &HlaOperand,
+        site: Span,
+    ) -> Option<Classified> {
+        let source = OperandSource::hla(operand)?;
+        self.classify_operand(mnemonic, source, site)
     }
 
     fn classify_operand(
         &mut self,
         mnemonic: Mnemonic,
-        native: &NativeInstruction,
+        source: OperandSource<'_>,
+        site: Span,
     ) -> Option<Classified> {
-        let span = native.mnemonic.span;
-        let operand = native.operand.as_ref();
-
         // `&&label` and `&&&label` produce immediate relocations even in
         // address position — the one documented exception to "an unprefixed
         // value operand is an address operand".
-        if let Some(NativeOperand::Address(address)) = operand
+        if let OperandSource::Address(address) = source
             && address.index.is_none()
             && address.encoding.is_none()
             && is_address_of(&address.value)
         {
-            return self.immediate(mnemonic, span, &address.value);
+            return self.immediate(mnemonic, site, &address.value);
         }
 
-        let Some(form) = source_form(operand) else {
+        let Some(form) = source_form(source) else {
             self.report(
                 Diagnostic::error(
                     DiagnosticCode::INVALID_OPERAND,
                     format!("`{}` cannot take this operand shape", mnemonic.ca65()),
                     Label::new(
-                        operand_span(native),
+                        source.span(site),
                         "no 65816 addressing mode is written like this",
                     ),
                 )
@@ -425,29 +515,29 @@ impl<'a> Resolver<'a> {
             return None;
         };
 
-        self.check_offset_marker(operand, form);
+        self.check_offset_marker(source, form);
         let form = accumulator_default(mnemonic, form);
         let mnemonic = aliased(mnemonic, form);
 
         match form {
             OperandForm::Immediate => {
-                let Some(NativeOperand::Immediate(value)) = operand else {
+                let OperandSource::Immediate(value) = source else {
                     unreachable!("only an immediate operand has the immediate form");
                 };
-                self.immediate(mnemonic, span, value)
+                self.immediate(mnemonic, site, value)
             }
             OperandForm::Nothing | OperandForm::Accumulator => {
-                let spec = self.select(mnemonic, form, span, operand_span(native))?;
+                let spec = self.select(mnemonic, form, site, source.span(site))?;
                 Some(Classified {
                     spec,
                     operand: None,
                 })
             }
             OperandForm::BlockMove => {
-                let Some(NativeOperand::BlockMove(banks)) = operand else {
+                let OperandSource::BlockMove(banks) = source else {
                     unreachable!("only a block move has the block-move form");
                 };
-                let spec = self.select(mnemonic, form, span, operand_span(native))?;
+                let spec = self.select(mnemonic, form, site, source.span(site))?;
                 let source = self.bank_byte(&banks.source)?;
                 let destination = self.bank_byte(&banks.destination)?;
                 Some(Classified {
@@ -458,7 +548,7 @@ impl<'a> Resolver<'a> {
                     }),
                 })
             }
-            _ => self.addressed(mnemonic, form, native),
+            _ => self.addressed(mnemonic, form, source, site),
         }
     }
 
@@ -515,19 +605,18 @@ impl<'a> Resolver<'a> {
         &mut self,
         mnemonic: Mnemonic,
         form: OperandForm,
-        native: &NativeInstruction,
+        source: OperandSource<'_>,
+        site: Span,
     ) -> Option<Classified> {
-        let (value, forced, index) = match native.operand.as_ref() {
-            Some(NativeOperand::Address(address)) => {
-                (&address.value, address.encoding, address.index)
-            }
-            Some(NativeOperand::Indirect(indirect)) => (&indirect.value, indirect.encoding, None),
-            Some(NativeOperand::LongIndirect(long)) => (&long.value, long.encoding, None),
+        let (value, forced, index) = match source {
+            OperandSource::Address(address) => (&address.value, address.encoding, address.index),
+            OperandSource::Indirect(indirect) => (&indirect.value, indirect.encoding, None),
+            OperandSource::LongIndirect(long) => (&long.value, long.encoding, None),
             _ => unreachable!("an addressed form always carries an address expression"),
         };
 
-        self.check_const_in_address_position(mnemonic, value, native);
-        let spec = self.select_encoding(mnemonic, form, native, value, forced)?;
+        self.check_const_in_address_position(mnemonic, value, source);
+        let spec = self.select_encoding(mnemonic, form, source, site, value, forced)?;
         let expr = self.fold(value)?;
         self.check_fits(spec, &expr, value.span);
 
@@ -622,13 +711,14 @@ impl<'a> Resolver<'a> {
         &mut self,
         mnemonic: Mnemonic,
         form: OperandForm,
-        native: &NativeInstruction,
+        source: OperandSource<'_>,
+        site: Span,
         value: &Expr,
         forced: Option<AstEncoding>,
     ) -> Option<&'static InstructionSpec> {
         let candidates: Vec<&'static InstructionSpec> = spec_for_form(mnemonic, form).collect();
         if candidates.is_empty() {
-            self.report_invalid_form(mnemonic, form, native.mnemonic.span, operand_span(native));
+            self.report_invalid_form(mnemonic, form, site, source.span(site));
             return None;
         }
         // A displacement operand has no encoding to choose.
@@ -770,9 +860,9 @@ impl<'a> Resolver<'a> {
         &mut self,
         mnemonic: Mnemonic,
         value: &Expr,
-        native: &NativeInstruction,
+        source: OperandSource<'_>,
     ) {
-        if let Some(NativeOperand::Address(address)) = native.operand.as_ref()
+        if let OperandSource::Address(address) = source
             && address.offset_marker.is_some()
         {
             return;
@@ -830,8 +920,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// The `&expr` marker is legal only in the `,X` and `,Y` indexed modes.
-    fn check_offset_marker(&mut self, operand: Option<&NativeOperand>, form: OperandForm) {
-        let Some(NativeOperand::Address(address)) = operand else {
+    fn check_offset_marker(&mut self, source: OperandSource<'_>, form: OperandForm) {
+        let OperandSource::Address(address) = source else {
             return;
         };
         let Some(marker) = address.offset_marker else {
@@ -946,38 +1036,38 @@ impl<'a> Resolver<'a> {
 
 /// The source operand shape, or `None` when no 65816 mode is written that
 /// way (`(expr,Y)`, say, which no instruction has).
-fn source_form(operand: Option<&NativeOperand>) -> Option<OperandForm> {
+fn source_form(source: OperandSource<'_>) -> Option<OperandForm> {
     use IndexRegisterKind as I;
     let index = |register: Option<crate::ast::IndexRegister>| register.map(|index| index.kind);
-    Some(match operand {
-        None => OperandForm::Nothing,
-        Some(NativeOperand::Register(register)) => {
+    Some(match source {
+        OperandSource::Nothing => OperandForm::Nothing,
+        OperandSource::Register(register) => {
             if register.kind == crate::ast::RegisterKind::A {
                 OperandForm::Accumulator
             } else {
                 return None;
             }
         }
-        Some(NativeOperand::Immediate(_)) => OperandForm::Immediate,
-        Some(NativeOperand::BlockMove(_)) => OperandForm::BlockMove,
-        Some(NativeOperand::Address(AddressOperand { index: idx, .. })) => match index(*idx) {
+        OperandSource::Immediate(_) => OperandForm::Immediate,
+        OperandSource::BlockMove(_) => OperandForm::BlockMove,
+        OperandSource::Address(AddressOperand { index: idx, .. }) => match index(*idx) {
             None => OperandForm::Address,
             Some(I::X) => OperandForm::AddressIndexedX,
             Some(I::Y) => OperandForm::AddressIndexedY,
             Some(I::Stack) => OperandForm::StackRelative,
         },
-        Some(NativeOperand::Indirect(IndirectOperand {
+        OperandSource::Indirect(IndirectOperand {
             inner_index,
             outer_index,
             ..
-        })) => match (index(*inner_index), index(*outer_index)) {
+        }) => match (index(*inner_index), index(*outer_index)) {
             (None, None) => OperandForm::Indirect,
             (Some(I::X), None) => OperandForm::IndirectIndexedX,
             (None, Some(I::Y)) => OperandForm::IndirectIndexedY,
             (Some(I::Stack), Some(I::Y)) => OperandForm::StackRelativeIndirectIndexedY,
             _ => return None,
         },
-        Some(NativeOperand::LongIndirect(long)) => match index(long.outer_index) {
+        OperandSource::LongIndirect(long) => match index(long.outer_index) {
             None => OperandForm::LongIndirect,
             Some(I::Y) => OperandForm::LongIndirectIndexedY,
             Some(_) => return None,
@@ -996,20 +1086,6 @@ fn is_address_of(expr: &Expr) -> bool {
                 crate::ast::UnaryOp::Address16 | crate::ast::UnaryOp::Address24
             )
     )
-}
-
-/// The span to blame for an operand problem: the operand itself when there
-/// is one, and the mnemonic when there is not.
-fn operand_span(native: &NativeInstruction) -> Span {
-    match native.operand.as_ref() {
-        None => native.mnemonic.span,
-        Some(NativeOperand::Immediate(expr)) => expr.span,
-        Some(NativeOperand::Register(register)) => register.span,
-        Some(NativeOperand::Address(address)) => address.value.span,
-        Some(NativeOperand::Indirect(indirect)) => indirect.value.span,
-        Some(NativeOperand::LongIndirect(long)) => long.value.span,
-        Some(NativeOperand::BlockMove(banks)) => banks.source.span,
-    }
 }
 
 fn encoding_of(kind: StorageClassKind) -> AddressEncoding {

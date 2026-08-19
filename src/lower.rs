@@ -29,9 +29,7 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
-use crate::ast::{
-    AstFile, ExprKind, HlaOperandKind, HlaStatement, ItemKind, ReturnKind, StatementKind,
-};
+use crate::ast::{AstFile, HlaOperandKind, HlaStatement, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
@@ -315,14 +313,48 @@ impl Lowering<'_> {
         );
     }
 
-    /// An absolute memory reference through a declared symbol — the only
-    /// address operand the slice lowers. Task C4 replaces this with the
-    /// classifier that chooses the encoding.
+    /// The absolute address operand a near call transfers to.
+    ///
+    /// Every other address operand goes through the classifier, which chooses
+    /// the encoding; a `jsr` has only this one, so there is nothing to choose
+    /// (`postmortem.md` §D.1.6).
     fn absolute(symbol: SymbolId) -> Operand {
         Operand::Address {
             encoding: AddressEncoding::Absolute,
             expr: KExpr::Symbol(symbol),
             index: None,
+        }
+    }
+
+    /// Lowers one operand an HLA statement wrote, through the classifier the
+    /// native path uses — width reconciliation included, so the width model
+    /// sees the same operation whichever syntax produced it.
+    ///
+    /// Analysis has already classified this operand and reported anything
+    /// wrong with it, so a diagnostic here is a compiler bug rather than user
+    /// error, exactly as on the native arm.
+    fn hla_instruction(
+        &mut self,
+        statement: &crate::ast::Statement,
+        mnemonic: Mnemonic,
+        operand: &crate::ast::HlaOperand,
+        span: Span,
+    ) {
+        let mut resolver = Resolver::new(&self.model.symbols)
+            .in_function(self.function)
+            .with_widths(self.widths_at(statement));
+        match resolver.classify_hla(mnemonic, operand, span) {
+            Some(classified) if !resolver.has_diagnostics() => {
+                let instruction = classified.instruction();
+                let effects = instruction.effects();
+                self.push(
+                    KOpKind::Instruction(instruction),
+                    span,
+                    Origin::HlaExpansion,
+                );
+                self.reconcile(statement, effects);
+            }
+            _ => self.skipped(span, "an unclassified HLA operand"),
         }
     }
 
@@ -454,42 +486,16 @@ impl Lowering<'_> {
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
                 // Analysis accepts exactly two chain shapes so far; anything
-                // else never reaches lowering.
-                match (assign.targets.as_slice(), &assign.source.kind) {
-                    // `a = #imm` is the HLA spelling of `lda #imm`.
-                    ([_], HlaOperandKind::Immediate(value)) => {
-                        let ExprKind::Number(number) = value.kind else {
-                            return self.skipped(span, "a malformed immediate");
-                        };
-                        self.instruction(
-                            Mnemonic::Lda,
-                            AddressingMode::Immediate,
-                            Some(Operand::Immediate(KExpr::number(number))),
-                            span,
-                            Origin::HlaExpansion,
-                        );
-                    }
-                    // `MEM = a` is the HLA spelling of `sta MEM`.
-                    ([target], HlaOperandKind::Register(_)) => {
-                        let HlaOperandKind::Memory(memory) = &target.kind else {
-                            return self.skipped(span, "an unsupported assignment target");
-                        };
-                        let ExprKind::Symbol(name) = &memory.value.kind else {
-                            return self.skipped(span, "an unsupported assignment target");
-                        };
-                        let Some(symbol) = self.model.symbols.lookup(&name.text) else {
-                            return self.skipped(span, "an unresolved symbol");
-                        };
-                        self.instruction(
-                            Mnemonic::Sta,
-                            AddressingMode::Absolute,
-                            Some(Self::absolute(symbol)),
-                            span,
-                            Origin::HlaExpansion,
-                        );
-                    }
-                    _ => self.skipped(span, "an unsupported assignment chain"),
-                }
+                // else never reaches lowering. Which instruction a shape means
+                // is decided here, because that is what the spelling says;
+                // what its operand is is not decided here, because `lda` and
+                // `sta` already asked that question (sub-plan E, decision 1).
+                let (mnemonic, operand) = match (assign.targets.as_slice(), &assign.source.kind) {
+                    ([_], HlaOperandKind::Immediate(_)) => (Mnemonic::Lda, &assign.source),
+                    ([target], HlaOperandKind::Register(_)) => (Mnemonic::Sta, target),
+                    _ => return self.skipped(span, "an unsupported assignment chain"),
+                };
+                self.hla_instruction(statement, mnemonic, operand, span);
             }
             StatementKind::Hla(
                 HlaStatement::Exchange(_)

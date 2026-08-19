@@ -121,8 +121,16 @@ fn width_dependent_immediate_without_contract_is_rejected() {
     assert_eq!(diagnostics[0].code, DiagnosticCode::UNKNOWN_WIDTH);
     assert_eq!(
         diagnostics[0].help.as_deref(),
-        Some("add @a8 or @a16 to the enclosing function")
+        Some("add @a8 or @a16 to the enclosing function, or set the width here")
     );
+
+    // And it is the *same* refusal the native spelling gets, down to the
+    // help and notes: one operand model answers for both syntaxes.
+    let (_, native) = analyze("func main {\n    lda #1\n}\n");
+    assert_eq!(native.len(), 1);
+    assert_eq!(native[0].code, diagnostics[0].code);
+    assert_eq!(native[0].help, diagnostics[0].help);
+    assert_eq!(native[0].notes, diagnostics[0].notes);
 }
 
 #[test]

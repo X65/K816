@@ -38,13 +38,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
-use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
+use crate::isa::{Mnemonic, RegisterWidth};
 use crate::linkage::Linkage;
 use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
 use crate::source::{Provenance, Span};
 use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
-use crate::value::KExpr;
 use crate::width::{self, WidthAnalysis};
 
 /// The result of analyzing one file: symbols plus per-function facts.
@@ -1042,29 +1041,36 @@ impl Analysis {
                 let resolved = resolver.finish();
                 self.absorb(resolved);
                 if let Some(classified) = classified {
-                    self.check_addressable(native, &classified);
+                    self.check_addressable(native.mnemonic.span, &classified);
                 }
             }
             StatementKind::Hla(HlaStatement::Assign(assign)) => {
                 match (assign.targets.as_slice(), &assign.source.kind) {
-                    // `a = #imm` sizes like the native `lda #imm`.
-                    ([target], HlaOperandKind::Immediate(value))
-                        if is_accumulator(&target.kind) =>
-                    {
-                        self.check_immediate(
-                            value,
-                            Some(ImmediateWidthClass::MDependent),
-                            widths,
+                    // `a = #imm` is the HLA spelling of `lda #imm`, and its
+                    // operand is that instruction's operand.
+                    ([target], HlaOperandKind::Immediate(_)) if is_accumulator(&target.kind) => {
+                        self.check_hla_operand(
                             Mnemonic::Lda,
+                            &assign.source,
+                            statement.span,
+                            widths,
                         );
                     }
-                    // `MEM = a` is the store the slice compiles.
+                    // `MEM = a` is the store the slice compiles. Which target
+                    // shapes are accepted is still the slice's answer — E2
+                    // opens the rest — but what the accepted one *means* is
+                    // the classifier's.
                     ([target], HlaOperandKind::Register(register))
                         if register.kind == RegisterKind::A =>
                     {
                         match plain_symbol(&target.kind) {
                             Some(name) if name.provenance != Provenance::Synthetic => {
-                                self.check_memory_operand(&name.text, name.span);
+                                self.check_hla_operand(
+                                    Mnemonic::Sta,
+                                    target,
+                                    statement.span,
+                                    widths,
+                                );
                             }
                             Some(_) => {}
                             None => self.diagnostics.push(compat::unimplemented(
@@ -1158,75 +1164,6 @@ impl Analysis {
                 self.check_call_target(&call.target);
                 self.check_call_flow(statement, call);
             }
-        }
-    }
-
-    /// Validates an immediate operand against its width class and the width
-    /// the model tracks *here*.
-    fn check_immediate(
-        &mut self,
-        value: &Expr,
-        width: Option<ImmediateWidthClass>,
-        widths: ModeState,
-        mnemonic: Mnemonic,
-    ) {
-        let Some(folded) = self.fold(value) else {
-            return;
-        };
-        let Some(number) = folded.value().map(|value| value.get()) else {
-            // A link-time immediate such as `#&&label` is legal — ca65
-            // relocates it — and the native path carries one through
-            // classification. This is the HLA slice's own immediate check;
-            // it goes away when HLA operands lower through the shared
-            // classifier, which is sub-plan E's work, not C's.
-            self.diagnostics.push(compat::unimplemented(
-                value.span,
-                "link-time values in HLA immediate operands",
-                compat::Owner::HlaLowering,
-            ));
-            return;
-        };
-        let Some(width) = width else {
-            return;
-        };
-        let Some(limit) = width.max_value(widths.a.width(), widths.i.width()) else {
-            // Only the width-dependent classes can fail to report a limit,
-            // and they fail exactly when their axis is unconstrained.
-            let (axis, help) = match width {
-                ImmediateWidthClass::MDependent => {
-                    ("accumulator", "add @a8 or @a16 to the enclosing function")
-                }
-                ImmediateWidthClass::XDependent => (
-                    "index register",
-                    "add @i8 or @i16 to the enclosing function",
-                ),
-                ImmediateWidthClass::Fixed8 | ImmediateWidthClass::Fixed16 => {
-                    unreachable!("fixed immediate widths always report a limit")
-                }
-            };
-            self.diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::UNKNOWN_WIDTH,
-                    format!(
-                        "`{}` uses a width-dependent immediate but {axis} width is unknown",
-                        mnemonic.ca65()
-                    ),
-                    Label::new(value.span, "cannot size this immediate"),
-                )
-                .with_help(help)
-                .with_docs("doc/register-width-aware-syntax.md"),
-            );
-            return;
-        };
-        if number > limit {
-            self.diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::IMMEDIATE_RANGE,
-                    format!("immediate ${number:X} does not fit in the selected width"),
-                    Label::new(value.span, format!("maximum here is ${limit:X}")),
-                )
-                .with_docs("doc/register-width-aware-syntax.md"),
-            );
         }
     }
 
@@ -1431,15 +1368,6 @@ impl Analysis {
         self.diagnostics.extend(resolved.diagnostics);
     }
 
-    /// Folds `expr`, reporting whatever the fold turns up.
-    fn fold(&mut self, expr: &Expr) -> Option<KExpr> {
-        let mut resolver = self.resolver();
-        let folded = resolver.fold(expr);
-        let resolved = resolver.finish();
-        self.absorb(resolved);
-        folded
-    }
-
     /// The absolute value of `expr` in a position that requires one.
     fn constant(&mut self, expr: &Expr, position: &str) -> Option<u32> {
         let mut resolver = self.resolver();
@@ -1503,17 +1431,37 @@ impl Analysis {
         }
     }
 
+    /// Classifies one operand an HLA statement wrote, through the classifier
+    /// that answers for the native spelling of the same instruction.
+    ///
+    /// There is no HLA-side immediate check, no HLA-side range check, and no
+    /// HLA-side symbol-kind check: those were a second operand model, and a
+    /// second model is a second set of answers (sub-plan E, decision 1).
+    /// `mnemonic` is what the statement's shape means; everything else about
+    /// the operand is decided here for both syntaxes at once.
+    fn check_hla_operand(
+        &mut self,
+        mnemonic: Mnemonic,
+        operand: &crate::ast::HlaOperand,
+        site: Span,
+        widths: ModeState,
+    ) {
+        let mut resolver = self.resolver().with_widths(widths);
+        let classified = resolver.classify_hla(mnemonic, operand, site);
+        let resolved = resolver.finish();
+        self.absorb(resolved);
+        if let Some(classified) = classified {
+            self.check_addressable(site, &classified);
+        }
+    }
+
     /// Rejects a symbol used in a role its declaration does not allow.
     ///
     /// Classification already checked the *shape* of an operand against the
     /// ISA table; this is the other axis — whether the name in it denotes
     /// something an operand may address at all. A `const` in address
     /// position is its own diagnostic, reported during classification.
-    fn check_addressable(
-        &mut self,
-        native: &crate::ast::NativeInstruction,
-        classified: &Classified,
-    ) {
+    fn check_addressable(&mut self, site: Span, classified: &Classified) {
         let Some(operand) = &classified.operand else {
             return;
         };
@@ -1546,7 +1494,7 @@ impl Analysis {
                 Diagnostic::error(
                     DiagnosticCode::SYMBOL_KIND_MISMATCH,
                     format!("`{name}` is a function, not a variable"),
-                    Label::new(native.mnemonic.span, "cannot be used as a memory operand"),
+                    Label::new(site, "cannot be used as a memory operand"),
                 )
                 .with_secondary(Label::new(declaration, "declared here"))
                 .with_help(format!(
@@ -1601,60 +1549,6 @@ impl Analysis {
             ))
             .with_docs("doc/syntax-reference.md#code-sections"),
         );
-    }
-
-    /// Validates a memory operand named by an HLA statement.
-    fn check_memory_operand(&mut self, name: &str, span: Span) {
-        let Some(id) = self.model.symbols.lookup(name) else {
-            let mut resolver = self.resolver();
-            resolver.resolve(name, span);
-            let resolved = resolver.finish();
-            self.absorb(resolved);
-            return;
-        };
-        self.model.referenced.insert(id);
-        let symbol = self.model.symbols.symbol(id);
-        let declaration = symbol.declaration;
-        match symbol.kind {
-            SymbolKind::Var { .. } | SymbolKind::Label { .. } | SymbolKind::DataLabel { .. } => {}
-            SymbolKind::Const { .. } => self.diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::CONST_IN_ADDRESS_POSITION,
-                    format!("`{name}` is a `const`, not a memory location"),
-                    Label::new(span, "a `const` names a value, not an address"),
-                )
-                .with_secondary(Label::new(declaration, "declared here"))
-                .with_fix(Fix {
-                    title: format!("load the value with `#{name}`"),
-                    applicability: Applicability::MachineApplicable,
-                    edits: vec![TextEdit::insert(span, "#")],
-                })
-                .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65"),
-            ),
-            SymbolKind::Function { .. } => self.diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::SYMBOL_KIND_MISMATCH,
-                    format!("`{name}` is a function, not a variable"),
-                    Label::new(span, "cannot be used as a memory operand"),
-                )
-                .with_secondary(Label::new(declaration, "declared here"))
-                .with_help(format!(
-                    "call it with `call {name}`, or take its address with `&&{name}`"
-                )),
-            ),
-            SymbolKind::AbstractVar { .. } => self.diagnostics.push(
-                Diagnostic::error(
-                    DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
-                    format!("`{name}` is an `abstract var`, which has no storage"),
-                    Label::new(span, "a layout, not a memory location"),
-                )
-                .with_secondary(Label::new(declaration, "declared here"))
-                .with_help(format!(
-                    "query the layout with `{name}:sizeof`, or declare a `var` with the same fields to give it storage"
-                ))
-                .with_docs("doc/symbolic-subscripts.md#abstract-layout-only-form"),
-            ),
-        }
     }
 }
 

@@ -38,14 +38,14 @@ use crate::expand;
 use crate::hla;
 use crate::isa::{AddressEncoding, AddressingMode, ImmediateWidthClass, Mnemonic, OperandWidth};
 use crate::op::{
-    AnchorId, AxisState, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState, Operand,
-    Origin, Reason, RegisterWidth, SegmentName, WidthContract,
+    AnchorId, AxisState, DataOp, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState,
+    Operand, Origin, Reason, RegisterWidth, SegmentName, WidthContract,
 };
 use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
-use crate::semantic::SemanticModel;
+use crate::semantic::{Reservation, SemanticModel};
 use crate::source::Span;
-use crate::symbol::{SymbolId, SymbolKind};
+use crate::symbol::{AddressSize, SymbolId, SymbolKind};
 use crate::value::KExpr;
 use crate::width::{Bridge, BridgeAnchor, P_MASK_M, P_MASK_X};
 
@@ -68,13 +68,34 @@ pub fn lower_unit(
     let mut diagnostics = Vec::new();
     let mut anonymous = AnonymousBlocks::default();
     let mut checked_calls: Vec<(usize, Vec<CheckedCall>)> = Vec::new();
+    // Direct-page reservations are collected rather than emitted in place.
+    // The direct page is "segment-orthogonal" — the document says so of both
+    // the pool and the `segment` directive — so a `var dp` between two
+    // functions must not land in whichever segment those functions are in.
+    let mut direct_page: Vec<(&Reservation, Span)> = Vec::new();
     // Unit-level operations and functions interleave in source order,
     // because a `segment` selection is lexical state: which segment a
     // function lands in is decided by what precedes it in the file.
     for (index, item) in file.items.iter().enumerate() {
+        // An allocated variable is a label and a `.res`, in the segment the
+        // items before it selected. A pinned one has no entry here: it is an
+        // equate, and an equate reserves nothing.
+        if let Some(reservation) = model.reservations.get(&index) {
+            if reservation.direct_page {
+                direct_page.push((reservation, item.span));
+            } else {
+                for op in reserve(reservation, item.span) {
+                    program.push_op(op);
+                }
+            }
+            continue;
+        }
         if let ItemKind::Segment(name) = &item.kind {
             program.push_op(KOp::new(
-                KOpKind::Segment(SegmentName::new(&name.text)),
+                KOpKind::Segment {
+                    name: SegmentName::new(&name.text),
+                    addressing: None,
+                },
                 item.span,
                 Origin::User,
             ));
@@ -140,8 +161,46 @@ pub fn lower_unit(
         });
         diagnostics.append(&mut lowering.diagnostics);
     }
+    // The direct-page pool goes last, in a segment of its own. Last because
+    // it is the one segment switch that never has to be undone: nothing
+    // follows it, so no later item inherits it.
+    if let Some((_, first)) = direct_page.first() {
+        program.push_op(KOp::new(
+            KOpKind::Segment {
+                name: SegmentName::new(DIRECT_PAGE_SEGMENT),
+                addressing: Some(AddressSize::DirectPage),
+            },
+            *first,
+            Origin::CompilerGenerated,
+        ));
+        for (reservation, span) in direct_page {
+            for op in reserve(reservation, span) {
+                program.push_op(op);
+            }
+        }
+    }
     diagnostics.extend(report_damaged_registers(&program, model, &checked_calls));
     (program, diagnostics)
+}
+
+/// The segment a unit's direct-page allocations are reserved in.
+///
+/// ld65 places them, from a `zp`-type memory area 256 bytes long; K816's part
+/// is to say how many bytes each one wants and that they are direct-page
+/// bytes. The name is ca65's conventional one so an existing linker
+/// configuration already has an entry for it.
+pub const DIRECT_PAGE_SEGMENT: &str = "ZEROPAGE";
+
+/// One allocated variable, as the label and the reservation ld65 places.
+fn reserve(reservation: &Reservation, span: Span) -> [KOp; 2] {
+    [
+        KOp::new(KOpKind::Label(reservation.symbol), span, Origin::User),
+        KOp::new(
+            KOpKind::Data(DataOp::Reserve(KExpr::number(reservation.bytes))),
+            span,
+            Origin::User,
+        ),
+    ]
 }
 
 /// The branch that is taken exactly when `mnemonic` is not.
@@ -1692,7 +1751,7 @@ impl<'a> Lowering<'a> {
             // Unit-level directives never end a function body, and a label
             // is not a return.
             KOpKind::Label(_)
-            | KOpKind::Segment(_)
+            | KOpKind::Segment { .. }
             | KOpKind::Data(_)
             | KOpKind::Align(_)
             | KOpKind::Export(_)

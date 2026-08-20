@@ -85,6 +85,24 @@ var sprites[8] * NUM_SPRITES
     count: (identifier)))
 
 ================================================================================
+An array span is the declaration's, not a new evaluator block
+================================================================================
+
+var first = 1  // a comment, which is what used to change the answer
+var buffer[32]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    name: (identifier)
+    address: (number))
+  (line_comment)
+  (var_declaration
+    name: (identifier)
+    size: (number)))
+
+================================================================================
 Linker-allocated variables have no initializer
 ================================================================================
 

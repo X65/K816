@@ -109,6 +109,9 @@ func main @a8 @i16 {
         k816::symbol::SymbolKind::Var {
             address: Some(0x0400),
             size: k816::symbol::AddressSize::Absolute,
+            width: None,
+            element: 1,
+            repeat: None,
             layout: None,
         }
     );
@@ -784,4 +787,105 @@ fn a_data_blocks_names_are_declared_and_addressable() {
             "`{name}`"
         );
     }
+}
+
+/// The three declaration axes land on the symbol independently.
+///
+/// Sub-plan E's decision 14 exists because the document is explicit that they
+/// are unrelated: `var dp pointer:far` is a 24-bit datum at a one-byte
+/// address, and a compiler that collapsed the axes into one enum could not
+/// represent it. These are the four answers a declaration produces —
+/// encoding, datum width, element stride, repeat count — checked against
+/// declarations that vary each one on its own.
+#[test]
+fn a_declarations_axes_stay_independent_on_the_symbol() {
+    use k816::symbol::{AddressSize, DataWidth, SymbolKind};
+
+    let source = "\
+var plain
+var dp small
+var far rom = $C08000
+var w:word
+var dp pointer:far = $F0
+var buffer[32]
+var slots:word * 4
+var pairs:word[2] * 3
+";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![]);
+
+    let axes = |name: &str| match model
+        .symbols
+        .symbol(
+            model
+                .symbols
+                .lookup(name)
+                .unwrap_or_else(|| panic!("`{name}` declared")),
+        )
+        .kind
+    {
+        SymbolKind::Var {
+            size,
+            width,
+            element,
+            repeat,
+            ..
+        } => (size, width, element, repeat),
+        other => panic!("`{name}` is {other:?}"),
+    };
+
+    // Encoding follows the storage class, or the value when there is none.
+    assert_eq!(axes("plain").0, AddressSize::Absolute);
+    assert_eq!(axes("small").0, AddressSize::DirectPage);
+    assert_eq!(axes("rom").0, AddressSize::Long);
+
+    // The datum width is the `:` suffix and nothing else. An unwritten one
+    // is `None` rather than a defaulted byte: it is the absence of a claim,
+    // and one byte is a claim.
+    assert_eq!(axes("plain").1, None);
+    assert_eq!(axes("w").1, Some(DataWidth::Word));
+
+    // Both axes at once, on one declaration, disagreeing — and legal.
+    assert_eq!(
+        (axes("pointer").0, axes("pointer").1),
+        (AddressSize::DirectPage, Some(DataWidth::Far))
+    );
+
+    // The element is the datum times the raw span; the count is outside it.
+    assert_eq!((axes("buffer").2, axes("buffer").3), (32, None));
+    assert_eq!((axes("slots").2, axes("slots").3), (2, Some(4)));
+    assert_eq!((axes("pairs").2, axes("pairs").3), (4, Some(3)));
+}
+
+/// What a declaration reserves, and which of them reserve nothing.
+#[test]
+fn only_an_allocated_variable_asks_the_linker_for_bytes() {
+    let source = "\
+var pinned = $2000
+var dp slot = $10
+var counter
+var dp fast
+var grid:word[4] * 2
+";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![]);
+
+    let of = |name: &str| {
+        let id = model.symbols.lookup(name).expect("declared");
+        model
+            .reservations
+            .values()
+            .find(|reservation| reservation.symbol == id)
+            .copied()
+    };
+    // A pinned variable is an equate: someone else owns those bytes.
+    assert_eq!(of("pinned"), None);
+    assert_eq!(of("slot"), None);
+
+    let counter = of("counter").expect("allocated");
+    assert_eq!((counter.bytes, counter.direct_page), (1, false));
+    let fast = of("fast").expect("allocated");
+    assert_eq!((fast.bytes, fast.direct_page), (1, true));
+    // 2 elements x 4 words.
+    assert_eq!(of("grid").expect("allocated").bytes, 16);
 }

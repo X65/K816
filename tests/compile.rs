@@ -900,6 +900,116 @@ fn the_near_far_convention_is_checked_across_units() {
     assert_eq!(codes, vec![DiagnosticCode::CALL_CONVENTION_MISMATCH]);
 }
 
+/// Every declaration axis, through the assembler and the linker.
+///
+/// The claims worth making about a `var` are what it *reserves* and what a
+/// reference to it *encodes*, and the two are independent: a pinned variable
+/// becomes an equate and reserves nothing, an allocated one becomes a
+/// reservation ld65 places, and neither of those facts follows from the
+/// datum width. The link is the real gate — a direct-page reservation only
+/// works if ca65 gave its label a direct-page address size, which it only
+/// does if the segment said so.
+#[test]
+fn every_declaration_axis_reserves_and_encodes_what_it_declares() {
+    let mut map = SourceMap::new();
+    let file = map.add_file("vars.k816", include_str!("golden/vars.k816"));
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // A pinned variable is an equate, whatever its storage class.
+    for equate in [
+        "mmio            := $2100",
+        "meter           := $0010",
+        "rom             := $C08000",
+        "port            := $0080",
+        "pointer         := $00F0",
+    ] {
+        assert!(
+            assembly.contains(equate),
+            "expected `{equate}`:\n{assembly}"
+        );
+    }
+    // …and reserves nothing: an equate names an address someone else owns.
+    assert!(
+        !assembly.contains("mmio:"),
+        "a pinned variable is not a label:\n{assembly}"
+    );
+
+    // An allocated one reserves exactly what its axes multiply out to.
+    for (name, bytes) in [
+        ("counter", "$01"), // one untyped datum
+        ("w", "$02"),       // one word
+        ("buffer", "$20"),  // a raw span of 32 bytes
+        ("grid", "$08"),    // a raw span of 4 words
+        ("slots", "$08"),   // 4 word elements
+        ("pairs", "$0C"),   // 3 elements of 2 words
+        ("late", "$01"),
+        ("fast", "$01"),
+        ("cursor", "$02"),
+    ] {
+        let reservation = format!("{name}:");
+        let index = assembly
+            .find(&reservation)
+            .unwrap_or_else(|| panic!("`{name}` is allocated:\n{assembly}"));
+        assert!(
+            assembly[index..].contains(&format!(".res     {bytes}")),
+            "`{name}` reserves {bytes}:\n{assembly}"
+        );
+    }
+
+    // The direct page is a pool, not bytes in a segment: its reservations
+    // are in a zeropage-typed segment of their own, and the `segment BSS`
+    // two of them were written under did not move them.
+    let zeropage = assembly
+        .find(".segment \"ZEROPAGE\": zeropage")
+        .expect("the pool has a segment of its own");
+    for pooled in ["fast:", "cursor:"] {
+        assert!(
+            assembly[zeropage..].contains(pooled),
+            "`{pooled}` belongs to the pool:\n{assembly}"
+        );
+    }
+    assert!(
+        assembly[..zeropage].contains("late:"),
+        "an absolute allocation stays in the segment it was written in:\n{assembly}"
+    );
+
+    // The storage class decides the encoding, and it is not the data width.
+    for expected in [
+        "lda     a:mmio",    // absolute by magnitude
+        "lda     z:meter",   // direct page by prefix
+        "lda     f:rom",     // long by prefix
+        "lda     a:port",    // the prefix outranks the page-zero value
+        "lda     z:fast",    // an allocated pool slot, still one byte
+        "lda     [pointer]", // 24 bits reach no register, so: a pointer
+        "lda     f:w",       // a use-site view: `far` encoding, byte datum
+    ] {
+        assert!(
+            assembly.contains(expected),
+            "expected `{expected}`:\n{assembly}"
+        );
+    }
+
+    // A subscript is address arithmetic, and the stride is the element —
+    // which the raw span is part of and the count is not.
+    for expected in [
+        "lda     a:slots  ",     // slots[0] is slots, with no arithmetic after it
+        "lda     a:slots + $06", // slots[3], striding one word
+        "lda     a:grid + $02",  // a raw span has no elements: bytes
+        "lda     a:pairs + $08", // 2 x (2 words)
+        "lda     a:buffer + $08",
+    ] {
+        assert!(
+            assembly.contains(expected),
+            "expected `{}`:\n{assembly}",
+            expected.trim_end()
+        );
+    }
+
+    assemble_and_link("vars", &assembly, "vars");
+}
+
 /// The section kinds that are not subroutines, through the assembler.
 ///
 /// `inline` is the one construct that changes the *shape* of the operation

@@ -136,8 +136,12 @@
           "type": "CHOICE",
           "members": [
             {
-              "type": "SYMBOL",
-              "name": "_span_or_fields"
+              "type": "PREC_DYNAMIC",
+              "value": 1,
+              "content": {
+                "type": "SYMBOL",
+                "name": "_span_or_fields"
+              }
             },
             {
               "type": "BLANK"

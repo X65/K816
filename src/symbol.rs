@@ -240,6 +240,32 @@ pub enum SymbolKind {
     Var {
         address: Option<u32>,
         size: AddressSize,
+        /// `:byte` / `:word` / `:far`, and `None` when the declaration wrote
+        /// no suffix.
+        ///
+        /// `None` is not `Some(DataWidth::Byte)`. Allocation treats an
+        /// unwritten width as one byte, because `var arr[10]` reserves ten
+        /// bytes; *validation* treats it as no claim at all, because a
+        /// variable that never said how wide its datum is cannot disagree
+        /// with the register that loads it. One declaration, two questions,
+        /// two answers.
+        width: Option<DataWidth>,
+        /// The bytes one element occupies, which is the stride `NAME[i]`
+        /// multiplies and the answer `NAME:sizeof` gives.
+        ///
+        /// Computed by the declaration pass and stored, rather than derived
+        /// from `width` where it is needed: the raw span `[N]` is part of an
+        /// element and the width is not the whole story about one, so two
+        /// consumers deriving it separately is two chances to differ.
+        element: u32,
+        /// `* count` — the repeat count, and `None` when the declaration
+        /// wrote none.
+        ///
+        /// Also not a defaulted `1`: `NAME[i]` on a variable with a repeat
+        /// count is bounds-checked element access, and on one without it is
+        /// ordinary byte-offset arithmetic (`doc/syntax-reference.md`,
+        /// "Allocation Count").
+        repeat: Option<u32>,
         /// The field layout `var NAME[ .field :word … ]` declares, or `None`
         /// for a variable that has no fields.
         layout: Option<LayoutId>,
@@ -554,6 +580,9 @@ mod tests {
         SymbolKind::Var {
             address: Some(address),
             size: AddressSize::of_value(address),
+            width: None,
+            element: 1,
+            repeat: None,
             layout: None,
         }
     }
@@ -653,6 +682,9 @@ mod tests {
             SymbolKind::Var {
                 address: None,
                 size: AddressSize::Absolute,
+                width: None,
+                element: 1,
+                repeat: None,
                 layout: None
             }
             .known_address(),
@@ -684,6 +716,9 @@ mod tests {
                 SymbolKind::Var {
                     address: Some(0x10),
                     size: AddressSize::DirectPage,
+                    width: None,
+                    element: 2,
+                    repeat: None,
                     layout: Some(layout),
                 },
                 span,

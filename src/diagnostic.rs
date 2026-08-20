@@ -157,6 +157,22 @@ impl DiagnosticCode {
     /// Code `0137` is skipped — it was registered for an unreachable case
     /// during E0 and burned when E2 retired it.
     pub const CALL_CONVENTION_MISMATCH: Self = Self("K816-E0138");
+    /// A `far` variable has no explicit address. The 24-bit storage class is
+    /// the one with no auto-allocator: nothing in the frontend or in ld65
+    /// knows which of the 256 banks an unaddressed `far` symbol belongs to,
+    /// so the declaration has to say (`doc/syntax-reference.md`, "Far
+    /// storage").
+    pub const FAR_NEEDS_ADDRESS: Self = Self("K816-E0139");
+    /// A datum's declared width does not fit the register the access moves it
+    /// through: a `:word` variable read with an 8-bit accumulator, a `:byte`
+    /// one read with a 16-bit one, or a `:far` one read at all — no register
+    /// holds three bytes.
+    ///
+    /// This is the *data-width* axis of a declaration, not the address-size
+    /// axis: `var dp p:far` is a legal 24-bit datum in the direct page, and
+    /// what this code refuses is loading it into a register
+    /// (`doc/syntax-reference.md`, "Two orthogonal axes").
+    pub const DATA_WIDTH_MISMATCH: Self = Self("K816-E0140");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -378,6 +394,8 @@ mod tests {
         DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
         DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
         DiagnosticCode::CALL_CONVENTION_MISMATCH,
+        DiagnosticCode::FAR_NEEDS_ADDRESS,
+        DiagnosticCode::DATA_WIDTH_MISMATCH,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

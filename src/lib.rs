@@ -35,6 +35,7 @@ pub mod emit_ca65;
 pub mod expand;
 pub mod hla;
 pub mod isa;
+pub mod layout;
 pub mod linkage;
 pub mod lower;
 pub mod lsp;

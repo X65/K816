@@ -152,6 +152,21 @@ fn exported(
 }
 
 /// One `.import`/`.export` line, qualified by the symbol's address size.
+/// The ca65 segment-type suffix, for a segment whose address size K816 chose.
+///
+/// ca65 gives every label the address size of the segment it is defined in,
+/// so a reservation K816 places has to be in a segment that says what that
+/// size is. A segment the source named carries no suffix: its type is the
+/// linker configuration's to decide, and stating one here would overrule it.
+fn segment_type(addressing: Option<AddressSize>) -> &'static str {
+    match addressing {
+        Some(AddressSize::DirectPage) => ": zeropage",
+        Some(AddressSize::Absolute) => ": absolute",
+        Some(AddressSize::Long) => ": far",
+        None => "",
+    }
+}
+
 fn linkage_directive(direction: &str, name: &str, size: Option<AddressSize>) -> String {
     match size {
         // ca65 spells the direct-page forms with their own directive.
@@ -348,8 +363,8 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
             &format!(".import {}", names.of(*symbol)),
             &annotation(map, op),
         )),
-        KOpKind::Segment(name) => out.push_str(&annotated(
-            &format!("        .segment \"{name}\""),
+        KOpKind::Segment { name, addressing } => out.push_str(&annotated(
+            &format!("        .segment \"{name}\"{}", segment_type(*addressing)),
             &annotation(map, op),
         )),
         // Emitted with the function's ops, where the reference count is
@@ -420,7 +435,11 @@ fn annotation(map: &SourceMap, op: &KOp) -> String {
 /// A short explanation for a synthesized directive.
 fn generated_directive_note(kind: &KOpKind) -> &'static str {
     match kind {
-        KOpKind::Segment(_) => "`address` placement needs a segment of its own",
+        KOpKind::Segment {
+            addressing: Some(AddressSize::DirectPage),
+            ..
+        } => "the direct page is a pool of its own, not bytes inside a segment",
+        KOpKind::Segment { .. } => "`address` placement needs a segment of its own",
         KOpKind::NocrossGuard { .. } => "ld65 checks the page after placement",
         KOpKind::Export(_) => "defined here, visible to other units",
         KOpKind::Import(_) => "defined by another unit in the workspace",

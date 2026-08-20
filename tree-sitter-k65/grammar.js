@@ -274,7 +274,13 @@ export default grammar({
         optional(field('storage', alias($.identifier, $.storage_class))),
         field('name', $.identifier),
         optional(field('type', $.type_suffix)),
-        optional($._span_or_fields),
+        // A `[` here belongs to the declaration, not to a top-level
+        // evaluator block that happens to start on the same line: both
+        // readings parse `var buffer[32]`, and the declaration outranks the
+        // split. Without this the ambiguity is resolved by whichever parse
+        // state the preceding tokens left the parser in, which made a
+        // *comment* earlier in the file change how the array declared.
+        optional(prec.dynamic(1, $._span_or_fields)),
         optional(seq('*', field('count', $._expression))),
         optional(seq('=', field('address', $._expression))),
       ),

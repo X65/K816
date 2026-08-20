@@ -77,7 +77,7 @@ fn remove_overwritten_register_values(ops: &mut Vec<KOp>, log: &mut Optimization
                 let effects = match &removed.kind {
                     KOpKind::Instruction(instruction) => instruction.effects(),
                     KOpKind::Label(_)
-                    | KOpKind::Segment(_)
+                    | KOpKind::Segment { .. }
                     | KOpKind::Data(_)
                     | KOpKind::Align(_)
                     | KOpKind::Export(_)

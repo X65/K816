@@ -1,0 +1,67 @@
+// Sub-plan E7's fixture: what a `var` declares, and what it reserves.
+//
+// Three axes, and they are independent. The storage class says where the
+// variable lives and how a plain reference to it encodes; the type width says
+// how wide one datum is; the two multipliers say how many data there are.
+// `var dp pointer:far` is the combination that proves they are three answers
+// and not one — a 24-bit value at a one-byte address.
+
+// --- Pinned. The address is in the source, so the output is an equate. ---
+
+var mmio = $2100         // absolute, because the value is
+var dp meter = $10       // direct page, because the prefix says so
+var far rom = $C08000    // 24 bits, the class that is never auto-allocated
+var abs port = $80       // in page zero, and absolute anyway: the prefix wins
+
+// --- Allocated. K816 says how many bytes; ld65 says where. ---
+
+var counter              // one byte
+var w:word               // two, because one datum is a word
+var buffer[32]           // a raw span: 32 bytes, no elements
+var grid:word[4]         // a raw span of words: 8 bytes, still no elements
+var slots:word * 4       // four elements, and `slots[i]` addresses them
+var pairs:word[2] * 3    // both multipliers: 3 x 2 x 2 = 12 bytes
+
+// A `segment` directive moves the allocations that follow it. The direct
+// page ignores it — it is a pool, not bytes inside a segment, and that is
+// what the document means by calling it segment-orthogonal.
+segment BSS
+var late
+var dp fast
+var dp cursor:word
+
+// Pinned in the pool, and 3 bytes wide there. Both axes at once.
+var dp pointer:far = $F0
+
+segment CODE
+
+func widths @a16 @i16 {
+    a = w
+    a = slots[0]
+    a = slots[3]
+    // A raw span has no elements, so its bracket is byte arithmetic —
+    // `grid[2]` is two bytes along, not two words.
+    a = grid[2]
+    a = pairs[2]
+    x = cursor
+}
+
+func bytes @a8 @i8 {
+    a = counter
+    a = buffer[8]
+    a = late
+    a = fast
+    // A use-site view restates the width for one expression, and overrides
+    // whatever the declaration said.
+    lda far w:byte
+}
+
+func pinned @a8 @i8 {
+    a = mmio
+    a = meter
+    a = rom
+    a = port
+    // Three bytes reach a register a piece at a time, or not at all: this
+    // one goes through the pointer instead.
+    lda [pointer]
+}

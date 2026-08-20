@@ -50,6 +50,19 @@ var arr[10]             // Allocated ABS: 10-byte slot in the current segment
 
 The declaration `[N]` suffix reserves a raw storage span: N elements of the declared width, or N bytes when no width is written. It does not create repeat-element metadata and `NAME[i]` on that kind of aggregate remains ordinary byte-offset arithmetic rather than bounds-checked element access. Use the separate `* N` allocation count when you want repeated elements addressable as `NAME[i]`.
 
+### What K816 decides, and what the linker decides
+
+K816 decides *size*; ld65 decides *address*. A pinned declaration becomes a ca65 equate and reserves nothing — the address is already in the source, and the bytes belong to whatever put them there. An allocated one becomes a label and a `.res` of exactly the bytes its axes multiply out to, emitted in the segment the declaration sits in, and ld65 places it.
+
+Allocated direct-page variables are the exception, and they are reserved together in a segment named `ZEROPAGE`, declared to ca65 as a zeropage-type segment so that references to them encode in one byte and cross-unit ones export as `.importzp` / `.exportzp`. That segment needs a 256-byte `zp`-type entry in the ld65 configuration:
+
+```
+MEMORY   { ZP: start = $0000, size = $0100; }
+SEGMENTS { ZEROPAGE: load = ZP, type = zp, optional = yes; }
+```
+
+The reservations appear at the end of the emitted unit, after everything else, because the pool is not part of any segment the source selected and must not disturb the one in force.
+
 A `segment NAME` directive selects which segment subsequent Allocated **ABS** vars land in (DP is segment-orthogonal — `segment` does not affect DP placement):
 
 ```k65
@@ -69,7 +82,8 @@ The 65816 direct page is a **runtime-relocatable** 256-byte window addressed wit
 
 - `var dp NAME` requests a slot of `sizeof(NAME)` bytes from the pool. The linker assigns the final 8-bit DP offset by **first-fit** in declaration order within each compilation unit, and in **link-input order** between units. The assembler does not emit any bytes for DP allocations — runtime is responsible for setting D and providing backing RAM.
 - `var dp NAME = $X` pins NAME to a specific DP offset (`$X` must be `≤ $FF`). Pinned slots reserve their byte range so the auto-allocator skips them. **Multiple pinned DP vars at the same offset are allowed by design** — useful for typed views over the same DP slot.
-- DP pool overflow (>256 bytes total across all linked units) produces a rich diagnostic at link time pointing at the failing declaration.
+- DP pool overflow is `K816-E0133`, reported by the frontend at the declaration that exceeds the page rather than discovered as a link-time segment overflow. K816 counts what one compilation unit asks for: allocated slots add up, and pinned ones contribute the byte range they cover — counted once where two of them overlap, since overlapping pinned views are allowed on purpose. A pinned slot whose bytes run past `$FF` is the same code with a different message: `var dp p:far = $FE` is three bytes starting two from the end of the page.
+- Across units the check is ld65's, and it is the one it already makes: the `ZEROPAGE` segment is 256 bytes in the linker configuration, so two units that each fit on their own but do not fit together overflow the memory area at link time. K816 sees one unit at a time and says what it can about that one.
 - DP storage is independent of `segment` directives and the linker's `memory` / `segments` config. There is no `MemoryKind::DirectPage` and no DP-section concept; the linker only tracks symbol-name → 8-bit DP offset.
 
 ### Far storage (`var far`)
@@ -78,8 +92,10 @@ The 65816 direct page is a **runtime-relocatable** 256-byte window addressed wit
 
 ```k65
 var far rom_table = $C00000  // OK: bank $C0, offset $0000
-var far missing_addr         // ERROR: FAR variable must have an explicit address
+var far missing_addr         // K816-E0139: FAR variable must have an explicit address
 ```
+
+`K816-E0139` is a frontend error because nothing downstream could make the decision either: an address is 24 bits wide because it names a bank, and neither K816 nor ld65 has a rule for which of the 256 banks an unaddressed `far` symbol belongs in.
 
 ### Allocation Count
 
@@ -100,6 +116,14 @@ var after_sprites               // Allocated: next slot, after the 40-byte sprit
 ```
 
 `count` can be any constant expression known at compile time, including `const` names and evaluator constants. The allocation count does not create additional symbolic subscript entries; it records a repeat count for bounds-checked element access and scales the total allocation.
+
+The two multipliers sit on opposite sides of the element boundary, and the difference is visible in the stride:
+
+```k65
+var pairs:word[2] * 3      // 3 elements of 2 words: 12 bytes, stride 4
+```
+
+`[2]` is *inside* the element — "it repeats the computed element layout", and the raw span is part of that layout — so `pairs[1]` is four bytes along, not two. `* 3` is outside it, and is the only one of the two that makes the bracket element access at all.
 
 ### Repeat element accessors
 
@@ -125,7 +149,9 @@ The shorthand `.field[count]` is still valid and uses the var's default field
 width, or `:byte` when no default is declared. The old `.field[count]:type`
 order is rejected.
 
-`NAME[i]` is compile-time address arithmetic: the index must be a constant numeric expression and must satisfy `0 <= i < repeat_count`. Runtime-variable indices are out of scope for this bracket form; use CPU indexed addressing or explicit pointer arithmetic for those.
+`NAME[i]` is compile-time address arithmetic: the index must be a constant numeric expression (`K816-E0134` otherwise) and must satisfy `0 <= i < repeat_count` (`K816-E0135`). Runtime-variable indices are out of scope for this bracket form; use CPU indexed addressing or explicit pointer arithmetic for those.
+
+On a variable with no `* count` there is no extent to check and no element to stride, so the bracket steps bytes and neither code applies. That includes the raw span: `var grid:word[4]` reserves four words, and `grid[2]` is two *bytes* along.
 
 `NAME:sizeof` returns the element size, not `element_size * repeat_count`. That keeps the address identity stable:
 
@@ -180,6 +206,18 @@ lda far x:byte    // AbsoluteLong load + 1-byte data view (valid in @a8)
 lda far x:word    // AbsoluteLong load + 2-byte data view (valid in @a16)
 lda far x:far     // error: 3-byte data does not fit any register
 ```
+
+#### What the width check covers
+
+A mismatch between a datum's declared width and the register moving it is `K816-E0140`, in both directions: a `:word` read with an 8-bit accumulator reads half of it, and a `:byte` one read with a 16-bit accumulator reads a byte that is not part of it. A `:far` datum is the code's third case and needs no register width to be wrong.
+
+Three things bound the check, and each is a deliberate limit rather than an oversight:
+
+- **A declaration with no `:` suffix makes no claim.** It is not a defaulted `:byte`. Allocation still treats an unwritten width as one byte — `var arr[10]` is ten bytes — but that is a question about *size*, and the absence of a suffix is the absence of an answer about *width*. `var counter` loads in `@a8` and in `@a16` alike.
+- **Only accesses that move the datum through a register are checked**, which is what the rule is about. `lda`, `sta`, `ldx`, `cpy`, and the ALU operations qualify; `inc mem` and `stz mem` move their datum through no register, so there is nothing to disagree with them.
+- **A pointer is not its target.** `lda [ptr]` names `ptr` and loads what it points at, so the check does not apply to it — which is what makes the recommended spelling for a `:far` variable legal.
+
+Where the tracked width is unknown, the check is silent: an unknown width is not a claim either, and `K816-E0104` is the diagnostic for not knowing one.
 
 ### Address-encoding (prefixes)
 

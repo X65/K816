@@ -1037,6 +1037,9 @@ fn a_compound_address_folds_through_the_const_table() {
         k816::symbol::SymbolKind::Var {
             address: Some(0x0403),
             size: k816::symbol::AddressSize::Absolute,
+            width: None,
+            element: 1,
+            repeat: None,
             layout: None,
         }
     );
@@ -1135,20 +1138,34 @@ fn local_labels_keep_their_leading_dot() {
 }
 
 #[test]
-fn every_new_declaration_form_names_its_owner() {
-    // The parser accepts these; each one has to say which sub-plan owns its
-    // semantics rather than compile to nothing.
-    for (source, expected_code) in [
-        ("var counter\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        // The pool allocation is E's; the encoding default on a *pinned*
-        // variable is the address-size axis C owns.
-        ("var dp counter\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        ("var w:word = $2000\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
-        (
-            "var buffer[32] = $100\n",
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-        ),
-        ("var s:byte * 32\n", DiagnosticCode::NOT_YET_IMPLEMENTED),
+fn every_declaration_form_compiles_or_names_its_owner() {
+    // Allocation, the three storage classes, the typed widths, and both
+    // multipliers: E7's whole surface, and each one is a declaration the
+    // compiler now answers rather than defers.
+    for source in [
+        "var counter\n",
+        "var dp counter\n",
+        "var abs counter\n",
+        "var far rom = $C00000\n",
+        "var w:word = $2000\n",
+        "var dp p:far\n",
+        "var buffer[32] = $100\n",
+        "var s:byte * 32\n",
+        "var grid:word[4] * 8\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("owner.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+        assert_eq!(diagnostics, vec![], "`{source}` should compile");
+    }
+
+    // What is left of the declaration family is the two spellings that need
+    // a *layout*, and a layout is sub-plan E8's.
+    for source in [
+        "var vec[ .lo :byte .hi :byte ]\n",
+        "abstract var POINT[ .x :byte .y :byte ]\n",
     ] {
         let mut map = SourceMap::new();
         let id = map.add_file("owner.k65", source);
@@ -1156,7 +1173,11 @@ fn every_new_declaration_form_names_its_owner() {
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
         assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-        assert_eq!(diagnostics[0].code, expected_code, "`{source}`");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::NOT_YET_IMPLEMENTED,
+            "`{source}`"
+        );
         assert!(
             diagnostics[0].notes[0].starts_with("implemented by sub-plan "),
             "`{source}`: {:?}",

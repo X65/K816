@@ -39,6 +39,7 @@ use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
 use crate::isa::RegisterWidth;
+use crate::layout;
 use crate::linkage::Linkage;
 use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
@@ -74,6 +75,28 @@ pub struct SemanticModel {
     /// [`DiagnosticCode::GOTO_FOREIGN_LABEL`] is exactly the question "is
     /// this label in the function jumping to it".
     pub label_owner: BTreeMap<SymbolId, SymbolId>,
+    /// The storage each allocated `var` asks the linker for, keyed by the
+    /// index of its item in [`AstFile::items`].
+    ///
+    /// Lowering emits the reservation and needs the item's *position*, not
+    /// just the symbol: an absolute variable lands in whichever segment the
+    /// preceding items selected, which is a fact about where the declaration
+    /// sits rather than about what it declares. A pinned variable has no
+    /// entry — it is an equate, and equates reserve nothing.
+    pub reservations: BTreeMap<usize, Reservation>,
+}
+
+/// One allocated variable's claim on the linker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reservation {
+    pub symbol: SymbolId,
+    /// Bytes to reserve, already multiplied out by the declaration's span
+    /// and count.
+    pub bytes: u32,
+    /// True for a `var dp`, which is placed in the direct-page pool rather
+    /// than in the segment its declaration happens to sit in — the direct
+    /// page is "segment-orthogonal" and the document says so twice.
+    pub direct_page: bool,
 }
 
 impl SemanticModel {
@@ -192,6 +215,8 @@ fn analyze(
         externally_reachable: BTreeSet::new(),
         workspace_contracts: BTreeMap::new(),
         workspace_recursive: BTreeSet::new(),
+        direct_page: layout::DirectPage::default(),
+        direct_page_reported: false,
     };
     analysis.declare_placed_symbols(file);
     // Module defaults are file-wide, so they are known before any function's
@@ -253,6 +278,11 @@ struct Analysis {
     /// Functions the workspace call graph put in a cycle, including ones
     /// that only close through another unit.
     workspace_recursive: BTreeSet<SymbolId>,
+    /// The unit's running claim on the 256-byte direct page.
+    direct_page: layout::DirectPage,
+    /// True once the pool has overflowed and said so, so the declarations
+    /// after it do not each repeat the news.
+    direct_page_reported: bool,
 }
 
 impl Analysis {
@@ -431,48 +461,7 @@ impl Analysis {
     fn declare_items(&mut self, file: &AstFile) {
         for (item_index, item) in file.items.iter().enumerate() {
             match &item.kind {
-                ItemKind::Var(var) => {
-                    if var.name.provenance == Provenance::Synthetic {
-                        continue; // Recovery invented the name; syntax error already reported.
-                    }
-                    // Only the fixed-address form has semantics so far; every
-                    // other axis of the declaration says who owns it.
-                    if let Some(feature) = unsupported_var_feature(var) {
-                        self.diagnostics.push(compat::unimplemented(
-                            item.span,
-                            feature,
-                            compat::Owner::HlaLowering,
-                        ));
-                        continue;
-                    }
-                    let Some(address) = var
-                        .address
-                        .as_ref()
-                        .and_then(|address| self.constant(address, "variable addresses"))
-                    else {
-                        continue;
-                    };
-                    // A declaration-position prefix sets the default
-                    // encoding for plain references; without one the value's
-                    // own magnitude decides (`doc/syntax-reference.md`,
-                    // "Address-encoding (prefixes)").
-                    let size = var.storage.map_or_else(
-                        || AddressSize::of_value(address),
-                        |storage| address_size_of(storage.kind),
-                    );
-                    self.declare(
-                        &var.name.text,
-                        SymbolKind::Var {
-                            address: Some(address),
-                            size,
-                            // The fixed-address form has no field list; a
-                            // declaration that carries one is refused above,
-                            // until E8 computes its layout.
-                            layout: None,
-                        },
-                        var.name.span,
-                    );
-                }
+                ItemKind::Var(var) => self.declare_var(item_index, item.span, var),
                 ItemKind::Const(declaration) => self.declare_const_group(declaration),
                 ItemKind::Data(data) => {
                     let site = self.data_site(data, None);
@@ -1512,6 +1501,145 @@ impl Analysis {
         value
     }
 
+    /// Declares one `var`, in every shape the document gives it.
+    ///
+    /// Three axes are decided here and they stay independent, which is
+    /// sub-plan E's decision 14. The *storage class* says where the variable
+    /// lives and how a plain reference to it encodes; the *type width* says
+    /// how wide one datum is; the two multipliers say how many of them there
+    /// are. `var dp p:far` is a 24-bit value in the direct page, and it is
+    /// legal precisely because those are three answers and not one.
+    ///
+    /// What K816 decides is size. Where an allocated variable lands is
+    /// ld65's, and stays ld65's (`plans/feature-manifest.md` §3).
+    fn declare_var(&mut self, item_index: usize, span: Span, var: &ast::VarDeclaration) {
+        if var.name.provenance == Provenance::Synthetic {
+            return; // Recovery invented the name; syntax error already reported.
+        }
+        // Field lists and the storage-less `abstract var` are the two axes
+        // E7 leaves; both need a layout, and layouts are E8's.
+        if let Some(feature) = unsupported_var_feature(var) {
+            self.diagnostics.push(compat::unimplemented(
+                span,
+                feature,
+                compat::Owner::HlaLowering,
+            ));
+            return;
+        }
+
+        let address = match &var.address {
+            Some(expr) => match self.constant(expr, "variable addresses") {
+                Some(address) => Some(address),
+                // An address that does not fold leaves nothing to declare:
+                // every reference would need a value this one cannot supply.
+                None => return,
+            },
+            None => None,
+        };
+        // An extent that does not fold has already reported itself, and the
+        // declaration goes on without the multiplier — one bad count should
+        // not turn every use of the name into an undeclared-symbol error too.
+        let extent = var
+            .size
+            .as_ref()
+            .and_then(|expr| self.constant(expr, "array extents"));
+        let count = var
+            .count
+            .as_ref()
+            .and_then(|expr| self.constant(expr, "allocation counts"));
+        let width = var.width.map(|width| layout::data_width(width.kind));
+        let storage = var.storage.map(|storage| storage.kind);
+
+        // A declaration-position prefix sets the encoding plain references
+        // default to; without one a pinned variable's own magnitude decides
+        // and an allocated one is absolute, which is the documented default
+        // (`doc/syntax-reference.md`, "Variable Declaration").
+        let size = match (storage, address) {
+            (Some(storage), _) => address_size_of(storage),
+            (None, Some(address)) => AddressSize::of_value(address),
+            (None, None) => AddressSize::Absolute,
+        };
+
+        let datum = layout::datum_size(width, None, self.model.symbols.layouts());
+        let allocation = layout::allocation(datum, extent, count);
+
+        // `far` is the storage class with no auto-allocator: nothing knows
+        // which of the 256 banks an unaddressed 24-bit symbol belongs to.
+        let far_unplaced = storage == Some(ast::StorageClassKind::Far) && address.is_none();
+        if far_unplaced {
+            self.diagnostics.push(far_needs_address(var, span));
+        }
+
+        let direct_page = storage == Some(ast::StorageClassKind::DirectPage);
+        if direct_page {
+            self.claim_direct_page(var, span, address, allocation.total);
+        }
+
+        let Some(symbol) = self.declare(
+            &var.name.text,
+            SymbolKind::Var {
+                address,
+                size,
+                width,
+                element: allocation.element,
+                repeat: count,
+                // No declaration reaching here carries a field list; E8's
+                // layouts arrive with the pass that computes them.
+                layout: None,
+            },
+            var.name.span,
+        ) else {
+            return;
+        };
+
+        // A pinned variable is an equate and reserves nothing. An unplaced
+        // `far` one was refused just above, and emitting a reservation for it
+        // would put 24-bit storage in a segment chosen by accident.
+        if address.is_none() && !far_unplaced {
+            self.model.reservations.insert(
+                item_index,
+                Reservation {
+                    symbol,
+                    bytes: allocation.total,
+                    direct_page,
+                },
+            );
+        }
+    }
+
+    /// Records one `var dp` against the unit's direct page and reports the
+    /// declaration that does not fit.
+    ///
+    /// Two ways not to fit, and they are different complaints: a *pinned*
+    /// slot can name an offset the page does not have, and the pool as a
+    /// whole can be asked for more than 256 bytes. Only the first
+    /// declaration to exhaust the pool is reported — every later one would
+    /// repeat the same news about the same page.
+    fn claim_direct_page(
+        &mut self,
+        var: &ast::VarDeclaration,
+        span: Span,
+        address: Option<u32>,
+        bytes: u32,
+    ) {
+        let claimed = match address {
+            Some(pinned) => self.direct_page.pin(pinned, bytes),
+            None => self.direct_page.request(bytes),
+        };
+        if let Some(pinned) = address
+            && layout::pinned_slot_overflows(pinned, bytes)
+        {
+            self.diagnostics
+                .push(pinned_slot_outside_page(var, span, pinned, bytes));
+            return;
+        }
+        if claimed > layout::DIRECT_PAGE_BYTES && !self.direct_page_reported {
+            self.direct_page_reported = true;
+            self.diagnostics
+                .push(direct_page_overflow(var, span, claimed));
+        }
+    }
+
     /// Declares one `const` group, applying the enum-like auto-increment.
     ///
     /// An entry without a value continues the previous one; a group that
@@ -1931,30 +2059,88 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
     }
 }
 
-/// Names the first part of `var` that has no semantics yet, or `None` when
-/// the declaration is the fixed-address form the slice compiles.
+/// Names the part of `var` that has no semantics yet, or `None` when the
+/// declaration is one E7 allocates.
+///
+/// Both surviving arms are the same missing piece: a *layout*. A field list
+/// needs one computed, and an `abstract var` is a layout and nothing else.
+/// E8 computes them, and this function goes with them.
 fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static str> {
     if var.is_abstract {
         Some("`abstract var` layouts")
     } else if !var.fields.is_empty() {
         Some("symbolic subscript field lists")
-    } else if var.storage.is_some() && var.address.is_none() {
-        // On a pinned variable the prefix only picks the encoding plain
-        // references default to, which is the address-size axis C owns. On
-        // an allocated one it also asks for a storage pool — the direct-page
-        // pool, or far storage — and that allocation is E's.
-        Some("`dp` / `abs` / `far` storage classes on allocated variables")
-    } else if var.width.is_some() {
-        Some("typed width suffixes")
-    } else if var.size.is_some() {
-        Some("array declarations")
-    } else if var.count.is_some() {
-        Some("allocation counts")
-    } else if var.address.is_none() {
-        Some("linker-allocated variables")
     } else {
         None
     }
+}
+
+/// `var far NAME` with nothing to place it at.
+fn far_needs_address(var: &crate::ast::VarDeclaration, span: Span) -> Diagnostic {
+    let storage = var.storage.map_or(span, |storage| storage.span);
+    Diagnostic::error(
+        DiagnosticCode::FAR_NEEDS_ADDRESS,
+        format!("`far` variable `{}` has no address", var.name.text),
+        Label::new(storage, "24-bit storage is never auto-allocated"),
+    )
+    .with_secondary(Label::new(var.name.span, "nothing places this"))
+    .with_note(
+        "an address is 24 bits wide because it names a bank, and neither K816 nor ld65 \
+         has a rule for which of the 256 banks an unaddressed `far` symbol belongs in",
+    )
+    .with_help(format!(
+        "give it an address — `var far {} = $C00000` — or drop `far` and let the linker \
+         place it",
+        var.name.text
+    ))
+    .with_docs("doc/syntax-reference.md#far-storage-var-far")
+}
+
+/// A pinned `var dp` whose slot runs past the end of the direct page.
+fn pinned_slot_outside_page(
+    var: &crate::ast::VarDeclaration,
+    span: Span,
+    address: u32,
+    bytes: u32,
+) -> Diagnostic {
+    let last = address.saturating_add(bytes.max(1)) - 1;
+    Diagnostic::error(
+        DiagnosticCode::DIRECT_PAGE_OVERFLOW,
+        format!(
+            "`{}` is pinned at direct-page offset ${address:02X}, and its {bytes} bytes \
+             run to ${last:02X}",
+            var.name.text
+        ),
+        Label::new(
+            var.address.as_ref().map_or(span, |address| address.span),
+            "the direct page ends at $FF",
+        ),
+    )
+    .with_note(
+        "a pinned slot is an offset into the 256-byte direct page, not an absolute \
+         address: the D register decides where that page is at run time",
+    )
+    .with_help("pin it lower, or drop `dp` and let the variable live in a segment")
+    .with_docs("doc/syntax-reference.md#direct-page-storage-var-dp")
+}
+
+/// The unit has asked the direct page for more than it has.
+fn direct_page_overflow(var: &crate::ast::VarDeclaration, span: Span, claimed: u32) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DIRECT_PAGE_OVERFLOW,
+        format!("this unit's `dp` declarations need {claimed} bytes of the 256-byte direct page"),
+        Label::new(span, "this is the declaration that exceeds it"),
+    )
+    .with_secondary(Label::new(var.name.span, "declared here"))
+    .with_note(
+        "the direct page is 256 bytes and no linker configuration makes it larger, so \
+         the overflow is decided at the declaration rather than at the link",
+    )
+    .with_help(
+        "drop `dp` from the declarations that do not need one-byte addressing, or make \
+         them smaller",
+    )
+    .with_docs("doc/syntax-reference.md#direct-page-storage-var-dp")
 }
 
 /// The unit's call graph as adjacency lists over `functions`' indices.

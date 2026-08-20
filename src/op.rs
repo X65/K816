@@ -37,7 +37,7 @@
 use crate::effects::{Effects, instruction_effects};
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::source::Span;
-use crate::symbol::SymbolId;
+use crate::symbol::{AddressSize, SymbolId};
 use crate::value::{KExpr, Value};
 
 pub use crate::isa::RegisterWidth;
@@ -201,7 +201,17 @@ pub enum KOpKind {
     /// `doc/design.md` §7: segment names live in ld65's namespace, not in the
     /// unit's symbol table, and interning them there would make a segment
     /// named like a function a duplicate-symbol error.
-    Segment(SegmentName),
+    ///
+    /// `addressing` is the ca65 *segment type*, and it is `None` for every
+    /// segment a K65 source names. A segment K816 synthesizes may need it:
+    /// the address size of a label is the address size of the segment it is
+    /// defined in, so a direct-page reservation has to be in a segment that
+    /// says `zeropage` or its `.exportzp` is a ca65 error rather than a
+    /// one-byte operand.
+    Segment {
+        name: SegmentName,
+        addressing: Option<AddressSize>,
+    },
     /// Emitted bytes: `.byte` / `.word` / `.faraddr` / `.res`.
     Data(DataOp),
     /// `align N` — `.align` in ca65.
@@ -709,7 +719,7 @@ impl KProgram {
 fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
     match &op.kind {
         KOpKind::Label(symbol) => format!("label {}", symbols.name(*symbol)),
-        KOpKind::Segment(name) => format!("segment {name}"),
+        KOpKind::Segment { name, .. } => format!("segment {name}"),
         KOpKind::Align(expr) => format!("align {}", dump_expr(expr, symbols)),
         KOpKind::Export(symbol) => format!("export {}", symbols.name(*symbol)),
         KOpKind::NocrossGuard { length } => format!("nocross {length}"),

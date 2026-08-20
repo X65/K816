@@ -50,21 +50,25 @@ use std::collections::BTreeMap;
 use crate::ast::{
     AddressEncoding as AstEncoding, AddressOperand, BlockMoveOperand, DataBlock, DataEntry,
     DataEntryKind, DataValue, Expr, ExprKind, HlaOperand, HlaOperandKind, IndexRegisterKind,
-    IndirectOperand, LongIndirectOperand, NativeInstruction, NativeOperand, Register,
-    StorageClassKind,
+    IndirectOperand, LongIndirectOperand, Name, NativeInstruction, NativeOperand, Register,
+    StorageClassKind, SubscriptExpr,
 };
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
+use crate::effects::{RegisterSet, instruction_effects};
 use crate::isa::{
-    AddressEncoding, InstructionSpec, Mnemonic, OperandForm, OperandWidth, spec_for_form,
+    AddressEncoding, AddressingMode, InstructionSpec, Mnemonic, OperandForm, OperandWidth,
+    RegisterWidth, spec_for_form,
 };
+use crate::layout;
 use crate::op::{
     AxisState, DataOp, EmulationState, IndexRegister, Instruction, KOp, KOpKind, ModeState,
     Operand, Origin, SegmentName,
 };
 use crate::source::{Provenance, Span};
-use crate::symbol::{AddressSize, SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{AddressSize, DataWidth, SymbolId, SymbolKind, SymbolTable};
 use crate::value::{BinaryOp, KExpr, UnaryOp, Value};
+use crate::width::Axis;
 
 /// One classified instruction: the ISA row it matched, the typed operand
 /// built from the source expression, and how many times it is emitted.
@@ -213,6 +217,137 @@ fn unknown_width(
         );
     }
     diagnostic
+}
+
+/// The name a subscript or a typed view is ultimately *of*.
+///
+/// `COMP[2]`, `COMP:word`, and `COMP` all name `COMP`; arithmetic over one
+/// does not, because the result is an address and not the variable. It is
+/// what decides an access's encoding and its element size, and both have to
+/// be the declaration's answer rather than the expression's shape.
+fn base_name(expr: &Expr) -> Option<&Name> {
+    match &expr.kind {
+        ExprKind::Symbol(name) => Some(name),
+        ExprKind::Subscript(subscript) => base_name(&subscript.base),
+        ExprKind::TypedView(view) => base_name(&view.base),
+        _ => None,
+    }
+}
+
+/// An index outside the extent its declaration gives.
+fn subscript_out_of_range(subscript: &SubscriptExpr, index: u32, repeat: u32) -> Diagnostic {
+    let last = repeat.saturating_sub(1);
+    Diagnostic::error(
+        DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
+        format!("element {index} is outside this variable's {repeat} elements"),
+        Label::new(subscript.index.span, format!("the last element is {last}")),
+    )
+    .with_note(
+        "an allocation count fixes how many elements a variable has, and an index past \
+         them names storage the declaration did not reserve",
+    )
+    .with_docs("doc/syntax-reference.md#repeat-element-accessors")
+}
+
+/// The register axis a memory datum passes through, or `None` when no
+/// register carries it.
+///
+/// Asked of the *mnemonic*, at `Absolute` — a mode whose only
+/// address-forming register is the data bank register, so the
+/// general-purpose registers left in the effect are the ones the datum
+/// itself moves through. `LDA` writes A, `STX` reads X, `CPY` reads Y, and
+/// `JMP` touches none of them because a jump target is not a datum.
+///
+/// A read-modify-write like `INC` also touches none, which is why it is not
+/// checked: the document's rule is about loads and stores, and `INC` moves
+/// its datum through no register at all.
+fn datum_axis(mnemonic: Mnemonic) -> Option<Axis> {
+    let effects = instruction_effects(mnemonic, AddressingMode::Absolute, None);
+    let touched = effects.reads.registers.union(effects.writes.registers);
+    if touched.intersects(RegisterSet::X.union(RegisterSet::Y)) {
+        Some(Axis::Index)
+    } else if touched.intersects(RegisterSet::A) {
+        Some(Axis::Accumulator)
+    } else {
+        None
+    }
+}
+
+/// A `:far` datum in register position: there is no register to put it in.
+fn datum_too_wide(mnemonic: Mnemonic, operand: Span, declaration: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DATA_WIDTH_MISMATCH,
+        format!(
+            "`{}` cannot move a 3-byte datum: no register is that wide",
+            mnemonic.ca65()
+        ),
+        Label::new(operand, "declared `:far`, which is 3 bytes"),
+    )
+    .with_secondary(Label::new(declaration, "the width is declared here"))
+    .with_note(
+        "the accumulator and the index registers are 8 or 16 bits wide; 24-bit data is \
+         reached a piece at a time, or through a pointer",
+    )
+    .with_help(
+        "take a partial view — `ptr:word`, `(ptr+2):byte` — or use a long-indirect \
+         operand such as `lda [ptr]`",
+    )
+    .with_docs("doc/syntax-reference.md#typed-width-suffixes")
+}
+
+/// A datum whose declared width is not the width of the register reading it.
+fn datum_width_mismatch(
+    mnemonic: Mnemonic,
+    operand: Span,
+    declaration: Span,
+    datum: DataWidth,
+    axis: Axis,
+    register: RegisterWidth,
+) -> Diagnostic {
+    let bytes = datum.bytes();
+    let register_bytes = match register {
+        RegisterWidth::W8 => 1,
+        RegisterWidth::W16 => 2,
+    };
+    let wanted = match datum {
+        DataWidth::Byte => RegisterWidth::W8,
+        _ => RegisterWidth::W16,
+    };
+    Diagnostic::error(
+        DiagnosticCode::DATA_WIDTH_MISMATCH,
+        format!(
+            "`{}` moves {register_bytes} byte{} here, and this datum is {bytes}",
+            mnemonic.ca65(),
+            if register_bytes == 1 { "" } else { "s" },
+        ),
+        Label::new(
+            operand,
+            format!(
+                "declared `{}`",
+                match datum {
+                    DataWidth::Byte => ":byte",
+                    DataWidth::Word => ":word",
+                    DataWidth::Far => ":far",
+                }
+            ),
+        ),
+    )
+    .with_secondary(Label::new(declaration, "the width is declared here"))
+    .with_note(format!(
+        "the {} is {register_bytes}-byte wide here, so the access would {}",
+        axis.name(),
+        if register_bytes < bytes {
+            "read only part of the datum"
+        } else {
+            "run past the end of it"
+        }
+    ))
+    .with_help(format!(
+        "set the width — `{}` on the enclosing section, or a width block here — or take \
+         a typed view of the operand",
+        axis.annotation(wanted)
+    ))
+    .with_docs("doc/syntax-reference.md#typed-width-suffixes")
 }
 
 /// What one resolver run found.
@@ -406,13 +541,15 @@ impl<'a> Resolver<'a> {
                     right?,
                 ))
             }
-            ExprKind::Field(_)
-            | ExprKind::Subscript(_)
-            | ExprKind::Metadata(_)
-            | ExprKind::TypedView(_) => {
+            // A typed view restates how wide the datum is and says nothing
+            // about which one it is, so the value it folds to is the base's.
+            // The width it declares is read where widths are checked.
+            ExprKind::TypedView(view) => self.fold(&view.base),
+            ExprKind::Subscript(subscript) => self.subscript(subscript),
+            ExprKind::Field(_) | ExprKind::Metadata(_) => {
                 self.report(compat::unimplemented(
                     expr.span,
-                    "symbolic subscripts, metadata queries, and typed views",
+                    "symbolic subscripts and metadata queries",
                     compat::Owner::HlaLowering,
                 ));
                 None
@@ -427,6 +564,88 @@ impl<'a> Resolver<'a> {
             }
             // A syntax diagnostic was already reported for this node.
             ExprKind::Error => None,
+        }
+    }
+
+    /// Folds `NAME[i]`, which is compile-time address arithmetic and never
+    /// anything else.
+    ///
+    /// Two different things wear the same bracket, and the declaration
+    /// decides which. A variable declared with `* count` has *repeat
+    /// elements*: the index counts elements, strides by the element size, and
+    /// is checked against the count. A variable without one — including the
+    /// raw span `var buf[16]` — has no element metadata at all, and the
+    /// document is explicit that the bracket there "remains ordinary
+    /// byte-offset arithmetic". Both are addition; they differ in what is
+    /// added and in what is checked.
+    ///
+    /// The index must fold. A run-time index is the CPU's indexed addressing
+    /// modes, which are a different spelling for a different thing.
+    fn subscript(&mut self, subscript: &SubscriptExpr) -> Option<KExpr> {
+        let base = self.fold(&subscript.base);
+        let Some(index) = self.fold(&subscript.index) else {
+            return base.and(None);
+        };
+        let Some(index) = index.value().map(|value| value.get()) else {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
+                    "a subscript index must be known at compile time",
+                    Label::new(subscript.index.span, "this is not a constant"),
+                )
+                .with_note(
+                    "`NAME[i]` is address arithmetic K816 performs, not an index the CPU \
+                     applies at run time",
+                )
+                .with_help(
+                    "use an indexed addressing mode — `NAME,x` — or compute the address \
+                     into a pointer",
+                )
+                .with_docs("doc/syntax-reference.md#repeat-element-accessors"),
+            );
+            return base.and(None);
+        };
+        let base = base?;
+
+        // The repeat count is what creates elements. Without one — an
+        // untyped name, or the raw span `var buf[16]` — the bracket steps
+        // bytes, which is the document's own wording for that case.
+        let stride = match self.subscript_element(&subscript.base) {
+            Some((element, Some(repeat))) => {
+                if index >= repeat {
+                    self.report(subscript_out_of_range(subscript, index, repeat));
+                    return None;
+                }
+                element
+            }
+            _ => 1,
+        };
+        let offset = index.saturating_mul(stride);
+        if offset == 0 {
+            // `NAME[0]` is `NAME`. Emitting `NAME + 0` would assemble to the
+            // same bytes and read like arithmetic nobody wrote.
+            return Some(base);
+        }
+        Some(KExpr::fold_binary(
+            BinaryOp::Add,
+            base,
+            KExpr::number(offset),
+        ))
+    }
+
+    /// The element stride and the repeat count of a subscript's base.
+    ///
+    /// `None` when the base is not a variable: an expression K816 cannot
+    /// name has no declared element size, and byte arithmetic is the only
+    /// honest answer for it.
+    fn subscript_element(&self, base: &Expr) -> Option<(u32, Option<u32>)> {
+        let name = base_name(base)?;
+        let id = self.symbols.lookup(&name.text)?;
+        match self.symbols.kind(id) {
+            SymbolKind::Var {
+                element, repeat, ..
+            } => Some((element, repeat)),
+            _ => None,
         }
     }
 
@@ -795,6 +1014,7 @@ impl<'a> Resolver<'a> {
         let spec = self.select_encoding(mnemonic, form, source, site, value, forced)?;
         let expr = self.fold(value)?;
         self.check_fits(spec, &expr, value.span);
+        self.check_datum_width(mnemonic, form, value);
 
         let index = index.and_then(|index| match index.kind {
             IndexRegisterKind::X => Some(IndexRegister::X),
@@ -848,6 +1068,90 @@ impl<'a> Resolver<'a> {
             }
         };
         Some(Classified::new(spec, Some(operand)))
+    }
+
+    /// Checks a datum's declared width against the register the access moves
+    /// it through.
+    ///
+    /// This is the *data-width* axis and nothing else. Where the variable
+    /// lives and how the operand encodes were decided above, from the
+    /// storage class; how many bytes it holds was decided by its `:byte` /
+    /// `:word` / `:far` suffix, and the two are independent
+    /// (`doc/syntax-reference.md`, "Two orthogonal axes"). What is checked
+    /// here is that the register can hold the datum: a `:word` read with an
+    /// 8-bit accumulator reads half of it, and a `:far` one has no register
+    /// wide enough at all.
+    ///
+    /// Only the direct address forms qualify. A long-indirect operand
+    /// (`lda [ptr]`) names a *pointer*, and the document offers that spelling
+    /// as the way to reach a `:far` variable — checking `ptr`'s own width
+    /// there would refuse the thing it recommends.
+    fn check_datum_width(&mut self, mnemonic: Mnemonic, form: OperandForm, value: &Expr) {
+        if !matches!(
+            form,
+            OperandForm::Address | OperandForm::AddressIndexedX | OperandForm::AddressIndexedY
+        ) {
+            return;
+        }
+        let Some((width, declaration)) = self.declared_width(value) else {
+            return;
+        };
+        let Some(axis) = datum_axis(mnemonic) else {
+            return;
+        };
+        // A datum wider than any register is wrong whatever the widths are.
+        if width == DataWidth::Far {
+            self.report(datum_too_wide(mnemonic, value.span, declaration));
+            return;
+        }
+        let state = match axis {
+            Axis::Accumulator => self.widths.a,
+            Axis::Index => self.widths.i,
+        };
+        // An unknown width makes no claim, so it cannot disagree with one.
+        let AxisState::Known(register) = state else {
+            return;
+        };
+        let held = match register {
+            RegisterWidth::W8 => DataWidth::Byte,
+            RegisterWidth::W16 => DataWidth::Word,
+        };
+        if held != width {
+            self.report(datum_width_mismatch(
+                mnemonic,
+                value.span,
+                declaration,
+                width,
+                axis,
+                register,
+            ));
+        }
+    }
+
+    /// The data width one address expression declares, and where it said so.
+    ///
+    /// A use-site typed view is the nearer answer and overrides the
+    /// declaration's, which is what makes `lda far x:byte` a one-byte view of
+    /// a variable declared however it was. An expression that is neither a
+    /// name nor a view of one — arithmetic, a literal, an address-of —
+    /// declares nothing, and nothing is not a width to disagree with.
+    fn declared_width(&self, value: &Expr) -> Option<(DataWidth, Span)> {
+        match &value.kind {
+            ExprKind::TypedView(view) => {
+                Some((layout::data_width(view.width.kind), view.width.span))
+            }
+            ExprKind::Subscript(subscript) => self.declared_width(&subscript.base),
+            ExprKind::Symbol(name) => {
+                let id = self.symbols.lookup(&name.text)?;
+                match self.symbols.kind(id) {
+                    SymbolKind::Var {
+                        width: Some(width), ..
+                    } => Some((width, self.symbols.symbol(id).declaration)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Narrows a mnemonic's specs to one by source form, for the forms whose
@@ -968,7 +1272,10 @@ impl<'a> Resolver<'a> {
     /// variable, any expression over one — is placed by ld65, so K816 cannot
     /// prove page-zero fit and must not narrow.
     fn preferred_size(&mut self, value: &Expr) -> AddressSize {
-        if let ExprKind::Symbol(name) = &value.kind
+        // Through a subscript and a typed view too: `COMP[2]` and `x:byte`
+        // are the declaration's storage seen from a use site, so the
+        // encoding is the declaration's as much as a bare name's is.
+        if let Some(name) = base_name(value)
             && let Some(id) = self.symbols.lookup(&name.text)
             && let Some(size) = self.symbols.kind(id).address_size()
         {
@@ -1566,7 +1873,10 @@ impl Resolver<'_> {
                     }
                     switched = true;
                     ops.push(KOp::new(
-                        KOpKind::Segment(SegmentName::new(&name.text)),
+                        KOpKind::Segment {
+                            name: SegmentName::new(&name.text),
+                            addressing: None,
+                        },
                         entry.span,
                         Origin::User,
                     ));
@@ -1588,7 +1898,10 @@ impl Resolver<'_> {
                     let segment = address_segment(site, value, addresses);
                     self.report_address_placement(entry.span, &segment, value, site);
                     ops.push(KOp::new(
-                        KOpKind::Segment(segment),
+                        KOpKind::Segment {
+                            name: segment,
+                            addressing: None,
+                        },
                         entry.span,
                         Origin::CompilerGenerated,
                     ));
@@ -1650,7 +1963,10 @@ impl Resolver<'_> {
         // Restore the outer segment, so a block-local switch really is local.
         if switched {
             ops.push(KOp::new(
-                KOpKind::Segment(SegmentName::new(OUTER_SEGMENT)),
+                KOpKind::Segment {
+                    name: SegmentName::new(OUTER_SEGMENT),
+                    addressing: None,
+                },
                 span,
                 Origin::CompilerGenerated,
             ));

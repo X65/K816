@@ -210,6 +210,44 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::INLINE_RECURSION,
         caret: "one",
     },
+    // The declaration family: the storage class with no allocator, the pool
+    // with a size, an index past what a count reserved, and the two ways a
+    // datum can be the wrong width for the register reading it.
+    Case {
+        source: "var far rom\n",
+        code: DiagnosticCode::FAR_NEEDS_ADDRESS,
+        caret: "far",
+    },
+    Case {
+        source: "var dp first[200]\nvar dp second[100]\n",
+        code: DiagnosticCode::DIRECT_PAGE_OVERFLOW,
+        caret: "var dp second[100]",
+    },
+    Case {
+        source: "var dp late:word = $FF\n",
+        code: DiagnosticCode::DIRECT_PAGE_OVERFLOW,
+        caret: "$FF",
+    },
+    Case {
+        source: "var slots:word * 4\n\nfunc f @a16 @i8 {\n    a = slots[4]\n}\n",
+        code: DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
+        caret: "4",
+    },
+    Case {
+        source: "var w:word\n\nfunc f @a8 @i8 {\n    a = w\n}\n",
+        code: DiagnosticCode::DATA_WIDTH_MISMATCH,
+        caret: "w",
+    },
+    Case {
+        source: "var ptr:far\n\nfunc f @a16 @i8 {\n    a = ptr\n}\n",
+        code: DiagnosticCode::DATA_WIDTH_MISMATCH,
+        caret: "ptr",
+    },
+    Case {
+        source: "var n\nvar here\n\nfunc f @a8 @i8 {\n    a = n[here]\n}\n",
+        code: DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
+        caret: "here",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.

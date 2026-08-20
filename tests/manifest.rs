@@ -139,31 +139,31 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Allocated `var NAME`",
         source: "var bar\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Linker-allocated variables have no initializer",
     },
     Row {
         group: "Storage-class prefixes",
         source: "var dp counter\nvar abs slot\nvar far handler = $030000\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Storage class prefixes",
     },
     Row {
         group: "Typed width suffixes",
         source: "var w:word = $2000\nvar p:far = $3000\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Typed width suffixes",
     },
     Row {
         group: "Array declaration `var NAME[N]`",
         source: "var buffer[32] = $0100\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Array spans and allocation counts",
     },
     Row {
         group: "Allocation count `* count`",
         source: "var simple:byte * 32\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Array spans and allocation counts",
     },
     Row {

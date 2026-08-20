@@ -631,6 +631,14 @@ pub enum KProgramItem {
     /// A unit-level operation: a segment selection, a label, data, alignment,
     /// or a linkage directive.
     Op(KOp),
+    /// One top-level data block's operations, kept together as a run.
+    ///
+    /// A data block is bytes, and bytes need no state — until a `code { }`
+    /// subblock puts instructions among them, and an instruction is sized by
+    /// the width state tracked across the operations around it. That state
+    /// exists over a run and not over a single operation, which is why a
+    /// block arrives whole rather than one op at a time.
+    Data(Vec<KOp>),
 }
 
 /// A complete lowered compilation unit.
@@ -644,6 +652,16 @@ impl KProgram {
         self.items.push(KProgramItem::Function(function));
     }
 
+    /// Adds one top-level data block's operations, as a run.
+    ///
+    /// A run rather than one operation at a time because a `code { }`
+    /// subblock puts *instructions* among the bytes, and an instruction is
+    /// emitted with the width state tracked across the ops around it. A
+    /// single op has no such state; a run does.
+    pub fn push_data(&mut self, ops: Vec<KOp>) {
+        self.items.push(KProgramItem::Data(ops));
+    }
+
     pub fn push_op(&mut self, op: KOp) {
         self.items.push(KProgramItem::Op(op));
     }
@@ -652,7 +670,7 @@ impl KProgram {
     pub fn functions(&self) -> impl Iterator<Item = &KFunction> {
         self.items.iter().filter_map(|item| match item {
             KProgramItem::Function(function) => Some(function),
-            KProgramItem::Op(_) => None,
+            KProgramItem::Op(_) | KProgramItem::Data(_) => None,
         })
     }
 
@@ -660,7 +678,7 @@ impl KProgram {
     pub fn functions_mut(&mut self) -> impl Iterator<Item = &mut KFunction> {
         self.items.iter_mut().filter_map(|item| match item {
             KProgramItem::Function(function) => Some(function),
-            KProgramItem::Op(_) => None,
+            KProgramItem::Op(_) | KProgramItem::Data(_) => None,
         })
     }
 
@@ -684,6 +702,16 @@ impl KProgram {
                         text,
                         origin_note(op, symbols, map)
                     ));
+                }
+                KProgramItem::Data(ops) => {
+                    for op in ops {
+                        let text = dump_op(op, symbols);
+                        out.push_str(&format!(
+                            "{:<26} ; {}\n",
+                            text,
+                            origin_note(op, symbols, map)
+                        ));
+                    }
                 }
                 KProgramItem::Function(function) => {
                     out.push_str(&format!("func {}", symbols.name(function.symbol)));

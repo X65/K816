@@ -49,6 +49,22 @@ use crate::symbol::{
 };
 use crate::width::{self, WidthAnalysis};
 
+/// Where a `code { }` subblock sits: the item index of its data block, and
+/// which subblock of that block it is.
+pub type DataCodeId = (usize, usize);
+
+/// Where the width states of a body come from.
+///
+/// A function has an entry contract, a name, and callers; a `code { }`
+/// subblock of a data block has none of those and is still a body that the
+/// solver walks. One enum rather than an `Option<SymbolId>` plus a
+/// convention, so that every reader has to say which it means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WidthScope {
+    Function(SymbolId),
+    DataCode(DataCodeId),
+}
+
 /// The result of analyzing one file: symbols plus per-function facts.
 #[derive(Debug, Default)]
 pub struct SemanticModel {
@@ -86,6 +102,15 @@ pub struct SemanticModel {
     /// sits rather than about what it declares. A pinned variable has no
     /// entry — it is an equate, and equates reserve nothing.
     pub reservations: BTreeMap<usize, Reservation>,
+    /// The width analysis of each `code { }` subblock of a top-level data
+    /// block, keyed by where it sits.
+    ///
+    /// A function's analysis is keyed by its symbol; a subblock has none —
+    /// it is a body with no name, no contract, and no caller — so it is
+    /// keyed by position instead. Both are the same kind of answer to the
+    /// same question, which is why lowering reads one or the other and does
+    /// nothing differently after that.
+    pub data_code: BTreeMap<DataCodeId, WidthAnalysis>,
 }
 
 /// One allocated variable's claim on the linker.
@@ -472,6 +497,7 @@ impl Analysis {
                     let resolved = resolver.finish();
                     self.absorb(resolved);
                     self.report_reserved_in_data(data);
+                    self.check_data_code(item_index, data);
                 }
                 ItemKind::EvalBlock(expression) => {
                     self.diagnostics.push(compat::unimplemented(
@@ -1090,7 +1116,7 @@ impl Analysis {
                 continue;
             };
             self.current_function = Some(function.symbol);
-            self.check_block(function.symbol, &func.body);
+            self.check_block(WidthScope::Function(function.symbol), &func.body);
             self.current_function = None;
         }
     }
@@ -1153,30 +1179,80 @@ impl Analysis {
     }
 
     /// Checks one block's statements, and the blocks nested in them.
-    fn check_block(&mut self, function: SymbolId, block: &crate::ast::Block) {
+    fn check_block(&mut self, scope: WidthScope, block: &crate::ast::Block) {
         for statement in &block.statements {
-            let widths = self.widths_at(function, statement);
+            let widths = self.widths_at(scope, statement);
             self.check_statement(statement, widths);
             // A nested body is ordinary code, checked with the state the
             // solver tracks inside it rather than skipped along with the
             // statement that opens it — a scoped width block's body at the
             // block's width, a conditional's and a loop's at theirs.
             match &statement.kind {
-                StatementKind::WidthBlock(width) => self.check_block(function, &width.body),
+                StatementKind::WidthBlock(width) => self.check_block(scope, &width.body),
                 StatementKind::Conditional(conditional) => {
-                    self.check_block(function, &conditional.body);
+                    self.check_block(scope, &conditional.body);
                     if let Some(otherwise) = &conditional.otherwise {
-                        self.check_block(function, otherwise);
+                        self.check_block(scope, otherwise);
                     }
                 }
                 StatementKind::Loop(loop_statement) => {
                     self.loops += 1;
-                    self.check_block(function, &loop_statement.body);
+                    self.check_block(scope, &loop_statement.body);
                     self.loops -= 1;
                 }
-                StatementKind::Nocross(body) => self.check_block(function, body),
+                StatementKind::Nocross(body) => self.check_block(scope, body),
+                // A `code { }` subblock of an inline data block is ordinary
+                // code of the enclosing function: the solver flattened it
+                // into the same graph, so it is checked in the same scope.
+                StatementKind::Data(data) => {
+                    for entry in &data.entries {
+                        if let DataEntryKind::Code { body, .. } = &entry.kind {
+                            self.check_block(scope, body);
+                        }
+                    }
+                }
                 _ => {}
             }
+        }
+    }
+
+    /// Analyzes the `code { }` subblocks of a *top-level* data block.
+    ///
+    /// They are bodies without a function: no entry contract, no caller, no
+    /// name. So the solver runs over each one from an unknown entry state —
+    /// which is the honest one, since nothing says what widths hold when
+    /// control reaches bytes in a data block — and the result is keyed by
+    /// position rather than by symbol.
+    ///
+    /// An *inline* data block's subblocks are not here: those are statements
+    /// of the enclosing function, flattened into its graph by the solver and
+    /// checked in its scope.
+    fn check_data_code(&mut self, item: usize, data: &DataBlock) {
+        for (ordinal, entry) in data
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.kind, DataEntryKind::Code { .. }))
+            .enumerate()
+        {
+            let DataEntryKind::Code { body, .. } = &entry.kind else {
+                continue;
+            };
+            let id: DataCodeId = (item, ordinal);
+            let (analysis, diagnostics) = width::analyze_function(
+                body,
+                ModeState::unknown(),
+                &width::Context {
+                    symbols: &self.model.symbols,
+                    // No function, so no scope for `.name` labels — which
+                    // `resolve.rs` reports where one is written.
+                    function: None,
+                    callees: &BTreeMap::new(),
+                    externally_reachable: &BTreeSet::new(),
+                },
+            );
+            self.diagnostics.extend(diagnostics);
+            self.model.data_code.insert(id, analysis);
+            self.check_block(WidthScope::DataCode(id), body);
         }
     }
 
@@ -1205,12 +1281,12 @@ impl Analysis {
     /// A statement the analysis does not describe is a compiler bug, not a
     /// case to fall back from: substituting the entry contract there is
     /// exactly how one question comes to have two answers.
-    fn widths_at(&mut self, function: SymbolId, statement: &Statement) -> ModeState {
-        match self
-            .model
-            .width(function)
-            .and_then(|analysis| analysis.before(statement.id))
-        {
+    fn widths_at(&mut self, scope: WidthScope, statement: &Statement) -> ModeState {
+        let analysis = match scope {
+            WidthScope::Function(function) => self.model.width(function),
+            WidthScope::DataCode(id) => self.model.data_code.get(&id),
+        };
+        match analysis.and_then(|analysis| analysis.before(statement.id)) {
             Some(state) => state,
             None => {
                 self.diagnostics.push(Diagnostic::error(

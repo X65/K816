@@ -64,7 +64,15 @@ impl DiagnosticCode {
     pub const ADDRESS_RANGE: Self = Self("K816-E0109");
     /// A bare `const` (or const-rooted expression) in address position.
     pub const CONST_IN_ADDRESS_POSITION: Self = Self("K816-E0110");
-    /// A `segment` directive is not the first entry of its data block.
+    /// A placement directive sits where it cannot take effect: a `segment`
+    /// that is not the first entry of its data block, or any of `segment` /
+    /// `align` / `address` / `nocross` inside a `repeat` body.
+    ///
+    /// One code because it is one complaint from where the author sits —
+    /// placement is a property of where the block's bytes land, and both
+    /// positions have no single answer to give: bytes are already placed
+    /// before the first, and a repetition would ask the second for one
+    /// answer per copy.
     pub const SEGMENT_PLACEMENT: Self = Self("K816-E0111");
     /// A `nocross`-guarded run exceeds 256 bytes.
     pub const NOCROSS_TOO_LARGE: Self = Self("K816-E0112");
@@ -185,6 +193,11 @@ impl DiagnosticCode {
     /// and every access to one is out of range the moment it is written
     /// (`doc/symbolic-subscripts.md`, "Diagnostics").
     pub const ELEMENT_COUNT_RANGE: Self = Self("K816-E0141");
+    /// A string character has no slot in the `charset` in force. A charset is
+    /// an index table, so a character it does not list has no byte to emit —
+    /// and guessing one (the character's own value, say) would put a byte in
+    /// the output that the declared mapping says nothing about.
+    pub const CHARSET_UNMAPPED: Self = Self("K816-E0142");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -409,6 +422,7 @@ mod tests {
         DiagnosticCode::FAR_NEEDS_ADDRESS,
         DiagnosticCode::DATA_WIDTH_MISMATCH,
         DiagnosticCode::ELEMENT_COUNT_RANGE,
+        DiagnosticCode::CHARSET_UNMAPPED,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

@@ -113,6 +113,16 @@ impl DataWidth {
             Self::Far => 3,
         }
     }
+
+    /// The largest value this width can hold, which is what a data entry
+    /// checks its values against.
+    pub fn max_value(self) -> u32 {
+        match self {
+            Self::Byte => 0xFF,
+            Self::Word => 0xFFFF,
+            Self::Far => 0xFF_FFFF,
+        }
+    }
 }
 
 /// Identifies an interned [`Layout`].

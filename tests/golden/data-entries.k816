@@ -1,0 +1,133 @@
+// Sub-plan E9's fixture: what a data block emits, entry by entry.
+//
+// Everything here is bytes in the end, and the interesting part is which
+// bytes: the width a typed entry gives each value, the mapping a `charset`
+// puts a string through, how many copies a `repeat` makes, and what a
+// `for … eval` body folds to at each step of its range. A `code { }`
+// subblock is the exception that proves the rule — it is the one entry that
+// is not values, so it is the one entry lowering has to fill in.
+
+const FRAME_BYTES = $20
+const SLOTS = 3
+var ptr = $2345
+
+// --- Typed entries. The keyword sets the width; every value takes it. ---
+
+data widths {
+    // The explicit form of the implicit default, and the reason it exists:
+    // a bare identifier is ambiguous without it.
+    byte FRAME_BYTES 0 1 ?
+    // Two bytes per value, little-endian, and a symbol is the whole address.
+    word 0 $1234 ptr ?
+    // Three per value, for the 24-bit address space.
+    far $01C000 ?
+    // An address-byte operator selects a byte of an address; the *entry*
+    // still says how wide the value it produces is.
+    byte &<ptr &>ptr
+}
+
+data untyped {
+    // The implicit form: one byte per value, which is what `byte` restates.
+    // A typed entry takes every value that follows it, comments and line
+    // breaks included — K65 is newline-insensitive, so a value cannot mean
+    // one thing on this line and another on the next — which is why these
+    // are in a block of their own rather than under the `byte` above.
+    $7F 1 2 3
+}
+
+// --- Strings, and the mapping they go through. ---
+
+data text {
+    // A charset is an index table: `.` is 0, `A` is 1, and the repeated `.`
+    // padding means every one of those slots reads back as `.`. A character
+    // listed twice takes its first slot.
+    charset ".ABCDEFGHIJKLMNOPQRSTUVWXYZ..... "
+
+    hello: "HELLO" 0
+}
+
+data raw {
+    // No charset in force, so a string is its characters' own values.
+    "AB" 0
+}
+
+// --- Repetition. ---
+
+data repeated {
+    repeat 3 { 4 }
+    // The body is a whole data block, so a typed entry repeats too — and a
+    // `repeat` inside one multiplies rather than replaces.
+    repeat 2 { byte 1 2 }
+    repeat SLOTS {
+        repeat 2 { $AA }
+    }
+    // A charset written inside a body is scoped to it: the string after the
+    // `repeat` is mapped by the block's charset, which is none.
+    repeat 2 {
+        charset "xyz"
+        "zy"
+    }
+    "z"
+}
+
+// --- Generated data. ---
+
+data table {
+    // The loop variable and the unit's constants, folded once per step.
+    for i=0..4 eval [ i * SLOTS ]
+    // Ranges run backwards too, which a descending table needs.
+    for j=4..0 eval [ j ]
+    // One step is a range as much as five are.
+    for k=7..7 eval [ k ]
+    // The arithmetic is the evaluator's, not the K65 expression layer's:
+    // `?<` selects the smaller value, and a comparison answers 0 or 1.
+    for m=0..3 eval [ (m * 100) ?< 255 ]
+    for n=0..3 eval [ n > 1 ? $F0 : $0F ]
+}
+
+// --- What a `nocross` run measures. ---
+
+data guarded {
+    // The guard covers the run of statically-sizeable entries after it, and
+    // every entry in this one is sizeable without folding anything: a
+    // `charset` is no bytes, a string is one value per character, and a
+    // typed entry is its width times its values. Nine bytes.
+    nocross
+    charset " AB"
+    "AAAA"
+    word 1 2
+    byte 9
+}
+
+// --- Code among the bytes. ---
+
+data mixed {
+    0 0
+    // A subblock of a *top-level* data block is a body with no function, so
+    // nothing says what widths hold when control reaches it. A width block
+    // is how it says.
+    code {
+        @a8 {
+            a = FRAME_BYTES
+        }
+    }
+    // `nocross` on a subblock asks the same page-fit question the statement
+    // form does.
+    nocross code {
+        @i8 {
+            y = 3
+        }
+    }
+    $FF
+}
+
+func caller @a8 @i8 {
+    // An inline data block's subblock is ordinary code of *this* function:
+    // the width model flattened it into this graph, so the immediate below
+    // is sized by the contract above without saying so again.
+    data {
+        1 2
+        code { a = #7 }
+    }
+    return
+}

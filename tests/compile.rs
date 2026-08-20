@@ -1360,6 +1360,96 @@ fn a_call_that_damages_a_live_register_warns_at_the_call() {
     );
 }
 
+/// What a data block emits, entry by entry.
+///
+/// The gate is bytes: the width a typed entry gives each value, the mapping a
+/// string goes through, how many copies a `repeat` makes, and what each step
+/// of a `for … eval` folds to. Everything here is arithmetic K816 performs at
+/// compile time, so everything here is checkable without running anything.
+#[test]
+fn every_data_entry_emits_the_bytes_it_describes() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "data-entries.k816",
+        include_str!("golden/data-entries.k816"),
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    for expected in [
+        // The keyword sets the width, and `?` is that width's zero.
+        ".byte    $20, $00, $01, $00",
+        ".word    $00, $1234, ptr, $00",
+        ".faraddr $01C000, $00",
+        // An address-byte operator selects a byte; the entry still sizes it.
+        ".byte    .lobyte(ptr), .hibyte(ptr)",
+        // A charset is an index table: H is 8, E is 5, L is 12, O is 15.
+        ".byte    $08, $05, $0C, $0C, $0F",
+        // Without one, a string is its characters' own values.
+        ".byte    $41, $42",
+        // `repeat 2 { byte 1 2 }` keeps the entry's width in every copy.
+        ".byte    $01, $02",
+        // Generated: i*3 forward, j backwards, one step, min, and a ternary.
+        ".byte    $00, $03, $06, $09, $0C",
+        ".byte    $04, $03, $02, $01, $00",
+        ".byte    $07",
+        ".byte    $00, $64, $C8, $FF",
+        ".byte    $0F, $0F, $F0, $F0",
+    ] {
+        assert!(
+            assembly.contains(expected),
+            "expected `{expected}`:\n{assembly}"
+        );
+    }
+
+    // Repetition is copies, not a directive: three of one byte, and six from
+    // a `repeat` inside a `repeat`.
+    let repeated = assembly.find("repeated:").expect("the repeated block");
+    let table = assembly.find("table:").expect("the generated block");
+    let body = &assembly[repeated..table];
+    assert_eq!(body.matches(".byte    $04").count(), 3, "{body}");
+    assert_eq!(body.matches(".byte    $AA").count(), 6, "{body}");
+    // A `charset` inside a `repeat` body is scoped to it: `z` is 2 in the
+    // copies and its own value after them.
+    assert_eq!(body.matches(".byte    $02, $01").count(), 2, "{body}");
+    assert!(body.contains(".byte    $7A"), "{body}");
+
+    // A `code { }` subblock puts instructions among the bytes, and they are
+    // emitted with a width state like any other instruction.
+    let mixed = assembly.find("mixed:").expect("the mixed block");
+    let mixed = &assembly[mixed..];
+    assert!(
+        mixed.contains("lda     #$20") && mixed.contains("ldy     #$03"),
+        "the subblocks' instructions are here:\n{mixed}"
+    );
+    // `nocross code { }` asks the page-fit question the statement form does.
+    assert!(
+        mixed.contains(".assert  .hibyte(*"),
+        "the guarded subblock carries its assertion:\n{mixed}"
+    );
+    // And an inline subblock is ordinary code of its function: sized by the
+    // contract above it, with the jump around the data it sits in.
+    let caller = assembly.find("caller:").expect("the function");
+    let caller = &assembly[caller..];
+    assert!(
+        caller.contains("jmp     :+") && caller.contains("lda     #$07"),
+        "the inline subblock lowers inside the function:\n{caller}"
+    );
+
+    // A `nocross` run is measured without folding anything: a `charset` is
+    // no bytes, a string is one value per character, and a typed entry is
+    // its width times its values — 4 + 4 + 1 here.
+    let guarded = assembly.find("guarded:").expect("the guarded block");
+    assert!(
+        assembly[guarded..].contains(".hibyte(* - 9)"),
+        "the guard covers the whole run:\n{}",
+        &assembly[guarded..]
+    );
+
+    assemble_and_link("data-entries", &assembly, "slice");
+}
+
 /// The section kinds that are not subroutines, through the assembler.
 ///
 /// `inline` is the one construct that changes the *shape* of the operation

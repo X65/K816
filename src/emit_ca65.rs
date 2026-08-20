@@ -287,41 +287,54 @@ pub fn emit(
     for item in &program.items {
         match item {
             KProgramItem::Op(op) => emit_unit_op(&unit, op, &mut out),
+            // A data block's own run: no leading blank line and no contract,
+            // and otherwise emitted exactly as a function body is, because a
+            // `code { }` subblock's instructions need the same width state.
+            KProgramItem::Data(ops) => emit_ops(&unit, ops, &mut out),
             KProgramItem::Function(function) => {
                 out.push('\n');
-                let mut widths = WidthState::default();
-                let references = unnamed_references(&function.ops);
-                for (index, op) in function.ops.iter().enumerate() {
-                    match &op.kind {
-                        KOpKind::Instruction(instruction) => {
-                            emit_instruction(
-                                &unit,
-                                instruction,
-                                op,
-                                references[index].as_deref(),
-                                &mut widths,
-                                &mut out,
-                            );
-                        }
-                        // The model's claim is authoritative: it overrides
-                        // whatever the preceding instructions carried.
-                        KOpKind::ModeAssumption(state) => {
-                            widths.claim(*state, op, &unit, &mut out);
-                        }
-                        KOpKind::SkipData => out.push_str(&annotated(
-                            &format!(
-                                "        jmp     {}",
-                                references[index].as_deref().unwrap_or(":+")
-                            ),
-                            "k816: step over the inline data below",
-                        )),
-                        _ => emit_unit_op(&unit, op, &mut out),
-                    }
-                }
+                emit_ops(&unit, &function.ops, &mut out);
             }
         }
     }
     out
+}
+
+/// Emits a run of operations, tracking the width state across it.
+fn emit_ops(unit: &Unit<'_>, ops: &[KOp], out: &mut String) {
+    {
+        {
+            let mut widths = WidthState::default();
+            let references = unnamed_references(ops);
+            for (index, op) in ops.iter().enumerate() {
+                match &op.kind {
+                    KOpKind::Instruction(instruction) => {
+                        emit_instruction(
+                            unit,
+                            instruction,
+                            op,
+                            references[index].as_deref(),
+                            &mut widths,
+                            out,
+                        );
+                    }
+                    // The model's claim is authoritative: it overrides
+                    // whatever the preceding instructions carried.
+                    KOpKind::ModeAssumption(state) => {
+                        widths.claim(*state, op, unit, out);
+                    }
+                    KOpKind::SkipData => out.push_str(&annotated(
+                        &format!(
+                            "        jmp     {}",
+                            references[index].as_deref().unwrap_or(":+")
+                        ),
+                        "k816: step over the inline data below",
+                    )),
+                    _ => emit_unit_op(unit, op, out),
+                }
+            }
+        }
+    }
 }
 
 /// The per-unit context every emitted operation needs: the source it came

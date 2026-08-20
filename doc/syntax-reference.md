@@ -931,6 +931,8 @@ data palette {
 }
 ```
 
+A typed entry takes **every value that follows it**, not only the ones on its line. K65 is newline-insensitive, so `byte 1 2 3` and `byte 1 2` with `3` on the next line are the same token sequence and emit the same bytes; a line break — or a comment — cannot change what a value means. The entry ends at the first thing that is not a value: another type keyword, a label, a directive, or the block's closing brace.
+
 Each value on a `byte` line emits 1 byte. Values can be:
 
 - **Numeric literals** (validated to fit in 8 bits): `byte 0 $7F 255`
@@ -1020,6 +1022,15 @@ data generated {
 }
 ```
 
+`nocross code { }` asks the page-fit question the statement form asks, about the subblock's own bytes.
+
+A subblock of a **top-level** data block is a body without a function: no entry contract, no caller, and no scope of its own. Two consequences follow, and both are what "no function" means rather than restrictions added on top:
+
+- **Nothing says what the register widths are** where control reaches it, so they start unknown and a width-dependent immediate is `K816-E0104` until the subblock says. A width block is how it says: `code { @a8 { a = 1 } }`.
+- **A local label has nowhere to live** (`K816-E0101`), because local labels are scoped to a function. Use a unit-level label, or move the code into a `func`.
+
+A subblock of an **inline** data block — one written inside a function — has neither problem: it is ordinary code of that function, tracked in the same width model as the statements around it, so its immediates are sized by the contract already in force.
+
 ### `repeat`
 
 Repeats data within a data block:
@@ -1030,9 +1041,21 @@ data repeated {
 }
 ```
 
+The body is a data block, so typed entries, strings, and nested `repeat`s all work inside one, and a nested count multiplies rather than replaces. Two kinds of entry are refused there, for the same reason: each copy would need its own answer.
+
+- A **label** — `K816-E0102`. A label names one address, and `repeat 3` would give it three. Put it before the `repeat`, where it names the first copy.
+- A **placement directive** — `segment`, `align`, `address`, `nocross`: `K816-E0111`. Placement is a property of where the block's bytes land, and a repetition has one answer to give per copy.
+
+A `code { }` subblock is refused for the label reason: its labels would be defined once per copy.
+
 ### `charset`
 
-Defines character mapping for subsequent string data:
+Defines character mapping for subsequent string data. A charset string is an **index table**: the byte a character emits is its position in that string, so `charset ".ABC"` sends `.` to 0 and `C` to 3, and a character listed twice takes its first slot — which is what the padded form `".ABCDEFGHIJKLMNOPQRSTUVWXYZ..... "` is for.
+
+It is compile-time only: it emits no bytes of its own, has no effect on non-string entries, and there is no runtime translation. A character the table does not list has no byte to emit, and inventing one — the character's own value, say — would put a byte in the output that the declared mapping says nothing about: `K816-E0142`.
+
+The mapping is in force for every string *after* it in the same block. It does not reach the next block, and one written inside a `repeat` body is scoped to that body — each copy starts from the charset in force where the `repeat` is, so a mapping cannot leak from one copy into the next or out past the last.
+
 
 ```k65
 data text_data {
@@ -1076,6 +1099,12 @@ data table {
   for j=4..0 eval [ j ]             // reverse range
 }
 ```
+
+The range is inclusive at both ends, so `0..4` is five values and `7..7` is one. Each value the body folds to emits **one byte**, and it has to be one: K816 does not round an evaluator value or mask it to a byte, so a body that leaves the range says so (`K816-E0109`) rather than emitting a byte nobody wrote. Mask or clamp in the expression — `& 255`, `?< 255`.
+
+What a body may use is the loop variable, the unit's `const` values, and integer arithmetic: the operators of the evaluator's own grammar, including `?<` and `?>` for the smaller and greater of two values, the comparisons, and the ternary. A name that is neither the loop variable nor a `const` has no compile-time value to fold (`K816-E0101`).
+
+Floating point and the evaluator's function library — `sin`, `pi`, and the rest — are **not** in this subset: they report as not-yet-implemented and name the sub-plan that owns the evaluator. The reason is not that they are unpredictable, since `sin` is not; it is that a float has to become a byte somehow, and the two references disagree about how. The original K65 rounds to nearest and masks with `$FF`; this document says an integer context needs an exact integer and that no automatic rounding happens. Picking between those is the evaluator's decision to make, not one to make in passing while emitting data.
 
 ### `image`
 

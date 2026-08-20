@@ -214,9 +214,6 @@ export default grammar({
     // subblock — two readings of the same keyword, separated by what comes
     // after it.
     [$.nocross_directive, $.code_subblock],
-    // A value list runs until something that is not a value; an eval bracket
-    // could equally be the next entry on its own.
-    [$.typed_entry],
     // The loose `image` argument run ends where the next entry begins.
     [$.reserved_image_block],
     // `mem<<` on one line and `mem,x>>>` on the next are two shift
@@ -496,10 +493,22 @@ export default grammar({
 
     // `byte 1 2 3`, `word main 0`, `far handler`. Values are atoms only: a
     // compound expression in a value list has to go through a `const`.
+    // A typed entry takes every value that follows it, and `prec.right` is
+    // what says so. Without it the parser has a choice at each value
+    // boundary — keep filling this entry, or end it and start an untyped
+    // one — and resolved it from whatever parse state preceded, so a
+    // *comment* earlier in the block decided whether `word 0 $1234 ptr` was
+    // three words or one word and two bytes.
+    //
+    // Greedy is the only reading a newline-insensitive language can have:
+    // `word 1 2 3` and `word 1 2` followed by `3` on the next line are the
+    // same token sequence, so they cannot emit different bytes.
     typed_entry: $ =>
-      seq(
-        field('type', choice('byte', 'word', 'far')),
-        repeat1(field('value', $._data_atom)),
+      prec.right(
+        seq(
+          field('type', choice('byte', 'word', 'far')),
+          repeat1(field('value', $._data_atom)),
+        ),
       ),
 
     // A value with no type keyword, which defaults to bytes.
@@ -555,11 +564,19 @@ export default grammar({
     // `?` reserves a slot whose value is deliberately unspecified.
     undefined_byte: _ => '?',
 
+    // `nocross code { }` is one entry, and the attached reading wins by
+    // dynamic precedence. Both readings are real — a bare `nocross` guards
+    // the run that follows, and `code { }` is an entry on its own — so
+    // without a preference the parser resolved it from whatever state
+    // preceded, and a *comment* two entries earlier decided whether the
+    // subblock got its page guard at all.
     code_subblock: $ =>
-      seq(
-        optional(field('nocross', 'nocross')),
-        'code',
-        field('body', $.block),
+      choice(
+        prec.dynamic(
+          1,
+          seq(field('nocross', 'nocross'), 'code', field('body', $.block)),
+        ),
+        seq('code', field('body', $.block)),
       ),
 
     data_repeat: $ =>

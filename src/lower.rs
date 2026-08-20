@@ -57,6 +57,53 @@ pub fn lower(file: &AstFile, model: &SemanticModel) -> (KProgram, Vec<Diagnostic
     lower_unit(file, model, "")
 }
 
+/// Puts each `code { }` subblock's operations where the data walk left room.
+///
+/// A subblock of a *top-level* data block is a body with no function: no
+/// entry contract, no caller, and no scope for local labels. So it gets a
+/// `Lowering` of its own, carrying the width analysis analysis computed for
+/// exactly this position — which is how the two passes stay agreed about a
+/// body neither of them can name.
+///
+/// The subblocks are filled back to front so that the earlier insertion
+/// points stay valid as the ones after them move.
+fn fill_code_subblocks<'a>(
+    walked: resolve::DataOps<'a>,
+    file: &'a AstFile,
+    model: &'a SemanticModel,
+    unit: &str,
+    anonymous: &mut AnonymousBlocks,
+    diagnostics: &mut Vec<Diagnostic>,
+    widths: impl Fn(usize) -> Option<&'a crate::width::WidthAnalysis>,
+) -> Vec<KOp> {
+    let mut ops = walked.ops;
+    for (ordinal, subblock) in walked.code.iter().enumerate().rev() {
+        let mut lowering = Lowering {
+            file,
+            model,
+            function: None,
+            function_name: String::new(),
+            unit: unit.to_owned(),
+            anonymous,
+            widths: widths(ordinal),
+            ops: Vec::new(),
+            checked_calls: Vec::new(),
+            diagnostics: Vec::new(),
+            anchors: 0,
+            loops: Vec::new(),
+            is_far: false,
+            aliases: BTreeMap::new(),
+            expanding: Vec::new(),
+        };
+        lowering.block(subblock.body);
+        let code = std::mem::take(&mut lowering.ops);
+        let code = lowering.guarded(code, subblock.nocross, subblock.span);
+        diagnostics.append(&mut lowering.diagnostics);
+        ops.splice(subblock.at..subblock.at, code);
+    }
+    ops
+}
+
 /// Lowers `file`, naming the unit so `address` placements derive the same
 /// synthetic segment names analysis reported in `W0116`.
 pub fn lower_unit(
@@ -104,9 +151,17 @@ pub fn lower_unit(
         if let ItemKind::Data(data) = &item.kind {
             let site = resolve::data_site(&mut anonymous, unit, data, None);
             let mut resolver = Resolver::new(&model.symbols);
-            for op in resolver.data_block(data, item.span, &site) {
-                program.push_op(op);
-            }
+            let walked = resolver.data_block(data, item.span, &site);
+            let ops = fill_code_subblocks(
+                walked,
+                file,
+                model,
+                unit,
+                &mut anonymous,
+                &mut diagnostics,
+                |ordinal| model.data_code.get(&(index, ordinal)),
+            );
+            program.push_data(ops);
             continue;
         }
         let Some(info) = model.functions.iter().find(|info| info.item_index == index) else {
@@ -577,6 +632,38 @@ impl<'a> Lowering<'a> {
             )
             .with_docs("doc/register-width-aware-syntax.md#block-level-mode-scoping"),
         );
+    }
+
+    /// A `code { }` subblock's operations, with the page-fit guard a
+    /// `nocross code { … }` asks for.
+    ///
+    /// The guard is the same one a `nocross { }` statement gets, for the same
+    /// reason: it is a claim about where the bytes land, and the bytes are
+    /// the same bytes whichever spelling produced them.
+    fn guarded(&mut self, code: Vec<KOp>, nocross: bool, span: Span) -> Vec<KOp> {
+        if !nocross {
+            return code;
+        }
+        let length: u32 = code.iter().map(byte_length).sum();
+        let mut code = code;
+        // The run being measured is the subblock itself, so nothing K816
+        // added around it can be blamed for the size.
+        if length > 256 {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::NOCROSS_TOO_LARGE,
+                    format!("this `nocross code` run is {length} bytes, which cannot fit a page"),
+                    Label::new(span, "a page is 256 bytes"),
+                )
+                .with_docs("doc/syntax-reference.md#code--subblocks"),
+            );
+        }
+        code.push(KOp::new(
+            KOpKind::NocrossGuard { length },
+            span,
+            Origin::CompilerGenerated,
+        ));
+        code
     }
 
     /// Gives a transfer that leaves a scoped width block somewhere to restore
@@ -1316,9 +1403,20 @@ impl<'a> Lowering<'a> {
                     .in_function(self.function)
                     .with_widths(self.widths_at(statement))
                     .with_aliases(self.aliases.clone());
-                let ops = resolver.data_block(data, span, &site);
+                let walked = resolver.data_block(data, span, &site);
                 if resolver.has_diagnostics() {
                     return self.skipped(span, "an unresolved inline data block");
+                }
+                // A `code { }` subblock here is ordinary code of *this*
+                // function: the solver flattened it into this graph, so its
+                // statements lower with the widths tracked around them.
+                let mut ops = walked.ops;
+                for subblock in walked.code.into_iter().rev() {
+                    let start = self.ops.len();
+                    self.block(subblock.body);
+                    let code = self.ops.split_off(start);
+                    let code = self.guarded(code, subblock.nocross, subblock.span);
+                    ops.splice(subblock.at..subblock.at, code);
                 }
                 self.push(KOpKind::SkipData, span, Origin::CompilerGenerated);
                 self.ops.extend(ops);

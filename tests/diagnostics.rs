@@ -326,9 +326,47 @@ const FAMILY: &[Case] = &[
     // A code that was registered and reachable with nothing exercising it,
     // found by the audit below rather than by anyone meeting it.
     Case {
-        source: "data blk {\n    byte 1 2\n}\n",
+        source: "data blk {\n    binary \"tiles.bin\"\n}\n",
         code: DiagnosticCode::NOT_YET_IMPLEMENTED,
-        caret: "byte 1 2",
+        caret: "binary \"tiles.bin\"",
+    },
+    // The data-block family: a character the charset cannot emit, a value
+    // too wide for its entry, and the two things a `repeat` body may not
+    // contain because each copy would need its own answer.
+    Case {
+        source: "data d {\n    charset \" ABC\"\n    \"AZ\"\n}\n",
+        code: DiagnosticCode::CHARSET_UNMAPPED,
+        caret: "\"AZ\"",
+    },
+    Case {
+        source: "data d {\n    byte $100\n}\n",
+        code: DiagnosticCode::ADDRESS_RANGE,
+        caret: "$100",
+    },
+    Case {
+        source: "data d {\n    repeat 2 {\n        inner: 1\n    }\n}\n",
+        code: DiagnosticCode::DUPLICATE_SYMBOL,
+        caret: "inner:",
+    },
+    Case {
+        source: "data d {\n    repeat 2 {\n        align 4\n    }\n}\n",
+        code: DiagnosticCode::SEGMENT_PLACEMENT,
+        caret: "align 4",
+    },
+    Case {
+        source: "data d {\n    for i=0..3 eval [ i - 9 ]\n}\n",
+        code: DiagnosticCode::ADDRESS_RANGE,
+        caret: "i - 9",
+    },
+    Case {
+        source: "data d {\n    for i=0..3 eval [ sin(i) ]\n}\n",
+        code: DiagnosticCode::NOT_YET_IMPLEMENTED,
+        caret: "sin(i)",
+    },
+    Case {
+        source: "data d {\n    for i=0..3 eval [ missing ]\n}\n",
+        code: DiagnosticCode::UNDECLARED_SYMBOL,
+        caret: "missing",
     },
 ];
 

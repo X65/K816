@@ -48,14 +48,16 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    AddressEncoding as AstEncoding, AddressOperand, BlockMoveOperand, DataBlock, DataEntry,
+    AddressEncoding as AstEncoding, AddressOperand, Block, BlockMoveOperand, DataBlock, DataEntry,
     DataEntryKind, DataValue, Expr, ExprKind, FieldAccess, HlaOperand, HlaOperandKind,
     IndexRegisterKind, IndirectOperand, LongIndirectOperand, MetadataQuery, MetadataQueryKind,
     Name, NativeInstruction, NativeOperand, Register, StorageClassKind, SubscriptExpr,
+    TypeWidthKind,
 };
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::{RegisterSet, instruction_effects};
+use crate::eval;
 use crate::isa::{
     AddressEncoding, AddressingMode, InstructionSpec, Mnemonic, OperandForm, OperandWidth,
     RegisterWidth, spec_for_form,
@@ -1109,7 +1111,26 @@ impl<'a> Resolver<'a> {
 
     /// Resolves a `.name` label in the enclosing function's scope.
     fn resolve_local(&mut self, name: &str, span: Span) -> Option<SymbolId> {
-        let owner = self.function?;
+        let Some(owner) = self.function else {
+            // Code outside a function — a `code { }` subblock of a top-level
+            // data block — has no scope for a `.name` to live in. Reported
+            // rather than dropped: an operand that quietly fails to resolve
+            // takes its instruction with it.
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::UNDECLARED_SYMBOL,
+                    format!("`{name}` is a local label, and there is no function here"),
+                    Label::new(span, "local labels are scoped to a function"),
+                )
+                .with_note(
+                    "a `code { }` subblock of a data block is not a function body: it has \
+                     no scope of its own for local labels to belong to",
+                )
+                .with_help("use a unit-level label — `name:` — or move the code into a `func`")
+                .with_docs("doc/syntax-reference.md#local"),
+            );
+            return None;
+        };
         match self.symbols.lookup_local(owner, name) {
             Some(id) => Some(id),
             None => {
@@ -2164,6 +2185,170 @@ fn address_segment(site: &DataSite, address: u32, occurrence: usize) -> SegmentN
 
 /// The index of the last entry in a block's leading statically-sizeable
 /// run, which is where a `nocross` guard goes.
+/// What walking a data block produces: its operations, and the `code { }`
+/// bodies whose operations lowering has to put in among them.
+///
+/// The split is the same one contract 3 draws everywhere else. A data block
+/// is *values*, and values are operands, so the walk is the resolver's. The
+/// statements inside a `code` entry are not values, and lowering owns
+/// statements — so rather than grow a second statement lowerer here, or move
+/// the whole walk there, the walk says where the gap is and who fills it.
+#[derive(Debug, Default)]
+pub struct DataOps<'a> {
+    pub ops: Vec<KOp>,
+    /// Each `code { }` entry: where its operations belong in `ops`, the body
+    /// to lower, whether it asked for `nocross`, and its span.
+    pub code: Vec<CodeSubblock<'a>>,
+}
+
+/// One `code { }` entry of a data block, waiting for lowering.
+#[derive(Debug)]
+pub struct CodeSubblock<'a> {
+    /// The index in [`DataOps::ops`] the lowered statements go before.
+    pub at: usize,
+    pub body: &'a Block,
+    pub nocross: bool,
+    pub span: Span,
+}
+
+/// The character mapping a `charset` entry establishes.
+///
+/// A charset string is an *index table*: the byte a character emits is its
+/// position in that string, so `charset ".ABC"` sends `.` to 0 and `C` to 3.
+/// A character listed twice takes its first slot, which is what makes the
+/// documented padding — `".ABCDEFGHIJKLMNOPQRSTUVWXYZ..... "` — mean what it
+/// looks like.
+///
+/// With no charset in force a string's bytes are its characters' own values.
+/// That is not a default mapping so much as the absence of one: nothing has
+/// said the bytes are anything else.
+#[derive(Clone, Debug, Default)]
+struct Charset {
+    table: Option<Vec<char>>,
+}
+
+impl Charset {
+    fn set(&mut self, mapping: &str) {
+        self.table = Some(mapping.chars().collect());
+    }
+
+    /// The byte `character` emits, or `None` when nothing maps it.
+    fn map(&self, character: char) -> Option<u8> {
+        match &self.table {
+            Some(table) => table
+                .iter()
+                .position(|listed| *listed == character)
+                .and_then(|index| u8::try_from(index).ok()),
+            None => u8::try_from(u32::from(character)).ok(),
+        }
+    }
+
+    /// True once a `charset` entry has established a mapping.
+    fn is_declared(&self) -> bool {
+        self.table.is_some()
+    }
+}
+
+/// What the deterministic subset could not fold, as a diagnostic.
+///
+/// Every arm names an owner rather than calling the form invalid, because
+/// none of them is: they are evaluator syntax K65 has and K816 has not
+/// finished. The one exception is arithmetic with no answer, which no
+/// sub-plan will make work.
+fn unsupported_eval(unsupported: eval::Unsupported) -> Diagnostic {
+    match unsupported {
+        eval::Unsupported::Numeric { span, what } => compat::unimplemented(
+            span,
+            &format!("{what} in a `for … eval` body"),
+            compat::Owner::Compatibility,
+        )
+        .with_note(
+            "generated data folds to integers here; the floating-point model — whether \
+             a value rounds, truncates, or is refused — belongs with the evaluator",
+        ),
+        eval::Unsupported::Form { span, what } => compat::unimplemented(
+            span,
+            &format!("{what} in a `for … eval` body"),
+            compat::Owner::Compatibility,
+        ),
+        eval::Unsupported::Name { span, name } => Diagnostic::error(
+            DiagnosticCode::UNDECLARED_SYMBOL,
+            format!("`{name}` is not a `const` or the loop variable"),
+            Label::new(span, "nothing here gives this a value"),
+        )
+        .with_note(
+            "a `for … eval` body sees the loop variable and the unit's `const` values; \
+             a label or a variable has no compile-time value to fold",
+        )
+        .with_docs("doc/syntax-reference.md#for--eval"),
+        eval::Unsupported::Undefined { span, what } => Diagnostic::error(
+            DiagnosticCode::NOT_CONSTANT,
+            format!("this expression asks for {what}"),
+            Label::new(span, "there is no value for this"),
+        )
+        .with_docs("doc/syntax-reference.md#for--eval"),
+    }
+}
+
+/// A character the `charset` in force has no slot for.
+fn charset_unmapped(character: char, span: Span, charset: &Charset) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error(
+        DiagnosticCode::CHARSET_UNMAPPED,
+        format!("`{character}` has no byte in this string's character set"),
+        Label::new(span, "this string cannot be emitted"),
+    );
+    if charset.is_declared() {
+        diagnostic = diagnostic
+            .with_note(
+                "a `charset` is an index table: a character emits the byte of its \
+                 position in it, and one the table does not list has no byte at all",
+            )
+            .with_help(format!(
+                "add `{character}` to the `charset` string, or write the byte value \
+                 directly"
+            ));
+    } else {
+        diagnostic = diagnostic.with_note(
+            "with no `charset` in force a string emits its characters' own values, and \
+             this one is not a single byte",
+        );
+    }
+    diagnostic.with_docs("doc/syntax-reference.md#charset")
+}
+
+/// A placement directive where it cannot take effect.
+fn placement_inside_repeat(entry: &DataEntry, what: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::SEGMENT_PLACEMENT,
+        format!("`{what}` cannot appear inside a `repeat` body"),
+        Label::new(entry.span, "this would have to hold once per copy"),
+    )
+    .with_note(
+        "placement is a property of where the block's bytes land, and a repetition \
+         has one answer to give for every copy it makes",
+    )
+    .with_help("move it out of the `repeat`, before or after it")
+    .with_docs("doc/syntax-reference.md#placement-directives")
+}
+
+/// A name defined inside a `repeat` body, which every copy would define again.
+fn definition_inside_repeat(entry: &DataEntry, what: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DUPLICATE_SYMBOL,
+        format!("{what} inside a `repeat` body would be defined once per copy"),
+        Label::new(
+            entry.span,
+            "one name, and one definition of it per repetition",
+        ),
+    )
+    .with_note(
+        "a label names one address; `repeat 3` would give this one three, which is \
+         a duplicate definition rather than a choice K816 can make",
+    )
+    .with_help("put the label before the `repeat`, where it names the first copy")
+    .with_docs("doc/syntax-reference.md#repeat")
+}
+
 fn last_index_of_run(block: &DataBlock) -> usize {
     block
         .entries
@@ -2177,11 +2362,37 @@ fn last_index_of_run(block: &DataBlock) -> usize {
 /// statically-sizeable run member.
 fn entry_size(entry: &DataEntry) -> Option<u32> {
     match &entry.kind {
-        // A label takes no space and does not interrupt a run.
-        DataEntryKind::Label(_) | DataEntryKind::Nocross | DataEntryKind::Segment(_) => Some(0),
-        DataEntryKind::Value(DataValue::Expr(expr)) => Some(address_of_width(expr).unwrap_or(1)),
-        DataEntryKind::Value(_) => Some(1),
+        // These emit nothing, so they take no space and do not interrupt a
+        // run. A `charset` is among them: it maps the strings after it and
+        // is not itself bytes.
+        DataEntryKind::Label(_)
+        | DataEntryKind::Nocross
+        | DataEntryKind::Segment(_)
+        | DataEntryKind::Charset(_) => Some(0),
+        DataEntryKind::Value(value) => Some(value_size(value, 1)),
+        DataEntryKind::Typed { width, values } => {
+            let width = crate::layout::data_width(*width).bytes();
+            Some(values.iter().map(|value| value_size(value, width)).sum())
+        }
+        // A `repeat` count, a generated range, and a subblock's instructions
+        // are all statically knowable and none of them is known *here*:
+        // folding is the resolver's, and this is a free function walking the
+        // AST. The run ends at them, which is the documented behaviour — a
+        // `nocross` guards the run of statically-sizeable entries after it.
         _ => None,
+    }
+}
+
+/// The bytes one value emits at `width`.
+///
+/// A string is as many values as it has characters — the mapping a `charset`
+/// applies changes what they are and never how many — so it is the one value
+/// that is not one value.
+fn value_size(value: &DataValue, width: u32) -> u32 {
+    match value {
+        DataValue::Expr(expr) => address_of_width(expr).unwrap_or(width),
+        DataValue::Undefined => width,
+        DataValue::String(text) => u32::try_from(text.chars().count()).unwrap_or(u32::MAX) * width,
     }
 }
 
@@ -2205,7 +2416,13 @@ impl Resolver<'_> {
     /// lowering calls it for the operations, having already established that
     /// there are no diagnostics. One walk, so the two cannot disagree about
     /// what a block emits.
-    pub fn data_block(&mut self, block: &DataBlock, span: Span, site: &DataSite) -> Vec<KOp> {
+    pub fn data_block<'b>(
+        &mut self,
+        block: &'b DataBlock,
+        span: Span,
+        site: &DataSite,
+    ) -> DataOps<'b> {
+        let mut code = Vec::new();
         let mut ops = Vec::new();
         let mut addresses = 0usize;
         // A `segment` inside a block is scope-local: it switches segments
@@ -2225,6 +2442,9 @@ impl Resolver<'_> {
         // Where the guard goes: after the last entry of the leading run,
         // whose page it compares against the run's first byte.
         let run_ends = last_index_of_run(block);
+        // The mapping strings emit through, established by a `charset` entry
+        // and in force for every string after it in this block (decision 17).
+        let mut charset = Charset::default();
 
         for (index, entry) in block.entries.iter().enumerate() {
             let placement = matches!(
@@ -2308,22 +2528,40 @@ impl Resolver<'_> {
                     }
                 }
                 DataEntryKind::Value(value) => {
-                    if let Some(data) = self.data_value(value, entry.span) {
+                    if let Some(data) = self.data_value(value, entry.span, &charset) {
                         ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
                     }
                 }
-                // Typed entries, strings, `charset`, `repeat`, `code`, and
-                // `for … eval` are `HLA-core` rows; C builds the emission
-                // machinery they extend rather than implementing them early.
-                DataEntryKind::Typed { .. }
-                | DataEntryKind::Charset(_)
-                | DataEntryKind::Code { .. }
-                | DataEntryKind::Repeat { .. }
-                | DataEntryKind::ForEval { .. } => self.report(compat::unimplemented(
-                    entry.span,
-                    "typed entries, strings, `charset`, `repeat`, `code`, and `for … eval`",
-                    compat::Owner::HlaLowering,
-                )),
+                DataEntryKind::Typed { width, values } => {
+                    if let Some(data) = self.typed_entry(*width, values, entry.span, &charset) {
+                        ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
+                    }
+                }
+                // Compile-time only: it maps the strings that follow it and
+                // emits nothing of its own (decision 17).
+                DataEntryKind::Charset(mapping) => charset.set(mapping),
+                DataEntryKind::Repeat { count, body } => {
+                    self.repeat_entry(count, body, &charset, &mut ops);
+                }
+                DataEntryKind::ForEval {
+                    variable,
+                    from,
+                    to,
+                    body,
+                } => {
+                    if let Some(data) = self.for_eval(variable, from, to, body, entry.span) {
+                        ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
+                    }
+                }
+                // A `code` subblock is statements, and statements are
+                // lowering's. The walk records where they belong and hands
+                // the body back for lowering to fill in.
+                DataEntryKind::Code { nocross, body } => code.push(CodeSubblock {
+                    at: ops.len(),
+                    body,
+                    nocross: *nocross,
+                    span: entry.span,
+                }),
                 DataEntryKind::Preprocessor(_) => self.report(compat::unimplemented(
                     entry.span,
                     "preprocessor directives",
@@ -2362,7 +2600,7 @@ impl Resolver<'_> {
                 Origin::CompilerGenerated,
             ));
         }
-        ops
+        DataOps { ops, code }
     }
 
     /// One value of an implicit-default entry.
@@ -2377,7 +2615,7 @@ impl Resolver<'_> {
     /// `?` reserves a slot whose value is deliberately unspecified and emits
     /// as a zero of the entry's width — the affordance is at the source
     /// level, not on the wire.
-    fn data_value(&mut self, value: &DataValue, span: Span) -> Option<DataOp> {
+    fn data_value(&mut self, value: &DataValue, span: Span, charset: &Charset) -> Option<DataOp> {
         match value {
             DataValue::Expr(expr) => {
                 let width = address_of_width(expr);
@@ -2404,14 +2642,237 @@ impl Resolver<'_> {
                 })
             }
             DataValue::Undefined => Some(DataOp::Byte(vec![KExpr::number(0)])),
-            // Strings go through the active `charset`, which is E's row.
-            DataValue::String(_) => {
-                self.report(compat::unimplemented(
-                    span,
-                    "string data and `charset` mapping",
-                    compat::Owner::HlaLowering,
-                ));
-                None
+            DataValue::String(text) => Some(DataOp::Byte(self.string_bytes(text, span, charset)?)),
+        }
+    }
+
+    /// The bytes a string emits, through the `charset` in force.
+    ///
+    /// Every character is mapped or the string is refused: emitting the ones
+    /// that map and skipping the rest would silently change every offset
+    /// after it, which is worse than not emitting the string at all.
+    fn string_bytes(&mut self, text: &str, span: Span, charset: &Charset) -> Option<Vec<KExpr>> {
+        let mut bytes = Vec::with_capacity(text.len());
+        for character in text.chars() {
+            match charset.map(character) {
+                Some(byte) => bytes.push(KExpr::number(u32::from(byte))),
+                None => {
+                    self.report(charset_unmapped(character, span, charset));
+                    return None;
+                }
+            }
+        }
+        Some(bytes)
+    }
+
+    /// `byte 1 2 3`, `word main 0`, `far handler` — one entry, one width,
+    /// every value emitted at it.
+    ///
+    /// The entry's keyword decides the width and an address-byte operator
+    /// inside it does not: `&<ptr` in a `word` entry is the low byte of an
+    /// address, emitted in two. That is the same rule the untyped form has
+    /// with the default width, and it is what "each value on a `word` line
+    /// emits 2 bytes" means.
+    fn typed_entry(
+        &mut self,
+        width: TypeWidthKind,
+        values: &[DataValue],
+        span: Span,
+        charset: &Charset,
+    ) -> Option<DataOp> {
+        let width = layout::data_width(width);
+        let mut folded = Vec::with_capacity(values.len());
+        for value in values {
+            match value {
+                // `byte ?` is one zero byte, `word ?` two, `far ?` three:
+                // the zero a literal would have produced in that position.
+                DataValue::Undefined => folded.push(KExpr::number(0)),
+                DataValue::String(text) => {
+                    folded.extend(self.string_bytes(text, span, charset)?);
+                }
+                DataValue::Expr(expr) => {
+                    let value = self.fold(expr)?;
+                    if let Some(known) = value.value()
+                        && known.get() > width.max_value()
+                    {
+                        self.report(
+                            Diagnostic::error(
+                                DiagnosticCode::ADDRESS_RANGE,
+                                format!("{known} does not fit a {}-byte value", width.bytes()),
+                                Label::new(
+                                    expr.span,
+                                    format!("this entry emits {} bytes per value", width.bytes()),
+                                ),
+                            )
+                            .with_help("use a wider entry, or select a byte with `&<` / `&>`")
+                            .with_docs("doc/syntax-reference.md#byte-8-bit-byte-entries"),
+                        );
+                        return None;
+                    }
+                    folded.push(value);
+                }
+            }
+        }
+        Some(match width {
+            DataWidth::Byte => DataOp::Byte(folded),
+            DataWidth::Word => DataOp::Word(folded),
+            DataWidth::Far => DataOp::Far(folded),
+        })
+    }
+
+    /// `for x=A..B eval [ … ]` — one byte per value the body folds to.
+    ///
+    /// The range is inclusive at both ends and may run backwards, which the
+    /// document shows and which a table of decreasing values needs. Both
+    /// bounds are ordinary K65 expressions; the *body* is evaluator syntax,
+    /// and what folds there is decision 18's deterministic subset and nothing
+    /// wider.
+    fn for_eval(
+        &mut self,
+        variable: &Name,
+        from: &Expr,
+        to: &Expr,
+        body: &Expr,
+        span: Span,
+    ) -> Option<DataOp> {
+        let from = self.constant(from, "`for` range bounds")?;
+        let to = self.constant(to, "`for` range bounds")?;
+        let ExprKind::Eval(body) = &body.kind else {
+            // The grammar only produces an evaluator bracket here.
+            self.report(compat::unimplemented(
+                span,
+                "`for … eval` bodies that are not evaluator brackets",
+                compat::Owner::Compatibility,
+            ));
+            return None;
+        };
+
+        let mut bytes = Vec::new();
+        let mut index = i64::from(from);
+        let last = i64::from(to);
+        let step = if last >= index { 1 } else { -1 };
+        loop {
+            let bindings = eval::Bindings {
+                variable: (&variable.text, index),
+                symbols: self.symbols,
+            };
+            match eval::fold(body, &bindings) {
+                Ok(value) => match u8::try_from(value) {
+                    Ok(byte) => bytes.push(KExpr::number(u32::from(byte))),
+                    Err(_) => {
+                        // Reported once, at the first iteration that leaves
+                        // the byte: 256 copies of the same news is not more
+                        // information.
+                        self.report(
+                            Diagnostic::error(
+                                DiagnosticCode::ADDRESS_RANGE,
+                                format!(
+                                    "`{}` = {index} makes this expression {value}, which is \
+                                     not a byte",
+                                    variable.text
+                                ),
+                                Label::new(body.span, "each generated value is one byte"),
+                            )
+                            .with_note(
+                                "K816 does not round or mask an evaluator value: a table of \
+                                 bytes has to produce bytes",
+                            )
+                            .with_help("mask or clamp in the expression — `& 255`, `?< 255`")
+                            .with_docs("doc/syntax-reference.md#for--eval"),
+                        );
+                        return None;
+                    }
+                },
+                Err(unsupported) => {
+                    self.report(unsupported_eval(unsupported));
+                    return None;
+                }
+            }
+            if index == last {
+                break;
+            }
+            index += step;
+        }
+        Some(DataOp::Byte(bytes))
+    }
+
+    /// `repeat N { … }` — the body's bytes, N times over.
+    ///
+    /// The body is walked once per copy rather than emitted once and
+    /// multiplied, because a `repeat` inside a `repeat` has to multiply too,
+    /// and because the charset in force has to reach the strings inside it.
+    fn repeat_entry(
+        &mut self,
+        count: &Expr,
+        body: &DataBlock,
+        charset: &Charset,
+        ops: &mut Vec<KOp>,
+    ) {
+        let Some(count) = self.constant(count, "`repeat` counts") else {
+            return;
+        };
+        for _ in 0..count {
+            // Each copy starts from the charset in force at the `repeat`, so
+            // a `charset` written inside the body cannot leak out of it or
+            // into the next copy.
+            let mut inner = charset.clone();
+            self.repeat_body(body, &mut inner, ops);
+        }
+    }
+
+    /// One copy of a `repeat` body.
+    ///
+    /// The alphabet is narrower than a block's, and both exclusions are the
+    /// same objection: an entry that would have to mean something different
+    /// in each copy. Placement has one answer per block, and a label has one
+    /// address.
+    fn repeat_body(&mut self, body: &DataBlock, charset: &mut Charset, ops: &mut Vec<KOp>) {
+        for entry in &body.entries {
+            match &entry.kind {
+                DataEntryKind::Value(value) => {
+                    if let Some(data) = self.data_value(value, entry.span, charset) {
+                        ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
+                    }
+                }
+                DataEntryKind::Typed { width, values } => {
+                    if let Some(data) = self.typed_entry(*width, values, entry.span, charset) {
+                        ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
+                    }
+                }
+                DataEntryKind::Charset(mapping) => charset.set(mapping),
+                DataEntryKind::Repeat { count, body } => {
+                    let outer = charset.clone();
+                    self.repeat_entry(count, body, &outer, ops);
+                }
+                DataEntryKind::ForEval {
+                    variable,
+                    from,
+                    to,
+                    body,
+                } => {
+                    if let Some(data) = self.for_eval(variable, from, to, body, entry.span) {
+                        ops.push(KOp::new(KOpKind::Data(data), entry.span, Origin::User));
+                    }
+                }
+                DataEntryKind::Segment(_) => self.report(placement_inside_repeat(entry, "segment")),
+                DataEntryKind::Align(_) => self.report(placement_inside_repeat(entry, "align")),
+                DataEntryKind::Address(_) => self.report(placement_inside_repeat(entry, "address")),
+                DataEntryKind::Nocross => self.report(placement_inside_repeat(entry, "nocross")),
+                DataEntryKind::Label(_) => self.report(definition_inside_repeat(entry, "a label")),
+                DataEntryKind::Code { .. } => {
+                    self.report(definition_inside_repeat(entry, "a `code` subblock"));
+                }
+                DataEntryKind::Preprocessor(_) => self.report(compat::unimplemented(
+                    entry.span,
+                    "preprocessor directives",
+                    compat::Owner::Compatibility,
+                )),
+                DataEntryKind::Binary(_) => self.report(compat::unimplemented(
+                    entry.span,
+                    "`binary` inclusions",
+                    compat::Owner::Compatibility,
+                )),
+                DataEntryKind::Reserved(_) | DataEntryKind::Error => {}
             }
         }
     }

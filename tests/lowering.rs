@@ -340,7 +340,7 @@ fn a_directive_between_instructions_is_an_optimizer_barrier() {
         .iter_mut()
         .find_map(|item| match item {
             k816::op::KProgramItem::Function(function) => Some(function),
-            k816::op::KProgramItem::Op(_) => None,
+            k816::op::KProgramItem::Op(_) | k816::op::KProgramItem::Data(_) => None,
         })
         .expect("one function");
     let span = function.ops[3].span;

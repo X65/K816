@@ -518,3 +518,57 @@ data d {
           operand: (binary_expression
             left: (identifier)
             right: (number)))))))
+
+================================================================================
+A comment does not end a typed entry
+================================================================================
+
+data d {
+  // a comment
+  byte 1 ?
+  // another comment
+  word 2 $1234 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (line_comment)
+      (typed_entry
+        value: (number)
+        value: (undefined_byte))
+      (line_comment)
+      (typed_entry
+        value: (number)
+        value: (number)
+        value: (number)))))
+
+================================================================================
+A comment does not detach `nocross` from its subblock
+================================================================================
+
+data d {
+  code { nop }
+  // a comment
+  nocross code { nop }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (code_subblock
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic))))
+      (line_comment)
+      (code_subblock
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic)))))))
+

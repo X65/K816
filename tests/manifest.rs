@@ -44,11 +44,18 @@ use k816::source::SourceMap;
 /// What a snippet must do beyond parsing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Expect {
-    /// Parses with no syntax diagnostics.
-    Parses,
     /// Parses *and compiles*: the group's semantics have landed, so a
     /// snippet in that syntax reaches emitted assembly with no errors.
     Compiles,
+    /// Parses, and defers to a sub-plan that is not E — every remaining one
+    /// is the evaluator, the preprocessor, or `binary` inclusion.
+    ///
+    /// This replaced a plain "parses" once sub-plan E finished: a row that
+    /// only parsed used to mean "nobody has done this yet", which was true
+    /// of most of the language and said nothing about who would. Naming the
+    /// owner makes the row a claim that can go stale — when G lands, these
+    /// fail and someone flips them.
+    Deferred,
     /// Parses, and reports itself as reserved legacy syntax.
     Reserved,
 }
@@ -67,73 +74,73 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Line and block comments",
         source: "// note\n/* block */\nvar A = 0\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Comment edge cases",
     },
     Row {
         group: "Identifiers",
         source: "var _leading = 0\nvar with9digits = 1\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Identifiers use the full name namespace",
     },
     Row {
         group: "Numeric literals, binary",
         source: "var A = %1010\nvar B = 0b1010\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Binary literal forms",
     },
     Row {
         group: "Numeric literals, hexadecimal",
         source: "var A = $2A\nvar B = 0x2A\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Hexadecimal literal forms",
     },
     Row {
         group: "Character literals",
         source: "var A = 'A'\nvar B = '\\n'\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Character literal escapes",
     },
     Row {
         group: "Float literals in evaluator brackets",
         source: "data d {\n  [ 1.5 + .5 ]\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "The full evaluator operator table",
     },
     Row {
         group: "Expression operators, binary",
-        source: "var A = B * C + D << E & F ^ G | H\n",
-        expect: Expect::Parses,
+        source: "const B = 1\nconst C = 2\nconst D = 3\nconst E = 1\nconst F = 4\nconst G = 5\nconst H = 6\nvar A = B * C + D << E & F ^ G | H\n",
+        expect: Expect::Compiles,
         case: "Every binary operator token",
     },
     Row {
         group: "Expression operators, unary",
-        source: "var A = -~FOO\n",
-        expect: Expect::Parses,
+        source: "const FOO = 1\nvar A = -~FOO\n",
+        expect: Expect::Compiles,
         case: "Unary operators repeat in the order written",
     },
     Row {
         group: "Compound-expression position rules",
-        source: "data d {\n  byte FOO 0 1\n}\n",
-        expect: Expect::Parses,
+        source: "const FOO = 1\ndata d {\n  byte FOO 0 1\n}\n",
+        expect: Expect::Compiles,
         case: "Raw values and address byte operators",
     },
     Row {
         group: "`&&` address-of-vs-AND parse quirk",
-        source: "var A = FOO && BAR\n",
-        expect: Expect::Parses,
+        source: "const FOO = 1\nconst BAR = 2\nvar A = FOO && BAR\n",
+        expect: Expect::Compiles,
         case: "Infix double ampersand is the address-of gotcha",
     },
     Row {
         group: "`const` and enum-like groups",
         source: "const A = 0, B, C\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Constant groups with enum-like auto-increment",
     },
     Row {
         group: "Fixed-address `var NAME = $addr`",
         source: "var SCREEN = $0400\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Fixed-address var declaration",
     },
     Row {
@@ -198,38 +205,38 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Address-encoding operand prefixes",
-        source: "func f {\n  lda dp addr\n  lda abs addr\n  lda far addr\n}\n",
-        expect: Expect::Parses,
+        source: "var dp addr = $10\nfunc f @a8 @i8 {\n  lda dp addr\n  lda abs addr\n  lda far addr\n}\n",
+        expect: Expect::Compiles,
         case: "Address-encoding operand prefixes",
     },
     Row {
         group: "`segment NAME` selection",
         source: "segment fixed_lo\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Segment selection",
     },
     Row {
         group: "Global labels",
         source: "func f {\n  hello:\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Global and local labels",
     },
     Row {
         group: "Local labels",
         source: "func f {\n  .loop:\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Global and local labels",
     },
     Row {
         group: "Label+offset assignment targets",
-        source: "func f {\n  .LT+1 = a\n}\n",
-        expect: Expect::Parses,
+        source: "func f @a8 @i8 {\n  .LT:\n  nop\n  .LT+1 = a\n}\n",
+        expect: Expect::Compiles,
         case: "Label plus offset assignment targets",
     },
     Row {
         group: "`func NAME { }`",
         source: "func inc_x { x++ }\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Every code section form",
     },
     Row {
@@ -270,8 +277,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Checked bare calls",
-        source: "func f {\n  inc_x\n  call add\n}\n",
-        expect: Expect::Parses,
+        source: "func inc_x @a8 @i8 { nop }\nfunc add @a8 @i8 { nop }\nfunc f @a8 @i8 {\n  inc_x\n  call add\n}\n",
+        expect: Expect::Compiles,
         case: "Call statements",
     },
     Row {
@@ -301,74 +308,74 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "HLA register loads",
-        source: "func f {\n  a = #1\n  a = mem,x\n  a = (mem),y\n}\n",
-        expect: Expect::Parses,
+        source: "var mem = $0400\nvar dp zp = $10\nfunc f @a8 @i8 {\n  a = #1\n  a = mem,x\n  a = (zp),y\n}\n",
+        expect: Expect::Compiles,
         case: "Loads in every operand shape",
     },
     Row {
         group: "HLA stores",
-        source: "func f {\n  mem = a\n  mem,x = a\n  (mem),y = a\n  mem = x\n}\n",
-        expect: Expect::Parses,
+        source: "var mem = $0400\nvar dp zp = $10\nfunc f @a8 @i8 {\n  mem = a\n  mem,x = a\n  (zp),y = a\n  mem = x\n}\n",
+        expect: Expect::Compiles,
         case: "Stores in every operand shape",
     },
     Row {
         group: "Assignment chaining",
-        source: "func f {\n  dst0 = dst1 = a = src\n}\n",
-        expect: Expect::Parses,
+        source: "var dst0 = $0410\nvar dst1 = $0411\nvar src = $0412\nfunc f @a8 @i8 {\n  dst0 = dst1 = a = src\n}\n",
+        expect: Expect::Compiles,
         case: "Assignment chaining",
     },
     Row {
         group: "Register-to-register transfers",
         source: "func f {\n  x = a\n  d = c\n  s = x = y\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Register to register transfers",
     },
     Row {
         group: "Zero-store shortcut",
-        source: "func f {\n  mem = 0\n  mem,x = 0\n}\n",
-        expect: Expect::Parses,
+        source: "var mem = $0400\nfunc f @a8 @i8 {\n  mem = 0\n  mem,x = 0\n}\n",
+        expect: Expect::Compiles,
         case: "Stores in every operand shape",
     },
     Row {
         group: "HLA arithmetic and compares",
-        source: "func f {\n  a+mem\n  a-#1\n  a?10\n  x?#1\n}\n",
-        expect: Expect::Parses,
+        source: "var mem = $0400\nfunc f @a8 @i8 {\n  a+mem\n  a-#1\n  a?10\n  x?#1\n}\n",
+        expect: Expect::Compiles,
         case: "Arithmetic and logic shorthands",
     },
     Row {
         group: "HLA bit test",
-        source: "func f {\n  a&?READY\n}\n",
-        expect: Expect::Parses,
+        source: "const READY = $80\nfunc f @a8 @i8 {\n  a&?READY\n}\n",
+        expect: Expect::Compiles,
         case: "Compares and the bit test",
     },
     Row {
         group: "HLA shifts and rotates",
-        source: "func f {\n  a<<\n  mem,x>>>\n}\n",
-        expect: Expect::Parses,
+        source: "var mem = $0400\nfunc f @a8 @i8 {\n  a<<\n  mem,x>>>\n}\n",
+        expect: Expect::Compiles,
         case: "Shifts and rotates",
     },
     Row {
         group: "HLA increment and decrement",
-        source: "func f {\n  x++\n  mem,x--\n}\n",
-        expect: Expect::Parses,
+        source: "var mem = $0400\nfunc f @a8 @i8 {\n  x++\n  mem,x--\n}\n",
+        expect: Expect::Compiles,
         case: "Increment and decrement",
     },
     Row {
         group: "Flag shorthand ops",
         source: "func f {\n  c+ c- d+ d- i+ i- v-\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Flag shorthands",
     },
     Row {
         group: "Stack shorthands",
         source: "func f {\n  a!! a?? p!! b!! d??\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Stack shorthands",
     },
     Row {
         group: "`b~a` / `a~b` XBA",
         source: "func f {\n  b~a\n  a~b\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Accumulator exchange",
     },
     Row {
@@ -380,13 +387,13 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Branch operator mapping",
         source: "func f {\n  { } <\n  { } >=0\n  { } c-?\n  { } <<=\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Every branch condition spelling",
     },
     Row {
         group: "Conditional prefix form",
         source: "func f {\n  >={ x++ }\n  c-?{ x++ }\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Prefix conditional form",
     },
     Row {
@@ -398,25 +405,25 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Postfix loop form",
         source: "func f {\n  { x-- } !=\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Postfix loop form",
     },
     Row {
         group: "`always` / `never` loops",
         source: "func f {\n  { } always\n  { } never\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Postfix loop form",
     },
     Row {
         group: "`break` / `repeat`",
-        source: "func f {\n  break\n  repeat\n  < break\n  != repeat\n}\n",
-        expect: Expect::Parses,
+        source: "func f @a8 @i8 {\n  {\n    break\n    repeat\n    < break\n    != repeat\n  } always\n}\n",
+        expect: Expect::Compiles,
         case: "Conditional goto, break, and repeat",
     },
     Row {
         group: "`else`",
-        source: "func f {\n  =={ a = #1 } else { a = #2 }\n}\n",
-        expect: Expect::Parses,
+        source: "func f @a8 @i8 {\n  =={ a = #1 } else { a = #2 }\n}\n",
+        expect: Expect::Compiles,
         case: "If-else",
     },
     Row {
@@ -428,127 +435,127 @@ const AUDIT: &[Row] = &[
     Row {
         group: "`nocross` code wrappers",
         source: "func f {\n  nocross { x++ } !=\n  nocross { y++ }\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "nocross code wrappers",
     },
     Row {
         group: "Wait-loop patterns",
-        source: "func f {\n  { a&?READY } n-?\n}\n",
-        expect: Expect::Parses,
+        source: "const READY = $80\nfunc f @a8 @i8 {\n  { a&?READY } n-?\n}\n",
+        expect: Expect::Compiles,
         case: "A wait loop",
     },
     Row {
         group: "Efficiency warnings for `>` / `<=`",
         source: "func f {\n  { x++ } >\n  { x++ } <=\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Every branch condition spelling",
     },
     Row {
         group: "NOP shorthand",
         source: "func f {\n  *\n  * 5\n  inx * 3\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "NOP and break shorthands",
     },
     Row {
         group: "`%` BRK shorthand",
         source: "func f {\n  %\n  brk #0\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "A binary literal is not the break shorthand",
     },
     Row {
         group: "Raw 6502 mnemonics",
-        source: "func f {\n  adc x0 and x0 asl a bit x0 cmp x0 eor x0 lsr a ora x0 rol a sbc x0\n}\n",
-        expect: Expect::Parses,
+        source: "var x0 = $0400\nfunc f @a8 @i8 {\n  adc x0 and x0 asl a bit x0 cmp x0 eor x0 lsr a ora x0 rol a sbc x0\n}\n",
+        expect: Expect::Compiles,
         case: "Every classical mnemonic is recognized",
     },
     Row {
         group: "Classical operand shapes",
-        source: "func f {\n  nop\n  asl a\n  lda #1\n  lda addr,x\n  lda (ptr,x)\n  lda (ptr),y\n  jmp (vec)\n}\n",
-        expect: Expect::Parses,
+        source: "var addr = $0400\nvar dp ptr = $10\nvar dp vec = $12\nfunc f @a8 @i8 {\n  nop\n  asl a\n  lda #1\n  lda addr,x\n  lda (ptr,x)\n  lda (ptr),y\n  jmp (vec)\n}\n",
+        expect: Expect::Compiles,
         case: "Classical operand shapes",
     },
     Row {
         group: "65816 stack-relative operands",
         source: "func f {\n  lda 4,s\n  lda (4,s),y\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Stack-relative operands",
     },
     Row {
         group: "65816 indirect long operands",
-        source: "func f {\n  lda [ptr]\n  lda [ptr],y\n}\n",
-        expect: Expect::Parses,
+        source: "var dp ptr = $10\nfunc f @a8 @i8 {\n  lda [ptr]\n  lda [ptr],y\n}\n",
+        expect: Expect::Compiles,
         case: "Indirect long operands",
     },
     Row {
         group: "65816 indexed-offset marker",
-        source: "func f {\n  lda &FIELD, x\n  lda abs &FIELD, x\n}\n",
-        expect: Expect::Parses,
+        source: "const FIELD = 2\nfunc f @a8 @i8 {\n  lda &FIELD, x\n  lda abs &FIELD, x\n}\n",
+        expect: Expect::Compiles,
         case: "The indexed-offset marker",
     },
     Row {
         group: "65C02 additions",
-        source: "func f {\n  bra t phx phy plx ply stz a0 tsb a0 trb a0 wai stp\n}\n",
-        expect: Expect::Parses,
+        source: "var a0 = $0400\nfunc f @a8 @i8 {\n  bra t\n  t:\n  phx phy plx ply stz a0 tsb a0 trb a0 wai stp\n}\n",
+        expect: Expect::Compiles,
         case: "65C02 additions",
     },
     Row {
         group: "65816 bank/mode mnemonics",
         source: "func f {\n  phb plb phd pld phk xce\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "65816 bank registers and mode switch",
     },
     Row {
         group: "65816 control flow/mode/stack",
-        source: "func f {\n  brl t jml t jsl t rtl pea #1 pei (p) per t cop #2 wdm #3 rep #$10 sep #$20\n}\n",
-        expect: Expect::Parses,
+        source: "var dp p = $14\nfunc f @a8 @i8 {\n  brl t\n  t:\n  jml t jsl t rtl pea #1 pei (p) per t cop #2 wdm #3 rep #$10 sep #$20\n}\n",
+        expect: Expect::Compiles,
         case: "65816 control flow, mode and stack",
     },
     Row {
         group: "65816 transfer mnemonics",
         source: "func f {\n  tcd tcs tdc tsc txy tyx xba\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "65816 transfer instructions",
     },
     Row {
         group: "Block moves",
-        source: "func f {\n  mvn $01,$02\n  mvp src,dst\n}\n",
-        expect: Expect::Parses,
+        source: "const src = 1\nconst dst = 2\nfunc f @a8 @i8 {\n  mvn $01,$02\n  mvp src,dst\n}\n",
+        expect: Expect::Compiles,
         case: "Block moves take two operands",
     },
     Row {
         group: "Data blocks, named and anonymous",
         source: "data D { 1 2 }\ndata { 3 4 }\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Named and anonymous data blocks",
     },
     Row {
         group: "`segment` placement rule in data",
         source: "data D {\n  segment VECTORS\n  word 0\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Placement directives",
     },
     Row {
         group: "Placement directives",
         source: "data D {\n  align 16\n  address $5000\n  1\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Placement directives",
     },
     Row {
         group: "`nocross` in data blocks",
         source: "nocross data W { 1 2 }\ndata D {\n  nocross\n  nocross 8\n  1\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "The nocross data wrapper",
     },
     Row {
         group: "Raw bytes and labels in data",
         source: "data D {\n  hello: 1 2 3\n  \"HI\" 0\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Raw values and address byte operators",
     },
     Row {
         group: "Address byte operators",
-        source: "data D {\n  &<ptr &>ptr &&ptr &&&ptr\n  &<ptr+1\n}\n",
-        expect: Expect::Parses,
+        source: "var ptr = $0400\ndata D {\n  &<ptr &>ptr &&ptr &&&ptr\n  &<ptr+1\n}\n",
+        expect: Expect::Compiles,
         case: "An evaluator entry is not part of the value before it",
     },
     Row {
@@ -596,7 +603,7 @@ const AUDIT: &[Row] = &[
     Row {
         group: "`binary` in data blocks",
         source: "data D {\n  binary \"t.bin\"\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "Binary inclusion",
     },
     Row {
@@ -608,25 +615,25 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Evaluator brackets",
         source: "var A = [$FF]\nfunc f {\n  a = [SIZE]\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "Evaluator brackets are expression atoms",
     },
     Row {
         group: "Top-level evaluator blocks",
         source: "[ FOUR = 4, FIVE = FOUR+1 ]\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "Generated data from an evaluator range",
     },
     Row {
         group: "Evaluator operator set",
         source: "data D {\n  [ A ? B : C ]\n  [ A && B || C ]\n  [ 1 / 2 % 3 ]\n  [ N = 1, M += 2 ]\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "The full evaluator operator table",
     },
     Row {
         group: "Evaluator math functions",
         source: "data D {\n  [ clamp(sin(x), 0, 1) ]\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "The full evaluator operator table",
     },
     Row {
@@ -638,25 +645,25 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Preprocessor directives",
         source: "#if FOO\nvar A = 1\n#elif BAR\n#else\n#endif\n#error \"x\"\n#warn \"y\"\n",
-        expect: Expect::Parses,
+        expect: Expect::Deferred,
         case: "Preprocessor directives at the top level",
     },
     Row {
         group: "Optional semicolons and empty statements",
         source: "var A = 0; var B = 1;;\n;\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "Semicolons are optional separators and empty statements are ignored",
     },
     Row {
         group: "Case-insensitive registers and flags",
-        source: "func f {\n  A = #0\n  X = A\n  D = C\n}\n",
-        expect: Expect::Parses,
+        source: "func f @a8 @i8 {\n  A = #0\n  X = A\n  D = C\n}\n",
+        expect: Expect::Compiles,
         case: "Registers are case-insensitive",
     },
     Row {
         group: "Variable+offset addressing",
-        source: "func f {\n  a = base+3\n  lda base-2,x\n}\n",
-        expect: Expect::Parses,
+        source: "var base = $0500\nfunc f @a8 @i8 {\n  a = base+3\n  lda base-2,x\n}\n",
+        expect: Expect::Compiles,
         case: "Compound operand expressions",
     },
 ];
@@ -728,6 +735,37 @@ fn every_manifest_syntax_group_parses() {
                 failures.push(format!(
                     "  {}\n    expected it to compile, got {errors:?}\n    source: {:?}",
                     row.group, row.source
+                ));
+            }
+            continue;
+        }
+        if row.expect == Expect::Deferred {
+            // Parsed, and handed to a named owner. The note
+            // `compat::unimplemented` writes is what carries the name.
+            let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            let deferred: Vec<&k816::diagnostic::Diagnostic> = diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED
+                })
+                .collect();
+            if deferred.is_empty() {
+                failures.push(format!(
+                    "  {}\n    expected a deferral, got none — if it compiles now, \
+                     flip the row to `Compiles`\n    source: {:?}",
+                    row.group, row.source
+                ));
+                continue;
+            }
+            if let Some(mine) = deferred.iter().find(|diagnostic| {
+                diagnostic
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("sub-plan E "))
+            }) {
+                failures.push(format!(
+                    "  {}\n    deferred to sub-plan E, which has finished: {mine:?}",
+                    row.group
                 ));
             }
             continue;

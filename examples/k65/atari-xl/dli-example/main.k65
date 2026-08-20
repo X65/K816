@@ -13,7 +13,12 @@ data displist {
   0x41 &<displist &>displist
 }
 
-naked dli {
+// The hardware enters this handler, not a `call`, so nothing K816 can see
+// establishes the register widths it runs at — the interrupted code's widths
+// are whatever that code last set. This program never widens, so the handler
+// says so: the annotation is the invariant the program keeps, and without it
+// the immediate below cannot be sized.
+naked dli @a8 @i8 {
   a!!
   COLPF2=a=0xDE WSYNC=a
   a??

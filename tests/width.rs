@@ -1378,21 +1378,46 @@ fn contract_unit_fixtures_export_a_derived_cross_unit_exit() {
     );
 }
 
-/// `RTI` restores a status byte K816 has not tracked, exactly as `PLP` does.
+/// `RTI` restores the status byte, so a return through one *preserves*.
 ///
-/// Unlike `PLP` it is also a *return*, so what it destroys shows up at the
-/// function's exit rather than downstream: a body that returns through one
-/// promises its caller nothing. It reaches the model through the effect
-/// table rather than through a mnemonic match, which is what makes the four
-/// unknown-transition instructions one case rather than four; this pins the
-/// fourth.
+/// **This reverses the answer sub-plan D gave**, and the reason is which
+/// status byte it is. `PLP` pops whatever happens to be on the stack, which
+/// K816 never tracked, so the widths after it are unknown — that stands. But
+/// `RTI` pops the `P` the *interrupt* pushed, which is the interrupted
+/// code's own, so from that code's point of view its widths come back
+/// exactly. An interrupt handler that saves and restores its registers is the
+/// idiom, and D's reading made every one of them warn twice.
+///
+/// The direction of the risk is worth stating, because `Unknown` is the safe
+/// answer and `Preserve` is the precise one. `Preserve` misleads only a
+/// *caller*, and the one program shape where an `RTI` has a caller — a `func`
+/// reached by `jsr` that returns through `rti` — is already corrupting its
+/// stack by three bytes against two. K816 does not diagnose that, here or
+/// anywhere else.
 #[test]
-fn rti_leaves_no_width_a_caller_can_rely_on() {
-    let source = "func handler @a8 @i8 {\n    rti\n}\n";
+fn an_rti_return_preserves_the_interrupted_widths() {
+    for source in [
+        "naked handler @a8 @i8 {\n    rti\n}\n",
+        "naked handler @a8 @i8 {\n    return_i\n}\n",
+        // What the body did in between does not reach the exit: the pushed
+        // `P` is what comes back.
+        "naked handler @a8 @i8 {\n    rep #$20\n    rti\n}\n",
+        "naked handler @a8 @i8 {\n    plp\n    rti\n}\n",
+    ] {
+        assert_eq!(
+            exit_of(source, "handler"),
+            (AxisExit::Preserve, AxisExit::Preserve),
+            "`{source}`"
+        );
+        let (_, _, diagnostics) = analyze(source);
+        assert_eq!(codes(&diagnostics), Vec::<&str>::new(), "`{source}`");
+    }
+
+    // `PLP` on its own is still unknown: it pops a byte nothing tracked, and
+    // unlike `RTI` it is not the instruction that ends the frame.
+    let source = "func handler @a8 @i8 {\n    plp\n    nop\n}\n";
     assert_eq!(
         exit_of(source, "handler"),
         (AxisExit::Unknown, AxisExit::Unknown)
     );
-    let (_, _, diagnostics) = analyze(source);
-    assert_eq!(codes(&diagnostics), ["K816-W0124", "K816-W0124"]);
 }

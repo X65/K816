@@ -1481,8 +1481,8 @@ fn expansions_and_naked_sections_assemble() {
         .collect();
     assert_eq!(
         warnings,
-        ["K816-W0124", "K816-W0124"],
-        "only the `rti` exit, which no caller can rely on"
+        Vec::<&str>::new(),
+        "the `rti` exit restores what it interrupted, so it preserves"
     );
     let assembly = result.assembly.expect("compilation succeeds");
 

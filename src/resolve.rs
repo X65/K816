@@ -2255,8 +2255,8 @@ impl Charset {
 /// none of them is: they are evaluator syntax K65 has and K816 has not
 /// finished. The one exception is arithmetic with no answer, which no
 /// sub-plan will make work.
-fn unsupported_eval(unsupported: eval::Unsupported) -> Diagnostic {
-    match unsupported {
+fn unsupported_eval(unsupported: eval::Unsupported) -> Option<Diagnostic> {
+    let diagnostic = match unsupported {
         eval::Unsupported::Numeric { span, what } => compat::unimplemented(
             span,
             &format!("{what} in a `for … eval` body"),
@@ -2287,7 +2287,10 @@ fn unsupported_eval(unsupported: eval::Unsupported) -> Diagnostic {
             Label::new(span, "there is no value for this"),
         )
         .with_docs("doc/syntax-reference.md#for--eval"),
-    }
+        // Already said once; saying it again is noise, not information.
+        eval::Unsupported::Reported => return None,
+    };
+    Some(diagnostic)
 }
 
 /// A character the `charset` in force has no slot for.
@@ -2784,7 +2787,9 @@ impl Resolver<'_> {
                     }
                 },
                 Err(unsupported) => {
-                    self.report(unsupported_eval(unsupported));
+                    if let Some(diagnostic) = unsupported_eval(unsupported) {
+                        self.report(diagnostic);
+                    }
                     return None;
                 }
             }

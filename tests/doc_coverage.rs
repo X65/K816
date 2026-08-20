@@ -427,6 +427,407 @@ fn every_documented_example_compiles_to_what_it_documents() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// `doc/symbolic-subscripts.md` (sub-plan E, task E10).
+// ---------------------------------------------------------------------------
+
+/// The declarations the symbolic-subscript document's examples are written
+/// against, so that each row states only what it is about.
+const LAYOUTS: &str = "\
+var TASKS[
+    .sp      :word
+    .state   :byte
+    .signals :byte
+] = $4000
+
+var REGS[
+    .status :byte
+    .data[
+        .lo :byte
+        .hi :byte
+    ]
+] = $D000
+
+var COMP[
+    .one :byte
+    .two :word
+    .str :byte [5]
+] * 10 = $1000
+
+var counter:word = $80
+var buffer[32] = $0100
+var tasks[
+    .state :byte
+] * 8
+
+abstract var DEV_HANDLER[
+    .open  :word
+    .close :word
+    .init  :word
+]
+";
+
+/// One claim `doc/symbolic-subscripts.md` makes, and the byte it produces.
+///
+/// Every row is an *arithmetic* claim — an offset, a size, a stride — which
+/// is what that document is: "Semantics" gives the formulas and the rest
+/// gives worked examples of them. A row that stops holding is a formula the
+/// compiler no longer implements.
+const SUBSCRIPTS: &[(&str, &str, &str)] = &[
+    // "Semantics": packed and sequential, first offset 0.
+    ("Semantics", "a = TASKS:sizeof", "#$04"),
+    ("Semantics", "a = TASKS.sp:sizeof", "#$02"),
+    ("Semantics", "a = TASKS.sp:offsetof", "#$00"),
+    ("Semantics", "a = TASKS.state:offsetof", "#$02"),
+    ("Semantics", "a = TASKS.signals:offsetof", "#$03"),
+    // `field size = element_width * count`.
+    ("Semantics", "a = COMP.str:sizeof", "#$05"),
+    // Nested fields resolve against the top-level variable.
+    ("Semantics", "a = REGS.data.lo:offsetof", "#$01"),
+    ("Semantics", "a = REGS.data.hi:offsetof", "#$02"),
+    // `foo:sizeof` is one repeated element, not the allocation.
+    ("Semantics", "a = tasks:sizeof", "#$01"),
+    ("Semantics", "a = counter:sizeof", "#$02"),
+    ("Semantics", "a = buffer:sizeof", "#$20"),
+    // "Access Syntax": the dotted and bracketed spellings are one selection,
+    // and a repeated element strides by `:sizeof`.
+    ("Access Syntax", "a = TASKS.state", "a:TASKS + $02"),
+    ("Access Syntax", "a = TASKS[.state]", "a:TASKS + $02"),
+    ("Access Syntax", "a = COMP[2].one", "a:COMP + $10"),
+    ("Access Syntax", "a = COMP[2][.one]", "a:COMP + $10"),
+    ("Access Syntax", "a = COMP[2].str[3]", "a:COMP + $16"),
+    // "Abstract layout-only form": queries, and nothing else.
+    (
+        "Abstract layout-only form",
+        "a = DEV_HANDLER:sizeof",
+        "#$06",
+    ),
+    (
+        "Abstract layout-only form",
+        "a = DEV_HANDLER.init:offsetof",
+        "#$04",
+    ),
+];
+
+/// Every arithmetic claim `doc/symbolic-subscripts.md` makes is the arithmetic
+/// K816 performs.
+#[test]
+fn every_symbolic_subscript_claim_holds() {
+    let mut failures = Vec::new();
+    for (section, statement, expected) in SUBSCRIPTS {
+        // `@a8` throughout: every value below is a byte, and every field
+        // these rows read is a `:byte` one — a wider accumulator would be
+        // `K816-E0140` against the declared datum, which is its own test.
+        let source = format!("{LAYOUTS}\nfunc work @a8 @i8 {{\n    {statement}\n}}\n");
+        let (lines, codes) = compile(&source);
+        if !codes.is_empty() {
+            failures.push(format!("  {section}: `{statement}` reported {codes:?}"));
+            continue;
+        }
+        if !lines.iter().any(|line| line.contains(expected)) {
+            failures.push(format!(
+                "  {section}: `{statement}` should emit `{expected}`, emitted {lines:?}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "documented subscript claims that do not hold:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Every section of `doc/symbolic-subscripts.md` is checked or accounted for.
+#[test]
+fn every_symbolic_subscript_section_is_accounted_for() {
+    /// Sections with no arithmetic of their own, and why.
+    const ACCOUNTED: &[(&str, &str)] = &[
+        (
+            "Overview",
+            "introduces the three base forms the sections below check",
+        ),
+        ("Declaration Syntax", "introduces the three forms below it"),
+        (
+            "Symbolic subscript array form",
+            "tests/golden/subscripts.k816, through every_field_access_folds_to_the_offset_its_layout_declares",
+        ),
+        (
+            "Default field width on the symbol",
+            "tests/semantic.rs: a_field_takes_the_nearest_width_and_counts_elements_of_it",
+        ),
+        (
+            "Field item grammar",
+            "tests/semantic.rs: a_field_takes_the_nearest_width_and_counts_elements_of_it",
+        ),
+        (
+            "Diagnostics",
+            "tests/diagnostics.rs: one FAMILY case per row of that table",
+        ),
+        (
+            "Implementation Notes",
+            "describes the original K65 compiler, not this one",
+        ),
+        ("AST and parser", "describes the original K65 compiler"),
+        (
+            "Eval expansion and semantics",
+            "describes the original K65 compiler",
+        ),
+        (
+            "Lowering and formatting",
+            "describes the original K65 compiler",
+        ),
+        ("Tests", "describes the original K65 compiler's test layout"),
+    ];
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/symbolic-subscripts.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let headings: Vec<&str> = text
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("## ")
+                .or_else(|| line.strip_prefix("### "))
+        })
+        .collect();
+    assert!(headings.len() > 10, "the heading parse found {headings:?}");
+
+    let missing: Vec<&str> = headings
+        .iter()
+        .filter(|heading| {
+            !SUBSCRIPTS.iter().any(|(section, _, _)| section == *heading)
+                && !ACCOUNTED.iter().any(|(section, _)| section == *heading)
+        })
+        .copied()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "symbolic-subscript sections with neither a checked claim nor a stated reason: {missing:?}"
+    );
+    for (section, why) in ACCOUNTED {
+        assert!(
+            headings.contains(section),
+            "`{section}` is accounted for but no longer a section ({why})"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The per-instruction spelling tables (sub-plan E, task E10).
+// ---------------------------------------------------------------------------
+
+/// The nine columns every instruction section's table has, with the operand
+/// each one is written against and the addressing mode it claims.
+///
+/// `Implied` covers the stack forms too — `a!!` is `PHA`, which the ISA calls
+/// `Stack` — so that column asserts the mnemonic and leaves the mode alone.
+/// Everything else names exactly one mode, and naming it is the point: the
+/// table is a claim that this spelling selects that mode, and a spelling that
+/// quietly picked another would still assemble.
+const COLUMNS: &[(&str, &[&str])] = &[
+    ("Acc", &["Accumulator"]),
+    ("Implied", &[]),
+    ("Imm", &["Immediate"]),
+    // The direct-page variants belong beside the absolute ones: the column
+    // claims "the indexed form", and which widths the CPU offers for a given
+    // instruction is the ISA table's business — `STX` has only `dp,Y`.
+    ("Mem", &["Absolute", "Direct"]),
+    ("Mem,X", &["AbsoluteIndexedX", "DirectIndexedX"]),
+    ("Mem,Y", &["AbsoluteIndexedY", "DirectIndexedY"]),
+    ("(Mem,X)", &["DirectIndexedIndirect"]),
+    ("(Mem),Y", &["DirectIndirectIndexed"]),
+    // Two modes wear one column: the indirect load forms are direct-page
+    // only, and `JMP` has no direct-page indirect at all, so the same
+    // spelling means `(dp)` for one instruction and `(abs)` for the other.
+    ("(Mem)", &["DirectIndirect", "AbsoluteIndirect"]),
+];
+
+/// One cell of one instruction's table.
+struct Spelling {
+    mnemonic: String,
+    column: &'static str,
+    modes: &'static [&'static str],
+    source: String,
+}
+
+/// Reads every `### \`MNEMONIC\`` section's spelling table out of the
+/// document.
+///
+/// The tables are the document's per-statement claim — "this K65 spelling is
+/// that instruction in that mode" — and they are the part of the reference
+/// that sub-plan E implements. Parsed rather than transcribed, so that a
+/// spelling added to the document is checked without anyone remembering to
+/// add it here.
+fn split_cells(row: &str) -> Vec<String> {
+    let mut cells = vec![String::new()];
+    let mut escaped = false;
+    for character in row.chars() {
+        match character {
+            '\\' if !escaped => escaped = true,
+            '|' if !escaped => cells.push(String::new()),
+            _ => {
+                cells.last_mut().expect("one cell").push(character);
+                escaped = false;
+            }
+        }
+    }
+    cells
+}
+
+fn spellings() -> Vec<Spelling> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/syntax-reference.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let header = COLUMNS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join("|");
+
+    let mut found = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let Some(rest) = line.strip_prefix("### `") else {
+            continue;
+        };
+        let Some(mnemonic) = rest.split('`').next() else {
+            continue;
+        };
+        // The table, when there is one, is the next two non-empty lines: the
+        // header and its separator. A branch section has a bullet list here.
+        let mut table = lines.clone();
+        let Some(&next) = table.peek() else { continue };
+        if next.is_empty() {
+            table.next();
+        }
+        if table.peek().is_none_or(|line| *line != header) {
+            continue;
+        }
+        table.next();
+        table.next(); // the `:---:` separator
+        let Some(row) = table.next() else { continue };
+        // `|` separates cells and `\|` is a literal pipe inside one — which
+        // `ORA` needs, its whole spelling being `a|mem`.
+        for (cell, (column, modes)) in split_cells(row).into_iter().zip(COLUMNS) {
+            // A cell may offer alternatives: `` `p!!` / `flag!!` ``.
+            for spelling in cell.split(" / ") {
+                let spelling = spelling.trim().trim_matches('`');
+                if spelling.is_empty() {
+                    continue;
+                }
+                found.push(Spelling {
+                    mnemonic: mnemonic.to_owned(),
+                    column,
+                    modes,
+                    source: spelling.to_owned(),
+                });
+            }
+        }
+    }
+    assert!(
+        found.len() > 100,
+        "the table parse found only {} spellings, so the shape changed",
+        found.len()
+    );
+    found
+}
+
+/// Every spelling the instruction tables give is that instruction, in that
+/// mode.
+///
+/// This is sub-plan E's subject stated by the document and checked against
+/// the compiler: the HLA statement family exists to make these spellings mean
+/// those instructions.
+#[test]
+fn every_documented_spelling_selects_the_instruction_it_claims() {
+    let mut failures = Vec::new();
+    for spelling in spellings() {
+        // `mem` is absolute and `zp` direct-page, because the indirect forms
+        // are direct-page-only on this CPU — which is why the document writes
+        // them as `(mem)` and means a one-byte address.
+        // The indirect forms are direct-page only, so they are written
+        // against the direct-page variable; everything else is tried
+        // absolute first and falls back, because an instruction whose only
+        // indexed form is `dp,Y` cannot take an absolute one.
+        let candidates: &[&str] = if spelling.column.starts_with('(') {
+            &["zp"]
+        } else {
+            &["mem", "zp"]
+        };
+        let mut attempt = None;
+        for operand in candidates {
+            let statement = spelling.source.replace("imm", "#1").replace("mem", operand);
+            let source = format!(
+                "var mem = $0400\nvar dp zp = $10\nfunc work @a8 @i8 {{\n    {statement}\n}}\n"
+            );
+            let mut map = SourceMap::new();
+            let file = map.add_file("table.k816", &source);
+            let parsed = k816::parser::parse_source(map.file(file), None);
+            if !parsed.diagnostics.is_empty() {
+                attempt = Some((statement, Err("does not parse".to_owned()), None));
+                continue;
+            }
+            let (model, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            if diagnostics
+                .iter()
+                .any(k816::diagnostic::Diagnostic::is_error)
+            {
+                let codes = diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.code.as_str())
+                    .collect::<Vec<_>>();
+                attempt = Some((statement, Err(format!("{codes:?}")), None));
+                continue;
+            }
+            attempt = Some((statement, Ok(()), Some((parsed, model))));
+            break;
+        }
+        let Some((statement, outcome, compiled)) = attempt else {
+            continue;
+        };
+        if let Err(why) = outcome {
+            failures.push(format!("  {} `{statement}`: {why}", spelling.mnemonic));
+            continue;
+        }
+        let (parsed, model) = compiled.expect("a successful attempt carries its output");
+        let (program, _) = k816::lower::lower(&parsed.file, &model);
+        let emitted: Vec<String> = program
+            .functions()
+            .flat_map(|function| function.ops.iter())
+            .filter_map(|op| match &op.kind {
+                k816::op::KOpKind::Instruction(instruction) => {
+                    Some(format!("{:?}/{:?}", instruction.mnemonic, instruction.mode))
+                }
+                _ => None,
+            })
+            .collect();
+        // The implicit `rts` is the function's, not the spelling's.
+        let Some(actual) = emitted.first() else {
+            failures.push(format!(
+                "  {} `{statement}`: emitted nothing",
+                spelling.mnemonic
+            ));
+            continue;
+        };
+        let (mnemonic, mode) = actual.split_once('/').expect("mnemonic/mode");
+        if !mnemonic.eq_ignore_ascii_case(&spelling.mnemonic) {
+            failures.push(format!(
+                "  {} `{statement}`: emitted {mnemonic}",
+                spelling.mnemonic
+            ));
+            continue;
+        }
+        if !spelling.modes.is_empty() && !spelling.modes.contains(&mode) {
+            failures.push(format!(
+                "  {} `{statement}` ({}): emitted {mode}, documented {:?}",
+                spelling.mnemonic, spelling.column, spelling.modes
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "documented spellings that do not select what they claim:\n{}",
+        failures.join("\n")
+    );
+}
+
 /// Every `Optimized` row states what the optimizer changes about it, so the
 /// difference from the document is recorded rather than left to be
 /// rediscovered as a bug.

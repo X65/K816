@@ -547,7 +547,7 @@ func add @a16 @i16 (a, x) -> @a8 a, y {
 
 The `@a8`/`@a16` annotations control the accumulator width and `@i8`/`@i16` control index register width; the compiler synthesises [`REP`](#rep-reset-p-bits) or [`SEP`](#sep-set-p-bits) instructions as needed to satisfy these contracts.
 
-The special name `main` designates the program entry point. A `func main` block defaults to 8-bit register widths (matching the 65816's power-on state after XCE) and automatically emits `REP` instructions if 16-bit mode is declared.
+The special name `main` designates the program entry point. Its register widths come from the **entry ABI** — what the startup code hands over, currently native mode with both axes 8-bit — rather than from an annotation: `main`'s caller is the environment, and an environment cannot be bridged. An annotation on `main` is therefore a claim about that ABI, true or `K816-E0143`, and no entry setup is generated for one. See `register-width-aware-syntax.md`, "The entry point".
 
 ```k65
 func main {

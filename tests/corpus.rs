@@ -282,6 +282,103 @@ fn corpus_cases_produce_the_expected_trees() {
     }
 }
 
+/// Every source under `examples/` and what it still reports.
+///
+/// One row per program, with the *unit set* it is compiled in — K65 has no
+/// import syntax, so which files are compiled together is the build structure
+/// and has to be stated. The expected codes are exact: a row that goes
+/// silent is a construct that landed, and a row that grows is a regression,
+/// and both should be noticed here rather than in a user's build.
+const CORPUS: &[(&str, &[&str], &[&str])] = &[
+    ("examples/fullstack/main.k816", &[], &[]),
+    // The one construct left, and it is sub-plan G's: an evaluator bracket
+    // in operand position (`a = [$FF]`).
+    ("examples/hello_uart.k65", &[], &["K816-E0201"]),
+    (
+        "examples/k65/atari-xl/dli-example/main.k65",
+        &["examples/k65/atari-xl/include/defs.k65"],
+        &[],
+    ),
+    (
+        "examples/k65/atari-xl/landscape/main.k65",
+        &["examples/k65/atari-xl/include/defs.k65"],
+        &[],
+    ),
+    (
+        "examples/k65/atari-xl/rainbow/main.k65",
+        &["examples/k65/atari-xl/include/defs.k65"],
+        &[],
+    ),
+    // `rnd()` in a `for … eval` body: reserved legacy syntax that keeps its
+    // own code by design (sub-plan E, decision 18), not a construct waiting
+    // to be implemented.
+    (
+        "examples/k65/atari-xl/starfield/main.k65",
+        &["examples/k65/atari-xl/include/defs.k65"],
+        &["K816-K65-0002", "K816-K65-0002"],
+    ),
+    ("examples/k65/atari-xl/include/defs.k65", &[], &[]),
+];
+
+fn read(path: &str) -> String {
+    let full = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("read {full:?}: {e}"))
+}
+
+/// The legacy corpus compiles, and what it does not compile is named.
+///
+/// This is sub-plan E's own success criterion: the HLA statement family, the
+/// declaration family, and the data blocks are done when the programs that
+/// use them come out the other side. What remains is listed per file so that
+/// "still failing" and "failing differently" are different test results.
+#[test]
+fn every_corpus_program_compiles_or_names_what_is_left() {
+    for (path, units, expected) in CORPUS {
+        let mut map = SourceMap::new();
+        let file = map.add_file(*path, read(path));
+        for unit in *units {
+            map.add_file(*unit, read(unit));
+        }
+        let result = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false });
+        let codes: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        assert_eq!(codes, *expected, "{path}");
+    }
+}
+
+/// Nothing in the corpus is waiting on sub-plan E any more.
+///
+/// The criterion as the plan wrote it was "no `K816-E0201`", which cannot be
+/// met while the evaluator is sub-plan G's — so the checkable form is that no
+/// deferral names *E*. `compat::unimplemented` puts the owning sub-plan in a
+/// note, which is what makes this a question the test can ask.
+#[test]
+fn no_corpus_program_waits_on_sub_plan_e() {
+    for (path, units, _) in CORPUS {
+        let mut map = SourceMap::new();
+        let file = map.add_file(*path, read(path));
+        for unit in *units {
+            map.add_file(*unit, read(unit));
+        }
+        let result = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false });
+        for diagnostic in &result.diagnostics {
+            if diagnostic.code != k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED {
+                continue;
+            }
+            assert!(
+                !diagnostic
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("sub-plan E ")),
+                "{path} still waits on sub-plan E: {diagnostic:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn corpus_case_names_are_unique() {
     // B12's manifest audit maps every feature row to a corpus case name, so

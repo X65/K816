@@ -56,6 +56,15 @@ pub enum Unsupported {
     Name { span: Span, name: String },
     /// Arithmetic that has no answer: division or remainder by zero.
     Undefined { span: Span, what: &'static str },
+    /// A construct that has *already* reported itself, so the caller has
+    /// nothing to add.
+    ///
+    /// The reserved evaluator calls are the case: `rnd()` in a `for … eval`
+    /// body is `K816-K65-0002`, which analysis reports when it walks the
+    /// expression, and sub-plan E's decision 18 says that is the diagnostic
+    /// such a body keeps. Folding it fails too, of course — but a second
+    /// complaint about one call is one complaint too many.
+    Reported,
 }
 
 /// What the body of one `for … eval` iteration is evaluated against.
@@ -206,12 +215,10 @@ pub fn fold(expr: &EvalExpr, bindings: &Bindings<'_>) -> Result<i64, Unsupported
             span: expr.span,
             what: "member access",
         }),
-        // The reserved calls report themselves through `K816-K65-0002`
-        // before this ever runs, so there is nothing for this to add.
-        EvalExprKind::ReservedCall(_) | EvalExprKind::Error => Err(Unsupported::Form {
-            span: expr.span,
-            what: "this construct",
-        }),
+        // A reserved call reports itself through `K816-K65-0002`, and an
+        // error node reported itself as a syntax error; both are already
+        // said, so neither is said again.
+        EvalExprKind::ReservedCall(_) | EvalExprKind::Error => Err(Unsupported::Reported),
     }
 }
 
@@ -290,5 +297,8 @@ mod tests {
             eval("x / 0", 0),
             Err(Unsupported::Undefined { .. })
         ));
+        // A reserved call has already been reported as reserved legacy
+        // syntax, so folding it adds nothing (sub-plan E, decision 18).
+        assert_eq!(eval("rnd() & 255", 0), Err(Unsupported::Reported));
     }
 }

@@ -339,6 +339,29 @@ struct Node {
     last_of_statement: bool,
 }
 
+/// The transfer an `RTI` return makes.
+///
+/// `RTI` pops `P`, and with it both width flags, so control leaves at exactly
+/// the state that was pushed — the interrupted code's. From that code's point
+/// of view the handler *preserved* its widths, whatever the body did in
+/// between, and an interrupt handler that saves and restores its registers is
+/// the idiom rather than a hazard.
+///
+/// It is spelled as the restore a scoped width block already uses, against
+/// node 0, because node 0's incoming fact is the function's entry state and
+/// the restore carries the touched bits with it. The widths named in `axes`
+/// are irrelevant — only *which axes* are restored is read — so they say
+/// "both".
+fn restores_the_interrupted_state() -> Transfer {
+    Transfer::Restore {
+        enter: 0,
+        axes: WidthContract {
+            a: Some(RegisterWidth::W8),
+            i: Some(RegisterWidth::W8),
+        },
+    }
+}
+
 /// A scoped width block's node range, for the leaking-exit check.
 #[derive(Clone, Copy, Debug)]
 struct BlockRange {
@@ -694,22 +717,23 @@ impl Flattener<'_> {
             // claimed the tracked widths would promise an interrupt handler's
             // callers something the CPU does not do.
             StatementKind::Return(kind) => {
-                let mnemonic = match kind {
-                    ast::ReturnKind::Subroutine => Mnemonic::Rts,
-                    ast::ReturnKind::Interrupt => Mnemonic::Rti,
-                };
-                self.push(
-                    id,
-                    span,
-                    Transfer::Instruction {
+                let transfer = match kind {
+                    ast::ReturnKind::Subroutine => Transfer::Instruction {
                         effect: crate::effects::instruction_effects(
-                            mnemonic,
+                            Mnemonic::Rts,
                             crate::isa::AddressingMode::Stack,
                             None,
                         )
                         .width,
                         exchanges_emulation: false,
                     },
+                    // `return_i` is `RTI`, which restores what it interrupted.
+                    ast::ReturnKind::Interrupt => restores_the_interrupted_state(),
+                };
+                self.push(
+                    id,
+                    span,
+                    transfer,
                     Control {
                         fall_through: false,
                         target: None,
@@ -1020,13 +1044,27 @@ impl Flattener<'_> {
                 );
             }
             ControlEffect::Return => {
-                self.push(
-                    id,
-                    span,
+                // `RTI` pops `P`, and with it the widths — so a return
+                // through it hands back exactly the state the interrupted
+                // code had, whatever the body did in between. That is
+                // `Preserve` and not "cannot say": the instruction's whole
+                // job is the restore, and an interrupt handler that saves
+                // and restores its registers is the idiom, not a hazard.
+                // Node 0's incoming fact is the entry state, so the block
+                // restore already written for scoped width blocks says this
+                // exactly.
+                let transfer = if instruction.mnemonic == Mnemonic::Rti {
+                    restores_the_interrupted_state()
+                } else {
                     Transfer::Instruction {
                         effect: effects.width,
                         exchanges_emulation: instruction.mnemonic == Mnemonic::Xce,
-                    },
+                    }
+                };
+                self.push(
+                    id,
+                    span,
+                    transfer,
                     Control {
                         fall_through: false,
                         target: None,

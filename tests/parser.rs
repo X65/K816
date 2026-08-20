@@ -1837,17 +1837,21 @@ fn every_section_form_and_contract_compiles() {
         assert_eq!(diagnostics, vec![], "`{source}`");
     }
 
-    // `return_i` is `rti`, which restores `P`, so a section ending in one
-    // leaves no width a caller can rely on — the same answer the native
-    // spelling has had since sub-plan D.
-    let (_, diagnostics) = analyze_section("naked handler @a8 @i8 { return_i }\n");
-    let codes: Vec<_> = diagnostics.iter().map(|d| d.code.as_str()).collect();
-    assert_eq!(codes, ["K816-W0124", "K816-W0124"]);
-    assert_eq!(
-        diagnostics[0].help.as_deref(),
-        Some("re-establish the width before control leaves the section"),
-        "a `naked` section cannot be told to declare an exit it may not have"
-    );
+    // `return_i` is `rti`, which restores `P` — and with it both width flags
+    // — so control leaves at exactly the state that was pushed. From the
+    // interrupted code's point of view the handler preserved its widths,
+    // which is the idiom rather than a hazard, and the same answer the native
+    // `rti` spelling gets.
+    for source in [
+        "naked handler @a8 @i8 { return_i }\n",
+        "naked handler @a8 @i8 { rti }\n",
+        // Even when the body changes a width: what leaves is what was
+        // pushed, not what the body last set.
+        "naked handler @a8 @i8 { rep #$20 return_i }\n",
+    ] {
+        let (_, diagnostics) = analyze_section(source);
+        assert_eq!(diagnostics, vec![], "`{source}`");
+    }
 }
 
 /// Parses and analyzes one section snippet, asserting only that it parses.

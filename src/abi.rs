@@ -47,17 +47,23 @@
 //! to a way of *supplying* an ABI before the configuration it has to agree
 //! with exists is how two ways of saying one thing end up disagreeing.
 //!
-//! # What an annotation on `main` means
+//! # Which sections the ABI answers for
 //!
-//! It is an **assertion**, not a request. Every other function's contract is
-//! a requirement on its callers, which K816 satisfies by bridging at each
-//! call site; `main`'s caller is the environment, and an environment cannot
-//! be bridged. So an annotation on `main` is a claim *about* the ABI: a true
-//! one is allowed and costs nothing, and a false one is
+//! Two, and for one reason: **their caller is not a call site**. `main` is
+//! entered by the startup stub and an interrupt handler by the hardware, so
+//! neither has a caller K816 can bridge to. Every *other* function's contract
+//! is a requirement on its callers, satisfied by a `REP`/`SEP` emitted at
+//! each call site — which is why an ordinary function may declare whatever
+//! widths it needs and these two may not.
+//!
+//! # What an annotation on one of them means
+//!
+//! It is an **assertion**, not a request: a claim *about* the ABI. A true one
+//! is allowed and costs nothing, and a false one is
 //! [`crate::diagnostic::DiagnosticCode::ENTRY_ABI_MISMATCH`]. No width setup
-//! is generated for an entry point at all — emitting a `REP` to make the
-//! claim true would be K816 choosing an ABI that belongs to the startup
-//! code.
+//! is generated for either kind — emitting a `REP` to make the claim true
+//! would be K816 choosing an ABI that belongs to the startup code and to
+//! whatever the interrupt interrupted.
 
 use crate::isa::RegisterWidth;
 use crate::op::{AxisState, EmulationState, ModeState, WidthContract};
@@ -153,16 +159,52 @@ pub fn environment() -> EntryEnvironment {
     EntryEnvironment::STARTUP_STUB
 }
 
+/// A section whose caller is not a call site, and so whose widths are the
+/// environment's rather than its contract's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryKind {
+    /// `main`, entered by the startup code.
+    Main,
+    /// A section that returns through `RTI`, entered by the hardware.
+    ///
+    /// The same environment answers for it, and for a reason that is worth
+    /// keeping separate from "they happen to match": an interrupt is taken at
+    /// whatever widths the interrupted code was running at, and the program's
+    /// widths are the environment's until something widens them. A scoped
+    /// `@a16 { … }` block that an interrupt lands inside is the case that
+    /// would make this wrong, and K816 cannot see it — which is exactly why
+    /// the ABI is a stated contract rather than an inference.
+    Interrupt,
+}
+
+impl EntryKind {
+    /// How to name this section in a diagnostic.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Main => "the entry point",
+            Self::Interrupt => "an interrupt handler",
+        }
+    }
+
+    /// Who enters it, which is the reason it cannot be bridged.
+    pub fn caller(self) -> &'static str {
+        match self {
+            Self::Main => "`main`'s caller is the environment",
+            Self::Interrupt => "an interrupt handler is entered by the hardware",
+        }
+    }
+}
+
 /// The width state a function body starts in.
 ///
 /// The single answer to "what holds when control arrives here", for both of
 /// the passes that ask: the width solver, which walks forward from it, and
 /// lowering, which claims it to the assembler. An ordinary function's answer
 /// is its contract — a caller that does not satisfy it is bridged at the call
-/// site — and the entry point's is the environment's, since its caller is the
-/// environment and cannot be bridged.
-pub fn entry_state(is_entry_point: bool, contract: WidthContract) -> ModeState {
-    if is_entry_point {
+/// site — and a section the ABI answers for takes the environment's, since
+/// what enters it cannot be bridged.
+pub fn entry_state(entry: Option<EntryKind>, contract: WidthContract) -> ModeState {
+    if entry.is_some() {
         environment().entry_state(contract)
     } else {
         ModeState::from_contract(contract)
@@ -184,7 +226,7 @@ mod tests {
 
         // The case that makes a legacy `main` compile at all: no annotation,
         // and the widths are the environment's rather than unknown.
-        let unannotated = entry_state(true, contract(None, None));
+        let unannotated = entry_state(Some(EntryKind::Main), contract(None, None));
         assert_eq!(unannotated, environment.state());
         assert_eq!(unannotated.a, AxisState::Known(RegisterWidth::W8));
         assert_eq!(unannotated.i, AxisState::Known(RegisterWidth::W8));
@@ -192,7 +234,10 @@ mod tests {
         // A mismatched annotation is refused before this is asked, and the
         // state it produces is what the author believed — so that the body's
         // own diagnostics are about the body rather than about the ABI.
-        let refused = entry_state(true, contract(Some(RegisterWidth::W16), None));
+        let refused = entry_state(
+            Some(EntryKind::Interrupt),
+            contract(Some(RegisterWidth::W16), None),
+        );
         assert_eq!(refused.a, AxisState::Known(RegisterWidth::W16));
         assert_eq!(refused.i, AxisState::Known(RegisterWidth::W8));
     }
@@ -202,11 +247,11 @@ mod tests {
         // Its caller can be bridged, so an unstated axis is unknown and stays
         // that way — taking the entry ABI here would be inventing a width no
         // caller promised.
-        let unannotated = entry_state(false, contract(None, None));
+        let unannotated = entry_state(None, contract(None, None));
         assert_eq!(unannotated.a, AxisState::Unknown);
         assert_eq!(unannotated.i, AxisState::Unknown);
 
-        let annotated = entry_state(false, contract(Some(RegisterWidth::W16), None));
+        let annotated = entry_state(None, contract(Some(RegisterWidth::W16), None));
         assert_eq!(annotated.a, AxisState::Known(RegisterWidth::W16));
         assert_eq!(annotated.i, AxisState::Unknown);
     }
@@ -253,11 +298,13 @@ mod tests {
             contract(Some(RegisterWidth::W8), Some(RegisterWidth::W8)),
         ] {
             assert_eq!(environment.mismatches(annotation), [], "for {annotation:?}");
-            assert_eq!(
-                entry_state(true, annotation),
-                environment.state(),
-                "for {annotation:?}"
-            );
+            for kind in [EntryKind::Main, EntryKind::Interrupt] {
+                assert_eq!(
+                    entry_state(Some(kind), annotation),
+                    environment.state(),
+                    "{kind:?} for {annotation:?}"
+                );
+            }
         }
     }
 }

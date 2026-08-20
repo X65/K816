@@ -147,6 +147,35 @@ func wide_all @a16 @i16 {
         diagnostic: None,
     },
     Row {
+        section: "The entry point",
+        // An interrupt handler is the second kind, and takes the same
+        // widths without saying anything.
+        source: "naked dli {\n    lda #$01\n    return_i\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[".a8", ".i8", "lda     #$01"],
+        diagnostic: None,
+    },
+    Row {
+        section: "The entry point",
+        // And is held to them.
+        source: "naked dli @a16 {\n    lda #$1234\n    return_i\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0143"),
+    },
+    Row {
+        section: "The entry point",
+        // `naked` alone marks nothing: without an `RTI` this is an ordinary
+        // function, and declares what it likes.
+        source: "naked chunk @a16 {\n    lda #$1234\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &["lda     #$1234"],
+        diagnostic: None,
+    },
+    Row {
         section: "Call-site bridging",
         source: "\
 func wide_a @a16 {

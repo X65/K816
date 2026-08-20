@@ -168,7 +168,7 @@ impl Linkage {
                 let callees = local_contracts(model, &contracts);
                 let (analysis, _) = width::analyze_function(
                     body,
-                    crate::abi::entry_state(info.is_entry_point, info.contract),
+                    crate::abi::entry_state(info.entry, info.contract),
                     &width::Context {
                         symbols: &model.symbols,
                         function: Some(info.symbol),

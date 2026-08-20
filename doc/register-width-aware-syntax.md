@@ -82,11 +82,17 @@ A contract may be partial -- `@a16` alone leaves the index width unspecified.
 
 ### The entry point
 
-`main` is the one function whose caller is the environment, and an environment
-cannot be bridged: whatever state the startup code leaves the machine in is
-the state `main` begins in. So the entry point does not take its widths from
-an annotation the way every other function does — it takes them from the
-**entry ABI**, and an unannotated `main` is not an error.
+Two kinds of section have a caller that is not a call site: `main`, entered by
+the startup code, and an **interrupt handler** — any section that returns
+through `RTI`, entered by the hardware. Neither can be bridged to, so neither
+takes its widths from an annotation the way every other function does. Both
+take them from the **entry ABI**, and an unannotated one is not an error.
+
+`RTI` is what marks a handler, not `naked` and not its name: the instruction
+exists to pop the status byte an interrupt pushed, so a body containing one is
+a body an interrupt vector reaches. A `naked` section without one is an
+ordinary function that happens to have no automatic `RTS`, and declares
+whatever widths it likes.
 
 The ABI K816 currently targets is the one `examples/fullstack/startup.asm`
 establishes: **native mode, 8-bit accumulator, 8-bit index registers**. It is
@@ -104,16 +110,27 @@ satisfy is `K816-E0143`:
 func main @a16 {        // K816-E0143: the environment provides @a8
     lda #$1234
 }
+
+naked dli @a16 {        // K816-E0143: the same, for the same reason
+    lda #$1234
+    return_i
+}
 ```
 
 Every other function's contract is a requirement on its *callers*, which K816
-satisfies by bridging at each call site. `main`'s caller is the environment,
-which cannot be bridged, so the requirement stays and the bridge goes. No
-width setup is generated for an entry point at all: emitting a `REP` to make
-the annotation true would be K816 choosing an ABI that belongs to the startup
-code.
+satisfies by bridging at each call site. their callers are not call sites,
+so the requirement stays and the bridge goes. No width setup is generated for
+either kind: emitting a `REP` to make the annotation true would be K816
+choosing an ABI that belongs to the startup code, and to whatever the
+interrupt interrupted.
 
-Code that needs wider registers in `main` widens them in the *body*, where the
+An interrupt is taken at whatever widths the interrupted code was running at,
+which is why this is a *stated contract* rather than something K816 works out.
+A program whose widths are the environment's — one that widens only inside
+scoped blocks — satisfies it; one that leaves the accumulator 16-bit across a
+region where interrupts can fire does not, and nothing in the source says so.
+
+Code that needs wider registers in either widens them in the *body*, where the
 widening is the body's own and not a claim about the environment:
 
 ```k65

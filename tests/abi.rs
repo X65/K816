@@ -20,15 +20,21 @@
 /*                                                                           */
 /*****************************************************************************/
 
-//! The entry ABI from the outside: what an annotation on `main` does.
+//! The entry ABI from the outside: which sections it answers for, and what
+//! an annotation on one of them does.
 //!
-//! Every other function's width contract is a requirement on its *callers*,
-//! and K816 satisfies it by bridging at each call site. `main`'s caller is
-//! the environment, and an environment cannot be bridged — so an annotation
-//! on `main` is a claim *about* the entry ABI rather than a request of it.
-//! A true claim is allowed and costs nothing; a false one is `K816-E0143`,
-//! because emitting a `REP` to make it true would be K816 choosing an ABI
-//! that belongs to the startup code.
+//! Two kinds, and one reason: **their caller is not a call site**. `main` is
+//! entered by the startup code; a section that returns through `RTI` is
+//! entered by the hardware. Every *other* function's contract is a
+//! requirement on its callers, which K816 satisfies by bridging at each call
+//! site — so an ordinary function may declare whatever widths it needs, and
+//! these two may not.
+//!
+//! An annotation on one of them is a claim *about* the ABI rather than a
+//! request of it. A true claim is allowed and costs nothing; a false one is
+//! `K816-E0143`, because emitting a `REP` to make it true would be K816
+//! choosing an ABI that belongs to the startup code and to whatever the
+//! interrupt interrupted.
 //!
 //! The environment is hardcoded in `src/abi.rs` — native mode, `@a8`, `@i8`,
 //! from `examples/fullstack/startup.asm`. Selecting a different one is
@@ -277,6 +283,95 @@ fn an_ordinary_function_may_declare_whatever_widths_it_needs() {
         assembly.contains("rep     #$20") && assembly.contains("rep     #$10"),
         "the bridge is at the call site:\n{assembly}"
     );
+}
+
+/// A section that returns through `RTI` takes the ABI's widths too.
+///
+/// It is entered by the hardware, so — exactly like `main` — there is no call
+/// site to bridge from, and its widths are the environment's whether it
+/// annotated them or not. Without this an interrupt handler could not size a
+/// single immediate: nothing K816 can see establishes a width on the way in.
+#[test]
+fn an_interrupt_handler_takes_its_widths_from_the_environment() {
+    for source in [
+        // `return_i` is the K65 spelling.
+        "naked handler {\n    a = #1\n    x = #2\n    return_i\n}\n",
+        // The native one is the same instruction and the same conclusion.
+        "naked handler {\n    a = #1\n    rti\n}\n",
+        // A handler that returns from inside a conditional is still entered
+        // by the hardware.
+        "naked handler {\n    a?0\n    == { return_i }\n    return_i\n}\n",
+        // And so is one whose return sits under a width block.
+        "naked handler {\n    a = #1\n    @a16 {\n        a = #$0102\n    }\n    return_i\n}\n",
+    ] {
+        let (assembly, codes) = (compile(source).1, errors(source));
+        assert_eq!(codes, Vec::<String>::new(), "`{source}`:\n{assembly}");
+        assert_eq!(
+            entry_setup(&assembly),
+            Vec::<String>::new(),
+            "and nothing is generated to establish them:\n{assembly}"
+        );
+    }
+
+    // The widths really are the ABI's: an 8-bit immediate encodes in one
+    // byte, and a two-byte value does not fit.
+    let (_, assembly) = compile("naked handler {\n    a = #1\n    return_i\n}\n");
+    assert!(assembly.contains("lda     #$01"), "{assembly}");
+    let codes = errors("naked handler {\n    a = #$100\n    return_i\n}\n");
+    assert_eq!(codes, ["K816-E0103"]);
+}
+
+/// And it is held to them, the same way `main` is.
+#[test]
+fn a_handler_annotation_the_environment_does_not_satisfy_is_refused() {
+    let codes = errors("naked handler @a16 {\n    nop\n    return_i\n}\n");
+    assert_eq!(codes, ["K816-E0143"]);
+
+    let (diagnostics, _) = compile("naked handler @a16 {\n    nop\n    return_i\n}\n");
+    let refusal = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::ENTRY_ABI_MISMATCH)
+        .expect("the mismatch is reported");
+    // The secondary label says *why* this section is held to the ABI, which
+    // is the part a reader of a `naked` section would not guess.
+    assert!(
+        refusal
+            .secondary
+            .iter()
+            .any(|label| label.message.contains("an interrupt handler")),
+        "the refusal says which kind of entry this is: {refusal:?}"
+    );
+    assert!(
+        refusal
+            .notes
+            .iter()
+            .any(|note| note.contains("entered by the hardware")),
+        "and why it cannot be bridged: {refusal:?}"
+    );
+
+    // Restating the ABI is a true claim here too.
+    let codes = errors("naked handler @a8 @i8 {\n    nop\n    return_i\n}\n");
+    assert_eq!(codes, Vec::<String>::new());
+}
+
+/// Returning through `RTI` is what makes a section a handler — not `naked`,
+/// and not its name.
+///
+/// `naked` says "no automatic `RTS`", which an interrupt handler needs and so
+/// do other things; the *instruction* is the signal, because `RTI` exists to
+/// pop the status an interrupt pushed. A `func` that returns through one is
+/// treated the same way, and a `naked` section that does not is not treated
+/// specially at all.
+#[test]
+fn the_rti_is_what_marks_a_handler_and_not_the_section_kind() {
+    // `naked` without an `RTI`: an ordinary contract, freely declared.
+    let codes = errors("naked chunk @a16 {\n    a = #$0102\n}\n");
+    assert_eq!(codes, Vec::<String>::new());
+
+    // A `func` with one: held to the ABI, because something entered it that
+    // pushed a status byte.
+    let codes = errors("func odd @a16 {\n    nop\n    rti\n}\n");
+    assert_eq!(codes, ["K816-E0143"]);
 }
 
 /// The example in the tree obeys the ABI it runs in.

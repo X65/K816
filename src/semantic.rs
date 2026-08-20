@@ -146,7 +146,9 @@ pub struct FunctionInfo {
     pub item_index: usize,
     pub contract: WidthContract,
     /// `main` is the program entry point and receives entry-mode setup.
-    pub is_entry_point: bool,
+    /// Set when this section's caller is not a call site, so its widths come
+    /// from the entry ABI rather than from its own contract.
+    pub entry: Option<abi::EntryKind>,
     /// What callers may believe about their widths after calling it.
     ///
     /// Consumed by call-site lowering, by the workspace exit classification,
@@ -546,15 +548,15 @@ impl Analysis {
                     let declared = width::fold_annotations(&func.width, &mut self.diagnostics);
                     self.check_contract(func, symbol);
                     let contract = width::merge_defaults(self.defaults, declared);
-                    let is_entry_point = func.name.text == "main";
-                    if is_entry_point {
-                        self.check_entry_abi(func, contract);
+                    let entry = entry_kind(func);
+                    if let Some(entry) = entry {
+                        self.check_entry_abi(func, entry, contract);
                     }
                     self.model.functions.push(FunctionInfo {
                         symbol,
                         item_index,
                         contract,
-                        is_entry_point,
+                        entry,
                         // Nothing derives an exit yet, so every function
                         // takes the documented fallback and says so.
                         exit: ExitContract::preserving(),
@@ -580,7 +582,7 @@ impl Analysis {
     ///
     /// Restating what the environment provides is fine: `func main @a8` is a
     /// true claim, and a true claim costs nothing to allow.
-    fn check_entry_abi(&mut self, func: &Function, contract: WidthContract) {
+    fn check_entry_abi(&mut self, func: &Function, entry: abi::EntryKind, contract: WidthContract) {
         let environment = abi::environment();
         for axis in environment.mismatches(contract) {
             // The annotation is the thing the author can change, so it is
@@ -588,11 +590,11 @@ impl Analysis {
             // default has none here, and the function's name is the nearest
             // honest place to put the caret.
             let site = entry_annotation(func, axis).unwrap_or(func.name.span);
-            let mut diagnostic = entry_abi_mismatch(axis, environment, site);
+            let mut diagnostic = entry_abi_mismatch(entry, axis, environment, site, func);
             if entry_annotation(func, axis).is_none() {
                 diagnostic = diagnostic.with_note(
-                    "this width comes from the module-level default, which reaches `main` \
-                     like any other function",
+                    "this width comes from the module-level default, which reaches this \
+                     section like any other function",
                 );
             }
             self.diagnostics.push(diagnostic);
@@ -924,7 +926,7 @@ impl Analysis {
             };
             let (analysis, _) = width::analyze_function(
                 &func.body,
-                abi::entry_state(info.is_entry_point, info.contract),
+                abi::entry_state(info.entry, info.contract),
                 &width::Context {
                     symbols: &self.model.symbols,
                     function: Some(info.symbol),
@@ -981,7 +983,7 @@ impl Analysis {
                 };
                 let (analysis, diagnostics) = width::analyze_function(
                     &func.body,
-                    abi::entry_state(info.is_entry_point, info.contract),
+                    abi::entry_state(info.entry, info.contract),
                     &width::Context {
                         symbols: &self.model.symbols,
                         function: Some(info.symbol),
@@ -2294,6 +2296,49 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
     }
 }
 
+/// Whether the entry ABI answers for this section, and as what.
+///
+/// Two ways in, and neither is a call site. `main` is entered by the startup
+/// code. A section that returns through `RTI` is entered by the *hardware*:
+/// the instruction exists to pop the status the interrupt pushed, so a body
+/// containing one is a body the interrupt vector reaches. Both take the
+/// environment's widths, because a caller that is not a call site cannot be
+/// bridged to.
+///
+/// The `RTI` is looked for syntactically, and it has to be: the widths are
+/// needed *before* the body is analyzed, so nothing the solver learns is
+/// available yet.
+fn entry_kind(func: &Function) -> Option<abi::EntryKind> {
+    if func.name.text == "main" {
+        return Some(abi::EntryKind::Main);
+    }
+    returns_through_rti(&func.body).then_some(abi::EntryKind::Interrupt)
+}
+
+/// True when any statement of `block`, at any depth, returns through `RTI`.
+fn returns_through_rti(block: &crate::ast::Block) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| match &statement.kind {
+            StatementKind::Return(ast::ReturnKind::Interrupt) => true,
+            StatementKind::Native(native) => native.mnemonic.text.eq_ignore_ascii_case("rti"),
+            // A handler may put its return inside a conditional or a loop, and a
+            // width block around it changes nothing about who entered the body.
+            StatementKind::WidthBlock(width) => returns_through_rti(&width.body),
+            StatementKind::Conditional(conditional) => {
+                returns_through_rti(&conditional.body)
+                    || conditional
+                        .otherwise
+                        .as_ref()
+                        .is_some_and(returns_through_rti)
+            }
+            StatementKind::Loop(loop_statement) => returns_through_rti(&loop_statement.body),
+            StatementKind::Nocross(body) => returns_through_rti(body),
+            _ => false,
+        })
+}
+
 /// The span of the annotation that set `axis` on this function, if it wrote
 /// one.
 fn entry_annotation(func: &Function, axis: Axis) -> Option<Span> {
@@ -2314,8 +2359,14 @@ fn entry_annotation(func: &Function, axis: Axis) -> Option<Span> {
         .map(|annotation| annotation.span)
 }
 
-/// `main` declares a width the environment does not provide.
-fn entry_abi_mismatch(axis: Axis, environment: abi::EntryEnvironment, site: Span) -> Diagnostic {
+/// A section the entry ABI answers for declares a width it does not provide.
+fn entry_abi_mismatch(
+    entry: abi::EntryKind,
+    axis: Axis,
+    environment: abi::EntryEnvironment,
+    site: Span,
+    func: &Function,
+) -> Diagnostic {
     let (name, annotation) = match axis {
         Axis::Accumulator => ("an accumulator width", ["@a8", "@a16"]),
         Axis::Index => ("an index-register width", ["@i8", "@i16"]),
@@ -2326,14 +2377,21 @@ fn entry_abi_mismatch(axis: Axis, environment: abi::EntryEnvironment, site: Span
     };
     Diagnostic::error(
         DiagnosticCode::ENTRY_ABI_MISMATCH,
-        format!("`main` declares {name} the environment does not provide"),
+        format!(
+            "`{}` declares {name} the environment does not provide",
+            func.name.text
+        ),
         Label::new(site, format!("the environment provides `{provided}`")),
     )
-    .with_note(
-        "an annotation on another function is a requirement on its callers, which K816 \
-         satisfies by bridging at each call site; `main`'s caller is the environment, and \
-         an environment cannot be bridged",
-    )
+    .with_secondary(Label::new(
+        func.name.span,
+        format!("{}, so its widths are the environment's", entry.describe()),
+    ))
+    .with_note(format!(
+        "an annotation on an ordinary function is a requirement on its callers, which \
+         K816 satisfies by bridging at each call site; {}, and that cannot be bridged",
+        entry.caller()
+    ))
     .with_help(format!(
         "write `{provided}`, or drop the annotation and set the width in the body — a \
          scoped `{} {{ … }}` block, or an explicit `rep`/`sep`",

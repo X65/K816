@@ -99,7 +99,7 @@ func main @a8 {
 
     assert_eq!(model.functions.len(), 1);
     let main = &model.functions[0];
-    assert!(main.is_entry_point);
+    assert_eq!(main.entry, Some(k816::abi::EntryKind::Main));
     assert_eq!(main.contract.a, Some(RegisterWidth::W8));
     assert_eq!(main.contract.i, None, "the axis it did not annotate");
 
@@ -215,7 +215,7 @@ fn functions_are_not_entry_points_unless_named_main() {
     let (model, diagnostics) = analyze("func helper @a8 {\n    return\n}\n");
     assert_eq!(diagnostics, vec![]);
     assert_eq!(model.functions.len(), 1);
-    assert!(!model.functions[0].is_entry_point);
+    assert_eq!(model.functions[0].entry, None);
 }
 
 // ---------------------------------------------------------------------------

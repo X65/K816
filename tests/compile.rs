@@ -1040,8 +1040,8 @@ fn every_field_access_folds_to_the_offset_its_layout_declares() {
     );
     let cursor = assembly.find("cursor:").expect("a pooled layout");
     assert!(
-        assembly[cursor..].contains(".res     $02"),
-        "the pool takes the layout's size:\n{assembly}"
+        assembly[cursor..].contains(".res     $05"),
+        "the pool takes the layout's size, `:far` field included:\n{assembly}"
     );
     // An `abstract var` reserves nothing and names nothing: no label, no
     // equate, and no export. It appears in the emitted source only where the
@@ -1095,25 +1095,155 @@ fn every_field_access_folds_to_the_offset_its_layout_declares() {
         );
     }
 
-    // The two spellings of one selection produce one address.
-    let dotted = assembly.find("a = COMP[2].one").expect("the dotted form");
-    let bracketed = assembly
-        .find("a = COMP[2][.one]")
-        .expect("the bracketed form");
-    // The instruction only: the echoed source and its line number differ by
-    // construction, and neither is what the two spellings have to agree on.
-    let instruction = |site: usize| {
+    // The instruction a line of the fixture compiled to. The echoed source
+    // and its line number differ by construction, so neither belongs in a
+    // comparison between two spellings.
+    let instruction = |source: &str| {
+        let site = assembly
+            .find(source)
+            .unwrap_or_else(|| panic!("`{source}` is in the fixture:\n{assembly}"));
         let start = assembly[..site].rfind('\n').expect("a line start");
         let comment = assembly[start..site].find(';').expect("an echoed line");
         assembly[start..start + comment].trim().to_owned()
     };
+
+    // The two spellings of one selection produce one address, at both the
+    // field step and the field-element step.
     assert_eq!(
-        instruction(dotted),
-        instruction(bracketed),
+        instruction("a = COMP[2].one"),
+        instruction("a = COMP[2][.one]"),
         "`COMP[2].one` and `COMP[2][.one]` are one selection"
+    );
+    assert_eq!(
+        instruction("a = COMP[2].str[3]"),
+        instruction("a = COMP[2][.str][3]"),
+        "the bracketed spelling indexes the same field element"
+    );
+
+    // `:sizeof` is the size of a *field* when a field is what was selected,
+    // and the document's plain-variable answers are the ones worth pinning
+    // because they are the ones a reader would guess wrong.
+    for (source, expected) in [
+        ("a = COMP.str:sizeof", "#$05"),  // five bytes, not one
+        ("a = REGS.data:sizeof", "#$02"), // the nested layout's own size
+        ("a = counter:sizeof", "#$02"),
+        ("a = buffer:sizeof", "#$20"), // the whole raw span
+        ("a = tasks:sizeof", "#$01"),  // one element, not the allocation
+    ] {
+        assert!(
+            instruction(source).ends_with(expected),
+            "`{source}` folds to `{expected}`, got `{}`",
+            instruction(source)
+        );
+    }
+
+    // `&&NAME[i] == &&NAME + i * NAME:sizeof`, which is the identity that
+    // makes `:sizeof` mean one element. Checked as arithmetic rather than as
+    // a string, so the fixture's own numbers cannot drift apart.
+    let hex = |text: &str, after: &str| -> u32 {
+        let tail = text.split(after).nth(1).unwrap_or_else(|| {
+            panic!("expected `{after}` in `{text}`");
+        });
+        let digits: String = tail.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        u32::from_str_radix(&digits, 16).expect("a hex number")
+    };
+    let element = hex(&instruction("a = COMP:sizeof"), "#$");
+    assert_eq!(element, 8, "the fixture's element size");
+    for index in 1..=3u32 {
+        let taken = instruction(&format!("a = &&COMP[{index}]"));
+        assert_eq!(
+            hex(&taken, "+ $"),
+            index * element,
+            "&&COMP[{index}] is &&COMP + {index} * COMP:sizeof, got `{taken}`"
+        );
+    }
+
+    // A `:far` field reaches no register, so it is reached as a pointer —
+    // and the long-indirect form is deliberately outside the datum-width
+    // check, since it names the pointer rather than the datum.
+    assert!(
+        assembly.contains("lda     [(cursor + $02)]"),
+        "a far field goes through a pointer:\n{assembly}"
     );
 
     assemble_and_link("subscripts", &assembly, "vars");
+}
+
+/// A layout stops at the unit boundary, and the two halves of that.
+///
+/// A `LayoutId` indexes the arena of the unit that computed it, so a layout
+/// cannot be handed to another unit — and both consequences are worth
+/// pinning, because each is a behaviour a reader would otherwise guess at.
+/// An `abstract var` is not exportable, so two units may declare the same
+/// one; an imported `var` arrives without its fields, so selecting one is
+/// refused here rather than answered from the wrong arena.
+#[test]
+fn a_layout_does_not_cross_a_unit_boundary() {
+    use k816::diagnostic::DiagnosticCode;
+
+    // Both units declare `HANDLER`, and that is not a duplicate definition:
+    // a layout has no place and no value, so there is nothing for ld65 to
+    // resolve and nothing for two definitions to disagree about.
+    let bytes = link_two_units(
+        "cross-unit-layout",
+        (
+            "layout-unit-b.k816",
+            include_str!("golden/layout-unit-b.k816"),
+        ),
+        (
+            "layout-unit-a.k816",
+            include_str!("golden/layout-unit-a.k816"),
+        ),
+    );
+    assert!(!bytes.is_empty(), "the two units link");
+
+    // Each unit answers the query from its own copy: 4 bytes of layout, and
+    // `.close` two bytes in.
+    let mut map = SourceMap::new();
+    let b = map.add_file(
+        "layout-unit-b.k816",
+        include_str!("golden/layout-unit-b.k816"),
+    );
+    map.add_file(
+        "layout-unit-a.k816",
+        include_str!("golden/layout-unit-a.k816"),
+    );
+    let result = compile_to_ca65(&map, b, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "both units compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+    assert!(
+        assembly.contains("lda     #$04") && assembly.contains("lda     #$02"),
+        "the queries answer from this unit's own layout:\n{assembly}"
+    );
+    // The variable crosses as a name and an address size, which is what the
+    // import carries and all it carries.
+    assert!(
+        assembly.contains(".import TABLE") && assembly.contains("lda     a:TABLE"),
+        "the imported name is still an ordinary address:\n{assembly}"
+    );
+
+    // And its fields do not cross. The refusal names the boundary rather
+    // than claiming the declaration has no fields, because it has — over
+    // there.
+    let mut map = SourceMap::new();
+    let user = map.add_file("user.k816", "func main @a8 @i8 {\n    a = TABLE.hi\n}\n");
+    map.add_file(
+        "layout-unit-a.k816",
+        include_str!("golden/layout-unit-a.k816"),
+    );
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let refusal = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::SYMBOL_KIND_MISMATCH)
+        .expect("a foreign field selection is refused");
+    assert!(
+        refusal
+            .notes
+            .iter()
+            .any(|note| note.contains("another unit")),
+        "the refusal names the boundary: {refusal:?}"
+    );
 }
 
 /// The section kinds that are not subroutines, through the assembler.

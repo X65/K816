@@ -309,18 +309,40 @@ fn abstract_has_no_storage(name: &str, span: Span, declaration: Span) -> Diagnos
 }
 
 /// A `.field` step on something that has no fields to select from.
-fn selection_without_fields(base: &Expr, field: &Name, described: &str) -> Diagnostic {
-    Diagnostic::error(
+///
+/// `foreign` is the case that needs its own words: the name *was* declared
+/// with a field list, in another unit, and "has no fields" would look like a
+/// lie to anyone who can see that declaration. A layout does not cross a unit
+/// boundary, so what is true here is that the offsets are not this unit's.
+fn selection_without_fields(
+    base: &Expr,
+    field: &Name,
+    described: &str,
+    foreign: bool,
+) -> Diagnostic {
+    let diagnostic = Diagnostic::error(
         DiagnosticCode::SYMBOL_KIND_MISMATCH,
         format!("{described} has no fields"),
         Label::new(field.span, "no field list declares this"),
     )
     .with_secondary(Label::new(base.span, "selected from here"))
-    .with_note(
+    .with_docs("doc/symbolic-subscripts.md#declaration-syntax");
+    if foreign {
+        return diagnostic
+            .with_note(
+                "this name is defined by another unit, and a field layout does not cross \
+                 a unit boundary: field offsets belong to the unit that computed them",
+            )
+            .with_help(
+                "declare the layout in this unit too — an `abstract var` is not a \
+                 definition, so both units may have one — or select the field where the \
+                 variable is declared",
+            );
+    }
+    diagnostic.with_note(
         "only a declaration written with a field list — `var NAME[ .lo :byte ]` — has \
          fields to select",
     )
-    .with_docs("doc/symbolic-subscripts.md#declaration-syntax")
 }
 
 /// A `.field` step naming something the layout does not declare.
@@ -852,14 +874,18 @@ impl<'a> Resolver<'a> {
     fn select_field(&mut self, base: Access, access: &FieldAccess) -> Option<Access> {
         let name = access.field.text.trim_start_matches('.');
         let Some(layout) = base.place.layout else {
-            let described = match base.root {
-                Some(id) => format!("`{}`", self.symbols.name(id)),
-                None => "this".to_owned(),
+            let (described, foreign) = match base.root {
+                Some(id) => (
+                    format!("`{}`", self.symbols.name(id)),
+                    self.symbols.symbol(id).imported,
+                ),
+                None => ("this".to_owned(), false),
             };
             self.report(selection_without_fields(
                 &access.base,
                 &access.field,
                 &described,
+                foreign,
             ));
             return None;
         };

@@ -952,6 +952,198 @@ abstract var DEV[ .open :word .close :word .init :word ]
     );
 }
 
+/// Every way an `abstract var` can ask for storage it cannot have.
+///
+/// One code for all of them, because they are one misunderstanding — this
+/// declares a layout, and a layout has no bytes — and one diagnostic per
+/// declaration, because a declaration writing two of them would otherwise
+/// hear the same news twice.
+#[test]
+fn an_abstract_layout_may_not_ask_for_storage() {
+    for source in [
+        "abstract var P:byte[ .x ] = $4000\n", // an address
+        "abstract var dp P[ .x :byte ]\n",     // a storage class
+        "abstract var far P[ .x :byte ]\n",
+        "abstract var P[ .x :byte ] * 4\n", // an allocation count
+        "abstract var P[16]\n",             // a raw span, and no fields
+        "abstract var P\n",                 // nothing to declare at all
+    ] {
+        let (model, diagnostics) = analyze(source);
+        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].code,
+            DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+            "`{source}`"
+        );
+        // Refused, and still declared: a use of the name should report what
+        // is wrong with the use, not that the name does not exist.
+        let id = model.symbols.lookup("P").expect("declared anyway");
+        assert!(matches!(
+            model.symbols.symbol(id).kind,
+            k816::symbol::SymbolKind::AbstractVar { .. }
+        ));
+        // And it reserves nothing whatever it was refused for.
+        assert!(
+            !model
+                .reservations
+                .values()
+                .any(|reservation| reservation.symbol == id),
+            "`{source}` reserved bytes"
+        );
+    }
+
+    // The layout itself is still what the author wrote, so the queries that
+    // are the whole point of the declaration still answer.
+    let (model, _) = analyze("abstract var P[ .x :word .y :word ]\nvar q = P:sizeof\n");
+    assert_eq!(
+        model
+            .symbols
+            .symbol(model.symbols.lookup("q").expect("declared"))
+            .kind,
+        k816::symbol::SymbolKind::Var {
+            address: Some(4),
+            size: k816::symbol::AddressSize::DirectPage,
+            width: None,
+            element: 1,
+            repeat: None,
+            layout: None,
+        }
+    );
+}
+
+/// Where a field's width comes from, and what its bracket counts.
+///
+/// Three sources, in order of nearness: the field's own suffix, the default
+/// the enclosing declaration set, and `:byte`. The bracket is the other half
+/// — on a field it is a *count* of elements of that width, where the same
+/// bracket on a declaration is a raw span.
+#[test]
+fn a_field_takes_the_nearest_width_and_counts_elements_of_it() {
+    use k816::symbol::{DataWidth, FieldShape, SymbolKind};
+
+    let source = "\
+var v:word[
+    .plain
+    .narrow  :byte
+    .wide    :far
+    .repeats[3]
+    .counted :byte [5]
+    .nested:byte[
+        .c
+        .d :word
+    ]
+    .deep[
+        .middle[
+            .leaf
+        ]
+    ]
+]
+";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![]);
+
+    let SymbolKind::Var {
+        layout, element, ..
+    } = model
+        .symbols
+        .symbol(model.symbols.lookup("v").expect("declared"))
+        .kind
+    else {
+        panic!("`v` is a variable");
+    };
+    let layout = model.symbols.layout(layout.expect("a field list"));
+    let field = |name: &str| layout.field(name).unwrap_or_else(|| panic!("`{name}`"));
+
+    // The declaration's default, a field's own suffix, and `:far`.
+    assert_eq!(field("plain").shape, FieldShape::Scalar(DataWidth::Word));
+    assert_eq!(field("narrow").shape, FieldShape::Scalar(DataWidth::Byte));
+    assert_eq!(field("wide").shape, FieldShape::Scalar(DataWidth::Far));
+
+    // `.repeats[3]` is the shorthand: three of the *default* width, not
+    // three bytes. `.counted :byte [5]` names its own width and counts that.
+    assert_eq!(field("repeats").count, 3);
+    assert_eq!(field("repeats").shape, FieldShape::Scalar(DataWidth::Word));
+    assert_eq!(field("repeats").size(model.symbols.layouts()), 6);
+    assert_eq!(field("counted").count, 5);
+    assert_eq!(field("counted").size(model.symbols.layouts()), 5);
+
+    // Offsets are the running sum, so every width above is visible in them.
+    assert_eq!(field("plain").offset, 0);
+    assert_eq!(field("narrow").offset, 2);
+    assert_eq!(field("wide").offset, 3);
+    assert_eq!(field("repeats").offset, 6);
+    assert_eq!(field("counted").offset, 12);
+    assert_eq!(field("nested").offset, 17);
+
+    // A width written before a nested list is that list's default, and it
+    // replaces the declaration's for the fields inside it.
+    let FieldShape::Nested(nested) = field("nested").shape else {
+        panic!("`.nested` nests");
+    };
+    let nested = model.symbols.layout(nested);
+    assert_eq!(
+        nested.field("c").expect("packed").shape,
+        FieldShape::Scalar(DataWidth::Byte),
+        "the nested list's own `:byte` default"
+    );
+    assert_eq!(
+        nested.field("d").expect("packed").shape,
+        FieldShape::Scalar(DataWidth::Word)
+    );
+    assert_eq!(nested.size, 3);
+
+    // Nesting is not limited to one level, and a list that names no width
+    // inherits the enclosing default rather than falling back to `:byte`.
+    let FieldShape::Nested(deep) = field("deep").shape else {
+        panic!("`.deep` nests");
+    };
+    let FieldShape::Nested(middle) = model
+        .symbols
+        .layout(deep)
+        .field("middle")
+        .expect("packed")
+        .shape
+    else {
+        panic!("`.middle` nests");
+    };
+    let middle = model.symbols.layout(middle);
+    assert_eq!(
+        middle.field("leaf").expect("packed").shape,
+        FieldShape::Scalar(DataWidth::Word),
+        "the declaration's default reaches the innermost list"
+    );
+
+    // 2 + 1 + 3 + 6 + 5 + 3 + 2, packed and in order — and that is the whole
+    // element, which is what `v:sizeof` answers.
+    assert_eq!(layout.size, 22);
+    assert_eq!(element, 22);
+}
+
+/// A field name is unique inside *its own* list, not inside the declaration.
+#[test]
+fn a_nested_list_has_its_own_field_namespace() {
+    // `.lo` twice in one list is a name that could never be reached again.
+    let (_, diagnostics) = analyze("var outer[\n  .data[\n    .lo :byte\n    .lo :word\n  ]\n]\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::DUPLICATE_SYMBOL);
+
+    // The same name in two *different* lists is two fields, and neither
+    // shadows the other: `outer.a.lo` and `outer.b.lo` are different offsets.
+    let (model, diagnostics) = analyze("var outer[\n  .a[ .lo :byte ]\n  .b[ .lo :byte ]\n]\n");
+    assert_eq!(diagnostics, vec![]);
+    let k816::symbol::SymbolKind::Var { layout, .. } = model
+        .symbols
+        .symbol(model.symbols.lookup("outer").expect("declared"))
+        .kind
+    else {
+        panic!("`outer` is a variable");
+    };
+    let layout = model.symbols.layout(layout.expect("a field list"));
+    assert_eq!(layout.field("a").expect("packed").offset, 0);
+    assert_eq!(layout.field("b").expect("packed").offset, 1);
+    assert_eq!(layout.size, 2);
+}
+
 /// What a declaration reserves, and which of them reserve nothing.
 #[test]
 fn only_an_allocated_variable_asks_the_linker_for_bytes() {

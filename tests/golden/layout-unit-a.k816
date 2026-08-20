@@ -1,0 +1,30 @@
+// Sub-plan E8 fixture, unit A of the cross-unit layout gate.
+//
+// A layout is offsets, and offsets belong to the unit that computed them. So
+// what crosses the boundary is what ld65 can resolve — a name and an address
+// size — and what does not is the field list. This unit declares both halves:
+// a variable another unit will reference, and a layout another unit will
+// declare for itself.
+
+// Allocated, so the name is really a linker symbol rather than a folded
+// constant, and unit B's reference to it becomes an `.import`. It stays in
+// the unit's own segment: which segment an allocation lands in is E7's
+// question, and this fixture is about the field list.
+var TABLE[
+    .lo :byte
+    .hi :byte
+] * 4
+
+// A layout with no storage. It is *not* exportable — there is no place and no
+// value to hand anyone — so unit B declaring the same one is not a duplicate
+// definition. That is the property a shared declarations file needs.
+abstract var HANDLER[
+    .open  :word
+    .close :word
+]
+
+func fill @a8 @i8 {
+    // Inside the declaring unit the fields are ordinary offsets.
+    a = HANDLER:sizeof
+    TABLE[3].hi = a
+}

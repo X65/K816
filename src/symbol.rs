@@ -805,6 +805,45 @@ mod tests {
     }
 
     #[test]
+    fn a_layout_does_not_survive_the_trip_to_another_unit() {
+        let mut map = SourceMap::new();
+        let file = map.add_file("t.k816", "var TABLE[ .lo :byte .hi :byte ] * 4\n");
+        let mut table = SymbolTable::new();
+        let layout = table.add_layout(pair(Span::new(file, 4, 9)));
+        let local = SymbolKind::Var {
+            address: None,
+            size: AddressSize::Absolute,
+            width: None,
+            element: 2,
+            repeat: Some(4),
+            layout: Some(layout),
+        };
+
+        // A `LayoutId` indexes *this* unit's arena, so it cannot cross —
+        // the importing unit would read whichever layout sits at the same
+        // index, which is worse than having none.
+        let SymbolKind::Var {
+            address,
+            size,
+            width,
+            element,
+            repeat,
+            layout,
+        } = local.foreign()
+        else {
+            panic!("a variable stays a variable");
+        };
+        assert_eq!(layout, None, "the fields stay behind");
+        // Everything ld65 and ca65 need does cross, unchanged.
+        assert_eq!((address, size, width), (None, AddressSize::Absolute, None));
+        assert_eq!((element, repeat), (2, Some(4)));
+
+        // A declaration with no layout crosses as itself.
+        let plain = fixed(0x0400);
+        assert_eq!(plain.foreign(), plain);
+    }
+
+    #[test]
     fn an_abstract_var_has_a_layout_and_nothing_else() {
         let mut map = SourceMap::new();
         let file = map.add_file("t.k816", "abstract var handler[ .lo :byte .hi :byte ]\n");

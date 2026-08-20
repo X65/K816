@@ -55,11 +55,23 @@ var sprites[
 ] * SLOTS
 
 // A layout in the direct page. The pool is a storage class and a field list
-// is a shape, so they compose like every other pair of axes.
+// is a shape, so they compose like every other pair of axes — and a `:far`
+// field inside one is three bytes at a one-byte address, which is the same
+// composition one level down.
 var dp cursor[
-    .x :byte
-    .y :byte
+    .x   :byte
+    .y   :byte
+    .ptr :far
 ]
+
+// The document's plain-variable examples, whose `:sizeof` answers are stated
+// there and are not obvious: a raw span answers its whole span, and a
+// `* count` answers one element rather than the allocation.
+var counter:word
+var buffer[32]
+var tasks[
+    .state :byte
+] * 8
 
 // --- No storage at all. ---
 
@@ -87,6 +99,14 @@ func metadata @a8 @i8 {
     a = DEV_HANDLER:sizeof       // 6
     a = DEV_HANDLER.init:offsetof // 4
     cursor.y = a
+    // A field's own size is its width times its count, and a nested field's
+    // is the layout it names.
+    a = COMP.str:sizeof          // 5: five bytes, not one
+    a = REGS.data:sizeof         // 2: the sub-layout's own size
+    // And the plain variables the document tabulates.
+    a = counter:sizeof           // 2
+    a = buffer:sizeof            // 32, the whole raw span
+    a = tasks:sizeof             // 1, not 8: `* 8` repeats a 1-byte element
 }
 
 func elements @a8 @i8 {
@@ -100,6 +120,25 @@ func elements @a8 @i8 {
     // stride is where the difference shows: `.str` is `:byte`, so both are
     // one here, and `.two` proves the field-element case at width two.
     a = COMP[1].str[4]
+    // The bracketed field spelling takes an index too, and reaches the same
+    // byte as the dotted one.
+    a = COMP[2][.str][3]
+    // A `:far` field has no register wide enough, so it is reached the way
+    // the document says to reach one: as a pointer.
+    lda [cursor.ptr]
+    // A use-site view narrows a `:word` field to the byte this 8-bit
+    // accumulator can hold, and overrides what the field declared.
+    lda TASKS.sp:byte
+}
+
+// `&&NAME[i]` is `&&NAME + i * NAME:sizeof`, whatever the count is. That
+// identity is what makes `:sizeof` answer *one element* rather than the
+// allocation, so it is worth stating in code that has to keep it true.
+func addresses @a16 @i16 {
+    a = COMP:sizeof
+    a = &&COMP[1]
+    a = &&COMP[2]
+    a = &&COMP[3]
 }
 
 func words @a16 @i16 {

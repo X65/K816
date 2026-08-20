@@ -266,6 +266,33 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::UNDECLARED_SYMBOL,
         caret: ".hi",
     },
+    // Near enough to suggest, which is the other half of the same
+    // diagnostic: the one above lists the fields, this one offers an edit.
+    Case {
+        source: "var vec[ .state :byte ]\n\nfunc f @a8 @i8 {\n    a = vec.stat\n}\n",
+        code: DiagnosticCode::UNDECLARED_SYMBOL,
+        caret: ".stat",
+    },
+    Case {
+        source: "var vec[ .a :byte ]\n\nfunc f @a8 @i8 {\n    a = vec.a.b\n}\n",
+        code: DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        caret: ".b",
+    },
+    Case {
+        source: "var buf[0]\n",
+        code: DiagnosticCode::ELEMENT_COUNT_RANGE,
+        caret: "0",
+    },
+    Case {
+        source: "var t:byte * 0\n",
+        code: DiagnosticCode::ELEMENT_COUNT_RANGE,
+        caret: "0",
+    },
+    Case {
+        source: "var vec[ .ptr :far ]\n\nfunc f @a8 @i8 {\n    a = vec.ptr\n}\n",
+        code: DiagnosticCode::DATA_WIDTH_MISMATCH,
+        caret: "vec.ptr",
+    },
     Case {
         source: "var counter\n\nfunc f @a8 @i8 {\n    a = counter.lo\n}\n",
         code: DiagnosticCode::SYMBOL_KIND_MISMATCH,

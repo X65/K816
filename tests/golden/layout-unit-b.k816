@@ -1,0 +1,21 @@
+// Sub-plan E8 fixture, unit B of the cross-unit layout gate.
+//
+// It declares the same layout unit A does — legal, because an `abstract var`
+// is not a definition anyone can be handed — and it references unit A's
+// variable by name, which is. What it cannot do is select a field of that
+// variable: those offsets are A's, and B was not told them.
+
+abstract var HANDLER[
+    .open  :word
+    .close :word
+]
+
+func main @a8 @i8 {
+    // B's own copy of the layout answers B's own queries.
+    a = HANDLER:sizeof
+    a = HANDLER.close:offsetof
+    // A's variable is an imported name, and a plain reference to it is all
+    // the boundary carries.
+    a = TABLE
+    call fill
+}

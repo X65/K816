@@ -192,6 +192,47 @@ func main {
             index: (number)))))))
 
 ================================================================================
+The bracketed field spelling takes an index
+================================================================================
+
+func main {
+  lda #foo[.string]
+  lda #foo[.string][3]
+  sta foo[1][.field][2]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (subscript_expression
+            base: (identifier)
+            field: (local_identifier))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (immediate
+          value: (subscript_expression
+            base: (subscript_expression
+              base: (identifier)
+              field: (local_identifier))
+            index: (number))))
+      (native_instruction
+        mnemonic: (mnemonic)
+        operand: (address
+          value: (subscript_expression
+            base: (subscript_expression
+              base: (subscript_expression
+                base: (identifier)
+                index: (number))
+              field: (local_identifier))
+            index: (number)))))))
+
+================================================================================
 Metadata query suffixes
 ================================================================================
 

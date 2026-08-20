@@ -46,7 +46,7 @@ fn analyze(
 #[test]
 fn undeclared_screen_yields_exact_diagnostic() {
     // The slice program without its `var SCREEN = $0400` declaration.
-    let source = "func main @a8 @i16 {
+    let source = "func work @a8 @i16 {
     a = #0
     a = #1
     SCREEN = a
@@ -87,7 +87,7 @@ fn undeclared_screen_yields_exact_diagnostic() {
 fn slice_program_analyzes_cleanly_with_contract() {
     let source = "var SCREEN = $0400
 
-func main @a8 @i16 {
+func main @a8 {
     a = #0
     a = #1
     SCREEN = a
@@ -101,7 +101,7 @@ func main @a8 @i16 {
     let main = &model.functions[0];
     assert!(main.is_entry_point);
     assert_eq!(main.contract.a, Some(RegisterWidth::W8));
-    assert_eq!(main.contract.i, Some(RegisterWidth::W16));
+    assert_eq!(main.contract.i, None, "the axis it did not annotate");
 
     let screen = model.symbols.lookup("SCREEN").expect("SCREEN declared");
     assert_eq!(
@@ -155,26 +155,34 @@ fn the_entry_point_takes_its_widths_from_the_environment() {
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].code, DiagnosticCode::IMMEDIATE_RANGE);
 
-    // An annotation still widens, and the axis beside it keeps the ABI's.
-    let (_, diagnostics) = analyze("func main @a16 {\n    a = #$100\n    x = #2\n}\n");
+    // Restating the ABI is allowed and changes nothing.
+    let (_, diagnostics) = analyze("func main @a8 @i8 {\n    a = #1\n    x = #2\n}\n");
     assert_eq!(diagnostics, vec![]);
-    let (_, diagnostics) = analyze("func main @a16 {\n    x = #$100\n}\n");
+
+    // Contradicting it is refused — the entry point cannot ask the
+    // environment for widths it does not provide.
+    let (_, diagnostics) = analyze("func main @a16 {\n    a = #$100\n}\n");
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    assert_eq!(diagnostics[0].code, DiagnosticCode::IMMEDIATE_RANGE);
+    assert_eq!(diagnostics[0].code, DiagnosticCode::ENTRY_ABI_MISMATCH);
+
+    // Widening for the body is how a body gets wider registers, and that is
+    // not a claim about the environment at all.
+    let (_, diagnostics) = analyze("func main {\n    @a16 {\n        a = #$100\n    }\n}\n");
+    assert_eq!(diagnostics, vec![]);
 }
 
 #[test]
 fn immediate_must_fit_the_contracted_width() {
-    let (_, diagnostics) = analyze("func main @a8 {\n    a = #256\n}\n");
+    let (_, diagnostics) = analyze("func work @a8 {\n    a = #256\n}\n");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code, DiagnosticCode::IMMEDIATE_RANGE);
 
     // 16-bit accumulator accepts the same value.
-    let (_, diagnostics) = analyze("func main @a16 {\n    a = #256\n}\n");
+    let (_, diagnostics) = analyze("func work @a16 {\n    a = #256\n}\n");
     assert_eq!(diagnostics, vec![]);
 
     // SEP/REP masks are fixed 8-bit regardless of contract.
-    let (_, diagnostics) = analyze("func main @a16 {\n    sep #$100\n}\n");
+    let (_, diagnostics) = analyze("func work @a16 {\n    sep #$100\n}\n");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code, DiagnosticCode::IMMEDIATE_RANGE);
 }
@@ -551,7 +559,7 @@ fn only_diagnostic(source: &str) -> k816::diagnostic::Diagnostic {
 
 /// A function body wrapped around `body`, with both widths pinned.
 fn body(body: &str) -> String {
-    format!("var ZP = $80\nvar SCREEN = $0400\nfunc main @a8 @i16 {{\n    {body}\n}}\n")
+    format!("var ZP = $80\nvar SCREEN = $0400\nfunc work @a8 @i16 {{\n    {body}\n}}\n")
 }
 
 #[test]
@@ -581,8 +589,8 @@ fn one_source_shape_picks_the_narrowest_encoding_that_holds_the_address() {
         ("asl", AddressingMode::Accumulator),
         ("inx", AddressingMode::Implied),
         ("pha", AddressingMode::Stack),
-        ("bne main", AddressingMode::Relative),
-        ("brl main", AddressingMode::RelativeLong),
+        ("bne work", AddressingMode::Relative),
+        ("brl work", AddressingMode::RelativeLong),
         ("mvn $01,$02", AddressingMode::BlockMove),
     ] {
         let mut map = SourceMap::new();
@@ -666,20 +674,20 @@ fn an_operand_shape_the_instruction_lacks_lists_what_it_accepts() {
 
 #[test]
 fn a_const_in_address_position_is_rejected_but_the_offset_marker_is_not() {
-    let source = "const FIELD = 2\nvar ZP = $80\nfunc main @a8 @i16 {\n    lda FIELD\n}\n";
+    let source = "const FIELD = 2\nvar ZP = $80\nfunc work @a8 @i16 {\n    lda FIELD\n}\n";
     let diagnostic = only_diagnostic(source);
     assert_eq!(diagnostic.code, DiagnosticCode::CONST_IN_ADDRESS_POSITION);
     assert_eq!(diagnostic.fixes[0].edits[0].replacement, "#");
 
     // The `&` marker is exactly how a const becomes a field offset.
-    let source = "const FIELD = 2\nfunc main @a8 @i16 {\n    lda &FIELD,x\n}\n";
+    let source = "const FIELD = 2\nfunc work @a8 @i16 {\n    lda &FIELD,x\n}\n";
     let (_, diagnostics) = analyze(source);
     assert_eq!(diagnostics, vec![], "{diagnostics:?}");
 }
 
 #[test]
 fn the_offset_marker_needs_an_index_register() {
-    let source = "const FIELD = 2\nfunc main @a8 @i16 {\n    lda &FIELD\n}\n";
+    let source = "const FIELD = 2\nfunc work @a8 @i16 {\n    lda &FIELD\n}\n";
     let diagnostic = only_diagnostic(source);
     assert_eq!(diagnostic.code, DiagnosticCode::OFFSET_MARKER_POSITION);
     assert_eq!(diagnostic.fixes[0].edits[0].replacement, "");
@@ -690,7 +698,7 @@ fn the_address_of_operators_produce_an_immediate_without_a_hash() {
     // `doc/syntax-reference.md`: "&&label and &&&label are the intentional
     // exception: they produce immediate relocations even without `#`".
     use k816::isa::AddressingMode;
-    let source = "func main @a16 {\n  spot:\n    lda &&spot\n}\n";
+    let source = "func work @a16 {\n  spot:\n    lda &&spot\n}\n";
     let mut map = SourceMap::new();
     let id = map.add_file("addrof.k816", source);
     let parse = parse_source(map.file(id), None);

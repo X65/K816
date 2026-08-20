@@ -95,14 +95,38 @@ startup code does rather than what the CPU does at reset — the stub runs
 `sei; clc; xce; jsr main`, which leaves emulation mode and widens neither
 axis.
 
-Today an annotation on `main` is still a *request*: `func main @a16` gets the
-`REP` that widens the accumulator before the body runs, and the environment
-supplies whichever axes the annotation left unstated. Making it an
-*assertion* — checking the annotation against the environment and refusing a
-mismatch, rather than generating setup for it — is planned, along with any way
-of selecting a different environment. Until then there is exactly one, and it
-is stated in one place (`src/abi.rs`) rather than assumed separately by each
-pass that needs it.
+An annotation on `main` is therefore an **assertion**, not a request. It may
+restate what the environment provides — `func main @a8 @i8` is a true claim,
+and repeating a true claim costs nothing — but one the environment does not
+satisfy is `K816-E0143`:
+
+```k65
+func main @a16 {        // K816-E0143: the environment provides @a8
+    lda #$1234
+}
+```
+
+Every other function's contract is a requirement on its *callers*, which K816
+satisfies by bridging at each call site. `main`'s caller is the environment,
+which cannot be bridged, so the requirement stays and the bridge goes. No
+width setup is generated for an entry point at all: emitting a `REP` to make
+the annotation true would be K816 choosing an ABI that belongs to the startup
+code.
+
+Code that needs wider registers in `main` widens them in the *body*, where the
+widening is the body's own and not a claim about the environment:
+
+```k65
+func main @a8 {
+    @a16 {
+        lda #$1234      // 16-bit here, and the block restores @a8 after it
+    }
+}
+```
+
+Selecting a different environment — a target name, a configuration file — is
+not implemented; there is exactly one, and it is stated in one place
+(`src/abi.rs`) rather than assumed separately by each pass that needs it.
 
 ### Call-site bridging
 
@@ -195,27 +219,10 @@ still eliminated.
 
 ### Entry-point mode setup
 
-The 65816 starts in 8-bit emulation mode after reset.  Regular functions rely
-on call-site bridging, but `main` has no caller.  When `main` has a 16-bit
-contract, the compiler emits `REP` at the very beginning of the function body:
-
-```k65
-@a16 @i16
-
-func main {
-    lda #$1234      // entry emits REP #$30 before this
-    ldx #$0001
-}
-```
-
-Generated output:
-
-```asm
-000000: C2 30       rep #$30        ; entry-point setup
-000002: A9 34 12    lda #$1234
-000005: A2 01 00    ldx #$0001
-000008: 60          rts
-```
+There is none. K816 generates no `REP`/`SEP` for an entry point, whatever it
+declared: the environment hands `main` its widths, and an annotation on `main`
+is a claim about them rather than a request K816 satisfies. See "The entry
+point" above, and widen inside the body if the body needs it.
 
 Only `REP` (16-bit) is emitted -- `SEP` (8-bit) at entry would be redundant
 since the CPU already defaults to 8-bit.
@@ -311,7 +318,7 @@ does not declare its own width inherits the module default:
 ```k65
 @a16
 
-func main {
+func work {
     lda #1          // inherits @a16 -- 3-byte immediate
 }
 
@@ -320,6 +327,12 @@ func helper {
 }
 ```
 
+A module default reaches `main` like any other function, and there it is
+subject to the entry ABI: a file-wide `@a16` makes `main` claim a width the
+environment does not provide, which is `K816-E0143` at `main`'s declaration.
+Annotate `main` with what the environment does provide, or widen inside its
+body.
+
 ### Overriding module defaults
 
 A function-level annotation takes precedence over the module default:
@@ -327,7 +340,7 @@ A function-level annotation takes precedence over the module default:
 ```k65
 @a16 @i16
 
-func main {
+func work {
     lda #1          // 16-bit (inherited)
     ldx #1          // 16-bit (inherited)
 }

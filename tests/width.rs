@@ -324,7 +324,7 @@ fn a_module_default_after_a_code_section_is_rejected() {
 /// requirements; picking one silently would make the other a lie.
 #[test]
 fn contradicting_annotations_are_an_error_not_last_one_wins() {
-    let (_, _, diagnostics) = analyze("func main @a8 @a16 {\n    nop\n}\n");
+    let (_, _, diagnostics) = analyze("func work @a8 @a16 {\n    nop\n}\n");
     assert_eq!(codes(&diagnostics), ["K816-E0118"]);
     assert_eq!(diagnostics[0].secondary.len(), 1, "the first is pointed at");
 }
@@ -394,13 +394,13 @@ func main @a8 {
 #[test]
 fn a_narrowing_sep_is_believed_when_emulation_is_unknown() {
     let source = "\
-func main @a16 {
+func work @a16 {
     xce
     sep #$20
     nop
 }
 ";
-    assert_eq!(before(source, "main", 2).0, known(RegisterWidth::W8));
+    assert_eq!(before(source, "work", 2).0, known(RegisterWidth::W8));
 }
 
 /// An annotation is a user assertion that native mode holds — the documented
@@ -451,7 +451,7 @@ func main @a8 {
 #[test]
 fn an_eight_bit_assertion_does_not_assert_native_mode() {
     let source = "\
-func main @a16 {
+func work @a16 {
     xce
     @a8
     rep #$20
@@ -460,9 +460,9 @@ func main @a16 {
 ";
     assert_eq!(error_codes(&analyze(source).2), ["K816-E0104"]);
     // The assertion itself is believed — it is 8-bit either way.
-    assert_eq!(before(source, "main", 2).0, known(RegisterWidth::W8));
+    assert_eq!(before(source, "work", 2).0, known(RegisterWidth::W8));
     // The `rep` after it is not: nothing said emulation mode was off.
-    assert_eq!(before(source, "main", 3).0, AxisState::Unknown);
+    assert_eq!(before(source, "work", 3).0, AxisState::Unknown);
 }
 
 #[test]
@@ -601,10 +601,10 @@ func main @a8 {
 /// emission, which is one question with two answers.
 #[test]
 fn an_immediate_is_sized_by_the_tracked_state_not_the_contract() {
-    let (_, _, diagnostics) = analyze("func main @a8 {\n    rep #$20\n    lda #$1234\n}\n");
+    let (_, _, diagnostics) = analyze("func work @a8 {\n    rep #$20\n    lda #$1234\n}\n");
     assert_eq!(codes(&diagnostics), Vec::<&str>::new());
 
-    let (_, _, diagnostics) = analyze("func main @a16 {\n    sep #$20\n    lda #$1234\n}\n");
+    let (_, _, diagnostics) = analyze("func work @a16 {\n    sep #$20\n    lda #$1234\n}\n");
     assert_eq!(codes(&diagnostics), ["K816-E0103"]);
 }
 
@@ -962,7 +962,7 @@ func callee @a8 {
     nop
 }
 
-func main @a16 {
+func work @a16 {
     jsr callee
     nop
 }

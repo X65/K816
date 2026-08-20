@@ -31,7 +31,10 @@ use k816::workspace::{Workspace, find_file};
 use k816::{Options, compile_to_ca65};
 
 /// The slice with its declaration removed: one syntax-clean semantic error.
-const BROKEN_SLICE: &str = "func main @a8 @i16 {
+// A duplicate of `golden/slice.k816`'s `main`, which is what makes it
+// "broken" in a workspace that holds both — the entry contract restates the
+// ABI, so nothing else here is wrong.
+const BROKEN_SLICE: &str = "func main @a8 {
     a = #0
     a = #1
     SCREEN = a
@@ -40,7 +43,7 @@ const BROKEN_SLICE: &str = "func main @a8 @i16 {
 ";
 
 /// Malformed source: exercises the syntax-diagnostic path too.
-const MALFORMED: &str = "func main @a8 {\n    a = =\n    return\n";
+const MALFORMED: &str = "func work @a8 {\n    a = =\n    return\n";
 
 #[test]
 fn cli_and_lsp_report_identical_diagnostics_for_the_slice() {

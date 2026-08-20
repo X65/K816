@@ -1,6 +1,6 @@
 var SCREEN = $0400
 
-func main @a8 @i16 {
+func main @a8 {
     lda #0
     lda #1
     sta SCREEN

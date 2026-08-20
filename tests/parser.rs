@@ -36,7 +36,7 @@ use k816::source::{Provenance, SourceMap, Span};
 
 const HLA_SLICE: &str = "var SCREEN = $0400
 
-func main @a8 @i16 {
+func work @a8 @i16 {
     a = #0
     a = #1
     SCREEN = a
@@ -46,7 +46,7 @@ func main @a8 @i16 {
 
 const NATIVE_SLICE: &str = "var SCREEN = $0400
 
-func main @a8 @i16 {
+func work @a8 @i16 {
     sep #$20
     rep #$10
     lda #0
@@ -60,7 +60,7 @@ func main @a8 @i16 {
 const LEXICAL: &str = "var BIN = %1010
 var CH = '\\n'
 
-func main @a8 {
+func work @a8 {
     a = #0b0101
     a = #'A'
     lda #$FF
@@ -686,7 +686,7 @@ fn hla_slice_ast_snapshot_is_exact() {
         dump_ast(&result.file),
         "\
 var SCREEN = 1024 @0..18
-func main @a8 @i16 @20..90
+func work @a8 @i16 @20..90
   hla a = #0 @45..51
   hla a = #1 @56..62
   hla SCREEN = a @67..77
@@ -705,7 +705,7 @@ fn native_slice_ast_snapshot_is_exact() {
         dump_ast(&result.file),
         "\
 var SCREEN = 1024 @0..18
-func main @a8 @i16 @20..113
+func work @a8 @i16 @20..113
   native sep #32 @45..53
   native rep #16 @58..66
   native lda #0 @71..77
@@ -896,7 +896,7 @@ fn lexical_ast_snapshot_is_exact() {
         "\
 var BIN = 10 @0..15
 var CH = 10 @16..29
-func main @a8 @31..90
+func work @a8 @31..90
   hla a = #5 @51..62
   hla a = #65 @67..75
   native lda #255 @80..88
@@ -1826,12 +1826,12 @@ fn every_section_form_and_contract_compiles() {
     // `section_forms_and_contracts_name_their_owner`; what is left of it is
     // the assertion that each form reaches analysis with nothing to say.
     for source in [
-        "far func other @a8 { }\nfunc main @a8 { far other }\n",
-        "far func other @a8 { }\nfunc main @a8 { call far other }\n",
+        "far func other @a8 { }\nfunc work @a8 { far other }\n",
+        "far func other @a8 { }\nfunc work @a8 { call far other }\n",
         "naked f @a8 @i8 { }\n",
-        "inline f @a8 @i8 { }\nfunc main @a8 @i8 { f }\n",
+        "inline f @a8 @i8 { }\nfunc work @a8 @i8 { f }\n",
         "inline scale @a16 (a, #factor) -> a { lda #factor }\n\
-         func main @a16 @i8 { scale a, #16 -> a }\n",
+         func work @a16 @i8 { scale a, #16 -> a }\n",
     ] {
         let (_, diagnostics) = analyze_section(source);
         assert_eq!(diagnostics, vec![], "`{source}`");
@@ -1996,7 +1996,7 @@ fn exact_spans_map_back_to_source_text() {
     let ItemKind::Func(func) = &result.file.items[1].kind else {
         panic!("expected func declaration");
     };
-    assert_eq!(map.span_text(func.name.span), "main");
+    assert_eq!(map.span_text(func.name.span), "work");
     assert_eq!(func.width.len(), 2);
     assert_eq!(func.width[0].kind, WidthAnnotationKind::A8);
     assert_eq!(map.span_text(func.width[0].span), "@a8");

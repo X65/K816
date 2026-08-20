@@ -36,7 +36,7 @@ use k816::value::KExpr;
 /// deliverable", with the fixed-address `SCREEN` declaration).
 const HLA_SLICE: &str = "var SCREEN = $0400
 
-func main @a8 @i16 {
+func work @a8 @i16 {
     a = #0
     a = #1
     SCREEN = a
@@ -48,7 +48,7 @@ func main @a8 @i16 {
 /// compiler emit the same explicit entry-mode setup for both forms.
 const NATIVE_SLICE: &str = "var SCREEN = $0400
 
-func main @a8 @i16 {
+func work @a8 @i16 {
     lda #0
     lda #1
     sta SCREEN
@@ -129,9 +129,11 @@ fn the_unoptimized_stream_is_exactly_the_expected_slice_sequence() {
     assert_eq!(
         kinds,
         vec![
-            "label#0",  // main
-            "rep #$10", // entry @i16 — the @a8 half needs no instruction
-            // The 8-bit half of the contract is claimed rather than executed.
+            "label#0", // work
+            // The contract is claimed, not executed: no function generates
+            // width setup at entry, because its caller established the
+            // widths — a call site for an ordinary function, the environment
+            // for the entry point.
             "assume ModeState { a: Known(W8), i: Known(W16), e: Native }",
             "lda #$00", // the dead load — removed only by the optimizer
             "lda #$01",
@@ -154,14 +156,13 @@ fn origins_distinguish_user_hla_and_compiler_operations() {
             .collect()
     };
 
-    // Entry setup is compiler-generated in both forms; the body ops record
-    // which syntax produced them.
+    // The width claim is compiler-generated in both forms; the body ops
+    // record which syntax produced them.
     assert_eq!(
         origins(&hla),
         vec![
             Origin::User,              // label
-            Origin::CompilerGenerated, // sep
-            Origin::CompilerGenerated, // rep
+            Origin::CompilerGenerated, // the entry width claim
             Origin::HlaExpansion,
             Origin::HlaExpansion,
             Origin::HlaExpansion,
@@ -172,8 +173,7 @@ fn origins_distinguish_user_hla_and_compiler_operations() {
         origins(&native),
         vec![
             Origin::User,
-            Origin::CompilerGenerated,
-            Origin::CompilerGenerated,
+            Origin::CompilerGenerated, // the entry width claim
             Origin::User,
             Origin::User,
             Origin::User,
@@ -196,11 +196,11 @@ fn every_lowered_op_retains_a_source_span() {
     }
     // HLA statements map back to their exact source text.
     assert_eq!(
-        map.span_text(first_function(&program).ops[3].span),
+        map.span_text(first_function(&program).ops[2].span),
         "a = #0"
     );
     assert_eq!(
-        map.span_text(first_function(&program).ops[5].span),
+        map.span_text(first_function(&program).ops[4].span),
         "SCREEN = a"
     );
 }
@@ -246,7 +246,7 @@ fn the_ir_dump_renders_the_whole_operand_vocabulary() {
 var SCREEN = $0400
 const FIELD = 2
 
-func main @a8 @i16 {
+func work @a8 @i16 {
   .spot:
     lda ZP
     lda SCREEN,x
@@ -272,8 +272,7 @@ func main @a8 @i16 {
     assert_eq!(
         operations,
         vec![
-            "label main",
-            "rep #$10",
+            "label work",
             "mode-assume @a8 @i16",
             "label .spot",
             // Every reachable label carries the model's conclusion, because a
@@ -300,7 +299,7 @@ func main @a8 @i16 {
 #[test]
 fn a_native_only_function_lowers_without_any_hla_statement() {
     let program = lower_program(
-        "var SCREEN = $0400\nfunc main @a8 @i16 {\n    lda #1\n    sta SCREEN\n    rts\n}\n",
+        "var SCREEN = $0400\nfunc work @a8 @i16 {\n    lda #1\n    sta SCREEN\n    rts\n}\n",
     );
     let origins: Vec<Origin> = first_function(&program)
         .ops
@@ -311,8 +310,7 @@ fn a_native_only_function_lowers_without_any_hla_statement() {
         origins,
         vec![
             Origin::User,              // the function label
-            Origin::CompilerGenerated, // sep #$20
-            Origin::CompilerGenerated, // rep #$10
+            Origin::CompilerGenerated, // the entry width claim
             Origin::User,              // lda #1
             Origin::User,              // sta SCREEN
             Origin::User,              // rts
@@ -343,9 +341,9 @@ fn a_directive_between_instructions_is_an_optimizer_barrier() {
             k816::op::KProgramItem::Op(_) | k816::op::KProgramItem::Data(_) => None,
         })
         .expect("one function");
-    let span = function.ops[3].span;
+    let span = function.ops[2].span;
     function.ops.insert(
-        4,
+        3,
         KOp::new(
             KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)])),
             span,
@@ -401,9 +399,8 @@ func main @a8 {
         [
             "label .target".to_owned(),
             "rep #$20".to_owned(),
-            // The index axis is `@i8` and not unknown because this is the
-            // entry point: what it was not annotated with, the entry ABI
-            // supplies.
+            // `@i8` and not unknown: this is the entry point, and what it
+            // did not annotate the environment provides.
             "mode-assume @a16 @i8".to_owned(),
         ],
         "{ops:?}"
@@ -417,7 +414,7 @@ func main @a8 {
 #[test]
 fn a_label_whose_arrivals_already_agree_gets_no_bridge() {
     let text = "\
-func main @a16 {
+func work @a16 {
     bcc .target
     @a16
 .target:
@@ -429,7 +426,7 @@ func main @a16 {
         .iter()
         .position(|op| op == "label .target")
         .expect("the label was lowered");
-    assert_eq!(ops[label + 1], "mode-assume @a16 @i8", "{ops:?}");
+    assert_eq!(ops[label + 1], "mode-assume @a16 @i?", "{ops:?}");
 }
 
 /// A scoped block emits its entry bridge before the body and its restore
@@ -458,44 +455,42 @@ func main @a8 @i8 {
     );
 }
 
-/// `main` establishes its contract at entry; every other function assumes it
-/// and emits nothing, because its caller bridges to it.
+/// No function establishes its contract at entry — every one of them assumes
+/// it, and the caller is what makes it true.
+///
+/// For an ordinary function the caller is a `call` site, which K816 bridges.
+/// For `main` the caller is the environment, which cannot be bridged: its
+/// widths are the environment's, an annotation on it is a claim about them
+/// rather than a request, and one that disagrees is refused in analysis. So
+/// neither kind of function generates width setup, and this is where that is
+/// pinned.
 #[test]
-fn only_main_emits_entry_setup() {
+fn no_function_emits_entry_width_setup() {
     let text = "\
-func main @a16 @i16 {
+func work @a16 @i16 {
     nop
 }
 
-func helper @a16 @i16 {
+func main @a8 @i8 {
     nop
 }
 ";
     let ops = operations(text);
     let entry: Vec<&String> = ops.iter().take_while(|op| *op != "nop").collect();
-    assert_eq!(
-        entry,
-        [
-            "label main",
-            // Only the `REP` half: the CPU is already 8-bit after reset, so a
-            // `SEP` at entry would be redundant.
-            "rep #$20",
-            "rep #$10",
-            "mode-assume @a16 @i16",
-        ]
-    );
-    let helper = ops
+    assert_eq!(entry, ["label work", "mode-assume @a16 @i16"]);
+
+    let main = ops
         .iter()
-        .position(|op| op == "label helper")
-        .expect("the second function");
+        .position(|op| op == "label main")
+        .expect("the entry point");
     assert_eq!(
-        &ops[helper..helper + 3],
+        &ops[main..main + 3],
         [
-            "label helper".to_owned(),
-            "mode-assume @a16 @i16".to_owned(),
+            "label main".to_owned(),
+            "mode-assume @a8 @i8".to_owned(),
             "nop".to_owned(),
         ],
-        "a non-entry function assumes its contract: {ops:?}"
+        "the entry point assumes the environment's widths: {ops:?}"
     );
 }
 

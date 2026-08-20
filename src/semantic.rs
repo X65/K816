@@ -48,7 +48,7 @@ use crate::source::{Provenance, Span};
 use crate::symbol::{
     AddressSize, DataWidth, FieldShape, LabelScope, LayoutId, SymbolId, SymbolKind, SymbolTable,
 };
-use crate::width::{self, WidthAnalysis};
+use crate::width::{self, Axis, WidthAnalysis};
 
 /// Where a `code { }` subblock sits: the item index of its data block, and
 /// which subblock of that block it is.
@@ -545,11 +545,16 @@ impl Analysis {
                     }
                     let declared = width::fold_annotations(&func.width, &mut self.diagnostics);
                     self.check_contract(func, symbol);
+                    let contract = width::merge_defaults(self.defaults, declared);
+                    let is_entry_point = func.name.text == "main";
+                    if is_entry_point {
+                        self.check_entry_abi(func, contract);
+                    }
                     self.model.functions.push(FunctionInfo {
                         symbol,
                         item_index,
-                        contract: width::merge_defaults(self.defaults, declared),
-                        is_entry_point: func.name.text == "main",
+                        contract,
+                        is_entry_point,
                         // Nothing derives an exit yet, so every function
                         // takes the documented fallback and says so.
                         exit: ExitContract::preserving(),
@@ -560,6 +565,37 @@ impl Analysis {
                 }
                 ItemKind::Error => {}
             }
+        }
+    }
+
+    /// Checks the entry point's declared widths against the entry ABI.
+    ///
+    /// Every other function's contract is a requirement on its *callers*, and
+    /// K816 satisfies it by bridging at each call site. `main`'s caller is
+    /// the environment, which cannot be bridged — so an annotation on `main`
+    /// is a claim *about* the ABI rather than a request of it, and one the
+    /// ABI does not satisfy is simply false. Emitting a `REP` to make it true
+    /// would be K816 choosing an ABI that belongs to the startup code
+    /// (`plans/09-entry-abi.md`).
+    ///
+    /// Restating what the environment provides is fine: `func main @a8` is a
+    /// true claim, and a true claim costs nothing to allow.
+    fn check_entry_abi(&mut self, func: &Function, contract: WidthContract) {
+        let environment = abi::environment();
+        for axis in environment.mismatches(contract) {
+            // The annotation is the thing the author can change, so it is
+            // what the diagnostic points at. A width inherited from a module
+            // default has none here, and the function's name is the nearest
+            // honest place to put the caret.
+            let site = entry_annotation(func, axis).unwrap_or(func.name.span);
+            let mut diagnostic = entry_abi_mismatch(axis, environment, site);
+            if entry_annotation(func, axis).is_none() {
+                diagnostic = diagnostic.with_note(
+                    "this width comes from the module-level default, which reaches `main` \
+                     like any other function",
+                );
+            }
+            self.diagnostics.push(diagnostic);
         }
     }
 
@@ -2256,6 +2292,54 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
         EvalCallName::Print => "print",
         EvalCallName::Error => "error",
     }
+}
+
+/// The span of the annotation that set `axis` on this function, if it wrote
+/// one.
+fn entry_annotation(func: &Function, axis: Axis) -> Option<Span> {
+    func.width
+        .iter()
+        .find(|annotation| {
+            matches!(
+                (annotation.kind, axis),
+                (
+                    ast::WidthAnnotationKind::A8 | ast::WidthAnnotationKind::A16,
+                    Axis::Accumulator
+                ) | (
+                    ast::WidthAnnotationKind::I8 | ast::WidthAnnotationKind::I16,
+                    Axis::Index
+                )
+            )
+        })
+        .map(|annotation| annotation.span)
+}
+
+/// `main` declares a width the environment does not provide.
+fn entry_abi_mismatch(axis: Axis, environment: abi::EntryEnvironment, site: Span) -> Diagnostic {
+    let (name, annotation) = match axis {
+        Axis::Accumulator => ("an accumulator width", ["@a8", "@a16"]),
+        Axis::Index => ("an index-register width", ["@i8", "@i16"]),
+    };
+    let provided = match environment.width(axis) {
+        RegisterWidth::W8 => annotation[0],
+        RegisterWidth::W16 => annotation[1],
+    };
+    Diagnostic::error(
+        DiagnosticCode::ENTRY_ABI_MISMATCH,
+        format!("`main` declares {name} the environment does not provide"),
+        Label::new(site, format!("the environment provides `{provided}`")),
+    )
+    .with_note(
+        "an annotation on another function is a requirement on its callers, which K816 \
+         satisfies by bridging at each call site; `main`'s caller is the environment, and \
+         an environment cannot be bridged",
+    )
+    .with_help(format!(
+        "write `{provided}`, or drop the annotation and set the width in the body — a \
+         scoped `{} {{ … }}` block, or an explicit `rep`/`sep`",
+        annotation[1]
+    ))
+    .with_docs("doc/register-width-aware-syntax.md#the-entry-point")
 }
 
 /// A field name that appears twice in one list.

@@ -198,6 +198,16 @@ impl DiagnosticCode {
     /// and guessing one (the character's own value, say) would put a byte in
     /// the output that the declared mapping says nothing about.
     pub const CHARSET_UNMAPPED: Self = Self("K816-E0142");
+    /// The entry point declares a width the environment does not provide.
+    ///
+    /// Every other function's contract is a requirement on its *callers*,
+    /// which K816 satisfies by bridging at each call site. `main`'s caller is
+    /// the environment, and an environment cannot be bridged — so an
+    /// annotation on `main` is a claim *about* the entry ABI rather than a
+    /// request of it, and one the ABI does not satisfy is false. Generating a
+    /// `REP` to make it true would be K816 deciding an ABI it does not own
+    /// (`plans/09-entry-abi.md`).
+    pub const ENTRY_ABI_MISMATCH: Self = Self("K816-E0143");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -423,6 +433,7 @@ mod tests {
         DiagnosticCode::DATA_WIDTH_MISMATCH,
         DiagnosticCode::ELEMENT_COUNT_RANGE,
         DiagnosticCode::CHARSET_UNMAPPED,
+        DiagnosticCode::ENTRY_ABI_MISMATCH,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

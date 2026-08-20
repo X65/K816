@@ -234,13 +234,13 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Width annotations on functions",
-        source: "func main @a8 @i16 { }\n",
+        source: "func work @a8 @i16 { }\n",
         expect: Expect::Compiles,
         case: "Empty function with width annotations",
     },
     Row {
         group: "Module-level default widths",
-        source: "@a8\n@i16\nfunc main { }\n",
+        source: "@a8\n@i16\nfunc work { }\n",
         expect: Expect::Compiles,
         case: "Module-level default widths",
     },

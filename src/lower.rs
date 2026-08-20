@@ -39,7 +39,7 @@ use crate::hla;
 use crate::isa::{AddressEncoding, AddressingMode, ImmediateWidthClass, Mnemonic, OperandWidth};
 use crate::op::{
     AnchorId, AxisState, DataOp, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState,
-    Operand, Origin, Reason, RegisterWidth, SegmentName, WidthContract,
+    Operand, Origin, Reason, RegisterWidth, SegmentName,
 };
 use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
@@ -47,7 +47,7 @@ use crate::semantic::{Reservation, SemanticModel};
 use crate::source::Span;
 use crate::symbol::{AddressSize, SymbolId, SymbolKind};
 use crate::value::KExpr;
-use crate::width::{Bridge, BridgeAnchor, P_MASK_M, P_MASK_X};
+use crate::width::{Bridge, BridgeAnchor};
 
 /// Lowers every analyzed function of `file` into [`KOp`] streams.
 ///
@@ -196,7 +196,7 @@ pub fn lower_unit(
         };
 
         lowering.push(KOpKind::Label(info.symbol), func.name.span, Origin::User);
-        lowering.entry(info.is_entry_point, info.contract, func.name.span);
+        lowering.entry(func.name.span);
         lowering.block(&func.body);
         // `naked` is the section kind that gets no closing `rts`. That is the
         // whole of what the keyword means (`doc/syntax-reference.md`): it
@@ -1125,29 +1125,15 @@ impl<'a> Lowering<'a> {
     /// therefore trusts its caller, which is the same trust an `.a8` in a
     /// hand-written `.s` file expresses — stated in the annotation rather
     /// than defended against.
-    fn entry(&mut self, is_entry_point: bool, contract: WidthContract, span: Span) {
-        if is_entry_point {
-            // What the environment already provides needs no instruction,
-            // and what it does not is set here. Both halves come from
-            // `abi.rs` rather than from a claim about the CPU written at this
-            // line, which is what stops this from disagreeing with the state
-            // the width model walked forward from (`postmortem.md` §E.2.1).
-            let setup = crate::abi::environment().setup(contract);
-            for (width, mask) in setup.into_iter().zip([P_MASK_M, P_MASK_X]) {
-                let mnemonic = match width {
-                    Some(RegisterWidth::W16) => Mnemonic::Rep,
-                    Some(RegisterWidth::W8) => Mnemonic::Sep,
-                    None => continue,
-                };
-                self.generated_instruction(
-                    mnemonic,
-                    AddressingMode::Immediate,
-                    Some(Operand::Immediate(KExpr::number(mask))),
-                    span,
-                    Reason::EntryPoint,
-                );
-            }
-        }
+    /// Claims the state the entry point begins in.
+    ///
+    /// It emits no *instructions*, and that is the entry ABI's whole content
+    /// on this side: the environment hands `main` its widths, an annotation
+    /// on `main` is a claim about them rather than a request of them, and one
+    /// that disagrees was refused in analysis (`K816-E0143`). There is
+    /// nothing left to set up — generating a `REP` here would be K816
+    /// deciding an ABI it does not own.
+    fn entry(&mut self, span: Span) {
         let entry = self.widths.map_or_else(ModeState::unknown, |a| a.entry);
         self.assume(entry, span, Reason::EntryContract);
     }

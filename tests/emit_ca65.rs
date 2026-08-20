@@ -54,8 +54,10 @@ fn every_instruction_carries_debug_and_source_annotations() {
                 .any(|mnemonic| trimmed.starts_with(mnemonic))
         })
         .collect();
-    // Five: `main @a8 @i16` emits only the `REP` half of its entry setup.
-    assert_eq!(instruction_lines.len(), 5);
+    // Four: the slice's own instructions and nothing else. An entry point
+    // gets no width setup — the environment provides its widths, and an
+    // annotation on `main` is a claim about them rather than a request.
+    assert_eq!(instruction_lines.len(), 4);
     for line in &instruction_lines {
         assert!(
             line.contains("; slice.k816:") || line.contains("; k816:"),
@@ -63,12 +65,13 @@ fn every_instruction_carries_debug_and_source_annotations() {
         );
     }
 
-    // One `.dbg line` directive precedes every instruction.
+    // One `.dbg line` directive precedes every instruction — four, now that
+    // an entry point generates no width setup of its own.
     let dbg_lines = assembly
         .lines()
         .filter(|line| line.trim_start().starts_with(".dbg    line"))
         .count();
-    assert_eq!(dbg_lines, 5);
+    assert_eq!(dbg_lines, 4);
 
     // The debug file table names the K816 source.
     assert!(assembly.contains(".dbg    file, \"slice.k816\", 0, 0"));
@@ -93,19 +96,18 @@ fn fixed_address_vars_become_equates_not_resolved_addresses() {
 /// The entry contract's directives sit between the function label and the
 /// first instruction that depends on a width.
 ///
-/// They come *after* the entry setup rather than before it, because the claim
-/// states the width that holds once the setup has run. The setup's own
-/// operand is a fixed-width immediate, so nothing between the two depends on
-/// the claim.
+/// Both axes are claimed even though the source annotates one: an entry
+/// point's widths are the environment's, and the assembler has to be told
+/// both or it sizes the first immediate by whatever it last assumed.
 #[test]
 fn width_directives_track_the_entry_contract() {
     let assembly = emit("slice.k816", include_str!("golden/slice.k816"));
     let main_at = assembly.find("main:").expect("main label");
     let a8_at = assembly.find("        .a8 ").expect(".a8 directive");
-    let i16_at = assembly.find("        .i16 ").expect(".i16 directive");
+    let i8_at = assembly.find("        .i8 ").expect(".i8 directive");
     let first_load = assembly.find("        lda ").expect("the first load");
     assert!(main_at < a8_at && a8_at < first_load, "{assembly}");
-    assert!(main_at < i16_at && i16_at < first_load, "{assembly}");
+    assert!(main_at < i8_at && i8_at < first_load, "{assembly}");
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +118,7 @@ fn width_directives_track_the_entry_contract() {
 fn local_labels_become_ca65_cheap_locals() {
     let assembly = emit(
         "labels.k816",
-        "var SCREEN = $0400\nfunc main @a8 @i16 {\n  .again:\n    lda #1\n    sta .again\n}\n",
+        "var SCREEN = $0400\nfunc work @a8 @i16 {\n  .again:\n    lda #1\n    sta .again\n}\n",
     );
     assert!(assembly.contains("\n@again:"), "{assembly}");
     assert!(
@@ -133,11 +135,11 @@ fn a_global_label_inside_a_function_qualifies_its_local_labels() {
     // across that boundary resolvable instead of failing inside ca65.
     let assembly = emit(
         "split.k816",
-        "func main @a8 @i16 {\n  .again:\n    lda #1\n  done:\n    sta .again\n}\n",
+        "func work @a8 @i16 {\n  .again:\n    lda #1\n  done:\n    sta .again\n}\n",
     );
-    assert!(assembly.contains("\nmain_again:"), "{assembly}");
+    assert!(assembly.contains("\nwork_again:"), "{assembly}");
     assert!(assembly.contains("\ndone:"), "{assembly}");
-    assert!(assembly.contains("sta     a:main_again"), "{assembly}");
+    assert!(assembly.contains("sta     a:work_again"), "{assembly}");
     let code_only: String = assembly
         .lines()
         .map(|line| line.split(';').next().unwrap_or_default())
@@ -207,7 +209,7 @@ fn every_addressing_mode_emits_its_ca65_syntax() {
 var SCREEN = $0400
 const FIELD = 2
 
-func main @a8 @i16 {
+func work @a8 @i16 {
     lda ZP
     lda SCREEN
     lda far ZP
@@ -225,22 +227,21 @@ func main @a8 @i16 {
     pha
     pea #$1234
     pei (ZP)
-    per main
+    per work
     brk #$42
     cop #$7F
     mvn $01,$02
     jml [SCREEN]
     jmp (SCREEN)
-    jsr main
-    bne main
+    jsr work
+    bne work
 }
 ";
     assert_eq!(
         instructions("modes.k816", text),
         vec![
-            // `main @a8 @i16` emits only the `REP` half at entry; the CPU is
+            // An ordinary function gets no entry setup, and neither would
             // already 8-bit after reset.
-            "rep     #$10",
             "lda     z:ZP",
             "lda     a:SCREEN",
             "lda     f:ZP",
@@ -260,14 +261,14 @@ func main @a8 @i16 {
             // K65 writes these three with a `#`; ca65 spells them without.
             "pea     $1234",
             "pei     (ZP)",
-            "per     main",
+            "per     work",
             "brk     $42",
             "cop     $7F",
             "mvn     $01,$02",
             "jml     [SCREEN]",
             "jmp     (SCREEN)",
-            "jsr     a:main",
-            "bne     main",
+            "jsr     a:work",
+            "bne     work",
             "rts",
         ]
     );
@@ -275,7 +276,7 @@ func main @a8 @i16 {
 
 #[test]
 fn expressions_use_ca65s_named_operators_and_explicit_grouping() {
-    let text = "func main @a16 @i16 {
+    let text = "func work @a16 @i16 {
   spot:
     lda #spot + 1 & $FF
     lda #spot * 2
@@ -290,8 +291,6 @@ fn expressions_use_ca65s_named_operators_and_explicit_grouping() {
     assert_eq!(
         instructions("expr.k816", text),
         vec![
-            "rep     #$20",
-            "rep     #$10",
             // `&`, `^`, `<<`, and `>>` sit at ca65's precedence 2 and `|` at
             // 3, so only explicit grouping keeps the K65 meaning.
             "lda     #((spot + $01) .bitand $FF)",
@@ -313,7 +312,7 @@ fn expressions_use_ca65s_named_operators_and_explicit_grouping() {
 /// nested level keeps its own.
 #[test]
 fn an_address_operand_drops_only_its_outermost_parentheses() {
-    let text = "func main @a16 @i16 {\n  spot:\n    lda spot + 2 & $FF\n    lda spot + 2\n}\n";
+    let text = "func work @a16 @i16 {\n  spot:\n    lda spot + 2 & $FF\n    lda spot + 2\n}\n";
     let lines = instructions("outer.k816", text);
     assert!(
         lines.contains(&"lda     a:spot + $02".to_owned()),
@@ -331,19 +330,19 @@ fn an_address_operand_drops_only_its_outermost_parentheses() {
 fn an_unknown_width_transition_emits_no_width_claim() {
     let assembly = emit_unoptimized(
         "unknown.k816",
-        "func main @a8 @i16 {\n    plp\n    sep #$20\n}\n",
+        "func work @a8 @i16 {\n    plp\n    sep #$20\n}\n",
     );
     let claims: Vec<&str> = assembly
         .lines()
         .map(|line| line.split(';').next().unwrap_or_default().trim())
         .filter(|line| line.starts_with(".a") || line.starts_with(".i"))
         .collect();
-    // The entry setup's `.i16` (from the `rep`), the contract's `.a8`, then
-    // `sep #$20` re-establishing the accumulator width after `plp` made it
-    // unknown. Nothing claims a width between the `plp` and the `sep`, and
-    // the index width is never re-claimed: the `plp` dropped it and only an
-    // annotation could bring it back.
-    assert_eq!(claims, vec![".i16", ".a8", ".a8"], "{assembly}");
+    // The contract's two claims, then `sep #$20` re-establishing the
+    // accumulator width after `plp` made it unknown. Nothing claims a width
+    // between the `plp` and the `sep`, and the index width is never
+    // re-claimed: the `plp` dropped it and only an annotation could bring it
+    // back.
+    assert_eq!(claims, vec![".a8", ".i16", ".a8"], "{assembly}");
 }
 
 // ---------------------------------------------------------------------------
@@ -495,7 +494,7 @@ fn a_named_blocks_address_segment_does_not_renumber() {
 fn an_inline_data_block_is_jumped_over() {
     let emitted = lines(
         "inline.k816",
-        "func main @a8 @i16 {\n  .again:\n    data { $EA }\n    lda #1\n    bne .again\n}\n",
+        "func work @a8 @i16 {\n  .again:\n    data { $EA }\n    lda #1\n    bne .again\n}\n",
     );
     let jump = emitted
         .iter()
@@ -545,7 +544,7 @@ data pinned {
     5
 }
 
-func main @a8 @i16 {
+func work @a8 @i16 {
   .spot:
     data { $EA }
     lda ZP

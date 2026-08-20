@@ -9,11 +9,9 @@ SCREEN          := $0400                ; slice.k816:1: var SCREEN = $0400
 
         .segment "CODE"                 ; k816: the unit's default segment
 
-main:                                   ; slice.k816:3: func main @a8 @i16 {
-        .dbg    line, "slice.k816", 3
-        rep     #$10                    ; k816: entry-point width setup
-        .i16                            ; k816: the width the instruction above established
+main:                                   ; slice.k816:3: func main @a8 {
         .a8                             ; k816: the function's entry contract, assumed
+        .i8                             ; k816: the function's entry contract, assumed
         .dbg    line, "slice.k816", 4
         lda     #$00                    ; slice.k816:4: a = #0
         .dbg    line, "slice.k816", 5

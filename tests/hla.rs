@@ -76,7 +76,7 @@ fn lower_ops(text: &str) -> Vec<(KOpKind, Origin)> {
 /// Both bodies are compiled in the same declaration context, so a difference
 /// can only come from the statements themselves.
 fn equivalent(declarations: &str, hla_body: &str, native_body: &str) {
-    let program = |body: &str| format!("{declarations}\nfunc main @a8 @i16 {{\n{body}\n}}\n");
+    let program = |body: &str| format!("{declarations}\nfunc work @a8 @i16 {{\n{body}\n}}\n");
     equivalent_programs(
         &program(hla_body),
         &program(native_body),
@@ -452,7 +452,7 @@ fn the_jump_family_matches_its_native_spelling() {
     equivalent("var vec = $80", "    goto (vec)", "    jmp (vec)");
 
     let with_sections = |sections: &str, hla_body: &str, native_body: &str| {
-        let program = |body: &str| format!("func main @a8 @i16 {{\n{body}\n}}\n\n{sections}\n");
+        let program = |body: &str| format!("func work @a8 @i16 {{\n{body}\n}}\n\n{sections}\n");
         equivalent_programs(
             &program(hla_body),
             &program(native_body),
@@ -514,7 +514,7 @@ fn an_expansion_matches_the_body_written_out() {
     // comparison is over identifiers.
     let program = |body: &str| {
         format!(
-            "var mem = $0400\nfunc main @a8 @i16 {{\n{body}\n}}\n\n\
+            "var mem = $0400\nfunc work @a8 @i16 {{\n{body}\n}}\n\n\
              inline bump @a8 @i16 {{ mem++ }}\n\
              inline put @a8 @i16 (a, where) -> a {{ where = a }}\n"
         )

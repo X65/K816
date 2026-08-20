@@ -74,15 +74,15 @@ fn compile_and_link(test: &str, name: &str, text: &str, options: &Options) -> (V
     )
 }
 
-/// The unoptimized slice: entry setup, both loads, store, return.
+/// The unoptimized slice: both loads, the store, and the return.
 ///
-/// Only the `REP` half of `main @a8 @i16` is emitted. The CPU is already
-/// 8-bit after reset, so a `SEP` at entry would be redundant
-/// (`doc/register-width-aware-syntax.md`, "Entry-point mode setup"); the
-/// 8-bit half is claimed by a mode assumption instead, which is why the
-/// `lda #$00` below is still the two-byte form.
+/// No entry setup at all. `main @a8` restates what the environment provides,
+/// and an annotation on `main` is a claim about the entry ABI rather than a
+/// request K816 satisfies with a `REP` — so there is nothing to emit
+/// (`doc/register-width-aware-syntax.md`, "The entry point"). The widths are
+/// claimed to the assembler by a mode assumption instead, which is why the
+/// `lda #$00` below is the one-byte form.
 const UNOPTIMIZED_BYTES: &[u8] = &[
-    0xC2, 0x10, // rep #$10  — entry @i16, the only half worth emitting
     0xA9, 0x00, // lda #$00  — the dead load (removed only by the optimizer)
     0xA9, 0x01, // lda #$01
     0x8D, 0x00, 0x04, // sta $0400
@@ -113,7 +113,6 @@ fn native_slice_links_to_identical_bytes() {
 
 /// The optimized slice: the dead `lda #$00` is gone, nothing else changes.
 const OPTIMIZED_BYTES: &[u8] = &[
-    0xC2, 0x10, // rep #$10  — entry @i16
     0xA9, 0x01, // lda #$01
     0x8D, 0x00, 0x04, // sta $0400
     0x60, // rts
@@ -163,8 +162,11 @@ fn debug_database_records_k816_source_ownership() {
         .expect("file id")
         .to_owned();
 
-    // ...and every slice source line 3..=7 owns generated code.
-    for line_number in 3..=7 {
+    // ...and every slice source line that *produces* code owns some: the
+    // four statements, lines 4..=7. The declaration on line 3 owns none any
+    // more, because an entry point generates no width setup — the widths are
+    // the environment's, and claiming them to the assembler emits no bytes.
+    for line_number in 4..=7 {
         assert!(
             dbg.lines().any(|line| {
                 line.starts_with("line")
@@ -196,25 +198,22 @@ fn a_mixed_precedence_expression_links_to_the_k65_value() {
     let (bytes, _) = compile_and_link(
         "precedence",
         "precedence.k816",
-        "func main @a16 @i16 {\n  spot:\n    lda #spot + 1 & $FF\n}\n",
+        "func precedence @a16 @i16 {\n  spot:\n    lda #spot + 1 & $FF\n}\n",
         &Options { optimize: false },
     );
 
-    // `main` is the entry point, so its two width-setup instructions come
-    // first; `spot` is therefore at $8004, the config placing CODE at $8000.
+    // An ordinary function, so nothing precedes its body: `spot` is at
+    // $8000, the config placing CODE there. (An entry point would look the
+    // same — no width setup is generated for one either — but this is not
+    // one, because it declares widths the environment does not provide.)
+    assert_eq!(bytes[0], 0xA9, "lda immediate: {bytes:02X?}");
     assert_eq!(
-        &bytes[..4],
-        &[0xC2, 0x20, 0xC2, 0x10],
-        "entry width setup: {bytes:02X?}"
-    );
-    assert_eq!(bytes[4], 0xA9, "lda immediate: {bytes:02X?}");
-    assert_eq!(
-        u16::from_le_bytes([bytes[5], bytes[6]]),
-        0x0005,
+        u16::from_le_bytes([bytes[1], bytes[2]]),
+        0x0001,
         "K65 groups this as `(spot + 1) & $FF` = ($8004 + 1) & $FF = 5; \
-         ca65's own precedence would have given `spot + (1 & $FF)` = $8005"
+         ca65's own precedence would have given `spot + (1 & $FF)` = $8001"
     );
-    assert_eq!(bytes[7], 0x60, "implicit rts");
+    assert_eq!(bytes[3], 0x60, "implicit rts");
 }
 
 /// ca65 stores an unresolved expression in the object file and ld65
@@ -225,14 +224,14 @@ fn a_link_time_multiplication_survives_to_ld65() {
     let (bytes, _) = compile_and_link(
         "relocatable-multiply",
         "reloc.k816",
-        "func main @a16 @i16 {\n  spot:\n    lda #&<spot * 2\n}\n",
+        "func multiply @a16 @i16 {\n  spot:\n    lda #&<spot * 2\n}\n",
         &Options { optimize: false },
     );
-    assert_eq!(bytes[4], 0xA9, "{bytes:02X?}");
-    // `spot` lands at $8004 after the entry setup, so the low byte is $04
-    // and the product is 8. The point is that the multiplication reached
+    assert_eq!(bytes[0], 0xA9, "{bytes:02X?}");
+    // `spot` lands at $8000 — nothing precedes the body — so the low byte is
+    // $00 and the product is 0. The point is that the multiplication reached
     // ld65 at all rather than being rejected for naming a label.
-    assert_eq!(u16::from_le_bytes([bytes[5], bytes[6]]), 0x0008);
+    assert_eq!(u16::from_le_bytes([bytes[1], bytes[2]]), 0x0000);
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +291,7 @@ fn derived_linkage_carries_each_symbols_address_size() {
         "two-units",
         (
             "a.k816",
-            "func main @a8 @i16 {\n    jsr helper\n    lda CURSOR\n    lda BANKED\n}\n",
+            "func caller @a8 @i16 {\n    jsr helper\n    lda CURSOR\n    lda BANKED\n}\n",
         ),
         (
             "b.k816",
@@ -303,8 +302,9 @@ fn derived_linkage_carries_each_symbols_address_size() {
     assert_eq!(
         bytes,
         vec![
-            0xC2, 0x10, // rep #$10  — entry @i16; @a8 needs no instruction
-            0x20, 0x0C, 0x80, // jsr helper — absolute, an ordinary import
+            // No entry setup: this unit's caller is not `main`, so nothing
+            // here is an entry point and nothing declares one.
+            0x20, 0x0A, 0x80, // jsr helper — absolute, an ordinary import
             0xA5, 0x10, // lda $10    — one byte, from `.importzp`
             0xAF, 0x00, 0x00, 0x03, // lda $030000 — three, from `: far`
             0x60, // rts
@@ -427,8 +427,9 @@ fn the_committed_unit_pair_links() {
     assert_eq!(
         bytes,
         vec![
-            0xC2, 0x10, // rep #$10 — entry @i16; @a8 needs no instruction
-            0x20, 0x0E, 0x80, // jsr helper
+            // No entry setup: `caller` is not `main`, and no entry point
+            // gets one in any case.
+            0x20, 0x0C, 0x80, // jsr helper
             0xA5, 0x10, // lda $10       — one byte, from `.importzp`
             0xAF, 0x00, 0x00, 0x03, // lda $030000 — three, from `: far`
             0x85, 0x10, // sta $10

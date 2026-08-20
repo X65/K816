@@ -128,7 +128,10 @@ func block_moves @a8 @i16 {
     mvp $01,$02
 }
 
-func main @a8 @i16 {
+// Not `main`: an entry point's widths are the environment's, and this one
+// wants 16-bit index registers so that its callees' contracts are satisfied
+// without a bridge. An ordinary function may declare whatever it needs.
+func all_modes @a8 @i16 {
     jsr loads
     jsr indirection
     jsr read_modify_write

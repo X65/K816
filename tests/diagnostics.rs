@@ -49,7 +49,7 @@ struct Case {
 /// before the native translator landed.
 const FAMILY: &[Case] = &[
     Case {
-        source: "func main @a8 { jmp dp $10 }\n",
+        source: "func work @a8 { jmp dp $10 }\n",
         code: DiagnosticCode::INVALID_ENCODING,
         caret: "dp",
     },
@@ -59,12 +59,12 @@ const FAMILY: &[Case] = &[
         caret: "f + 1",
     },
     Case {
-        source: "var SCREEN = $0400\nfunc main @a8 { lda dp SCREEN }\n",
+        source: "var SCREEN = $0400\nfunc work @a8 { lda dp SCREEN }\n",
         code: DiagnosticCode::ADDRESS_RANGE,
         caret: "SCREEN",
     },
     Case {
-        source: "const K = $10\nfunc main @a8 { sta K }\n",
+        source: "const K = $10\nfunc work @a8 { sta K }\n",
         code: DiagnosticCode::CONST_IN_ADDRESS_POSITION,
         caret: "K",
     },
@@ -79,7 +79,7 @@ const FAMILY: &[Case] = &[
         caret: "nocross",
     },
     Case {
-        source: "const F = 2\nfunc main @a8 { lda &F }\n",
+        source: "const F = 2\nfunc work @a8 { lda &F }\n",
         code: DiagnosticCode::OFFSET_MARKER_POSITION,
         caret: "&",
     },
@@ -89,7 +89,7 @@ const FAMILY: &[Case] = &[
         caret: "|",
     },
     Case {
-        source: "func helper @a8 {\n    return\n}\nfunc main @a8 { sta helper }\n",
+        source: "func helper @a8 {\n    return\n}\nfunc work @a8 { sta helper }\n",
         code: DiagnosticCode::SYMBOL_KIND_MISMATCH,
         caret: "sta",
     },
@@ -99,12 +99,12 @@ const FAMILY: &[Case] = &[
         caret: "address $5000",
     },
     Case {
-        source: "func main @a8 { inx #1 }\n",
+        source: "func work @a8 { inx #1 }\n",
         code: DiagnosticCode::INVALID_OPERAND,
         caret: "1",
     },
     Case {
-        source: "func main @a8 { lda #$100 }\n",
+        source: "func work @a8 { lda #$100 }\n",
         code: DiagnosticCode::IMMEDIATE_RANGE,
         caret: "$100",
     },
@@ -117,7 +117,7 @@ const FAMILY: &[Case] = &[
         caret: "1",
     },
     Case {
-        source: "func main @a8 { lda MISSING }\n",
+        source: "func work @a8 { lda MISSING }\n",
         code: DiagnosticCode::UNDECLARED_SYMBOL,
         caret: "MISSING",
     },
@@ -128,12 +128,12 @@ const FAMILY: &[Case] = &[
     },
     // The width family, sub-plan D.
     Case {
-        source: "func main {\n    nop\n}\n\n@a16\n",
+        source: "func work {\n    nop\n}\n\n@a16\n",
         code: DiagnosticCode::MODULE_WIDTH_PLACEMENT,
         caret: "@a16",
     },
     Case {
-        source: "func main @a8 @a16 {\n    nop\n}\n",
+        source: "func work @a8 @a16 {\n    nop\n}\n",
         code: DiagnosticCode::CONFLICTING_WIDTH,
         caret: "@a16",
     },
@@ -370,6 +370,13 @@ const FAMILY: &[Case] = &[
         source: "data d {\n    for i=0..3 eval [ missing ]\n}\n",
         code: DiagnosticCode::UNDECLARED_SYMBOL,
         caret: "missing",
+    },
+    // The entry point's widths are the environment's, so an annotation on
+    // `main` is a claim about them rather than a request of them.
+    Case {
+        source: "func main @a16 {\n    nop\n}\n",
+        code: DiagnosticCode::ENTRY_ABI_MISMATCH,
+        caret: "@a16",
     },
 ];
 

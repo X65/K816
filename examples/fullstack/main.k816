@@ -22,7 +22,13 @@
 
 var RESULT = $0200
 
-func main @a8 @i16 {
+// `@a8` restates what the entry ABI provides, which is allowed and says so
+// out loud. `@i16` used to sit beside it and no longer can: `main`'s caller
+// is the startup stub, the stub widens nothing, and an annotation on `main`
+// is a claim about that rather than a request K816 satisfies with a `rep`.
+// Nothing here uses an index register, so there is nothing to widen; code
+// that needed 16-bit indices would open a scoped `@i16 { … }` block for them.
+func main @a8 {
     a = #0        // dead load — removed by the optimizer
     a = #$42
     RESULT = a

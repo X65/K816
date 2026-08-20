@@ -661,13 +661,18 @@ I would put these at the top of the new repository:
 The first new version should compile only a deliberately small but complete slice:
 
 ```k816
-func main @a8 @i16 {
+func main @a8 {
     a = #0
     a = #1
     SCREEN = a
     return
 }
 ```
+
+(The annotation restates what the entry ABI provides. `main`'s caller is the
+environment, so an annotation on it is a claim about that environment rather
+than a request K816 satisfies with entry setup — see
+`register-width-aware-syntax.md`, "The entry point".)
 
 It should demonstrate all defining qualities at once:
 

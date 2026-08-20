@@ -35,7 +35,7 @@ use k816::source::{FileId, SourceFile, SourceMap, Span};
 
 const SLICE: &str = "var SCREEN = $0400
 
-func main @a8 @i16 {
+func work @a8 @i16 {
     a = #1
     SCREEN = a
     return
@@ -148,7 +148,7 @@ fn inserting_an_item_between_two_items() {
     assert_incremental_equals_clean(
         "insert an item",
         SLICE,
-        vec![edit("\nfunc main", "\nvar OTHER = $0500\n\nfunc main")],
+        vec![edit("\nfunc work", "\nvar OTHER = $0500\n\nfunc work")],
     );
 }
 
@@ -287,8 +287,8 @@ fn an_edit_that_breaks_and_repairs_the_file() {
         vec![
             edit("a = #1", "a = ="),
             edit("a = =", "a = #1"),
-            edit("func main", "func"),
-            edit("func @a8", "func main @a8"),
+            edit("func work", "func"),
+            edit("func @a8", "func work @a8"),
         ],
     );
 }

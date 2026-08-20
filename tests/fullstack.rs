@@ -54,7 +54,9 @@ const CODE_PREFIX: &[u8] = &[
     0x20, 0x08, 0x80, // jsr $8008  — k816 main, resolved across modules
     0xDB, // stp
     0x40, // rti               — shared stray-interrupt handler ($8007)
-    0xC2, 0x10, // rep #$10    — main: entry @i16; @a8 needs no instruction
+    // No entry setup at all: `main @a8` restates what the stub provides, and
+    // an annotation on `main` is a claim about the entry ABI rather than a
+    // request K816 satisfies with a `rep`.
     0xA9, 0x42, // lda #$42    — the dead lda #$00 is optimized away
     0x8D, 0x00, 0x02, // sta $0200
     0x60, // rts

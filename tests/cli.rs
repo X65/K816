@@ -27,7 +27,9 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// The slice without its declaration: exactly one semantic error.
-const BROKEN: &str = "func main @a8 @i16 {\n    SCREEN = a\n    return\n}\n";
+// `@a8 @i8` restates the entry ABI, so the undeclared `SCREEN` is the only
+// thing wrong with this file — which is what every test below reads.
+const BROKEN: &str = "func main @a8 @i8 {\n    SCREEN = a\n    return\n}\n";
 /// Missing `}`: a syntax error carrying a machine-applicable fix.
 const OPEN_BRACE: &str = "func main @a8 {\n    return\n";
 

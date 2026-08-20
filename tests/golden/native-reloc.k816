@@ -36,7 +36,9 @@ func helper @a8 @i16 {
     bne .spin
 }
 
-func main @a8 @i16 {
+// Not `main`: this wants 16-bit index registers, and an entry point takes
+// its widths from the environment rather than declaring them.
+func reloc @a8 @i16 {
   top:
     lda table
     lda table,x

@@ -120,12 +120,30 @@ func wide_all @a16 @i16 {
     },
     Row {
         section: "The entry point",
-        // Annotated, which is still a request today: the setup that reaches
-        // the annotation, and the ABI for the axis it did not mention.
-        source: "func main @a16 {\n    lda #$0102\n}\n",
+        // Annotated with what the environment provides: a true claim, and
+        // still no instruction — the widths were already those.
+        source: "func main @a8 @i8 {\n    lda #$01\n}\n",
         stage: Stage::Modelled,
         difference: "",
-        expected: &["rep     #$20", ".a16", ".i8", "lda     #$0102"],
+        expected: &[".a8", ".i8", "lda     #$01"],
+        diagnostic: None,
+    },
+    Row {
+        section: "The entry point",
+        // Annotated with what it does not: the document prints this error.
+        source: "func main @a16 {\n    lda #$1234\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0143"),
+    },
+    Row {
+        section: "The entry point",
+        // And the way to get wider registers in `main`: widen the body.
+        source: "func main @a8 {\n    @a16 {\n        lda #$1234\n    }\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &["rep     #$20", "lda     #$1234", "sep     #$20"],
         diagnostic: None,
     },
     Row {
@@ -191,6 +209,8 @@ func main @a8 @i8 {
     },
     Row {
         section: "Entry-point mode setup",
+        // There is none, and the section says so: a module default that
+        // reaches `main` is checked against the ABI like any annotation.
         source: "\
 @a16 @i16
 
@@ -199,15 +219,10 @@ func main {
     ldx #$0001
 }
 ",
-        stage: Stage::Optimized,
-        difference: "the listing folds the two entry `rep`s into `rep #$30`",
-        expected: &[
-            "rep     #$20",
-            "rep     #$10",
-            "lda     #$1234",
-            "ldx     #$0001",
-        ],
-        diagnostic: None,
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0143"),
     },
     Row {
         section: "Leaving a block by a branch",
@@ -270,10 +285,12 @@ func main @a8 @i8 {
     },
     Row {
         section: "Module-level default coloring",
+        // Not `main`: a module default reaches the entry point too, where it
+        // is checked against the ABI — which the section now says.
         source: "\
 @a16
 
-func main {
+func work {
     lda #1
 }
 
@@ -291,7 +308,7 @@ func helper {
         source: "\
 @a16 @i16
 
-func main {
+func work {
     lda #1
     ldx #1
 }

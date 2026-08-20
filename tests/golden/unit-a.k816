@@ -2,7 +2,10 @@
 // `CURSOR`, or `BANKED` come from somewhere else — K65 has no syntax for
 // that — so the imports below are derived from the other unit's symbols.
 
-func main @a8 @i16 {
+// Not `main`: it calls a `@i16` function with a bare `jsr`, which K816 does
+// not bridge, so the caller has to be in that width already — and an entry
+// point cannot declare a width the environment does not provide.
+func caller @a8 @i16 {
     jsr helper              // a call into the sibling unit
     lda CURSOR              // a direct-page symbol: one operand byte
     lda BANKED              // a far symbol: three

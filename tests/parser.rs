@@ -905,6 +905,43 @@ func main @a8 @31..90
 }
 
 #[test]
+fn a_literal_too_big_for_32_bits_is_refused_where_it_is_written() {
+    // The range check belongs to the lexer's decode, so it is a *parse*
+    // diagnostic: nothing later ever sees a value that does not fit, which is
+    // why no analysis test can reach this code.
+    for source in [
+        "var x = $1000000000\n",
+        "var x = 4294967296\n",
+        "var x = 0b100000000000000000000000000000000\n",
+        "func f @a16 {\n    lda #$FFFFFFFFF\n}\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("range.k65", source);
+        let result = parse_source(map.file(id), None);
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DiagnosticCode::NUMBER_RANGE)
+            .unwrap_or_else(|| {
+                panic!(
+                    "`{source}` should be out of range: {:?}",
+                    result.diagnostics
+                )
+            });
+        assert!(
+            diagnostic.help.is_some(),
+            "`{source}` explains the limit: {diagnostic:?}"
+        );
+    }
+
+    // The boundary itself fits: 32 bits is the limit, not one less.
+    let mut map = SourceMap::new();
+    let id = map.add_file("range.k65", "var x = $FFFFFFFF\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+}
+
+#[test]
 fn every_literal_form_decodes_to_its_value() {
     let source = "var DEC = 42
 var DOLLAR = $2A
@@ -2171,6 +2208,18 @@ fn truncating_a_fixture_anywhere_yields_a_usable_tree() {
                 assert!(
                     diagnostic.primary.span.end <= length,
                     "{path} truncated at {end}: diagnostic span escapes the file"
+                );
+                // An unfinished file is not a compiler bug. `K816-E0900`
+                // claims a grammar/builder mismatch, and every prefix of a
+                // real program is something an editor sees between two
+                // keystrokes — a `func` missing its closing brace leaves its
+                // statements at the file root, and reporting *that* as an
+                // internal error is a false alarm at the worst moment.
+                assert_ne!(
+                    diagnostic.code,
+                    DiagnosticCode::INTERNAL,
+                    "{path} truncated at {end}: {}\n{truncated}",
+                    diagnostic.title
                 );
             }
         }

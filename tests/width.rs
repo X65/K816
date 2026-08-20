@@ -1106,6 +1106,49 @@ fn the_legacy_corpus_calls_produce_no_bridge_and_no_width_diagnostic() {
     );
 }
 
+/// A tail jump out of a function is not an arrival at every label in it.
+///
+/// `goto other_function` leaves for a place K816 can name, and a named
+/// function's entry is not one of this function's labels. Treating it as an
+/// unknown target instead would make every label below it an unknown arrival
+/// — the immediate after `.here` would lose its width, and the function's own
+/// exit would stop being something a caller can rely on. That is the shape
+/// `doc/syntax-reference.md`'s `naked` example is written in, so the
+/// distinction has to survive.
+#[test]
+fn a_tail_jump_out_does_not_erase_the_widths_below_it() {
+    let source = "\
+func other @a8 @i8 {
+    nop
+}
+
+func f @a8 @i8 {
+    @a16 {
+        a?0
+        == goto other
+    }
+.here:
+    lda #$12
+}
+";
+    assert_eq!(
+        compile_codes(source),
+        Vec::<String>::new(),
+        "the label below the tail jump keeps the width it falls through with"
+    );
+
+    // And the immediate really is sized by that width: one byte, not two.
+    let mut map = SourceMap::new();
+    let file = map.add_file("tail.k816", source);
+    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false })
+        .assembly
+        .expect("compiles");
+    assert!(
+        assembly.contains("lda     #$12"),
+        "an 8-bit immediate, not a widened one:\n{assembly}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Call contracts
 // ---------------------------------------------------------------------------

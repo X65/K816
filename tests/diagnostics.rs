@@ -323,7 +323,176 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
         caret: "POINT",
     },
+    // A code that was registered and reachable with nothing exercising it,
+    // found by the audit below rather than by anyone meeting it.
+    Case {
+        source: "data blk {\n    byte 1 2\n}\n",
+        code: DiagnosticCode::NOT_YET_IMPLEMENTED,
+        caret: "byte 1 2",
+    },
 ];
+
+/// Codes no `FAMILY` row can reach, and what covers them instead.
+///
+/// Two reasons a code is here rather than above: it is reported by a stage
+/// `diagnostic_for` does not run — syntax diagnostics come from the parser,
+/// and two of E's come from lowering — or it cannot be reached from source at
+/// all, in which case the entry says why and that claim is the coverage.
+const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
+    (
+        "K816-E0003",
+        "tests/parser.rs: a_literal_too_big_for_32_bits_is_refused_where_it_is_written",
+    ),
+    (
+        "K816-E0001",
+        "tests/parser.rs: malformed_statement_yields_navigable_ast_after_first_error",
+    ),
+    (
+        "K816-E0002",
+        "tests/parser.rs: missing_brace_gets_a_machine_applicable_fix",
+    ),
+    (
+        "K816-E0128",
+        "tests/parser.rs: control_flow_statements_compile_or_name_their_owner",
+    ),
+    (
+        "K816-W0123",
+        "tests/compile.rs: a_call_that_damages_a_live_register_warns_at_the_call",
+    ),
+    (
+        "K816-E0130",
+        "tests/compile.rs: a_nocross_run_blames_the_split_that_grew_it",
+    ),
+    (
+        "K816-K65-0001",
+        "tests/parser.rs: a_nested_reserved_construct_reports_its_own_k65_code",
+    ),
+    (
+        "K816-K65-0002",
+        "tests/parser.rs: a_nested_reserved_construct_reports_its_own_k65_code",
+    ),
+    (
+        "K816-E0105",
+        "tests/diagnostics.rs: a_misspelled_mnemonic_is_not_an_unknown_mnemonic",
+    ),
+    (
+        "K816-E0900",
+        "unreachable by design: it claims a K816 bug, and the builder stays \
+         quiet about shapes tree-sitter recovered — see \
+         truncating_a_fixture_anywhere_yields_a_usable_tree",
+    ),
+];
+
+/// `K816-E0105` is unreachable from source, and this is why.
+///
+/// The grammar's `mnemonic` token matches real 65816 spellings only, so a
+/// misspelling is lexed as an identifier and reports as an undeclared symbol
+/// — a better diagnostic than "unknown mnemonic" would have been. The arm in
+/// `resolve.rs` stays as a guard against a grammar change that would let a
+/// non-mnemonic through, and this test is what would notice such a change:
+/// it starts failing the day the spelling reaches the ISA table.
+#[test]
+fn a_misspelled_mnemonic_is_not_an_unknown_mnemonic() {
+    for source in [
+        "func f @a8 @i8 {\n    xyz\n}\n",
+        "func f @a8 @i8 {\n    ldaa $10\n}\n",
+        "func f @a8 @i8 {\n    lfa $10\n}\n",
+    ] {
+        let mut map = SourceMap::new();
+        let id = map.add_file("typo.k816", source);
+        let parse = parse_source(map.file(id), None);
+        let (_, analysis) = analyze_file(&parse.file);
+        // Both stages, because the refusal comes from whichever one meets it
+        // first: a bare misspelling is an undeclared symbol, and one with an
+        // operand does not parse as a statement at all.
+        let codes: Vec<&str> = parse
+            .diagnostics
+            .iter()
+            .chain(analysis.iter())
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        assert!(
+            !codes.contains(&"K816-E0105"),
+            "`{source}` reached the unknown-mnemonic arm: {codes:?}"
+        );
+        assert!(
+            !codes.is_empty(),
+            "`{source}` has to be refused as *something*"
+        );
+    }
+}
+
+/// Every code `src/diagnostic.rs` registers is exercised, or says why not.
+///
+/// The registry is read from the source file rather than imported, for the
+/// same reason `tests/doc_coverage.rs` reads its document: the list has to be
+/// the one the compiler actually ships, and a copy in a test is a copy that
+/// can be forgotten. Adding a code now forces the choice — write a case, name
+/// the test that covers it, or state why nothing can reach it — which is the
+/// gate that was missing when three codes were registered with no coverage at
+/// all.
+#[test]
+fn every_registered_code_is_exercised_or_declared_unreachable() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/diagnostic.rs");
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+
+    // `pub const NAME: Self = Self("K816-…");` — the one shape a code is
+    // declared in.
+    let registered: Vec<String> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub const "))
+        .filter_map(|line| line.split("Self(\"").nth(1))
+        .filter_map(|line| line.split('"').next())
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        registered.len() > 40,
+        "the registry parse found only {} codes, which means the shape changed",
+        registered.len()
+    );
+
+    let in_family = |code: &str| FAMILY.iter().any(|case| case.code.as_str() == code);
+    let accounted = |code: &str| ACCOUNTED_ELSEWHERE.iter().any(|(named, _)| *named == code);
+
+    let missing: Vec<&String> = registered
+        .iter()
+        .filter(|code| !in_family(code) && !accounted(code))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "registered codes nothing exercises: {missing:?}\n\
+         add a `Case` to FAMILY, or an ACCOUNTED_ELSEWHERE entry naming the test \
+         that covers it or the reason nothing can reach it"
+    );
+
+    // The reverse, so the table cannot outlive what it describes.
+    for (code, why) in ACCOUNTED_ELSEWHERE {
+        assert!(
+            registered.iter().any(|registered| registered == code),
+            "{code} is accounted for but no longer registered"
+        );
+        assert!(
+            !in_family(code),
+            "{code} is in FAMILY *and* listed as covered elsewhere ({why})"
+        );
+        assert!(!why.is_empty(), "{code} says nothing about its coverage");
+        // A named test has to exist, or the table is describing coverage
+        // that a rename quietly took away.
+        if let Some((file, name)) = why.split_once(": ")
+            && let Some(file) = file.strip_prefix("tests/")
+        {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join(file);
+            let source =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+            assert!(
+                source.contains(&format!("fn {name}(")),
+                "{code} names `{name}` in {file}, which has no such test"
+            );
+        }
+    }
+}
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.
 fn diagnostic_for(source: &str, code: DiagnosticCode) -> (SourceMap, Diagnostic) {

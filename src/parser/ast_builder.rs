@@ -53,6 +53,9 @@ pub(super) fn build(root: Node<'_>, source: &SourceFile) -> (AstFile, Vec<Diagno
     let mut builder = AstBuilder {
         source,
         diagnostics: Vec::new(),
+        // Whether tree-sitter had to recover anywhere in this file, which is
+        // what decides if an unrecognized shape is a K816 bug or debris.
+        recovered: root.has_error(),
     };
     let mut file = builder.file(root);
     assign_statement_ids(&mut file);
@@ -152,6 +155,8 @@ fn number_data(data: &mut DataBlock, next: &mut u32) {
 struct AstBuilder<'a> {
     source: &'a SourceFile,
     diagnostics: Vec<Diagnostic>,
+    /// True when the tree contains an `ERROR` or `MISSING` node anywhere.
+    recovered: bool,
 }
 
 impl AstBuilder<'_> {
@@ -176,7 +181,20 @@ impl AstBuilder<'_> {
 
     /// Records an internal diagnostic for a CST shape this builder does not
     /// recognize. Reaching this is a grammar/builder mismatch, not user error.
+    ///
+    /// Which is exactly why it stays quiet once tree-sitter has recovered
+    /// anywhere in the file. Recovery re-parents whatever it could not fit —
+    /// a `func` whose closing brace has not been typed yet leaves its
+    /// statements as children of the file root — so the shape the builder
+    /// meets says nothing about the grammar, and every prefix of a real
+    /// program would otherwise be reported as a compiler bug. The syntax
+    /// diagnostic is the one the author needs, and it has already been
+    /// collected. A builder bug in a file that parses cleanly still reports,
+    /// which is the case this code was written for.
     fn unexpected(&mut self, node: Node<'_>, context: &str) {
+        if self.recovered {
+            return;
+        }
         self.diagnostics.push(Diagnostic::error(
             DiagnosticCode::INTERNAL,
             format!("internal: unexpected `{}` node in {context}", node.kind()),

@@ -1246,6 +1246,120 @@ fn a_layout_does_not_cross_a_unit_boundary() {
     );
 }
 
+/// A `nocross` run that no longer fits blames whatever made it not fit.
+///
+/// Two ways to overflow a page and they are different complaints: the run was
+/// written too big, which is the author's arithmetic, or K816 grew it by
+/// putting a width restore on a branch's taken edge, which is not. Both come
+/// from one site, so the interesting claim is that it picks the right one —
+/// and neither had a test on the *code* path, only on data.
+#[test]
+fn a_nocross_run_blames_the_split_that_grew_it() {
+    use k816::diagnostic::DiagnosticCode;
+
+    let compile = |source: &str| {
+        let mut map = SourceMap::new();
+        let file = map.add_file("nocross.k816", source);
+        compile_to_ca65(&map, file, &Options { optimize: false }).diagnostics
+    };
+
+    // 250 bytes of `nop`, then a width block a branch leaves. Written, the
+    // run fits; lowered, the restore on the taken edge pushes it over.
+    let grown = compile(
+        "func f @a8 @i8 {\n\
+         \x20   nocross {\n\
+         \x20       nop * 250\n\
+         \x20       @a16 {\n\
+         \x20           bra .out\n\
+         \x20       }\n\
+         \x20   }\n\
+         .out:\n\
+         \x20   nop\n\
+         }\n",
+    );
+    let split = grown
+        .iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::NOCROSS_SPLIT_OVERFLOW)
+        .unwrap_or_else(|| panic!("expected the split to be blamed: {grown:?}"));
+    assert!(
+        split.notes.iter().any(|note| note.contains("restore")),
+        "the note names the bytes K816 added: {split:?}"
+    );
+    assert!(
+        split.help.is_some(),
+        "and offers the two ways out: {split:?}"
+    );
+
+    // The same site, the other arm: nothing K816 added is to blame, so the
+    // run is simply too big and the older code says so.
+    let written = compile("func f @a8 @i8 {\n    nocross {\n        nop * 260\n    }\n}\n");
+    let codes: Vec<&str> = written
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert!(
+        codes.contains(&"K816-E0112") && !codes.contains(&"K816-E0130"),
+        "a run written too big is not the split's fault: {codes:?}"
+    );
+}
+
+/// A call that damages a register the caller is still using warns at the call.
+///
+/// The callee's contract names what it hands back; anything else it writes is
+/// damage, and the warning is only worth making where the caller *reads* the
+/// register afterwards — so the test pins both halves, the warning and the
+/// silence when the contract covers it.
+#[test]
+fn a_call_that_damages_a_live_register_warns_at_the_call() {
+    use k816::diagnostic::DiagnosticCode;
+
+    let compile = |source: &str| {
+        let mut map = SourceMap::new();
+        let file = map.add_file("clobber.k816", source);
+        compile_to_ca65(&map, file, &Options { optimize: false }).diagnostics
+    };
+
+    // `callee` returns A and quietly steps X; the caller reads X after it.
+    let damaged = compile(
+        "var mem = $10\n\n\
+         func callee @a8 @i8 (a) -> a {\n    x++\n}\n\n\
+         func caller @a8 @i8 {\n\
+         \x20   x = mem\n\
+         \x20   a = #1\n\
+         \x20   callee a -> a\n\
+         \x20   mem = x\n\
+         }\n",
+    );
+    let warning = damaged
+        .iter()
+        .find(|diagnostic| diagnostic.code == DiagnosticCode::CLOBBERED_REGISTER)
+        .unwrap_or_else(|| panic!("expected the clobber warning: {damaged:?}"));
+    assert!(!warning.is_error(), "damage is a warning, not a refusal");
+    assert_eq!(
+        warning.secondary.len(),
+        1,
+        "it points at the read as well as the call: {warning:?}"
+    );
+
+    // Declared as an output, the same write is what the caller asked for.
+    let declared = compile(
+        "var mem = $10\n\n\
+         func callee @a8 @i8 (a) -> a, x {\n    x++\n}\n\n\
+         func caller @a8 @i8 {\n\
+         \x20   x = mem\n\
+         \x20   a = #1\n\
+         \x20   callee a -> a, x\n\
+         \x20   mem = x\n\
+         }\n",
+    );
+    assert!(
+        !declared
+            .iter()
+            .any(|diagnostic| diagnostic.code == DiagnosticCode::CLOBBERED_REGISTER),
+        "a register the contract hands back is not damage: {declared:?}"
+    );
+}
+
 /// The section kinds that are not subroutines, through the assembler.
 ///
 /// `inline` is the one construct that changes the *shape* of the operation

@@ -9,12 +9,12 @@ Symbolic subscript arrays are inspired by the Pawn language's named-field array 
 A symbolic subscript array declaration binds a symbol to a base location and defines a field layout on top of it. As with any other `var`, the base may be either:
 
 - **Fixed** — `var foo[...] = $6000` pins the layout to a compile-time constant address. Use this for hardware register blocks (RIA, CGIA) where the base is dictated by the silicon.
-- **Allocated** — `var foo[...]` (no `= ...`) leaves the base to the linker. The struct lands inside the current segment and the linker assigns its final address per the `.ld.ron` config, the same way it places code/data chunks. Field references resolve through per-field section symbols emitted by the lowerer (`foo.field_w`, `foo.idx`, …) so each name is independently relocatable.
+- **Allocated** — `var foo[...]` (no `= ...`) leaves the base to the linker. The struct lands inside the current segment and the linker assigns its final address, the same way it places code/data chunks. Field references resolve as the base symbol plus a constant offset (`foo+2`), which the assembler carries into the object file and the linker completes after placement — one relocatable name for the declaration, and arithmetic on it for the fields.
 - **Abstract** — `abstract var foo[...]` declares the same packed field layout but no storage. It is valid only for metadata queries such as `foo:sizeof` and `foo.field:offsetof`; it emits no bytes or linker symbol.
 
 Both forms produce identical field layouts.
 
-- No fixed-address bytes are emitted by `var = $addr` declarations; Allocated subscript vars emit zero-filled bytes in their segment so the linker reserves the slot.
+- No fixed-address bytes are emitted by `var = $addr` declarations; Allocated subscript vars reserve their bytes in the current segment (a ca65 `.res`) so the linker sets the slot aside.
 - `data { ... }` remains the mechanism for emitting initialized bytes.
 - Field layouts are packed (no padding).
 - A `* count` suffix repeats the whole layout and makes elements addressable as `foo[i]`. Declaration `[N]` reserves a raw span; it does not create repeated aggregate elements.
@@ -42,7 +42,7 @@ abstract var handler[
 ]
 ```
 
-`abstract var` reuses the same field item grammar, including nested fields and default field width on the declaration (`abstract var point:byte[...]`). It cannot use an address initializer, storage prefix, allocation count, or array-only bracket form.
+`abstract var` reuses the same field item grammar, including nested fields and default field width on the declaration (`abstract var point:byte[...]`). It cannot use an address initializer, storage prefix, allocation count, or array-only bracket form; each of those is `K816-E0136`, the same code a use of the layout as an operand gets.
 
 ### Default field width on the symbol
 
@@ -54,6 +54,8 @@ var baz:byte[
   .len:word
 ] = 0x2244
 ```
+
+On a declaration that has fields, the `:` suffix is the *default field width* and nothing else: the datum is the whole layout, so the variable itself claims no register width and a load of it is never checked against one. The default carries into nested lists, and a nested field's own suffix replaces it for its sub-list — in `var v:word[ .a .b:byte[ .c .d ] ]`, `.a` is a word and `.c` and `.d` are bytes.
 
 ### Field item grammar
 
@@ -132,19 +134,31 @@ Repeat indices must be compile-time numeric constants and are bounds checked wit
 
 The implementation reports hard errors for:
 
-- non-constant base expressions in the Fixed form (`var foo[...] = expr` where `expr` is not a compile-time number)
-- duplicate field names in one symbolic subscript array
-- invalid field counts (`<= 0` or out of range)
-- unknown field access (with nearest-name suggestion)
-- invalid indexing on symbolic subscript arrays (`foo[1]`, `foo[i]`)
-- non-constant, negative, or out-of-range repeat element indices
-- indexing a non-array field
-- field access on scalar repeat elements (`str[1].field`)
-- abstract layout address/index use (`abstract var foo[...]`, then `foo[0]`)
+| Condition | Code |
+| --- | --- |
+| A non-constant base in the Fixed form (`var foo[...] = expr`) | `K816-E0108` |
+| A field name declared twice in one list | `K816-E0102` |
+| An element count of zero, on a field or on a declaration | `K816-E0141` |
+| A field the layout does not declare, with a nearest-name suggestion | `K816-E0101` |
+| A `.field` selected from something that has no fields — a plain variable, a scalar field, an imported name | `K816-E0115` |
+| A repeat or field index that does not fold | `K816-E0134` |
+| An index outside the extent, which includes indexing a field that declared no count | `K816-E0135` |
+| An `abstract var` used where storage is required, or declaring storage it cannot have | `K816-E0136` |
+| `:offsetof` on something that is not a field, or `:sizeof` on something with no size | `K816-E0115` |
+
+Indexing a symbolic subscript array with a number is *not* an error: a variable with no `* count` has no elements, so `foo[1]` is the ordinary byte-offset arithmetic every other countless bracket is, and `foo[.field]` is how a field is selected. Only the field's own bracket and a `* count` variable's are checked.
 
 ## Implementation Notes
 
-The current implementation is split across the normal frontend stages instead of
+These notes describe the **original K65 compiler**; the paths below are that
+tree's, not this one's. K816 splits the same work differently: the packing
+arithmetic is `src/layout.rs`, the declaration pass that drives it is
+`src/semantic.rs`, and every access — `foo.field`, `foo[.field]`,
+`foo.field[i]`, `foo[i]`, and the two metadata queries — is one walk in
+`src/resolve.rs`, so an address, a size, and an offset cannot be derived from
+one path by three different rules.
+
+The K65 implementation is split across the normal frontend stages instead of
 using a dedicated lexer mode.
 
 ### AST and parser

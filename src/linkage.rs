@@ -311,16 +311,21 @@ fn local_contracts(
 
 /// True when a symbol kind can cross a unit boundary at all.
 ///
-/// A local label cannot: it is scoped to one function by definition. Every
-/// other unit-level kind can, including a `const`, whose value another unit
-/// reaches through an emitted equate rather than by folding.
+/// A local label cannot: it is scoped to one function by definition. An
+/// `abstract var` cannot either, and for a stronger reason — it has no place
+/// and no value, so there is nothing for ld65 to resolve, and its field
+/// offsets belong to the arena of the unit that declared it. Two units may
+/// therefore declare the same layout without that being a duplicate
+/// definition, which is what a shared header needs. Every other unit-level
+/// kind can cross, including a `const`, whose value another unit reaches
+/// through an emitted equate rather than by folding.
 fn is_exportable(kind: SymbolKind) -> bool {
     !matches!(
         kind,
         SymbolKind::Label {
             scope: LabelScope::Local,
             ..
-        }
+        } | SymbolKind::AbstractVar { .. }
     )
 }
 
@@ -348,5 +353,8 @@ pub fn always_exported(kind: SymbolKind) -> bool {
         | SymbolKind::AbstractVar { .. }
         | SymbolKind::Inline
         | SymbolKind::Alias { .. } => false,
+        // `AbstractVar` never reaches here — `is_exportable` keeps it out of
+        // the workspace — and the arm stays so that adding a kind is a
+        // compile error rather than a silent default.
     }
 }

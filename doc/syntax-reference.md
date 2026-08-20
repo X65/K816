@@ -50,6 +50,8 @@ var arr[10]             // Allocated ABS: 10-byte slot in the current segment
 
 The declaration `[N]` suffix reserves a raw storage span: N elements of the declared width, or N bytes when no width is written. It does not create repeat-element metadata and `NAME[i]` on that kind of aggregate remains ordinary byte-offset arithmetic rather than bounds-checked element access. Use the separate `* N` allocation count when you want repeated elements addressable as `NAME[i]`.
 
+A bracket that opens with a `.name` is not a span at all but a **symbolic subscript field list**, described in `doc/symbolic-subscripts.md`; one declaration cannot have both, because the bracket opens one or the other. A count of zero is rejected wherever it is written — `var buf[0]`, `var t * 0`, and the field count `.str[0]` are all `K816-E0141`: storage with no elements reserves nothing, and every index into it is out of range the moment it is written.
+
 ### What K816 decides, and what the linker decides
 
 K816 decides *size*; ld65 decides *address*. A pinned declaration becomes a ca65 equate and reserves nothing — the address is already in the source, and the bytes belong to whatever put them there. An allocated one becomes a label and a `.res` of exactly the bytes its axes multiply out to, emitted in the segment the declaration sits in, and ld65 places it.
@@ -153,6 +155,15 @@ order is rejected.
 
 On a variable with no `* count` there is no extent to check and no element to stride, so the bracket steps bytes and neither code applies. That includes the raw span: `var grid:word[4]` reserves four words, and `grid[2]` is two *bytes* along.
 
+A *field's* bracket is the other one. `.str :byte [5]` declares five elements, not a five-byte span, and `foo.str[i]` is `field_base + i * element_width` checked against the five — `doc/symbolic-subscripts.md`, "Semantics". So the same `[N]` means a span on a variable and a count on a field, and a field always has an extent, where a variable has one only when it wrote `* count`:
+
+```k65
+var grid:word[4]           // a span: grid[2] is 2 bytes along, unchecked
+var pts[ .xs :word [4] ]   // a count: pts.xs[2] is 4 bytes along, checked
+```
+
+A field that wrote no bracket is one element, so indexing it is `K816-E0135` rather than a silent stride of zero.
+
 `NAME:sizeof` returns the element size, not `element_size * repeat_count`. That keeps the address identity stable:
 
 ```k65
@@ -177,6 +188,8 @@ lda #DEV_HANDLER.init:offsetof
 An abstract var emits no bytes, no object symbol, and no linker allocation. It exists only for metadata queries (`:sizeof`, `:offsetof`) and occupies the normal symbol namespace so duplicate names are still rejected. Because it has no address, it cannot be used as an instruction operand or address-of target (`lda DEV_HANDLER`, `lda DEV_HANDLER.open`, and `lda &&DEV_HANDLER` are errors).
 
 The declaration must use a symbolic field list. Declaration-level default field width is allowed (`abstract var POINT:byte[ .x .y ]`), but storage-specific forms are rejected: no `dp`/`abs`/`far` prefix, no initializer, no allocation count, and no array-only form like `abstract var buf[16]`.
+
+Both directions are `K816-E0136`, because they are one complaint from where the author sits — this declares a layout, and a layout has no bytes. The declaration is still recorded when it is refused, so a use of the name reports what is wrong with the *use* rather than reporting the name as undeclared. A layout does not cross a compilation-unit boundary either: field offsets belong to the unit that declared them, so two units may declare the same layout without that being a duplicate definition, and a field of a name imported from another unit reports that the name has no fields.
 
 ### Two orthogonal axes: data width vs. address encoding
 
@@ -324,6 +337,12 @@ Both suffixes bind tightly (at atom level), so they work in arithmetic:
 ```k65
 lda #TASKS:sizeof + 1       // (TASKS:sizeof) + 1
 ```
+
+Each needs something that can answer it, and `K816-E0115` is what says so when there is none. `:sizeof` needs a variable or a field — a `const` is a value with no size, and a function is a place with no size. `:offsetof` needs a *field*, because an offset is a field's distance from the base of its variable: `counter:offsetof` is not zero, it is a question about nothing.
+
+A metadata query is an integer from the moment it folds, so it reads on the value side of an assignment exactly as a `const` does — `a = TASKS:sizeof` loads the number and does not read memory at the address `4`.
+
+Both work on an `abstract var`, which is the whole reason one may be declared. Neither reads the variable's storage, so neither is affected by where it lives.
 
 K65 also supports symbolic subscript arrays with named `.field` entries inside `var name[...] = <addr>`. This feature is inspired by the Pawn language's named-field array style.
 

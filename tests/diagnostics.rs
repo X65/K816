@@ -248,6 +248,54 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
         caret: "here",
     },
+    // The layout family: a field list that packs two fields under one name
+    // or none at all, a selection with nothing to select from, and the two
+    // directions an `abstract var` meets storage.
+    Case {
+        source: "var vec[ .lo :byte .lo :word ]\n",
+        code: DiagnosticCode::DUPLICATE_SYMBOL,
+        caret: ".lo",
+    },
+    Case {
+        source: "var vec[ .id :byte .str :byte[0] ]\n",
+        code: DiagnosticCode::ELEMENT_COUNT_RANGE,
+        caret: "0",
+    },
+    Case {
+        source: "var vec[ .lo :byte ]\n\nfunc f @a8 @i8 {\n    a = vec.hi\n}\n",
+        code: DiagnosticCode::UNDECLARED_SYMBOL,
+        caret: ".hi",
+    },
+    Case {
+        source: "var counter\n\nfunc f @a8 @i8 {\n    a = counter.lo\n}\n",
+        code: DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        caret: ".lo",
+    },
+    Case {
+        source: "var counter\n\nfunc f @a8 @i8 {\n    a = counter:offsetof\n}\n",
+        code: DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        caret: "offsetof",
+    },
+    Case {
+        source: "var vec[ .lo :byte ]\n\nfunc f @a8 @i8 {\n    a = vec.lo[1]\n}\n",
+        code: DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
+        caret: "1",
+    },
+    Case {
+        source: "abstract var POINT[ .x :byte ]\n\nfunc f @a8 @i8 {\n    a = POINT.x\n}\n",
+        code: DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        caret: "POINT.x",
+    },
+    Case {
+        source: "abstract var dp POINT[ .x :byte ]\n",
+        code: DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        caret: "dp",
+    },
+    Case {
+        source: "abstract var POINT\n",
+        code: DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        caret: "POINT",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.

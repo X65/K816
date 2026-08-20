@@ -44,7 +44,9 @@ use crate::linkage::Linkage;
 use crate::op::{ExitContract, ModeState, WidthContract};
 use crate::resolve::{AnonymousBlocks, Classified, DataSite, Resolved, Resolver, data_site};
 use crate::source::{Provenance, Span};
-use crate::symbol::{AddressSize, LabelScope, SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{
+    AddressSize, DataWidth, FieldShape, LabelScope, LayoutId, SymbolId, SymbolKind, SymbolTable,
+};
 use crate::width::{self, WidthAnalysis};
 
 /// The result of analyzing one file: symbols plus per-function facts.
@@ -1459,13 +1461,20 @@ impl Analysis {
     ///
     /// The kind and address size are the *defining* unit's, because that is
     /// what ca65 needs to validate an addressing mode against the imported
-    /// symbol. Declaring a name does not import it: only the ones this unit
-    /// goes on to reference reach the emitted `.import` list.
+    /// symbol. What does not cross is the field layout: a `LayoutId` names
+    /// the declaring unit's arena, so [`SymbolKind::foreign`] strips it and a
+    /// foreign `NAME.field` says the name has no fields rather than reading
+    /// whichever layout sits at that index here.
+    ///
+    /// Declaring a name does not import it: only the ones this unit goes on
+    /// to reference reach the emitted `.import` list.
     fn declare_imports(&mut self, linkage: &Linkage) {
         for (name, definition) in linkage.definitions() {
-            self.model
-                .symbols
-                .declare_imported(name, definition.kind, definition.declaration);
+            self.model.symbols.declare_imported(
+                name,
+                definition.kind.foreign(),
+                definition.declaration,
+            );
         }
     }
 
@@ -1516,14 +1525,11 @@ impl Analysis {
         if var.name.provenance == Provenance::Synthetic {
             return; // Recovery invented the name; syntax error already reported.
         }
-        // Field lists and the storage-less `abstract var` are the two axes
-        // E7 leaves; both need a layout, and layouts are E8's.
-        if let Some(feature) = unsupported_var_feature(var) {
-            self.diagnostics.push(compat::unimplemented(
-                span,
-                feature,
-                compat::Owner::HlaLowering,
-            ));
+        // A layout with no storage answers none of the questions below —
+        // there is no address to fold, no extent to multiply, and nothing to
+        // reserve — so it is declared by itself.
+        if var.is_abstract {
+            self.declare_abstract_var(var);
             return;
         }
 
@@ -1547,7 +1553,20 @@ impl Analysis {
             .count
             .as_ref()
             .and_then(|expr| self.constant(expr, "allocation counts"));
-        let width = var.width.map(|width| layout::data_width(width.kind));
+        let extent = self.checked_count(extent, var.size.as_ref());
+        let count = self.checked_count(count, var.count.as_ref());
+        let declared = var.width.map(|width| layout::data_width(width.kind));
+        // On a declaration with fields the `:byte` suffix is the *default
+        // field width* and not a datum width of its own: the datum is the
+        // whole layout, and a struct has no register to disagree with
+        // (`doc/symbolic-subscripts.md`, "Default field width on the
+        // symbol"). One suffix, two meanings, decided by whether a field
+        // list follows.
+        let (width, layout) = if var.fields.is_empty() {
+            (declared, None)
+        } else {
+            (None, Some(self.build_layout(&var.fields, declared)))
+        };
         let storage = var.storage.map(|storage| storage.kind);
 
         // A declaration-position prefix sets the encoding plain references
@@ -1560,7 +1579,7 @@ impl Analysis {
             (None, None) => AddressSize::Absolute,
         };
 
-        let datum = layout::datum_size(width, None, self.model.symbols.layouts());
+        let datum = layout::datum_size(width, layout, self.model.symbols.layouts());
         let allocation = layout::allocation(datum, extent, count);
 
         // `far` is the storage class with no auto-allocator: nothing knows
@@ -1583,9 +1602,7 @@ impl Analysis {
                 width,
                 element: allocation.element,
                 repeat: count,
-                // No declaration reaching here carries a field list; E8's
-                // layouts arrive with the pass that computes them.
-                layout: None,
+                layout,
             },
             var.name.span,
         ) else {
@@ -1637,6 +1654,111 @@ impl Analysis {
             self.direct_page_reported = true;
             self.diagnostics
                 .push(direct_page_overflow(var, span, claimed));
+        }
+    }
+
+    /// Declares one `abstract var`: a packed field layout and nothing else.
+    ///
+    /// It is a kind of its own rather than a `var` with no address, because
+    /// a linker-allocated `var` also has no address *yet* and the two must
+    /// not be confused. What it may not do is ask for storage — no storage
+    /// class, no initializer, no allocation count, no raw span — and the
+    /// document rejects each of those (`doc/syntax-reference.md`, "Abstract
+    /// symbolic layouts").
+    fn declare_abstract_var(&mut self, var: &ast::VarDeclaration) {
+        // One complaint per declaration. All four forms are the same
+        // misunderstanding — that this reserves something — and a
+        // declaration writing two of them would otherwise hear it twice.
+        let offense = var
+            .storage
+            .map(|storage| (storage.span, "a storage class"))
+            .or_else(|| var.address.as_ref().map(|expr| (expr.span, "an address")))
+            .or_else(|| {
+                var.count
+                    .as_ref()
+                    .map(|expr| (expr.span, "an allocation count"))
+            })
+            .or_else(|| var.size.as_ref().map(|expr| (expr.span, "a raw span")));
+        if let Some((site, what)) = offense {
+            self.diagnostics
+                .push(abstract_declares_storage(var, site, what));
+        } else if var.fields.is_empty() {
+            self.diagnostics.push(abstract_has_no_fields(var));
+        }
+
+        let default = var.width.map(|width| layout::data_width(width.kind));
+        let layout = self.build_layout(&var.fields, default);
+        // Declared even when it was refused above: the fields are still what
+        // the author wrote, and leaving the name undeclared would turn one
+        // complaint into one more at every use of it.
+        let _ = self.declare(
+            &var.name.text,
+            SymbolKind::AbstractVar { layout },
+            var.name.span,
+        );
+    }
+
+    /// Computes and interns the layout a field list declares.
+    ///
+    /// `default` is the width fields take when they name none — the
+    /// declaration's own `:byte` suffix, which on a declaration that has
+    /// fields means *default field width*. It carries into nested lists, and
+    /// a nested field's own suffix replaces it for its sub-list, so
+    /// `var v:word[ .a .b:byte[ .c .d ] ]` gives `.a` a word and `.c` a byte.
+    ///
+    /// Nested layouts are interned before the field that names them, which is
+    /// what keeps a [`FieldShape::Nested`] identifier resolvable.
+    fn build_layout(
+        &mut self,
+        fields: &[ast::FieldDeclaration],
+        default: Option<DataWidth>,
+    ) -> LayoutId {
+        let mut packing = layout::Packing::default();
+        for field in fields {
+            if field.name.provenance == Provenance::Synthetic {
+                continue; // Recovery invented the name; the syntax error stands.
+            }
+            let declared = field.width.map(|width| width.kind);
+            let shape = if field.fields.is_empty() {
+                FieldShape::Scalar(layout::field_width(declared, default))
+            } else {
+                let nested = declared.map(layout::data_width).or(default);
+                FieldShape::Nested(self.build_layout(&field.fields, nested))
+            };
+            // A field's bracket is a count and not a span: an indexed field
+            // element is `field_base + index * element_width`
+            // (`doc/symbolic-subscripts.md`, "Semantics"), where a
+            // declaration's `[N]` is a raw span the bracket steps in bytes.
+            let count = field
+                .size
+                .as_ref()
+                .and_then(|expr| self.constant(expr, "field element counts"));
+            let count = self.checked_count(count, field.size.as_ref()).unwrap_or(1);
+
+            let name = field.name.text.trim_start_matches('.');
+            if let Some(previous) = packing.declared(name).map(|field| field.declaration) {
+                self.diagnostics.push(duplicate_field(field, previous));
+                continue;
+            }
+            packing.push(name, shape, count, field.span, self.model.symbols.layouts());
+        }
+        self.model.symbols.add_layout(packing.finish())
+    }
+
+    /// Rejects an element count of zero, and passes every other answer on.
+    ///
+    /// A count of zero describes storage with no elements: nothing is
+    /// reserved, and every index into it is out of range the moment it is
+    /// written. The declaration carries on without the multiplier, for the
+    /// same reason a count that did not fold does — one bad number should not
+    /// turn every use of the name into an undeclared-symbol error too.
+    fn checked_count(&mut self, count: Option<u32>, expr: Option<&Expr>) -> Option<u32> {
+        match (count, expr) {
+            (Some(0), Some(expr)) => {
+                self.diagnostics.push(zero_element_count(expr.span));
+                None
+            }
+            _ => count,
         }
     }
 
@@ -2059,20 +2181,73 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
     }
 }
 
-/// Names the part of `var` that has no semantics yet, or `None` when the
-/// declaration is one E7 allocates.
-///
-/// Both surviving arms are the same missing piece: a *layout*. A field list
-/// needs one computed, and an `abstract var` is a layout and nothing else.
-/// E8 computes them, and this function goes with them.
-fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static str> {
-    if var.is_abstract {
-        Some("`abstract var` layouts")
-    } else if !var.fields.is_empty() {
-        Some("symbolic subscript field lists")
-    } else {
-        None
-    }
+/// A field name that appears twice in one list.
+fn duplicate_field(field: &ast::FieldDeclaration, previous: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DUPLICATE_SYMBOL,
+        format!("`{}` is declared twice in this field list", field.name.text),
+        Label::new(field.name.span, "declared again here"),
+    )
+    .with_secondary(Label::new(previous, "first declared here"))
+    .with_note(
+        "a field name selects one offset, so a second entry under the same name could \
+         never be reached",
+    )
+    .with_docs("doc/symbolic-subscripts.md#field-item-grammar")
+}
+
+/// `var buf[0]`, `var t * 0`, or the field count `.str[0]`.
+fn zero_element_count(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::ELEMENT_COUNT_RANGE,
+        "an element count must be at least 1",
+        Label::new(span, "this declares no elements"),
+    )
+    .with_note(
+        "storage with no elements reserves nothing, and every index into it is out of \
+         range the moment it is written",
+    )
+    .with_help("write how many elements there are, or drop the count to declare one")
+    .with_docs("doc/syntax-reference.md#allocation-count")
+}
+
+/// An `abstract var` whose declaration asks for storage it cannot have.
+fn abstract_declares_storage(var: &ast::VarDeclaration, site: Span, what: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        format!("`abstract var {}` declares {what}", var.name.text),
+        Label::new(site, "an abstract layout reserves nothing"),
+    )
+    .with_secondary(Label::new(var.name.span, "declared `abstract` here"))
+    .with_note(
+        "an `abstract var` exists for `:sizeof` and `:offsetof`: it emits no bytes, no \
+         object symbol, and no linker allocation",
+    )
+    .with_help(format!(
+        "drop {what}, or drop `abstract` to declare a variable that has storage"
+    ))
+    .with_docs("doc/syntax-reference.md#abstract-symbolic-layouts")
+}
+
+/// An `abstract var` with no field list, which leaves nothing declared.
+fn abstract_has_no_fields(var: &ast::VarDeclaration) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        format!("`abstract var {}` declares no fields", var.name.text),
+        Label::new(
+            var.name.span,
+            "an abstract layout is a field list and nothing else",
+        ),
+    )
+    .with_note(
+        "with no storage and no fields there is nothing left to declare: no bytes, no \
+         address, and no offsets to query",
+    )
+    .with_help(format!(
+        "write the fields, as in `abstract var {}[ .lo :byte .hi :byte ]`",
+        var.name.text
+    ))
+    .with_docs("doc/syntax-reference.md#abstract-symbolic-layouts")
 }
 
 /// `var far NAME` with nothing to place it at.

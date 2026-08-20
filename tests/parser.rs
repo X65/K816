@@ -1138,10 +1138,10 @@ fn local_labels_keep_their_leading_dot() {
 }
 
 #[test]
-fn every_declaration_form_compiles_or_names_its_owner() {
-    // Allocation, the three storage classes, the typed widths, and both
-    // multipliers: E7's whole surface, and each one is a declaration the
-    // compiler now answers rather than defers.
+fn every_declaration_form_compiles() {
+    // Allocation, the three storage classes, the typed widths, both
+    // multipliers, a field list, and the layout that has no storage: the
+    // whole declaration family, with nothing left naming a later sub-plan.
     for source in [
         "var counter\n",
         "var dp counter\n",
@@ -1152,6 +1152,10 @@ fn every_declaration_form_compiles_or_names_its_owner() {
         "var buffer[32] = $100\n",
         "var s:byte * 32\n",
         "var grid:word[4] * 8\n",
+        "var vec[ .lo :byte .hi :byte ]\n",
+        "var dp regs:word[ .a .b ] = $10\n",
+        "abstract var POINT[ .x :byte .y :byte ]\n",
+        "abstract var NEST:word[ .head .body[ .lo :byte .hi :byte ] ]\n",
     ] {
         let mut map = SourceMap::new();
         let id = map.add_file("owner.k65", source);
@@ -1159,30 +1163,6 @@ fn every_declaration_form_compiles_or_names_its_owner() {
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
         assert_eq!(diagnostics, vec![], "`{source}` should compile");
-    }
-
-    // What is left of the declaration family is the two spellings that need
-    // a *layout*, and a layout is sub-plan E8's.
-    for source in [
-        "var vec[ .lo :byte .hi :byte ]\n",
-        "abstract var POINT[ .x :byte .y :byte ]\n",
-    ] {
-        let mut map = SourceMap::new();
-        let id = map.add_file("owner.k65", source);
-        let parsed = parse_source(map.file(id), None);
-        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
-        let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-        assert_eq!(
-            diagnostics[0].code,
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-            "`{source}`"
-        );
-        assert!(
-            diagnostics[0].notes[0].starts_with("implemented by sub-plan "),
-            "`{source}`: {:?}",
-            diagnostics[0].notes
-        );
     }
 }
 
@@ -1263,24 +1243,26 @@ var REGS[
 }
 
 #[test]
-fn subscript_forms_name_their_owner() {
-    for source in [
-        "abstract var P[ .x :byte ]\n",
-        "var TASKS[ .sp :word ] = $4000\n",
-        "func f { lda #TASKS:sizeof }\n",
-        "func f { lda #TASKS.sp }\n",
+fn every_subscript_form_compiles() {
+    let declarations =
+        "abstract var POINT[ .x :byte ]\nvar TASKS[ .sp :word .str :byte[4] ] * 2 = $4000\n";
+    for statement in [
+        "lda #TASKS:sizeof",
+        "lda #TASKS.sp",
+        "lda #POINT:sizeof",
+        "lda #POINT.x:offsetof",
+        "lda TASKS.str[3]",
+        "lda TASKS[1].str[2]",
+        "lda TASKS[1][.str][2]",
+        "a = TASKS.str[0]",
     ] {
+        let source = format!("{declarations}func f @a8 @i8 {{ {statement} }}\n");
         let mut map = SourceMap::new();
-        let id = map.add_file("owner.k65", source);
+        let id = map.add_file("owner.k65", &source);
         let parsed = parse_source(map.file(id), None);
-        assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
+        assert_eq!(parsed.diagnostics, vec![], "`{statement}` did not parse");
         let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-        assert_eq!(
-            diagnostics[0].code,
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-            "`{source}`"
-        );
+        assert_eq!(diagnostics, vec![], "`{statement}` should compile");
     }
 }
 

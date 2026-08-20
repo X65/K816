@@ -1,0 +1,117 @@
+// Sub-plan E8's fixture: what a field list declares, and what an access to
+// one folds to.
+//
+// A layout is offsets and nothing else. It composes with every axis a
+// declaration already had — a pinned base, a linker-allocated one, the
+// direct-page pool, an allocation count — and it adds one of its own: the
+// fields, which are packed, sequential, and nest. Every access to one is a
+// constant offset from the base, which is why `:offsetof` can answer at all.
+
+// --- Pinned. The document's own example layouts. ---
+
+var TASKS[
+    .sp      :word
+    .state   :byte
+    .signals :byte
+] = $4000
+
+// Nested fields resolve their offsets against the top-level variable, so
+// `.data.hi` is two bytes in and not one.
+var REGS[
+    .status :byte
+    .data[
+        .lo :byte
+        .hi :byte
+    ]
+] = $D000
+
+// On a declaration that has fields the `:word` suffix is the *default field
+// width*, not a datum width of its own: `.a` and `.b` are words because of
+// it, and `.len` is a byte because it said so.
+var baz:word[
+    .a
+    .b
+    .len :byte
+] = $2244
+
+// `* count` repeats the layout and is what makes `COMP[i]` element access.
+// `COMP:sizeof` stays the size of *one* element, so that `&&COMP[i]` is
+// `&&COMP + i * COMP:sizeof` whatever the count is.
+const SLOTS = 4
+var COMP[
+    .one :byte
+    .two :word
+    .str :byte [5]
+] * SLOTS = $1000
+
+// --- Allocated. K816 says how many bytes; ld65 says where. ---
+
+segment BSS
+
+var sprites[
+    .x    :word
+    .y    :word
+    .tile :byte
+] * SLOTS
+
+// A layout in the direct page. The pool is a storage class and a field list
+// is a shape, so they compose like every other pair of axes.
+var dp cursor[
+    .x :byte
+    .y :byte
+]
+
+// --- No storage at all. ---
+
+abstract var DEV_HANDLER[
+    .open  :word
+    .close :word
+    .init  :word
+]
+
+segment CODE
+
+func metadata @a8 @i8 {
+    // Every one of these folds to an integer at analysis time and is an
+    // ordinary constant afterwards.
+    a = TASKS:sizeof             // 4: 2 + 1 + 1, packed
+    TASKS.state = a
+    a = TASKS.signals:offsetof   // 3
+    TASKS.signals = a
+    a = REGS.data.hi:offsetof    // 2, from the top-level base
+    REGS.status = a
+    a = baz.len:offsetof         // 4: two default-width fields precede it
+    baz.len = a
+    // A layout with no storage answers the same two questions and nothing
+    // else, which is the whole reason it may be declared.
+    a = DEV_HANDLER:sizeof       // 6
+    a = DEV_HANDLER.init:offsetof // 4
+    cursor.y = a
+}
+
+func elements @a8 @i8 {
+    // Element base, then field offset, then the field's own element.
+    a = COMP[2].one              // COMP + 2*8
+    a = COMP[2][.one]            // the equivalent spelling, same address
+    a = COMP[2].str[3]           // COMP + 16 + 3 + 3
+    x = sprites[3].tile          // an allocated base: ld65 places it, ca65 adds
+    a = cursor.y                 // a pooled base, still one byte to encode
+    // A field's `[N]` counts elements and a variable's counts bytes, and the
+    // stride is where the difference shows: `.str` is `:byte`, so both are
+    // one here, and `.two` proves the field-element case at width two.
+    a = COMP[1].str[4]
+}
+
+func words @a16 @i16 {
+    // The datum width is the field's, not the variable's.
+    a = TASKS.sp
+    TASKS.sp = a
+    a = COMP[3].two
+    x = baz.a
+    // A nested field is a struct: it declares no register width, so nothing
+    // here is checked against one.
+    a = REGS.data
+    // A use-site view restates the width for one expression and overrides
+    // whatever the field declared.
+    lda TASKS.sp:word
+}

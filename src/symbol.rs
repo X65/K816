@@ -188,7 +188,9 @@ pub struct Field {
     /// `[count]` — how many elements the field repeats, `1` when the
     /// declaration omits it. It is the extent a subscript is checked against.
     pub count: u32,
-    /// Span of the declaring `.name`, for "declared here" secondary labels.
+    /// Span of the declaring entry — the `.name` and whatever it wrote after
+    /// it — for "declared here" secondary labels. It covers the width too,
+    /// because the width is what most of those labels are about.
     pub declaration: Span,
 }
 
@@ -339,6 +341,36 @@ impl SymbolKind {
                 size: AddressSize::Long
             }
         )
+    }
+
+    /// This kind as another unit sees it.
+    ///
+    /// A [`LayoutId`] names *this* unit's arena, so it cannot cross a unit
+    /// boundary: the importing unit would read whichever layout happens to
+    /// sit at the same index, or none at all. What crosses is what ca65 needs
+    /// — the address size — and the fields stay behind, so a foreign
+    /// `NAME.field` reports that the name has no fields rather than answering
+    /// from the wrong layout. Sharing a layout between units is a source-level
+    /// question, and the language has no syntax for asking it.
+    pub fn foreign(self) -> Self {
+        match self {
+            Self::Var {
+                address,
+                size,
+                width,
+                element,
+                repeat,
+                layout: Some(_),
+            } => Self::Var {
+                address,
+                size,
+                width,
+                element,
+                repeat,
+                layout: None,
+            },
+            other => other,
+        }
     }
 
     /// The address size of plain references to this symbol, or `None` when

@@ -35,7 +35,8 @@
 //! sub-plan E's decision 13, and [`DirectPage`] is the accounting it needs.
 
 use crate::ast::TypeWidthKind;
-use crate::symbol::{DataWidth, LayoutId, Layouts};
+use crate::source::Span;
+use crate::symbol::{DataWidth, Field, FieldShape, Layout, LayoutId, Layouts};
 
 /// The bytes the direct page has, which is what makes its pool a pool.
 pub const DIRECT_PAGE_BYTES: u32 = 256;
@@ -101,6 +102,82 @@ pub fn allocation(datum: u32, span: Option<u32>, count: Option<u32>) -> Allocati
     Allocation {
         element,
         total: element.saturating_mul(count.unwrap_or(1)),
+    }
+}
+
+/// The width one field of a symbolic subscript list holds.
+///
+/// Three answers in order of nearness: what the field itself wrote, then the
+/// default the enclosing declaration set (`var baz:byte[ .a .b ]`), and
+/// `:byte` when neither said anything. The middle one is what makes a
+/// declaration-level suffix mean *default field width* on a declaration that
+/// has fields, rather than the datum width it means on one that has none.
+pub fn field_width(declared: Option<TypeWidthKind>, default: Option<DataWidth>) -> DataWidth {
+    declared
+        .map(data_width)
+        .or(default)
+        .unwrap_or(DataWidth::Byte)
+}
+
+/// A field list being packed, one field at a time.
+///
+/// Layouts are packed and sequential with no padding, so a field's offset is
+/// the sum of the sizes before it and the layout's own size is the sum of
+/// them all (`doc/symbolic-subscripts.md`, "Semantics"). Offsets are computed
+/// here, once, and stored on the [`Field`]: an access reads them rather than
+/// re-deriving them, so what a diagnostic says `.hi` is at and what the
+/// operand adds cannot drift apart.
+///
+/// It accumulates rather than being one `pack(fields)` call because a nested
+/// list has to be interned before the field naming it can be sized, and the
+/// recursion that does that also owns the complaints — a duplicate name, a
+/// count that does not fold — which are the declaring pass's and not this
+/// module's.
+#[derive(Debug, Default)]
+pub struct Packing {
+    fields: Vec<Field>,
+    size: u32,
+}
+
+impl Packing {
+    /// The field already packed under `name`, which is what makes a repeated
+    /// `.name` a diagnostic instead of a second entry nothing can reach.
+    pub fn declared(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// Appends `name` at the current offset and advances past it.
+    ///
+    /// `count` is the field's `[N]`, which is *not* the raw span a top-level
+    /// declaration's `[N]` is: `doc/symbolic-subscripts.md` gives an indexed
+    /// field element the address `field_base + index * element_width`, so a
+    /// field's bracket makes elements and is checked, where a variable's
+    /// makes a span and is not.
+    pub fn push(
+        &mut self,
+        name: &str,
+        shape: FieldShape,
+        count: u32,
+        declaration: Span,
+        layouts: &Layouts,
+    ) {
+        let field = Field {
+            name: name.to_owned(),
+            offset: self.size,
+            shape,
+            count,
+            declaration,
+        };
+        self.size = self.size.saturating_add(field.size(layouts));
+        self.fields.push(field);
+    }
+
+    /// The packed layout, ready to intern.
+    pub fn finish(self) -> Layout {
+        Layout {
+            fields: self.fields,
+            size: self.size,
+        }
     }
 }
 
@@ -195,6 +272,47 @@ mod tests {
         assert_eq!(page.pin(0x80, 2), 8);
         // A third that only partly overlaps adds the part that is new.
         assert_eq!(page.pin(0x81, 2), 9);
+    }
+
+    #[test]
+    fn a_field_takes_the_nearest_width_that_was_written() {
+        // The field's own, then the declaration's default, then `:byte`.
+        assert_eq!(
+            field_width(Some(TypeWidthKind::Word), Some(DataWidth::Far)),
+            DataWidth::Word
+        );
+        assert_eq!(field_width(None, Some(DataWidth::Far)), DataWidth::Far);
+        assert_eq!(field_width(None, None), DataWidth::Byte);
+    }
+
+    #[test]
+    fn packing_is_sequential_and_a_count_multiplies_the_field() {
+        let layouts = Layouts::default();
+        let mut map = crate::source::SourceMap::new();
+        let file = map.add_file("t.k816", "var TASKS[ .sp :word .state .str[5] ]\n");
+        let span = Span::new(file, 0, 0);
+        let mut packing = Packing::default();
+        packing.push("sp", FieldShape::Scalar(DataWidth::Word), 1, span, &layouts);
+        packing.push(
+            "state",
+            FieldShape::Scalar(DataWidth::Byte),
+            1,
+            span,
+            &layouts,
+        );
+        packing.push(
+            "str",
+            FieldShape::Scalar(DataWidth::Byte),
+            5,
+            span,
+            &layouts,
+        );
+        assert_eq!(packing.declared("state").expect("packed").offset, 2);
+        assert!(packing.declared("nope").is_none());
+
+        let layout = packing.finish();
+        assert_eq!(layout.field("str").expect("packed").offset, 3);
+        assert_eq!(layout.size, 8, "2 + 1 + 5, packed and in order");
     }
 
     #[test]

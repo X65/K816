@@ -141,9 +141,15 @@ impl DiagnosticCode {
     pub const SUBSCRIPT_NOT_CONSTANT: Self = Self("K816-E0134");
     /// A subscript index is outside the extent its declaration gives.
     pub const SUBSCRIPT_OUT_OF_RANGE: Self = Self("K816-E0135");
-    /// An `abstract var` is used where storage is required. It declares a
-    /// layout for metadata queries and reserves nothing, so it has no address
-    /// to load, store, or transfer to.
+    /// An `abstract var` meets storage, in either direction: it is used where
+    /// an address is required, or its own declaration asks for storage it
+    /// cannot have — a `dp`/`abs`/`far` prefix, an initializer, an allocation
+    /// count, a raw span, or no field list at all.
+    ///
+    /// One code for both because it is one complaint from where the author
+    /// sits: this declares a layout, and a layout has no bytes. It reserves
+    /// nothing, emits nothing, and has no address to load, store, or transfer
+    /// to (`doc/syntax-reference.md`, "Abstract symbolic layouts").
     pub const ABSTRACT_HAS_NO_STORAGE: Self = Self("K816-E0136");
     /// A call site and its callee disagree about the calling convention: a
     /// near `call` to a `far func`, or a `call far` to a near one.
@@ -173,6 +179,12 @@ impl DiagnosticCode {
     /// what this code refuses is loading it into a register
     /// (`doc/syntax-reference.md`, "Two orthogonal axes").
     pub const DATA_WIDTH_MISMATCH: Self = Self("K816-E0140");
+    /// A declaration's element count is not a positive number. Both brackets
+    /// and the allocation count are affected: `var buf[0]`, `var t * 0`, and
+    /// the field count `.str[0]` all describe storage that has no elements,
+    /// and every access to one is out of range the moment it is written
+    /// (`doc/symbolic-subscripts.md`, "Diagnostics").
+    pub const ELEMENT_COUNT_RANGE: Self = Self("K816-E0141");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -396,6 +408,7 @@ mod tests {
         DiagnosticCode::CALL_CONVENTION_MISMATCH,
         DiagnosticCode::FAR_NEEDS_ADDRESS,
         DiagnosticCode::DATA_WIDTH_MISMATCH,
+        DiagnosticCode::ELEMENT_COUNT_RANGE,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::K65_RESERVED_IMAGE,

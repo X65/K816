@@ -1010,6 +1010,112 @@ fn every_declaration_axis_reserves_and_encodes_what_it_declares() {
     assemble_and_link("vars", &assembly, "vars");
 }
 
+/// What a field list declares, and what an access to one folds to.
+///
+/// The gate is the *numbers*: a layout is offsets, an access is a constant
+/// added to a base, and a metadata query is that constant on its own. If
+/// packing and access ever disagreed about one field, they would disagree
+/// here first.
+#[test]
+fn every_field_access_folds_to_the_offset_its_layout_declares() {
+    let mut map = SourceMap::new();
+    let file = map.add_file("subscripts.k816", include_str!("golden/subscripts.k816"));
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // A layout does not change what a declaration *is*: a pinned base is
+    // still an equate, and an allocated one still reserves what its fields
+    // and its count multiply out to.
+    for equate in ["TASKS           := $4000", "COMP            := $1000"] {
+        assert!(
+            assembly.contains(equate),
+            "expected `{equate}`:\n{assembly}"
+        );
+    }
+    let sprites = assembly.find("sprites:").expect("an allocated layout");
+    assert!(
+        assembly[sprites..].contains(".res     $14"),
+        "4 elements of (2 + 2 + 1):\n{assembly}"
+    );
+    let cursor = assembly.find("cursor:").expect("a pooled layout");
+    assert!(
+        assembly[cursor..].contains(".res     $02"),
+        "the pool takes the layout's size:\n{assembly}"
+    );
+    // An `abstract var` reserves nothing and names nothing: no label, no
+    // equate, and no export. It appears in the emitted source only where the
+    // line it came from is echoed as a comment.
+    assert!(
+        !assembly
+            .lines()
+            .any(|line| line.trim_start().starts_with("DEV_HANDLER")
+                || line.contains(".export DEV_HANDLER")),
+        "a layout with no storage emits nothing:\n{assembly}"
+    );
+
+    // `:sizeof` is one element and `:offsetof` is a field's distance from
+    // the base of its variable — both integers by the time ca65 sees them.
+    for (expected, source) in [
+        ("lda     #$04", "a = TASKS:sizeof"),
+        ("lda     #$03", "a = TASKS.signals:offsetof"),
+        ("lda     #$02", "a = REGS.data.hi:offsetof"),
+        ("lda     #$04", "a = baz.len:offsetof"),
+        ("lda     #$06", "a = DEV_HANDLER:sizeof"),
+        ("lda     #$04", "a = DEV_HANDLER.init:offsetof"),
+    ] {
+        let site = assembly
+            .find(source)
+            .unwrap_or_else(|| panic!("`{source}` is in the fixture:\n{assembly}"));
+        let line = assembly[..site].rfind('\n').expect("a line start");
+        assert!(
+            assembly[line..site].contains(expected),
+            "`{source}` folds to `{expected}`:\n{assembly}"
+        );
+    }
+
+    // An access is the base plus a constant: the field's offset, the
+    // element's stride, and the field element's own width, added up.
+    for expected in [
+        "sta     a:TASKS + $02",   // .state, after a word
+        "sta     a:REGS  ",        // .status is first, so there is nothing to add
+        "sta     a:baz + $04",     // two default-width fields precede `.len`
+        "sta     z:cursor + $01",  // a pooled base keeps its one-byte encoding
+        "lda     a:COMP + $10",    // COMP[2]: two 8-byte elements
+        "lda     a:COMP + $16",    // COMP[2].str[3]: 16 + 3 + 3
+        "lda     a:COMP + $19",    // COMP[3].two: 24 + 1
+        "lda     a:COMP + $0F",    // COMP[1].str[4]: 8 + 3 + 4
+        "ldx     a:sprites + $13", // an allocated base, and ld65 adds the rest
+        "lda     a:REGS + $01",    // a nested field selects the sub-layout's base
+    ] {
+        assert!(
+            assembly.contains(expected),
+            "expected `{}`:\n{assembly}",
+            expected.trim_end()
+        );
+    }
+
+    // The two spellings of one selection produce one address.
+    let dotted = assembly.find("a = COMP[2].one").expect("the dotted form");
+    let bracketed = assembly
+        .find("a = COMP[2][.one]")
+        .expect("the bracketed form");
+    // The instruction only: the echoed source and its line number differ by
+    // construction, and neither is what the two spellings have to agree on.
+    let instruction = |site: usize| {
+        let start = assembly[..site].rfind('\n').expect("a line start");
+        let comment = assembly[start..site].find(';').expect("an echoed line");
+        assembly[start..start + comment].trim().to_owned()
+    };
+    assert_eq!(
+        instruction(dotted),
+        instruction(bracketed),
+        "`COMP[2].one` and `COMP[2][.one]` are one selection"
+    );
+
+    assemble_and_link("subscripts", &assembly, "vars");
+}
+
 /// The section kinds that are not subroutines, through the assembler.
 ///
 /// `inline` is the one construct that changes the *shape* of the operation

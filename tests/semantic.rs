@@ -857,6 +857,101 @@ var pairs:word[2] * 3
     assert_eq!((axes("pairs").2, axes("pairs").3), (4, Some(3)));
 }
 
+/// What a field list packs, and what the three widths in one declaration
+/// each decide.
+#[test]
+fn a_layout_packs_its_fields_in_order_and_nests_them() {
+    use k816::symbol::{DataWidth, FieldShape, SymbolKind};
+
+    let source = "\
+var TASKS[
+    .sp      :word
+    .state   :byte
+    .signals :byte
+] = $4000
+var baz:word[
+    .a
+    .b
+    .len :byte
+]
+var REGS[
+    .status :byte
+    .data[
+        .lo :byte
+        .hi :byte
+    ]
+] = $D000
+abstract var DEV[ .open :word .close :word .init :word ]
+";
+    let (model, diagnostics) = analyze(source);
+    assert_eq!(diagnostics, vec![]);
+
+    let layout_of = |name: &str| {
+        let id = model.symbols.lookup(name).expect("declared");
+        match model.symbols.symbol(id).kind {
+            SymbolKind::Var { layout, .. } => layout.expect("a field list"),
+            SymbolKind::AbstractVar { layout } => layout,
+            other => panic!("`{name}` is {other:?}"),
+        }
+    };
+
+    // Packed and sequential, with no padding: each offset is the sum of the
+    // sizes before it, and the layout's size is the sum of them all.
+    let tasks = model.symbols.layout(layout_of("TASKS"));
+    assert_eq!(tasks.size, 4);
+    assert_eq!(tasks.field("sp").expect("packed").offset, 0);
+    assert_eq!(tasks.field("state").expect("packed").offset, 2);
+    assert_eq!(tasks.field("signals").expect("packed").offset, 3);
+
+    // The declaration's `:word` is the *default field width* here, and a
+    // field that names its own replaces it — so the symbol itself claims no
+    // datum width at all, since the datum is the whole layout.
+    let baz = model.symbols.layout(layout_of("baz"));
+    assert_eq!(baz.size, 5);
+    assert_eq!(
+        baz.field("a").expect("packed").shape,
+        FieldShape::Scalar(DataWidth::Word)
+    );
+    assert_eq!(
+        baz.field("len").expect("packed").shape,
+        FieldShape::Scalar(DataWidth::Byte)
+    );
+    let SymbolKind::Var { width, element, .. } = model
+        .symbols
+        .symbol(model.symbols.lookup("baz").expect("declared"))
+        .kind
+    else {
+        panic!("`baz` is a variable");
+    };
+    assert_eq!(width, None, "the suffix went to the fields, not the datum");
+    assert_eq!(element, 5, "and `baz:sizeof` is the layout's size");
+
+    // A nested field is sized by the layout it names, and its own fields
+    // keep offsets relative to it.
+    let regs = model.symbols.layout(layout_of("REGS"));
+    assert_eq!(regs.size, 3);
+    let data = regs.field("data").expect("packed");
+    assert_eq!(data.offset, 1);
+    let FieldShape::Nested(inner) = data.shape else {
+        panic!("`.data` nests");
+    };
+    let inner = model.symbols.layout(inner);
+    assert_eq!(inner.size, 2);
+    assert_eq!(inner.field("hi").expect("packed").offset, 1);
+
+    // A layout with no storage answers the same questions and reserves
+    // nothing.
+    assert_eq!(model.symbols.layout(layout_of("DEV")).size, 6);
+    let dev = model.symbols.lookup("DEV").expect("declared");
+    assert!(
+        !model
+            .reservations
+            .values()
+            .any(|reservation| reservation.symbol == dev),
+        "an `abstract var` asks the linker for nothing"
+    );
+}
+
 /// What a declaration reserves, and which of them reserve nothing.
 #[test]
 fn only_an_allocated_variable_asks_the_linker_for_bytes() {

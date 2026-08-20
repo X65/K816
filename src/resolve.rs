@@ -49,9 +49,9 @@ use std::collections::BTreeMap;
 
 use crate::ast::{
     AddressEncoding as AstEncoding, AddressOperand, BlockMoveOperand, DataBlock, DataEntry,
-    DataEntryKind, DataValue, Expr, ExprKind, HlaOperand, HlaOperandKind, IndexRegisterKind,
-    IndirectOperand, LongIndirectOperand, Name, NativeInstruction, NativeOperand, Register,
-    StorageClassKind, SubscriptExpr,
+    DataEntryKind, DataValue, Expr, ExprKind, FieldAccess, HlaOperand, HlaOperandKind,
+    IndexRegisterKind, IndirectOperand, LongIndirectOperand, MetadataQuery, MetadataQueryKind,
+    Name, NativeInstruction, NativeOperand, Register, StorageClassKind, SubscriptExpr,
 };
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
@@ -66,7 +66,9 @@ use crate::op::{
     Operand, Origin, SegmentName,
 };
 use crate::source::{Provenance, Span};
-use crate::symbol::{AddressSize, DataWidth, SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{
+    AddressSize, DataWidth, FieldShape, LayoutId, SymbolId, SymbolKind, SymbolTable,
+};
 use crate::value::{BinaryOp, KExpr, UnaryOp, Value};
 use crate::width::Axis;
 
@@ -219,32 +221,224 @@ fn unknown_width(
     diagnostic
 }
 
-/// The name a subscript or a typed view is ultimately *of*.
+/// The name an access path is ultimately *of*.
 ///
-/// `COMP[2]`, `COMP:word`, and `COMP` all name `COMP`; arithmetic over one
-/// does not, because the result is an address and not the variable. It is
-/// what decides an access's encoding and its element size, and both have to
-/// be the declaration's answer rather than the expression's shape.
+/// `COMP[2].two`, `COMP:word`, and `COMP` all name `COMP`; arithmetic over
+/// one does not, because the result is an address and not the variable. It is
+/// what decides an access's encoding — every step of a path is a constant
+/// offset from the declaration's own base, so a field of a direct-page
+/// variable is still in the direct page.
 fn base_name(expr: &Expr) -> Option<&Name> {
     match &expr.kind {
         ExprKind::Symbol(name) => Some(name),
+        ExprKind::Field(access) => base_name(&access.base),
         ExprKind::Subscript(subscript) => base_name(&subscript.base),
         ExprKind::TypedView(view) => base_name(&view.base),
         _ => None,
     }
 }
 
+/// One resolved access path: where it starts, how far into it the path
+/// reached, and what it landed on.
+///
+/// `TASKS`, `TASKS.sp`, `TASKS[2].str[3]`, and `TASKS.sp:word` are all one
+/// walk. Every step contributes a *constant* offset — that is decision 15,
+/// and it is what lets the emitted operand be the declaration's own name plus
+/// a number, and what lets `:offsetof` answer at all.
+#[derive(Clone, Debug)]
+struct Access {
+    /// The folded root: a symbol most of the time, and whatever expression a
+    /// subscript happened to sit on otherwise.
+    base: KExpr,
+    /// Bytes between the root's address and what the path selected.
+    offset: u32,
+    /// The root symbol, when the path starts at a declared name.
+    root: Option<SymbolId>,
+    place: Place,
+}
+
+/// What a path has reached, and what one more step would do to it.
+///
+/// Every field is optional because a path can be rooted in something that
+/// declared nothing — a literal, a local label, arithmetic — and a
+/// declaration that said nothing must not be read as one that said the
+/// default (`postmortem.md` §E.1.17, the same rule as the unwritten `:`).
+#[derive(Clone, Copy, Debug, Default)]
+struct Place {
+    /// The bytes the selection occupies: `:sizeof`'s answer.
+    size: Option<u32>,
+    /// Its declared data width, and where the declaration said so.
+    width: Option<(DataWidth, Span)>,
+    /// The layout a further `.field` step would look in.
+    layout: Option<LayoutId>,
+    /// What a further `[i]` step would stride by, and how far it may go.
+    extent: Option<Extent>,
+    /// The `.field` the last step selected, when it selected one. It is what
+    /// makes `:offsetof` legal, since an offset is only ever a field's.
+    field: Option<Span>,
+}
+
+/// The stride and the extent of a bracket step.
+///
+/// The two brackets in the language differ here and nowhere else. A field's
+/// `[N]` makes elements — `doc/symbolic-subscripts.md` gives an indexed field
+/// element the address `field_base + index * element_width` — so it strides
+/// by the element and is checked against `N`. A declaration's `[N]` is a raw
+/// span with no element metadata, so it strides one byte and there is nothing
+/// to check; only `* count` gives a variable elements of its own.
+#[derive(Clone, Copy, Debug)]
+struct Extent {
+    stride: u32,
+    /// The number of elements, when a declaration fixes one.
+    count: Option<u32>,
+}
+
+/// A layout used where a value is needed.
+fn abstract_has_no_storage(name: &str, span: Span, declaration: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
+        format!("`{name}` is an `abstract var`, which has no storage"),
+        Label::new(span, "a layout, not a memory location"),
+    )
+    .with_secondary(Label::new(declaration, "declared here"))
+    .with_help(format!(
+        "query the layout with `{name}:sizeof` or `{name}.field:offsetof`, or declare a \
+         `var` with the same fields to give it storage"
+    ))
+    .with_docs("doc/symbolic-subscripts.md#abstract-layout-only-form")
+}
+
+/// A `.field` step on something that has no fields to select from.
+fn selection_without_fields(base: &Expr, field: &Name, described: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        format!("{described} has no fields"),
+        Label::new(field.span, "no field list declares this"),
+    )
+    .with_secondary(Label::new(base.span, "selected from here"))
+    .with_note(
+        "only a declaration written with a field list — `var NAME[ .lo :byte ]` — has \
+         fields to select",
+    )
+    .with_docs("doc/symbolic-subscripts.md#declaration-syntax")
+}
+
+/// A `.field` step naming something the layout does not declare.
+fn unknown_field(field: &Name, owner: &str, candidates: &[String]) -> Diagnostic {
+    let name = field.text.trim_start_matches('.');
+    let mut diagnostic = Diagnostic::error(
+        DiagnosticCode::UNDECLARED_SYMBOL,
+        format!("`{owner}` has no field `{}`", field.text),
+        Label::new(field.span, "no such field"),
+    );
+    if let Some(nearest) = nearest_name(name, candidates) {
+        diagnostic = diagnostic
+            .with_help(format!("there is a field `.{nearest}`"))
+            .with_fix(Fix {
+                title: format!("change it to `.{nearest}`"),
+                applicability: Applicability::MaybeIncorrect,
+                edits: vec![TextEdit::replace(field.span, format!(".{nearest}"))],
+            });
+    } else if candidates.is_empty() {
+        diagnostic = diagnostic.with_note("this layout declares no fields at all");
+    } else {
+        diagnostic = diagnostic.with_note(format!(
+            "`{owner}` declares {}",
+            candidates
+                .iter()
+                .map(|field| format!("`.{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    diagnostic.with_docs("doc/symbolic-subscripts.md#access-syntax")
+}
+
+/// The nearest of `candidates` to `name`, when one is near enough to suggest.
+///
+/// Near enough is a third of the name's length, rounded down, and at least
+/// one: a suggestion that shares less than that is noise, and offering the
+/// wrong field is worse than offering none.
+fn nearest_name<'a>(name: &str, candidates: &'a [String]) -> Option<&'a str> {
+    let budget = (name.chars().count() / 3).max(1);
+    candidates
+        .iter()
+        .map(|candidate| (edit_distance(name, candidate), candidate))
+        .filter(|(distance, _)| *distance <= budget)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| candidate.as_str())
+}
+
+/// The Levenshtein distance between two names, over one row of the matrix.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut row: Vec<usize> = (0..=right.len()).collect();
+    for (i, from) in left.chars().enumerate() {
+        let mut previous = row[0];
+        row[0] = i + 1;
+        for (j, to) in right.iter().enumerate() {
+            let substitute = previous + usize::from(from != *to);
+            previous = row[j + 1];
+            row[j + 1] = substitute.min(row[j] + 1).min(previous + 1);
+        }
+    }
+    row[right.len()]
+}
+
+/// A metadata query asked of something that cannot answer it.
+fn no_metadata(query: &MetadataQuery, span: Span, what: &str) -> Diagnostic {
+    let suffix = match query.query {
+        MetadataQueryKind::SizeOf => ":sizeof",
+        MetadataQueryKind::OffsetOf => ":offsetof",
+    };
+    Diagnostic::error(
+        DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        format!("`{suffix}` needs {what}"),
+        Label::new(query.query_span, format!("nothing here answers `{suffix}`")),
+    )
+    .with_secondary(Label::new(span, "asked of this"))
+    .with_note(
+        "`:sizeof` is the size of a variable element or a field, and `:offsetof` is a \
+         field's distance from the base of its variable",
+    )
+    .with_docs("doc/syntax-reference.md#metadata-query-suffixes")
+}
+
 /// An index outside the extent its declaration gives.
-fn subscript_out_of_range(subscript: &SubscriptExpr, index: u32, repeat: u32) -> Diagnostic {
-    let last = repeat.saturating_sub(1);
+///
+/// The two brackets fail differently and the wording follows: a variable's
+/// extent comes from its `* count`, and a field's from its `[N]` — where the
+/// unwritten one is a single element, and indexing that is not a range error
+/// so much as a misreading of what the field is.
+fn subscript_out_of_range(subscript: &SubscriptExpr, index: u32, count: u32) -> Diagnostic {
+    let owner = match &subscript.base.kind {
+        ExprKind::Field(access) => format!("`{}`", access.field.text),
+        _ => "this variable".to_owned(),
+    };
+    if count == 1 {
+        return Diagnostic::error(
+            DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
+            format!("{owner} is a single element, and `[{index}]` names another"),
+            Label::new(subscript.index.span, "the only index is 0"),
+        )
+        .with_note(
+            "a declaration with no count declares one element, so there is nothing for \
+             an index to select",
+        )
+        .with_help("declare how many there are — `:byte [4]` on a field, `* 4` on a variable")
+        .with_docs("doc/syntax-reference.md#repeat-element-accessors");
+    }
     Diagnostic::error(
         DiagnosticCode::SUBSCRIPT_OUT_OF_RANGE,
-        format!("element {index} is outside this variable's {repeat} elements"),
-        Label::new(subscript.index.span, format!("the last element is {last}")),
+        format!("element {index} is outside the {count} elements of {owner}"),
+        Label::new(
+            subscript.index.span,
+            format!("the last element is {}", count - 1),
+        ),
     )
     .with_note(
-        "an allocation count fixes how many elements a variable has, and an index past \
-         them names storage the declaration did not reserve",
+        "a declared count fixes how many elements there are, and an index past them \
+         names storage the declaration did not reserve",
     )
     .with_docs("doc/syntax-reference.md#repeat-element-accessors")
 }
@@ -455,72 +649,7 @@ impl<'a> Resolver<'a> {
             ExprKind::Number(value) => Some(KExpr::number(*value)),
             ExprKind::Symbol(name) => {
                 let id = self.resolve(&name.text, name.span)?;
-                match self.symbols.kind(id) {
-                    // A `const` has no storage, so it can only ever be its
-                    // value; everything else keeps its name for ca65/ld65.
-                    SymbolKind::Const { value } => Some(KExpr::number(value)),
-                    // An `abstract var` has neither a value nor a place, so
-                    // there is nothing for a mention of one to fold to. It is
-                    // reported here rather than at each position that rejects
-                    // it, because this is the single point where a name
-                    // becomes a value.
-                    SymbolKind::AbstractVar { .. } => {
-                        let declaration = self.symbols.symbol(id).declaration;
-                        self.report(
-                            Diagnostic::error(
-                                DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
-                                format!("`{}` is an `abstract var`, which has no storage", name.text),
-                                Label::new(name.span, "a layout, not a memory location"),
-                            )
-                            .with_secondary(Label::new(declaration, "declared here"))
-                            .with_help(format!(
-                                "query the layout with `{0}:sizeof` or `{0}.field:offsetof`, or declare a `var` with the same fields to give it storage",
-                                name.text
-                            ))
-                            .with_docs("doc/symbolic-subscripts.md#abstract-layout-only-form"),
-                        );
-                        None
-                    }
-                    // An `inline` is a body, not a place: nothing links to
-                    // it, so a mention of one outside a use site has nothing
-                    // to become. Reported here for the same reason as an
-                    // `abstract var` — this is the single point where a name
-                    // becomes a value.
-                    SymbolKind::Inline => {
-                        let declaration = self.symbols.symbol(id).declaration;
-                        self.report(
-                            Diagnostic::error(
-                                DiagnosticCode::SYMBOL_KIND_MISMATCH,
-                                format!("`{}` is an `inline`, which has no address", name.text),
-                                Label::new(name.span, "a body that is expanded, not a place"),
-                            )
-                            .with_secondary(Label::new(declaration, "declared here"))
-                            .with_note(
-                                "an `inline` is copied into each use site, so there is no one \
-                     address for a reference to name",
-                            )
-                            .with_help(format!(
-                                "write `{}` on its own to expand it, or make it a `func` to \
-                     give it an address",
-                                name.text
-                            ))
-                            .with_docs("doc/syntax-reference.md#inline"),
-                        );
-                        None
-                    }
-                    // An alias is whatever the use site passed, where a use
-                    // site is what is being lowered; at the declaration there
-                    // is nothing bound and the alias stays itself, which is
-                    // what lets the body be classified once with a shape
-                    // rather than with a hole.
-                    SymbolKind::Alias { .. } => {
-                        Some(self.aliases.get(&id).cloned().unwrap_or(KExpr::Symbol(id)))
-                    }
-                    SymbolKind::Var { .. }
-                    | SymbolKind::Label { .. }
-                    | SymbolKind::DataLabel { .. }
-                    | SymbolKind::Function { .. } => Some(KExpr::Symbol(id)),
-                }
+                self.symbol_value(id, name.span)
             }
             ExprKind::LocalSymbol(name) => {
                 let id = self.resolve_local(&name.text, name.span)?;
@@ -545,15 +674,15 @@ impl<'a> Resolver<'a> {
             // about which one it is, so the value it folds to is the base's.
             // The width it declares is read where widths are checked.
             ExprKind::TypedView(view) => self.fold(&view.base),
-            ExprKind::Subscript(subscript) => self.subscript(subscript),
-            ExprKind::Field(_) | ExprKind::Metadata(_) => {
-                self.report(compat::unimplemented(
-                    expr.span,
-                    "symbolic subscripts and metadata queries",
-                    compat::Owner::HlaLowering,
-                ));
-                None
+            // An access path is a base and a constant offset, and folding one
+            // is asking for its address. Which is why the walk is shared with
+            // `:sizeof` and `:offsetof` but the *address* is not: a layout
+            // answers those two and has no address to give.
+            ExprKind::Field(_) | ExprKind::Subscript(_) => {
+                let access = self.access(expr)?;
+                self.address_of(&access, expr.span)
             }
+            ExprKind::Metadata(query) => self.metadata(query, expr.span),
             ExprKind::Eval(_) => {
                 self.report(compat::unimplemented(
                     expr.span,
@@ -567,25 +696,225 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Folds `NAME[i]`, which is compile-time address arithmetic and never
-    /// anything else.
+    /// The value a plain reference to `id` folds to.
     ///
-    /// Two different things wear the same bracket, and the declaration
-    /// decides which. A variable declared with `* count` has *repeat
-    /// elements*: the index counts elements, strides by the element size, and
-    /// is checked against the count. A variable without one — including the
-    /// raw span `var buf[16]` — has no element metadata at all, and the
-    /// document is explicit that the bracket there "remains ordinary
-    /// byte-offset arithmetic". Both are addition; they differ in what is
-    /// added and in what is checked.
+    /// Shared by the two paths that turn a name into something: an
+    /// expression, and the root of an access path. It is the single point
+    /// where a name becomes a value, which is why the kinds that have no
+    /// value are refused *here* rather than at each position that rejects
+    /// them.
+    fn symbol_value(&mut self, id: SymbolId, span: Span) -> Option<KExpr> {
+        match self.symbols.kind(id) {
+            // A `const` has no storage, so it can only ever be its value;
+            // everything else keeps its name for ca65/ld65.
+            SymbolKind::Const { value } => Some(KExpr::number(value)),
+            // An `abstract var` has neither a value nor a place, so there is
+            // nothing for a mention of one to fold to.
+            SymbolKind::AbstractVar { .. } => {
+                let declaration = self.symbols.symbol(id).declaration;
+                let name = self.symbols.name(id).to_owned();
+                self.report(abstract_has_no_storage(&name, span, declaration));
+                None
+            }
+            // An `inline` is a body, not a place: nothing links to it, so a
+            // mention of one outside a use site has nothing to become.
+            SymbolKind::Inline => {
+                let declaration = self.symbols.symbol(id).declaration;
+                let name = self.symbols.name(id).to_owned();
+                self.report(
+                    Diagnostic::error(
+                        DiagnosticCode::SYMBOL_KIND_MISMATCH,
+                        format!("`{name}` is an `inline`, which has no address"),
+                        Label::new(span, "a body that is expanded, not a place"),
+                    )
+                    .with_secondary(Label::new(declaration, "declared here"))
+                    .with_note(
+                        "an `inline` is copied into each use site, so there is no one \
+                         address for a reference to name",
+                    )
+                    .with_help(format!(
+                        "write `{name}` on its own to expand it, or make it a `func` to \
+                         give it an address"
+                    ))
+                    .with_docs("doc/syntax-reference.md#inline"),
+                );
+                None
+            }
+            // An alias is whatever the use site passed, where a use site is
+            // what is being lowered; at the declaration there is nothing
+            // bound and the alias stays itself, which is what lets the body
+            // be classified once with a shape rather than with a hole.
+            SymbolKind::Alias { .. } => {
+                Some(self.aliases.get(&id).cloned().unwrap_or(KExpr::Symbol(id)))
+            }
+            SymbolKind::Var { .. }
+            | SymbolKind::Label { .. }
+            | SymbolKind::DataLabel { .. }
+            | SymbolKind::Function { .. } => Some(KExpr::Symbol(id)),
+        }
+    }
+
+    /// Walks an access path — `NAME`, `.field` steps, `[i]` steps, and typed
+    /// views over any of them — into a base, a constant offset, and a
+    /// description of what it landed on.
+    ///
+    /// One walk for every consumer, which is decision 15's real content:
+    /// `TASKS.state`'s address, `TASKS.state:sizeof`, `TASKS.state:offsetof`,
+    /// and the width `lda TASKS.state` is checked against are four questions
+    /// about one path, and answering them separately is how they come to
+    /// disagree.
+    fn access(&mut self, expr: &Expr) -> Option<Access> {
+        match &expr.kind {
+            ExprKind::Symbol(name) => {
+                let id = self.resolve(&name.text, name.span)?;
+                let place = self.place_of(id);
+                // A layout is not refused here: whether having no address is
+                // a problem depends on what the path is *for*, and
+                // `DEV_HANDLER.init:offsetof` is the case that must not be.
+                let base = match self.symbols.kind(id) {
+                    SymbolKind::AbstractVar { .. } => KExpr::Symbol(id),
+                    _ => self.symbol_value(id, name.span)?,
+                };
+                Some(Access {
+                    base,
+                    offset: 0,
+                    root: Some(id),
+                    place,
+                })
+            }
+            ExprKind::Field(field) => {
+                let base = self.access(&field.base)?;
+                self.select_field(base, field)
+            }
+            ExprKind::Subscript(subscript) => {
+                let base = self.access(&subscript.base)?;
+                self.element(base, subscript)
+            }
+            // A typed view restates how wide the datum is and says nothing
+            // about which one it is, so it replaces the width the path
+            // carries and leaves every other answer alone.
+            ExprKind::TypedView(view) => {
+                let mut access = self.access(&view.base)?;
+                access.place.width = Some((layout::data_width(view.width.kind), view.width.span));
+                Some(access)
+            }
+            // Anything else is a root that declared nothing: a literal, a
+            // local label, arithmetic. It still has an address to offset
+            // from; it just has no extent, no width, and no fields.
+            _ => Some(Access {
+                base: self.fold(expr)?,
+                offset: 0,
+                root: None,
+                place: Place::default(),
+            }),
+        }
+    }
+
+    /// What a declared name is, as an access path sees it.
+    fn place_of(&self, id: SymbolId) -> Place {
+        match self.symbols.kind(id) {
+            SymbolKind::Var {
+                width,
+                element,
+                repeat,
+                layout,
+                ..
+            } => Place {
+                size: Some(element),
+                width: width.map(|width| (width, self.symbols.symbol(id).declaration)),
+                layout,
+                // Only `* count` gives a variable elements. Without one the
+                // bracket steps bytes and has nothing to be checked against,
+                // which is the document's own wording and covers the raw
+                // span too.
+                extent: Some(Extent {
+                    stride: if repeat.is_some() { element } else { 1 },
+                    count: repeat,
+                }),
+                field: None,
+            },
+            SymbolKind::AbstractVar { layout } => Place {
+                size: Some(self.symbols.layout(layout).size),
+                width: None,
+                layout: Some(layout),
+                // A layout has no storage, so it has no elements either: an
+                // allocation count is one of the forms its declaration may
+                // not write.
+                extent: None,
+                field: None,
+            },
+            _ => Place::default(),
+        }
+    }
+
+    /// Takes one `.field` step, which adds the field's offset and narrows the
+    /// path to what that field holds.
+    fn select_field(&mut self, base: Access, access: &FieldAccess) -> Option<Access> {
+        let name = access.field.text.trim_start_matches('.');
+        let Some(layout) = base.place.layout else {
+            let described = match base.root {
+                Some(id) => format!("`{}`", self.symbols.name(id)),
+                None => "this".to_owned(),
+            };
+            self.report(selection_without_fields(
+                &access.base,
+                &access.field,
+                &described,
+            ));
+            return None;
+        };
+        let layouts = self.symbols.layouts();
+        let Some(field) = self.symbols.layout(layout).field(name) else {
+            let owner = base.root.map_or_else(
+                || "this layout".to_owned(),
+                |id| self.symbols.name(id).to_owned(),
+            );
+            let candidates: Vec<String> = self
+                .symbols
+                .layout(layout)
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect();
+            self.report(unknown_field(&access.field, &owner, &candidates));
+            return None;
+        };
+        let place = Place {
+            size: Some(field.size(layouts)),
+            width: match field.shape {
+                FieldShape::Scalar(width) => Some((width, field.declaration)),
+                // A nested list is a struct, and a struct has no register to
+                // agree or disagree with.
+                FieldShape::Nested(_) => None,
+            },
+            layout: match field.shape {
+                FieldShape::Nested(layout) => Some(layout),
+                FieldShape::Scalar(_) => None,
+            },
+            // A field's own bracket is a count, checked: this is where the
+            // two brackets of the language part company.
+            extent: Some(Extent {
+                stride: field.element_size(layouts),
+                count: Some(field.count),
+            }),
+            field: Some(access.field.span),
+        };
+        let offset = base.offset.saturating_add(field.offset);
+        Some(Access {
+            base: base.base,
+            offset,
+            root: base.root,
+            place,
+        })
+    }
+
+    /// Takes one `[i]` step, which is compile-time address arithmetic and
+    /// never anything else.
     ///
     /// The index must fold. A run-time index is the CPU's indexed addressing
     /// modes, which are a different spelling for a different thing.
-    fn subscript(&mut self, subscript: &SubscriptExpr) -> Option<KExpr> {
-        let base = self.fold(&subscript.base);
-        let Some(index) = self.fold(&subscript.index) else {
-            return base.and(None);
-        };
+    fn element(&mut self, base: Access, subscript: &SubscriptExpr) -> Option<Access> {
+        let index = self.fold(&subscript.index)?;
         let Some(index) = index.value().map(|value| value.get()) else {
             self.report(
                 Diagnostic::error(
@@ -603,49 +932,87 @@ impl<'a> Resolver<'a> {
                 )
                 .with_docs("doc/syntax-reference.md#repeat-element-accessors"),
             );
-            return base.and(None);
+            return None;
         };
-        let base = base?;
+        let extent = base.place.extent.unwrap_or(Extent {
+            stride: 1,
+            count: None,
+        });
+        if let Some(count) = extent.count
+            && index >= count
+        {
+            self.report(subscript_out_of_range(subscript, index, count));
+            return None;
+        }
+        let place = Place {
+            // One element of what was indexed, so its width and its layout
+            // survive the step and its extent does not.
+            size: Some(extent.stride),
+            extent: None,
+            ..base.place
+        };
+        let offset = base
+            .offset
+            .saturating_add(index.saturating_mul(extent.stride));
+        Some(Access {
+            base: base.base,
+            offset,
+            root: base.root,
+            place,
+        })
+    }
 
-        // The repeat count is what creates elements. Without one — an
-        // untyped name, or the raw span `var buf[16]` — the bracket steps
-        // bytes, which is the document's own wording for that case.
-        let stride = match self.subscript_element(&subscript.base) {
-            Some((element, Some(repeat))) => {
-                if index >= repeat {
-                    self.report(subscript_out_of_range(subscript, index, repeat));
-                    return None;
-                }
-                element
-            }
-            _ => 1,
-        };
-        let offset = index.saturating_mul(stride);
-        if offset == 0 {
-            // `NAME[0]` is `NAME`. Emitting `NAME + 0` would assemble to the
-            // same bytes and read like arithmetic nobody wrote.
-            return Some(base);
+    /// The address an access path denotes.
+    ///
+    /// This is the one question a layout cannot answer, so it is the one
+    /// place `abstract var` is refused. `NAME[0]` and a path whose steps all
+    /// landed at zero return the base unchanged: `NAME + 0` assembles to the
+    /// same bytes and reads like arithmetic nobody wrote.
+    fn address_of(&mut self, access: &Access, span: Span) -> Option<KExpr> {
+        if let Some(root) = access.root
+            && matches!(self.symbols.kind(root), SymbolKind::AbstractVar { .. })
+        {
+            let declaration = self.symbols.symbol(root).declaration;
+            let name = self.symbols.name(root).to_owned();
+            self.report(abstract_has_no_storage(&name, span, declaration));
+            return None;
+        }
+        if access.offset == 0 {
+            return Some(access.base.clone());
         }
         Some(KExpr::fold_binary(
             BinaryOp::Add,
-            base,
-            KExpr::number(offset),
+            access.base.clone(),
+            KExpr::number(access.offset),
         ))
     }
 
-    /// The element stride and the repeat count of a subscript's base.
+    /// Folds `NAME:sizeof` and `NAME.field:offsetof` to the integers they
+    /// are, which is all they ever are (decision 15).
     ///
-    /// `None` when the base is not a variable: an expression K816 cannot
-    /// name has no declared element size, and byte arithmetic is the only
-    /// honest answer for it.
-    fn subscript_element(&self, base: &Expr) -> Option<(u32, Option<u32>)> {
-        let name = base_name(base)?;
-        let id = self.symbols.lookup(&name.text)?;
-        match self.symbols.kind(id) {
-            SymbolKind::Var {
-                element, repeat, ..
-            } => Some((element, repeat)),
-            _ => None,
+    /// Deliberately *not* an address: a metadata query walks the same path an
+    /// access does and then asks the path about itself, so an `abstract var`
+    /// — which has no address and exists for exactly this — answers both.
+    fn metadata(&mut self, query: &MetadataQuery, span: Span) -> Option<KExpr> {
+        let access = self.access(&query.base)?;
+        match query.query {
+            MetadataQueryKind::SizeOf => match access.place.size {
+                Some(size) => Some(KExpr::number(size)),
+                None => {
+                    self.report(no_metadata(query, span, "a variable or a field"));
+                    None
+                }
+            },
+            // An offset is a field's distance from its variable's base, so a
+            // path that selected no field has none — `counter:offsetof` is
+            // not zero, it is a question about nothing.
+            MetadataQueryKind::OffsetOf => match access.place.field {
+                Some(_) => Some(KExpr::number(access.offset)),
+                None => {
+                    self.report(no_metadata(query, span, "a field"));
+                    None
+                }
+            },
         }
     }
 
@@ -856,7 +1223,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// True when `expr` denotes a value rather than a place: a literal, a
-    /// `const`, an address-byte operator, or arithmetic over those.
+    /// `const`, a metadata query, an address-byte operator, or arithmetic
+    /// over those.
     ///
     /// A name K816 cannot resolve counts as a place, so the operand keeps its
     /// address reading and classification reports the undeclared symbol —
@@ -871,6 +1239,11 @@ impl<'a> Resolver<'a> {
                     .map(|id| self.symbols.kind(id)),
                 Some(SymbolKind::Const { .. })
             ),
+            // `:sizeof` and `:offsetof` fold to integers at analysis time
+            // and are ordinary constants afterwards (sub-plan E, decision
+            // 15), so they read on the value side exactly as a `const` does.
+            // A `.field` or `[i]` step is the opposite: those name a place.
+            ExprKind::Metadata(_) => true,
             ExprKind::Unary(unary) => match unary.op {
                 UnaryOp::LowByte | UnaryOp::HighByte | UnaryOp::Address16 | UnaryOp::Address24 => {
                     true
@@ -1130,28 +1503,20 @@ impl<'a> Resolver<'a> {
 
     /// The data width one address expression declares, and where it said so.
     ///
-    /// A use-site typed view is the nearer answer and overrides the
-    /// declaration's, which is what makes `lda far x:byte` a one-byte view of
-    /// a variable declared however it was. An expression that is neither a
-    /// name nor a view of one — arithmetic, a literal, an address-of —
-    /// declares nothing, and nothing is not a width to disagree with.
+    /// The access path's answer, so `TASKS.state` is checked against the
+    /// field's width and not the variable's. A use-site typed view is the
+    /// nearer answer and overrides the declaration's, which is what makes
+    /// `lda far x:byte` a one-byte view of a variable declared however it
+    /// was. An expression that declares nothing — arithmetic, a literal, an
+    /// address-of — has no width to disagree with.
     fn declared_width(&self, value: &Expr) -> Option<(DataWidth, Span)> {
-        match &value.kind {
-            ExprKind::TypedView(view) => {
-                Some((layout::data_width(view.width.kind), view.width.span))
-            }
-            ExprKind::Subscript(subscript) => self.declared_width(&subscript.base),
-            ExprKind::Symbol(name) => {
-                let id = self.symbols.lookup(&name.text)?;
-                match self.symbols.kind(id) {
-                    SymbolKind::Var {
-                        width: Some(width), ..
-                    } => Some((width, self.symbols.symbol(id).declaration)),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
+        // A quiet probe: the operand was folded for real before this check
+        // runs, and every diagnostic the path deserves was reported there.
+        let mut probe = Resolver::new(self.symbols)
+            .in_function(self.function)
+            .with_widths(self.widths)
+            .with_aliases(self.aliases.clone());
+        probe.access(value)?.place.width
     }
 
     /// Narrows a mnemonic's specs to one by source form, for the forms whose

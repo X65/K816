@@ -72,7 +72,9 @@ struct Row {
 const MATRIX: &[Row] = &[
     Row {
         section: "Width-dependent instructions",
-        source: "func main {\n    lda #$01\n}\n",
+        // Not `main`: the entry point takes its widths from the ABI, so it
+        // is the one function that cannot reach this error.
+        source: "func f {\n    lda #$01\n}\n",
         stage: Stage::Modelled,
         difference: "",
         expected: &[],
@@ -108,6 +110,25 @@ func wide_all @a16 @i16 {
         diagnostic: None,
     },
     Row {
+        section: "The entry point",
+        // Unannotated, and still sized: the widths are the environment's.
+        source: "func main {\n    lda #$01\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[".a8", ".i8", "lda     #$01"],
+        diagnostic: None,
+    },
+    Row {
+        section: "The entry point",
+        // Annotated, which is still a request today: the setup that reaches
+        // the annotation, and the ABI for the axis it did not mention.
+        source: "func main @a16 {\n    lda #$0102\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &["rep     #$20", ".a16", ".i8", "lda     #$0102"],
+        diagnostic: None,
+    },
+    Row {
         section: "Call-site bridging",
         source: "\
 func wide_a @a16 {
@@ -126,7 +147,7 @@ func uncolored {
     nop
 }
 
-func main {
+func caller {
     call wide_a
     call narrow
     call wide_all

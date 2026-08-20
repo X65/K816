@@ -40,7 +40,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
-use crate::op::ModeState;
 use crate::parser;
 use crate::semantic;
 use crate::source::{FileId, SourceMap, Span};
@@ -169,7 +168,7 @@ impl Linkage {
                 let callees = local_contracts(model, &contracts);
                 let (analysis, _) = width::analyze_function(
                     body,
-                    ModeState::from_contract(info.contract),
+                    crate::abi::entry_state(info.is_entry_point, info.contract),
                     &width::Context {
                         symbols: &model.symbols,
                         function: Some(info.symbol),

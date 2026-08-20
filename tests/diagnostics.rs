@@ -108,8 +108,11 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::IMMEDIATE_RANGE,
         caret: "$100",
     },
+    // An ordinary function, not `main`: the entry point's widths come from
+    // the ABI whether it annotated them or not, so it is the one function
+    // that cannot reach this.
     Case {
-        source: "func main { lda #1 }\n",
+        source: "func f { lda #1 }\n",
         code: DiagnosticCode::UNKNOWN_WIDTH,
         caret: "1",
     },

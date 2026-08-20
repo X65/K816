@@ -119,7 +119,9 @@ func main @a8 @i16 {
 
 #[test]
 fn width_dependent_immediate_without_contract_is_rejected() {
-    let (_, diagnostics) = analyze("func main {\n    a = #1\n}\n");
+    // An ordinary function: its caller is bridged at the call site, so an
+    // axis it did not annotate is genuinely unknown here.
+    let (_, diagnostics) = analyze("func f {\n    a = #1\n}\n");
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].code, DiagnosticCode::UNKNOWN_WIDTH);
     assert_eq!(
@@ -129,11 +131,36 @@ fn width_dependent_immediate_without_contract_is_rejected() {
 
     // And it is the *same* refusal the native spelling gets, down to the
     // help and notes: one operand model answers for both syntaxes.
-    let (_, native) = analyze("func main {\n    lda #1\n}\n");
+    let (_, native) = analyze("func f {\n    lda #1\n}\n");
     assert_eq!(native.len(), 1);
     assert_eq!(native[0].code, diagnostics[0].code);
     assert_eq!(native[0].help, diagnostics[0].help);
     assert_eq!(native[0].notes, diagnostics[0].notes);
+}
+
+/// The entry point is the exception, and this is what the entry ABI buys.
+///
+/// `main`'s caller is the environment, which cannot be bridged, so its widths
+/// are the environment's whether it annotated them or not. An unannotated
+/// legacy `main` therefore sizes its immediates instead of reporting one
+/// `K816-E0104` per immediate — which is the whole reason the ABI exists as a
+/// value rather than as an assumption in two passes.
+#[test]
+fn the_entry_point_takes_its_widths_from_the_environment() {
+    let (_, diagnostics) = analyze("func main {\n    a = #1\n    x = #2\n}\n");
+    assert_eq!(diagnostics, vec![], "the ABI answers both axes");
+
+    // The value is 8-bit on both axes, so a two-byte immediate does not fit.
+    let (_, diagnostics) = analyze("func main {\n    a = #$100\n}\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::IMMEDIATE_RANGE);
+
+    // An annotation still widens, and the axis beside it keeps the ABI's.
+    let (_, diagnostics) = analyze("func main @a16 {\n    a = #$100\n    x = #2\n}\n");
+    assert_eq!(diagnostics, vec![]);
+    let (_, diagnostics) = analyze("func main @a16 {\n    x = #$100\n}\n");
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert_eq!(diagnostics[0].code, DiagnosticCode::IMMEDIATE_RANGE);
 }
 
 #[test]

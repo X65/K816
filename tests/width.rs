@@ -128,16 +128,17 @@ fn error_codes(diagnostics: &[Diagnostic]) -> Vec<&str> {
 #[test]
 fn a_merge_of_two_widths_is_unknown_not_the_last_one_seen() {
     let source = "\
-func main @a8 {
+func f @a8 {
     bcc .skip
     rep #$20
 .skip:
     nop
 }
 ";
-    // Statements: bcc, rep, .skip, nop.
+    // Statements: bcc, rep, .skip, nop. Not `main`, so the index axis is
+    // genuinely unknown rather than the entry ABI's.
     assert_eq!(
-        before(source, "main", 3),
+        before(source, "f", 3),
         (AxisState::Unknown, AxisState::Unknown)
     );
 }
@@ -185,7 +186,7 @@ func main @a8 @i8 {
 #[test]
 fn a_backward_edge_converges_at_the_loop_head() {
     let source = "\
-func main @a8 {
+func f @a8 {
 .head:
     nop
     rep #$20
@@ -195,7 +196,7 @@ func main @a8 {
     // Before the first `nop`: the entry contract on the first arrival, 16-bit
     // on the back edge.
     assert_eq!(
-        before(source, "main", 1),
+        before(source, "f", 1),
         (AxisState::Unknown, AxisState::Unknown)
     );
 }
@@ -291,10 +292,19 @@ func main @a8 {
 
 #[test]
 fn a_partial_contract_leaves_the_other_axis_unknown() {
+    // An ordinary function: nothing establishes the axis it did not name.
+    let source = "func f @a8 {\n    nop\n}\n";
+    assert_eq!(
+        before(source, "f", 0),
+        (known(RegisterWidth::W8), AxisState::Unknown)
+    );
+
+    // The entry point is the exception: its caller is the environment, so
+    // the axis it did not name is the one the environment provides.
     let source = "func main @a8 {\n    nop\n}\n";
     assert_eq!(
         before(source, "main", 0),
-        (known(RegisterWidth::W8), AxisState::Unknown)
+        (known(RegisterWidth::W8), known(RegisterWidth::W8))
     );
 }
 
@@ -1011,12 +1021,13 @@ fn width_bridging_fixture_matches_the_documented_example() {
     let source = fixture("width-bridging.k816");
     let (_, _, diagnostics) = analyze(&source);
     assert_eq!(codes(&diagnostics), Vec::<&str>::new());
-    // `main` is uncoloured, so each call's bridge is what establishes the
-    // callee's contract; the state after each one is that contract, because
-    // every callee here preserves.
+    // `main` is uncoloured, so it starts at the entry ABI's widths and each
+    // call's bridge establishes what its callee's contract adds to them; the
+    // state after each one is that contract, because every callee here
+    // preserves.
     assert_eq!(
         before(&source, "main", 1),
-        (known(RegisterWidth::W16), AxisState::Unknown)
+        (known(RegisterWidth::W16), known(RegisterWidth::W8))
     );
     assert_eq!(
         before(&source, "main", 2),
@@ -1077,32 +1088,26 @@ fn the_legacy_corpus_calls_produce_no_bridge_and_no_width_diagnostic() {
         "the width model says nothing about unchecked calls in uncoloured functions"
     );
 
-    // What it *does* say, now that sub-plan E2 lets the chains through: an
-    // uncoloured function cannot size a width-dependent immediate, so every
-    // `a=9` in this legacy `main` is `K816-E0104`.
+    // And what it used to say: every `a=9` in this uncoloured legacy `main`
+    // was `K816-E0104`, because an unannotated function's widths are unknown
+    // — the sound reading of a callee whose caller may have widened
+    // anything. That reading was wrong for exactly one function. `main`'s
+    // caller is the environment, not another K65 function, so its widths are
+    // an ABI fact rather than an absence, and `src/abi.rs` is where the fact
+    // now lives.
     //
-    // That is a documented conflict, not a bug in the chain lowering.
-    // `doc/syntax-reference.md` ("Code Sections") says a `main` block
-    // defaults to 8-bit register widths, and `doc/k65-compat.md` says legacy
-    // code defaults to 6502-compatible 8-bit semantics throughout; the width
-    // model instead treats an unannotated function as unknown, which is the
-    // sound reading of a callee whose caller may have widened anything. The
-    // corpus cannot compile until that is settled, so it is asserted here —
-    // this test fails the day the default lands, which is when someone should
-    // be looking at it.
-    //
-    // The count climbs as more of the file compiles: three when sub-plan E2
-    // opened the chains, five once E4 opened the branch bodies around them. A
-    // change in the number means more of the corpus reached the width model,
-    // which is progress; a change to *none* means J landed.
+    // The count was three when sub-plan E2 opened the chains and five once E4
+    // opened the branch bodies around them. It is zero because the entry ABI
+    // landed, which is what the earlier note said would happen.
     let unsizable: Vec<&str> = diagnostics
         .iter()
         .map(|diagnostic| diagnostic.code.as_str())
         .filter(|code| *code == "K816-E0104")
         .collect();
     assert_eq!(
-        unsizable, ["K816-E0104"; 5],
-        "the immediates in an uncoloured legacy `main` are still unsizable"
+        unsizable,
+        Vec::<&str>::new(),
+        "an uncoloured legacy `main` sizes its immediates from the entry ABI"
     );
 }
 

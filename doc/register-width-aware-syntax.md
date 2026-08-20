@@ -41,7 +41,9 @@ follows the index register width:
     ldy  ldx  cpy  cpx
 
 Using any of these with an immediate operand in a function that has no width
-declaration is a compile-time error:
+declaration is a compile-time error — with one exception, the entry point,
+whose widths come from the environment rather than from an annotation (see
+"The entry point" below):
 
 ```
 Error: `lda` uses a width-dependent immediate but accumulator width is unknown
@@ -78,6 +80,30 @@ func wide_all @a16 @i16 {
 
 A contract may be partial -- `@a16` alone leaves the index width unspecified.
 
+### The entry point
+
+`main` is the one function whose caller is the environment, and an environment
+cannot be bridged: whatever state the startup code leaves the machine in is
+the state `main` begins in. So the entry point does not take its widths from
+an annotation the way every other function does — it takes them from the
+**entry ABI**, and an unannotated `main` is not an error.
+
+The ABI K816 currently targets is the one `examples/fullstack/startup.asm`
+establishes: **native mode, 8-bit accumulator, 8-bit index registers**. It is
+a contract between the startup code and the compiler, so the value is what the
+startup code does rather than what the CPU does at reset — the stub runs
+`sei; clc; xce; jsr main`, which leaves emulation mode and widens neither
+axis.
+
+Today an annotation on `main` is still a *request*: `func main @a16` gets the
+`REP` that widens the accumulator before the body runs, and the environment
+supplies whichever axes the annotation left unstated. Making it an
+*assertion* — checking the annotation against the environment and refusing a
+mismatch, rather than generating setup for it — is planned, along with any way
+of selecting a different environment. Until then there is exactly one, and it
+is stated in one place (`src/abi.rs`) rather than assumed separately by each
+pass that needs it.
+
 ### Call-site bridging
 
 When calling a function with a mode contract, the compiler automatically emits
@@ -85,13 +111,18 @@ When calling a function with a mode contract, the compiler automatically emits
 contract:
 
 ```k65
-func main {
+func caller {
     call wide_a         // emits REP #$20 before JSR
     call narrow         // emits SEP #$30 before JSR
     call wide_all       // emits REP #$30 before JSR
     call uncolored      // no REP/SEP needed
 }
 ```
+
+The caller here is an ordinary function, which starts at unknown widths, so
+each bridge establishes every axis its callee names. Written as `main` the
+listing would be shorter: the entry point starts at the widths the environment
+provides, so a bridge only has to change the axes that differ from them.
 
 Generated output:
 

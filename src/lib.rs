@@ -27,6 +27,7 @@
 //! both the CLI (`main.rs`) and the LSP server. Neither tool reconstructs
 //! project semantics on its own.
 
+pub mod abi;
 pub mod ast;
 pub mod compat;
 pub mod diagnostic;

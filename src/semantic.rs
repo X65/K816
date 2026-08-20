@@ -35,6 +35,7 @@ use crate::ast::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::abi;
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
@@ -887,7 +888,7 @@ impl Analysis {
             };
             let (analysis, _) = width::analyze_function(
                 &func.body,
-                ModeState::from_contract(info.contract),
+                abi::entry_state(info.is_entry_point, info.contract),
                 &width::Context {
                     symbols: &self.model.symbols,
                     function: Some(info.symbol),
@@ -944,7 +945,7 @@ impl Analysis {
                 };
                 let (analysis, diagnostics) = width::analyze_function(
                     &func.body,
-                    ModeState::from_contract(info.contract),
+                    abi::entry_state(info.is_entry_point, info.contract),
                     &width::Context {
                         symbols: &self.model.symbols,
                         function: Some(info.symbol),

@@ -654,6 +654,13 @@ fn a_scoped_block_changes_the_encoded_length_only_inside_itself() {
 /// none at all for the uncoloured callee. The masks are unfolded — merging
 /// `rep #$20` and `rep #$10` into `rep #$30` is the optimizer's, so the
 /// document's listing shows fewer instructions than this.
+///
+/// "Differs" is measured from a *known* state here, and that is the entry
+/// ABI's doing: `main` is unannotated, so it starts at what `abi.rs` says the
+/// environment provides — 8-bit on both axes — rather than at unknown. The
+/// bridge to `narrow @a8 @i8` is one instruction because of it, where an
+/// unknown index width would have needed a `sep #$10` to establish something
+/// the environment had already established.
 #[test]
 fn call_site_bridges_are_the_minimum_for_each_contract() {
     let bytes = linked(
@@ -664,17 +671,19 @@ fn call_site_bridges_are_the_minimum_for_each_contract() {
     // The four callees come first: `nop`, `rts` each.
     let main_at = 4 * 2;
     assert_eq!(
-        &bytes[main_at..main_at + 20],
+        &bytes[main_at..main_at + 21],
         &[
             0xC2, 0x20, // rep #$20 — bridge for wide_a @a16
             0x20, 0x00, 0x80, // jsr wide_a
-            0xE2, 0x20, // sep #$20 — bridge for narrow @a8 @i8
-            0xE2, 0x10, // sep #$10
+            0xE2, 0x20, // sep #$20 — bridge for narrow @a8 @i8: the
+            //            accumulator only, since the index registers are
+            //            still the 8 bits the environment handed over
             0x20, 0x02, 0x80, // jsr narrow
             0xC2, 0x20, // rep #$20 — bridge for wide_all @a16 @i16
             0xC2, 0x10, // rep #$10
             0x20, 0x04, 0x80, // jsr wide_all
-            0x20, // jsr uncolored — no bridge at all
+            0x20, 0x06, 0x80, // jsr uncolored — no bridge at all
+            0x60, // rts
         ],
         "{bytes:02X?}"
     );

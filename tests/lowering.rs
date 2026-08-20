@@ -401,7 +401,10 @@ func main @a8 {
         [
             "label .target".to_owned(),
             "rep #$20".to_owned(),
-            "mode-assume @a16 @i?".to_owned(),
+            // The index axis is `@i8` and not unknown because this is the
+            // entry point: what it was not annotated with, the entry ABI
+            // supplies.
+            "mode-assume @a16 @i8".to_owned(),
         ],
         "{ops:?}"
     );
@@ -426,7 +429,7 @@ func main @a16 {
         .iter()
         .position(|op| op == "label .target")
         .expect("the label was lowered");
-    assert_eq!(ops[label + 1], "mode-assume @a16 @i?", "{ops:?}");
+    assert_eq!(ops[label + 1], "mode-assume @a16 @i8", "{ops:?}");
 }
 
 /// A scoped block emits its entry bridge before the body and its restore

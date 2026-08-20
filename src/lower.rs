@@ -1127,12 +1127,20 @@ impl<'a> Lowering<'a> {
     /// than defended against.
     fn entry(&mut self, is_entry_point: bool, contract: WidthContract, span: Span) {
         if is_entry_point {
-            for (width, mask) in [(contract.a, P_MASK_M), (contract.i, P_MASK_X)] {
-                if width != Some(RegisterWidth::W16) {
-                    continue;
-                }
+            // What the environment already provides needs no instruction,
+            // and what it does not is set here. Both halves come from
+            // `abi.rs` rather than from a claim about the CPU written at this
+            // line, which is what stops this from disagreeing with the state
+            // the width model walked forward from (`postmortem.md` §E.2.1).
+            let setup = crate::abi::environment().setup(contract);
+            for (width, mask) in setup.into_iter().zip([P_MASK_M, P_MASK_X]) {
+                let mnemonic = match width {
+                    Some(RegisterWidth::W16) => Mnemonic::Rep,
+                    Some(RegisterWidth::W8) => Mnemonic::Sep,
+                    None => continue,
+                };
                 self.generated_instruction(
-                    Mnemonic::Rep,
+                    mnemonic,
                     AddressingMode::Immediate,
                     Some(Operand::Immediate(KExpr::number(mask))),
                     span,

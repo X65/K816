@@ -29,9 +29,12 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
-use crate::ast::{AstFile, ItemKind, ReturnKind, StatementKind};
+use std::collections::BTreeMap;
+
+use crate::ast::{AstFile, FunctionKind, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
+use crate::expand;
 use crate::hla;
 use crate::isa::{AddressEncoding, AddressingMode, ImmediateWidthClass, Mnemonic, OperandWidth};
 use crate::op::{
@@ -42,7 +45,7 @@ use crate::resolve;
 use crate::resolve::{AnonymousBlocks, Resolver};
 use crate::semantic::SemanticModel;
 use crate::source::Span;
-use crate::symbol::SymbolId;
+use crate::symbol::{SymbolId, SymbolKind};
 use crate::value::KExpr;
 use crate::width::{Bridge, BridgeAnchor, P_MASK_M, P_MASK_X};
 
@@ -91,8 +94,15 @@ pub fn lower_unit(
         let ItemKind::Func(func) = &item.kind else {
             continue;
         };
+        // An `inline` emits nothing of its own: it has no address, so there
+        // is no label to define and no body to place. Its operations appear
+        // once per use site, produced by `expand.rs`.
+        if func.kind == FunctionKind::Inline {
+            continue;
+        }
 
         let mut lowering = Lowering {
+            file,
             model,
             function: Some(info.symbol),
             function_name: func.name.text.clone(),
@@ -105,12 +115,20 @@ pub fn lower_unit(
             anchors: 0,
             loops: Vec::new(),
             is_far: func.is_far,
+            aliases: BTreeMap::new(),
+            expanding: Vec::new(),
         };
 
         lowering.push(KOpKind::Label(info.symbol), func.name.span, Origin::User);
         lowering.entry(info.is_entry_point, info.contract, func.name.span);
         lowering.block(&func.body);
-        lowering.implicit_return(func.body.span);
+        // `naked` is the section kind that gets no closing `rts`. That is the
+        // whole of what the keyword means (`doc/syntax-reference.md`): it
+        // carries no special width rule, and its exit is inferred from its
+        // reachable returns like any other section's.
+        if func.kind != FunctionKind::Naked {
+            lowering.implicit_return(func.body.span);
+        }
         lowering.relax_branches();
 
         checked_calls.push((program.functions().count(), lowering.checked_calls));
@@ -338,6 +356,9 @@ fn clobbered_register(call: Span, read: Span, damaged: RegisterSet) -> Diagnosti
 }
 
 struct Lowering<'a> {
+    /// The unit being lowered, which an `inline` use site reads to find the
+    /// body it has to expand.
+    file: &'a AstFile,
     model: &'a SemanticModel,
     /// The function being lowered, which local labels are scoped to.
     function: Option<SymbolId>,
@@ -363,6 +384,54 @@ struct Lowering<'a> {
     /// `far func` — every return from this body is `rtl`, because callers
     /// reached it with `jsl`.
     is_far: bool,
+    /// What this body's aliases stand for. Empty except while an `inline`
+    /// expansion is being lowered, which is the only time a body has any.
+    aliases: BTreeMap<SymbolId, KExpr>,
+    /// The sections whose expansion encloses this one.
+    ///
+    /// `E0132` refuses a cycle in analysis, and lowering runs only after
+    /// analysis found no errors, so this should never stop anything. It is
+    /// here because the failure it prevents is a stack overflow, and a
+    /// compiler that dies without a diagnostic has no way to tell anyone
+    /// which two sections to look at.
+    expanding: Vec<SymbolId>,
+}
+
+/// Moves a diagnostic from an expanded body to the use site that caused it.
+///
+/// The body was written once and is correct on its own terms; what makes a
+/// complaint true is the argument *this* use site passed. So the primary
+/// caret moves to the use site and the place in the body becomes a secondary
+/// — the reverse of what a naive splice produces, which is a caret in source
+/// the reader did not write and cannot fix without breaking the other use
+/// sites.
+fn at_use_site(diagnostic: Diagnostic, site: Span, name: &str) -> Diagnostic {
+    let mut moved = diagnostic;
+    let in_body = std::mem::replace(
+        &mut moved.primary,
+        Label::new(site, format!("expanding `{name}` here")),
+    );
+    moved.secondary.insert(
+        0,
+        Label::new(in_body.span, format!("in the body: {}", in_body.message)),
+    );
+    moved
+}
+
+/// Every parameter a section declares, in written order.
+fn parameters(func: &crate::ast::Function) -> impl Iterator<Item = &crate::ast::ContractParameter> {
+    func.contract
+        .iter()
+        .flat_map(|contract| contract.inputs.iter().flatten())
+}
+
+/// The name an alias parameter declares, or `None` for a register.
+fn alias_name(parameter: &crate::ast::ContractParameter) -> Option<&crate::ast::Name> {
+    match parameter {
+        crate::ast::ContractParameter::Register(_) => None,
+        crate::ast::ContractParameter::ImmediateAlias { name, .. }
+        | crate::ast::ContractParameter::Alias(name) => Some(name),
+    }
 }
 
 /// The instruction a `goto` is, before it is decided whether the condition
@@ -391,7 +460,7 @@ struct CheckedCall {
     span: Span,
 }
 
-impl Lowering<'_> {
+impl<'a> Lowering<'a> {
     /// Lowers every statement of a block, which is how a body nested in a
     /// conditional or a loop reaches the same per-statement machinery — its
     /// bridges, its width state, its origins — as a top-level one.
@@ -1018,7 +1087,8 @@ impl Lowering<'_> {
                 // compiler bug rather than user error.
                 let mut resolver = Resolver::new(&self.model.symbols)
                     .in_function(self.function)
-                    .with_widths(self.widths_at(statement));
+                    .with_widths(self.widths_at(statement))
+                    .with_aliases(self.aliases.clone());
                 match resolver.classify(native) {
                     Some(classified) if !resolver.has_diagnostics() => {
                         let effects = classified.instruction().effects();
@@ -1028,19 +1098,20 @@ impl Lowering<'_> {
                         }
                         self.reconcile(statement, effects);
                     }
-                    _ => self.skipped(span, "an unclassified instruction"),
+                    _ => self.unclassified(resolver, span, "an unclassified instruction"),
                 }
             }
             StatementKind::Hla(hla) => {
                 let mut resolver = Resolver::new(&self.model.symbols)
                     .in_function(self.function)
-                    .with_widths(self.widths_at(statement));
+                    .with_widths(self.widths_at(statement))
+                    .with_aliases(self.aliases.clone());
                 let steps = hla::statement(&mut resolver, hla, span);
                 match steps {
                     Some(steps) if !resolver.has_diagnostics() => {
                         self.expanded(statement, steps, span);
                     }
-                    _ => self.skipped(span, "an HLA statement"),
+                    _ => self.unclassified(resolver, span, "an HLA statement"),
                 }
             }
             StatementKind::Return(ReturnKind::Subroutine) => {
@@ -1054,10 +1125,17 @@ impl Lowering<'_> {
                     Origin::HlaExpansion,
                 );
             }
-            // Analysis reports each of these as not-yet-implemented, so
-            // lowering is never reached with one.
+            // `return_i` is `rti`, which is a return like any other as far as
+            // control flow is concerned and unlike any other as far as widths
+            // are: it restores `P`, so nothing after it is known.
             StatementKind::Return(ReturnKind::Interrupt) => {
-                self.skipped(span, "a `return_i`");
+                self.instruction(
+                    Mnemonic::Rti,
+                    AddressingMode::Stack,
+                    None,
+                    span,
+                    Origin::HlaExpansion,
+                );
             }
             // The block's entry bridge was emitted above; its restore is
             // emitted after the body, and only for axes the block changed.
@@ -1074,10 +1152,11 @@ impl Lowering<'_> {
             // the callee left behind.
             // `call NAME` opts out of the contract checks entirely, damage
             // tracking included: that is what the keyword is for.
-            StatementKind::Call(call) => self.call(statement, &call.target, false),
+            StatementKind::Call(call) => self.call(statement, &call.target, false, &[]),
             StatementKind::BareCall(call) => {
                 let checked = call.arguments.is_some() || call.outputs.is_some();
-                self.call(statement, &call.target, checked);
+                let arguments = call.arguments.as_deref().unwrap_or_default();
+                self.call(statement, &call.target, checked, arguments);
             }
             // A conditional branches *past* its body: the instruction tests
             // the complement of what is written, which is why the sense is
@@ -1176,7 +1255,8 @@ impl Lowering<'_> {
                     resolve::data_site(self.anonymous, &self.unit, data, Some(&self.function_name));
                 let mut resolver = Resolver::new(&self.model.symbols)
                     .in_function(self.function)
-                    .with_widths(self.widths_at(statement));
+                    .with_widths(self.widths_at(statement))
+                    .with_aliases(self.aliases.clone());
                 let ops = resolver.data_block(data, span, &site);
                 if resolver.has_diagnostics() {
                     return self.skipped(span, "an unresolved inline data block");
@@ -1234,7 +1314,8 @@ impl Lowering<'_> {
     ) -> Option<Jump> {
         let mut resolver = Resolver::new(&self.model.symbols)
             .in_function(self.function)
-            .with_widths(self.widths_at(statement));
+            .with_widths(self.widths_at(statement))
+            .with_aliases(self.aliases.clone());
         let expr = resolver.fold(&goto.target);
         if resolver.has_diagnostics() {
             return None;
@@ -1343,11 +1424,21 @@ impl Lowering<'_> {
         statement: &crate::ast::Statement,
         target: &crate::ast::Name,
         checked: bool,
+        arguments: &[crate::ast::CallArgument],
     ) {
         let Some(symbol) = self.model.symbols.lookup(&target.text) else {
             return self.skipped(statement.span, "a call to an undeclared function");
         };
         let before = self.widths_at(statement);
+        // An `inline` is not called: its operations are spliced in where its
+        // name appears. The bridge and the exit claim around it are the same
+        // ones a `jsr` gets, because the width model treats a use site as a
+        // call — which is what lets the body be lowered once against its own
+        // contract (sub-plan E, decision 12).
+        if self.model.symbols.kind(symbol) == SymbolKind::Inline {
+            self.expand(statement, target, symbol, arguments);
+            return self.claim_exit(statement, symbol, before);
+        }
         if checked {
             self.checked_calls.push(CheckedCall {
                 op: self.ops.len(),
@@ -1382,6 +1473,127 @@ impl Lowering<'_> {
             statement.span,
             Origin::HlaExpansion,
         );
+        self.claim_exit(statement, symbol, before);
+    }
+
+    /// Splices an `inline`'s operations in where its name was written.
+    ///
+    /// The body is lowered here rather than once per unit because lowering
+    /// needs somewhere to put the result, and the result is different at each
+    /// use site: the labels become this function's anchors and the aliases
+    /// become this use site's arguments. What is *not* different is the
+    /// widths — those come from the section's own analysis, which is what the
+    /// bridge at the use site is for.
+    fn expand(
+        &mut self,
+        statement: &crate::ast::Statement,
+        target: &crate::ast::Name,
+        section: SymbolId,
+        arguments: &[crate::ast::CallArgument],
+    ) {
+        let Some(func) = self.section(section) else {
+            return self.skipped(statement.span, "an `inline` with no body");
+        };
+        if self.expanding.contains(&section) {
+            return self.skipped(statement.span, "an `inline` that expands into itself");
+        }
+        let mut aliases = BTreeMap::new();
+        let mut resolver = Resolver::new(&self.model.symbols)
+            .in_function(self.function)
+            .with_widths(self.widths_at(statement))
+            .with_aliases(self.aliases.clone());
+        // Positional: the alias in the *n*th parameter slot takes the *n*th
+        // argument. Analysis has already refused a use site whose shape does
+        // not match the declaration, so a slot that is an alias here is a
+        // slot whose argument is an immediate.
+        for (parameter, argument) in parameters(func).zip(arguments) {
+            let (Some(name), crate::ast::CallArgument::Immediate(expr)) =
+                (alias_name(parameter), argument)
+            else {
+                continue;
+            };
+            let (Some(alias), Some(value)) = (
+                self.model.symbols.lookup_local(section, &name.text),
+                resolver.fold(expr),
+            ) else {
+                continue;
+            };
+            aliases.insert(alias, value);
+        }
+        if resolver.has_diagnostics() {
+            self.diagnostics.extend(resolver.take_diagnostics());
+            return;
+        }
+
+        // The body is lowered with the bindings in force, so the one operand
+        // classifier sizes an alias-bearing operand the same way it sizes
+        // every other — against the widths the section's own contract
+        // establishes, which is what the use site bridged to.
+        let mut body = Lowering {
+            file: self.file,
+            model: self.model,
+            function: Some(section),
+            function_name: self.model.symbols.name(section).to_owned(),
+            unit: self.unit.clone(),
+            anonymous: self.anonymous,
+            widths: self.model.width(section),
+            ops: Vec::new(),
+            checked_calls: Vec::new(),
+            diagnostics: Vec::new(),
+            anchors: 0,
+            loops: Vec::new(),
+            is_far: false,
+            aliases,
+            expanding: {
+                let mut enclosing = self.expanding.clone();
+                enclosing.push(section);
+                enclosing
+            },
+        };
+        body.block(&func.body);
+        let (ops, diagnostics, checked) = (body.ops, body.diagnostics, body.checked_calls);
+        // A complaint about the expanded body is a complaint about *this* use
+        // site: the argument it passed is what made the complaint true. So the
+        // caret moves here and the place in the body becomes the secondary
+        // (sub-plan E, decision 12).
+        self.diagnostics.extend(
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| at_use_site(diagnostic, statement.span, &target.text)),
+        );
+
+        let start = self.ops.len();
+        // A contract-bearing call *inside* the body keeps its damage scan;
+        // its operation index has to move with it.
+        self.checked_calls
+            .extend(checked.into_iter().map(|call| CheckedCall {
+                op: call.op + start,
+                ..call
+            }));
+        self.ops.extend(expand::splice(ops, &mut self.anchors));
+    }
+
+    /// The section `symbol` declares, as written.
+    fn section(&self, symbol: SymbolId) -> Option<&'a crate::ast::Function> {
+        let info = self
+            .model
+            .functions
+            .iter()
+            .find(|info| info.symbol == symbol)?;
+        match &self.file.items.get(info.item_index)?.kind {
+            ItemKind::Func(func) => Some(func),
+            _ => None,
+        }
+    }
+
+    /// States what the callee's exit leaves, when the model concluded
+    /// something a reader of the instruction stream could not.
+    fn claim_exit(
+        &mut self,
+        statement: &crate::ast::Statement,
+        callee: SymbolId,
+        before: ModeState,
+    ) {
         let Some(after) = self.widths_after(statement) else {
             return;
         };
@@ -1392,7 +1604,7 @@ impl Lowering<'_> {
             let reason = if assumed {
                 Reason::AssumedExit
             } else {
-                Reason::CalleeExit(symbol)
+                Reason::CalleeExit(callee)
             };
             self.assume(after, statement.span, reason);
         }
@@ -1502,6 +1714,26 @@ impl Lowering<'_> {
                 Reason::ImplicitReturn,
             );
         }
+    }
+
+    /// Reports a statement the classifier refused.
+    ///
+    /// Ordinarily this is a compiler bug: analysis classified the same
+    /// statement with the same widths and accepted it, so lowering reaching a
+    /// second answer means the two disagree. Inside an `inline` expansion it
+    /// is not, and cannot be — the body was analyzed with its aliases
+    /// unbound, and only the use site knows what they stand for. There the
+    /// resolver's own complaint is the true one, and it is what the reader
+    /// needs (sub-plan E, decision 12).
+    fn unclassified(&mut self, mut resolver: Resolver<'_>, span: Span, what: &str) {
+        if self.aliases.is_empty() {
+            return self.skipped(span, what);
+        }
+        let reported = resolver.take_diagnostics();
+        if reported.is_empty() {
+            return self.skipped(span, what);
+        }
+        self.diagnostics.extend(reported);
     }
 
     /// Records that lowering skipped a construct semantic analysis should

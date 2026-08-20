@@ -116,10 +116,15 @@ impl<'a> Names<'a> {
                 scope: LabelScope::Local,
                 ..
             } => format!("@{}", symbol.name.trim_start_matches('.')),
+            // An alias never reaches emission: expansion substitutes what
+            // the use site passed before an operation leaves lowering. Its
+            // own name is the honest thing to print if one ever does.
             SymbolKind::Label { .. }
             | SymbolKind::DataLabel { .. }
             | SymbolKind::Var { .. }
             | SymbolKind::AbstractVar { .. }
+            | SymbolKind::Alias { .. }
+            | SymbolKind::Inline
             | SymbolKind::Function { .. }
             | SymbolKind::Const { .. } => symbol.name.clone(),
         }

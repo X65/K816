@@ -1,0 +1,67 @@
+// Sub-plan E6's fixture: the section kinds that are not `func`.
+//
+// `naked` and `inline` are the two ways a section stops being a subroutine —
+// one keeps the address and drops the return, the other drops the address
+// altogether — and `return_i` is the return that belongs to neither caller
+// nor `rts`.
+
+var mem = $0400
+var dp cursor = $10
+
+// The simplest `inline`: a body with no contract, expanded wherever its name
+// appears, with no `jsr` and no `rts` between the caller and it.
+inline inc_y @a8 @i8 {
+    y++
+}
+
+// An immediate alias. The body is classified once, against *this* section's
+// `@a16`, so `lda #factor` is a three-byte instruction at every use site —
+// and the use site is bridged to `@a16` to make that true.
+inline scale @a16 (a, #factor) -> a {
+    lda #factor
+}
+
+// An identifier alias names a place. Its encoding follows whatever the use
+// site passes, which is the same rule every other address operand obeys.
+inline store_to @a8 (a, target) -> a {
+    target = a
+}
+
+// A label inside an expanded body cannot keep its name: the second expansion
+// would define it again. Each expansion gets targets of its own.
+inline settle @a8 @i8 {
+.spin:
+    mem++
+    != goto .spin
+}
+
+func uses_them @a8 @i8 {
+    inc_y
+    inc_y
+    store_to a, #mem -> a
+    store_to a, #cursor -> a
+    settle
+    settle
+}
+
+func widening @a16 @i8 {
+    scale a, #16 -> a
+    scale a, #$1234 -> a
+}
+
+// `naked` emits no closing `rts`: control leaves by whatever the body does
+// last, which here is a jump to a section that does return.
+naked tail @a8 @i8 {
+    x++
+    goto uses_them
+}
+
+// The corpus's interrupt-handler shape: a `naked` section ending in `rti`.
+// It leaves no width a caller can rely on, which is the same answer the
+// native spelling has had since sub-plan D.
+naked handler @a8 @i8 {
+    a!!
+    mem = a = $DE
+    a??
+    return_i
+}

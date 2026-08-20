@@ -32,6 +32,7 @@ pub mod compat;
 pub mod diagnostic;
 pub mod effects;
 pub mod emit_ca65;
+pub mod expand;
 pub mod hla;
 pub mod isa;
 pub mod linkage;

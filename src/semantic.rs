@@ -31,7 +31,7 @@
 use crate::ast::{
     self, AstFile, ContractParameter, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr,
     EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement, ItemKind, RegisterKind,
-    ReservedKind, ReturnKind, Statement, StatementKind,
+    ReservedKind, Statement, StatementKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -118,14 +118,31 @@ pub struct FunctionInfo {
 
 /// The register flow a `func NAME (a, x) -> a, y` header declares.
 ///
-/// Only the registers: the exit *widths* of the same clause are the width
-/// model's, and are checked against the body's reachable returns.
+/// Only the registers and aliases: the exit *widths* of the same clause are
+/// the width model's, and are checked against the body's reachable returns.
 #[derive(Clone, Debug)]
 pub struct CallFlow {
-    pub inputs: Vec<RegisterKind>,
+    /// The input list **in written order**, because an `inline`'s aliases
+    /// bind positionally against the use site's arguments.
+    pub inputs: Vec<FlowInput>,
     pub outputs: Vec<RegisterKind>,
     /// The clause itself, for the "declared here" label.
     pub span: Span,
+}
+
+/// One entry of a declared input list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowInput {
+    /// A register the caller is expected to have loaded.
+    Register(RegisterKind),
+    /// An `inline` alias, bound to the argument written in this position.
+    Alias {
+        symbol: SymbolId,
+        /// Written `#name` — the alias stands for a value rather than a
+        /// place. Both bind from an immediate argument; the difference is
+        /// what the body may do with the result.
+        immediate: bool,
+    },
 }
 
 /// Which width axes a function body's immediates depend on.
@@ -173,7 +190,6 @@ fn analyze(
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
         externally_reachable: BTreeSet::new(),
-        deferred_sections: BTreeMap::new(),
         workspace_contracts: BTreeMap::new(),
         workspace_recursive: BTreeSet::new(),
     };
@@ -201,6 +217,11 @@ fn analyze(
     // The width dataflow runs before the checks that consume it, and after
     // imports so that a foreign callee resolves.
     analysis.solve_widths(file);
+    // Before the bodies are checked, because a cycle of expansions is a
+    // question about the sections rather than about any statement in them —
+    // and because lowering walks the same edges and must not be reached with
+    // one.
+    analysis.check_inline_recursion();
     analysis.check_functions(file);
     (analysis.model, analysis.diagnostics)
 }
@@ -223,9 +244,6 @@ struct Analysis {
     /// Global labels another unit refers to, which the width solver treats
     /// as reachable from a width nothing in this unit establishes.
     externally_reachable: BTreeSet<SymbolId>,
-    /// Code sections the parser recognized but no sub-plan compiles yet, by
-    /// name, so a call that names one says what is actually missing.
-    deferred_sections: BTreeMap<String, (&'static str, compat::Owner)>,
     /// Every function's contract as the workspace classified it, translated
     /// into this unit's symbol ids.
     ///
@@ -255,18 +273,21 @@ impl Analysis {
         for item in &file.items {
             match &item.kind {
                 ItemKind::Func(func) => {
-                    if func.name.provenance == Provenance::Synthetic
-                        || unsupported_function_feature(func).is_some()
-                    {
+                    if func.name.provenance == Provenance::Synthetic {
                         continue;
                     }
-                    let Some(symbol) = self.declare(
-                        &func.name.text,
-                        SymbolKind::function(func.is_far),
-                        func.name.span,
-                    ) else {
+                    let kind = match func.kind {
+                        FunctionKind::Inline => SymbolKind::Inline,
+                        _ => SymbolKind::function(func.is_far),
+                    };
+                    let Some(symbol) = self.declare(&func.name.text, kind, func.name.span) else {
                         continue;
                     };
+                    // Aliases are declared before the body is walked, for the
+                    // same reason labels are: the body reads them, and an
+                    // alias that is not a symbol by then resolves as an
+                    // undeclared name.
+                    self.declare_aliases_of(symbol, func);
                     self.declare_labels_in(symbol, &func.body);
                 }
                 ItemKind::Data(data) => self.declare_data_labels(data),
@@ -280,6 +301,37 @@ impl Analysis {
                 | ItemKind::ModuleWidth(_)
                 | ItemKind::Error => {}
             }
+        }
+    }
+
+    /// Declares an `inline`'s parameter aliases into its own scope.
+    ///
+    /// They share the scope local labels live in, which is what makes two
+    /// `inline`s free to use the same alias name and what keeps an alias
+    /// invisible everywhere but the body that declared it. There is no
+    /// collision to arbitrate: a local label's name begins with `.` and an
+    /// alias's does not.
+    ///
+    /// An alias on a section that is not `inline` is `E0121`, reported by
+    /// `check_contract`; it is declared here anyway, so the body still reads
+    /// as the author meant and the section does not produce a second wave of
+    /// undeclared-name errors on top of the one real complaint.
+    fn declare_aliases_of(&mut self, owner: SymbolId, func: &Function) {
+        let Some(contract) = &func.contract else {
+            return;
+        };
+        for parameter in contract.inputs.iter().flatten() {
+            let (name, immediate) = match parameter {
+                ContractParameter::Register(_) => continue,
+                ContractParameter::ImmediateAlias { name, .. } => (name, true),
+                ContractParameter::Alias(name) => (name, false),
+            };
+            self.declare_local(
+                owner,
+                &name.text,
+                SymbolKind::Alias { immediate },
+                name.span,
+            );
         }
     }
 
@@ -464,17 +516,6 @@ impl Analysis {
                     if func.name.provenance == Provenance::Synthetic {
                         continue;
                     }
-                    // Only a plain `func` (or the legacy bare `main`) with no
-                    // call contract has semantics so far.
-                    if let Some((feature, owner)) = unsupported_function_feature(func) {
-                        self.diagnostics
-                            .push(compat::unimplemented(item.span, feature, owner));
-                        // Remembered so that a call naming it says which
-                        // section kind is missing rather than "undeclared".
-                        self.deferred_sections
-                            .insert(func.name.text.clone(), (feature, owner));
-                        continue;
-                    }
                     // The first pass declared the name; a duplicate reported
                     // itself there, and this pass records what lowering and
                     // emission need about the function it kept.
@@ -518,14 +559,33 @@ impl Analysis {
         };
         let mut inputs = Vec::new();
         for parameter in contract.inputs.iter().flatten() {
-            match parameter {
-                ContractParameter::Register(register) => inputs.push(register.kind),
-                ContractParameter::ImmediateAlias { name, .. } | ContractParameter::Alias(name) => {
-                    if func.kind != FunctionKind::Inline {
-                        self.diagnostics.push(alias_not_inline(name, func));
-                    }
+            let (name, immediate) = match parameter {
+                ContractParameter::Register(register) => {
+                    inputs.push(FlowInput::Register(register.kind));
+                    continue;
                 }
+                ContractParameter::ImmediateAlias { name, .. } => (name, true),
+                ContractParameter::Alias(name) => (name, false),
+            };
+            if func.kind != FunctionKind::Inline {
+                self.diagnostics.push(alias_not_inline(name, func));
+                continue;
             }
+            // Declared into the section's own scope by `declare_aliases_of`,
+            // which ran in the first pass so the body could read it.
+            if let Some(symbol) = self.model.symbols.lookup_local(symbol, &name.text) {
+                inputs.push(FlowInput::Alias { symbol, immediate });
+            }
+        }
+        // A `naked` section never returns to its caller, so it has no exit
+        // for a `->` clause to describe — neither the registers it hands back
+        // nor the widths they arrive at. The clause is refused rather than
+        // ignored, because a declaration nothing checks is worse than none.
+        if func.kind == FunctionKind::Naked
+            && let Some(outputs) = &contract.outputs
+        {
+            self.diagnostics
+                .push(naked_exit_contract(&func.name, outputs.span));
         }
         let outputs: Vec<RegisterKind> = contract
             .outputs
@@ -547,6 +607,59 @@ impl Analysis {
         }
     }
 
+    /// Whether a use site's arguments match what the callee declares.
+    ///
+    /// Positional, entry by entry: a register parameter wants that register
+    /// named, an alias parameter wants an immediate. That is the whole
+    /// difference an `inline` makes at a use site — `scale a, #16 -> a` binds
+    /// `#factor` to `16`, and the `#` is argument syntax rather than a claim
+    /// about what the substituted expression will be used *as*.
+    fn arguments_match(&self, flow: &CallFlow, arguments: &[crate::ast::CallArgument]) -> bool {
+        use crate::ast::CallArgument;
+        flow.inputs.len() == arguments.len()
+            && flow
+                .inputs
+                .iter()
+                .zip(arguments)
+                .all(|(declared, written)| match (declared, written) {
+                    (FlowInput::Register(kind), CallArgument::Register(register)) => {
+                        *kind == register.kind
+                    }
+                    (FlowInput::Alias { .. }, CallArgument::Immediate(_)) => true,
+                    _ => false,
+                })
+    }
+
+    /// The source spelling of a declared flow, for the help line.
+    fn describe_flow(&self, flow: &CallFlow) -> String {
+        let inputs = flow
+            .inputs
+            .iter()
+            .map(|input| match input {
+                FlowInput::Register(register) => register_name(*register).to_owned(),
+                FlowInput::Alias { symbol, immediate } => {
+                    let name = self.model.symbols.name(*symbol);
+                    if *immediate {
+                        format!("#{name}")
+                    } else {
+                        name.to_owned()
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if flow.outputs.is_empty() {
+            return inputs;
+        }
+        let outputs = flow
+            .outputs
+            .iter()
+            .map(|register| register_name(*register))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{inputs} -> {outputs}")
+    }
+
     /// Checks a bare call's register flow against the callee's declaration.
     ///
     /// `call NAME` opts out of both directions of this check — it is the
@@ -556,20 +669,7 @@ impl Analysis {
             return; // Undeclared; the target check reported it.
         };
         let flow = self.model.contracts.get(&symbol).cloned();
-        let written: Option<Vec<RegisterKind>> = call.arguments.as_ref().map(|arguments| {
-            arguments
-                .iter()
-                .filter_map(|argument| match argument {
-                    crate::ast::CallArgument::Register(register) => Some(register.kind),
-                    crate::ast::CallArgument::Immediate(_) => None,
-                })
-                .collect()
-        });
-        let immediates = call
-            .arguments
-            .iter()
-            .flatten()
-            .any(|argument| matches!(argument, crate::ast::CallArgument::Immediate(_)));
+        let written = call.arguments.as_ref();
         let declared_outputs: Option<Vec<RegisterKind>> = call
             .outputs
             .as_ref()
@@ -596,22 +696,22 @@ impl Analysis {
                     format!(
                         "write `{} {}` to state the flow, or `call {}` to opt out of the check",
                         call.target.text,
-                        describe_flow(&flow),
+                        self.describe_flow(&flow),
                         call.target.text
                     ),
                     Some(flow.span),
                 ));
             }
             Some(flow) => {
-                let inputs = written.unwrap_or_default();
-                if immediates || inputs != flow.inputs {
+                let arguments = written.map_or(&[][..], Vec::as_slice);
+                if !self.arguments_match(&flow, arguments) {
                     self.diagnostics.push(call_flow_mismatch(
                         statement.span,
                         format!(
-                            "this call hands `{}` different registers than it declares",
+                            "this call hands `{}` different arguments than it declares",
                             call.target.text
                         ),
-                        format!("the declaration reads `{}`", describe_flow(&flow)),
+                        format!("the declaration reads `{}`", self.describe_flow(&flow)),
                         Some(flow.span),
                     ));
                 }
@@ -623,7 +723,7 @@ impl Analysis {
                             "this call expects different registers back from `{}` than it declares",
                             call.target.text
                         ),
-                        format!("the declaration reads `{}`", describe_flow(&flow)),
+                        format!("the declaration reads `{}`", self.describe_flow(&flow)),
                         Some(flow.span),
                     ));
                 }
@@ -939,10 +1039,7 @@ impl Analysis {
                     "the language requires callers to assume such a function preserves \
                      their widths, which this body may not do",
                 )
-                .with_help(format!(
-                    "declare the exit width with `-> {}`, or re-establish it before returning",
-                    axis.annotation(RegisterWidth::W8)
-                ))
+                .with_help(exit_width_help(func, axis))
                 .with_docs("doc/register-width-aware-syntax.md#unknown-exit-contracts-preserve-caller-mode"),
             );
         }
@@ -1004,6 +1101,63 @@ impl Analysis {
             self.current_function = Some(function.symbol);
             self.check_block(function.symbol, &func.body);
             self.current_function = None;
+        }
+    }
+
+    /// Reports every `inline` that expands into itself.
+    ///
+    /// Expansion is a copy, so a cycle of them does not terminate — unlike a
+    /// cycle of *calls*, which is ordinary recursion and costs only stack.
+    /// The edges are the ones the width solver already collected: it walks
+    /// every use site to find what a body calls, and an `inline` use site is
+    /// a call as far as that walk is concerned.
+    fn check_inline_recursion(&mut self) {
+        let expansions: BTreeMap<SymbolId, Vec<SymbolId>> = self
+            .model
+            .functions
+            .iter()
+            .filter(|info| self.model.symbols.kind(info.symbol) == SymbolKind::Inline)
+            .map(|info| {
+                let callees = info
+                    .callees
+                    .iter()
+                    .copied()
+                    .filter(|callee| self.model.symbols.kind(*callee) == SymbolKind::Inline)
+                    .collect();
+                (info.symbol, callees)
+            })
+            .collect();
+
+        for &section in expansions.keys() {
+            let Some(cycle) = reaches(section, section, &expansions, &mut BTreeSet::new()) else {
+                continue;
+            };
+            // One complaint per cycle, not one per member: every section in a
+            // cycle is equally unable to expand, and saying so three times
+            // does not tell the reader anything the first did not.
+            if cycle.iter().any(|&member| member < section) {
+                continue;
+            }
+            let route: Vec<&str> = cycle
+                .iter()
+                .map(|&member| self.model.symbols.name(member))
+                .collect();
+            let name = self.model.symbols.name(section);
+            let declaration = self.model.symbols.symbol(section).declaration;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::INLINE_RECURSION,
+                    format!("`{name}` expands into itself"),
+                    Label::new(declaration, "expanding this would not terminate"),
+                )
+                .with_note(format!("the cycle is `{}`", route.join("` → `")))
+                .with_note(
+                    "an `inline` is copied into each use site, so a cycle of them has no \
+                     base case the way a cycle of calls does",
+                )
+                .with_help("make one of the sections a `func`, so the cycle becomes a call")
+                .with_docs("doc/syntax-reference.md#inline"),
+            );
         }
     }
 
@@ -1097,16 +1251,11 @@ impl Analysis {
             // Both label scopes were declared by the first pass, so a label
             // statement has nothing left to check here.
             StatementKind::Label(_) => {}
-            // `return` is the slice's; `return_i` and everything else in the
-            // section family belongs to later work.
-            StatementKind::Return(ReturnKind::Subroutine) | StatementKind::Error => {}
-            StatementKind::Return(ReturnKind::Interrupt) => {
-                self.diagnostics.push(compat::unimplemented(
-                    statement.span,
-                    "`return_i` statements",
-                    compat::Owner::HlaLowering,
-                ));
-            }
+            // Both returns are ordinary statements. Which one a body may
+            // write is not checked: `rti` in a `func` is legal 65816 and the
+            // legacy corpus writes `return_i` inside a `naked` section, so
+            // the pairing is the author's to get right.
+            StatementKind::Return(_) | StatementKind::Error => {}
             // Both establish widths, which the solver has already tracked;
             // the body of a block is checked by the walk that got here.
             StatementKind::WidthBlock(_) | StatementKind::ModeSet(_) => {}
@@ -1493,11 +1642,6 @@ impl Analysis {
         if target.provenance == Provenance::Synthetic {
             return;
         }
-        if let Some((feature, owner)) = self.deferred_sections.get(&target.text).copied() {
-            self.diagnostics
-                .push(compat::unimplemented(target.span, feature, owner));
-            return;
-        }
         let Some(id) = self.model.symbols.lookup(&target.text) else {
             let mut resolver = self.resolver();
             resolver.resolve(&target.text, target.span);
@@ -1551,6 +1695,29 @@ impl Analysis {
             return;
         };
         let symbol = self.model.symbols.symbol(id);
+        // An `inline` is expanded rather than called, so there is no
+        // transfer for `far` to lengthen. The original K65 reference says so
+        // in as many words: "Inlines do not use far prefix, because the code
+        // is simply inlined."
+        if symbol.kind == SymbolKind::Inline {
+            if site_is_far {
+                let declaration = symbol.declaration;
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        DiagnosticCode::CALL_CONVENTION_MISMATCH,
+                        format!("`{}` is an `inline`, so it is not called at all", target.text),
+                        Label::new(target.span, "there is no transfer for `far` to lengthen"),
+                    )
+                    .with_secondary(Label::new(declaration, "declared here"))
+                    .with_note(
+                        "an `inline` body is copied into the use site, so it runs in                          whichever bank the use site is in",
+                    )
+                    .with_help(format!("write `{}` on its own", target.text))
+                    .with_docs("doc/syntax-reference.md#far-calls"),
+                );
+            }
+            return;
+        }
         // Only a section declares a convention. A call to a bare address —
         // the legacy `var openmode = $EF9C` route into ROM — declares
         // nothing, so the call site's spelling is all there is and it wins.
@@ -1764,22 +1931,6 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
     }
 }
 
-/// Names the first part of a code section that has no semantics yet and the
-/// sub-plan that owns it, or `None` for the plain `func` K816 compiles.
-///
-/// The owner is per feature rather than per call site: `plans/`
-/// `feature-manifest.md` §2 gives `naked` and `inline` to E — the function
-/// *kinds* — while the call contract is D's width work. `far func` was on
-/// that list until E5 landed it; a far section is now an ordinary one whose
-/// symbol carries [`SymbolKind::is_far_function`].
-fn unsupported_function_feature(func: &Function) -> Option<(&'static str, compat::Owner)> {
-    match func.kind {
-        FunctionKind::Func | FunctionKind::Main => None,
-        FunctionKind::Naked => Some(("`naked` sections", compat::Owner::HlaLowering)),
-        FunctionKind::Inline => Some(("`inline` sections", compat::Owner::HlaLowering)),
-    }
-}
-
 /// Names the first part of `var` that has no semantics yet, or `None` when
 /// the declaration is the fixed-address form the slice compiles.
 fn unsupported_var_feature(var: &crate::ast::VarDeclaration) -> Option<&'static str> {
@@ -1868,6 +2019,42 @@ fn divergent_exit(name: &str, divergence: width::Divergence) -> Diagnostic {
     .with_docs("doc/register-width-aware-syntax.md#unknown-exit-contracts-preserve-caller-mode")
 }
 
+/// How to give an axis an exit a caller can rely on.
+///
+/// A `naked` section is offered only the second half: declaring one is
+/// [`DiagnosticCode::NAKED_EXIT_CONTRACT`], so suggesting it would be
+/// advising an edit that produces another error.
+fn exit_width_help(func: &Function, axis: width::Axis) -> String {
+    if func.kind == FunctionKind::Naked {
+        return "re-establish the width before control leaves the section".to_owned();
+    }
+    format!(
+        "declare the exit width with `-> {}`, or re-establish it before returning",
+        axis.annotation(RegisterWidth::W8)
+    )
+}
+
+/// A `->` clause on a `naked` section.
+fn naked_exit_contract(name: &crate::ast::Name, clause: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::NAKED_EXIT_CONTRACT,
+        format!("`{}` is `naked`, so it has no exit to declare", name.text),
+        Label::new(clause, "an exit contract describes what a return leaves"),
+    )
+    .with_secondary(Label::new(name.span, "declared `naked` here"))
+    .with_note(
+        "a `naked` section emits no `rts`, so control leaves it by whatever the body \
+                     does last rather than by returning to the caller",
+    )
+    .with_help("drop the clause, or make the section a `func` so that it returns")
+    .with_fix(Fix {
+        title: "drop the exit contract".to_owned(),
+        applicability: Applicability::MachineApplicable,
+        edits: vec![TextEdit::delete(clause)],
+    })
+    .with_docs("doc/syntax-reference.md#naked")
+}
+
 /// An alias parameter on a section that is not `inline`.
 ///
 /// An alias binds during macro expansion, which only an `inline` has: a
@@ -1911,29 +2098,42 @@ fn call_flow_mismatch(
     diagnostic
 }
 
-/// The source spelling of a declared register flow, for the help line.
-fn describe_flow(flow: &CallFlow) -> String {
-    let list = |registers: &[RegisterKind]| {
-        registers
-            .iter()
-            .map(|register| match register {
-                RegisterKind::A => "a",
-                RegisterKind::X => "x",
-                RegisterKind::Y => "y",
-                RegisterKind::S => "s",
-                RegisterKind::D => "d",
-                RegisterKind::B => "b",
-                RegisterKind::P => "p",
-                RegisterKind::C => "c",
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let inputs = list(&flow.inputs);
-    if flow.outputs.is_empty() {
-        inputs
-    } else {
-        format!("{inputs} -> {}", list(&flow.outputs))
+/// The route from `from` back to `goal`, or `None` when there is none.
+///
+/// The path is returned rather than a bare yes, because "`a` expands into
+/// itself" is unhelpful without the sections in between.
+fn reaches(
+    from: SymbolId,
+    goal: SymbolId,
+    edges: &BTreeMap<SymbolId, Vec<SymbolId>>,
+    seen: &mut BTreeSet<SymbolId>,
+) -> Option<Vec<SymbolId>> {
+    for &next in edges.get(&from).map_or(&[][..], Vec::as_slice) {
+        if next == goal {
+            return Some(vec![from, goal]);
+        }
+        if !seen.insert(next) {
+            continue;
+        }
+        if let Some(mut route) = reaches(next, goal, edges, seen) {
+            route.insert(0, from);
+            return Some(route);
+        }
+    }
+    None
+}
+
+/// The K65 spelling of one register.
+fn register_name(register: RegisterKind) -> &'static str {
+    match register {
+        RegisterKind::A => "a",
+        RegisterKind::X => "x",
+        RegisterKind::Y => "y",
+        RegisterKind::S => "s",
+        RegisterKind::D => "d",
+        RegisterKind::B => "b",
+        RegisterKind::P => "p",
+        RegisterKind::C => "c",
     }
 }
 

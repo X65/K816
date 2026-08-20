@@ -1780,30 +1780,34 @@ fn an_operand_prefix_is_not_a_far_call() {
 }
 
 #[test]
-fn section_forms_and_contracts_name_their_owner() {
-    // E5 landed the far family, so a `far func` and both spellings of the
-    // call it takes are ordinary code now.
+fn every_section_form_and_contract_compiles() {
+    // E5 landed the far family and E6 `naked`, `inline`, and `return_i`, so
+    // no section kind names an owner any more. This test was
+    // `section_forms_and_contracts_name_their_owner`; what is left of it is
+    // the assertion that each form reaches analysis with nothing to say.
     for source in [
         "far func other @a8 { }\nfunc main @a8 { far other }\n",
         "far func other @a8 { }\nfunc main @a8 { call far other }\n",
+        "naked f @a8 @i8 { }\n",
+        "inline f @a8 @i8 { }\nfunc main @a8 @i8 { f }\n",
+        "inline scale @a16 (a, #factor) -> a { lda #factor }\n\
+         func main @a16 @i8 { scale a, #16 -> a }\n",
     ] {
         let (_, diagnostics) = analyze_section(source);
         assert_eq!(diagnostics, vec![], "`{source}`");
     }
 
-    for source in [
-        "naked f { }\n",
-        "inline f { }\n",
-        "func main @a8 { return_i }\n",
-    ] {
-        let (_, diagnostics) = analyze_section(source);
-        assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
-        assert_eq!(
-            diagnostics[0].code,
-            DiagnosticCode::NOT_YET_IMPLEMENTED,
-            "`{source}`"
-        );
-    }
+    // `return_i` is `rti`, which restores `P`, so a section ending in one
+    // leaves no width a caller can rely on — the same answer the native
+    // spelling has had since sub-plan D.
+    let (_, diagnostics) = analyze_section("naked handler @a8 @i8 { return_i }\n");
+    let codes: Vec<_> = diagnostics.iter().map(|d| d.code.as_str()).collect();
+    assert_eq!(codes, ["K816-W0124", "K816-W0124"]);
+    assert_eq!(
+        diagnostics[0].help.as_deref(),
+        Some("re-establish the width before control leaves the section"),
+        "a `naked` section cannot be told to declare an exit it may not have"
+    );
 }
 
 /// Parses and analyzes one section snippet, asserting only that it parses.

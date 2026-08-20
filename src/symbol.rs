@@ -260,6 +260,27 @@ pub enum SymbolKind {
     },
     /// A label inside a data block, including a block's own name.
     DataLabel { size: AddressSize },
+    /// An `inline` parameter alias, scoped to the section that declares it.
+    ///
+    /// It stands for whatever the use site substitutes, which is why it has a
+    /// kind of its own rather than being a `Const` with a placeholder value:
+    /// nothing may fold it, and every stage that meets one has to carry it
+    /// through to expansion intact.
+    ///
+    /// `immediate` is `#name` — the alias stands for a *value*. A bare
+    /// identifier alias stands for a *place*, and takes
+    /// [`AddressSize::Absolute`], because the address it will name is not
+    /// known where the body is classified and an over-wide encoding costs a
+    /// byte where an under-wide one is wrong.
+    Alias { immediate: bool },
+    /// An `inline` section: a body expanded at each use site.
+    ///
+    /// Not a [`SymbolKind::Function`] with a flag, because the two answer
+    /// every structural question differently. An `inline` has no address, so
+    /// it is not exported, not callable by `jsr`, not a jump target, and not
+    /// a value any expression may fold. What it has is a body, and the only
+    /// thing a use site may do with it is expand that body.
+    Inline,
     /// A code section, `func` or `far func`.
     ///
     /// `size` carries the calling convention: a `far func` is
@@ -298,7 +319,8 @@ impl SymbolKind {
     /// the symbol has no address at all.
     pub fn address_size(self) -> Option<AddressSize> {
         match self {
-            Self::Const { .. } | Self::AbstractVar { .. } => None,
+            Self::Const { .. } | Self::AbstractVar { .. } | Self::Inline => None,
+            Self::Alias { immediate } => (!immediate).then_some(AddressSize::Absolute),
             Self::Var { size, .. }
             | Self::Label { size, .. }
             | Self::DataLabel { size }
@@ -317,6 +339,8 @@ impl SymbolKind {
             Self::Var { address, .. } => address,
             Self::Const { .. }
             | Self::AbstractVar { .. }
+            | Self::Alias { .. }
+            | Self::Inline
             | Self::Label { .. }
             | Self::DataLabel { .. }
             | Self::Function { .. } => None,
@@ -327,7 +351,13 @@ impl SymbolKind {
     pub fn is_addressable(self) -> bool {
         match self {
             Self::Var { .. } | Self::Label { .. } | Self::DataLabel { .. } => true,
-            Self::Const { .. } | Self::AbstractVar { .. } | Self::Function { .. } => false,
+            // A place alias is exactly a stand-in for an address; a `#name`
+            // one is a stand-in for a value and may not be stored to.
+            Self::Alias { immediate } => !immediate,
+            Self::Const { .. }
+            | Self::AbstractVar { .. }
+            | Self::Inline
+            | Self::Function { .. } => false,
         }
     }
 
@@ -347,6 +377,8 @@ impl SymbolKind {
             } => "a local label",
             Self::DataLabel { .. } => "a data label",
             Self::Function { .. } => "a function",
+            Self::Inline => "an `inline`",
+            Self::Alias { .. } => "an `inline` alias",
         }
     }
 }

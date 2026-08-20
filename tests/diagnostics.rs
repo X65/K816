@@ -198,6 +198,18 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::CALL_CONVENTION_MISMATCH,
         caret: "near_one",
     },
+    // The section family: a `naked` section declaring an exit it cannot have,
+    // and a pair of `inline`s that expand into each other.
+    Case {
+        source: "naked f @a8 -> @a8 a {\n    nop\n}\n",
+        code: DiagnosticCode::NAKED_EXIT_CONTRACT,
+        caret: "-> @a8 a",
+    },
+    Case {
+        source: "inline one @a8 @i8 {\n    two\n}\n\ninline two @a8 @i8 {\n    one\n}\n",
+        code: DiagnosticCode::INLINE_RECURSION,
+        caret: "one",
+    },
 ];
 
 /// Analyzes `source` and returns the diagnostic carrying `code`.

@@ -337,6 +337,16 @@ pub fn always_exported(kind: SymbolKind) -> bool {
     match kind {
         SymbolKind::Function { .. } | SymbolKind::DataLabel { .. } => true,
         SymbolKind::Label { scope, .. } => scope == LabelScope::Global,
-        SymbolKind::Const { .. } | SymbolKind::Var { .. } | SymbolKind::AbstractVar { .. } => false,
+        // An alias is scoped to one `inline` and vanishes at expansion, so
+        // there is no place and no value for another unit to be handed.
+        // An `inline` has no address to hand anyone: its body is expanded
+        // at each use site, and a use site in another unit has no body to
+        // expand. Sharing one is a source-level question, not a link-time
+        // one.
+        SymbolKind::Const { .. }
+        | SymbolKind::Var { .. }
+        | SymbolKind::AbstractVar { .. }
+        | SymbolKind::Inline
+        | SymbolKind::Alias { .. } => false,
     }
 }

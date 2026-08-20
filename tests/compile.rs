@@ -899,3 +899,98 @@ fn the_near_far_convention_is_checked_across_units() {
     let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
     assert_eq!(codes, vec![DiagnosticCode::CALL_CONVENTION_MISMATCH]);
 }
+
+/// The section kinds that are not subroutines, through the assembler.
+///
+/// `inline` is the one construct that changes the *shape* of the operation
+/// stream rather than adding to it, so the claims worth making are about what
+/// is no longer there: no `jsr`, no `rts`, and no label two expansions could
+/// both define.
+#[test]
+fn expansions_and_naked_sections_assemble() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "inline-expansion.k816",
+        include_str!("golden/inline-expansion.k816"),
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        warnings,
+        ["K816-W0124", "K816-W0124"],
+        "only the `rti` exit, which no caller can rely on"
+    );
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // An `inline` has no address: nothing defines it, nothing exports it, and
+    // no use site transfers to it.
+    for absent in ["inc_y:", "scale:", "store_to:", "settle:", ".export inc_y"] {
+        assert!(
+            !assembly.contains(absent),
+            "an `inline` is not a place, so `{absent}` must not appear:\n{assembly}"
+        );
+    }
+    assert!(
+        !assembly.contains("jsr     a:inc_y"),
+        "an `inline` is expanded, not called:\n{assembly}"
+    );
+
+    // Expanded twice each, in the body that used them.
+    assert_eq!(
+        assembly.matches("iny ").count(),
+        2,
+        "`inc_y` used twice is two `iny`s:\n{assembly}"
+    );
+    // The alias takes the encoding its bound symbol earns, not one the
+    // declaration had to guess.
+    assert!(assembly.contains("sta     a:mem"), "{assembly}");
+    assert!(
+        assembly.contains("sta     z:cursor"),
+        "a direct-page argument narrows the store:\n{assembly}"
+    );
+    // The immediate alias is sized by the section's own contract.
+    assert!(assembly.contains("lda     #$0010"), "{assembly}");
+    assert!(assembly.contains("lda     #$1234"), "{assembly}");
+
+    // `naked` appends nothing. `tail` ends in its jump and `handler` in its
+    // `rti`, so the only `rts` in the file is the two `func`s'.
+    assert_eq!(
+        assembly.matches("        rts").count(),
+        2,
+        "only the two `func` sections return:\n{assembly}"
+    );
+    assert!(assembly.contains("        rti"), "{assembly}");
+    assemble_and_link("inline_expansion", &assembly, "slice");
+}
+
+/// An argument that does not fit is reported at the use site that passed it.
+///
+/// The body is correct on its own terms — it is the *argument* that makes the
+/// complaint true — so the caret belongs where the argument was written
+/// (sub-plan E, decision 12).
+#[test]
+fn an_argument_that_does_not_fit_is_reported_where_it_was_passed() {
+    use k816::diagnostic::DiagnosticCode;
+
+    let mut map = SourceMap::new();
+    let source = "inline narrow @a8 (a, #value) -> a {\n    lda #value\n}\n\n\
+                  func f @a8 @i8 {\n    narrow a, #300 -> a\n}\n";
+    let file = map.add_file("narrow.k816", source);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let reported: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect();
+    assert_eq!(reported, vec![DiagnosticCode::IMMEDIATE_RANGE]);
+
+    let diagnostic = &result.diagnostics[0];
+    let caret = map.file(file).span_text(diagnostic.primary.span);
+    assert_eq!(caret, "narrow a, #300 -> a", "the use site, not the body");
+    let body = map.file(file).span_text(diagnostic.secondary[0].span);
+    assert_eq!(body, "value", "and the parameter it was bound to");
+}

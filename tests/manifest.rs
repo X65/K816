@@ -276,14 +276,15 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`naked` functions",
-        source: "naked dli { return_i }\n",
-        expect: Expect::Parses,
+        source: "naked dli @a8 @i8 { return_i }\n",
+        expect: Expect::Compiles,
         case: "Every code section form",
     },
     Row {
         group: "`inline` functions with aliases",
-        source: "inline scale @a16 (a, #factor) -> a { }\n",
-        expect: Expect::Parses,
+        source: "inline scale @a16 (a, #factor) -> a { lda #factor }\n\
+                 func f @a16 @i8 {\n  scale a, #16 -> a\n}\n",
+        expect: Expect::Compiles,
         case: "Call contracts on a section header",
     },
     Row {
@@ -372,8 +373,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`return` / `return_i`",
-        source: "func f {\n  return\n}\nnaked g {\n  return_i\n}\n",
-        expect: Expect::Parses,
+        source: "func f @a8 @i8 {\n  return\n}\nnaked g @a8 @i8 {\n  return_i\n}\n",
+        expect: Expect::Compiles,
         case: "Call statements",
     },
     Row {

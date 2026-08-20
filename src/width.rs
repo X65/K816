@@ -687,11 +687,29 @@ impl Flattener<'_> {
                 let callee = self.lookup_callee(&call.target.text);
                 self.call(id, span, callee, true);
             }
-            StatementKind::Return(_) => {
+            // `return` leaves the widths alone; `return_i` is `rti`, which
+            // pulls `P` off the stack and with it both width bits. The
+            // difference is not cosmetic: a caller reads the state at the
+            // return site as the function's exit, so a `return_i` that
+            // claimed the tracked widths would promise an interrupt handler's
+            // callers something the CPU does not do.
+            StatementKind::Return(kind) => {
+                let mnemonic = match kind {
+                    ast::ReturnKind::Subroutine => Mnemonic::Rts,
+                    ast::ReturnKind::Interrupt => Mnemonic::Rti,
+                };
                 self.push(
                     id,
                     span,
-                    Transfer::Identity,
+                    Transfer::Instruction {
+                        effect: crate::effects::instruction_effects(
+                            mnemonic,
+                            crate::isa::AddressingMode::Stack,
+                            None,
+                        )
+                        .width,
+                        exchanges_emulation: false,
+                    },
                     Control {
                         fall_through: false,
                         target: None,
@@ -1051,10 +1069,20 @@ impl Flattener<'_> {
         );
     }
 
+    /// The section a use site names, `func` or `inline` alike.
+    ///
+    /// An `inline` is modelled as a call: the use site bridges to its entry
+    /// contract and adopts its exit, exactly as for a `func`. That is what
+    /// makes "an `inline` body is analyzed once, at its declaration" sound —
+    /// the widths inside the expansion are the ones its own contract
+    /// establishes, and the bridge is what gets the use site there.
     fn lookup_callee(&self, name: &str) -> Option<SymbolId> {
-        self.symbols
-            .lookup(name)
-            .filter(|symbol| matches!(self.symbols.kind(*symbol), SymbolKind::Function { .. }))
+        self.symbols.lookup(name).filter(|symbol| {
+            matches!(
+                self.symbols.kind(*symbol),
+                SymbolKind::Function { .. } | SymbolKind::Inline
+            )
+        })
     }
 
     fn goto_target(&self, goto: &ast::GotoStatement) -> Target {

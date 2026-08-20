@@ -31,7 +31,7 @@
 //! Each sub-plan E task adds its family here. E1 covers what the two models
 //! actually disagreed about before there was one.
 
-use k816::diagnostic::{Diagnostic, DiagnosticCode};
+use k816::diagnostic::{Diagnostic, DiagnosticCode, Severity};
 use k816::lower::lower;
 use k816::op::{KOpKind, Operand, Origin};
 use k816::parser::parse_source;
@@ -46,7 +46,18 @@ fn lower_ops(text: &str) -> Vec<(KOpKind, Origin)> {
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
     let (model, diagnostics) = analyze_file(&parse.file);
-    assert_eq!(diagnostics, vec![], "unexpected semantic diagnostics");
+    // Errors only: a *warning* is a claim about the program that lowering is
+    // supposed to keep working through, and the shapes E6 added — an `rti`
+    // exit above all — carry one by design.
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors,
+        Vec::<&Diagnostic>::new(),
+        "unexpected semantic errors"
+    );
     let (program, diagnostics) = lower(&parse.file, &model);
     assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
     program
@@ -488,5 +499,68 @@ fn a_far_section_returns_the_way_its_callers_arrived() {
         mnemonics("func near_one @a8 @i8 {\n    nop\n}\n"),
         [Mnemonic::Nop, Mnemonic::Rts],
         "a near section is untouched by any of it"
+    );
+}
+
+/// An expansion is the body, written out where its name was.
+///
+/// The pairing E's discipline asks for, applied to the one construct that
+/// changes the shape of the stream rather than adding to it: what a use site
+/// produces has to equal what the same statements produce written in place.
+#[test]
+fn an_expansion_matches_the_body_written_out() {
+    // Both halves declare the same sections, used or not: a symbol the one
+    // program has and the other lacks shifts every later identifier, and the
+    // comparison is over identifiers.
+    let program = |body: &str| {
+        format!(
+            "var mem = $0400\nfunc main @a8 @i16 {{\n{body}\n}}\n\n\
+             inline bump @a8 @i16 {{ mem++ }}\n\
+             inline put @a8 @i16 (a, where) -> a {{ where = a }}\n"
+        )
+    };
+    let kinds = |text: &str| -> Vec<KOpKind> {
+        lower_ops(text).into_iter().map(|(kind, _)| kind).collect()
+    };
+    assert_eq!(
+        kinds(&program("    bump\n    bump")),
+        kinds(&program("    mem++\n    mem++")),
+        "two expansions are the two statements"
+    );
+    // And the alias is the argument, not a name of its own.
+    assert_eq!(
+        kinds(&program("    put a, #mem -> a")),
+        kinds(&program("    mem = a")),
+    );
+}
+
+/// `naked` is the section kind with no closing `rts`, and nothing else.
+#[test]
+fn a_naked_section_ends_where_its_body_does() {
+    use k816::isa::Mnemonic;
+
+    let mnemonics = |source: &str| -> Vec<Mnemonic> {
+        lower_ops(source)
+            .into_iter()
+            .filter_map(|(kind, _)| match kind {
+                KOpKind::Instruction(instruction) => Some(instruction.mnemonic),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        mnemonics("naked f @a8 @i8 {\n    x++\n}\n"),
+        [Mnemonic::Inx],
+        "nothing is appended at the closing brace"
+    );
+    assert_eq!(
+        mnemonics("func f @a8 @i8 {\n    x++\n}\n"),
+        [Mnemonic::Inx, Mnemonic::Rts],
+        "and a `func` is unchanged by any of it"
+    );
+    assert_eq!(
+        mnemonics("naked f @a8 @i8 {\n    return_i\n}\n"),
+        [Mnemonic::Rti],
+        "`return_i` is `rti`, the interrupt handler's return"
     );
 }

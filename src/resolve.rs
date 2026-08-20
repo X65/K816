@@ -45,6 +45,8 @@
 //! compile-time-known addresses only — numeric literals and pinned variables
 //! — and never to a symbol ld65 places.
 
+use std::collections::BTreeMap;
+
 use crate::ast::{
     AddressEncoding as AstEncoding, AddressOperand, BlockMoveOperand, DataBlock, DataEntry,
     DataEntryKind, DataValue, Expr, ExprKind, HlaOperand, HlaOperandKind, IndexRegisterKind,
@@ -234,6 +236,9 @@ pub struct Resolver<'a> {
     /// Every symbol this resolver looked up, which is what tells an
     /// `.import` a unit needs from one it merely could have had.
     referenced: Vec<SymbolId>,
+    /// What an `inline`'s aliases stand for, while an expansion is lowered.
+    /// Empty everywhere else, including at the declaration.
+    aliases: BTreeMap<SymbolId, KExpr>,
 }
 
 impl<'a> Resolver<'a> {
@@ -244,10 +249,24 @@ impl<'a> Resolver<'a> {
             widths: ModeState::unknown(),
             diagnostics: Vec::new(),
             referenced: Vec::new(),
+            aliases: BTreeMap::new(),
         }
     }
 
     /// Scopes local label resolution to `function`.
+    /// Binds an `inline`'s aliases to what a use site passed.
+    ///
+    /// Set only while lowering an expansion. It is what makes the value known
+    /// where it is known: the same classifier that sizes every other operand
+    /// sizes an alias-bearing one, against the same widths, so a substituted
+    /// immediate that does not fit is reported here rather than by ca65 — and
+    /// a substituted *place* takes the encoding its own declaration earns
+    /// instead of the conservative one an unbound alias has to assume.
+    pub fn with_aliases(mut self, aliases: BTreeMap<SymbolId, KExpr>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
     pub fn in_function(mut self, function: Option<SymbolId>) -> Self {
         self.function = function;
         self
@@ -326,6 +345,41 @@ impl<'a> Resolver<'a> {
                             .with_docs("doc/symbolic-subscripts.md#abstract-layout-only-form"),
                         );
                         None
+                    }
+                    // An `inline` is a body, not a place: nothing links to
+                    // it, so a mention of one outside a use site has nothing
+                    // to become. Reported here for the same reason as an
+                    // `abstract var` — this is the single point where a name
+                    // becomes a value.
+                    SymbolKind::Inline => {
+                        let declaration = self.symbols.symbol(id).declaration;
+                        self.report(
+                            Diagnostic::error(
+                                DiagnosticCode::SYMBOL_KIND_MISMATCH,
+                                format!("`{}` is an `inline`, which has no address", name.text),
+                                Label::new(name.span, "a body that is expanded, not a place"),
+                            )
+                            .with_secondary(Label::new(declaration, "declared here"))
+                            .with_note(
+                                "an `inline` is copied into each use site, so there is no one \
+                     address for a reference to name",
+                            )
+                            .with_help(format!(
+                                "write `{}` on its own to expand it, or make it a `func` to \
+                     give it an address",
+                                name.text
+                            ))
+                            .with_docs("doc/syntax-reference.md#inline"),
+                        );
+                        None
+                    }
+                    // An alias is whatever the use site passed, where a use
+                    // site is what is being lowered; at the declaration there
+                    // is nothing bound and the alias stays itself, which is
+                    // what lets the body be classified once with a shape
+                    // rather than with a hole.
+                    SymbolKind::Alias { .. } => {
+                        Some(self.aliases.get(&id).cloned().unwrap_or(KExpr::Symbol(id)))
                     }
                     SymbolKind::Var { .. }
                     | SymbolKind::Label { .. }
@@ -406,8 +460,21 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Resolves a unit-level name, reporting it when nothing declares it.
+    /// Resolves a plain name, reporting it when nothing declares it.
+    ///
+    /// The enclosing section's own scope is tried first, because an `inline`
+    /// alias is a plain identifier scoped to the section that declares it.
+    /// Nothing else in that scope can be reached this way: a local label's
+    /// name keeps its leading `.`, so `lookup_local` cannot match an
+    /// identifier, and an alias shadows a unit-level name of the same
+    /// spelling only inside the one body that declared it.
     pub fn resolve(&mut self, name: &str, span: Span) -> Option<SymbolId> {
+        if let Some(alias) = self
+            .function
+            .and_then(|owner| self.symbols.lookup_local(owner, name))
+        {
+            return Some(alias);
+        }
         match self.symbols.lookup(name) {
             Some(id) => {
                 self.referenced.push(id);
@@ -911,9 +978,20 @@ impl<'a> Resolver<'a> {
         // deserves is reported when it is folded for real.
         let mut probe = Resolver::new(self.symbols)
             .in_function(self.function)
-            .with_widths(self.widths);
-        match probe.fold(value).and_then(|expr| expr.value()) {
-            Some(folded) => AddressSize::of_value(folded.get()),
+            .with_widths(self.widths)
+            .with_aliases(self.aliases.clone());
+        match probe.fold(value) {
+            // A folded name is as good an answer as a written one, which is
+            // what lets an `inline` alias bound to a direct-page variable
+            // take the direct-page encoding at the use site.
+            Some(KExpr::Symbol(id)) => self
+                .symbols
+                .kind(id)
+                .address_size()
+                .unwrap_or(AddressSize::Absolute),
+            Some(folded) => folded.value().map_or(AddressSize::Absolute, |value| {
+                AddressSize::of_value(value.get())
+            }),
             None => AddressSize::Absolute,
         }
     }

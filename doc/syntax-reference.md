@@ -510,7 +510,9 @@ naked inc_x_twice {
 }            // no RTS here; make sure function never reaches here
 ```
 
-A `naked` function may carry entry-mode annotations and an input parameter list, but may **not** declare an exit contract — no `-> ...` clause is permitted, because control does not return to the caller implicitly. A bare call to a `naked` function resets the caller's tracked register widths; any code after the call is lowered as if at the start of a new function body and must re-establish whatever mode it needs via `@aX`/`@iX` annotations or explicit bridges.
+A `naked` function may carry entry-mode annotations and an input parameter list, but may **not** declare an exit contract — no `-> ...` clause is permitted (`K816-E0131`), because control does not return to the caller implicitly. A bare call to a `naked` function resets the caller's tracked register widths; any code after the call is lowered as if at the start of a new function body and must re-establish whatever mode it needs via `@aX`/`@iX` annotations or explicit bridges.
+
+The missing `RTS` is the *whole* of what `naked` means. Its exit widths are inferred from its reachable returns exactly as any other section's, falling off the end included — control does leave there, so that is a return site like any other.
 
 ### `inline`
 
@@ -521,6 +523,12 @@ inline inc_y {
   y++
 }
 ```
+
+An `inline` has no address. Nothing is emitted where it is declared, nothing is exported, and a reference to its name anywhere but a use site is an error (`K816-E0115`) — there is no one place for such a reference to mean. For the same reason `far` may not be written on a use site: the body runs in whatever bank the use site is in, so there is no transfer for the prefix to lengthen.
+
+An `inline` that expands into itself, directly or through a cycle, is `K816-E0132`. A copy has no base case the way a call does. Recursion through a non-`inline` callee is ordinary recursion and is fine.
+
+Labels inside an expanded body do not keep their names — a second expansion would define them again — so each expansion gets targets of its own. That is also why a `goto` may not name a label of another section (`K816-E0129`): from outside there is nothing to name.
 
 Functions and inlines are used simply by specifying their names. A contract-less bare call keeps the legacy behavior:
 
@@ -573,6 +581,40 @@ Two consequences follow, and both are deliberate:
 
 - **`func` may not declare aliases.** There would be nowhere to put the value. A `func` that needs a compile-time constant should take it in a register, read it from a `var`, or be an `inline`.
 - **A call site never passes an alias.** Call-site arguments are registers and immediates only — `add a, x -> a, y`, `scale a, #16 -> a`. An alias is bound during expansion, not handed over at a call, so there is no call-site syntax for one. This also keeps two consecutive bare calls unambiguous: with bare identifiers accepted as arguments, `inc_x` followed by `inc_y` would read as one call passing the other's name.
+
+#### How an alias is bound
+
+Aliases bind **positionally**, against the use site's argument list: the alias in the *n*th parameter slot takes the *n*th argument. A register slot wants that register named; an alias slot — either kind — wants an immediate.
+
+```k65
+inline scale @a16 (a, #factor) -> a {
+  lda #factor
+}
+
+inline store_to @a8 (a, target) -> a {
+  target = a
+}
+
+var cursor = $10
+var mem    = $0400
+
+func use @a16 @i8 {
+  scale a, #16 -> a         // lda #$0010
+}
+
+func place @a8 @i8 {
+  store_to a, #mem -> a     // sta a:mem
+  store_to a, #cursor -> a  // sta z:cursor
+}
+```
+
+The `#` in argument position is *argument syntax*, not a claim about what the substituted expression is used as: it is the only way to write a non-register argument, and it is what keeps `inc_x` on one line from reading as an argument to a call on the line above. Whether the alias stands for a value or a place is decided by how it was *declared* — `#factor` is a value and may only be read, `target` is a place and may be stored to.
+
+What follows from binding at expansion rather than at a call:
+
+- **The body is classified once, against the `inline`'s own contract.** `lda #factor` in an `@a16` section is a three-byte instruction at every use site, and the use site is bridged to `@a16` to make that true.
+- **An argument's own declaration decides the encoding.** `store_to a, #cursor -> a` narrows to `z:` because `cursor` is a direct-page variable, exactly as a hand-written `cursor = a` would.
+- **An argument that does not fit is reported where it was written.** The body is correct on its own terms; the argument is what makes the complaint true, so the caret lands on the use site and the parameter it was bound to is shown as a secondary.
 
 ### `else`
 

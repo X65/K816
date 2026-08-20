@@ -159,6 +159,17 @@ impl AstBuilder<'_> {
         node_span(node, self.source)
     }
 
+    /// `node`'s span, extended back over a preceding `->` if there is one.
+    fn with_arrow(&self, node: Node<'_>) -> Span {
+        let span = self.span(node);
+        match node.prev_sibling() {
+            Some(arrow) if arrow.kind() == "->" => {
+                Span::new(span.file, node_span(arrow, self.source).start, span.end)
+            }
+            _ => span,
+        }
+    }
+
     fn text(&self, node: Node<'_>) -> &str {
         self.source.span_text(node_span(node, self.source))
     }
@@ -463,7 +474,11 @@ impl AstBuilder<'_> {
             ContractOutputs {
                 width: self.width_annotations(outputs),
                 registers,
-                span: self.span(outputs),
+                // The `->` is part of the clause: a diagnostic that offers to
+                // delete the clause has to take the arrow with it, and one
+                // that points at "the declared exit" reads better including
+                // the token that introduces it.
+                span: self.with_arrow(outputs),
             }
         });
         CallContract {

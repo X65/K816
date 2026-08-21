@@ -170,11 +170,18 @@ pub struct FunctionInfo {
     /// and by native-call handling. Until exit inference lands this is the
     /// language's `Unknown ⇒ Preserve` fallback for every function.
     pub exit: ExitContract,
-    /// Whether the body contains a width-dependent immediate on each axis.
+    /// Which width axes the body observes *directly*.
     ///
-    /// D computes it and does not act on it: it is the seed of the
-    /// optimizer's transitive dead-mode-elimination pass (sub-plan F).
+    /// The seed of [`Self::observes`]; see [`WidthNeeds`] for why "observes"
+    /// and not "has a width-dependent immediate".
     pub needs: WidthNeeds,
+    /// Which width axes calling this function observes, transitively.
+    ///
+    /// The workspace answer where there is one, and this unit's own fixpoint
+    /// otherwise. The optimizer asks it one question at every call site: is
+    /// there anything reachable from this call that would behave differently
+    /// if the caller stopped establishing the axis.
+    pub observes: WidthNeeds,
     /// Call edges, from both `call NAME` and a native `jsr`/`jsl` with a
     /// resolvable target. Consumed by exit inference, by the workspace exit
     /// classification, by damage tracking, and by F's transitive pass.
@@ -712,6 +719,7 @@ impl Analysis {
                         exit: ExitContract::preserving(),
                         exit_is_assumed: true,
                         needs: WidthNeeds::default(),
+                        observes: WidthNeeds::default(),
                         callees: Vec::new(),
                     });
                 }
@@ -1207,17 +1215,19 @@ impl Analysis {
                 }
                 self.check_declared_exit(func, &analysis);
 
+                let observes = self.observed(info.symbol, index);
                 callees.insert(
                     info.symbol,
                     width::CalleeContract {
                         entry: info.contract,
                         exit,
-                        observes: self.observed(info.symbol, index),
+                        observes,
                     },
                 );
                 let function = &mut self.model.functions[index];
                 function.exit = exit;
                 function.exit_is_assumed = assumed;
+                function.observes = observes;
                 self.model.widths.insert(info.symbol, analysis);
             }
         }

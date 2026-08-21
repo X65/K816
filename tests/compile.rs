@@ -1848,36 +1848,281 @@ fn the_live_out_fixture_keeps_everything_a_return_could_hand_back() {
     );
 }
 
-/// **Moved by sub-plan F, task F1.** `width-branch.k816::skipped` loads the
-/// accumulator, branches away, and the target reloads it — so the first load
-/// is dead on every path and the optimizer removes it. The unoptimized gate
-/// above is unchanged and is still what proves the width model's own answer;
-/// this is the second gate the plan asks every width fixture to grow.
+/// **Moved by sub-plan F, tasks F1 and F2**, and every difference from the
+/// unoptimized gate above is one of two claims.
 ///
-/// The user-written `rep #$20` that no path reaches stays exactly where it was
-/// written: the unreachable pass removes compiler-generated operations only.
+/// `skipped` loads the accumulator, branches away, and the target reloads it,
+/// so the first load is dead on every path (F1). `resolved` writes a
+/// `rep #$20` immediately above a *label bridge* that establishes the same
+/// width for every arrival, so the first one is redundant on both paths and
+/// its M bit is unobserved before the bridge re-establishes it (F2) — and it
+/// is a user-written instruction, treated exactly like a generated one, which
+/// `doc/design.md` §8 makes a bullet.
+///
+/// Two things stay. The **label bridge itself** is never eliminated: the
+/// arrivals it exists for are branches from states F is not looking at, and
+/// liveness below the label says nothing about them. And the user-written
+/// `rep #$20` in `skipped` that no path reaches stays exactly where it was
+/// written — the unreachable pass removes compiler-generated operations only.
 #[test]
-fn the_optimized_skipped_branch_loses_only_the_load_it_branches_away_from() {
+fn the_optimized_branch_fixture_loses_only_what_no_path_depends_on() {
     let bytes = link_fixture(
         "width-branch-opt",
         "width-branch.k816",
         include_str!("golden/width-branch.k816"),
         &Options { optimize: true },
     );
-    // `skipped`: bra (2), rep #$20 (2), lda #$01 (2), rts (1).
+    // `skipped`: bra (2), the unreachable user rep #$20 (2), lda #$01 (2),
+    // rts (1). Only the load the branch leaves behind is gone.
     assert_eq!(
         &bytes[..7],
         &[0x80, 0x02, 0xC2, 0x20, 0xA9, 0x01, 0x60],
         "{bytes:02X?}"
     );
-    // `taken` and `resolved` are byte-for-byte what the unoptimized gate
-    // asserts: no path in either has a dead write.
+    // `taken` is byte-for-byte the unoptimized gate: its `rep #$20` is on
+    // every path to a `lda #$01` that reads M, so nothing there is dead.
     assert_eq!(
-        &bytes[7..],
-        &[
-            0xA9, 0x01, 0xC2, 0x20, 0x80, 0x00, 0xA9, 0x01, 0x00, 0x60, // taken
-            0x90, 0x02, 0xC2, 0x20, 0xC2, 0x20, 0xA9, 0x02, 0x01, 0x60, // resolved
-        ],
+        &bytes[7..17],
+        &[0xA9, 0x01, 0xC2, 0x20, 0x80, 0x00, 0xA9, 0x01, 0x00, 0x60],
         "{bytes:02X?}"
+    );
+    // `resolved`: bcc (2, now reaching two bytes nearer), the label bridge
+    // rep #$20 (2), lda #$0102 (3), rts (1).
+    assert_eq!(
+        &bytes[17..],
+        &[0x90, 0x00, 0xC2, 0x20, 0xA9, 0x02, 0x01, 0x60],
+        "{bytes:02X?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the optimizer changed about the width model's own fixtures (F2).
+// ---------------------------------------------------------------------------
+
+/// The instruction lines of an emitted assembly, in order, without comments.
+fn instruction_lines(assembly: &str) -> Vec<String> {
+    assembly
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or_default().trim_end())
+        .filter(|line| line.starts_with("        ") && !line.trim_start().starts_with('.'))
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+/// Compiles `text` twice, links both, and returns the lines the optimizer
+/// removed, the lines it put in their place, and the bytes the difference
+/// cost.
+///
+/// A line-level diff on its own would pass on output ca65 then sizes
+/// differently, which is the exact failure the width model exists to prevent —
+/// so both halves go through the real assembler and the linker, and the byte
+/// count is asserted beside the lines.
+fn optimizer_effect(test: &str, name: &str, text: &str) -> (Vec<String>, Vec<String>, usize) {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let compile = |optimize: bool| -> String {
+        let result = compile_to_ca65(&map, file, &Options { optimize });
+        let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{name}: {errors:?}");
+        result.assembly.expect("compilation succeeds")
+    };
+    let before = compile(false);
+    let after = compile(true);
+    let before_bytes = assemble_and_link(&format!("{test}-unopt"), &before, "slice");
+    let after_bytes = assemble_and_link(&format!("{test}-opt"), &after, "slice");
+
+    let mut remaining = instruction_lines(&after);
+    let mut removed = Vec::new();
+    for line in instruction_lines(&before) {
+        match remaining.iter().position(|kept| *kept == line) {
+            Some(index) => {
+                remaining.remove(index);
+            }
+            None => removed.push(line),
+        }
+    }
+    (removed, remaining, before_bytes.len() - after_bytes.len())
+}
+
+/// `block-exit.k816`: two scoped-block operations go, and the landing pads
+/// stay.
+///
+/// The `rep #$20` that enters `native_exit`'s block is dead because nothing
+/// inside the block reads M — the body is one `bra` — and the pad on the taken
+/// edge re-establishes the width for everything below. The `sep #$20` that
+/// `generated_exit` restores on its *back edge* is dead for the same reason
+/// one step around: every path from it re-enters the loop through the block's
+/// own `rep #$20`.
+///
+/// Both landing pads survive. The pad is what makes a branch out of a scoped
+/// block correct, and neither of these removals is on that edge.
+#[test]
+fn the_optimized_block_exit_fixture_drops_two_redundant_scoped_operations() {
+    let (removed, added, bytes) = optimizer_effect(
+        "block-exit",
+        "block-exit.k816",
+        include_str!("golden/block-exit.k816"),
+    );
+    assert_eq!(removed, vec!["rep     #$20", "sep     #$20"], "{removed:?}");
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 4, "two two-byte instructions");
+}
+
+/// `width-bridging.k816`: one bridge bit goes, and it is the one no
+/// instruction in the program depends on.
+///
+/// Every body in that fixture is a `nop` except `already_wide`, which reads M
+/// through `lda #$1234`. So the accumulator axis is observed and every `rep`
+/// and `sep` that carries M stays; the *index* axis is observed nowhere, and
+/// the widening `rep #$10` before `call wide_all` goes with it.
+///
+/// The narrowing `sep #$10` before `call narrow` stays, and the asymmetry is
+/// the truncation rule rather than an inconsistency: narrowing the index
+/// registers zeroes their high bytes, which is a register write, and every
+/// register is live at a function's exit.
+#[test]
+fn the_optimized_bridging_fixture_drops_only_the_axis_nothing_observes() {
+    let (removed, added, bytes) = optimizer_effect(
+        "width-bridging",
+        "width-bridging.k816",
+        include_str!("golden/width-bridging.k816"),
+    );
+    assert_eq!(removed, vec!["rep     #$10"], "{removed:?}");
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 2);
+}
+
+/// `width-loop.k816`: the `rep #$20` inside the diverging loop goes.
+///
+/// `diverging` is `nop`, `rep #$20`, `bra .head` — an infinite loop whose only
+/// path from the mode change leads back through the mode change. Nothing reads
+/// M anywhere on it, and the function has no reachable return for an exit
+/// contract to promise anything at.
+///
+/// The fixture's own claim is untouched: it exists to prove the width solver
+/// reaches a fixpoint over the back edge, and the unoptimized gate beside this
+/// one is what checks that.
+#[test]
+fn the_optimized_loop_fixture_drops_the_mode_change_its_own_loop_undoes() {
+    let (removed, added, bytes) = optimizer_effect(
+        "width-loop",
+        "width-loop.k816",
+        include_str!("golden/width-loop.k816"),
+    );
+    assert_eq!(removed, vec!["rep     #$20"], "{removed:?}");
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 2);
+}
+
+/// `native-modes.k816`: dead register and flag writes, and one redundant mode
+/// instruction.
+///
+/// The fixture writes every transfer and every flag operation in a row, so
+/// most of them overwrite each other: `txa` before `tya`, `tyx` before `tsx`,
+/// `txs` before `tcs`, `clc` before `sec`, `cld` before `sed`, `cli` before
+/// `sei`. The `sep #$20` goes because the `rep #$20` on the next line
+/// establishes M without reading it — which is only visible once `SEP`/`REP`
+/// stop claiming to read every P flag.
+///
+/// The `lda #$01` in `stack_forms` goes because `pla` overwrites A below it.
+#[test]
+fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
+    let (removed, added, bytes) = optimizer_effect(
+        "native-modes",
+        "native-modes.k816",
+        include_str!("golden/native-modes.k816"),
+    );
+    assert_eq!(
+        removed,
+        vec![
+            "lda     #$01",
+            "txa",
+            "tyx",
+            "txs",
+            "clc",
+            "cld",
+            "cli",
+            "sep     #$20",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 2 + 1 + 1 + 1 + 1 + 1 + 1 + 2);
+}
+
+/// The mode fixture, at the bytes: two changes, and nothing else.
+#[test]
+fn the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change() {
+    let (removed, added, bytes) = optimizer_effect(
+        "opt-modes",
+        "opt-modes.k816",
+        include_str!("golden/opt-modes.k816"),
+    );
+    // `rep #$21` becomes `rep #$01`: the M bit is unobserved, the carry clear
+    // is not the width pass's to touch. And the `sep #$20` above the fixed
+    // label bridge goes, because the bridge re-establishes the width for every
+    // arrival.
+    assert_eq!(removed, vec!["rep     #$21", "sep     #$20"], "{removed:?}");
+    assert_eq!(added, vec!["rep     #$01"], "{added:?}");
+    // The rewrite is the same length; only the removal costs bytes.
+    assert_eq!(bytes, 2);
+}
+
+/// The cross-unit pair links, and both of unit A's bridges are still there.
+///
+/// Nothing unit A can see reads the M or the X flag; unit B does, and it is
+/// also where the callee lives. "The axis is observed nowhere" is a claim
+/// about the whole program, and this is the program.
+#[test]
+fn the_cross_unit_mode_pair_links_with_both_bridges_intact() {
+    let mut map = SourceMap::new();
+    let a = map.add_file(
+        "opt-crossunit-a.k816",
+        include_str!("golden/opt-crossunit-a.k816"),
+    );
+    let b = map.add_file(
+        "opt-crossunit-b.k816",
+        include_str!("golden/opt-crossunit-b.k816"),
+    );
+    let assemble = |file, name: &str| -> PathBuf {
+        let result = compile_to_ca65(&map, file, &Options { optimize: true });
+        let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
+        assert!(errors.is_empty(), "{name}: {errors:?}");
+        let assembly = result.assembly.expect("compilation succeeds");
+        if name == "a" {
+            // Unit A's bridge to a callee it cannot see through is intact.
+            assert!(assembly.contains("rep     #$20"), "{assembly}");
+            assert!(assembly.contains("rep     #$10"), "{assembly}");
+        }
+        let dir = work_dir(&format!("opt-crossunit-{name}"));
+        let asm_path = dir.join("out.s");
+        let obj_path = dir.join("out.o");
+        std::fs::write(&asm_path, assembly).expect("write assembly");
+        run_ok(
+            Command::new(tool("CA65", "ca65"))
+                .arg(&asm_path)
+                .args(["-o".as_ref(), obj_path.as_os_str()]),
+            "ca65",
+        );
+        obj_path
+    };
+    let object_a = assemble(a, "a");
+    let object_b = assemble(b, "b");
+
+    let dir = work_dir("opt-crossunit-link");
+    let bin_path = dir.join("out.bin");
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    run_ok(
+        Command::new(tool("LD65", "ld65"))
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), bin_path.as_os_str()])
+            .arg(&object_a)
+            .arg(&object_b),
+        "ld65",
+    );
+    assert!(
+        !std::fs::read(&bin_path)
+            .expect("read linked binary")
+            .is_empty()
     );
 }

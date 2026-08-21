@@ -1,0 +1,24 @@
+// Sub-plan F fixture, unit B of the cross-unit pair. See
+// `opt-crossunit-a.k816` for what the two of them assert together.
+
+var OTHER = $0500
+
+// The callee unit A bridges to. It observes neither axis, which is what makes
+// unit A's bridge look dead from inside unit A.
+func quiet @a16 @i16 {
+    nop
+}
+
+// And the reason it is not: nothing in unit A reads the M or the X flag, and
+// this does. Never called — observation is a property of the program's
+// instructions, not of its call sites.
+func reads_x @a16 @i16 {
+    ldx #$0102
+    OTHER,x = a
+}
+
+// Branches into unit A's function, which is what makes `shared_spot`
+// reachable from outside.
+func arrives @a8 @i8 {
+    jmp shared_spot
+}

@@ -1,0 +1,33 @@
+// Sub-plan F fixture, unit A of the cross-unit pair.
+//
+// Two claims that cannot be made inside one file, because both are about what
+// K816 can see *elsewhere* in the workspace. Compiled with
+// `opt-crossunit-b.k816` beside it, neither operation below changes.
+
+var CELL = $0400
+
+// **The bridge that survives because another unit observes.** `main` is the
+// entry point, so its inferred exit constrains nobody and the exit-contract
+// guard is off; `quiet` is a `nop` and observes neither axis. Everything this
+// unit can see says the bridge is dead. Unit B reads M and X somewhere, so
+// neither axis is observed *nowhere*, and a published entry contract is a
+// promise the whole program was compiled against.
+//
+// `tests/opt_modes.rs` compiles the same shape as one self-contained file,
+// where the axes really are observed nowhere and the bridge really does go.
+// The difference between the two is the whole claim.
+func main @a8 @i8 {
+    call quiet
+}
+
+// **A label another unit branches to.** No edge inside this function reaches
+// `shared_spot` — the `bra` jumps over it — so its block is unreachable by
+// every local measure. Unit B names it, so control may arrive from code K816
+// is not looking at and the block is reachable after all.
+func has_a_shared_label @a8 @i8 {
+    bra .past
+shared_spot:
+    CELL = a
+.past:
+    nop
+}

@@ -931,6 +931,18 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "the_barrier_fixture_assembles_and_the_optimizer_changes_no_byte",
         ),
         (
+            "opt-crossunit-a.k816",
+            "the_cross_unit_mode_pair_links_with_both_bridges_intact",
+        ),
+        (
+            "opt-crossunit-b.k816",
+            "the_cross_unit_mode_pair_links_with_both_bridges_intact",
+        ),
+        (
+            "opt-modes.k816",
+            "the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change",
+        ),
+        (
             "opt-liveout.k816",
             "the_live_out_fixture_keeps_everything_a_return_could_hand_back",
         ),

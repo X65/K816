@@ -194,15 +194,17 @@ fn the_removal_is_justified_by_explicit_effects() {
 /// The other half of the `effects.rs` correction, asserted directly.
 ///
 /// Narrowing `SEP`/`REP`'s read set is what makes dead mode elimination
-/// possible and is *also* what would let this pass delete a mode instruction:
-/// a `sep #$20` has no memory effect, falls through, and writes M, and the
-/// second one below overwrites that write without reading it. Nothing in the
-/// candidate test rejects it. Deleting it here would happen with none of the
-/// guards a mode change needs — an exit contract, a fixed label bridge, a live
-/// truncation, a non-width bit in the mask — which is why the exclusion landed
-/// in the same change as the read-set correction rather than later.
+/// possible and is *also* what would let the ordinary dead-write pass delete a
+/// mode instruction: a `sep #$20` has no memory effect, falls through, and
+/// writes M, and the second one below overwrites that write without reading
+/// it. Nothing in that pass's candidate test rejects it, and it would do the
+/// deletion with none of the guards a mode change needs — an exit contract, a
+/// fixed label bridge, a live truncation, a non-width bit in the mask.
+///
+/// So the redundant `sep` does go, and it goes through **pass 1**, which
+/// checked all of them.
 #[test]
-fn no_pass_but_the_two_mode_passes_touches_a_mode_instruction() {
+fn only_the_two_mode_passes_touch_a_mode_instruction() {
     let (_, file, model, mut program) = lowered(
         "\
 func f @a16 {
@@ -213,21 +215,71 @@ func f @a16 {
 ",
     );
     let log = run(&mut program, &model, file);
-    assert!(log.is_empty(), "{:?}", log.changes);
-
-    let mnemonics: Vec<Mnemonic> = first_function(&program)
-        .ops
-        .iter()
-        .filter_map(|op| match &op.kind {
-            KOpKind::Instruction(instruction) => Some(instruction.mnemonic),
-            _ => None,
-        })
-        .collect();
+    assert_eq!(log.changes.len(), 1);
+    assert_eq!(log.changes[0].pass, Pass::EliminateDeadModes);
     assert_eq!(
-        mnemonics,
-        vec![Mnemonic::Sep, Mnemonic::Sep, Mnemonic::Lda, Mnemonic::Rts]
+        mnemonics(&program, &model, "f"),
+        vec![Mnemonic::Sep, Mnemonic::Lda, Mnemonic::Rts]
     );
+
+    // And the general claim, over every shipped fixture that has mode
+    // operations in it: whatever changed, a mode instruction only ever
+    // changed under pass 1 or pass 2.
+    for (name, source) in MODE_FIXTURES {
+        let (_, file, model, mut program) = lowered_as(name, source);
+        for change in run(&mut program, &model, file).changes {
+            let touched_a_mode =
+                change
+                    .before
+                    .iter()
+                    .chain(&change.after)
+                    .any(|op| match &op.kind {
+                        KOpKind::Instruction(instruction) => {
+                            matches!(instruction.mnemonic, Mnemonic::Sep | Mnemonic::Rep)
+                        }
+                        _ => false,
+                    });
+            assert!(
+                !touched_a_mode
+                    || matches!(change.pass, Pass::EliminateDeadModes | Pass::FoldModes),
+                "`{name}`: {:?} touched a mode instruction",
+                change.pass
+            );
+        }
+    }
 }
+
+/// Every shipped fixture that contains a `REP` or a `SEP`.
+const MODE_FIXTURES: &[(&str, &str)] = &[
+    ("block-exit.k816", include_str!("golden/block-exit.k816")),
+    (
+        "data-entries.k816",
+        include_str!("golden/data-entries.k816"),
+    ),
+    ("hla-alu.k816", include_str!("golden/hla-alu.k816")),
+    (
+        "native-modes.k816",
+        include_str!("golden/native-modes.k816"),
+    ),
+    (
+        "opt-barriers.k816",
+        include_str!("golden/opt-barriers.k816"),
+    ),
+    (
+        "width-blocks.k816",
+        include_str!("golden/width-blocks.k816"),
+    ),
+    (
+        "width-branch.k816",
+        include_str!("golden/width-branch.k816"),
+    ),
+    (
+        "width-bridging.k816",
+        include_str!("golden/width-bridging.k816"),
+    ),
+    ("width-exit.k816", include_str!("golden/width-exit.k816")),
+    ("width-loop.k816", include_str!("golden/width-loop.k816")),
+];
 
 #[test]
 fn reads_and_barriers_keep_live_operations() {
@@ -447,8 +499,9 @@ fn a_write_a_branch_leaves_behind_is_dead() {
         include_str!("golden/width-branch.k816"),
     );
     let log = run(&mut program, &model, file);
-    assert_eq!(log.changes.len(), 1);
-    assert_eq!(model.symbols.name(log.changes[0].site.function), "skipped");
+    let dead_writes: Vec<_> = log.by_pass(Pass::RemoveOverwritten).collect();
+    assert_eq!(dead_writes.len(), 1);
+    assert_eq!(model.symbols.name(dead_writes[0].site.function), "skipped");
     assert_eq!(
         mnemonics(&program, &model, "skipped"),
         vec![Mnemonic::Bra, Mnemonic::Rep, Mnemonic::Lda, Mnemonic::Rts],

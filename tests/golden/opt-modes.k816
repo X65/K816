@@ -1,0 +1,90 @@
+// Sub-plan F fixture: dead mode elimination, and the six things the width
+// specification's algorithm does not have.
+//
+// `doc/register-width-aware-syntax.md` "Dead mode elimination" is a backward
+// scan over need bits, seeded by counting `ImmediateM`/`ImmediateX`
+// instructions. Implemented literally it miscompiles two fixtures this
+// repository already ships, and the document gets away with it only because
+// its example function is `main`. This file is the corrections, one function
+// each.
+//
+// The one case that cannot live here is a program that observes an axis
+// *nowhere*: every function below reads M or X, which is what makes the
+// guards visible at all. Those cases are inline sources in
+// `tests/opt_modes.rs`.
+//
+// Its sibling `opt-modes-unit.k816` carries the two cross-unit claims.
+
+var CELL = $0400
+
+// **Probe 5.** A `rep #$20` before `lda addr` / `sta addr` must survive though
+// no immediate is in sight. The M flag sizes the load and the store, so
+// deleting it turns a 16-bit load and a 16-bit store into 8-bit ones — not a
+// lost optimization, a different program. The width document's seed counts
+// immediates and would delete it.
+func widened_memory @a8 {
+    rep #$20
+    lda CELL
+    sta CELL
+    sep #$20
+}
+
+// **Decision 3, first guard.** The `sep #$20` *is* the published `-> @a8`
+// exit contract. Nothing after it reads M, so the document's backward scan
+// calls it dead — and removing it leaves every caller sizing its immediates
+// against a promise this function stopped keeping. An exit contract is an
+// observer, and the specification's algorithm does not have one.
+func fixes_a_only @a16 -> @a8 {
+    sep #$20
+}
+
+// **Decision 3, second guard.** A `Preserve` exit means the axis leaves as it
+// entered, so the block's restore is what makes that true and cannot go on its
+// own. The enter cannot go either here: the body reads M.
+func scoped_pair @a8 @i8 {
+    @a16 {
+        CELL = a
+    }
+    CELL = a
+}
+
+// **Decision 8.** A `REP` mask is not a width operation, it is a write to an
+// arbitrary set of P bits, and only two of the eight are widths. `rep #$21`
+// clears M *and* the carry; the `sep #$20` below re-establishes M, so the M
+// bit is dead — and deleting the instruction would break the `bcc`. The pass
+// clears the M bit and leaves `rep #$01`.
+func carry_bit @a8 @i8 {
+    rep #$21
+    sep #$20
+    bcc .skip
+    nop
+.skip:
+    nop
+}
+
+// **Decision 7.** A label-anchored bridge is fixed and is never eliminated:
+// the arrivals it exists for are branches from states F is not looking at, so
+// liveness below the label says nothing about them. Mode changes *before* it
+// are still eliminated — the `sep #$20` here is redundant on every path that
+// reaches the bridge.
+func label_bridge @a8 @i8 {
+    sep #$20
+    @a16
+.here:
+    lda #$1234
+    bcc .here
+}
+
+// **Decision 4, through a call.** `observes_x` reads the X flag, so the index
+// bridge before the call cannot go however quiet the rest of this unit is.
+// The accumulator bridge cannot go either, for the ordinary reason: `CELL = a`
+// below reads M, and `observes_x` promises nothing about it.
+func bridges_to_a_reader @a8 @i8 {
+    call observes_x
+    CELL = a
+}
+
+func observes_x @a16 @i16 {
+    ldx #$0102
+    CELL,x = a
+}

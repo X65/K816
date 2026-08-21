@@ -1258,7 +1258,7 @@ fn eliminate_dead_mode_changes(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Op
         };
 
         let before = ops[index].clone();
-        let justification = dead_mask_justification(unit, &before, dead, kept);
+        let justification = dead_mask_justification(unit, dead, kept);
         let after = if kept == 0 {
             ops.remove(index);
             Vec::new()
@@ -1469,7 +1469,7 @@ fn set_axis_state(state: &mut ModeState, axis: Axis, value: AxisState) {
 }
 
 /// What the change log records for a stripped or removed mask.
-fn dead_mask_justification(unit: &Unit<'_>, op: &KOp, dead: u8, kept: u8) -> String {
+fn dead_mask_justification(unit: &Unit<'_>, dead: u8, kept: u8) -> String {
     let axes: Vec<&str> = [Axis::Accumulator, Axis::Index]
         .into_iter()
         .filter(|axis| dead & axis_bit(*axis) != 0)
@@ -1492,7 +1492,6 @@ fn dead_mask_justification(unit: &Unit<'_>, op: &KOp, dead: u8, kept: u8) -> Str
     } else {
         format!("${kept:02X} is not this pass's to touch, so the instruction stays")
     };
-    let _ = op;
     format!("{} is unobserved: {scope}; {tail}", axes.join(" and "))
 }
 
@@ -1581,7 +1580,12 @@ fn foldable(ops: &[KOp], flow: &Flow, start: usize) -> Option<(usize, usize, Vec
     if flow.frozen[start] || !flow.reachable[flow.block_of[start]] {
         return None;
     }
-    let reason = ops[start].reason;
+    // Equal *reason* and equal *origin*. The reason is the annotation the
+    // merged line will carry, and the origin is who wrote it: merging a user's
+    // `sep` with an expansion's would report one of them as the other, and
+    // `doc/design.md` §8's identical-treatment rule is about how a pass
+    // reasons, not about erasing which notation an operation came from.
+    let (reason, origin) = (ops[start].reason, ops[start].origin);
     let mut composed = Composed::default();
     composed.apply(first, first_mask);
 
@@ -1592,7 +1596,11 @@ fn foldable(ops: &[KOp], flow: &Flow, start: usize) -> Option<(usize, usize, Vec
     // lie about the other, and the annotation on the emitted line has to stay
     // true.
     let mut end = start + 1;
-    while end < ops.len() && !flow.frozen[end] && ops[end].reason == reason {
+    while end < ops.len()
+        && !flow.frozen[end]
+        && ops[end].reason == reason
+        && ops[end].origin == origin
+    {
         let Some((mnemonic, mask)) = mode_mask(&ops[end]) else {
             break;
         };

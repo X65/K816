@@ -64,6 +64,17 @@ fn first_function(program: &KProgram) -> &KFunction {
 }
 
 fn lower_program(text: &str) -> KProgram {
+    lower_unit(text).2
+}
+
+/// The same, keeping what the optimizer needs beside the stream.
+fn lower_unit(
+    text: &str,
+) -> (
+    k816::source::FileId,
+    k816::semantic::SemanticModel,
+    KProgram,
+) {
     let mut map = SourceMap::new();
     let id = map.add_file("test.k816", text);
     let parse = parse_source(map.file(id), None);
@@ -72,7 +83,7 @@ fn lower_program(text: &str) -> KProgram {
     assert_eq!(diagnostics, vec![], "unexpected semantic diagnostics");
     let (program, diagnostics) = lower(&parse.file, &model);
     assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
-    program
+    (id, model, program)
 }
 
 #[test]
@@ -321,18 +332,33 @@ fn a_native_only_function_lowers_without_any_hla_statement() {
 
 #[test]
 fn a_directive_between_instructions_is_an_optimizer_barrier() {
+    use k816::linkage::Linkage;
     use k816::op::{DataOp, KOp, KOpKind};
-    use k816::optimize::optimize;
+    use k816::optimize::{Context, optimize};
     use k816::value::KExpr;
 
+    let run = |program: &mut KProgram, file, model: &k816::semantic::SemanticModel| {
+        let linkage = Linkage::default();
+        optimize(
+            program,
+            &Context {
+                model,
+                linkage: &linkage,
+                file,
+            },
+        )
+        .changes
+        .len()
+    };
+
     // `lda #0` is dead: `lda #1` overwrites A, N, and Z before any read.
-    let mut program = lower_program(HLA_SLICE);
-    assert_eq!(optimize(&mut program).removals.len(), 1);
+    let (file, model, mut program) = lower_unit(HLA_SLICE);
+    assert_eq!(run(&mut program, file, &model), 1);
 
     // With a directive between them the pass must stop rather than reason
     // about what the emitted bytes do — the conservative answer for every
     // new op kind until sub-plan F says otherwise.
-    let mut program = lower_program(HLA_SLICE);
+    let (file, model, mut program) = lower_unit(HLA_SLICE);
     let function = program
         .items
         .iter_mut()
@@ -351,7 +377,7 @@ fn a_directive_between_instructions_is_an_optimizer_barrier() {
         ),
     );
     assert_eq!(
-        optimize(&mut program).removals.len(),
+        run(&mut program, file, &model),
         0,
         "an emitted directive stops the scan"
     );

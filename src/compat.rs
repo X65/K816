@@ -45,11 +45,16 @@ pub enum Owner {
     WidthAndContracts,
     /// E — HLA and declaration lowering.
     HlaLowering,
-    /// F — the optimizer.
-    Optimizer,
     /// G — compatibility migration.
     Compatibility,
 }
+
+// There is deliberately no `Optimizer` arm. This enum names the sub-plan that
+// will *implement a construct*, and sub-plan F implements none: it rewrites
+// operations the other sub-plans already lower, so no "not yet compiled"
+// diagnostic could ever name it. An owner with nothing to own is a dead arm
+// that invites a wrong attribution later (`postmortem.md` §C.7). If some later
+// sub-plan needs one, it comes back with a call site attached.
 
 impl Owner {
     /// The plan letter, e.g. `"C"`.
@@ -58,7 +63,6 @@ impl Owner {
             Self::NativeTranslator => "C",
             Self::WidthAndContracts => "D",
             Self::HlaLowering => "E",
-            Self::Optimizer => "F",
             Self::Compatibility => "G",
         }
     }
@@ -69,7 +73,6 @@ impl Owner {
             Self::NativeTranslator => "native translator",
             Self::WidthAndContracts => "width and contract analysis",
             Self::HlaLowering => "HLA and declaration lowering",
-            Self::Optimizer => "optimizer",
             Self::Compatibility => "compatibility migration",
         }
     }

@@ -872,6 +872,14 @@ pub fn instruction_effects(
         // mask unknown the *must-write* set is empty — the mask may be zero —
         // while the width transition is Unknown, which is what stops the
         // optimizer rather than a pretend flag write.
+        //
+        // The read set is every P flag the mask does *not* write. The
+        // instruction preserves those bits and decides nothing from the ones
+        // it sets, so `ALL_P` would say a `sep #$20` depends on M — which
+        // makes it an observer of the very axis it establishes, and a
+        // dead-mode pass seeded from flag reads could then never fire
+        // (`plans/05-optimizer.md` probe 5). Still an over-approximation, and
+        // an unfolded mask still reads everything, because it writes nothing.
         Mnemonic::Sep | Mnemonic::Rep => {
             let mask = immediate.map(|mask| mask as u8);
             let to = match mnemonic {
@@ -886,9 +894,10 @@ pub fn instruction_effects(
             } else {
                 RegisterSet::NONE
             };
+            let written = mask.map_or(FlagSet::NONE, FlagSet::from_p_mask);
             Effects {
-                reads: flags(FlagSet::ALL_P),
-                writes: state(truncated, mask.map_or(FlagSet::NONE, FlagSet::from_p_mask)),
+                reads: flags(FlagSet::ALL_P.without(written)),
+                writes: state(truncated, written),
                 memory: M::None,
                 control: C::FallThrough,
                 width,
@@ -1095,6 +1104,38 @@ mod tests {
         assert_eq!(rep.writes.flags, FlagSet::X);
         let both = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x30));
         assert_eq!(both.writes.flags, FlagSet::M.union(FlagSet::X));
+    }
+
+    /// A mode instruction does not *observe* the axis it establishes.
+    ///
+    /// `ALL_P` is a safe may-read over-approximation and too coarse to reason
+    /// with: it says a `sep #$20` depends on M, so the `sep #$20` below a
+    /// `rep #$20` would keep it alive and dead mode elimination could never
+    /// fire (`plans/05-optimizer.md` decision 2). The read set is every P
+    /// flag the folded mask leaves alone.
+    #[test]
+    fn sep_and_rep_read_every_flag_their_mask_does_not_write() {
+        let sep = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x20));
+        assert!(!sep.reads.flags.intersects(FlagSet::M));
+        // Every other P bit is preserved, so every other P bit is read.
+        assert_eq!(sep.reads.flags, FlagSet::ALL_P.without(FlagSet::M));
+
+        let rep = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x30));
+        assert_eq!(
+            rep.reads.flags,
+            FlagSet::ALL_P.without(FlagSet::M.union(FlagSet::X))
+        );
+
+        // `rep #$21` clears the carry as well, so the carry is not read
+        // either — which is what keeps folding from claiming it composed a
+        // bit it merely passed through.
+        let carry = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x21));
+        assert!(!carry.reads.flags.intersects(FlagSet::C));
+
+        // An unfolded mask writes nothing, so it reads everything.
+        let unfolded = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, None);
+        assert_eq!(unfolded.reads.flags, FlagSet::ALL_P);
+        assert_eq!(unfolded.writes.flags, FlagSet::NONE);
     }
 
     #[test]

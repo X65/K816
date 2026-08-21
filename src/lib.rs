@@ -146,7 +146,14 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
     }
 
     if options.optimize {
-        optimize::optimize(&mut program);
+        optimize::optimize(
+            &mut program,
+            &optimize::Context {
+                model: &model,
+                linkage: &linkage,
+                file,
+            },
+        );
     }
     let assembly = emit_ca65::emit(map, file, &model, &program, &linkage);
     CompileResult {
@@ -160,6 +167,13 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
 pub struct IrResult {
     /// The IR dump, or `None` when errors prevented lowering.
     pub ir: Option<String>,
+    /// What the optimizer did, when it ran.
+    ///
+    /// Carried rather than rendered here: `emit-ir --after-opt --explain` is
+    /// the answer to "where did my instruction go", and the justification it
+    /// prints comes from the same [`optimize::Change`] the pass tests assert
+    /// on, so the explanation and the test cannot disagree.
+    pub log: Option<optimize::OptimizationLog>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -177,6 +191,7 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {
             ir: None,
+            log: None,
             diagnostics,
         };
     }
@@ -186,15 +201,24 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {
             ir: None,
+            log: None,
             diagnostics,
         };
     }
 
-    if options.optimize {
-        optimize::optimize(&mut program);
-    }
+    let log = options.optimize.then(|| {
+        optimize::optimize(
+            &mut program,
+            &optimize::Context {
+                model: &model,
+                linkage: &linkage,
+                file,
+            },
+        )
+    });
     IrResult {
         ir: Some(program.dump(&model.symbols, map)),
+        log,
         diagnostics,
     }
 }

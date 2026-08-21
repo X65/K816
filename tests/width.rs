@@ -31,9 +31,10 @@
 
 use k816::ast::{AstFile, ItemKind, StatementKind, StmtId};
 use k816::diagnostic::{Diagnostic, DiagnosticCode};
+use k816::linkage::Linkage;
 use k816::op::{AxisExit, AxisState, EmulationState, RegisterWidth};
 use k816::parser::parse_source;
-use k816::semantic::{SemanticModel, analyze_file};
+use k816::semantic::{SemanticModel, analyze_file, analyze_unit};
 use k816::source::SourceMap;
 
 fn analyze(text: &str) -> (AstFile, SemanticModel, Vec<Diagnostic>) {
@@ -1471,4 +1472,148 @@ fn an_rti_return_preserves_the_interrupted_widths() {
         exit_of(source, "handler"),
         (AxisExit::Unknown, AxisExit::Unknown)
     );
+}
+
+// ---------------------------------------------------------------------------
+// What a body observes
+// ---------------------------------------------------------------------------
+
+/// Which axes `name`'s body observes directly, and which observing it
+/// transitively costs a caller.
+fn observed(text: &str, name: &str) -> ((bool, bool), (bool, bool)) {
+    let mut map = SourceMap::new();
+    let id = map.add_file("width.k816", text);
+    let linkage = Linkage::resolve(&map);
+    let parse = parse_source(map.file(id), None);
+    let (model, diagnostics) = analyze_unit(&parse.file, "width.k816", &linkage);
+    assert_eq!(error_codes(&diagnostics), Vec::<&str>::new());
+    let info = model
+        .functions
+        .iter()
+        .find(|info| model.symbols.name(info.symbol) == name)
+        .unwrap_or_else(|| panic!("no function named `{name}`"));
+    let contract = linkage
+        .contract(name)
+        .unwrap_or_else(|| panic!("`{name}` was not classified"));
+    (
+        (info.needs.m, info.needs.x),
+        (contract.observes.m, contract.observes.x),
+    )
+}
+
+/// The seed is *flag reads*, not width-dependent immediates.
+///
+/// `doc/register-width-aware-syntax.md` "Dead mode elimination" step 1 counts
+/// `ImmediateM`/`ImmediateX` instructions, and a `sta abs` carries no
+/// immediate at all — so under the document's rule the `rep #$20` above one is
+/// dead, and deleting it turns a 16-bit store into an 8-bit one. That is not a
+/// lost optimization, it is a different program
+/// (`plans/05-optimizer.md` decision 2).
+#[test]
+fn an_axis_is_observed_by_any_instruction_that_reads_its_flag() {
+    let cell = "var CELL = $0400\n";
+
+    // A store: no immediate, reads M.
+    let (direct, _) = observed(&format!("{cell}func f @a16 {{\n    sta CELL\n}}\n"), "f");
+    assert_eq!(direct, (true, false));
+
+    // A load from memory: the same.
+    let (direct, _) = observed(&format!("{cell}func f @a16 {{\n    lda CELL\n}}\n"), "f");
+    assert_eq!(direct, (true, false));
+
+    // An index step reads X and nothing else.
+    let (direct, _) = observed("func f @i16 {\n    inx\n}\n", "f");
+    assert_eq!(direct, (false, true));
+
+    // A push reads the width of what it pushes.
+    let (direct, _) = observed("func f @a16 {\n    pha\n}\n", "f");
+    assert_eq!(direct, (true, false));
+    let (direct, _) = observed("func f @i16 {\n    phx\n}\n", "f");
+    assert_eq!(direct, (false, true));
+
+    // And a body that reads neither observes neither, which is the case the
+    // width document's own dead-mode listing rests on.
+    let (direct, _) = observed("func f @a16 @i16 {\n    nop\n}\n", "f");
+    assert_eq!(direct, (false, false));
+}
+
+/// A mode instruction does not observe the axis it establishes.
+///
+/// With `SEP`/`REP` reading `FlagSet::ALL_P`, every body containing one
+/// observed both axes and dead mode elimination could never fire anywhere.
+/// The read set is now every P bit the folded mask leaves alone, so a
+/// `rep #$20` observes X — it preserves that bit — and not M.
+#[test]
+fn a_mode_instruction_observes_the_axes_it_does_not_set() {
+    let (direct, _) = observed("func f @a8 {\n    rep #$20\n}\n", "f");
+    assert_eq!(direct, (false, true));
+
+    let (direct, _) = observed("func f @a8 @i8 {\n    rep #$30\n}\n", "f");
+    assert_eq!(direct, (false, false));
+
+    // An unfolded mask writes nothing, so it reads — and observes —
+    // everything.
+    let (direct, _) = observed("const MASK = $20\nfunc f @a8 {\n    rep #MASK\n}\n", "f");
+    assert_eq!(direct, (false, true));
+}
+
+/// Observation is transitive through the call graph, and a callee K816
+/// cannot see observes everything.
+#[test]
+fn observation_propagates_through_calls() {
+    let source = "\
+var CELL = $0400
+
+func leaf @a16 {
+    sta CELL
+}
+
+func middle @a16 {
+    call leaf
+}
+
+func quiet @a16 @i16 {
+    nop
+}
+
+func caller @a16 @i16 {
+    call quiet
+}
+";
+    // `middle` observes nothing itself and everything `leaf` does.
+    let (direct, transitive) = observed(source, "middle");
+    assert_eq!(direct, (false, false));
+    assert_eq!(transitive, (true, false));
+
+    // A chain of bodies that observe nothing observes nothing.
+    let (direct, transitive) = observed(source, "caller");
+    assert_eq!(direct, (false, false));
+    assert_eq!(transitive, (false, false));
+
+    // A call through a variable holding an address — the legacy idiom
+    // `examples/k65/atari-xl/landscape/main.k65` uses to reach the Atari ROM
+    // — reaches code K816 cannot read, so both axes are observed.
+    let opaque = "var rom = $F9C2\n\nfunc f @a16 @i16 {\n    call rom\n}\n";
+    let (direct, transitive) = observed(opaque, "f");
+    assert_eq!(direct, (true, true));
+    assert_eq!(transitive, (true, true));
+}
+
+/// A cycle observes whatever any member observes.
+#[test]
+fn a_recursive_cycle_observes_what_any_member_does() {
+    let source = "\
+var CELL = $0400
+
+func ping @a16 {
+    call pong
+}
+
+func pong @a16 {
+    sta CELL
+    call ping
+}
+";
+    assert_eq!(observed(source, "ping").1, (true, false));
+    assert_eq!(observed(source, "pong").1, (true, false));
 }

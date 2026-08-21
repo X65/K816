@@ -153,6 +153,23 @@ impl Linkage {
             })
             .collect();
 
+        // What each function's own body observes, plus everything for a body
+        // that calls a name no analyzed unit defines: the edge is not in the
+        // graph, so the fixpoint below would otherwise not carry it.
+        let seeds: Vec<semantic::WidthNeeds> = sites
+            .iter()
+            .zip(&adjacency)
+            .map(|((unit, function), edges)| {
+                let info = &units[*unit].2.functions[*function];
+                if edges.len() == info.callees.len() {
+                    info.needs
+                } else {
+                    info.needs.union(semantic::WidthNeeds::opaque())
+                }
+            })
+            .collect();
+        let observed = width::observation_fixpoint(&seeds, &adjacency);
+
         let mut contracts: BTreeMap<String, width::CalleeContract> = BTreeMap::new();
         for component in width::strongly_connected_components(&adjacency) {
             let recursive = component.len() > 1 || adjacency[component[0]].contains(&component[0]);
@@ -189,6 +206,7 @@ impl Linkage {
                     width::CalleeContract {
                         entry: info.contract,
                         exit,
+                        observes: observed[node],
                     },
                 );
             }

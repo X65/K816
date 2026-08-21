@@ -53,8 +53,8 @@ use crate::ast::{
     WidthAnnotationKind,
 };
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
-use crate::effects::{ControlEffect, WidthEffect};
-use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth};
+use crate::effects::{ControlEffect, Effects, FlagSet, WidthEffect};
+use crate::isa::{Mnemonic, RegisterWidth};
 use crate::op::{
     AxisExit, AxisState, EmulationState, ExitContract, ModeState, Operand, Reason, WidthContract,
 };
@@ -449,6 +449,52 @@ pub struct CalleeContract {
     pub entry: WidthContract,
     /// What the caller may believe about its widths afterwards.
     pub exit: ExitContract,
+    /// Which width axes calling this function observes, transitively.
+    ///
+    /// Computed by [`observation_fixpoint`] over the whole workspace call
+    /// graph and read by the optimizer, which asks it one question: is there
+    /// anything reachable from this call that would behave differently if the
+    /// caller stopped establishing the axis. The width solver never reads it
+    /// — a width is what a claim says, and an axis nobody observes still has
+    /// the width the model concluded.
+    pub observes: WidthNeeds,
+}
+
+/// The transitive observation of `plans/05-optimizer.md` decision 4.
+///
+/// `seeds[i]` is what function `i`'s own body observes — [`WidthNeeds`],
+/// which already folds in a transfer to code K816 cannot see — and
+/// `adjacency[i]` names the functions it calls. An axis is observed at `i`
+/// when `i`'s body observes it or some callee's answer does.
+///
+/// A worklist rather than the reverse-topological single pass the exit
+/// classification uses, and the difference is deliberate: observation is a
+/// union over a two-element lattice, so it is monotone and a fixpoint is
+/// exactly right — including around a cycle, where every member observes
+/// whatever any member observes. `AxisExit` has no such order, which is why
+/// `postmortem.md` §D.5 forbids iterating *that* one.
+pub fn observation_fixpoint(seeds: &[WidthNeeds], adjacency: &[Vec<usize>]) -> Vec<WidthNeeds> {
+    let mut observed = seeds.to_vec();
+    // Callers of `i`, because a change at `i` is what its callers must see.
+    let mut callers: Vec<Vec<usize>> = vec![Vec::new(); seeds.len()];
+    for (caller, callees) in adjacency.iter().enumerate() {
+        for callee in callees {
+            callers[*callee].push(caller);
+        }
+    }
+    let mut worklist: Vec<usize> = (0..seeds.len()).collect();
+    while let Some(node) = worklist.pop() {
+        let mut answer = observed[node];
+        for callee in &adjacency[node] {
+            answer = answer.union(observed[*callee]);
+        }
+        if answer == observed[node] {
+            continue;
+        }
+        observed[node] = answer;
+        worklist.extend(callers[node].iter().copied());
+    }
+    observed
 }
 
 /// What the solver needs to know beyond the body it is walking.
@@ -530,6 +576,22 @@ struct Graph {
 }
 
 impl Flattener<'_> {
+    /// Records the axes one instruction observes.
+    ///
+    /// An axis is observed when the instruction *reads* its flag, which is
+    /// every load, store, ALU operation, compare, push, pull, index step, and
+    /// width-dependent transfer — not only the ones carrying a
+    /// width-dependent immediate. See [`WidthNeeds`] for why the narrower
+    /// reading the width document gives is unsound.
+    fn observe(&mut self, effects: Effects) {
+        if effects.reads.flags.intersects(FlagSet::M) {
+            self.needs.m = true;
+        }
+        if effects.reads.flags.intersects(FlagSet::X) {
+            self.needs.x = true;
+        }
+    }
+
     fn finish(mut self) -> Graph {
         // Label targets resolve now that the whole body has been seen, which
         // is what makes a forward branch an edge rather than an unknown.
@@ -545,6 +607,12 @@ impl Flattener<'_> {
             .nodes
             .iter()
             .any(|node| matches!(node.control.target, Some(Target::Unknown)));
+        // A transfer K816 cannot name reaches code that may read anything, so
+        // both axes are observed through it. Same answer as an invisible
+        // callee's, reached the same way.
+        if opaque_transfer {
+            self.needs = self.needs.union(WidthNeeds::opaque());
+        }
         // A statement's last node is simply its highest-numbered one, which a
         // pass over the finished list gets right even where the model moved a
         // statement's transition past an intervening one.
@@ -938,14 +1006,9 @@ impl Flattener<'_> {
         let mut effect = WidthEffect::Unchanged;
         for step in &steps {
             let instruction = step.instruction();
-            if let Some(class) = instruction.spec().and_then(|spec| spec.immediate_width()) {
-                match class {
-                    ImmediateWidthClass::MDependent => self.needs.m = true,
-                    ImmediateWidthClass::XDependent => self.needs.x = true,
-                    ImmediateWidthClass::Fixed8 | ImmediateWidthClass::Fixed16 => {}
-                }
-            }
-            match instruction.effects().width {
+            let effects = instruction.effects();
+            self.observe(effects);
+            match effects.width {
                 WidthEffect::Unchanged => {}
                 changed => effect = changed,
             }
@@ -980,14 +1043,8 @@ impl Flattener<'_> {
             return;
         };
         let instruction = classified.instruction();
-        if let Some(class) = instruction.spec().and_then(|spec| spec.immediate_width()) {
-            match class {
-                ImmediateWidthClass::MDependent => self.needs.m = true,
-                ImmediateWidthClass::XDependent => self.needs.x = true,
-                ImmediateWidthClass::Fixed8 | ImmediateWidthClass::Fixed16 => {}
-            }
-        }
         let effects = instruction.effects();
+        self.observe(effects);
         let target = instruction.operand.as_ref().and_then(operand_target);
         let symbol = target.and_then(|expr| match expr {
             KExpr::Symbol(symbol) => Some(*symbol),
@@ -1094,10 +1151,18 @@ impl Flattener<'_> {
     }
 
     fn call(&mut self, statement: StmtId, span: Span, callee: Option<SymbolId>, bridged: bool) {
-        if let Some(callee) = callee
-            && !self.callees.contains(&callee)
-        {
-            self.callees.push(callee);
+        match callee {
+            Some(callee) => {
+                if !self.callees.contains(&callee) {
+                    self.callees.push(callee);
+                }
+            }
+            // A call K816 cannot name — through a variable holding an
+            // address, or an unresolved indirect target — reaches code that
+            // may read either width flag. Recording it as an observation of
+            // both axes is what keeps the optimizer's transitive answer
+            // sound for a body whose call edges do not list it.
+            None => self.needs = self.needs.union(WidthNeeds::opaque()),
         }
         self.push(
             statement,
@@ -1373,6 +1438,8 @@ fn apply(
                 .unwrap_or_else(|| CalleeContract {
                     entry: WidthContract::default(),
                     exit: ExitContract::preserving(),
+                    // A callee K816 cannot see may read either width flag.
+                    observes: WidthNeeds::opaque(),
                 });
             let mut fact = incoming;
             // A managed call establishes the callee's entry contract first;

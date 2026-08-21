@@ -103,6 +103,14 @@ pub struct SemanticModel {
     /// sits rather than about what it declares. A pinned variable has no
     /// entry — it is an equate, and equates reserve nothing.
     pub reservations: BTreeMap<usize, Reservation>,
+    /// Global labels another unit in the workspace refers to.
+    ///
+    /// Published because two consumers need the same answer: the width solver
+    /// treats such a label as reachable from a width nothing here
+    /// establishes, and the optimizer's block graph treats its block as
+    /// reachable from an edge it cannot see. A global label nobody else names
+    /// is an ordinary label to both.
+    pub externally_reachable: BTreeSet<SymbolId>,
     /// The width analysis of each `code { }` subblock of a top-level data
     /// block, keyed by where it sits.
     ///
@@ -205,13 +213,64 @@ pub enum FlowInput {
     },
 }
 
-/// Which width axes a function body's immediates depend on.
+/// Which width axes a function body *observes*.
+///
+/// Not "which axes its immediates depend on". The M and X flags govern far
+/// more than immediate lengths: `lda addr` and `sta addr` read M and change
+/// width with it, `inx` and `cpx` read X, and every push, pull, compare, and
+/// width-dependent transfer reads one or the other. A seed counting
+/// `ImmediateM`/`ImmediateX` instructions — which is what
+/// `doc/register-width-aware-syntax.md` "Dead mode elimination" step 1 says —
+/// licenses deleting the `rep #$20` above an `lda addr`, turning a 16-bit
+/// load into an 8-bit one. That is not a lost optimization, it is a different
+/// program (`plans/05-optimizer.md` decision 2).
+///
+/// So an axis is observed when some instruction in the body reads its flag,
+/// or when the body transfers to code K816 cannot see — an unresolvable
+/// branch target, or a call whose target is not a function this workspace
+/// defines — which may observe anything.
+///
+/// This is the *direct* seed. Observation through the call graph is the
+/// optimizer's transitive fixpoint over it, published per function as
+/// [`crate::width::CalleeContract::observes`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WidthNeeds {
-    /// The body contains an `ImmediateM` instruction.
+    /// Some instruction in the body reads the M flag, or the body reaches
+    /// code K816 cannot see.
     pub m: bool,
-    /// The body contains an `ImmediateX` instruction.
+    /// The same, for the X flag.
     pub x: bool,
+}
+
+impl WidthNeeds {
+    /// Everything is observed: what a transfer to code K816 cannot see says.
+    pub fn opaque() -> Self {
+        Self { m: true, x: true }
+    }
+
+    /// The axes either side observes.
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            m: self.m || other.m,
+            x: self.x || other.x,
+        }
+    }
+
+    /// The axis named by `axis`.
+    pub fn axis(self, axis: crate::width::Axis) -> bool {
+        match axis {
+            crate::width::Axis::Accumulator => self.m,
+            crate::width::Axis::Index => self.x,
+        }
+    }
+
+    /// The same, for assignment.
+    pub fn set(&mut self, axis: crate::width::Axis, observed: bool) {
+        match axis {
+            crate::width::Axis::Accumulator => self.m = observed,
+            crate::width::Axis::Index => self.x = observed,
+        }
+    }
 }
 
 /// Analyzes `file`, returning the semantic model and all semantic
@@ -249,7 +308,7 @@ fn analyze(
         unit: unit_name.to_owned(),
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
-        externally_reachable: BTreeSet::new(),
+        observation: Vec::new(),
         workspace_contracts: BTreeMap::new(),
         workspace_recursive: BTreeSet::new(),
         direct_page: layout::DirectPage::default(),
@@ -304,9 +363,6 @@ struct Analysis {
     /// The module's default widths, merged into every function that does not
     /// declare the axis itself.
     defaults: WidthContract,
-    /// Global labels another unit refers to, which the width solver treats
-    /// as reachable from a width nothing in this unit establishes.
-    externally_reachable: BTreeSet<SymbolId>,
     /// Every function's contract as the workspace classified it, translated
     /// into this unit's symbol ids.
     ///
@@ -316,6 +372,9 @@ struct Analysis {
     /// Functions the workspace call graph put in a cycle, including ones
     /// that only close through another unit.
     workspace_recursive: BTreeSet<SymbolId>,
+    /// This unit's own transitive observation answer, per function index —
+    /// the fallback for a function the workspace did not classify.
+    observation: Vec<WidthNeeds>,
     /// The unit's running claim on the 256-byte direct page.
     direct_page: layout::DirectPage,
     /// True once the pool has overflowed and said so, so the declarations
@@ -975,7 +1034,7 @@ impl Analysis {
                 continue;
             }
             if linkage.referenced_elsewhere(&symbol.name, symbol.declaration.file) {
-                self.externally_reachable.insert(id);
+                self.model.externally_reachable.insert(id);
             }
         }
     }
@@ -1022,14 +1081,46 @@ impl Analysis {
                     symbols: &self.model.symbols,
                     function: Some(info.symbol),
                     callees: &fallback,
-                    externally_reachable: &self.externally_reachable,
+                    externally_reachable: &self.model.externally_reachable,
                 },
             );
             let function = &mut self.model.functions[index];
             function.needs = analysis.needs;
             function.callees.clone_from(&analysis.callees);
         }
+        // The transitive answer over this unit's own call graph. A callee
+        // another unit defines is not a node here, so its edge is dropped and
+        // the seed says "observes everything" instead — the same conservative
+        // answer the workspace pass gives a name nothing defines.
+        let adjacency = call_graph(&self.model.functions);
+        let seeds: Vec<WidthNeeds> = self
+            .model
+            .functions
+            .iter()
+            .zip(&adjacency)
+            .map(|(info, edges)| {
+                if edges.len() == info.callees.len() {
+                    info.needs
+                } else {
+                    info.needs.union(WidthNeeds::opaque())
+                }
+            })
+            .collect();
+        self.observation = width::observation_fixpoint(&seeds, &adjacency);
         self.classify_exits(file);
+    }
+
+    /// Which axes calling `symbol` observes.
+    ///
+    /// The workspace answer wherever there is one — it saw the callees this
+    /// unit cannot — and this unit's own fixpoint otherwise, which is what a
+    /// file compiled alone has. The width solver reads neither; it is carried
+    /// on [`width::CalleeContract`] so that one type answers everything a
+    /// call site needs to know about its callee.
+    fn observed(&self, symbol: SymbolId, index: usize) -> WidthNeeds {
+        self.workspace_contracts
+            .get(&symbol)
+            .map_or(self.observation[index], |contract| contract.observes)
     }
 
     /// Classifies every function's exit, in an order that has each function's
@@ -1079,7 +1170,7 @@ impl Analysis {
                         symbols: &self.model.symbols,
                         function: Some(info.symbol),
                         callees: &callees,
-                        externally_reachable: &self.externally_reachable,
+                        externally_reachable: &self.model.externally_reachable,
                     },
                 );
                 self.diagnostics.extend(diagnostics);
@@ -1121,6 +1212,7 @@ impl Analysis {
                     width::CalleeContract {
                         entry: info.contract,
                         exit,
+                        observes: self.observed(info.symbol, index),
                     },
                 );
                 let function = &mut self.model.functions[index];

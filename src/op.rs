@@ -750,7 +750,11 @@ impl KProgram {
 }
 
 /// The IR text of one operation, without its origin annotation.
-fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
+///
+/// Public because the optimizer's change log names operations in the same
+/// spelling `emit-ir` prints them in: a reader comparing a dump against an
+/// `--explain` line should not have to translate between two renderings.
+pub fn dump_op(op: &KOp, symbols: &crate::symbol::SymbolTable) -> String {
     match &op.kind {
         KOpKind::Label(symbol) => format!("label {}", symbols.name(*symbol)),
         KOpKind::Segment { name, .. } => format!("segment {name}"),

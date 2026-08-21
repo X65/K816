@@ -350,13 +350,19 @@ pub struct Effects {
     pub writes: CpuState,
     pub memory: MemoryEffect,
     pub control: ControlEffect,
+    pub width: WidthEffect,
 }
 ```
+
+`width` is not derivable from `writes`. A `FlagSet` says only that M or X was
+*written*, so `SEP` and `SEP`'s opposite are indistinguishable through it,
+while every assembler width directive and every width-dependent immediate needs
+to know which way. It is the fifth field for that reason.
 
 `CpuState` includes:
 
 * A, X, Y
-* S, D, DBR
+* S, D, DBR, PBR
 * N, V, M, X, D, I, Z, C, E
 
 Memory effects distinguish at least:
@@ -368,16 +374,24 @@ Memory effects distinguish at least:
 * stack
 * volatile or unknown
 
+`Volatile` is declared and produced by nothing, and that is deliberate: K65 has
+no `volatile` and no way to acquire one — a fixed-address `var` *is* how the
+language spells a hardware register. The optimizer answers the question the
+variant would have answered by never coalescing a memory read at all, so two
+reads of one address are two reads. Giving the variant a producer needs a
+language surface first.
+
 Effects should be derived from the instruction table, not copied into every `Op`, so they cannot silently become stale.
 
 Optimization should be conservative:
 
-* Labels and control-flow targets form barriers.
-* Calls and unknown operations clobber conservatively.
+* Labels are merge points, not barriers: control may *arrive* at one, which the block graph's successor relation expresses. A branch target the compiler cannot name is what makes every label in a function reachable from a state nothing established.
+* Calls and unknown operations clobber conservatively. A call returns — `JSR` is not a leaf of the graph — while remaining a dataflow barrier: the callee may read any register and any flag, including ones no contract names.
 * Memory-mapped I/O writes are always visible.
 * Stack operations are visible.
 * Flag writes are visible whenever a later operation reads those flags.
-* Width-changing operations participate in the same state model.
+* Width-changing operations participate in the same state model, and they redefine what a register write *covers*: at eight bits an `LDA` writes the low byte and leaves the accumulator's hidden high byte alone, and a narrowing `SEP` zeroes the high bytes of X and Y while preserving the low ones. Both are partial writes the effect model records as whole ones, so the registers a width transition resizes are live across it.
+* Nothing is dead where a function returns. Every register and every flag is live at every exit: a caller may legally read a register the contract does not list, and the contract syntax has no way to name a flag at all.
 * User-written native instructions and HLA-generated instructions receive identical treatment after lowering.
 
 The optimizer can remain a fixed sequence of small, understandable passes:
@@ -413,7 +427,18 @@ the ABI rule that stack memory belongs to the implementation and a function may
 read only its own frame; or a whole-program proof about every reader of stack
 memory, which is out of reach while units compile separately.
 
-Each pass should operate on local basic blocks. No control-flow graph framework is required initially.
+The sequence above is a *reading* order. **The runtime order is the one
+`implementation.md` phase 9 fixes**, which wins over this document (§2 of the
+master plan), and it runs the mode passes first so that folding sees single-bit
+masks fresh from lowering. One entry is missing from both lists: after the
+byte-removing passes, a branch the lowering stage emitted in its long form
+because it could not prove the short one reached may now reach, and putting it
+back is a ninth pass.
+
+Each pass should operate on local basic blocks. The blocks need a complete
+successor relation — otherwise everything after the first `JSR` looks
+unreachable — but not a framework: one shared view and one backward dataflow
+per function, built where the passes are.
 
 The current [peephole optimizer](https://github.com/X65/K816/blob/main/crates/core/src/peephole.rs) already contains valuable behavior. Port the rules and their tests, but rebuild them on one complete effect model rather than carrying over all implementation details.
 
@@ -622,6 +647,13 @@ k816 emit-ir file.k816
 k816 emit-ir --after-opt file.k816
 k816 compile --no-opt file.k816
 ```
+
+The explanation dump is `emit-ir --after-opt --explain`, and it is the reason
+the optimizer reports no diagnostic of its own: a warning for a *correct*
+rewrite would be noise on every build, and "where did my instruction go" is a
+question to ask on demand. It prints the pass, the position, what the operation
+became, and the justification the pass recorded — the same text the pass tests
+assert on, so the explanation and the test cannot disagree.
 
 These commands are important for trusting the compiler.
 

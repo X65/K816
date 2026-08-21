@@ -1304,6 +1304,8 @@ The LHS must name a declared place: a variable identifier, optionally indexed (`
 
 For chains that genuinely do want the accumulator loaded too (e.g. storing the same zero to several cells and leaving `A = 0` for a subsequent operation), keep the traditional `mem1 = mem2 = a = 0` form — the compiler's peephole rewrites each supported `STA` to `STZ` and drops the leading `LDA #0` when `A` is dead afterwards.
 
+Both halves are decided per *operation*. `STZ` has four addressing modes and `STA` has fourteen, so a chain that mixes them gets `STZ` where one exists and keeps `STA` where it does not — and the load stays whenever any store still reads the accumulator. The load also **stays at the end of a function**: everything is live where a function returns, the accumulator and the `N`/`Z` it wrote included, and nothing in a call contract could have said otherwise. So the rewrite completes less often at the end of a body than the sentence above suggests, and `mem = 0` on its own — which needs no accumulator at all — is the form to reach for there.
+
 ## Standard 6502 Instructions
 
 The per-instruction tables in this section document the classical 6502 spellings and the matching K65 HLA shorthand forms. k816 also accepts the 65816 native mnemonic modes listed in [65816 Addressing Modes in K65](#65816-addressing-modes-in-k65), and the exhaustive compiler coverage is kept in `tests/golden/fixtures/syntax-all-256-opcodes/`.

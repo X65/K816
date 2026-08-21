@@ -743,3 +743,86 @@ fn a_zero_chain_becomes_stz_per_store_and_drops_its_load_separately() {
          is an `STZ`"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Unreachable compiler-generated operations (sub-plan F, task F6)
+// ---------------------------------------------------------------------------
+
+/// The pass removes what the *compiler* put in an unreachable block, and
+/// nothing the user wrote there.
+///
+/// `width-branch.k816::skipped` has a user-written `rep #$20` that no path
+/// reaches, and it must survive F — the master plan's own wording restricts
+/// this pass to compiler-generated operations, and `doc/design.md` §8's
+/// identical-treatment rule is about how a pass *reasons*, not about who gets
+/// to keep unreachable code.
+#[test]
+fn only_compiler_generated_operations_are_removed_as_unreachable() {
+    let (_, file, model, mut program) = lowered_as(
+        "width-branch.k816",
+        include_str!("golden/width-branch.k816"),
+    );
+    let log = run(&mut program, &model, file);
+    assert_eq!(log.by_pass(Pass::Unreachable).count(), 0);
+    assert!(
+        mnemonics(&program, &model, "skipped").contains(&Mnemonic::Rep),
+        "the user's unreachable `rep` stays where it was written"
+    );
+
+    // A function that loops forever: the implicit return the compiler put
+    // after it is unreachable, and it goes.
+    let (_, file, model, mut program) =
+        lowered("func spins @a8 @i8 {\n.head:\n    nop\n    bra .head\n}\n");
+    let log = run(&mut program, &model, file);
+    let unreachable: Vec<_> = log.by_pass(Pass::Unreachable).collect();
+    assert_eq!(unreachable.len(), 1);
+    assert_eq!(
+        unreachable[0].justification,
+        "no edge reaches this block, and the compiler generated the operation"
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "spins"),
+        vec![Mnemonic::Nop, Mnemonic::Bra]
+    );
+}
+
+/// A call in the middle of a function keeps everything after it reachable.
+///
+/// `ControlEffect::Call` is not `FallThrough`, so a block graph built from the
+/// leader rule alone gives a `jsr` no successor and makes the whole rest of
+/// the function look unreachable — which this pass would then delete, quietly,
+/// in a program that still assembles.
+#[test]
+fn nothing_after_a_call_is_treated_as_unreachable() {
+    let source = "\
+var CELL = $0400
+
+func leaf @a8 @i8 {
+    nop
+}
+
+func caller @a8 @i8 {
+    call leaf
+    lda #$02
+    CELL = a
+    call leaf
+    lda #$03
+    CELL = a
+}
+";
+    let (_, file, model, mut program) = lowered(source);
+    let log = run(&mut program, &model, file);
+    assert_eq!(log.by_pass(Pass::Unreachable).count(), 0);
+    assert_eq!(
+        mnemonics(&program, &model, "caller"),
+        vec![
+            Mnemonic::Jsr,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Jsr,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}

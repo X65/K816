@@ -52,7 +52,8 @@ use crate::effects::{
 use crate::isa::{Mnemonic, RegisterWidth};
 use crate::linkage::Linkage;
 use crate::op::{
-    AnchorId, AxisExit, AxisState, ExitContract, KOp, KOpKind, KProgram, ModeState, Operand, Reason,
+    AnchorId, AxisExit, AxisState, ExitContract, KOp, KOpKind, KProgram, ModeState, Operand,
+    Origin, Reason,
 };
 use crate::semantic::{SemanticModel, WidthNeeds};
 use crate::source::FileId;
@@ -269,6 +270,7 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
         coalesce_known_loads(&unit, &mut function.ops, &mut log);
         collapse_redundant_flags(&unit, &mut function.ops, &mut log);
         rewrite_zero_stores(&unit, &mut function.ops, &mut log);
+        remove_unreachable(&unit, &mut function.ops, &mut log);
     }
     log
 }
@@ -2228,4 +2230,51 @@ fn loads_zero(op: &KOp) -> bool {
             .as_ref()
             .and_then(Operand::immediate_value)
             .is_some_and(|value| value.get() == 0)
+}
+
+// ---------------------------------------------------------------------------
+// Pass 8 — remove unreachable compiler-generated operations
+// ---------------------------------------------------------------------------
+
+/// Deletes instructions in blocks no edge reaches.
+///
+/// **Compiler-generated ones only**, which is the master plan's own wording
+/// and not a hedge. A user's unreachable `rep` stays exactly where they wrote
+/// it — `width-branch.k816::skipped` has one, and it is there to be seen in
+/// the output. So does an HLA statement's expansion: the user wrote that too,
+/// in a different notation, and `doc/design.md` §8's identical-treatment rule
+/// is about how a pass *reasons*, not about who gets to keep unreachable code.
+///
+/// Instructions only. The data between a `SkipData` and its target is
+/// unreachable as *code* by construction — that is what the jump around it is
+/// for — and it is the bytes the program came for.
+fn remove_unreachable(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    let flow = Flow::build(ops, unit);
+    let unreachable: Vec<usize> = (0..ops.len())
+        .filter(|index| {
+            !flow.frozen[*index]
+                && !flow.reachable[flow.block_of[*index]]
+                && ops[*index].origin == Origin::CompilerGenerated
+                && matches!(ops[*index].kind, KOpKind::Instruction(_))
+        })
+        .collect();
+    for index in &unreachable {
+        let removed = ops[*index].clone();
+        log.changes.push(Change {
+            pass: Pass::Unreachable,
+            site: Site {
+                function: unit.function,
+                index: *index,
+            },
+            before: vec![removed],
+            after: Vec::new(),
+            witness: None,
+            justification: String::from(
+                "no edge reaches this block, and the compiler generated the operation",
+            ),
+        });
+    }
+    for index in unreachable.into_iter().rev() {
+        ops.remove(index);
+    }
 }

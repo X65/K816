@@ -2046,9 +2046,12 @@ fn the_optimized_loop_fixture_drops_the_mode_change_its_own_loop_undoes() {
         "width-loop.k816",
         include_str!("golden/width-loop.k816"),
     );
-    assert_eq!(removed, vec!["rep     #$20"], "{removed:?}");
+    // And both functions loop forever, so the implicit `rts` the compiler put
+    // after each of them is unreachable. It removes compiler-generated
+    // operations only, which is the master plan's own wording.
+    assert_eq!(removed, vec!["rep     #$20", "rts", "rts"], "{removed:?}");
     assert_eq!(added, Vec::<String>::new());
-    assert_eq!(bytes, 2);
+    assert_eq!(bytes, 2 + 1 + 1);
 }
 
 /// `native-modes.k816`: dead register and flag writes, and one redundant mode
@@ -2076,6 +2079,11 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
             "cld",          // before `sed`
             "cli",          // before `sei`
             "lda     #$01", // before the `pla` in stack_forms
+            // The implicit return after `control`'s unconditional `bra`. The
+            // *user's* unreachable instructions below that branch — a `brl`,
+            // four jumps, a `jsr`, a `jsl`, a `brk`, and a `cop` — all stay,
+            // because this pass removes compiler-generated operations only.
+            "rts",
             "sep     #$20", // before the `rep #$20` on the next line
             "txa",          // before `tya`
             "txs",          // before `tcs`
@@ -2084,7 +2092,7 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
         "{removed:?}"
     );
     assert_eq!(added, Vec::<String>::new());
-    assert_eq!(bytes, 2 + 1 + 1 + 1 + 1 + 1 + 1 + 2);
+    assert_eq!(bytes, 2 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1);
 }
 
 /// The mode fixture, at the bytes: two changes, and nothing else.

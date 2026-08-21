@@ -82,6 +82,25 @@ func lanes_agree @a16 @i16 {
     CELL,x = a
 }
 
+// **`XBA` reports on eight bits whatever the accumulator width is.** It moves
+// all sixteen, so the *value* it establishes is full-width — but N and Z come
+// from the new low byte, regardless of M. `lda #$0001` then `xba` leaves
+// A = $0100 with Z **set**, and a 16-bit `lda #$0100` would leave Z clear, so
+// the second load is not redundant however much the accumulator agrees.
+//
+// The tracker keeps the value and forgets the flags, which is why the `lda`
+// below stays and the `beq` still branches on what the source says.
+func xba_reports_on_the_low_byte @a16 @i16 {
+    lda #$0001
+    xba
+    CELL = a
+    lda #$0100
+    == goto .target
+    nop
+.target:
+    nop
+}
+
 // **Two reads of a hardware register.** Both survive. K65 has no `volatile`
 // and no way to acquire one — a fixed-address `var` is how the language spells
 // a memory-mapped register — so a second read of one address is never

@@ -1060,3 +1060,31 @@ fn nothing_inside_a_nocross_run_shrinks_or_is_removed() {
         "the dead `clc` and the long form are both in it: {before:?}"
     );
 }
+
+/// `XBA` moves sixteen bits and reports on eight.
+///
+/// The value it establishes is full-width — it swaps the two halves of the
+/// accumulator — but N and Z come from the new *low byte*, regardless of M.
+/// `lda #$0001` then `xba` leaves A = $0100 with Z **set**, while a 16-bit
+/// `lda #$0100` would leave Z clear, so the second load is not redundant
+/// however much the accumulator agrees. Tracking the value and the flag
+/// provenance as one thing loses the difference, and the program takes the
+/// other branch.
+#[test]
+fn xba_leaves_the_tracked_flags_unknown() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    run(&mut program, &model, file);
+    assert_eq!(
+        mnemonics(&program, &model, "xba_reports_on_the_low_byte"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Xba,
+            Mnemonic::Sta,
+            Mnemonic::Lda, // stays: `xba` set Z from $00, this sets it from $0100
+            Mnemonic::Beq,
+            Mnemonic::Nop,
+            Mnemonic::Nop,
+            Mnemonic::Rts
+        ]
+    );
+}

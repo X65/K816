@@ -2764,3 +2764,48 @@ fn no_golden_fixtures_optimized_output_changes_without_a_stated_reason() {
         assert!(!why.is_empty(), "{fixture} says nothing");
     }
 }
+
+/// **Calling `main` publishes its exit contract**, and the caller's immediate
+/// is sized by it.
+///
+/// The optimizer treats an entry point's inferred exit as constraining nothing,
+/// because the startup code cannot be bridged — but only while nothing in the
+/// workspace names it. K65 does not refuse a call to `main`, and once one
+/// exists the exit is consumed like any other function's.
+///
+/// This goes through ca65 because the failure is silent at every other level:
+/// the `KOp` stream reads fine, the assembly assembles, and the accumulator is
+/// eight bits wide where a three-byte immediate was emitted.
+#[test]
+fn calling_an_entry_point_keeps_the_width_its_caller_was_compiled_against() {
+    let source = "\
+func main { rep #$20 }
+
+func caller @a8 @i8 {
+    call main
+    lda #$1234
+}
+";
+    let (removed, added, bytes) = optimizer_effect("called-entry", "called-entry.k816", source);
+    assert_eq!(removed, Vec::<String>::new(), "nothing is dead here");
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 0);
+
+    let unoptimized = link_fixture(
+        "called-entry-bytes",
+        "called-entry.k816",
+        source,
+        &Options { optimize: true },
+    );
+    assert_eq!(
+        unoptimized,
+        vec![
+            0xC2, 0x20, // main: rep #$20 — the instruction `-> @a16` rests on
+            0x60, //       rts
+            0x20, 0x00, 0x80, // caller: jsr main
+            0xA9, 0x34, 0x12, // lda #$1234 — three bytes, and the CPU agrees
+            0x60,
+        ],
+        "{unoptimized:02X?}"
+    );
+}

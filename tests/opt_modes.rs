@@ -379,6 +379,62 @@ fn the_entry_points_inferred_exit_constrains_nothing() {
     );
 }
 
+/// **An entry point that something in the workspace calls has a published
+/// exit after all.**
+///
+/// Decision 6 is conditional and the condition is easy to drop: `main`'s
+/// inferred exit constrains nothing "with `FunctionInfo::is_entry_point` set
+/// **and no analyzed unit naming it**". K65 does not refuse a call to `main`,
+/// and once one exists the exit contract is consumed like any other — the
+/// caller was compiled against `-> @a16` and sizes its immediates by it.
+///
+/// Without the condition, the `rep #$20` below goes and `caller` emits a
+/// three-byte `lda #$1234` while the accumulator is still eight bits wide.
+/// The assembly still assembles; every byte after it is wrong.
+#[test]
+fn an_entry_point_something_calls_keeps_its_exit_contract() {
+    let called = "\
+func main { rep #$20 }
+
+func caller @a8 @i8 {
+    call main
+    lda #$1234
+}
+";
+    let (model, program, log) = optimized(called);
+    assert_eq!(log.by_pass(Pass::EliminateDeadModes).count(), 0);
+    assert_eq!(
+        instructions(&program, &model, "main"),
+        vec![(Mnemonic::Rep, Some(0x20)), (Mnemonic::Rts, None)]
+    );
+
+    // A native `jsr` is the same claim: the two spellings lower to one
+    // instruction, and neither had to declare anything to consume the exit.
+    let jumped = "\
+func main { rep #$20 }
+
+func caller @a8 @i8 {
+    jsr main
+    lda #$1234
+}
+";
+    let (model, program, _) = optimized(jumped);
+    assert_eq!(
+        instructions(&program, &model, "main"),
+        vec![(Mnemonic::Rep, Some(0x20)), (Mnemonic::Rts, None)]
+    );
+
+    // And with nothing naming it, the exemption applies as decision 6 says:
+    // the same body loses the same instruction.
+    let uncalled = "func main { rep #$20 }\n";
+    let (model, program, log) = optimized(uncalled);
+    assert_eq!(log.by_pass(Pass::EliminateDeadModes).count(), 1);
+    assert_eq!(
+        instructions(&program, &model, "main"),
+        vec![(Mnemonic::Rts, None)]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Decisions 7, 8, and 10
 // ---------------------------------------------------------------------------

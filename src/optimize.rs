@@ -247,6 +247,7 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
     let symbols = &context.model.symbols;
     let callees = context.callee_contracts();
     let observed_nowhere = context.observed_nowhere();
+    let called = context.called_in_the_workspace();
     let info: BTreeMap<SymbolId, &crate::semantic::FunctionInfo> = context
         .model
         .functions
@@ -261,7 +262,7 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
             callees: &callees,
             exit_is_published: info
                 .get(&function.symbol)
-                .is_none_or(|info| info.entry.is_none()),
+                .is_none_or(|info| info.entry.is_none() || called.contains(&function.symbol)),
             observed_nowhere,
         };
         eliminate_dead_mode_changes(&unit, &mut function.ops, &mut log);
@@ -306,6 +307,34 @@ impl Context<'_> {
         contracts
     }
 
+    /// Every function some analyzed unit transfers to by name.
+    ///
+    /// The question decision 6 asks about an entry point: `main`'s inferred
+    /// exit constrains nothing *because nothing calls it*, and the moment
+    /// something does it is a published promise like any other. Both call
+    /// spellings and a tail `jmp` to a function are in `callees` — the width
+    /// model records them all — and a name another unit refers to is the
+    /// linkage's answer to the same question one boundary out.
+    ///
+    /// This is D's workspace optimism, not a second one: a function every
+    /// analyzed unit ignores is treated as having no outside caller, which is
+    /// what `--unit` exists to correct.
+    fn called_in_the_workspace(&self) -> BTreeSet<SymbolId> {
+        let mut called: BTreeSet<SymbolId> = self
+            .model
+            .functions
+            .iter()
+            .flat_map(|info| info.callees.iter().copied())
+            .collect();
+        for info in &self.model.functions {
+            let name = self.model.symbols.name(info.symbol);
+            if self.linkage.referenced_elsewhere(name, self.file) {
+                called.insert(info.symbol);
+            }
+        }
+        called
+    }
+
     /// The axes no function anywhere in the workspace observes.
     ///
     /// The union runs over the linkage's classified contracts *and* this
@@ -347,12 +376,19 @@ struct Unit<'a> {
     callees: &'a BTreeMap<SymbolId, CalleeContract>,
     /// True when this function's exit contract constrains someone.
     ///
-    /// `main` cannot be called, and neither can an interrupt handler: their
-    /// caller is the startup environment or the hardware, and no analyzed unit
-    /// names them. An inferred exit that nothing consumes constrains nothing,
-    /// so the operations that establish it are removable like any other dead
-    /// mode operation (`plans/05-optimizer.md` decision 6). Every other
-    /// function's exit is a published promise.
+    /// An entry point is *usually* nobody's callee: `main` is entered by the
+    /// startup code and an interrupt handler by the hardware, so an inferred
+    /// exit that nothing consumes constrains nothing and the operations
+    /// establishing it are removable like any other dead mode operation.
+    ///
+    /// **But only when no analyzed unit names it**, which is the condition
+    /// decision 6 states and the easiest half of it to drop. K65 does not
+    /// refuse a call to `main`, and once one exists the exit contract is
+    /// consumed exactly like any other function's — the caller was compiled
+    /// against it and sizes its immediates by it. Dropping the condition
+    /// deletes the `rep` that makes `-> @a16` true and leaves the caller
+    /// emitting a three-byte immediate at eight bits wide, in assembly that
+    /// still assembles.
     exit_is_published: bool,
     /// Axes no function anywhere in the workspace observes.
     ///
@@ -424,12 +460,12 @@ fn effects_of(op: &KOp) -> Option<Effects> {
 
 /// True when this operation is one only passes 1 and 2 may touch.
 ///
-/// The `SEP`/`REP` read set is `ALL_P` minus the bits the folded mask writes
-/// (`effects.rs`), which is what makes dead mode elimination possible at all —
-/// and, on its own, what would let passes 3 and 5 delete a mode instruction,
-/// since both already accept one as a removal candidate. They would do it with
-/// none of the guards a mode change needs: a published exit contract, a fixed
-/// label bridge, a live truncation, a mask carrying a non-width bit.
+/// `SEP`/`REP` read no flag (`effects.rs`), which is what makes dead mode
+/// elimination possible at all — and, on its own, what would let passes 3 and
+/// 5 delete a mode instruction, since both already accept one as a removal
+/// candidate. They would do it with none of the guards a mode change needs: a
+/// published exit contract, a fixed label bridge, a live truncation, a mask
+/// carrying a non-width bit.
 ///
 /// So the exclusion is stated once, here, and every pass but 1 and 2 consults
 /// it. It is the other half of the effect-table correction and landed in the
@@ -1897,7 +1933,13 @@ fn advance(state: Tracked, op: &KOp) -> Tracked {
     // random-number register in two consecutive statements (decision 14).
     let established = match instruction.mnemonic {
         Mnemonic::Lda | Mnemonic::Ldx | Mnemonic::Ldy => {
-            immediate_load(&state, instruction).map(|known| (destination(instruction), known))
+            immediate_load(&state, instruction).map(|value| Established {
+                register: destination(instruction),
+                value,
+                // A load reports on exactly what it loaded, at the width it
+                // loaded it.
+                nz: Some(value),
+            })
         }
         Mnemonic::Tax => transferred(&state, RegisterSet::A, RegisterSet::X, Axis::Index),
         Mnemonic::Tay => transferred(&state, RegisterSet::A, RegisterSet::Y, Axis::Index),
@@ -1906,31 +1948,48 @@ fn advance(state: Tracked, op: &KOp) -> Tracked {
         Mnemonic::Txy => transferred(&state, RegisterSet::X, RegisterSet::Y, Axis::Index),
         Mnemonic::Tyx => transferred(&state, RegisterSet::Y, RegisterSet::X, Axis::Index),
         // `XBA` moves all sixteen bits regardless of width, so it needs a
-        // full-width source and gives one.
+        // full-width source and gives one — **and it reports on eight**. N and
+        // Z come from the new low byte whatever `M` says (`doc/w65c816s.md`),
+        // so the flags it leaves are not the flags a load of the same value
+        // would leave: `lda #$0001` then `xba` gives A = $0100 with Z *set*,
+        // where `lda #$0100` at sixteen bits leaves Z clear. Tracking the
+        // value and the flag provenance as one thing loses that, and the
+        // program takes the other branch.
         Mnemonic::Xba => state
             .a
             .filter(|known| known.lanes == Lanes::Full)
-            .map(|known| {
-                (
-                    RegisterSet::A,
-                    Known {
-                        value: ((known.value >> 8) & 0xFF) | ((known.value & 0xFF) << 8),
-                        lanes: Lanes::Full,
-                    },
-                )
+            .map(|known| Established {
+                register: RegisterSet::A,
+                value: Known {
+                    value: ((known.value >> 8) & 0xFF) | ((known.value & 0xFF) << 8),
+                    lanes: Lanes::Full,
+                },
+                nz: None,
             }),
         _ => None,
     };
 
     state.clobber(effects);
-    if let Some((register, known)) = established {
-        state.set_register(register, Some(known));
-        // Every one of these sets N and Z from the value it moved.
+    if let Some(established) = established {
+        state.set_register(established.register, Some(established.value));
         if effects.writes.flags.contains(FlagSet::N.union(FlagSet::Z)) {
-            state.nz = Some(known);
+            state.nz = established.nz;
         }
     }
     state
+}
+
+/// A value one operation establishes, and what it leaves N and Z reporting.
+///
+/// The two are separate because they can disagree about *width*. Every load
+/// and every width-dependent transfer reports on exactly what it moved, so
+/// `nz` is the value again; `XBA` moves sixteen bits and reports on eight, so
+/// it has none.
+#[derive(Clone, Copy, Debug)]
+struct Established {
+    register: RegisterSet,
+    value: Known,
+    nz: Option<Known>,
 }
 
 fn set_flag(mut state: Tracked, flag: FlagSet, value: bool) -> Tracked {
@@ -1974,24 +2033,26 @@ fn transferred(
     from: RegisterSet,
     to: RegisterSet,
     destination_axis: Axis,
-) -> Option<(RegisterSet, Known)> {
+) -> Option<Established> {
     let width = state.width(destination_axis)?;
     let needed = Lanes::of(width);
     let source = state.register(from)?;
     if !source.lanes.covers(needed) {
         return None;
     }
-    let value = match width {
-        RegisterWidth::W8 => source.value & 0xFF,
-        RegisterWidth::W16 => source.value & 0xFFFF,
-    };
-    Some((
-        to,
-        Known {
-            value,
-            lanes: needed,
+    let value = Known {
+        value: match width {
+            RegisterWidth::W8 => source.value & 0xFF,
+            RegisterWidth::W16 => source.value & 0xFFFF,
         },
-    ))
+        lanes: needed,
+    };
+    Some(Established {
+        register: to,
+        value,
+        // These report on exactly what they moved, at the width they moved it.
+        nz: Some(value),
+    })
 }
 
 // ---------------------------------------------------------------------------

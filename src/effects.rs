@@ -375,9 +375,17 @@ impl Effects {
 /// program. `writes` is a **must-write** set: the optimizer subtracts it from
 /// the state a candidate produced, so over-approximating it would declare a
 /// live value dead. `SEP`/`REP` with an unfolded mask therefore write
-/// *nothing* — the mask may be zero — while reading every P flag and
-/// reporting [`WidthEffect::Unknown`], which is the signal that stops the
-/// scan entirely.
+/// *nothing* — the mask may be zero — and report [`WidthEffect::Unknown`],
+/// which is the signal that stops width reasoning entirely.
+///
+/// **A bit an instruction leaves alone is in neither set.** It is not read,
+/// because nothing was decided from it, and it is not written, because it did
+/// not change — and a live value passes through untouched precisely by being
+/// in neither. The temptation is to put preserved bits in `reads` "to be
+/// safe", which costs nothing for liveness and is wrong for anything that asks
+/// *what does this instruction depend on*: it makes a `sep #$20` an observer
+/// of the axis it establishes. `SEP` and `REP` read nothing at all for that
+/// reason.
 pub fn instruction_effects(
     mnemonic: Mnemonic,
     mode: AddressingMode,
@@ -911,13 +919,24 @@ pub fn instruction_effects(
         // while the width transition is Unknown, which is what stops the
         // optimizer rather than a pretend flag write.
         //
-        // The read set is every P flag the mask does *not* write. The
-        // instruction preserves those bits and decides nothing from the ones
-        // it sets, so `ALL_P` would say a `sep #$20` depends on M — which
-        // makes it an observer of the very axis it establishes, and a
-        // dead-mode pass seeded from flag reads could then never fire
-        // (`plans/05-optimizer.md` probe 5). Still an over-approximation, and
-        // an unfolded mask still reads everything, because it writes nothing.
+        // **They read no flag at all**, folded mask or not. `ALL_P` is a safe
+        // may-read over-approximation and too coarse to reason with: it says a
+        // `sep #$20` depends on M, which makes it an observer of the very axis
+        // it establishes, so the `sep #$20` below a `rep #$20` keeps it alive
+        // and dead mode elimination can never fire
+        // (`plans/05-optimizer.md` probe 5). Narrowing it to "every bit the
+        // mask does not write" is not enough either, and for the same reason
+        // one axis over: `rep #$10` would then read M, so a `rep #$20` beside
+        // it stays alive until *folding* merges the two — and a pass whose
+        // answer depends on whether a later pass has run is not idempotent.
+        //
+        // The right answer is that these instructions *decide nothing* from
+        // the status register. Every bit outside the mask is unchanged, and
+        // "unchanged" is already what a must-write set that excludes it means:
+        // a preserved bit stays live through this instruction because the
+        // transfer function passes it through, not because this instruction
+        // reads it. That is why `sec` before `rep #$20` before `bcs` keeps its
+        // carry, while `sec` before `rep #$21` does not.
         Mnemonic::Sep | Mnemonic::Rep => {
             let mask = immediate.map(|mask| mask as u8);
             let to = match mnemonic {

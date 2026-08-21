@@ -2429,3 +2429,338 @@ fn the_e_branch_fixture_keeps_its_long_form() {
     assert_eq!(added, Vec::<String>::new());
     assert_eq!(bytes, 0);
 }
+
+// ---------------------------------------------------------------------------
+// The completeness net (sub-plan F, decision 21).
+// ---------------------------------------------------------------------------
+
+/// What the optimizer changes about **every** golden fixture, and why.
+///
+/// The tests above assert particular differences through ca65 and ld65, which
+/// is what catches a wrong *size*. This catches a wrong *set*: a fixture whose
+/// optimized output starts differing for a reason nobody stated. F is the
+/// first sub-plan whose entire output is changes to working output, and
+/// non-negotiable 15's warning is that accepting a golden diff because "the
+/// optimizer got better" is how a wrong-bytes bug ships.
+///
+/// Each row is `(fixture, removed, added, why)`, counted rather than ordered:
+/// the same instruction removed from two functions is one entry with a count
+/// of two, and an even count across a paired HLA/native fixture is the
+/// identical-treatment claim showing through.
+type Effect = (
+    &'static str,
+    &'static [(&'static str, usize)],
+    &'static [(&'static str, usize)],
+    &'static str,
+);
+
+const FIXTURE_EFFECTS: &[Effect] = &[
+    (
+        "block-exit.k816",
+        &[
+            ("rep     #$10", 1),
+            ("rep     #$20", 2),
+            ("sep     #$10", 1),
+            ("sep     #$20", 2),
+        ],
+        &[("sep     #$30", 1)],
+        "three block enters whose bodies observe nothing, a restore the loop re-enters through, and the nested pad's pair folded",
+    ),
+    (
+        "far-calls.k816",
+        &[("rts", 3)],
+        &[],
+        "three implicit returns after functions that leave by `goto` and never come back",
+    ),
+    (
+        "hla-alu.k816",
+        &[
+            ("cmp     #$3C", 2),
+            ("cpx     #$01", 2),
+            ("sec", 2),
+            ("sed", 2),
+            ("sei", 2),
+            ("sep     #$10", 2),
+            ("sep     #$20", 2),
+        ],
+        &[("sep     #$30", 2)],
+        "a flag set overwritten by the clear on the next line, twice over; two compares whose N, Z, and C the next compare rewrites; and the block restore folded. Every count is even: the shorthand half and the native half beside it are treated identically",
+    ),
+    (
+        "hla-chains.k816",
+        &[("lda     #$00", 2), ("sta     z:dst0", 2)],
+        &[("stz     z:dst0", 2)],
+        "a `dst0 = a = 0` chain in each half becomes `stz`, and the load it fed goes with it",
+    ),
+    (
+        "inline-expansion.k816",
+        &[("lda     #$0010", 1)],
+        &[],
+        "one dead load inside an expansion, which is the same treatment a written one gets",
+    ),
+    (
+        "native-modes.k816",
+        &[
+            ("clc", 1),
+            ("cld", 1),
+            ("cli", 1),
+            ("lda     #$01", 1),
+            ("rts", 1),
+            ("sep     #$20", 1),
+            ("txa", 1),
+            ("txs", 1),
+            ("tyx", 1),
+        ],
+        &[],
+        "seven writes the next line overwrites, one redundant `sep`, and the implicit return after an unconditional `bra`",
+    ),
+    (
+        "native-reloc.k816",
+        &[
+            ("lda     #((table + $01) .bitand $0F)", 1),
+            ("lda     #.hibyte(table)", 1),
+            ("lda     #.lobyte(table)", 1),
+            ("rts", 1),
+        ],
+        &[],
+        "three dead loads and an implicit return no edge reaches; not one relocatable operand changes",
+    ),
+    (
+        "opt-branch-range.k816",
+        &[
+            ("bcs     :+", 3),
+            ("jmp     :++", 2),
+            ("jmp     :++++", 1),
+            ("ldx     #$0102", 174),
+        ],
+        &[("bcc     :+", 2), ("bcc     :++", 1)],
+        "a dead `ldx` run, and the three long-form branches whose distance it closed",
+    ),
+    (
+        "opt-folding.k816",
+        &[
+            ("rep     #$10", 1),
+            ("rep     #$20", 1),
+            ("rep     #$21", 1),
+            ("sep     #$10", 1),
+            ("sep     #$20", 1),
+        ],
+        &[("rep     #$30", 1), ("sep     #$30", 1)],
+        "the document's folding table, plus the mask whose M bit is stripped and whose carry clear stays",
+    ),
+    (
+        "opt-liveout.k816",
+        &[("lda     #$07", 1)],
+        &[],
+        "the one load that is not at a function exit; every other load, `ldy`, and `clc` in the file survives its return",
+    ),
+    (
+        "opt-modes.k816",
+        &[
+            ("rep     #$10", 1),
+            ("rep     #$20", 1),
+            ("rep     #$21", 1),
+            ("rts", 1),
+            ("sep     #$20", 1),
+        ],
+        &[("rep     #$01", 1), ("rep     #$30", 1)],
+        "a stripped mask, a redundant change above a fixed label bridge, a folded bridge, and an unreachable implicit return",
+    ),
+    (
+        "opt-values.k816",
+        &[
+            ("clc", 1),
+            ("lda     #$07", 1),
+            ("ldx     #$0000", 1),
+            ("sta     a:CELL,x", 4),
+        ],
+        &[("stz     a:CELL,x", 4)],
+        "a repeated load, a redundant `clc`, an `ldx` sixteen known bits made redundant, and four stores of a known-zero accumulator",
+    ),
+    (
+        "opt-zero-store.k816",
+        &[
+            ("lda     #$00", 5),
+            ("sta     a:abs1", 2),
+            ("sta     a:abs1,x", 1),
+            ("sta     z:zp", 2),
+            ("sta     z:zp,x", 1),
+        ],
+        &[
+            ("stz     a:abs1", 2),
+            ("stz     a:abs1,x", 1),
+            ("stz     z:zp", 2),
+            ("stz     z:zp,x", 1),
+        ],
+        "six stores in modes `STZ` has, and the loads that fed them where A is not live at an exit",
+    ),
+    (
+        "slice-native.k816",
+        &[("lda     #$00", 1)],
+        &[],
+        "the slice's dead load, written as a native instruction rather than as a chain",
+    ),
+    (
+        "slice.k816",
+        &[("lda     #$00", 1)],
+        &[],
+        "the slice's dead load: `lda #$01` overwrites A, N, and Z before anything reads them",
+    ),
+    (
+        "subscripts.k816",
+        &[
+            ("lda     #$0008", 1),
+            ("lda     #$02", 2),
+            ("lda     #$04", 1),
+            ("lda     #$05", 1),
+            ("lda     #$06", 1),
+            ("lda     #$20", 1),
+            ("lda     #.loword((COMP + $08))", 1),
+            ("lda     #.loword((COMP + $10))", 1),
+        ],
+        &[],
+        "a run of `NAME:sizeof` loads nothing stores, and one survivor the accumulator already held",
+    ),
+    (
+        "width-blocks.k816",
+        &[
+            ("rep     #$10", 2),
+            ("rep     #$20", 2),
+            ("sep     #$10", 1),
+            ("sep     #$20", 1),
+        ],
+        &[("rep     #$30", 1), ("sep     #$30", 1)],
+        "two block enters whose bodies observe the axis they establish, and the documented block's pair folded on both ends",
+    ),
+    (
+        "width-branch.k816",
+        &[("lda     #$01", 1), ("rep     #$20", 1)],
+        &[],
+        "the load a branch leaves behind, and a user `rep` a fixed label bridge re-establishes",
+    ),
+    (
+        "width-bridging.k816",
+        &[("rep     #$10", 1)],
+        &[],
+        "the one bridge bit on the axis no instruction in the program observes",
+    ),
+    (
+        "width-exit.k816",
+        &[("rep     #$10", 1), ("rep     #$20", 1)],
+        &[("rep     #$30", 1)],
+        "one fold; every operation a declared or inferred exit rests on stays",
+    ),
+    (
+        "width-loop.k816",
+        &[("rep     #$20", 1), ("rts", 2)],
+        &[],
+        "the mode change the loop's own back edge undoes, and the implicit returns after two loops that never end",
+    ),
+    (
+        "width-native-call.k816",
+        &[("rts", 1)],
+        &[],
+        "the implicit return after a tail jump out of the function",
+    ),
+];
+
+/// A fixture that compiles alone but is not in the table above changes
+/// nothing, and one that is changes exactly what its row says.
+#[test]
+fn no_golden_fixtures_optimized_output_changes_without_a_stated_reason() {
+    /// `(fixture, why it cannot be compiled alone)`.
+    const SKIPPED: &[(&str, &str)] = &[
+        ("contract-unit-b.k816", "one unit of a cross-unit pair"),
+        ("layout-unit-b.k816", "one unit of a cross-unit pair"),
+        ("opt-crossunit-a.k816", "one unit of a cross-unit pair"),
+        ("opt-crossunit-b.k816", "one unit of a cross-unit pair"),
+        ("unit-a.k816", "one unit of a cross-unit pair"),
+        ("nocross-oversized.k816", "pins a refusal: K816-E0112"),
+        (
+            "width-emulation.k816",
+            "pins a refusal under unknown emulation",
+        ),
+    ];
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read tests/golden")
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+            (name.ends_with(".k816") && !SKIPPED.iter().any(|(skip, _)| *skip == name))
+                .then_some(name)
+        })
+        .collect();
+    names.sort();
+
+    for name in &names {
+        let text = std::fs::read_to_string(dir.join(name)).expect("read fixture");
+        let compile = |optimize: bool| -> Vec<String> {
+            let mut map = SourceMap::new();
+            let file = map.add_file(name.as_str(), text.as_str());
+            let result = compile_to_ca65(&map, file, &Options { optimize });
+            result
+                .assembly
+                .map(|a| instruction_lines(&a))
+                .unwrap_or_default()
+        };
+        let before = compile(false);
+        if before.is_empty() {
+            continue; // Refused, or nothing but declarations.
+        }
+        let after = compile(true);
+
+        let count = |lines: &[String]| {
+            let mut counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for line in lines {
+                *counts.entry(line.clone()).or_default() += 1;
+            }
+            counts
+        };
+        let (mut before, mut after) = (count(&before), count(&after));
+        for (line, taken) in after.clone() {
+            if let Some(had) = before.get_mut(&line) {
+                let shared = (*had).min(taken);
+                *had -= shared;
+                *after.get_mut(&line).expect("just cloned") -= shared;
+            }
+        }
+        let listed = |counts: std::collections::BTreeMap<String, usize>| -> Vec<(String, usize)> {
+            counts.into_iter().filter(|(_, n)| *n > 0).collect()
+        };
+        let (removed, added) = (listed(before), listed(after));
+
+        match FIXTURE_EFFECTS.iter().find(|(fixture, ..)| fixture == name) {
+            Some((_, expected_removed, expected_added, why)) => {
+                assert!(why.len() > 30, "{name} says too little: {why}");
+                let owned = |rows: &[(&str, usize)]| -> Vec<(String, usize)> {
+                    rows.iter()
+                        .map(|(line, n)| ((*line).to_owned(), *n))
+                        .collect()
+                };
+                assert_eq!(removed, owned(expected_removed), "{name}: {why}");
+                assert_eq!(added, owned(expected_added), "{name}: {why}");
+            }
+            None => assert!(
+                removed.is_empty() && added.is_empty(),
+                "{name} changed under the optimizer with no row saying why: \
+                 -{removed:?} +{added:?}"
+            ),
+        }
+    }
+
+    // The table and the skip list cannot outlive the files they name.
+    for (fixture, ..) in FIXTURE_EFFECTS {
+        assert!(
+            dir.join(fixture).exists(),
+            "{fixture} is listed but is gone"
+        );
+    }
+    for (fixture, why) in SKIPPED {
+        assert!(
+            dir.join(fixture).exists(),
+            "{fixture} is skipped but is gone"
+        );
+        assert!(!why.is_empty(), "{fixture} says nothing");
+    }
+}

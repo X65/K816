@@ -222,11 +222,11 @@ func f @a16 {
         vec![Mnemonic::Sep, Mnemonic::Lda, Mnemonic::Rts]
     );
 
-    // And the general claim, over every shipped fixture that has mode
-    // operations in it: whatever changed, a mode instruction only ever
-    // changed under pass 1 or pass 2.
-    for (name, source) in MODE_FIXTURES {
-        let (_, file, model, mut program) = lowered_as(name, source);
+    // And the general claim, over every fixture that compiles on its own:
+    // whatever changed, a mode instruction only ever changed under pass 1 or
+    // pass 2.
+    for (name, source) in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_as(&name, &source);
         for change in run(&mut program, &model, file).changes {
             let touched_a_mode =
                 change
@@ -248,38 +248,6 @@ func f @a16 {
         }
     }
 }
-
-/// Every shipped fixture that contains a `REP` or a `SEP`.
-const MODE_FIXTURES: &[(&str, &str)] = &[
-    ("block-exit.k816", include_str!("golden/block-exit.k816")),
-    (
-        "data-entries.k816",
-        include_str!("golden/data-entries.k816"),
-    ),
-    ("hla-alu.k816", include_str!("golden/hla-alu.k816")),
-    (
-        "native-modes.k816",
-        include_str!("golden/native-modes.k816"),
-    ),
-    (
-        "opt-barriers.k816",
-        include_str!("golden/opt-barriers.k816"),
-    ),
-    (
-        "width-blocks.k816",
-        include_str!("golden/width-blocks.k816"),
-    ),
-    (
-        "width-branch.k816",
-        include_str!("golden/width-branch.k816"),
-    ),
-    (
-        "width-bridging.k816",
-        include_str!("golden/width-bridging.k816"),
-    ),
-    ("width-exit.k816", include_str!("golden/width-exit.k816")),
-    ("width-loop.k816", include_str!("golden/width-loop.k816")),
-];
 
 #[test]
 fn reads_and_barriers_keep_live_operations() {
@@ -590,26 +558,54 @@ fn a_write_a_branch_leaves_behind_is_dead() {
 /// over the sequence.
 #[test]
 fn optimization_is_idempotent() {
-    for (name, source) in [
-        ("slice.k816", HLA_SLICE),
-        ("opt-barriers.k816", BARRIERS),
-        ("opt-liveout.k816", LIVEOUT),
-        (
-            "width-branch.k816",
-            include_str!("golden/width-branch.k816"),
-        ),
-        (
-            "width-blocks.k816",
-            include_str!("golden/width-blocks.k816"),
-        ),
-        ("hla-alu.k816", include_str!("golden/hla-alu.k816")),
-        ("subscripts.k816", include_str!("golden/subscripts.k816")),
-    ] {
-        let (_, file, model, mut program) = lowered_as(name, source);
+    for (name, source) in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_as(&name, &source);
         run(&mut program, &model, file);
         let second = run(&mut program, &model, file);
         assert!(second.is_empty(), "`{name}`: {:?}", second.changes);
     }
+}
+
+/// Every `tests/golden/*.k816` that compiles on its own.
+///
+/// Read from the directory rather than listed, so a fixture added later is
+/// covered without anyone remembering to add it — which is the difference
+/// between "idempotent on the cases we thought of" and the claim decision 18
+/// makes. The skipped ones each name why: a unit of a pair has no meaning
+/// alone, and a fixture that pins a *refusal* has no operations to optimize.
+fn every_self_contained_fixture() -> Vec<(String, String)> {
+    /// `(fixture, why it cannot be compiled alone)`.
+    const SKIPPED: &[(&str, &str)] = &[
+        ("contract-unit-b.k816", "one unit of a cross-unit pair"),
+        ("layout-unit-b.k816", "one unit of a cross-unit pair"),
+        ("opt-crossunit-a.k816", "one unit of a cross-unit pair"),
+        ("opt-crossunit-b.k816", "one unit of a cross-unit pair"),
+        ("unit-a.k816", "one unit of a cross-unit pair"),
+        ("nocross-oversized.k816", "pins a refusal: K816-E0112"),
+        (
+            "width-emulation.k816",
+            "pins a refusal under unknown emulation",
+        ),
+    ];
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let mut fixtures: Vec<(String, String)> = std::fs::read_dir(&dir)
+        .expect("read tests/golden")
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".k816") || SKIPPED.iter().any(|(skip, _)| *skip == name) {
+                return None;
+            }
+            Some((name.clone(), std::fs::read_to_string(dir.join(&name)).ok()?))
+        })
+        .collect();
+    fixtures.sort();
+    // The skip list cannot outlive the files it names.
+    for (name, why) in SKIPPED {
+        assert!(dir.join(name).exists(), "{name} is skipped but is gone");
+        assert!(!why.is_empty(), "{name} says nothing");
+    }
+    assert!(fixtures.len() > 20, "the directory scan found nothing");
+    fixtures
 }
 
 // ---------------------------------------------------------------------------
@@ -972,8 +968,8 @@ fn a_branch_over_inline_data_does_not_shrink() {
 /// implements the rewrite without reading the reasoning, a test fails.
 #[test]
 fn no_call_and_return_pair_becomes_a_jump() {
-    for (name, source) in MODE_FIXTURES.iter().chain(&[("opt-liveout.k816", LIVEOUT)]) {
-        let (_, file, model, mut program) = lowered_as(name, source);
+    for (name, source) in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_as(&name, &source);
         let before = tail_pairs(&program);
         run(&mut program, &model, file);
         assert_eq!(tail_pairs(&program), before, "`{name}`");
@@ -1020,14 +1016,8 @@ fn tail_pairs(program: &KProgram) -> Vec<(Mnemonic, Mnemonic)> {
 /// nothing can audit.
 #[test]
 fn every_recorded_change_carries_its_streams_and_its_effects() {
-    for (name, source) in MODE_FIXTURES.iter().chain(&[
-        ("opt-values.k816", VALUES),
-        ("opt-zero-store.k816", ZERO_STORE),
-        ("opt-liveout.k816", LIVEOUT),
-        ("opt-branch-range.k816", BRANCH_RANGE),
-        ("subscripts.k816", include_str!("golden/subscripts.k816")),
-    ]) {
-        let (_, file, model, mut program) = lowered_as(name, source);
+    for (name, source) in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_as(&name, &source);
         for change in run(&mut program, &model, file).changes {
             assert!(!change.before.is_empty(), "`{name}`: {change:?}");
             assert!(

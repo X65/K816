@@ -1460,6 +1460,30 @@ fn every_data_entry_emits_the_bytes_it_describes() {
     assemble_and_link("data-entries", &assembly, "slice");
 }
 
+/// The paired HLA fixtures reach the assembler, not just the comparison.
+///
+/// `tests/hla.rs` proves each HLA body lowers to the same `KOp`s as the
+/// native body beside it, which is a claim about *meaning* and says nothing
+/// about whether ca65 accepts the result. For branches that gap is the whole
+/// of decision 7: a relative branch out of range is not a K816 diagnostic, it
+/// is an assembler error, and a compiler that emits the short form and hopes
+/// produces a program that does not build.
+#[test]
+fn the_paired_hla_fixtures_assemble() {
+    for (name, source) in [
+        ("hla-chains", include_str!("golden/hla-chains.k816") as &str),
+        ("hla-alu", include_str!("golden/hla-alu.k816")),
+        ("hla-branches", include_str!("golden/hla-branches.k816")),
+    ] {
+        let mut map = SourceMap::new();
+        let file = map.add_file(format!("{name}.k816"), source);
+        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        assert_eq!(result.diagnostics, vec![], "{name} must compile");
+        let assembly = result.assembly.expect("compilation succeeds");
+        assemble_and_link(name, &assembly, "slice");
+    }
+}
+
 /// The section kinds that are not subroutines, through the assembler.
 ///
 /// `inline` is the one construct that changes the *shape* of the operation

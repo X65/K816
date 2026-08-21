@@ -857,6 +857,158 @@ fn every_documented_spelling_selects_the_instruction_it_claims() {
     );
 }
 
+/// Every fixture is handed to ca65, or says why it cannot be.
+///
+/// Comparing `KOp` streams proves what a construct *means*; only the
+/// assembler proves the result is something ca65 accepts, and the two are not
+/// the same claim. Sub-plan E found this the hard way: `hla-branches.k816`
+/// held every branch form and was compared against its native pairing for
+/// three tasks without anyone asking ca65 whether a relative branch reached
+/// — which is exactly the failure decision 7 exists to prevent, and not a
+/// failure K816 reports.
+#[test]
+fn every_golden_fixture_is_assembled_or_says_why_not() {
+    /// The fixtures that reach ca65, and the test that takes them there.
+    const ASSEMBLED: &[(&str, &str)] = &[
+        (
+            "block-exit.k816",
+            "a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge",
+        ),
+        (
+            "branch-range.k816",
+            "a_branch_past_a_relative_branchs_reach_still_assembles",
+        ),
+        (
+            "contract-unit-a.k816",
+            "a_cross_unit_exit_reaches_the_callers_encoded_immediate",
+        ),
+        (
+            "contract-unit-b.k816",
+            "a_cross_unit_exit_reaches_the_callers_encoded_immediate",
+        ),
+        (
+            "data-entries.k816",
+            "every_data_entry_emits_the_bytes_it_describes",
+        ),
+        (
+            "far-calls.k816",
+            "the_far_family_and_every_goto_shape_assemble",
+        ),
+        ("hla-alu.k816", "the_paired_hla_fixtures_assemble"),
+        ("hla-branches.k816", "the_paired_hla_fixtures_assemble"),
+        ("hla-chains.k816", "the_paired_hla_fixtures_assemble"),
+        (
+            "inline-expansion.k816",
+            "expansions_and_naked_sections_assemble",
+        ),
+        (
+            "layout-unit-a.k816",
+            "a_layout_does_not_cross_a_unit_boundary",
+        ),
+        (
+            "layout-unit-b.k816",
+            "a_layout_does_not_cross_a_unit_boundary",
+        ),
+        ("native-modes.k816", "native_modes_assembles_and_links"),
+        (
+            "native-reloc.k816",
+            "the_emitted_assembly_does_not_depend_on_where_ld65_puts_it",
+        ),
+        ("slice.k816", "hla_slice_links_to_the_expected_bytes"),
+        ("slice-native.k816", "native_slice_links_to_identical_bytes"),
+        (
+            "subscripts.k816",
+            "every_field_access_folds_to_the_offset_its_layout_declares",
+        ),
+        ("unit-a.k816", "the_committed_unit_pair_links"),
+        ("unit-b.k816", "the_committed_unit_pair_links"),
+        (
+            "vars.k816",
+            "every_declaration_axis_reserves_and_encodes_what_it_declares",
+        ),
+        (
+            "width-branch.k816",
+            "a_skipped_mode_change_does_not_widen_the_immediate_after_the_label",
+        ),
+        (
+            "width-bridging.k816",
+            "call_site_bridges_are_the_minimum_for_each_contract",
+        ),
+        (
+            "width-loop.k816",
+            "a_loop_head_its_arrivals_agree_about_keeps_its_width",
+        ),
+        (
+            "width-module.k816",
+            "module_defaults_reach_the_encoded_immediate_length",
+        ),
+    ];
+
+    /// The fixtures that cannot reach ca65, and why. Every one of them pins a
+    /// *refusal*, and a refused program has no bytes to assemble.
+    const REFUSED: &[(&str, &str)] = &[
+        (
+            "nocross-oversized.k816",
+            "a `nocross` run too big for a page: K816-E0112",
+        ),
+        ("width-blocks.k816", "a width block a branch leaks out of"),
+        (
+            "width-emulation.k816",
+            "a widening annotation under unknown emulation",
+        ),
+        ("width-exit.k816", "divergent and contradicted exits"),
+        (
+            "width-native-call.k816",
+            "an unbridged native call: K816-W0125",
+        ),
+    ];
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let mut fixtures: Vec<String> = std::fs::read_dir(&dir)
+        .expect("read tests/golden")
+        .filter_map(|entry| {
+            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+            name.ends_with(".k816").then_some(name)
+        })
+        .collect();
+    fixtures.sort();
+
+    let missing: Vec<&String> = fixtures
+        .iter()
+        .filter(|name| {
+            !ASSEMBLED.iter().any(|(fixture, _)| fixture == *name)
+                && !REFUSED.iter().any(|(fixture, _)| fixture == *name)
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "fixtures that neither assemble nor say why not: {missing:?}"
+    );
+
+    // And the tables cannot outlive the files or the tests they name.
+    for (fixture, named) in ASSEMBLED.iter().chain(REFUSED) {
+        assert!(
+            fixtures.iter().any(|name| name == fixture),
+            "{fixture} is listed but no longer exists"
+        );
+        assert!(!named.is_empty(), "{fixture} says nothing");
+    }
+    let sources = ["tests/compile.rs", "tests/fullstack.rs"]
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (fixture, test) in ASSEMBLED {
+        assert!(
+            sources.contains(&format!("fn {test}(")),
+            "{fixture} names `{test}`, which no longer exists"
+        );
+    }
+}
+
 /// Every `Optimized` row states what the optimizer changes about it, so the
 /// difference from the document is recorded rather than left to be
 /// rediscovered as a bug.

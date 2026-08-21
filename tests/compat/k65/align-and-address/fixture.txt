@@ -1,0 +1,28 @@
+row       align-directive
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+expect    K816-E0002
+expect    K816-E0001
+expect    K816-E0127
+expect    K816-E0104
+
+**`align` and `address` are accepted at the start of a code section, and
+`align N + M` means "at an address congruent to M modulo N".**
+
+The golden places `offset_table` at `$2004` (`align 16 + 4`), `aligned` at
+`$2008` (`align 256 + 8`) and `addressed` at `$2040` (`address 0x2040`), and
+zero-fills the gaps.
+
+`Align` sits between `SecStart` and the body in `func`, `naked`, `main` *and*
+`data` (`compiler.inc:121-136`), which answers the question probe 4 left as
+"unverified".  `setalign(a, offs)` (`compiler_src.cpp:877`) then requires `a`
+to be a power of two in `1..65536` and `offs` to be less than `a`, and marks
+every start address that is not congruent to `offs` unusable.
+
+K816 reads `align 256 + 8` as `align 264` today, and inside a `func` body it
+does not parse at all.  Decision 15's lowering - `.align N` followed by
+`.res M` - puts the label at the same congruence class, and differs from the
+original in emitting M filler bytes where the original leaves the linker a gap.
+That difference is `backend-different`, and G2 lands it.

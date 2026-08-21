@@ -1,0 +1,55 @@
+// Oracle questions from decision 5: what is a method call, what is a string
+// value, and what does an `evaluator [ ]` data entry do?
+//
+// The plan recognises all three and refuses them "until a reading is
+// measured".  This fixture measures them.
+//
+//   - `EvElem . AllIdent ( args )` compiles to `name(EvElem, args...)`
+//     (compiler.inc:448-449), so a method call is spelling, not a feature.
+//   - `evaluator [ code ]` precompiles a program into the *section's*
+//     evaluator; `datavalue` then runs it with `x` bound to each byte
+//     (compiler_src.cpp:466-472).  Which entries it reaches is the question:
+//     the literals below and the string and `for ... eval` values are
+//     deliberately in separate sections so the golden separates them.
+//   - a string value's operators are `+`, `==` and `<`, and the golden shows
+//     whether one can reach a byte at all.
+
+data source { 10 20 30 40 }
+
+data spellings {
+  [ index(source, 2) ]      // the function
+  [ source[1] ]             // the operator
+  [ source.index(3) ]       // the method call, one argument
+  [ source.size ]           // the method call, no arguments
+}
+
+data filtered_literals {
+  evaluator [ x * 2 + 1 ]
+  1 2 3
+}
+
+data filtered_generated {
+  evaluator [ x * 2 + 1 ]
+  for i = 0 .. 3 eval [ i ]
+}
+
+data filtered_string {
+  charset " ABC"
+  evaluator [ x + 0x40 ]
+  "CAB"
+}
+
+data string_values {
+  [ "ab" == "ab" ]
+  [ "ab" == "ba" ]
+  [ "a" < "b" ]
+}
+
+main {
+  a = spellings
+  a = filtered_literals
+  a = filtered_generated
+  a = filtered_string
+  a = string_values
+  return
+}

@@ -1,0 +1,20 @@
+row       topelem-binary
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-K65-0001
+expect    K816-K65-0001
+expect    K816-E0201
+expect    K816-E0101
+expect    K816-E0101
+expect    K816-E0101
+
+`image NAME = "file"` and `binary NAME = "file"` at top level.
+
+Two readings collide here and the original wins (decision 2).  The **legacy
+K816** compiled these into labels with no bytes behind them - its
+`expected.lst` is three `lda $00` - which is a `legacy-defective` row.  The
+**original** builds a whole section from the file's bytes.  K816 refuses
+`image` (decision 7) and will `.incbin` `binary` (G6), so the three
+`K816-E0101` rows here - the names the labels would have declared - go with the
+`binary` work.

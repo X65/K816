@@ -1308,7 +1308,7 @@ Both halves are decided per *operation*. `STZ` has four addressing modes and `ST
 
 ## Standard 6502 Instructions
 
-The per-instruction tables in this section document the classical 6502 spellings and the matching K65 HLA shorthand forms. k816 also accepts the 65816 native mnemonic modes listed in [65816 Addressing Modes in K65](#65816-addressing-modes-in-k65), and the exhaustive compiler coverage is kept in `tests/golden/fixtures/syntax-all-256-opcodes/`.
+The per-instruction tables in this section document the classical 6502 spellings and the matching K65 HLA shorthand forms. k816 also accepts the 65816 native mnemonic modes listed in [65816 Addressing Modes in K65](#65816-addressing-modes-in-k65), and the exhaustive compiler coverage is kept in `tests/isa.rs`, which emits every legal instruction-and-mode pair the ISA table claims and assembles the result with ca65 itself.
 
 ### [Address Modes](https://www.masswerk.at/6502/6502_instruction_set.html)
 

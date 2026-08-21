@@ -1,0 +1,11 @@
+row       topelem-image
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+
+A malformed `image`/`binary` line: the legacy compiler warned and carried on.
+
+K816 reports `K816-E0001`, which is the one shape decision 0 rules out - a K65
+form reaching a generic parse error.  G1 gives the malformed forms named nodes
+so that G6 can refuse them by name.

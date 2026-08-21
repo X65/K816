@@ -1,0 +1,23 @@
+row       number-eval-bracket
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+**The original's evaluator sees `const` names, and sees a data label as a
+section.**  `[FLAG_A]` is `$30`, `[FLAG_A | FLAG_B]` is `$3C`, and
+`[index(tab, 2)]` is `30`, the third byte of `tab`.
+
+`getevalvar` (`compiler_src.cpp:288`) resolves a name against the *one* symbol
+table the compiler keeps: a `const` yields its value, a label yields the
+section it names, and an evaluator variable yields whatever was assigned to it.
+A `var` is the one kind that does not resolve - `[vx]` for a declared `var vx`
+is "Incorrect type of eval variable".
+
+This settles two things decision 4 left open.  K816 letting a bracket read a
+`const` is **compatibility, not an extension** - the row is `compatible` - and
+the legacy K816's dual parse, which existed because *its* evaluator could not
+see `const`, has nothing left to rescue and is not reproduced.

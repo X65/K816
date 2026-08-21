@@ -1,0 +1,8 @@
+row       k816-zero-store-stz
+config    legacy-stub.cfg
+compare   bytes
+units     input.k65
+
+Zero stores become STZ in zero page, absolute and absolute-indexed.
+
+Identical to the legacy bytes after the `sep #$30` prologue.

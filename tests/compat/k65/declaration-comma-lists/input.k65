@@ -1,0 +1,20 @@
+// Oracle question: what does the `?` marker after a variable name emit?
+//
+// `Var -> Ident Verbose` in the original grammar (compiler.inc:36-41) allows a
+// bare `?` after a declared name, and no document of either compiler mentions
+// it.  The comma lists it appears in are asked at the same time: `var` with
+// and without an address, and `const` with and without a value.
+//
+// Note that `var NAME = N` gives the variable an *address*, not an initial
+// value - the golden shows the three variables landing at $80, $81, $82.
+
+var anim = 0x80, cntX, cntY?
+const FIRST, SECOND = 7
+
+main {
+  a = anim
+  a = cntX
+  a = cntY
+  a = SECOND
+  return
+}

@@ -1,0 +1,9 @@
+# What K816 compiles this fixture to today, assembled with ca65 and
+# linked with `../../legacy-stub.cfg`.  Sixteen bytes per line, load
+# address in the left column.
+#
+# This is K816's own output, not the legacy compiler's: `fixture.txt`
+# says where the two differ and why.
+
+origin 0000
+0000  A9 07 85 10 85 11 64 12 64 13 A9 01 60

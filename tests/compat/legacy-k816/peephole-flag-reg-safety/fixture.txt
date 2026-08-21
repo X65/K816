@@ -1,0 +1,18 @@
+row       optimizer-dead-flag-write
+config    legacy-stub.cfg
+compare   bytes
+units     input.k65
+
+Duplicate flag writes collapse; opposite ones do not; memory reads and stack
+pulls survive an immediately overwritten register.
+
+K816 goes further than the legacy compiler did, and the bytes say so.  The
+legacy output kept `18 38 18 38` for the six `clc`/`sec` lines and kept
+`A9 02`, `A2 04` and `A9 03`; K816 emits `38 A2 05 A5 20 68 A9 04 85 21 60` -
+one `sec`, because every earlier carry write is dead at the return, and one
+`ldx`, because `ldx #4`/`inx` are overwritten before anything reads X.  The
+reads (`lda mmio_like`) and the pull (`pla`) stay, which is the property the
+fixture was written to protect.
+
+The row is `backend-different`: the observable behaviour at the return is the
+same and the difference is which dead writes each optimizer proved dead.

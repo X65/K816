@@ -1,0 +1,12 @@
+row       k816-postfix-le
+config    legacy-stub.cfg
+compare   bytes
+units     input.k65
+
+`} <=` is a K816 extension - the original's `BranchOp` has no `<=`
+(`compiler.inc:304-319`) - and the legacy compiler warned that it expands to
+two branches.
+
+K816 emits `E8 90 FD F0 FB 60`: `inx`, `bcc` back to the loop, `beq` back to
+the loop.  Two branches, the same expansion the legacy warning described, and
+today no warning at all.  G8 adds it.

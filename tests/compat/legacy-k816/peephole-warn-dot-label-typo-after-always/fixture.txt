@@ -1,0 +1,14 @@
+row       k816-unreachable-warning
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0002
+
+`.exit` without its colon after `} always`: the legacy compiler recognised the
+shape and warned that a local label is missing its `:`.
+
+K816 reports `K816-E0002` - a parse error naming the missing `:` - at the same
+place, which is the better answer to the same question, and reaches it in the
+parser rather than in the optimizer.  `legacy-defective` in the other
+direction: the legacy compiler let a mistyped label reach the peephole pass at
+all.

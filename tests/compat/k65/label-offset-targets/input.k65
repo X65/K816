@@ -1,0 +1,23 @@
+// Oracle question: what bytes does a store into `label + offset` produce?
+//
+// `VarArg -> Ident + Number` is an assignment target for any identifier in the
+// original grammar (compiler.inc:281), so `.LT+1 = a` writes into the
+// instruction stream one byte past a code label - self-modifying code, which
+// K65 sources use for exactly that.  The question the golden answers is
+// whether the original said anything about it, or just emitted the store
+// (plans/06-compatibility.md decision 17).
+//
+// Three targets, one of each kind: a code label, a data label, and a
+// zero-page variable.
+
+var slot = 0x80
+data payload { 1 2 3 4 }
+
+main {
+.LT:
+  a = 1
+  .LT+1 = a
+  payload+2 = a
+  slot+1 = a
+  return
+}

@@ -1,0 +1,20 @@
+func main @a8 @i8 {
+    // Adjacent literal loads to the same register on distinct source
+    // lines should fold to just the last load. The previous loads are
+    // dead because each subsequent immediate write overwrites the
+    // register without reading it and refreshes N/Z.
+    lda #$01
+    lda #$02
+    lda #$03
+    lda #$05
+
+    ldx #$01
+    ldx #$02
+    ldx #$03
+    ldx #$05
+
+    ldy #$01
+    ldy #$02
+    ldy #$03
+    ldy #$05
+}

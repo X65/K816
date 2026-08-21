@@ -1,0 +1,65 @@
+row       number-eval-bracket
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+**Round half up, then wrap silently.**  The golden reads, byte for byte:
+
+    FF  [255]                       in range
+    2C  [300]                       past $FF - wrapped, no diagnostic
+    00  [65536]                     past $FFFF - wrapped
+    FF  [0 - 1]                     negative - wrapped
+    02  [2.4]     03  [2.5]     03  [2.6]
+    FE  [-2.4]    FE  [-2.5]    FD  [-2.6]
+    01  [0.5]     02  [1.5]     03  [2.5]     04  [3.5]
+    04  [7 / 2]
+    00  [16777217 - 16777216]
+    01  [16777216 + 1 - 16777216]
+    F9  [(0.1 + 0.2 - 0.3) * 1000000000]
+
+Reading them in order:
+
+  - **The rounding is `floor(v + 0.5)`**, not round-half-away-from-zero and not
+    round-half-to-even: `-2.5` becomes `-2` and `2.5`, `1.5`, `3.5` all round
+    upward.  `compiler_src.cpp:392` is the line, and it applies at every
+    integer boundary because every boundary goes through `doeval`.
+  - **A value outside the context's range is wrapped, silently.**  This is the
+    answer decision 4 said would be measured here, and it decides the
+    `EVAL_RANGE` row of the diagnostics table: the code is **not registered**.
+    K816 keeps its own range check - a bracket that produces 300 in a byte
+    context is refused, exactly as the literal `300` is - so the row is
+    `intentionally-changed` and the diagnostic already exists.
+  - **The arithmetic is double, but the literals and the result are single.**
+    `16777217` and `16777216` are the same number after `ParseFloat`
+    (`convert_parse.cpp:57` returns `float`), so their difference is zero; the
+    same sum written inside one expression is one, because `EvalAny::value_f`
+    is a `double`; and `(0.1 + 0.2 - 0.3)` is nonzero, which single precision
+    would not give.  `Eval_Exec` then narrows to `float` before the rounding
+    (`compiler_eval.cpp:576`), which is why `[8388609]` - one past the last
+    integer a `float` holds exactly - comes out as `8388610`.
+
+So the rule G4 implements at every boundary is one function:
+
+    i64( floor( f32( value_computed_in_f64 ) + 0.5f32 ) )
+
+and then the context's own width and range check, unchanged.  Decision 4's
+"values are `f64`" is right about the arithmetic and wrong about the ends, and
+G4 corrects it.

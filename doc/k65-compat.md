@@ -26,14 +26,34 @@ note: the syntax is reserved for K65 compatibility
 help: use `...` temporarily, or follow implementation status at <docs URL>
 ```
 
-The compatibility work should have its own manifest:
+The compatibility work should have its own manifest. It has one:
+[`plans/compat-manifest.md`](../plans/compat-manifest.md), a row per rule of
+the original compiler's grammar and a row per K816 construct that is not one,
+each with a status, the fixture that proves it, and — where the status is not
+`compatible` — the reason. `tests/compat.rs` reads it.
 
-| Status                 | Meaning                                    |
-| ---------------------- | ------------------------------------------ |
-| Compatible             | Implemented with original K65 semantics    |
-| Reserved               | Recognized as K65, but not implemented yet |
-| K816 extension         | New syntax that cannot conflict with K65   |
-| Intentional difference | Exceptional, documented, and ideally gated |
+Its statuses are the master plan's four plus the one this document contributed,
+and `Reserved` is gone (`plans/06-compatibility.md` decision 1). The master
+plan wins by `plans/implementation.md` §2, so its four stay as it spells them;
+`--strict-k65` cannot be implemented without knowing which constructs are
+extensions, and that column existed only here.
+
+| Status | Meaning |
+| --- | --- |
+| `compatible` | Implemented with the original's semantics; the oracle and K816 agree at the bytes, or at the instruction sequence where layout differs. |
+| `intentionally-changed` | K816 does something else on purpose, the difference is documented, and `--strict-k65` reports it. |
+| `legacy-defective` | The original (or the legacy K816) did something its own documentation contradicts; K816 does what the documentation says, and the row says what the old behaviour was. |
+| `backend-different` | Same behaviour, different bytes or layout, because ca65/ld65 own encoding and placement. Compared at the instruction sequence. |
+| `K816-extension` | Not in the original grammar. `--strict-k65` rejects it. |
+
+`Reserved` is not carried over, because it names the absence of a decision
+rather than a decision. The manifest spells that `open` and names the task that
+closes it, and no `open` row is allowed to survive the sub-plan.
+
+This document is itself part of the authority chain now
+(`plans/implementation.md` §2, rule 4): it is the only one that says what
+compatibility *means*, and the manifest is its inventory rather than a rival to
+it.
 
 I would also provide `--strict-k65`, but not make it a separate compiler architecture. Normal K816 mode accepts the whole superset; strict mode merely rejects K816 extensions so portable K65 programs can be checked.
 
@@ -44,6 +64,12 @@ Before the C rewrite progresses much further, freeze a reference snapshot of the
 * Programs compiled by both implementations.
 * Negative cases and parser edge cases.
 * Real `.k65` sources, including current K816 sources.
+
+That corpus is `tests/compat/`, in the three sets its `README.md` describes,
+and the original compiler is its behaviour oracle. What is frozen is the
+original's *output*: `tests/compat/oracle.sh` runs it and commits the bytes
+beside the fixture with the invocation that produced them, so provenance is
+recorded and `cargo test` does not depend on a binary outside the tree.
 
 The test hierarchy should distinguish:
 

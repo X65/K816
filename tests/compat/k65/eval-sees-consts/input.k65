@@ -1,0 +1,24 @@
+// Oracle question: does the original evaluator see compiler `const` names?
+//
+// plans/06-compatibility.md decision 4 left it open, and the answer decides
+// whether K816 letting one bracket read a `const` is compatibility or an
+// extension.  Three readings are asked at once: a const, a const folded with
+// another const, and a data label - the third because `getevalvar` treats a
+// label as a *section* value, which is what makes `index` below work.
+
+const FLAG_A = 0x30
+const FLAG_B = 0x0C
+
+data tab { 10 20 30 40 }
+
+data answers {
+  [ FLAG_A ]                // a const alone
+  [ FLAG_A | FLAG_B ]       // two consts folded
+  [ index(tab, 2) ]         // a data label read as a section
+}
+
+main {
+  a = answers
+  a = [ FLAG_B ]            // and a bracket in operand position
+  return
+}

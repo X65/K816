@@ -1,0 +1,24 @@
+row       optimizer-branch-to-next-label
+config    legacy-stub.cfg
+compare   bytes
+units     input.k65
+
+The zero flag a branch shorthand reads must survive the store that follows the
+load that set it.
+
+Two differences from the legacy bytes, and both are worth keeping in view:
+
+  - K816 emits `A9 00 64 10` where the legacy compiler emitted `A9 00 85 10`.
+    Both are correct - the branch reads the Z the `lda #0` set, and neither
+    store writes flags.
+  - The `{ a = 2 }` body is empty in K816's output, because `a = 2` is dead:
+    the next statement loads A again.  What is left is `D0 00` - a branch whose
+    target is the next instruction, which is exactly the shape sub-plan G's
+    **pass 9** removes (decision 18).  This fixture is that pass's witness in
+    the imported corpus, and its bytes are expected to lose those two when G8
+    lands.
+
+K816 also does *not* rewrite the second zero-store run to STZ where the legacy
+compiler did (`85 12 85 11` against `64 12 64 11`).  That is a missed
+rewrite, not a wrong one, and it is recorded rather than fixed here: the
+optimizer is sub-plan F's and G8 is the only task that touches it.

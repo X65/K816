@@ -1,0 +1,8 @@
+const FOO = 42
+
+data SOME {
+    [( unbalanced]
+}
+
+func main {
+}

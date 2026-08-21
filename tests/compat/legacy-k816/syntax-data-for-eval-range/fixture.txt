@@ -1,0 +1,12 @@
+row       data-for-eval
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0201
+expect    K816-E0101
+
+A `for ... eval` range whose bounds come from a top-level `[ FACTOR = 3 ]`
+block the body reads.
+
+Top-level evaluator blocks and the environment they share with brackets are
+G4's; today the block is `K816-E0201` and `FACTOR` is `K816-E0101`.

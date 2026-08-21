@@ -1,6 +1,6 @@
 # K816 Rust redesign
 
-This is a plan for redesigning /home/smoku/devel/X65/k816 compiler into a cc65 toolchain member.
+This is a plan for redesigning the legacy K816 compiler into a cc65 toolchain member.
 
 ## 1. Product boundary
 

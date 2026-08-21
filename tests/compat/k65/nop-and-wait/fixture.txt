@@ -1,0 +1,35 @@
+row       instr-nop-wait
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+expect    K816-E0001
+
+**`* N` waits N *cycles*, and it spends an odd one on an illegal opcode.**  The
+golden is
+
+    EA           *          one NOP, two cycles
+    04 80 EA     * 5        NOP $80 (three cycles) then NOP (two)
+    EA EA EA     * 6        three NOPs
+    04 80        %          NOP $80 - three cycles, not BRK
+    B8           o-         CLV
+    68 48 28 08  a?? a!! z?? z!!
+
+`opnop` (`compiler_src.cpp:540`) refuses a negative wait, refuses `* 1` as
+unrealizable, refuses more than 256, and spends an odd cycle through
+`NOP $80` - the 6502's undocumented three-cycle `NOP zp`, **opcode `$04`**.
+
+That last byte is the whole argument for decision 11.  On the 65816 `$04` is
+`TSB dp`, a real instruction that reads and writes memory, so the original's
+odd-cycle wait is not merely different on this target - it cannot be
+reproduced.  Compatibility here is not cheap, it is impossible, so K816 keeps
+its own meaning for `* N` and `%` (`doc/syntax-reference.md`: N NOPs, and
+`BRK`), `--strict-k65` warns, and the row is `intentionally-changed` with this
+golden as its evidence.
+
+`o-` is the other half of the fixture and needs no argument: `Flag -> o` is the
+original's spelling of the overflow flag (`compiler.inc:259-260`) and `B8` is
+`CLV`, so decision 14's alias is `compatible`.  Its opposite is not: `o+`
+assembles to `SEv`, which does not exist, and the original compiler dies
+without a diagnostic.  That is a `legacy-defective` row, and K816 refusing
+`o+` is the right behaviour rather than a compatibility break.

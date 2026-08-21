@@ -1,0 +1,22 @@
+row       ppifnumber-condition
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+Preprocessor regions at statement and data-entry level, with `#if !0` among
+the conditions.
+
+Eight diagnostics, and the first is the interesting one: `K816-E0001` on `!0`,
+because B's grammar makes the condition a K65 `_expression` and K65 has no
+prefix `!`.  The original's condition language is its own four-form
+non-terminal - a number, a name, a negation, or an evaluator bracket through
+`Number` (`compiler.inc:23-25`) - which is decision 9, and G1 gives it the
+`!`.

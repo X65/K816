@@ -1,0 +1,34 @@
+// Oracle question: what do the evaluator's statements do, and how far does
+// `evalfunc` go?
+//
+// `if`/`else`, `while` and `{ }` blocks are `EvalInstr` in the original
+// grammar (compiler.inc:365-367) and `evalfunc` is a top-level element
+// (compiler.inc:465-466); decision 5 rules all of them cheap and lands them in
+// G4.  The golden is what "the same answers" means there.
+//
+// Recursion is deliberately absent: it is measured separately, because in the
+// original a function that calls itself resolves to evaluator function *zero*
+// and the compiler either returns another function's answer or dies on a
+// stack underrun.  The manifest row carries that reading; a fixture cannot,
+// because there is no golden to write.
+
+[ n = 0 ]
+[ while n < 5 { n = n + 1 } ]
+[ if n == 5 m = 100 else m = 200 ]
+
+evalfunc dbl(q) [ q * 2 ]
+evalfunc add(p, q) [ p + q ]
+
+data answers {
+  [ n ]
+  [ m ]
+  [ dbl(21) ]
+  [ add(3, 4) ]
+  [ add(add(1, 2), 5) ]
+  [ dbl(dbl(3)) ]
+}
+
+main {
+  a = answers
+  return
+}

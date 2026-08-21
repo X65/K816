@@ -1,0 +1,14 @@
+row       data-image-tiles
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-K65-0001
+expect    K816-K65-0001
+expect    K816-E0201
+
+`image` with `tiles` and `colormode` inside a data block, and `binary` beside
+it.
+
+`image` is refused (`K816-K65-0001`, twice) and `binary` is deferred
+(`K816-E0201`) today.  Decision 7 makes the first a permanent refusal with a
+help that names external conversion, and G6 turns the second into `.incbin`.

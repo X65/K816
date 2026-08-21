@@ -1,0 +1,19 @@
+row       k816-far-function
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-W0125
+expect    K816-E0104
+
+A far function with no width annotation, plus the branch-to-next-label and
+tail-call shapes.
+
+The legacy compiler's whole point here was the tail-call rewrite - `jsr` +
+`rts` becoming `jmp`, `jsl` + `rtl` becoming `jml` - which sub-plan F declined
+(F decision 17) and G leaves declined (decision 19).  K816 stops earlier: a
+`far func` needs a width annotation it does not have.
+
+The three branch-to-next-label shapes at the top of `main` are pass 9's
+positive cases, and they are unreachable behind the error today.  When G8
+lands, this fixture's expectation moves from a diagnostic to bytes, and the
+row for the tail call stays `intentionally-changed`.

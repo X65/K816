@@ -1,0 +1,12 @@
+row       k816-zero-store-stz
+config    legacy-stub.cfg
+compare   bytes
+units     input.k65
+
+A zero store becomes STZ only where the accumulator's value is not wanted
+afterwards.
+
+The legacy compiler kept `A9 00 85 12` before the `tax`, reasoning that A is
+live.  K816 emits `A9 00 64 12 AA`: it keeps the `lda #0` the transfer needs
+and still uses STZ for the store, because STZ does not disturb A.  Same length,
+same architectural state, a different route - `backend-different`.

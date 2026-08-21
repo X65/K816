@@ -1,0 +1,4 @@
+image
+func main @a8 @i8 {
+    a=0
+}

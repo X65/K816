@@ -1,0 +1,29 @@
+row       vararg-label-offset
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A store into `label + offset` is just a store, and the original says nothing
+about it.**  The golden's `main` is
+
+    A9 01        lda #1
+    8D 08 20     sta .LT+1        <- into its own instruction stream
+    8D 05 20     sta payload+2
+    85 81        sta slot+1
+
+which is decision 17 measured: no diagnostic, no comment in the listing, and
+the local label `.LT` mangled to `__local1_LT`.
+
+K816 compiles this fixture cleanly today and emits the same three stores in the
+same order.  One difference, recorded rather than fixed here: K816 assembles
+`slot+1` as `a:slot + $01` where the original used zero page (`85 81`), even
+though it does choose direct page for `slot` itself.  The offset form loses
+the direct-page decision.  That is G2's to settle - decision 17 says "plain
+store, no diagnostic" and says nothing about the addressing mode - so the
+manifest row stays `open` until then.
+
+The other difference is layout, and it is not a difference in this compiler:
+the original's Atari XL linker prepends a `__start` section at `$2000` holding
+`JMP main`, so every address in its golden is three higher than K816's.  A
+startup stub is the build's, not the compiler's (`src/abi.rs`), so that part of
+the row is `backend-different` by construction.

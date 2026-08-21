@@ -1,0 +1,57 @@
+row       evalinstr-statements
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+**`if`/`else`, `while`, blocks and `evalfunc` all work, and recursion does
+not.**  The golden is `05 64 2A 07 08 0C`: the `while` counted to five, the
+`if` took its then-branch, `dbl(21)` is 42, `add(3, 4)` is 7, `add(add(1, 2),
+5)` is 8, and `dbl(dbl(3))` is 12.
+
+Decision 5 rules the statements cheap and this measures what "the same answers"
+means for them.  Two readings the plan did not have:
+
+  - **`evalfunc` has no frame.**  `Eval_FixLocals` (`compiler_eval.cpp:230`)
+    renames each parameter to a `__local_N` slot allocated once, at definition
+    time, and the call sequence stores into those slots.  Nesting works, as the
+    golden shows, because an inner call finishes before the outer one stores.
+
+  - **A function that calls itself calls evaluator function *zero*.**
+    `Eval_AddFunction` inserts the map entry before compiling the body, so a
+    self-call resolves - to an entry whose `user_id` has not been assigned yet.
+    The result is silent nonsense or a crash, depending on what function zero
+    is: with `evalfunc dbl(q)` defined first, `evalfunc fact(k) [ if k <= 1 1
+    else fact(k-1) * k ]` returns `dbl(4) * 5`, which is 40 rather than 120;
+    with a two-argument function first, the same shape underruns the stack and
+    the compiler dies.
+
+    So recursion in the original is not "bounded", it is *broken*, and decision
+    5's step budget is not what stands between a source and a hang.  K816
+    implementing recursion properly is a `K816-extension` row with no
+    compatibility cost - no working K65 program can contain a recursive
+    `evalfunc` - and the budget still earns its place as the bound on `while`.
+
+The library the statements are written against is `compiler.inc:465-471` and
+`src/gen/compiler_evops.inl`, and it is one name short of what decision 5
+lists: **there is no `abs`**.  The original's functions are `max min floor ceil
+round frac sin cos rnd clamp color sqrt pow acos asin index addbyte size print
+error`, and `abs(x)` ends the build with "Unknown evaluator function".

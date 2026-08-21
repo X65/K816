@@ -1,0 +1,23 @@
+// Oracle question: what do `*`, `* N` and `%` actually emit?
+//
+// doc/syntax-reference.md says `* 5` is "5 NOPs" and `%` is `BRK`; the
+// original's `opnop` counts *cycles* and spends an odd one through a
+// three-cycle `NOP $80` (compiler.inc:151-153, compiler_src.cpp:540).  The
+// golden settles it, and it is the evidence behind decision 11 - the one
+// place K816 keeps its own meaning for a K65 spelling.
+//
+// `o-` rides along because `Flag -> o` is the original's spelling of the
+// overflow flag and ours is `v` (decision 14).
+
+main {
+  *
+  * 5
+  * 6
+  %
+  o-
+  a ??
+  a !!
+  z??
+  z!!
+  return
+}

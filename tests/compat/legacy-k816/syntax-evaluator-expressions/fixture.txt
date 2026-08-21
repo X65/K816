@@ -1,0 +1,18 @@
+row       evexpr-operators
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+The evaluator's operator set, in four brackets.
+
+Four `K816-E0201`.  The operator table lands in G4; what it contains is
+`compiler.inc:371-449` and what each operator *does* is
+`src/compiler_eval.cpp`'s `Eval_RunVM`, including the two places the plan's
+reading was wrong: `%` is a non-negative modulo (`fmod(fmod(a,b)+b,b)`), and
+there is no `||` operator at all - the original's grammar spells both logical
+operators `&&` (`compiler.inc:390,393`), so a source containing `||` does not
+compile.

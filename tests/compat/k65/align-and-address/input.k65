@@ -1,0 +1,33 @@
+// Oracle questions: is `align` accepted at the start of a code section, and
+// what does `align N + M` place?
+//
+// `Align` sits between `SecStart` and the body of `func`, `naked`, `main` and
+// `data` in the original grammar (compiler.inc:121-136), which the modern
+// documents never say.  `align N + M` is a boundary *and* an offset, and the
+// golden's addresses are what decides whether that means "the section starts
+// at a multiple of N plus M" or something else.
+//
+// K816 reads `align 256 + 8` as `align 264` today, which is why this fixture
+// exists (plans/06-compatibility.md decision 15).
+
+func aligned {
+  align 256 + 8
+  a = 1
+}
+
+func addressed {
+  address 0x2040
+  a = 2
+}
+
+data offset_table {
+  align 16 + 4
+  1 2 3
+}
+
+main {
+  call aligned
+  call addressed
+  a = offset_table
+  return
+}

@@ -1,0 +1,14 @@
+row       k816-unreachable-warning
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0104
+
+Code between `} always` and the next label is unreachable, and the legacy
+compiler warned once per dropped instruction.
+
+K816 reports `K816-E0104` instead - and the difference is not about the
+warning.  The legacy source declares no segment and K816 needs one; the
+warning question is behind that error.  G decision 18 keeps the warnings
+declined either way: the optimizer reports no diagnostic (F decision 20) and
+`emit-ir --after-opt --explain` answers the question on demand.

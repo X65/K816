@@ -1,0 +1,27 @@
+// Oracle question: at an integer boundary, does the original round or
+// truncate, and is a value outside the context's range wrapped or refused?
+//
+// plans/06-compatibility.md decision 4 says the answer is measured here and
+// recorded in the manifest rather than guessed.  Every entry below is one
+// byte, so the whole numeric model reads off the golden:
+//
+//   .5 up or to even, negatives, and what happens past $FF.
+
+data boundary {
+  [ 255 ]           // in range
+  [ 300 ]           // past $FF
+  [ 65536 ]         // past $FFFF
+  [ 0 - 1 ]         // negative
+  [ 2.4 ] [ 2.5 ] [ 2.6 ]
+  [ 0 - 2.4 ] [ 0 - 2.5 ] [ 0 - 2.6 ]
+  [ 0.5 ] [ 1.5 ] [ 2.5 ] [ 3.5 ]     // .5 four times: up, or to even?
+  [ 7 / 2 ]                            // 3.5 arrived at by division
+  [ 16777217 - 16777216 ]              // 2^24+1 and 2^24 as two literals
+  [ 16777216 + 1 - 16777216 ]          // the same sum inside one expression
+  [ ( 0.1 + 0.2 - 0.3 ) * 1000000000 ] // is the arithmetic single or double?
+}
+
+main {
+  a = boundary
+  return
+}

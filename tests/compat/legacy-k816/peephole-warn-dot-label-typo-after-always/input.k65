@@ -1,0 +1,16 @@
+// The original bug-report scenario: `.exit` (missing trailing ':') after
+// `} always` becomes `Op::Instruction { mnemonic: ".exit", operand: None }`,
+// which `prune_unreachable_instructions` then drops as dead code — before
+// `emit_object`'s `EncodeError::UnknownMnemonic` enrichment can see it.
+// The peephole pass detects the dot-prefix-no-operand shape and emits the
+// label-declaration-style warning so the user gets the same advice they
+// would get for the typo in normal straight-line code. A trailing `nop`
+// produces the generic flavour, demonstrating both diagnostics coexist.
+
+func test @a8 @i8 {
+    {
+        lda #1
+    } always
+.exit
+    nop
+}

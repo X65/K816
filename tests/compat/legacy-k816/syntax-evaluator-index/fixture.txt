@@ -1,0 +1,14 @@
+row       evelem-index
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+`index` and the `[ ]` indexing operator.
+
+Four `K816-E0201`.  The oracle answer that matters for G4 is in
+`tests/compat/k65/eval-forms/`: what is indexed is a **section** - a data
+label - not an array value, and `tab[i]` is exactly `index(tab, i)`.

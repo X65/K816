@@ -1,0 +1,19 @@
+row       evelem-index
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+`arr = [10, 20, 30]` followed by `arr[1]`.
+
+The legacy K816 read this as an array literal.  The original has no array
+literal: `Number -> [ EvalCode ]` and `EvalCode`'s comma is the *pop* operator
+(`compiler.inc:328,359-360`, opcode 1), so `[10, 20, 30]` is 30, and the value
+`arr[i]` indexes has to be a section.  A row where importing the legacy
+fixture as truth would have enshrined a construct K65 never had, which is what
+decision 2 is for.
+
+Today: one `K816-E0001` on the literal and three `K816-E0201`.

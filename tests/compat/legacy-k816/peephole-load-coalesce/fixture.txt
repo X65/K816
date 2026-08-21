@@ -1,0 +1,9 @@
+row       optimizer-dead-register-write
+config    legacy-stub.cfg
+compare   bytes
+units     input.k65
+
+A second identical load is redundant when only stores sit between the two, and
+a run of zero stores becomes STZ.
+
+Identical to the legacy bytes after the `sep #$30` prologue.

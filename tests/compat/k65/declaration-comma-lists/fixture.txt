@@ -1,0 +1,36 @@
+row       var-declaration
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0001
+expect    K816-E0001
+expect    K816-E0101
+expect    K816-E0101
+expect    K816-E0101
+expect    K816-E0101
+
+**`?` prints the variable's address at compile time and emits nothing.**  The
+golden is `A5 80 A5 81 A5 82 A9 07` - three zero-page loads and an immediate -
+and the compiler prints one extra line while building it:
+
+    Variable 'cntY' located at $82
+
+`Var -> Ident Verbose` (`compiler.inc:36-41`) passes the marker through to
+`var(...)` as its `verbose` argument, and the only thing it reaches is that
+`printf` (`compiler_src.cpp:446`).  K816 accepting and ignoring it (decision
+13) moves no byte, which is what the golden had to show.
+
+Two more things the golden settles:
+
+  - **`var NAME = N` gives an address, not an initial value.**  `anim` is at
+    `$80` because the declaration says so, and `cntX` and `cntY` follow it at
+    `$81` and `$82` - the allocator puts each next variable right after the
+    previous one.  The three loads are `A5 80`, `A5 81`, `A5 82`.
+  - **A `const` with no value is legal until it is read.**  `const FIRST,
+    SECOND = 7` declares both; `FIRST` is only an error at a use site
+    ("Constant 'FIRST' doesn't have value assigned").
+
+Not asked here, and worth knowing before writing more fixtures: `A`, `X`, `Y`,
+`S` and the flag letters `c C d D i I o O` are *tokens*, not identifiers
+(`compiler.inc:244-260`), so `const A` is a syntax error in the original, and
+so is `var v`.

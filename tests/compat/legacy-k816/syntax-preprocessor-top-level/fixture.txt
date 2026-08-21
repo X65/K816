@@ -1,0 +1,15 @@
+row       topelem-preprocessor
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+expect    K816-E0201
+
+`#if` / `#else` / `#endif` around top-level elements.
+
+Four `K816-E0201`.  The legacy compiler never evaluated a directive - it warned
+and skipped the line, parsing the body either way - so it is not an oracle for
+anything here; the original is (`compiler.inc:7-25`, `pp_if` and friends in
+`compiler_src.cpp:999`), and G5 implements what it does.

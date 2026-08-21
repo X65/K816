@@ -1,0 +1,16 @@
+row       number-eval-bracket
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    K816-E0002
+expect    K816-E0201
+
+An evaluator bracket the legacy compiler could not parse, which it then
+re-parsed as a K65 const expression - the "dual parse" of
+`doc/syntax-reference.md`.
+
+Decision 4 does not reproduce it: a bracket is an evaluator expression and only
+that, and the fallback existed because the legacy evaluator could not see
+`const` names.  The original's evaluator *can* -
+`tests/compat/k65/eval-sees-consts/` measures it - so the workaround has
+nothing left to rescue.

@@ -1,0 +1,50 @@
+// Sub-plan F fixture: the zero-store peephole.
+//
+// `doc/syntax-reference.md` "Zero-Store Shortcut" specifies it exactly: "the
+// compiler's peephole rewrites each supported `STA` to `STZ` and drops the
+// leading `LDA #0` when `A` is dead afterwards". Both halves are per
+// *operation*: `STZ` has four addressing modes and `STA` has fourteen, so a
+// chain may mix them, and the load dies separately — if it dies at all.
+//
+// `mem = 0` on its own is not this pass's business. That lowers straight to
+// `STZ` with no accumulator traffic at all, which is sub-plan E's, and the
+// document says so in the same section.
+
+var zp    = $10
+var abs1  = $0200
+var ptr   = $12
+var after = $0202
+
+// The four modes `STZ` has. Every store is rewritten, and the load goes with
+// them: the `lda #$01` below overwrites the accumulator and the flags it set.
+func every_stz_mode @a8 @i8 {
+    zp     = a = 0
+    abs1   = a = 0
+    zp,x   = a = 0
+    abs1,x = a = 0
+    a = #$01
+    after = a
+}
+
+// Two modes `STZ` lacks. There is no `stz abs,y` and no `stz [dp]`, so both
+// stores stay as they are — and the load stays with them, because they still
+// read the accumulator. The long-indirect form is written with the raw
+// mnemonic, which is the only spelling that reaches it
+// (`doc/syntax-reference.md`, "`[expr]` — indirect-long").
+func modes_stz_lacks @a8 @i8 {
+    a = #$00
+    abs1,y = a
+    sta [ptr]
+    a = #$01
+    after = a
+}
+
+// The same chain at a function's end. The stores are still rewritten, and the
+// `lda #0` still **stays**: everything is live at a function exit, the
+// accumulator and the N and Z it wrote included, and nothing in the contract
+// syntax could have said otherwise. This is why the rewrite completes less
+// often here than the document's phrasing suggests.
+func at_the_end @a8 @i8 {
+    zp   = a = 0
+    abs1 = a = 0
+}

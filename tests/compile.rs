@@ -2247,10 +2247,27 @@ fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
             "clc",            // repeated_clear
             "lda     #$07",   // repeated_load
             "ldx     #$0000", // lanes_agree, where sixteen known bits moved
+            // …and the four stores of a known-zero accumulator, which the
+            // zero-store peephole rewrites on its way past.
+            "sta     a:CELL,x",
+            "sta     a:CELL,x",
+            "sta     a:CELL,x",
+            "sta     a:CELL,x",
         ],
         "{removed:?}"
     );
-    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(
+        added,
+        vec![
+            "stz     a:CELL,x",
+            "stz     a:CELL,x",
+            "stz     a:CELL,x",
+            "stz     a:CELL,x",
+        ],
+        "{added:?}"
+    );
+    // `STZ` is the same length as `STA`, so only the three deletions cost
+    // bytes: a one-byte `clc`, a two-byte load, and a three-byte one.
     assert_eq!(bytes, 1 + 2 + 3);
 }
 
@@ -2288,4 +2305,54 @@ fn the_optimized_subscripts_fixture_drops_the_loads_nothing_stores() {
     // Six two-byte loads and three three-byte ones: the 16-bit `#$0008` and
     // the two link-time `.loword` operands, which ca65 sizes as addresses.
     assert_eq!(bytes, 6 * 2 + 3 * 3);
+}
+
+/// The zero-store fixture, at the bytes.
+///
+/// `STZ` and `STA` are the same length in every mode both have, so the six
+/// rewrites cost nothing; the two bytes are the one `lda #$00` the rewrite
+/// orphaned. The `lda #$00` at the function's end stays, and so do the two
+/// stores in modes `STZ` lacks.
+#[test]
+fn the_zero_store_fixture_rewrites_per_store_and_drops_one_load() {
+    let (removed, added, bytes) = optimizer_effect_with(
+        "opt-zero-store",
+        "opt-zero-store.k816",
+        include_str!("golden/opt-zero-store.k816"),
+        "vars",
+    );
+    assert_eq!(
+        removed,
+        vec![
+            // Four identical loads the coalescing pass had already collapsed
+            // to one, plus the one this rewrite orphaned.
+            "lda     #$00",
+            "lda     #$00",
+            "lda     #$00",
+            "lda     #$00",
+            "lda     #$00",
+            // …and the six stores that became `stz`.
+            "sta     a:abs1",
+            "sta     a:abs1",
+            "sta     a:abs1,x",
+            "sta     z:zp",
+            "sta     z:zp",
+            "sta     z:zp,x",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(
+        added,
+        vec![
+            "stz     a:abs1",
+            "stz     a:abs1",
+            "stz     a:abs1,x",
+            "stz     z:zp",
+            "stz     z:zp",
+            "stz     z:zp,x",
+        ],
+        "{added:?}"
+    );
+    // `STZ` is the same length as `STA`, so only the five loads cost bytes.
+    assert_eq!(bytes, 5 * 2);
 }

@@ -268,6 +268,7 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
         remove_overwritten_register_values(&unit, &mut function.ops, &mut log);
         coalesce_known_loads(&unit, &mut function.ops, &mut log);
         collapse_redundant_flags(&unit, &mut function.ops, &mut log);
+        rewrite_zero_stores(&unit, &mut function.ops, &mut log);
     }
     log
 }
@@ -2105,4 +2106,126 @@ fn collapse_redundant_flags(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optim
     for index in redundant.into_iter().rev() {
         ops.remove(index);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 6 — rewrite safe zero stores
+// ---------------------------------------------------------------------------
+
+/// Rewrites `sta m` to `stz m` where A is known zero, and then drops the
+/// `lda #0` the rewrite orphaned.
+///
+/// `doc/syntax-reference.md` "Zero-Store Shortcut" specifies it exactly: "the
+/// compiler's peephole rewrites each supported `STA` to `STZ` and drops the
+/// leading `LDA #0` when `A` is dead afterwards". So the rewrite is *per
+/// store* — `STZ` exists in four modes and `STA` in fourteen, and a chain may
+/// mix them — and the load dies separately, if it dies at all.
+///
+/// The load's liveness is checked here rather than left to the dead-write
+/// pass, because that pass runs earlier in the fixed order and will not see
+/// the opportunity this one just created. That is decision 18's rule applied
+/// to its one real instance.
+fn rewrite_zero_stores(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    let flow = Flow::build(ops, unit);
+    let values = track_values(ops, &flow);
+    let rewritten: Vec<usize> = (0..ops.len())
+        .filter(|index| zero_store(ops, &flow, &values, *index).is_some())
+        .collect();
+    for index in &rewritten {
+        let before = ops[*index].clone();
+        let after = zero_store(ops, &flow, &values, *index).expect("just checked");
+        ops[*index] = after.clone();
+        log.changes.push(Change {
+            pass: Pass::ZeroStores,
+            site: Site {
+                function: unit.function,
+                index: *index,
+            },
+            before: vec![before],
+            after: vec![after],
+            witness: None,
+            justification: String::from(
+                "the accumulator is known zero in every lane this store writes, and `STZ` \
+                 has this mode: same length, same stored bytes, and it stops reading A",
+            ),
+        });
+    }
+    if rewritten.is_empty() {
+        return;
+    }
+
+    // The rewrite is what may have made the load dead, so the question is
+    // asked again over the stream the rewrite left behind.
+    let flow = Flow::build(ops, unit);
+    let orphaned: Vec<usize> = (0..ops.len())
+        .filter(|index| flow.doomed[*index] && loads_zero(&ops[*index]))
+        .collect();
+    for index in &orphaned {
+        let removed = ops[*index].clone();
+        log.changes.push(Change {
+            pass: Pass::ZeroStores,
+            site: Site {
+                function: unit.function,
+                index: *index,
+            },
+            before: vec![removed],
+            after: Vec::new(),
+            witness: None,
+            justification: String::from(
+                "nothing reads the accumulator or the N and Z it wrote, now that every \
+                 store it fed is an `STZ`",
+            ),
+        });
+    }
+    for index in orphaned.into_iter().rev() {
+        ops.remove(index);
+    }
+}
+
+/// The `stz` an `sta` becomes, when it may.
+fn zero_store(ops: &[KOp], flow: &Flow, values: &[Tracked], index: usize) -> Option<KOp> {
+    if flow.frozen[index] || flow.doomed[index] || !flow.reachable[flow.block_of[index]] {
+        return None;
+    }
+    let KOpKind::Instruction(instruction) = &ops[index].kind else {
+        return None;
+    };
+    if instruction.mnemonic != Mnemonic::Sta {
+        return None;
+    }
+    // The ISA table decides which modes exist, rather than a list repeated
+    // here: `STZ` has direct, direct indexed by X, absolute, and absolute
+    // indexed by X, and nothing else — no long, no indexed-Y, no indirect, no
+    // stack-relative.
+    crate::isa::spec(Mnemonic::Stz, instruction.mode)?;
+
+    // Known zero in every lane the store writes. The store's width is the
+    // accumulator's, and F reads that off the claim in effect or not at all.
+    let state = &values[index];
+    let width = state.width(Axis::Accumulator)?;
+    let known = state.a?;
+    if known.value != 0 || !known.lanes.covers(Lanes::of(width)) {
+        return None;
+    }
+
+    let mut rewritten = ops[index].clone();
+    rewritten.kind = KOpKind::Instruction(crate::op::Instruction::new(
+        Mnemonic::Stz,
+        instruction.mode,
+        instruction.operand.clone(),
+    ));
+    Some(rewritten)
+}
+
+/// True when this operation is a `lda #0`.
+fn loads_zero(op: &KOp) -> bool {
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        return false;
+    };
+    instruction.mnemonic == Mnemonic::Lda
+        && instruction
+            .operand
+            .as_ref()
+            .and_then(Operand::immediate_value)
+            .is_some_and(|value| value.get() == 0)
 }

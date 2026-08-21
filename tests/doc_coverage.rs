@@ -943,6 +943,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "the_folding_fixture_merges_only_what_the_composed_transform_allows",
         ),
         (
+            "opt-zero-store.k816",
+            "the_zero_store_fixture_rewrites_per_store_and_drops_one_load",
+        ),
+        (
             "opt-values.k816",
             "the_value_fixture_coalesces_only_what_the_lanes_cover",
         ),

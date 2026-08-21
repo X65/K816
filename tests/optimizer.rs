@@ -589,14 +589,16 @@ fn a_transfer_propagates_only_when_the_source_covers_what_it_moves() {
     let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
     run(&mut program, &model, file);
 
+    // The stores became `stz`: the accumulator is known zero, which is the
+    // zero-store peephole doing its own job on the way past.
     assert_eq!(
         mnemonics(&program, &model, "lanes"),
         vec![
             Mnemonic::Lda,
             Mnemonic::Tax,
-            Mnemonic::Sta,
+            Mnemonic::Stz,
             Mnemonic::Ldx, // stays: A was known in the low byte only
-            Mnemonic::Sta,
+            Mnemonic::Stz,
             Mnemonic::Rts
         ]
     );
@@ -605,9 +607,9 @@ fn a_transfer_propagates_only_when_the_source_covers_what_it_moves() {
         vec![
             Mnemonic::Lda,
             Mnemonic::Tax,
-            Mnemonic::Sta,
+            Mnemonic::Stz,
             // the `ldx #$0000` is gone: sixteen known bits moved into sixteen
-            Mnemonic::Sta,
+            Mnemonic::Stz,
             Mnemonic::Rts
         ]
     );
@@ -671,5 +673,73 @@ fn a_flag_operation_that_would_change_nothing_is_collapsed() {
             Mnemonic::Sta,
             Mnemonic::Rts
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Zero stores (sub-plan F, task F5)
+// ---------------------------------------------------------------------------
+
+const ZERO_STORE: &str = include_str!("golden/opt-zero-store.k816");
+
+/// Each supported `STA` becomes `STZ`, and the leading `LDA #0` goes only
+/// where A and the N and Z it wrote are dead.
+#[test]
+fn a_zero_chain_becomes_stz_per_store_and_drops_its_load_separately() {
+    let (_, file, model, mut program) = lowered_as("opt-zero-store.k816", ZERO_STORE);
+    let log = run(&mut program, &model, file);
+
+    // Four modes `STZ` has: every store is rewritten, and the load goes.
+    assert_eq!(
+        mnemonics(&program, &model, "every_stz_mode"),
+        vec![
+            Mnemonic::Stz,
+            Mnemonic::Stz,
+            Mnemonic::Stz,
+            Mnemonic::Stz,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+
+    // Two modes it lacks: nothing moves, because the stores still read A.
+    assert_eq!(
+        mnemonics(&program, &model, "modes_stz_lacks"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Sta,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+
+    // The same chain at a function's end: the stores are still rewritten and
+    // the load **stays**. Everything is live at an exit, the accumulator and
+    // the N and Z it wrote included, which is why the rewrite completes less
+    // often here than `doc/syntax-reference.md`'s phrasing suggests.
+    assert_eq!(
+        mnemonics(&program, &model, "at_the_end"),
+        vec![Mnemonic::Lda, Mnemonic::Stz, Mnemonic::Stz, Mnemonic::Rts]
+    );
+
+    let zero_stores: Vec<_> = log.by_pass(Pass::ZeroStores).collect();
+    // Six rewrites and one removal.
+    assert_eq!(zero_stores.len(), 7);
+    assert_eq!(
+        zero_stores[0].justification,
+        "the accumulator is known zero in every lane this store writes, and `STZ` has this \
+         mode: same length, same stored bytes, and it stops reading A"
+    );
+    let dropped = zero_stores
+        .iter()
+        .find(|change| change.after.is_empty())
+        .expect("the load the rewrite orphaned");
+    assert_eq!(
+        dropped.justification,
+        "nothing reads the accumulator or the N and Z it wrote, now that every store it fed \
+         is an `STZ`"
     );
 }

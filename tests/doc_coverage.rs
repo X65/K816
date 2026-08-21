@@ -927,6 +927,14 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "every_declaration_axis_reserves_and_encodes_what_it_declares",
         ),
         (
+            "opt-barriers.k816",
+            "the_barrier_fixture_assembles_and_the_optimizer_changes_no_byte",
+        ),
+        (
+            "opt-liveout.k816",
+            "the_live_out_fixture_keeps_everything_a_return_could_hand_back",
+        ),
+        (
             "width-branch.k816",
             "a_skipped_mode_change_does_not_widen_the_immediate_after_the_label",
         ),

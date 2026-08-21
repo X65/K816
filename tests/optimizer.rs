@@ -20,9 +20,13 @@
 /*                                                                           */
 /*****************************************************************************/
 
-//! The slice's one optimization (master plan Phase 5): the overwritten
-//! `a = #0` is removed, with IR dumps before and after and the explicit
-//! effects justifying the removal.
+//! The fixed pass sequence, one test per pass per rewrite.
+//!
+//! Each test asserts the operation stream *before*, the stream *after*, and
+//! the `Change`'s recorded justification. Phase 9's first success criterion is
+//! exactly this: a test that asserts only the after-stream does not satisfy
+//! it, because it cannot tell a rewrite that was justified from one that
+//! happened to produce the same bytes.
 
 use k816::effects::{ControlEffect, FlagSet, MemoryEffect, RegisterSet};
 use k816::isa::Mnemonic;
@@ -45,15 +49,45 @@ fn first_function(program: &KProgram) -> &KFunction {
 }
 
 fn lowered(text: &str) -> (SourceMap, FileId, SemanticModel, KProgram) {
+    lowered_as("slice.k816", text)
+}
+
+fn lowered_as(name: &str, text: &str) -> (SourceMap, FileId, SemanticModel, KProgram) {
     let mut map = SourceMap::new();
-    let id = map.add_file("slice.k816", text);
+    let id = map.add_file(name, text);
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![]);
     let (model, diagnostics) = analyze_file(&parse.file);
-    assert_eq!(diagnostics, vec![]);
+    // Errors only: several fixtures earn a width or damage *warning* on
+    // purpose, and the warning is usually the claim the fixture is making.
+    assert_eq!(errors(&diagnostics), Vec::<String>::new());
     let (program, diagnostics) = lower(&parse.file, &model);
-    assert_eq!(diagnostics, vec![]);
+    assert_eq!(errors(&diagnostics), Vec::<String>::new());
     (map, id, model, program)
+}
+
+fn errors(diagnostics: &[k816::diagnostic::Diagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.is_error())
+        .map(|diagnostic| diagnostic.code.as_str().to_owned())
+        .collect()
+}
+
+/// The mnemonics of one named function's stream, for a test that cares which
+/// instructions survived and in what order.
+fn mnemonics(program: &KProgram, model: &SemanticModel, name: &str) -> Vec<Mnemonic> {
+    program
+        .functions()
+        .find(|function| model.symbols.name(function.symbol) == name)
+        .unwrap_or_else(|| panic!("no function named `{name}`"))
+        .ops
+        .iter()
+        .filter_map(|op| match &op.kind {
+            KOpKind::Instruction(instruction) => Some(instruction.mnemonic),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Runs the fixed pass sequence over one unit analyzed on its own.
@@ -250,4 +284,204 @@ fn native_and_hla_forms_optimize_identically() {
             .collect()
     };
     assert_eq!(kinds(&hla), kinds(&native));
+}
+
+// ---------------------------------------------------------------------------
+// The block view and its liveness (sub-plan F, task F1)
+// ---------------------------------------------------------------------------
+
+const BARRIERS: &str = include_str!("golden/opt-barriers.k816");
+const LIVEOUT: &str = include_str!("golden/opt-liveout.k816");
+
+/// The strongest form the barrier claim has.
+///
+/// Every other fixture asserts what changed; this one asserts that nothing
+/// did, and it asserts it as an **empty log** rather than as an expected
+/// output. An expected output passes when a pass removes an operation and
+/// another puts an equivalent one back; an empty log cannot.
+#[test]
+fn nothing_in_the_barrier_fixture_changes() {
+    let (_, file, model, mut program) = lowered_as("opt-barriers.k816", BARRIERS);
+    let before = program.clone();
+    let log = run(&mut program, &model, file);
+    assert!(
+        log.is_empty(),
+        "{:?}",
+        log.changes
+            .iter()
+            .map(|change| (change.pass, change.justification.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(program, before, "the stream itself is untouched");
+}
+
+/// A label is not a barrier once there is a successor relation.
+///
+/// The straight-line scan bailed at the first non-instruction operation and
+/// called it conservatism; it was really the absence of a successor relation.
+/// No path *from* `lda #$00` reads the accumulator before `lda #$01`
+/// overwrites it — arriving at `spot` from elsewhere means the write never ran
+/// — so the write is dead with the label there and without it.
+#[test]
+fn a_label_between_a_dead_write_and_its_overwriter_is_not_a_barrier() {
+    let with_label = "\
+var SCREEN = $0400
+
+func main @a8 @i8 {
+    lda #$00
+spot:
+    lda #$01
+    SCREEN = a
+}
+";
+    let (_, file, model, mut program) = lowered(with_label);
+    let log = run(&mut program, &model, file);
+    assert_eq!(log.changes.len(), 1);
+    assert_eq!(log.changes[0].pass, Pass::RemoveOverwritten);
+    assert_eq!(
+        mnemonics(&program, &model, "main"),
+        vec![Mnemonic::Lda, Mnemonic::Sta, Mnemonic::Rts]
+    );
+}
+
+/// A call returns, so everything after the first `jsr` is still reachable.
+///
+/// `ControlEffect::Call` is not `FallThrough`, so a splitter written from the
+/// leader rule alone ends a block at every call and gives it no successor —
+/// which makes the whole rest of the function look unreachable, in a program
+/// that still assembles. This asserts the edge directly, before the pass that
+/// would delete what a missing one hides.
+#[test]
+fn a_call_in_the_middle_of_a_function_does_not_end_the_graph() {
+    let source = "\
+var CELL = $0400
+
+func leaf @a8 @i8 {
+    nop
+}
+
+func caller @a8 @i8 {
+    lda #$01
+    call leaf
+    lda #$02
+    CELL = a
+}
+";
+    let (_, file, model, mut program) = lowered(source);
+    run(&mut program, &model, file);
+    // Nothing after the call was dropped, and `lda #$01` survived too: a call
+    // is a clobber and a dataflow barrier, so A is live before it.
+    assert_eq!(
+        mnemonics(&program, &model, "caller"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Jsr,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}
+
+/// Nothing is dead at a function exit, and a mid-function load with the same
+/// shape still goes.
+#[test]
+fn everything_is_live_at_every_exit() {
+    let (_, file, model, mut program) = lowered_as("opt-liveout.k816", LIVEOUT);
+    let log = run(&mut program, &model, file);
+
+    // The declared output survives, and so does the *undeclared* `ldy`: a
+    // caller reached through `call` may read Y, and the declaration does not
+    // forbid it.
+    assert_eq!(
+        mnemonics(&program, &model, "produce"),
+        vec![Mnemonic::Adc, Mnemonic::Ldy, Mnemonic::Rts]
+    );
+    // The trailing `clc` survives: no contract syntax could have declared the
+    // carry an output, so the carry is live at every exit.
+    assert_eq!(
+        mnemonics(&program, &model, "carry"),
+        vec![Mnemonic::Lda, Mnemonic::Sta, Mnemonic::Clc, Mnemonic::Rts]
+    );
+    // Both call spellings lower to the same `jsr` and are treated the same.
+    assert_eq!(
+        mnemonics(&program, &model, "caller"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Jsr,
+            Mnemonic::Sta,
+            Mnemonic::Sta,
+            Mnemonic::Lda,
+            Mnemonic::Jsr,
+            Mnemonic::Sta,
+            Mnemonic::Sta,
+            Mnemonic::Rts,
+        ]
+    );
+
+    // The one change in the whole file: the mid-function load.
+    assert_eq!(log.changes.len(), 1);
+    let change = &log.changes[0];
+    assert_eq!(model.symbols.name(change.site.function), "middle");
+    assert_eq!(
+        change.justification,
+        "writes A N Z, all overwritten by `lda #$08` before any read"
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "middle"),
+        vec![Mnemonic::Lda, Mnemonic::Sta, Mnemonic::Rts]
+    );
+}
+
+/// A branch that leaves immediately makes the write above it dead.
+///
+/// `width-branch.k816::skipped` loads the accumulator, branches away, and the
+/// target reloads it. No path from the first load reads A before the second
+/// overwrites it, so the first is dead — which the straight-line scan could
+/// not see, because the branch was a barrier and the label after it was
+/// another one.
+#[test]
+fn a_write_a_branch_leaves_behind_is_dead() {
+    let (_, file, model, mut program) = lowered_as(
+        "width-branch.k816",
+        include_str!("golden/width-branch.k816"),
+    );
+    let log = run(&mut program, &model, file);
+    assert_eq!(log.changes.len(), 1);
+    assert_eq!(model.symbols.name(log.changes[0].site.function), "skipped");
+    assert_eq!(
+        mnemonics(&program, &model, "skipped"),
+        vec![Mnemonic::Bra, Mnemonic::Rep, Mnemonic::Lda, Mnemonic::Rts],
+        "the branch, the unreachable user `rep`, and the load at the label all stay"
+    );
+}
+
+/// A second `optimize()` over an already-optimized program changes nothing.
+///
+/// Decision 18: the eight passes run once, in order, and each closes what it
+/// opens. If a second run finds work, the pass that created the opportunity is
+/// at fault and gets fixed there — the assertion is not a reason to add a loop
+/// over the sequence.
+#[test]
+fn optimization_is_idempotent() {
+    for (name, source) in [
+        ("slice.k816", HLA_SLICE),
+        ("opt-barriers.k816", BARRIERS),
+        ("opt-liveout.k816", LIVEOUT),
+        (
+            "width-branch.k816",
+            include_str!("golden/width-branch.k816"),
+        ),
+        (
+            "width-blocks.k816",
+            include_str!("golden/width-blocks.k816"),
+        ),
+        ("hla-alu.k816", include_str!("golden/hla-alu.k816")),
+        ("subscripts.k816", include_str!("golden/subscripts.k816")),
+    ] {
+        let (_, file, model, mut program) = lowered_as(name, source);
+        run(&mut program, &model, file);
+        let second = run(&mut program, &model, file);
+        assert!(second.is_empty(), "`{name}`: {:?}", second.changes);
+    }
 }

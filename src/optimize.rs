@@ -44,12 +44,15 @@
 //! 16 bits here" from anything else has become the second width authority,
 //! which is the failure `width.rs` exists to prevent.
 
-use crate::effects::{ControlEffect, Effects, MemoryEffect, WidthEffect};
+use std::collections::HashMap;
+
+use crate::effects::{ControlEffect, CpuState, Effects, MemoryEffect, WidthEffect};
 use crate::linkage::Linkage;
-use crate::op::{KOp, KOpKind, KProgram};
+use crate::op::{AnchorId, KOp, KOpKind, KProgram, Operand};
 use crate::semantic::SemanticModel;
 use crate::source::FileId;
 use crate::symbol::{SymbolId, SymbolTable};
+use crate::value::KExpr;
 
 /// One pass of the fixed sequence.
 ///
@@ -236,10 +239,24 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
     let mut log = OptimizationLog::default();
     let symbols = &context.model.symbols;
     for function in program.functions_mut() {
-        let symbol = function.symbol;
-        remove_overwritten_register_values(symbol, &mut function.ops, symbols, &mut log);
+        let unit = Unit {
+            function: function.symbol,
+            external_labels: &context.model.externally_reachable,
+            symbols,
+        };
+        remove_overwritten_register_values(&unit, &mut function.ops, &mut log);
     }
     log
+}
+
+/// What one function's passes need to know about the unit around it.
+struct Unit<'a> {
+    /// The function being rewritten, for the change log's site.
+    function: SymbolId,
+    /// Global labels another unit in the workspace refers to, so a block led
+    /// by one is reachable from an edge K816 cannot see.
+    external_labels: &'a std::collections::BTreeSet<SymbolId>,
+    symbols: &'a SymbolTable,
 }
 
 /// The effects of an operation, for the operations that have any.
@@ -276,94 +293,479 @@ fn is_mode_operation(op: &KOp) -> bool {
     effects_of(op).is_some_and(|effects| effects.width != WidthEffect::Unchanged)
 }
 
-/// Removes instructions whose entire written register/flag state is
-/// overwritten before any operation reads it.
+// ---------------------------------------------------------------------------
+// The block view
+// ---------------------------------------------------------------------------
+
+/// One basic block: a half-open range of a function's operation stream.
+#[derive(Clone, Debug)]
+struct Block {
+    start: usize,
+    end: usize,
+    successors: Vec<usize>,
+}
+
+/// Where control may go from one operation, resolved against this function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Transfer {
+    control: ControlEffect,
+    /// The operation this one names, when it names one this function defines.
+    target: Option<usize>,
+    /// The operation names a target this function does not define — an
+    /// indirect `jmp (vec)`, a computed target, a tail transfer to another
+    /// function. Control goes somewhere K816 is not looking at.
+    opaque: bool,
+}
+
+/// The per-function view every pass shares: basic blocks with a complete
+/// successor relation, the liveness it induces, and which blocks an edge
+/// reaches.
 ///
-/// Candidates must have no memory effect and fall through — observable
-/// memory, stack, and control effects are never removed — and must not be
-/// mode instructions ([`is_mode_operation`]). The forward scan is
-/// conservative: labels and non-fallthrough control are barriers (the state
-/// may be observed elsewhere), reads are checked before writes so
-/// read-modify-write operations keep their sources alive, and unknown
-/// memory effects stop the scan.
-fn remove_overwritten_register_values(
-    function: SymbolId,
-    ops: &mut Vec<KOp>,
-    symbols: &SymbolTable,
-    log: &mut OptimizationLog,
-) {
-    let mut index = 0;
-    while index < ops.len() {
-        match removable(ops, index) {
-            Some(overwriter) => {
-                let removed = ops.remove(index);
-                // `overwriter` counted positions before the removal.
-                let witness = ops[overwriter - 1].clone();
-                let justification = format!(
-                    "writes {}, all overwritten by `{}` before any read",
-                    describe_state(&effects_of(&removed).expect("an instruction").writes),
-                    crate::op::dump_op(&witness, symbols),
-                );
-                log.changes.push(Change {
-                    pass: Pass::RemoveOverwritten,
-                    site: Site { function, index },
-                    before: vec![removed],
-                    after: Vec::new(),
-                    witness: Some(witness),
-                    justification,
-                });
-                // Do not advance: the next op shifted into `index`.
+/// One shared view and one dataflow, not a pass framework: `doc/design.md`
+/// §14 rule 9 wants two concrete users before an abstraction, and the master
+/// plan forbids generic pass frameworks outright.
+///
+/// **Err toward more edges.** An extra successor can only make liveness larger
+/// and reachability wider, which costs a missed optimization and never a wrong
+/// program. A *missing* edge does the opposite, and
+/// [`ControlEffect::Call`] is where that mistake is easiest to make: a call is
+/// not `FallThrough`, so a splitter written from the leader rule alone leaves
+/// everything after the first `jsr` looking unreachable, and the unreachable
+/// pass then deletes it.
+struct Flow {
+    blocks: Vec<Block>,
+    /// The block each operation belongs to.
+    block_of: Vec<usize>,
+    /// The CPU state live immediately after each operation.
+    live_after: Vec<CpuState>,
+    /// Blocks some edge reaches.
+    reachable: Vec<bool>,
+    /// Operations inside a `nocross`-guarded run, which no pass may change.
+    frozen: Vec<bool>,
+}
+
+impl Flow {
+    fn build(ops: &[KOp], unit: &Unit<'_>) -> Self {
+        let transfers = resolve_transfers(ops);
+        let blocks = split_blocks(ops, &transfers);
+        let mut block_of = vec![0; ops.len()];
+        for (index, block) in blocks.iter().enumerate() {
+            for slot in block_of.iter_mut().take(block.end).skip(block.start) {
+                *slot = index;
             }
-            None => index += 1,
         }
+        let reachable = reachability(ops, &blocks, &transfers, unit);
+        let live_after = liveness(ops, &blocks, &transfers);
+        let frozen = frozen_operations(ops);
+        Self {
+            blocks,
+            block_of,
+            live_after,
+            reachable,
+            frozen,
+        }
+    }
+
+    /// The block containing `index`.
+    fn block(&self, index: usize) -> &Block {
+        &self.blocks[self.block_of[index]]
     }
 }
 
-/// If the op at `index` is provably dead, returns the index of the operation
-/// that completed the overwrite of its written state.
-fn removable(ops: &[KOp], index: usize) -> Option<usize> {
-    let KOpKind::Instruction(candidate) = &ops[index].kind else {
-        return None;
-    };
-    if is_mode_operation(&ops[index]) {
-        return None;
-    }
-    let effects = candidate.effects();
-    if !effects.is_removal_candidate() || effects.writes.is_empty() {
-        return None;
+/// Resolves every operation's control transfer against this function's own
+/// labels and anchors.
+fn resolve_transfers(ops: &[KOp]) -> Vec<Transfer> {
+    let mut label_at: HashMap<SymbolId, usize> = HashMap::new();
+    let mut anchor_at: HashMap<AnchorId, usize> = HashMap::new();
+    // ca65 counts every unnamed label it has seen, and the jump around inline
+    // data names the next one below it — anchors and skip targets alike. The
+    // block graph resolves it the same way emission spells it.
+    let mut unnamed: Vec<usize> = Vec::new();
+    for (index, op) in ops.iter().enumerate() {
+        match &op.kind {
+            KOpKind::Label(symbol) => {
+                label_at.insert(*symbol, index);
+            }
+            KOpKind::Anchor(anchor) => {
+                anchor_at.insert(*anchor, index);
+                unnamed.push(index);
+            }
+            KOpKind::SkipTarget => unnamed.push(index),
+            _ => {}
+        }
     }
 
-    let mut pending = effects.writes;
-    for (offset, op) in ops.iter().enumerate().skip(index + 1) {
-        let KOpKind::Instruction(next) = &op.kind else {
-            // A label (control may enter here and observe the state), a
-            // directive whose placement effect this pass cannot reason
-            // about, or a mode assumption — which states what the width
-            // model concluded, so removing an op across one could leave the
-            // claim false. Every non-instruction op is a barrier until
-            // sub-plan F's block view replaces this scan.
-            return None;
+    ops.iter()
+        .enumerate()
+        .map(|(index, op)| {
+            if op.kind == KOpKind::SkipData {
+                let target = unnamed.iter().find(|&&site| site > index).copied();
+                return Transfer {
+                    control: ControlEffect::Jump,
+                    target,
+                    opaque: target.is_none(),
+                };
+            }
+            let Some(effects) = effects_of(op) else {
+                return Transfer {
+                    control: ControlEffect::FallThrough,
+                    target: None,
+                    opaque: false,
+                };
+            };
+            let KOpKind::Instruction(instruction) = &op.kind else {
+                unreachable!("only an instruction has effects");
+            };
+            if !matches!(effects.control, ControlEffect::Branch | ControlEffect::Jump) {
+                return Transfer {
+                    control: effects.control,
+                    target: None,
+                    opaque: false,
+                };
+            }
+            let target = match &instruction.operand {
+                Some(Operand::Anchor(anchor)) => anchor_at.get(anchor).copied(),
+                Some(Operand::Label(KExpr::Symbol(symbol))) => label_at.get(symbol).copied(),
+                Some(Operand::Address {
+                    expr: KExpr::Symbol(symbol),
+                    index: None,
+                    ..
+                }) => label_at.get(symbol).copied(),
+                _ => None,
+            };
+            Transfer {
+                control: effects.control,
+                target,
+                opaque: target.is_none(),
+            }
+        })
+        .collect()
+}
+
+/// Splits the stream into basic blocks.
+///
+/// Leaders are the first operation, every label-like operation control can
+/// arrive at, and the operation after every transfer that is not a plain
+/// fall-through.
+fn split_blocks(ops: &[KOp], transfers: &[Transfer]) -> Vec<Block> {
+    if ops.is_empty() {
+        return Vec::new();
+    }
+    let mut leader = vec![false; ops.len()];
+    leader[0] = true;
+    for (index, op) in ops.iter().enumerate() {
+        if matches!(
+            op.kind,
+            KOpKind::Label(_) | KOpKind::Anchor(_) | KOpKind::SkipTarget
+        ) {
+            leader[index] = true;
+        }
+        if transfers[index].control != ControlEffect::FallThrough && index + 1 < ops.len() {
+            leader[index + 1] = true;
+        }
+    }
+
+    let starts: Vec<usize> = (0..ops.len()).filter(|index| leader[*index]).collect();
+    let mut blocks: Vec<Block> = starts
+        .iter()
+        .enumerate()
+        .map(|(position, start)| Block {
+            start: *start,
+            end: starts.get(position + 1).copied().unwrap_or(ops.len()),
+            successors: Vec::new(),
+        })
+        .collect();
+
+    // Every label-led block, for the transfers K816 cannot name: control may
+    // arrive at any of them from a target it could not resolve, which is the
+    // same conservative answer the width solver gives, reached the same way.
+    let label_blocks: Vec<usize> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| matches!(ops[block.start].kind, KOpKind::Label(_)))
+        .map(|(index, _)| index)
+        .collect();
+    let block_of_op = |op: usize| -> usize {
+        starts
+            .partition_point(|start| *start <= op)
+            .saturating_sub(1)
+    };
+
+    for index in 0..blocks.len() {
+        let last = blocks[index].end - 1;
+        let next = (index + 1 < blocks.len()).then_some(index + 1);
+        let transfer = transfers[last];
+        let mut successors: Vec<usize> = Vec::new();
+        let target = transfer.target.map(block_of_op);
+        match transfer.control {
+            // A call returns: `JSR` is not a leaf of this graph. It remains a
+            // clobber and a dataflow barrier, which is the liveness transfer
+            // function's business rather than the edge set's.
+            ControlEffect::FallThrough | ControlEffect::Call => successors.extend(next),
+            // `BRK`/`COP` vector to a handler that returns past the signature
+            // byte; `WAI` resumes on the next instruction, and telling it from
+            // `STP` is not worth an edge.
+            ControlEffect::Trap | ControlEffect::Halt => successors.extend(next),
+            ControlEffect::Branch => {
+                successors.extend(next);
+                match target {
+                    Some(target) => successors.push(target),
+                    None => successors.extend(label_blocks.iter().copied()),
+                }
+            }
+            ControlEffect::Jump => match target {
+                Some(target) => successors.push(target),
+                None => successors.extend(label_blocks.iter().copied()),
+            },
+            ControlEffect::Return => {}
+            ControlEffect::Unknown => {
+                successors.extend(next);
+                successors.extend(label_blocks.iter().copied());
+            }
+        }
+        successors.sort_unstable();
+        successors.dedup();
+        blocks[index].successors = successors;
+    }
+    blocks
+}
+
+/// Which blocks an edge reaches.
+fn reachability(
+    ops: &[KOp],
+    blocks: &[Block],
+    transfers: &[Transfer],
+    unit: &Unit<'_>,
+) -> Vec<bool> {
+    let mut reachable = vec![false; blocks.len()];
+    if blocks.is_empty() {
+        return reachable;
+    }
+    // A transfer K816 cannot name may land on any label in the function.
+    let opaque_transfer = transfers.iter().any(|transfer| transfer.opaque);
+    let mut worklist = vec![0usize];
+    for (index, block) in blocks.iter().enumerate() {
+        let KOpKind::Label(symbol) = &ops[block.start].kind else {
+            continue;
         };
-        let next_effects = next.effects();
-        // Reads are checked before writes: a read-modify-write op keeps its
-        // own sources alive.
-        if next_effects.reads.intersects(pending) {
-            return None;
+        if opaque_transfer || unit.external_labels.contains(symbol) {
+            worklist.push(index);
         }
-        pending = pending.without(next_effects.writes);
+    }
+    while let Some(index) = worklist.pop() {
+        if reachable[index] {
+            continue;
+        }
+        reachable[index] = true;
+        worklist.extend(blocks[index].successors.iter().copied());
+    }
+    reachable
+}
+
+/// The CPU state live immediately after each operation.
+///
+/// Backward, unioned over successors, over a lattice whose join is set union
+/// and whose transfer function is monotone — so a worklist converges, which is
+/// the opposite of the exit classification `postmortem.md` §D.5 forbids
+/// iterating.
+fn liveness(ops: &[KOp], blocks: &[Block], transfers: &[Transfer]) -> Vec<CpuState> {
+    let mut live_after = vec![CpuState::NONE; ops.len()];
+    let mut live_in = vec![CpuState::NONE; blocks.len()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for index in (0..blocks.len()).rev() {
+            let block = &blocks[index];
+            // An exit block has no successors, and its seed is everything:
+            // decision 12, and the difference between an optimizer and one
+            // that deletes return values.
+            let mut live = if block.successors.is_empty() {
+                CpuState::ALL
+            } else {
+                block
+                    .successors
+                    .iter()
+                    .fold(CpuState::NONE, |state, successor| {
+                        state.union(live_in[*successor])
+                    })
+            };
+            for op in (block.start..block.end).rev() {
+                live_after[op] = live;
+                live = live_before(&ops[op], transfers[op], live);
+            }
+            if live != live_in[index] {
+                live_in[index] = live;
+                changed = true;
+            }
+        }
+    }
+    live_after
+}
+
+/// The state live before one operation, given what is live after it.
+fn live_before(op: &KOp, transfer: Transfer, live_after: CpuState) -> CpuState {
+    let Some(effects) = effects_of(op) else {
+        // A label, a width claim, a directive: no bytes, no CPU state.
+        return live_after;
+    };
+    if is_liveness_barrier(effects, transfer) {
+        return CpuState::ALL;
+    }
+    live_after.without(effects.writes).union(effects.reads)
+}
+
+/// True when everything is live before this operation.
+///
+/// A call is the important row: the callee may read any register and any flag,
+/// including ones no contract names, so a call clobbers the liveness rather
+/// than passing it through. A return, a trap, a halt, an unclassifiable
+/// operation, an unknown memory effect, and an unknown width transition are
+/// the same answer for the same reason — and so is a branch or jump whose
+/// target this function does not define, which leaves for code K816 is not
+/// looking at.
+///
+/// `WidthEffect::Unknown` earns its place separately: `PLP` and `RTI` are
+/// recorded as writing X and Y, because narrowing the index registers zeroes
+/// their high bytes — but whether they narrow depends on a status byte nothing
+/// tracked, so that must-write set cannot be subtracted from a live set.
+fn is_liveness_barrier(effects: Effects, transfer: Transfer) -> bool {
+    if transfer.opaque {
+        return true;
+    }
+    matches!(
+        effects.control,
+        ControlEffect::Call
+            | ControlEffect::Return
+            | ControlEffect::Trap
+            | ControlEffect::Halt
+            | ControlEffect::Unknown
+    ) || matches!(
+        effects.memory,
+        MemoryEffect::Unknown | MemoryEffect::Volatile
+    ) || effects.width.is_unknown()
+}
+
+/// The operations inside a `nocross`-guarded run, which no pass may change.
+///
+/// A guard is a link-time assertion over the `length` bytes just emitted, and
+/// `length` was measured at lowering. Removing an operation from inside the
+/// run would leave the assertion covering bytes *before* the run's start —
+/// a page-crossing error about code the `nocross` never claimed. The run has
+/// no recorded start, so it is recovered here by walking back from the guard
+/// until the byte lengths add up, using lowering's own measurement so that the
+/// two agree by construction.
+fn frozen_operations(ops: &[KOp]) -> Vec<bool> {
+    let mut frozen = vec![false; ops.len()];
+    for (guard, op) in ops.iter().enumerate() {
+        let KOpKind::NocrossGuard { length } = op.kind else {
+            continue;
+        };
+        let mut total = 0;
+        let mut start = guard;
+        while start > 0 && total < length {
+            start -= 1;
+            total += crate::lower::byte_length(&ops[start]);
+        }
+        for slot in frozen.iter_mut().take(guard).skip(start) {
+            *slot = true;
+        }
+    }
+    frozen
+}
+
+// ---------------------------------------------------------------------------
+// Pass 3 — remove overwritten register values
+// ---------------------------------------------------------------------------
+
+/// Removes instructions nothing reachable reads.
+///
+/// An instruction is dead when nothing it writes is live on any path from it,
+/// and it has no other effect to leave behind: no memory effect, plain
+/// fall-through control, and not a mode instruction — those belong to passes 1
+/// and 2 alone ([`is_mode_operation`]).
+///
+/// The pass iterates to its own fixpoint. Removing a `tax` can make the
+/// `lda #1` above it dead in turn, and decision 18's rule is that each pass
+/// closes what it opens rather than being re-run by a loop over the sequence.
+fn remove_overwritten_register_values(
+    unit: &Unit<'_>,
+    ops: &mut Vec<KOp>,
+    log: &mut OptimizationLog,
+) {
+    loop {
+        let flow = Flow::build(ops, unit);
+        let Some(index) = (0..ops.len()).find(|index| dead(ops, &flow, *index)) else {
+            return;
+        };
+        let removed = ops.remove(index);
+        let effects = effects_of(&removed).expect("an instruction");
+        let witness = overwriter(ops, &flow, index, effects.writes);
+        let justification = match &witness {
+            Some(witness) => format!(
+                "writes {}, all overwritten by `{}` before any read",
+                describe_state(&effects.writes),
+                crate::op::dump_op(witness, unit.symbols),
+            ),
+            None => format!(
+                "writes {}, none of it live on any path from here",
+                describe_state(&effects.writes),
+            ),
+        };
+        log.changes.push(Change {
+            pass: Pass::RemoveOverwritten,
+            site: Site {
+                function: unit.function,
+                index,
+            },
+            before: vec![removed],
+            after: Vec::new(),
+            witness,
+            justification,
+        });
+    }
+}
+
+/// True when the operation at `index` writes nothing anything reads.
+fn dead(ops: &[KOp], flow: &Flow, index: usize) -> bool {
+    if flow.frozen[index] || is_mode_operation(&ops[index]) {
+        return false;
+    }
+    let Some(effects) = effects_of(&ops[index]) else {
+        return false;
+    };
+    if !effects.is_removal_candidate() || effects.writes.is_empty() {
+        return false;
+    }
+    // An operation no edge reaches is the unreachable pass's, which removes
+    // only what the compiler generated. Leaving it here keeps a user's
+    // unreachable instruction out of this pass's reach.
+    if !flow.reachable[flow.block_of[index]] {
+        return false;
+    }
+    !effects.writes.intersects(flow.live_after[index])
+}
+
+/// The operation that completed the overwrite, when one operation did.
+///
+/// The proof is the liveness; this is the *explanation*, and it exists because
+/// "overwritten by `lda #$01`" tells a reader more than "not live". A straight
+/// scan inside the block finds it where there is one, and there is none when
+/// the value simply died at a merge or at a live-out.
+fn overwriter(
+    ops: &[KOp],
+    flow: &Flow,
+    index: usize,
+    writes: crate::effects::CpuState,
+) -> Option<KOp> {
+    // `index` counted positions before the removal, so the operation that
+    // followed the removed one now sits at `index`.
+    let end = flow.block(index.min(ops.len().saturating_sub(1))).end - 1;
+    let mut pending = writes;
+    for op in ops.iter().take(end.max(index)).skip(index) {
+        let effects = effects_of(op)?;
+        pending = pending.without(effects.writes);
         if pending.is_empty() {
-            return Some(offset);
-        }
-        // Unknown effects inhibit optimization; other control flow may
-        // observe the remaining state. An unknown width transition is the
-        // third stop: `PLP`, `RTI`, `XCE`, and an unfolded `SEP`/`REP` mask
-        // may narrow the index registers and truncate them, which their
-        // must-write set cannot express.
-        if next_effects.memory == MemoryEffect::Unknown
-            || next_effects.control != ControlEffect::FallThrough
-            || next_effects.width.is_unknown()
-        {
-            return None;
+            return Some(op.clone());
         }
     }
     None

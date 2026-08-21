@@ -349,6 +349,28 @@ fn compile_fixture(name: &str, text: &str) -> String {
     result.assembly.expect("compilation succeeds")
 }
 
+/// Compiles a fixture that reports *warnings* on purpose, then assembles and
+/// links it.
+///
+/// `compile_and_link` asserts no diagnostics at all, which is right for a
+/// fixture whose whole output is supposed to be quiet. The optimizer's
+/// fixtures are not: `opt-barriers.k816` carries a `plp` and an unfolded mask
+/// so that `K816-W0124` is part of what it describes, and `opt-liveout.k816`
+/// reads Y after a call that clobbers it so that `K816-W0123` is the argument
+/// it makes. Errors are still fatal.
+fn link_fixture(test: &str, name: &str, text: &str, options: &Options) -> Vec<u8> {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let result = compile_to_ca65(&map, file, options);
+    let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
+    assert!(errors.is_empty(), "{name}: {errors:?}");
+    assemble_and_link(
+        test,
+        &result.assembly.expect("compilation succeeds"),
+        "slice",
+    )
+}
+
 /// Assembles `assembly` and links it with `config`, returning the bytes.
 fn assemble_and_link(test: &str, assembly: &str, config: &str) -> Vec<u8> {
     let dir = work_dir(test);
@@ -1755,4 +1777,107 @@ fn an_argument_that_does_not_fit_is_reported_where_it_was_passed() {
     assert_eq!(caret, "narrow a, #300 -> a", "the use site, not the body");
     let body = map.file(file).span_text(diagnostic.secondary[0].span);
     assert_eq!(body, "value", "and the parameter it was bound to");
+}
+
+// ---------------------------------------------------------------------------
+// The optimizer's own fixtures, at the bytes (sub-plan F).
+// ---------------------------------------------------------------------------
+
+/// The barrier fixture assembles, and optimizing it changes not one byte.
+///
+/// The `KOp`-level claim is in `tests/optimizer.rs`, where the log is asserted
+/// empty. This is the same claim through ca65: a pass that produced plausible
+/// text and different sizes would pass there and fail here.
+#[test]
+fn the_barrier_fixture_assembles_and_the_optimizer_changes_no_byte() {
+    let source = include_str!("golden/opt-barriers.k816");
+    let unoptimized = link_fixture(
+        "opt-barriers-unopt",
+        "opt-barriers.k816",
+        source,
+        &Options { optimize: false },
+    );
+    let optimized = link_fixture(
+        "opt-barriers-opt",
+        "opt-barriers.k816",
+        source,
+        &Options { optimize: true },
+    );
+    assert_eq!(optimized, unoptimized, "{optimized:02X?}");
+}
+
+/// Nothing is dead at a function exit, at the bytes.
+///
+/// The whole file loses exactly two bytes, and they are the mid-function
+/// `lda #$07` of `middle`. Every load, `ldy`, and `clc` that sits at an exit
+/// stays: the live-out seed is everything, and a declared `-> a` narrows
+/// nothing (`plans/05-optimizer.md` decision 12).
+#[test]
+fn the_live_out_fixture_keeps_everything_a_return_could_hand_back() {
+    let source = include_str!("golden/opt-liveout.k816");
+    let unoptimized = link_fixture(
+        "opt-liveout-unopt",
+        "opt-liveout.k816",
+        source,
+        &Options { optimize: false },
+    );
+    let optimized = link_fixture(
+        "opt-liveout-opt",
+        "opt-liveout.k816",
+        source,
+        &Options { optimize: true },
+    );
+    assert_eq!(
+        unoptimized.len() - optimized.len(),
+        2,
+        "only the mid-function `lda #$07` goes: {unoptimized:02X?} -> {optimized:02X?}"
+    );
+
+    // `produce`: adc #$01, ldy #$09, rts — the declared output *and* the
+    // undeclared one.
+    assert_eq!(&optimized[..5], &[0x69, 0x01, 0xA0, 0x09, 0x60]);
+    // `carry`: lda #$01, sta $0400, clc, rts — the trailing `clc` survives.
+    assert_eq!(
+        &optimized[5..12],
+        &[0xA9, 0x01, 0x8D, 0x00, 0x04, 0x18, 0x60]
+    );
+    // `middle`, at the end: lda #$08, sta $0400, rts — `lda #$07` is gone.
+    assert_eq!(
+        &optimized[optimized.len() - 6..],
+        &[0xA9, 0x08, 0x8D, 0x00, 0x04, 0x60]
+    );
+}
+
+/// **Moved by sub-plan F, task F1.** `width-branch.k816::skipped` loads the
+/// accumulator, branches away, and the target reloads it — so the first load
+/// is dead on every path and the optimizer removes it. The unoptimized gate
+/// above is unchanged and is still what proves the width model's own answer;
+/// this is the second gate the plan asks every width fixture to grow.
+///
+/// The user-written `rep #$20` that no path reaches stays exactly where it was
+/// written: the unreachable pass removes compiler-generated operations only.
+#[test]
+fn the_optimized_skipped_branch_loses_only_the_load_it_branches_away_from() {
+    let bytes = link_fixture(
+        "width-branch-opt",
+        "width-branch.k816",
+        include_str!("golden/width-branch.k816"),
+        &Options { optimize: true },
+    );
+    // `skipped`: bra (2), rep #$20 (2), lda #$01 (2), rts (1).
+    assert_eq!(
+        &bytes[..7],
+        &[0x80, 0x02, 0xC2, 0x20, 0xA9, 0x01, 0x60],
+        "{bytes:02X?}"
+    );
+    // `taken` and `resolved` are byte-for-byte what the unoptimized gate
+    // asserts: no path in either has a dead write.
+    assert_eq!(
+        &bytes[7..],
+        &[
+            0xA9, 0x01, 0xC2, 0x20, 0x80, 0x00, 0xA9, 0x01, 0x00, 0x60, // taken
+            0x90, 0x02, 0xC2, 0x20, 0xC2, 0x20, 0xA9, 0x02, 0x01, 0x60, // resolved
+        ],
+        "{bytes:02X?}"
+    );
 }

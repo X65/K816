@@ -330,8 +330,21 @@ fn a_native_only_function_lowers_without_any_hla_statement() {
     );
 }
 
+/// **Moved by sub-plan F, task F1.** This asserted the opposite until the
+/// optimizer had a block view: the straight-line scan bailed at the first
+/// non-instruction operation and called it conservatism, so a `.byte` between
+/// a dead write and its overwriter kept the write alive. It was really the
+/// absence of a successor relation.
+///
+/// The claim it becomes is the true one, and it is the reason the old claim
+/// was safe to drop rather than merely inconvenient: a data directive emits
+/// bytes and touches no register and no flag, so it cannot observe a value.
+/// A `nocross` guard *is* a barrier, and for a different reason — the guard
+/// records the byte length of the run it closes, so removing an operation from
+/// inside one would leave a link-time assertion covering bytes the `nocross`
+/// never claimed.
 #[test]
-fn a_directive_between_instructions_is_an_optimizer_barrier() {
+fn a_directive_is_not_a_dataflow_barrier_but_a_nocross_guard_is() {
     use k816::linkage::Linkage;
     use k816::op::{DataOp, KOp, KOpKind};
     use k816::optimize::{Context, optimize};
@@ -355,18 +368,10 @@ fn a_directive_between_instructions_is_an_optimizer_barrier() {
     let (file, model, mut program) = lower_unit(HLA_SLICE);
     assert_eq!(run(&mut program, file, &model), 1);
 
-    // With a directive between them the pass must stop rather than reason
-    // about what the emitted bytes do — the conservative answer for every
-    // new op kind until sub-plan F says otherwise.
+    // A directive between them changes nothing: it emits bytes and observes
+    // no CPU state, so the write is still dead.
     let (file, model, mut program) = lower_unit(HLA_SLICE);
-    let function = program
-        .items
-        .iter_mut()
-        .find_map(|item| match item {
-            k816::op::KProgramItem::Function(function) => Some(function),
-            k816::op::KProgramItem::Op(_) | k816::op::KProgramItem::Data(_) => None,
-        })
-        .expect("one function");
+    let function = only_function(&mut program);
     let span = function.ops[2].span;
     function.ops.insert(
         3,
@@ -378,9 +383,44 @@ fn a_directive_between_instructions_is_an_optimizer_barrier() {
     );
     assert_eq!(
         run(&mut program, file, &model),
-        0,
-        "an emitted directive stops the scan"
+        1,
+        "an emitted directive observes no register and no flag"
     );
+
+    // A `nocross` guard around the pair does stop it: the guard's recorded
+    // length is a claim about bytes that are still there.
+    let (file, model, mut program) = lower_unit(HLA_SLICE);
+    let function = only_function(&mut program);
+    let span = function.ops[2].span;
+    let length: u32 = function.ops[2..5]
+        .iter()
+        .map(k816::lower::byte_length)
+        .sum();
+    function.ops.insert(
+        5,
+        KOp::new(
+            KOpKind::NocrossGuard { length },
+            span,
+            Origin::CompilerGenerated,
+        ),
+    );
+    assert_eq!(
+        run(&mut program, file, &model),
+        0,
+        "a `nocross` guard freezes the run it measures"
+    );
+}
+
+/// The unit's one function, for a test that edits its stream.
+fn only_function(program: &mut KProgram) -> &mut k816::op::KFunction {
+    program
+        .items
+        .iter_mut()
+        .find_map(|item| match item {
+            k816::op::KProgramItem::Function(function) => Some(function),
+            k816::op::KProgramItem::Op(_) | k816::op::KProgramItem::Data(_) => None,
+        })
+        .expect("one function")
 }
 
 // ---------------------------------------------------------------------------

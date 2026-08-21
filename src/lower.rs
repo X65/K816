@@ -325,7 +325,13 @@ fn jump_target(operand: Option<Operand>) -> Option<Operand> {
 /// assembles, and a `nocross` run that thinks it is bigger than it is reports
 /// a fit problem that does not exist rather than missing one that does. An
 /// under-estimate does neither (sub-plan E, decision 7).
-fn byte_length(op: &KOp) -> u32 {
+///
+/// Public because the optimizer needs the *same* answer: a `nocross` guard
+/// records the byte length of the run it closes, and F recovers where that run
+/// starts by walking back from the guard until the lengths add up. Two
+/// implementations of "how big is this operation" would put the run's start in
+/// two places.
+pub fn byte_length(op: &KOp) -> u32 {
     let KOpKind::Instruction(instruction) = &op.kind else {
         return match &op.kind {
             KOpKind::Data(data) => data_length(data),

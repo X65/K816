@@ -1,0 +1,109 @@
+// Sub-plan F fixture: the negative gate. **Nothing in this file may change
+// under any pass**, and the test asserts an *empty log* rather than an
+// expected output — the strongest form the claim has, and the only shape that
+// catches a pass quietly widening its own candidate set.
+//
+// Every function below is one barrier, named in its comment. Adding a case is
+// how a new pass declares what it refuses to touch; changing one so that the
+// log stops being empty is a pass reaching past its own justification.
+//
+// Several bodies earn `K816-W0124`: a `plp`, an unfolded mask, and an
+// unresolved jump all leave widths a caller cannot rely on, which is the point
+// of the case. The gate asserts no *errors* and an empty log; the warnings are
+// the fixture describing itself.
+
+var VECTOR = $0300
+var RND    = $D20A
+var CELL   = $0400
+
+// A stack operation is observable memory, so it is never a removal candidate
+// however dead its register writes look.
+func stacked @a8 @i8 {
+    pha
+    php
+    plp
+    pla
+}
+
+// An indirect jump names a target K816 cannot resolve, so every label in the
+// function is reachable from a width and a register state nothing here
+// establishes.
+func indirect @a8 @i8 {
+    jmp (VECTOR)
+spot_unresolved:
+    CELL = a
+}
+
+// `PLP` pops a status byte nothing tracked: the widths after it are unknown,
+// and so is whether it truncated the index registers. Its must-write set
+// cannot be subtracted from anything.
+func pulled @a8 @i8 {
+    ldx #$01
+    plp
+    txs
+}
+
+// A `SEP` whose mask does not fold writes *nothing* — the mask may be zero —
+// and reads every P flag. It stops width reasoning rather than performing a
+// transition.
+func unfolded @a8 @i8 {
+    lda #$01
+    sep #&<unfoldable
+    CELL = a
+unfoldable:
+    nop
+}
+
+// A call is a clobber and a dataflow barrier: the callee may read any register
+// and any flag, including ones no contract names.
+func calls @a8 @i8 {
+    lda #$01
+    call stacked
+}
+
+// A user-written unreachable `rep`. The unreachable pass removes
+// *compiler-generated* operations only — the master plan's own wording — so
+// this one stays exactly where it was written.
+func unreachable_user @a8 {
+    bra .after
+    rep #$20
+.after:
+    lda #$01
+}
+
+// A narrowing `SEP` on the index axis writes the X and Y *registers*: it
+// zeroes their high bytes. `txs` reads the X register and no flag, so it
+// observes that truncation, and the mode bit is live even where the axis is
+// not.
+func truncates @a16 @i16 {
+    ldx #$0102
+    sep #$10
+    txs
+}
+
+// Two reads of a fixed-address `var` — the POKEY random-number register, as
+// `examples/k65/atari-xl/landscape/main.k65` reads it in consecutive
+// statements. A fixed-address `var` is how K65 spells a hardware register, so
+// a second read of one address is never redundant.
+func volatile_reads @a8 @i8 {
+    a = RND
+    CELL = a
+    a = RND
+    CELL = a
+}
+
+// The one barrier this file cannot hold: a label another unit branches to.
+// It is a barrier only when a sibling unit actually names it, so it needs a
+// workspace rather than a file, and it lives with the other cross-unit case in
+// `opt-modes.k816`'s pair.
+
+// `jsr` + `rts` is **not** rewritten to `jmp`. The rewrite would leave the
+// callee running with the stack two bytes shallower and with a live slot
+// holding this function's return address, and no fact K816 holds rules out the
+// callee reading it — the stack is ordinary bank-zero memory, so `lda $01FE`
+// reaches the frame without naming `S`. Phase 9 item 7 asks for *safe* tail
+// calls; the safe set is empty (`plans/05-optimizer.md` decision 17).
+func tail_call @a8 @i8 {
+    jsr stacked
+    rts
+}

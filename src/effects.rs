@@ -36,6 +36,8 @@ pub struct RegisterSet(u8);
 
 impl RegisterSet {
     pub const NONE: Self = Self(0);
+    /// Every register the effect model names.
+    pub const ALL: Self = Self(0x7F);
     pub const A: Self = Self(1 << 0);
     pub const X: Self = Self(1 << 1);
     pub const Y: Self = Self(1 << 2);
@@ -116,6 +118,8 @@ impl FlagSet {
 
     /// All eight P-register flags (not `E`).
     pub const ALL_P: Self = Self(0xFF);
+    /// Every flag, the hidden emulation flag included.
+    pub const ALL: Self = Self(0x1FF);
 
     /// The P-register flags selected by an 8-bit `SEP`/`REP` mask operand.
     pub const fn from_p_mask(mask: u8) -> Self {
@@ -187,6 +191,22 @@ impl CpuState {
         flags: FlagSet::NONE,
     };
 
+    /// Every register and every flag.
+    ///
+    /// This is the optimizer's live-out seed at a function exit, and its
+    /// answer at every barrier. An exit block has no successors, so liveness
+    /// needs a seed there and the seed is not "nothing" — without one, dead
+    /// register elimination deletes return values. A declared `-> a` is not a
+    /// licence to narrow it: `call foo` opts out of contract checking, a
+    /// hand-written `jsr foo` never had a contract, and an undeclared clobber
+    /// is a warning rather than a guarantee. Flags cannot be narrowed even in
+    /// principle, because the contract syntax has no way to name one
+    /// (`plans/05-optimizer.md` decision 12).
+    pub const ALL: Self = Self {
+        registers: RegisterSet::ALL,
+        flags: FlagSet::ALL,
+    };
+
     pub const fn new(registers: RegisterSet, flags: FlagSet) -> Self {
         Self { registers, flags }
     }
@@ -197,6 +217,24 @@ impl CpuState {
 
     pub const fn is_empty(self) -> bool {
         self.registers.is_empty() && self.flags.is_empty()
+    }
+
+    /// The state either side touches.
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            registers: self.registers.union(other.registers),
+            flags: self.flags.union(other.flags),
+        }
+    }
+
+    /// The state in both.
+    pub const fn intersection(self, other: Self) -> Self {
+        self.without(other.complement())
+    }
+
+    /// Everything this state does not name.
+    pub const fn complement(self) -> Self {
+        Self::ALL.without(self)
     }
 
     /// The state in `self` not covered by `other`.

@@ -1,0 +1,70 @@
+// Sub-plan F fixture: what is live where a function ends.
+//
+// An exit block has no successors, so backward liveness needs a seed there,
+// and the seed is **everything** — every register, every flag, on every
+// function, with no narrowing (`plans/05-optimizer.md` decision 12). Without
+// one, the seed is the empty set and the optimizer deletes return values. The
+// symptom is a wrong program rather than a compiler error, which is why this
+// fixture lands with the block view rather than with the pass that first makes
+// the need visible.
+//
+// **A declared `-> a` is not a licence to call X and Y dead**, tempting as it
+// looks. `call foo` is documented as the escape hatch that opts out of
+// contract checking, a hand-written `jsr foo` never had a contract to check,
+// and an undeclared clobber is `K816-W0123` — a warning, not a guarantee. A
+// caller may legally read a register the contract does not list. And flags
+// cannot be narrowed even in principle: the contract syntax `(a, x) -> a, y`
+// names registers and has no way to name a flag, so "the callee returns its
+// answer in the carry" is undeclarable *and* idiomatic.
+//
+// Narrowing the seed needs a workspace fact K816 cannot ask for today — a
+// checked call and the `call` escape hatch lower to the same `jsr` — or a
+// language rule that an unlisted output is undefined. Both are sub-plan G's.
+//
+// `caller` earns `K816-W0123` on purpose: it reads Y after a checked call that
+// writes it. That warning is the whole argument — K816 *notices* the
+// undeclared clobber and still compiles the read, so the read is legal and Y
+// is live.
+
+var CELL = $0400
+
+// `produce` declares `-> a`. The final `lda` survives because it is the
+// declared output; the final `ldy` survives **too**, because a caller reached
+// through the escape hatch may read Y and the declaration does not forbid it.
+func produce @a8 @i8 (a) -> a {
+    a+#$01
+    ldy #$09
+}
+
+// The trailing `clc` survives. Nothing in the contract syntax could have
+// declared the carry an output, and callers set and read it as an answer.
+func carry @a8 @i8 {
+    lda #$01
+    CELL = a
+    clc
+}
+
+// The same function called both ways: through the checked form, which states
+// the flow, and through the escape hatch, which does not. Both lower to the
+// same `jsr`, which is why the optimizer cannot tell them apart afterwards —
+// and why it treats every callee's exit the same way.
+func caller @a8 @i8 {
+    a = #$01
+    produce a -> a
+    CELL = a
+    CELL,y = a
+
+    a = #$02
+    call produce
+    CELL = a
+    CELL,y = a
+}
+
+// Mid-function, the identical load goes: `lda #$07` writes A, N, and Z, and
+// `lda #$08` overwrites all three before anything reads them. The difference
+// from `produce` is only *where* it sits, which is exactly the claim.
+func middle @a8 @i8 {
+    lda #$07
+    lda #$08
+    CELL = a
+}

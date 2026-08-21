@@ -266,6 +266,8 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
         eliminate_dead_mode_changes(&unit, &mut function.ops, &mut log);
         fold_mode_operations(&unit, &mut function.ops, &mut log);
         remove_overwritten_register_values(&unit, &mut function.ops, &mut log);
+        coalesce_known_loads(&unit, &mut function.ops, &mut log);
+        collapse_redundant_flags(&unit, &mut function.ops, &mut log);
     }
     log
 }
@@ -429,7 +431,18 @@ fn effects_of(op: &KOp) -> Option<Effects> {
 /// it. It is the other half of the effect-table correction and landed in the
 /// same change, because between the two the compiler is unsound.
 fn is_mode_operation(op: &KOp) -> bool {
-    effects_of(op).is_some_and(|effects| effects.width != WidthEffect::Unchanged)
+    // Both halves matter. The `WidthEffect` test is the plan's wording and is
+    // what a `PLP` or an unfolded mask answers to; the mnemonic test catches
+    // `sep #$01`, which carries no width bit and is still an instruction whose
+    // mask is decided by the composed-transform rule rather than by liveness.
+    match &op.kind {
+        KOpKind::Instruction(instruction)
+            if matches!(instruction.mnemonic, Mnemonic::Sep | Mnemonic::Rep) =>
+        {
+            true
+        }
+        _ => effects_of(op).is_some_and(|effects| effects.width != WidthEffect::Unchanged),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1639,4 +1652,457 @@ fn fold_justification(before: &[KOp], after: &[KOp]) -> String {
         before.len(),
         after.len(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// The value tracker (passes 4, 5, and 6)
+// ---------------------------------------------------------------------------
+
+/// Which bits of a register a tracked value covers.
+///
+/// **A value domain of `register → value` alone is unsound on this CPU.**
+/// `lda #0` in an 8-bit accumulator establishes the low byte and says nothing
+/// about the hidden `B` byte; a following `tax` with 16-bit index registers
+/// moves all sixteen bits, so X is *not* known to be zero
+/// (`plans/05-optimizer.md` decision 15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lanes {
+    /// The low byte only.
+    Low,
+    /// All sixteen bits.
+    Full,
+}
+
+impl Lanes {
+    fn of(width: RegisterWidth) -> Self {
+        match width {
+            RegisterWidth::W8 => Self::Low,
+            RegisterWidth::W16 => Self::Full,
+        }
+    }
+
+    /// True when a value known in `self` lanes covers everything `needed`
+    /// asks for.
+    fn covers(self, needed: Self) -> bool {
+        self == Self::Full || needed == Self::Low
+    }
+}
+
+/// One register's tracked value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Known {
+    value: u32,
+    lanes: Lanes,
+}
+
+/// What the tracker knows at one point.
+///
+/// It dies at every width transition, which is what keeps decision 1 intact: F
+/// reads a width from one place only — a `ModeAssumption` the width model
+/// wrote — and never advances it across an instruction, because the first
+/// instruction that would advance it also empties the tracker. F therefore
+/// never *computes* a width; it consumes one and stops trusting it at exactly
+/// the point the model would have written a new claim.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Tracked {
+    a: Option<Known>,
+    x: Option<Known>,
+    y: Option<Known>,
+    /// The value N and Z were last set from, which is what lets a load whose
+    /// register already holds its value go without changing the flags.
+    nz: Option<Known>,
+    carry: Option<bool>,
+    decimal: Option<bool>,
+    interrupt: Option<bool>,
+    overflow: Option<bool>,
+    /// The width claim in effect, or `None` once an instruction moved a width.
+    claim: Option<ModeState>,
+}
+
+impl Tracked {
+    fn register(&self, register: RegisterSet) -> Option<Known> {
+        match register {
+            RegisterSet::A => self.a,
+            RegisterSet::X => self.x,
+            RegisterSet::Y => self.y,
+            _ => None,
+        }
+    }
+
+    fn set_register(&mut self, register: RegisterSet, value: Option<Known>) {
+        match register {
+            RegisterSet::A => self.a = value,
+            RegisterSet::X => self.x = value,
+            RegisterSet::Y => self.y = value,
+            _ => {}
+        }
+    }
+
+    fn flag(&self, flag: FlagSet) -> Option<bool> {
+        match flag {
+            FlagSet::C => self.carry,
+            FlagSet::D => self.decimal,
+            FlagSet::I => self.interrupt,
+            FlagSet::V => self.overflow,
+            _ => None,
+        }
+    }
+
+    fn set_flag(&mut self, flag: FlagSet, value: Option<bool>) {
+        match flag {
+            FlagSet::C => self.carry = value,
+            FlagSet::D => self.decimal = value,
+            FlagSet::I => self.interrupt = value,
+            FlagSet::V => self.overflow = value,
+            _ => {}
+        }
+    }
+
+    /// The width in effect on `axis`, when a claim says so.
+    fn width(&self, axis: Axis) -> Option<RegisterWidth> {
+        let claim = self.claim?;
+        match axis {
+            Axis::Accumulator => claim.a.width(),
+            Axis::Index => claim.i.width(),
+        }
+    }
+
+    /// Everything the operation's effects invalidate.
+    fn clobber(&mut self, effects: Effects) {
+        for register in [RegisterSet::A, RegisterSet::X, RegisterSet::Y] {
+            if effects.writes.registers.intersects(register) {
+                self.set_register(register, None);
+            }
+        }
+        if effects
+            .writes
+            .flags
+            .intersects(FlagSet::N.union(FlagSet::Z))
+        {
+            self.nz = None;
+        }
+        for flag in [FlagSet::C, FlagSet::D, FlagSet::I, FlagSet::V] {
+            if effects.writes.flags.intersects(flag) {
+                self.set_flag(flag, None);
+            }
+        }
+    }
+}
+
+/// What the tracker knows *before* each operation.
+///
+/// Forward, per block, starting from nothing at every block boundary. There is
+/// no merge: a value that reaches a label by two paths is a question this pass
+/// does not need to answer, and answering it would need a lattice join over a
+/// domain whose whole point is that it dies easily.
+fn track_values(ops: &[KOp], flow: &Flow) -> Vec<Tracked> {
+    let mut before = vec![Tracked::default(); ops.len()];
+    for block in &flow.blocks {
+        let mut state = Tracked::default();
+        for index in block.start..block.end {
+            before[index] = state;
+            state = advance(state, &ops[index]);
+        }
+    }
+    before
+}
+
+/// The tracker after one operation.
+fn advance(state: Tracked, op: &KOp) -> Tracked {
+    if let KOpKind::ModeAssumption(claim) = &op.kind {
+        let mut state = state;
+        state.claim = Some(*claim);
+        return state;
+    }
+    let Some(effects) = effects_of(op) else {
+        return state;
+    };
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        unreachable!("only an instruction has effects");
+    };
+
+    // A width transition, a call, a return, an unknown memory effect, an
+    // unfolded mask, `PLP`, `RTI`, and `XCE` all empty the tracker.
+    if effects.width != WidthEffect::Unchanged
+        || effects.control != ControlEffect::FallThrough
+        || effects.memory == MemoryEffect::Unknown
+        || effects.memory == MemoryEffect::Volatile
+    {
+        return Tracked::default();
+    }
+
+    let mut state = state;
+    match instruction.mnemonic {
+        // A mask that touches no width flag is an ordinary set or clear of the
+        // bits it names, and the tracker can follow it exactly.
+        Mnemonic::Sep | Mnemonic::Rep => {
+            let Some((mnemonic, mask)) = mode_mask(op) else {
+                return Tracked::default();
+            };
+            let value = mnemonic == Mnemonic::Sep;
+            for flag in [FlagSet::C, FlagSet::D, FlagSet::I, FlagSet::V] {
+                if FlagSet::from_p_mask(mask).intersects(flag) {
+                    state.set_flag(flag, Some(value));
+                }
+            }
+            if FlagSet::from_p_mask(mask).intersects(FlagSet::N.union(FlagSet::Z)) {
+                state.nz = None;
+            }
+            return state;
+        }
+        Mnemonic::Clc => return set_flag(state, FlagSet::C, false),
+        Mnemonic::Sec => return set_flag(state, FlagSet::C, true),
+        Mnemonic::Cld => return set_flag(state, FlagSet::D, false),
+        Mnemonic::Sed => return set_flag(state, FlagSet::D, true),
+        Mnemonic::Cli => return set_flag(state, FlagSet::I, false),
+        Mnemonic::Sei => return set_flag(state, FlagSet::I, true),
+        Mnemonic::Clv => return set_flag(state, FlagSet::V, false),
+        _ => {}
+    }
+
+    // The loads and the transfers are the only two shapes that establish a
+    // value. **A load whose source is memory is never one of them**: a
+    // fixed-address `var` is how K65 spells a hardware register, and
+    // `examples/k65/atari-xl/landscape/main.k65` reads the POKEY
+    // random-number register in two consecutive statements (decision 14).
+    let established = match instruction.mnemonic {
+        Mnemonic::Lda | Mnemonic::Ldx | Mnemonic::Ldy => {
+            immediate_load(&state, instruction).map(|known| (destination(instruction), known))
+        }
+        Mnemonic::Tax => transferred(&state, RegisterSet::A, RegisterSet::X, Axis::Index),
+        Mnemonic::Tay => transferred(&state, RegisterSet::A, RegisterSet::Y, Axis::Index),
+        Mnemonic::Txa => transferred(&state, RegisterSet::X, RegisterSet::A, Axis::Accumulator),
+        Mnemonic::Tya => transferred(&state, RegisterSet::Y, RegisterSet::A, Axis::Accumulator),
+        Mnemonic::Txy => transferred(&state, RegisterSet::X, RegisterSet::Y, Axis::Index),
+        Mnemonic::Tyx => transferred(&state, RegisterSet::Y, RegisterSet::X, Axis::Index),
+        // `XBA` moves all sixteen bits regardless of width, so it needs a
+        // full-width source and gives one.
+        Mnemonic::Xba => state
+            .a
+            .filter(|known| known.lanes == Lanes::Full)
+            .map(|known| {
+                (
+                    RegisterSet::A,
+                    Known {
+                        value: ((known.value >> 8) & 0xFF) | ((known.value & 0xFF) << 8),
+                        lanes: Lanes::Full,
+                    },
+                )
+            }),
+        _ => None,
+    };
+
+    state.clobber(effects);
+    if let Some((register, known)) = established {
+        state.set_register(register, Some(known));
+        // Every one of these sets N and Z from the value it moved.
+        if effects.writes.flags.contains(FlagSet::N.union(FlagSet::Z)) {
+            state.nz = Some(known);
+        }
+    }
+    state
+}
+
+fn set_flag(mut state: Tracked, flag: FlagSet, value: bool) -> Tracked {
+    state.set_flag(flag, Some(value));
+    state
+}
+
+/// The register a load writes.
+fn destination(instruction: &crate::op::Instruction) -> RegisterSet {
+    match instruction.mnemonic {
+        Mnemonic::Ldx => RegisterSet::X,
+        Mnemonic::Ldy => RegisterSet::Y,
+        _ => RegisterSet::A,
+    }
+}
+
+/// The value an immediate load establishes, in the lanes the claim in effect
+/// says its immediate encodes.
+///
+/// With no claim in effect, nothing is tracked: F reads a width off a claim the
+/// width model wrote or it reads none at all.
+fn immediate_load(state: &Tracked, instruction: &crate::op::Instruction) -> Option<Known> {
+    let value = instruction.operand.as_ref()?.immediate_value()?.get();
+    let class = instruction.spec()?.immediate_width()?;
+    let lanes = match class {
+        crate::isa::ImmediateWidthClass::Fixed8 => Lanes::Low,
+        crate::isa::ImmediateWidthClass::Fixed16 => Lanes::Full,
+        crate::isa::ImmediateWidthClass::MDependent => Lanes::of(state.width(Axis::Accumulator)?),
+        crate::isa::ImmediateWidthClass::XDependent => Lanes::of(state.width(Axis::Index)?),
+    };
+    Some(Known { value, lanes })
+}
+
+/// The value a width-dependent transfer moves.
+///
+/// It moves as many bits as the *destination* width, which must itself be
+/// known, and it propagates only when the source's known lanes cover all of
+/// them.
+fn transferred(
+    state: &Tracked,
+    from: RegisterSet,
+    to: RegisterSet,
+    destination_axis: Axis,
+) -> Option<(RegisterSet, Known)> {
+    let width = state.width(destination_axis)?;
+    let needed = Lanes::of(width);
+    let source = state.register(from)?;
+    if !source.lanes.covers(needed) {
+        return None;
+    }
+    let value = match width {
+        RegisterWidth::W8 => source.value & 0xFF,
+        RegisterWidth::W16 => source.value & 0xFFFF,
+    };
+    Some((
+        to,
+        Known {
+            value,
+            lanes: needed,
+        },
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Pass 4 — coalesce known register loads
+// ---------------------------------------------------------------------------
+
+/// Deletes a load of a value the register provably already holds.
+fn coalesce_known_loads(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    let flow = Flow::build(ops, unit);
+    let values = track_values(ops, &flow);
+    let redundant: Vec<usize> = (0..ops.len())
+        .filter(|index| redundant_load(ops, &flow, &values, *index))
+        .collect();
+    for index in &redundant {
+        let removed = ops[*index].clone();
+        log.changes.push(Change {
+            pass: Pass::CoalesceLoads,
+            site: Site {
+                function: unit.function,
+                index: *index,
+            },
+            justification: format!(
+                "the register already holds {}, in every lane this load writes",
+                describe_value(&values[*index], &removed),
+            ),
+            before: vec![removed],
+            after: Vec::new(),
+            witness: None,
+        });
+    }
+    for index in redundant.into_iter().rev() {
+        ops.remove(index);
+    }
+}
+
+/// True when the load at `index` establishes what is already there.
+fn redundant_load(ops: &[KOp], flow: &Flow, values: &[Tracked], index: usize) -> bool {
+    if flow.frozen[index] || flow.doomed[index] || !flow.reachable[flow.block_of[index]] {
+        return false;
+    }
+    let KOpKind::Instruction(instruction) = &ops[index].kind else {
+        return false;
+    };
+    if !matches!(
+        instruction.mnemonic,
+        Mnemonic::Lda | Mnemonic::Ldx | Mnemonic::Ldy
+    ) {
+        return false;
+    }
+    let state = &values[index];
+    let Some(loaded) = immediate_load(state, instruction) else {
+        return false;
+    };
+    let register = destination(instruction);
+    if state.register(register) != Some(loaded) {
+        return false;
+    }
+    // The load also reports on N and Z. It is a complete no-op only when the
+    // flags already say the same thing, or when nothing reads them.
+    let nz = FlagSet::N.union(FlagSet::Z);
+    state.nz == Some(loaded) || !flow.live_after[index].flags.intersects(nz)
+}
+
+/// The tracked value a justification names.
+fn describe_value(state: &Tracked, op: &KOp) -> String {
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        return String::from("that value");
+    };
+    match state.register(destination(instruction)) {
+        Some(known) => format!(
+            "${:0width$X}",
+            known.value,
+            width = match known.lanes {
+                Lanes::Low => 2,
+                Lanes::Full => 4,
+            }
+        ),
+        None => String::from("that value"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pass 5 — collapse redundant flag operations
+// ---------------------------------------------------------------------------
+
+/// The flag one operation sets, and to what.
+fn flag_operation(op: &KOp) -> Option<(FlagSet, bool)> {
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        return None;
+    };
+    Some(match instruction.mnemonic {
+        Mnemonic::Clc => (FlagSet::C, false),
+        Mnemonic::Sec => (FlagSet::C, true),
+        Mnemonic::Cld => (FlagSet::D, false),
+        Mnemonic::Sed => (FlagSet::D, true),
+        Mnemonic::Cli => (FlagSet::I, false),
+        Mnemonic::Sei => (FlagSet::I, true),
+        Mnemonic::Clv => (FlagSet::V, false),
+        _ => return None,
+    })
+}
+
+/// Deletes a flag operation whose flag provably already holds that value.
+///
+/// This one needs no liveness at all: the instruction is deleted because it
+/// would change nothing, not because nothing reads what it changes — which is
+/// what keeps it away from the flags that are live at every exit.
+fn collapse_redundant_flags(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    let flow = Flow::build(ops, unit);
+    let values = track_values(ops, &flow);
+    let redundant: Vec<usize> = (0..ops.len())
+        .filter(|index| {
+            if flow.frozen[*index] || flow.doomed[*index] || is_mode_operation(&ops[*index]) {
+                return false;
+            }
+            if !flow.reachable[flow.block_of[*index]] {
+                return false;
+            }
+            flag_operation(&ops[*index])
+                .is_some_and(|(flag, value)| values[*index].flag(flag) == Some(value))
+        })
+        .collect();
+    for index in &redundant {
+        let removed = ops[*index].clone();
+        let (flag, value) = flag_operation(&removed).expect("a flag operation");
+        log.changes.push(Change {
+            pass: Pass::CollapseFlags,
+            site: Site {
+                function: unit.function,
+                index: *index,
+            },
+            justification: format!(
+                "{flag} already holds {}, so this changes nothing",
+                u8::from(value)
+            ),
+            before: vec![removed],
+            after: Vec::new(),
+            witness: None,
+        });
+    }
+    for index in redundant.into_iter().rev() {
+        ops.remove(index);
+    }
 }

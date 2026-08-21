@@ -1,0 +1,94 @@
+// Sub-plan F fixture: known values and known flags, and the two things the
+// tracker must never do.
+//
+// **The value domain tracks lanes.** `lda #0` in an 8-bit accumulator
+// establishes the low byte and says nothing about the hidden `B` byte, so a
+// following `tax` with 16-bit index registers — which moves all sixteen — must
+// not conclude that X is zero. A domain of `register → value` alone is unsound
+// on this CPU (`plans/05-optimizer.md` decision 15).
+//
+// **The tracker never reads memory.** A load whose source is memory is never
+// redundant, because a fixed-address `var` is how K65 spells a hardware
+// register: `examples/k65/atari-xl/landscape/main.k65` reads the POKEY
+// random-number register in two consecutive statements, and a pass that
+// coalesced the second one would break a program that ships here
+// (decision 14).
+
+var CELL = $0400
+var RND  = $D20A
+
+// The plain case: the same immediate loaded twice, with nothing in between
+// that touches the register or the flags it reports on.
+func repeated_load @a8 @i8 {
+    lda #$07
+    CELL = a
+    lda #$07
+    CELL = a
+}
+
+// A store between them changes nothing the load establishes, but a `cmp` does:
+// it rewrites N and Z from a comparison, so the second load is no longer a
+// complete no-op and stays.
+func compare_between @a8 @i8 {
+    lda #$07
+    a?#$08
+    lda #$07
+    CELL = a
+}
+
+// A redundant `clc`. The flag operation is deleted because it would change
+// nothing, not because nothing reads what it changes — which is what keeps
+// this pass away from the flags that are live at every exit.
+//
+// The carry is cleared by a `rep #$01`, which is a mask carrying no width bit:
+// no pass but the two mode passes may touch it, and neither has anything to do
+// to it, so it stays and the tracker follows it exactly.
+func repeated_clear @a8 @i8 {
+    rep #$01
+    clc
+    a+#$01
+    CELL = a
+}
+
+// And the `clc` that stays, one line apart from it: `adc` writes the carry, so
+// the second one is establishing something the first no longer guarantees.
+func carry_is_rewritten @a8 @i8 {
+    clc
+    a+#$01
+    clc
+    a+#$01
+    CELL = a
+}
+
+// **Lanes.** `lda #0` at `@a8` establishes the low byte; `tax` at `@i16` moves
+// sixteen. X is not known to be zero, so the `ldx #$0000` below it is not
+// redundant and stays.
+func lanes @a8 @i16 {
+    lda #$00
+    tax
+    CELL,x = a
+    ldx #$0000
+    CELL,x = a
+}
+
+// The same shape with the widths agreeing: `lda #$0000` at `@a16` establishes
+// all sixteen bits, `tax` at `@i16` moves all sixteen, and the `ldx #$0000`
+// after it *is* redundant.
+func lanes_agree @a16 @i16 {
+    lda #$0000
+    tax
+    CELL,x = a
+    ldx #$0000
+    CELL,x = a
+}
+
+// **Two reads of a hardware register.** Both survive. K65 has no `volatile`
+// and no way to acquire one — a fixed-address `var` is how the language spells
+// a memory-mapped register — so a second read of one address is never
+// redundant.
+func hardware_register @a8 @i8 {
+    a = RND
+    CELL = a
+    a = RND
+    CELL = a
+}

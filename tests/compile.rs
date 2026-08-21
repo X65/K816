@@ -1918,6 +1918,16 @@ fn instruction_lines(assembly: &str) -> Vec<String> {
 /// so both halves go through the real assembler and the linker, and the byte
 /// count is asserted beside the lines.
 fn optimizer_effect(test: &str, name: &str, text: &str) -> (Vec<String>, Vec<String>, usize) {
+    optimizer_effect_with(test, name, text, "slice")
+}
+
+/// The same, for a fixture that needs a different ld65 configuration.
+fn optimizer_effect_with(
+    test: &str,
+    name: &str,
+    text: &str,
+    config: &str,
+) -> (Vec<String>, Vec<String>, usize) {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
     let compile = |optimize: bool| -> String {
@@ -1928,8 +1938,8 @@ fn optimizer_effect(test: &str, name: &str, text: &str) -> (Vec<String>, Vec<Str
     };
     let before = compile(false);
     let after = compile(true);
-    let before_bytes = assemble_and_link(&format!("{test}-unopt"), &before, "slice");
-    let after_bytes = assemble_and_link(&format!("{test}-opt"), &after, "slice");
+    let before_bytes = assemble_and_link(&format!("{test}-unopt"), &before, config);
+    let after_bytes = assemble_and_link(&format!("{test}-opt"), &after, config);
 
     let mut remaining = instruction_lines(&after);
     let mut removed: Vec<String> = Vec::new();
@@ -2212,4 +2222,70 @@ fn the_folding_fixture_merges_only_what_the_composed_transform_allows() {
     );
     // Three merges of two-byte pairs; the mask rewrite is the same length.
     assert_eq!(bytes, 6);
+}
+
+/// The value fixture, at the bytes: three removals, and the five cases that
+/// must not move.
+///
+/// A repeated immediate load goes; a `cmp` between two identical loads keeps
+/// the second, because the load reports on N and Z and the comparison rewrote
+/// them. A `clc` after a mask that already cleared the carry goes; the one
+/// after an `adc` stays. `tax` from a low-byte-only accumulator into 16-bit
+/// index registers establishes nothing, so the `ldx` after it stays — and with
+/// the widths agreeing, the same `ldx` goes. Both reads of the hardware
+/// register stay.
+#[test]
+fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
+    let (removed, added, bytes) = optimizer_effect(
+        "opt-values",
+        "opt-values.k816",
+        include_str!("golden/opt-values.k816"),
+    );
+    assert_eq!(
+        removed,
+        vec![
+            "clc",            // repeated_clear
+            "lda     #$07",   // repeated_load
+            "ldx     #$0000", // lanes_agree, where sixteen known bits moved
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 1 + 2 + 3);
+}
+
+/// **Moved by sub-plan F, task F4.** `subscripts.k816` writes a run of
+/// `a = NAME:sizeof` statements whose results are never stored, so each load
+/// is overwritten by the next; and once the dead ones are gone, one of the
+/// survivors turns out to load a value the accumulator already holds.
+///
+/// The fixture's own claim is the folded *offsets*, and its unoptimized gate
+/// is what checks them. This is the second gate beside it.
+#[test]
+fn the_optimized_subscripts_fixture_drops_the_loads_nothing_stores() {
+    let (removed, added, bytes) = optimizer_effect_with(
+        "subscripts",
+        "subscripts.k816",
+        include_str!("golden/subscripts.k816"),
+        "vars",
+    );
+    assert_eq!(
+        removed,
+        vec![
+            "lda     #$0008",
+            "lda     #$02",
+            "lda     #$02",
+            "lda     #$04", // the one the accumulator already held
+            "lda     #$05",
+            "lda     #$06",
+            "lda     #$20",
+            "lda     #.loword((COMP + $08))",
+            "lda     #.loword((COMP + $10))",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(added, Vec::<String>::new());
+    // Six two-byte loads and three three-byte ones: the 16-bit `#$0008` and
+    // the two link-time `.loword` operands, which ca65 sizes as addresses.
+    assert_eq!(bytes, 6 * 2 + 3 * 3);
 }

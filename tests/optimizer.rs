@@ -538,3 +538,138 @@ fn optimization_is_idempotent() {
         assert!(second.is_empty(), "`{name}`: {:?}", second.changes);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Known values and known flags (sub-plan F, task F4)
+// ---------------------------------------------------------------------------
+
+const VALUES: &str = include_str!("golden/opt-values.k816");
+
+/// A load of a value the register already holds goes; one whose flags would
+/// differ stays.
+#[test]
+fn a_load_of_a_value_the_register_already_holds_is_coalesced() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    let log = run(&mut program, &model, file);
+
+    assert_eq!(
+        mnemonics(&program, &model, "repeated_load"),
+        vec![Mnemonic::Lda, Mnemonic::Sta, Mnemonic::Sta, Mnemonic::Rts]
+    );
+    let coalesced: Vec<_> = log.by_pass(Pass::CoalesceLoads).collect();
+    assert_eq!(coalesced.len(), 2, "the load and the `ldx` that agrees");
+    assert_eq!(
+        coalesced[0].justification,
+        "the register already holds $07, in every lane this load writes"
+    );
+
+    // A `cmp` between them rewrites N and Z from a comparison, so the second
+    // load is no longer a complete no-op.
+    assert_eq!(
+        mnemonics(&program, &model, "compare_between"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Cmp,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}
+
+/// The value domain tracks lanes, and the tracker refuses a transfer whose
+/// source does not cover what it moves.
+///
+/// `lda #0` at `@a8` establishes the low byte and says nothing about the
+/// hidden `B` byte. `tax` at `@i16` moves all sixteen, so X is **not** known
+/// to be zero and the `ldx #$0000` after it stays. With the widths agreeing,
+/// the same shape coalesces.
+#[test]
+fn a_transfer_propagates_only_when_the_source_covers_what_it_moves() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    run(&mut program, &model, file);
+
+    assert_eq!(
+        mnemonics(&program, &model, "lanes"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Tax,
+            Mnemonic::Sta,
+            Mnemonic::Ldx, // stays: A was known in the low byte only
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "lanes_agree"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Tax,
+            Mnemonic::Sta,
+            // the `ldx #$0000` is gone: sixteen known bits moved into sixteen
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}
+
+/// Value tracking never reads memory, so two reads of a hardware register are
+/// two reads.
+///
+/// K65 has no `volatile` and no way to acquire one — a fixed-address `var` is
+/// how the language spells a memory-mapped register, and
+/// `examples/k65/atari-xl/landscape/main.k65` reads the POKEY random-number
+/// register in consecutive statements.
+#[test]
+fn two_reads_of_a_fixed_address_var_are_both_kept() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    run(&mut program, &model, file);
+    assert_eq!(
+        mnemonics(&program, &model, "hardware_register"),
+        vec![
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Lda,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}
+
+/// A flag operation whose flag already holds that value goes; one whose flag
+/// was rewritten in between stays.
+#[test]
+fn a_flag_operation_that_would_change_nothing_is_collapsed() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    let log = run(&mut program, &model, file);
+
+    assert_eq!(
+        mnemonics(&program, &model, "repeated_clear"),
+        vec![
+            Mnemonic::Rep, // the mask that cleared the carry, untouched
+            Mnemonic::Adc,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+    let collapsed: Vec<_> = log.by_pass(Pass::CollapseFlags).collect();
+    assert_eq!(collapsed.len(), 1);
+    assert_eq!(
+        collapsed[0].justification,
+        "C already holds 0, so this changes nothing"
+    );
+
+    // `adc` writes the carry, so the second `clc` is establishing something
+    // the first no longer guarantees.
+    assert_eq!(
+        mnemonics(&program, &model, "carry_is_rewritten"),
+        vec![
+            Mnemonic::Clc,
+            Mnemonic::Adc,
+            Mnemonic::Clc,
+            Mnemonic::Adc,
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}

@@ -943,6 +943,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "the_folding_fixture_merges_only_what_the_composed_transform_allows",
         ),
         (
+            "opt-values.k816",
+            "the_value_fixture_coalesces_only_what_the_lanes_cover",
+        ),
+        (
             "opt-modes.k816",
             "the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change",
         ),

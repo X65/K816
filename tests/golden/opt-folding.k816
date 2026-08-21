@@ -1,0 +1,97 @@
+// Sub-plan F fixture: `REP`/`SEP` folding, the four rows of the width
+// document's table plus the cases it does not have.
+//
+// **Folding is justified by the composed status transform, not by effect
+// equality.** `Effects` records *which* state an instruction touches, never
+// what value it leaves there: `rep #$01` and `sep #$01` have identical
+// effects — same reads, same `C` write, no memory, fall-through — and set the
+// carry to opposite values. Any rule phrased as "equal effects" licenses
+// folding one into the other, so the rule is not that
+// (`plans/05-optimizer.md` decision 11).
+//
+// The run composes bit by bit instead: each `SEP` sets the bits of its mask,
+// each `REP` clears them, and a bit no operation touches is unchanged. What
+// comes out is one set mask, one clear mask, and whether the run narrowed the
+// index registers on the way through. A replacement is legal exactly when it
+// reproduces all three.
+//
+// Every body below reads the flag it changes, so nothing here is eliminated
+// before it can be folded. That is what makes this a folding fixture rather
+// than a second elimination one.
+
+var CELL = $0400
+
+// Row 1: `@a16` then `@i16` — one direction, one instruction.
+func widen_both @a8 @i8 {
+    rep #$20
+    rep #$10
+    lda CELL
+    ldx CELL
+}
+
+// Row 2: `@a8` then `@i8` — the same, narrowing.
+func narrow_both @a16 @i16 {
+    sep #$20
+    sep #$10
+    lda CELL
+    ldx CELL
+}
+
+// Row 3: `@a16` then `@i8` — opposite directions, so no merge. Two
+// instructions in, two out, and the composed transform is what says so:
+// a clear mask of $20 and a set mask of $10 need one of each.
+func opposite_axes @a8 @i16 {
+    rep #$20
+    sep #$10
+    lda CELL
+    ldx CELL
+}
+
+// Row 4, and the case the document gets wrong. Its cancellation row reads
+// "`REP #$20` + `SEP #$20` → `SEP #$20` (REP cancelled)", which is right only
+// for masks carrying width bits alone. `rep #$21` also clears the carry, and
+// the composed clear mask is $01 — so the fold is `rep #$01` **and**
+// `sep #$20`, not `sep #$20` by itself.
+func cancelled_with_a_carry @a16 @i8 {
+    rep #$21
+    sep #$20
+    bcc .skip
+    lda CELL
+.skip:
+    lda CELL
+}
+
+// The truncation, in its second costume. `sep #$10` + `rep #$10` composes to
+// a clear mask of $10 and narrows nothing — but the original narrowed on the
+// way through and zeroed the high bytes of X and Y. `txs` reads the X
+// register and no flag, so the fold is illegal here and both instructions
+// stay.
+func truncation_is_observed @a16 @i16 {
+    sep #$10
+    rep #$10
+    txs
+    ldx CELL
+}
+
+// A pair one operation apart does not merge: on any non-mode operation the
+// pending bits are flushed, which is the document's own rule.
+func separated @a8 @i8 {
+    rep #$20
+    lda CELL
+    rep #$10
+    ldx CELL
+}
+
+// **`rep #$01` beside `sep #$01`.** Identical effects, opposite results. The
+// composed transform is a clear mask of $01 followed by a set mask of $01,
+// last writer winning — so the run composes to `sep #$01` alone, and the
+// `bcs` below sees the carry set. A rule phrased as effect equality would
+// have folded these into the wrong one.
+func identical_effects_opposite_results @a8 @i8 {
+    rep #$01
+    sep #$01
+    bcs .taken
+    lda CELL
+.taken:
+    lda CELL
+}

@@ -939,6 +939,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "the_cross_unit_mode_pair_links_with_both_bridges_intact",
         ),
         (
+            "opt-folding.k816",
+            "the_folding_fixture_merges_only_what_the_composed_transform_allows",
+        ),
+        (
             "opt-modes.k816",
             "the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change",
         ),

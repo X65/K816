@@ -1537,24 +1537,27 @@ fn an_axis_is_observed_by_any_instruction_that_reads_its_flag() {
     assert_eq!(direct, (false, false));
 }
 
-/// A mode instruction does not observe the axis it establishes.
+/// A mode instruction observes no width axis at all.
 ///
 /// With `SEP`/`REP` reading `FlagSet::ALL_P`, every body containing one
 /// observed both axes and dead mode elimination could never fire anywhere.
-/// The read set is now every P bit the folded mask leaves alone, so a
-/// `rep #$20` observes X — it preserves that bit — and not M.
+/// Narrowing the read set to "every bit the mask does not write" is not enough
+/// either: `rep #$10` would then observe M, so a `rep #$20` beside it would
+/// keep its own M bit alive until *folding* merged the two — an answer that
+/// depends on whether a later pass has run. These instructions decide nothing
+/// from the status register, and the table now says so.
 #[test]
-fn a_mode_instruction_observes_the_axes_it_does_not_set() {
-    let (direct, _) = observed("func f @a8 {\n    rep #$20\n}\n", "f");
-    assert_eq!(direct, (false, true));
-
-    let (direct, _) = observed("func f @a8 @i8 {\n    rep #$30\n}\n", "f");
-    assert_eq!(direct, (false, false));
-
-    // An unfolded mask writes nothing, so it reads — and observes —
-    // everything.
-    let (direct, _) = observed("const MASK = $20\nfunc f @a8 {\n    rep #MASK\n}\n", "f");
-    assert_eq!(direct, (false, true));
+fn a_mode_instruction_observes_no_axis() {
+    for source in [
+        "func f @a8 {\n    rep #$20\n}\n",
+        "func f @a8 @i8 {\n    rep #$30\n}\n",
+        "func f @a16 @i16 {\n    sep #$10\n}\n",
+        // An unfolded mask decides nothing from P either; what makes it a
+        // barrier is `WidthEffect::Unknown`, not a pretend read.
+        "const MASK = $20\nfunc f @a8 {\n    rep #MASK\n}\n",
+    ] {
+        assert_eq!(observed(source, "f").0, (false, false), "`{source}`");
+    }
 }
 
 /// Observation is transitive through the call graph, and a callee K816

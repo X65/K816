@@ -46,7 +46,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::effects::{ControlEffect, CpuState, Effects, FlagSet, MemoryEffect, WidthEffect};
+use crate::effects::{
+    ControlEffect, CpuState, Effects, FlagSet, MemoryEffect, RegisterSet, WidthEffect,
+};
 use crate::isa::{Mnemonic, RegisterWidth};
 use crate::linkage::Linkage;
 use crate::op::{
@@ -262,6 +264,7 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
             observed_nowhere,
         };
         eliminate_dead_mode_changes(&unit, &mut function.ops, &mut log);
+        fold_mode_operations(&unit, &mut function.ops, &mut log);
         remove_overwritten_register_values(&unit, &mut function.ops, &mut log);
     }
     log
@@ -478,6 +481,18 @@ struct Flow {
     reachable: Vec<bool>,
     /// Operations inside a `nocross`-guarded run, which no pass may change.
     frozen: Vec<bool>,
+    /// Instructions the dead-write pass will remove.
+    ///
+    /// Computed as an *analysis* rather than discovered one removal at a time,
+    /// because two passes need the answer and they run in a fixed order that
+    /// puts them the wrong way round. Dead mode elimination runs first; the
+    /// dead-write pass runs third and can make a mode bit dead by deleting the
+    /// only instruction that read the flag. Decision 18's rule is that each
+    /// pass closes what it opens, and there is no loop over the sequence to
+    /// close this one — so the liveness both passes read is computed with the
+    /// doomed instructions already treated as absent, and the mode pass sees
+    /// through them the first time.
+    doomed: Vec<bool>,
 }
 
 impl Flow {
@@ -491,14 +506,24 @@ impl Flow {
             }
         }
         let reachable = reachability(ops, &blocks, &transfers, unit);
-        let live_after = liveness(ops, &blocks, &transfers);
         let frozen = frozen_operations(ops);
+        let (live_after, doomed) = liveness_and_doomed(
+            ops,
+            &blocks,
+            &transfers,
+            &Removable {
+                frozen: &frozen,
+                reachable: &reachable,
+                block_of: &block_of,
+            },
+        );
         Self {
             blocks,
             block_of,
             live_after,
             reachable,
             frozen,
+            doomed,
         }
     }
 
@@ -698,13 +723,63 @@ fn reachability(
     reachable
 }
 
-/// The CPU state live immediately after each operation.
+/// What makes an operation a candidate for removal at all, beyond its own
+/// effects.
+struct Removable<'a> {
+    frozen: &'a [bool],
+    reachable: &'a [bool],
+    block_of: &'a [usize],
+}
+
+/// The CPU state live immediately after each operation, and the instructions
+/// nothing reads.
+///
+/// The two are one fixpoint because each decides the other: an instruction is
+/// dead when nothing it writes is live, and a dead instruction's *reads* keep
+/// nothing alive. Computing liveness once and then deleting what it condemns
+/// finds `tax` and misses the `lda #1` above it — the cascade only appears
+/// when the liveness is recomputed without the condemned operation in it.
+///
+/// Monotone in both directions: the doomed set only grows, and the live set
+/// only shrinks as it does, so the loop terminates. This is an ordinary
+/// dataflow fixpoint over set union, not the exit classification
+/// `postmortem.md` §D.5 forbids iterating.
+fn liveness_and_doomed(
+    ops: &[KOp],
+    blocks: &[Block],
+    transfers: &[Transfer],
+    removable: &Removable<'_>,
+) -> (Vec<CpuState>, Vec<bool>) {
+    let mut doomed = vec![false; ops.len()];
+    let mut live_after;
+    loop {
+        live_after = liveness(ops, blocks, transfers, &doomed);
+        let condemned: Vec<usize> = (0..ops.len())
+            .filter(|index| {
+                !doomed[*index] && is_dead(ops, transfers, removable, &live_after, *index)
+            })
+            .collect();
+        let grew = !condemned.is_empty();
+        for index in condemned {
+            doomed[index] = true;
+        }
+        if !grew {
+            return (live_after, doomed);
+        }
+    }
+}
+
+/// The CPU state live immediately after each operation, with `doomed`
+/// operations treated as absent.
 ///
 /// Backward, unioned over successors, over a lattice whose join is set union
-/// and whose transfer function is monotone — so a worklist converges, which is
-/// the opposite of the exit classification `postmortem.md` §D.5 forbids
-/// iterating.
-fn liveness(ops: &[KOp], blocks: &[Block], transfers: &[Transfer]) -> Vec<CpuState> {
+/// and whose transfer function is monotone — so a worklist converges.
+fn liveness(
+    ops: &[KOp],
+    blocks: &[Block],
+    transfers: &[Transfer],
+    doomed: &[bool],
+) -> Vec<CpuState> {
     let mut live_after = vec![CpuState::NONE; ops.len()];
     let mut live_in = vec![CpuState::NONE; blocks.len()];
     let mut changed = true;
@@ -727,7 +802,9 @@ fn liveness(ops: &[KOp], blocks: &[Block], transfers: &[Transfer]) -> Vec<CpuSta
             };
             for op in (block.start..block.end).rev() {
                 live_after[op] = live;
-                live = live_before(&ops[op], transfers[op], live);
+                if !doomed[op] {
+                    live = live_before(&ops[op], transfers[op], live);
+                }
             }
             if live != live_in[index] {
                 live_in[index] = live;
@@ -736,6 +813,33 @@ fn liveness(ops: &[KOp], blocks: &[Block], transfers: &[Transfer]) -> Vec<CpuSta
         }
     }
     live_after
+}
+
+/// True when the operation at `index` writes nothing anything reads, and has
+/// nothing else to leave behind.
+fn is_dead(
+    ops: &[KOp],
+    transfers: &[Transfer],
+    removable: &Removable<'_>,
+    live_after: &[CpuState],
+    index: usize,
+) -> bool {
+    if removable.frozen[index] || is_mode_operation(&ops[index]) {
+        return false;
+    }
+    // An operation no edge reaches is the unreachable pass's, which removes
+    // only what the compiler generated. Leaving it here keeps a user's
+    // unreachable instruction out of this pass's reach.
+    if !removable.reachable[removable.block_of[index]] {
+        return false;
+    }
+    let Some(effects) = effects_of(&ops[index]) else {
+        return false;
+    };
+    if transfers[index].opaque || !effects.is_removal_candidate() || effects.writes.is_empty() {
+        return false;
+    }
+    !effects.writes.intersects(live_after[index])
 }
 
 /// The state live before one operation, given what is live after it.
@@ -747,7 +851,34 @@ fn live_before(op: &KOp, transfer: Transfer, live_after: CpuState) -> CpuState {
     if is_liveness_barrier(effects, transfer) {
         return CpuState::ALL;
     }
-    live_after.without(effects.writes).union(effects.reads)
+    let live = live_after.without(effects.writes).union(effects.reads);
+    // **A width transition redefines what a register write covers.**
+    // `RegisterSet` has one bit for the accumulator and the effect table calls
+    // an `lda` a write to it, but at 8 bits an `lda` writes the low byte and
+    // leaves the hidden `B` byte exactly where the 16-bit load above it put
+    // it — so the 16-bit load is not overwritten and is not dead. The same
+    // holds on the index axis in the other direction: a narrowing `SEP` zeroes
+    // the high bytes of X and Y and preserves the low ones, which is a partial
+    // write recorded as a whole one.
+    //
+    // Both are must-write over-approximations, and `postmortem.md` §C.5 says
+    // what those cost: the optimizer subtracts `writes` from a live set, so
+    // over-approximating declares a live value dead. Making the affected
+    // registers live at every width transition is the conservative answer, and
+    // it costs a load before a mode change rather than a program.
+    match effects.width {
+        WidthEffect::Known { a, i } => {
+            let mut live = live;
+            if a.is_some() {
+                live = live.union(CpuState::new(RegisterSet::A, FlagSet::NONE));
+            }
+            if i.is_some() {
+                live = live.union(CpuState::new(truncated(), FlagSet::NONE));
+            }
+            live
+        }
+        WidthEffect::Unchanged | WidthEffect::Unknown => live,
+    }
 }
 
 /// True when everything is live before this operation.
@@ -815,27 +946,24 @@ fn frozen_operations(ops: &[KOp]) -> Vec<bool> {
 
 /// Removes instructions nothing reachable reads.
 ///
-/// An instruction is dead when nothing it writes is live on any path from it,
-/// and it has no other effect to leave behind: no memory effect, plain
-/// fall-through control, and not a mode instruction — those belong to passes 1
-/// and 2 alone ([`is_mode_operation`]).
+/// The analysis is [`Flow::doomed`], which already ran the liveness and the
+/// deadness to their joint fixpoint — so this is a single sweep, every site
+/// index names a position in the stream the pass was handed, and the cascade
+/// (`lda #1` dying because the `tax` that read it did) is already in it.
 ///
-/// The pass iterates to its own fixpoint. Removing a `tax` can make the
-/// `lda #1` above it dead in turn, and decision 18's rule is that each pass
-/// closes what it opens rather than being re-run by a loop over the sequence.
+/// A candidate has no memory effect, plain fall-through control, and is not a
+/// mode instruction — those belong to passes 1 and 2 alone.
 fn remove_overwritten_register_values(
     unit: &Unit<'_>,
     ops: &mut Vec<KOp>,
     log: &mut OptimizationLog,
 ) {
-    loop {
-        let flow = Flow::build(ops, unit);
-        let Some(index) = (0..ops.len()).find(|index| dead(ops, &flow, *index)) else {
-            return;
-        };
-        let removed = ops.remove(index);
+    let flow = Flow::build(ops, unit);
+    let doomed: Vec<usize> = (0..ops.len()).filter(|index| flow.doomed[*index]).collect();
+    for index in &doomed {
+        let removed = ops[*index].clone();
         let effects = effects_of(&removed).expect("an instruction");
-        let witness = overwriter(ops, &flow, index, effects.writes);
+        let witness = overwriter(ops, &flow, *index, effects.writes);
         let justification = match &witness {
             Some(witness) => format!(
                 "writes {}, all overwritten by `{}` before any read",
@@ -851,7 +979,7 @@ fn remove_overwritten_register_values(
             pass: Pass::RemoveOverwritten,
             site: Site {
                 function: unit.function,
-                index,
+                index: *index,
             },
             before: vec![removed],
             after: Vec::new(),
@@ -859,26 +987,9 @@ fn remove_overwritten_register_values(
             justification,
         });
     }
-}
-
-/// True when the operation at `index` writes nothing anything reads.
-fn dead(ops: &[KOp], flow: &Flow, index: usize) -> bool {
-    if flow.frozen[index] || is_mode_operation(&ops[index]) {
-        return false;
+    for index in doomed.into_iter().rev() {
+        ops.remove(index);
     }
-    let Some(effects) = effects_of(&ops[index]) else {
-        return false;
-    };
-    if !effects.is_removal_candidate() || effects.writes.is_empty() {
-        return false;
-    }
-    // An operation no edge reaches is the unreachable pass's, which removes
-    // only what the compiler generated. Leaving it here keeps a user's
-    // unreachable instruction out of this pass's reach.
-    if !flow.reachable[flow.block_of[index]] {
-        return false;
-    }
-    !effects.writes.intersects(flow.live_after[index])
 }
 
 /// The operation that completed the overwrite, when one operation did.
@@ -893,11 +1004,9 @@ fn overwriter(
     index: usize,
     writes: crate::effects::CpuState,
 ) -> Option<KOp> {
-    // `index` counted positions before the removal, so the operation that
-    // followed the removed one now sits at `index`.
-    let end = flow.block(index.min(ops.len().saturating_sub(1))).end - 1;
+    let end = flow.block(index).end;
     let mut pending = writes;
-    for op in ops.iter().take(end.max(index)).skip(index) {
+    for op in ops.iter().take(end).skip(index + 1) {
         let effects = effects_of(op)?;
         pending = pending.without(effects.writes);
         if pending.is_empty() {
@@ -992,7 +1101,13 @@ fn observe_axis(ops: &[KOp], flow: &Flow, unit: &Unit<'_>, axis: Axis) -> Vec<bo
             };
             for op in (block.start..block.end).rev() {
                 after[op] = observed;
-                observed = observes_before(&ops[op], unit, axis, observed);
+                // An instruction the dead-write pass will delete observes
+                // nothing: it is not going to be there. Seeing through it here
+                // is what keeps a second `optimize()` finding no work, since
+                // that pass runs third and this one runs first.
+                if !flow.doomed[op] {
+                    observed = observes_before(&ops[op], unit, axis, observed);
+                }
             }
             if observed != at_entry[index] {
                 at_entry[index] = observed;
@@ -1195,8 +1310,8 @@ fn strip(
 }
 
 /// The registers a narrowing index-width transition truncates.
-fn truncated() -> crate::effects::RegisterSet {
-    crate::effects::RegisterSet::X.union(crate::effects::RegisterSet::Y)
+fn truncated() -> RegisterSet {
+    RegisterSet::X.union(RegisterSet::Y)
 }
 
 /// True when this transition narrows the registers `axis` sizes.
@@ -1344,4 +1459,184 @@ fn dead_mask_justification(unit: &Unit<'_>, op: &KOp, dead: u8, kept: u8) -> Str
     };
     let _ = op;
     format!("{} is unobserved: {scope}; {tail}", axes.join(" and "))
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2 — fold adjacent REP/SEP
+// ---------------------------------------------------------------------------
+
+/// The status transform an adjacent run of `REP`/`SEP` composes to.
+///
+/// **Not effect-set equality.** `Effects` records *which* state an instruction
+/// touches, never what value it leaves there: `rep #$01` and `sep #$01` have
+/// identical effects — same read set, same `C` write, no memory,
+/// fall-through — and set the carry to opposite values. Any rule phrased as
+/// "equal effects" licenses folding one into the other, so the rule is not
+/// that (`plans/05-optimizer.md` decision 11).
+///
+/// The run composes bit by bit instead: each `SEP` sets the bits of its mask,
+/// each `REP` clears them, and a bit no operation in the run touches is
+/// unchanged. What comes out is one *set* mask and one *clear* mask — disjoint
+/// by construction, last writer per bit winning — and a boolean for whether
+/// the run narrowed the index registers on the way through. A replacement is
+/// legal exactly when it reproduces all three.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Composed {
+    set: u8,
+    clear: u8,
+    /// Some operation in the run narrowed the index registers, which zeroes
+    /// the high bytes of X and Y whether or not the composed result still
+    /// leaves them narrow.
+    truncated: bool,
+}
+
+impl Composed {
+    fn apply(&mut self, mnemonic: Mnemonic, mask: u8) {
+        match mnemonic {
+            Mnemonic::Sep => {
+                self.set |= mask;
+                self.clear &= !mask;
+                self.truncated |= mask & axis_bit(Axis::Index) != 0;
+            }
+            _ => {
+                self.clear |= mask;
+                self.set &= !mask;
+            }
+        }
+    }
+
+    /// True when the replacement still narrows the index registers.
+    fn still_truncates(self) -> bool {
+        self.set & axis_bit(Axis::Index) != 0
+    }
+}
+
+/// Merges every adjacent run of `REP`/`SEP` into the fewest instructions with
+/// the same composed status transform.
+fn fold_mode_operations(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    loop {
+        let flow = Flow::build(ops, unit);
+        let Some((start, end, replacement)) = (0..ops.len())
+            .filter_map(|start| foldable(ops, &flow, start))
+            .next()
+        else {
+            return;
+        };
+        let before: Vec<KOp> = ops[start..end].to_vec();
+        let justification = fold_justification(&before, &replacement);
+        ops.splice(start..end, replacement.iter().cloned());
+        log.changes.push(Change {
+            pass: Pass::FoldModes,
+            site: Site {
+                function: unit.function,
+                index: start,
+            },
+            before,
+            after: replacement,
+            witness: None,
+            justification,
+        });
+    }
+}
+
+/// The run starting at `start`, and what replaces it, when a replacement is
+/// both legal and an improvement.
+fn foldable(ops: &[KOp], flow: &Flow, start: usize) -> Option<(usize, usize, Vec<KOp>)> {
+    let (first, first_mask) = mode_mask(&ops[start])?;
+    if flow.frozen[start] || !flow.reachable[flow.block_of[start]] {
+        return None;
+    }
+    let reason = ops[start].reason;
+    let mut composed = Composed::default();
+    composed.apply(first, first_mask);
+
+    // Any operation between two mode changes ends the run — a claim, a label,
+    // an instruction — which is the document's own "on any non-mode op, the
+    // pending bits are flushed". So does an unequal reason: a merged "bridge
+    // for `narrow`" and "entering the width block" would have to claim one and
+    // lie about the other, and the annotation on the emitted line has to stay
+    // true.
+    let mut end = start + 1;
+    while end < ops.len() && !flow.frozen[end] && ops[end].reason == reason {
+        let Some((mnemonic, mask)) = mode_mask(&ops[end]) else {
+            break;
+        };
+        composed.apply(mnemonic, mask);
+        end += 1;
+    }
+    if end - start < 2 {
+        return None;
+    }
+
+    // A narrowing the composed result no longer performs zeroed the high bytes
+    // of X and Y on the way through, and that is an ordinary register write:
+    // `sep #$10` + `rep #$10` composes to `rep #$10` only when X and Y are
+    // dead (decision 11, the truncation rule in its second costume).
+    if composed.truncated
+        && !composed.still_truncates()
+        && flow.live_after[end - 1].registers.intersects(truncated())
+    {
+        return None;
+    }
+
+    let mut replacement = Vec::new();
+    let mut push = |mnemonic: Mnemonic, mask: u8| {
+        if mask == 0 {
+            return;
+        }
+        let mut op = ops[start].clone();
+        op.kind = KOpKind::Instruction(crate::op::Instruction::new(
+            mnemonic,
+            crate::isa::AddressingMode::Immediate,
+            Some(Operand::Immediate(KExpr::number(u32::from(mask)))),
+        ));
+        replacement.push(op);
+    };
+    // The order of the run's first instruction, which keeps the merged stream
+    // reading like the one it replaced. Set and clear masks are disjoint, so
+    // the composed state is the same either way, and so is the truncation.
+    match first {
+        Mnemonic::Sep => {
+            push(Mnemonic::Sep, composed.set);
+            push(Mnemonic::Rep, composed.clear);
+        }
+        _ => {
+            push(Mnemonic::Rep, composed.clear);
+            push(Mnemonic::Sep, composed.set);
+        }
+    }
+    // Compared by *kind*: the replacement carries the first operation's span
+    // and reason, so a run that composes to itself would otherwise look like a
+    // change and rewrite every span in it for nothing.
+    let unchanged = replacement.len() == end - start
+        && replacement
+            .iter()
+            .zip(&ops[start..end])
+            .all(|(new, old)| new.kind == old.kind);
+    if replacement.len() > end - start || unchanged {
+        return None;
+    }
+    Some((start, end, replacement))
+}
+
+/// What the change log records for a fold.
+fn fold_justification(before: &[KOp], after: &[KOp]) -> String {
+    let mut composed = Composed::default();
+    for op in before {
+        let (mnemonic, mask) = mode_mask(op).expect("a folded mask");
+        composed.apply(mnemonic, mask);
+    }
+    let truncation = match (composed.truncated, composed.still_truncates()) {
+        (false, _) => "no index truncation to reproduce",
+        (true, true) => "the index truncation is reproduced",
+        (true, false) => "the index truncation is dropped, and X and Y are dead",
+    };
+    format!(
+        "identical composed transform: P bits set ${:02X}, cleared ${:02X}; {truncation}; \
+         {} instructions become {}",
+        composed.set,
+        composed.clear,
+        before.len(),
+        after.len(),
+    )
 }

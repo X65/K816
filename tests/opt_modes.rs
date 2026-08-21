@@ -314,8 +314,9 @@ fn a_call_bridge_goes_only_where_the_axis_is_observed_nowhere() {
         instructions(&program, &model, "main"),
         vec![
             (Mnemonic::Nop, None),
-            (Mnemonic::Rep, Some(0x20)),
-            (Mnemonic::Rep, Some(0x10)),
+            // Folded from `rep #$20` + `rep #$10` by pass 2, which is the
+            // width document's own first folding row.
+            (Mnemonic::Rep, Some(0x30)),
             (Mnemonic::Jsr, None),
             (Mnemonic::Rts, None),
         ],
@@ -334,12 +335,13 @@ fn a_sibling_units_reader_keeps_this_units_bridge() {
         ("opt-crossunit-a.k816", CROSS_A),
         ("opt-crossunit-b.k816", CROSS_B),
     ]);
-    assert!(log.is_empty(), "{:?}", log.changes);
+    // The bridge survives; both halves of it are still there, merged into the
+    // one instruction the document's folding table asks for.
+    assert_eq!(log.by_pass(Pass::EliminateDeadModes).count(), 0);
     assert_eq!(
         instructions(&program, &model, "main"),
         vec![
-            (Mnemonic::Rep, Some(0x20)),
-            (Mnemonic::Rep, Some(0x10)),
+            (Mnemonic::Rep, Some(0x30)),
             (Mnemonic::Jsr, None),
             (Mnemonic::Rts, None),
         ]
@@ -370,8 +372,7 @@ fn the_entry_points_inferred_exit_constrains_nothing() {
     assert_eq!(
         instructions(&program, &model, "caller"),
         vec![
-            (Mnemonic::Rep, Some(0x20)),
-            (Mnemonic::Rep, Some(0x10)),
+            (Mnemonic::Rep, Some(0x30)),
             (Mnemonic::Jsr, None),
             (Mnemonic::Rts, None),
         ]
@@ -516,4 +517,184 @@ fn claim_substitution_carries_the_preceding_claims_value() {
 /// weaker property that holds by construction: F emits no claim of its own.
 fn claim_is_not_invented(op: &KOp) -> bool {
     matches!(op.origin, Origin::CompilerGenerated)
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2 — folding, justified by the composed transform
+// ---------------------------------------------------------------------------
+
+const FOLDING: &str = include_str!("golden/opt-folding.k816");
+
+/// The four rows of the width document's folding table.
+#[test]
+fn the_documented_folding_table_is_what_k816_emits() {
+    let (model, program, _) = optimized(FOLDING);
+    let modes = |name: &str| -> Vec<(Mnemonic, Option<u32>)> {
+        instructions(&program, &model, name)
+            .into_iter()
+            .filter(|(mnemonic, _)| matches!(mnemonic, Mnemonic::Sep | Mnemonic::Rep))
+            .collect()
+    };
+
+    // `@a16` then `@i16` → `REP #$30`; `@a8` then `@i8` → `SEP #$30`.
+    assert_eq!(modes("widen_both"), vec![(Mnemonic::Rep, Some(0x30))]);
+    assert_eq!(modes("narrow_both"), vec![(Mnemonic::Sep, Some(0x30))]);
+    // `@a16` then `@i8` → no merge, because the two directions need one
+    // instruction each.
+    assert_eq!(
+        modes("opposite_axes"),
+        vec![(Mnemonic::Rep, Some(0x20)), (Mnemonic::Sep, Some(0x10))]
+    );
+    // The cancellation row, corrected. The document drops the `REP` entirely;
+    // its clear mask carries the carry, and the carry is not a width.
+    assert_eq!(
+        modes("cancelled_with_a_carry"),
+        vec![(Mnemonic::Rep, Some(0x01)), (Mnemonic::Sep, Some(0x20))]
+    );
+}
+
+/// Identical effects, opposite results: the pair that shows the rule cannot be
+/// effect equality.
+///
+/// `rep #$01` and `sep #$01` read the same state, write the same flag, touch
+/// no memory, and fall through — and leave the carry at opposite values. The
+/// run composes bit by bit, last writer per bit winning, so it becomes
+/// `sep #$01`.
+#[test]
+fn a_fold_reproduces_the_composed_transform_and_not_the_effect_set() {
+    let (model, program, log) = optimized(FOLDING);
+    assert_eq!(
+        instructions(&program, &model, "identical_effects_opposite_results")
+            .into_iter()
+            .take(2)
+            .collect::<Vec<_>>(),
+        vec![(Mnemonic::Sep, Some(0x01)), (Mnemonic::Bcs, None)]
+    );
+
+    let fold = log
+        .by_pass(Pass::FoldModes)
+        .find(|change| match change.after.as_slice() {
+            [only] => match &only.kind {
+                KOpKind::Instruction(instruction) => {
+                    instruction.mnemonic == Mnemonic::Sep
+                        && instruction
+                            .operand
+                            .as_ref()
+                            .and_then(Operand::immediate_value)
+                            == Some(k816::value::Value::new(0x01))
+                }
+                _ => false,
+            },
+            _ => false,
+        })
+        .expect("the carry pair folds");
+    assert_eq!(fold.before.len(), 2);
+    assert!(
+        fold.justification.contains("P bits set $01, cleared $00"),
+        "{}",
+        fold.justification
+    );
+}
+
+/// A truncation the composed result no longer performs is a register write
+/// that has to be dead.
+///
+/// `sep #$10` + `rep #$10` composes to a clear mask of $10 and narrows
+/// nothing — but the original zeroed the high bytes of X and Y on the way
+/// through, and `txs` reads the X register. The fold is illegal, and both
+/// instructions stay.
+#[test]
+fn a_fold_that_would_drop_a_live_truncation_does_not_happen() {
+    let (model, program, _) = optimized(FOLDING);
+    assert_eq!(
+        instructions(&program, &model, "truncation_is_observed"),
+        vec![
+            (Mnemonic::Sep, Some(0x10)),
+            (Mnemonic::Rep, Some(0x10)),
+            (Mnemonic::Txs, None),
+            (Mnemonic::Ldx, None),
+            (Mnemonic::Rts, None),
+        ]
+    );
+}
+
+/// On any non-mode operation the pending bits are flushed, which is the
+/// document's own rule: a pair one operation apart does not merge.
+#[test]
+fn an_operation_between_two_mode_changes_ends_the_run() {
+    let (model, program, _) = optimized(FOLDING);
+    assert_eq!(
+        instructions(&program, &model, "separated"),
+        vec![
+            (Mnemonic::Rep, Some(0x20)),
+            (Mnemonic::Lda, None),
+            (Mnemonic::Rep, Some(0x10)),
+            (Mnemonic::Ldx, None),
+            (Mnemonic::Rts, None),
+        ]
+    );
+}
+
+/// A run only merges when every member was produced for the same reason.
+///
+/// A merged "bridge for `wide_index`" and "entering the width block" would
+/// have to claim one and lie about the other, and the annotation on the
+/// emitted line is checked output. In practice every adjacent pair the model
+/// emits shares its reason, so the rule costs nothing today and stays honest
+/// once there are more producers.
+#[test]
+fn a_run_of_unequal_reasons_does_not_merge() {
+    // A block enter and a call bridge, adjacent, both widening, on different
+    // axes: everything about the composed transform says `rep #$30`, and they
+    // stay two instructions because they were emitted for different reasons.
+    let (model, program, _) = optimized(
+        "\
+var CELL = $0400
+
+func caller @a8 @i8 {
+    @a16 {
+        call wide_index
+        CELL = a
+    }
+    ldx #$01
+}
+
+func wide_index @a16 @i16 {
+    ldx #$0102
+}
+",
+    );
+    let ops = &function(&program, &model, "caller").ops;
+    let modes: Vec<(u32, Option<Reason>)> = ops
+        .iter()
+        .filter_map(|op| match &op.kind {
+            KOpKind::Instruction(instruction)
+                if matches!(instruction.mnemonic, Mnemonic::Sep | Mnemonic::Rep) =>
+            {
+                Some((
+                    instruction
+                        .operand
+                        .as_ref()
+                        .and_then(Operand::immediate_value)
+                        .expect("a folded mask")
+                        .get(),
+                    op.reason,
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        modes,
+        vec![
+            (0x20, Some(Reason::BlockEnter)),
+            (
+                0x10,
+                Some(Reason::CallBridge(
+                    model.symbols.lookup("wide_index").expect("the callee")
+                ))
+            ),
+            (0x20, Some(Reason::BlockRestore)),
+        ]
+    );
 }

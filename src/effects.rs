@@ -934,7 +934,7 @@ pub fn instruction_effects(
             };
             let written = mask.map_or(FlagSet::NONE, FlagSet::from_p_mask);
             Effects {
-                reads: flags(FlagSet::ALL_P.without(written)),
+                reads: CpuState::NONE,
                 writes: state(truncated, written),
                 memory: M::None,
                 control: C::FallThrough,
@@ -1144,36 +1144,39 @@ mod tests {
         assert_eq!(both.writes.flags, FlagSet::M.union(FlagSet::X));
     }
 
-    /// A mode instruction does not *observe* the axis it establishes.
+    /// `SEP` and `REP` decide nothing from the status register.
     ///
     /// `ALL_P` is a safe may-read over-approximation and too coarse to reason
     /// with: it says a `sep #$20` depends on M, so the `sep #$20` below a
     /// `rep #$20` would keep it alive and dead mode elimination could never
-    /// fire (`plans/05-optimizer.md` decision 2). The read set is every P
-    /// flag the folded mask leaves alone.
+    /// fire. "Every bit the mask does not write" is not enough either — then
+    /// `rep #$10` reads M and a `rep #$20` above it stays alive until folding
+    /// merges the two, which makes the pass's answer depend on whether a later
+    /// pass has run (`plans/05-optimizer.md` decision 2).
     #[test]
-    fn sep_and_rep_read_every_flag_their_mask_does_not_write() {
-        let sep = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, Some(0x20));
-        assert!(!sep.reads.flags.intersects(FlagSet::M));
-        // Every other P bit is preserved, so every other P bit is read.
-        assert_eq!(sep.reads.flags, FlagSet::ALL_P.without(FlagSet::M));
-
-        let rep = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x30));
-        assert_eq!(
-            rep.reads.flags,
-            FlagSet::ALL_P.without(FlagSet::M.union(FlagSet::X))
-        );
-
-        // `rep #$21` clears the carry as well, so the carry is not read
-        // either — which is what keeps folding from claiming it composed a
-        // bit it merely passed through.
-        let carry = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x21));
-        assert!(!carry.reads.flags.intersects(FlagSet::C));
-
-        // An unfolded mask writes nothing, so it reads everything.
+    fn sep_and_rep_read_no_flag_at_all() {
+        for mask in [Some(0x20), Some(0x30), Some(0x21), None] {
+            for mnemonic in [Mnemonic::Sep, Mnemonic::Rep] {
+                let effects = instruction_effects(mnemonic, AddressingMode::Immediate, mask);
+                assert_eq!(effects.reads, CpuState::NONE, "{mnemonic:?} {mask:?}");
+            }
+        }
+        // An unfolded mask writes nothing either — the mask may be zero — and
+        // says so through `WidthEffect::Unknown` instead.
         let unfolded = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, None);
-        assert_eq!(unfolded.reads.flags, FlagSet::ALL_P);
         assert_eq!(unfolded.writes.flags, FlagSet::NONE);
+        assert!(unfolded.width.is_unknown());
+    }
+
+    /// A preserved bit stays live through a mode instruction because the
+    /// transfer function passes it through, not because the instruction reads
+    /// it — and a bit the mask *does* write is a real overwrite.
+    #[test]
+    fn a_mode_mask_overwrites_exactly_the_flags_it_names() {
+        let plain = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x20));
+        assert!(!plain.writes.flags.intersects(FlagSet::C));
+        let carry = instruction_effects(Mnemonic::Rep, AddressingMode::Immediate, Some(0x21));
+        assert!(carry.writes.flags.contains(FlagSet::C));
     }
 
     #[test]
@@ -1202,12 +1205,12 @@ mod tests {
     /// An unfolded mask may be zero, so nothing is *definitely* written. The
     /// optimizer subtracts `writes` from a candidate's live state, so a
     /// pretend write here would declare a live flag dead; the barrier is the
-    /// unknown width transition instead.
+    /// unknown width transition instead, which is what makes every flag live
+    /// across it rather than a pretend read.
     #[test]
     fn an_unfolded_mask_writes_nothing_and_makes_the_width_unknown() {
         let effects = instruction_effects(Mnemonic::Sep, AddressingMode::Immediate, None);
         assert_eq!(effects.writes, CpuState::NONE);
-        assert_eq!(effects.reads.flags, FlagSet::ALL_P);
         assert!(effects.width.is_unknown());
     }
 

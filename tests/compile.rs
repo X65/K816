@@ -1932,7 +1932,7 @@ fn optimizer_effect(test: &str, name: &str, text: &str) -> (Vec<String>, Vec<Str
     let after_bytes = assemble_and_link(&format!("{test}-opt"), &after, "slice");
 
     let mut remaining = instruction_lines(&after);
-    let mut removed = Vec::new();
+    let mut removed: Vec<String> = Vec::new();
     for line in instruction_lines(&before) {
         match remaining.iter().position(|kept| *kept == line) {
             Some(index) => {
@@ -1941,31 +1941,58 @@ fn optimizer_effect(test: &str, name: &str, text: &str) -> (Vec<String>, Vec<Str
             None => removed.push(line),
         }
     }
+    // A multiset difference, sorted: identical lines in different functions
+    // cancel against each other, so the order they came out in says nothing.
+    // What the assertions name is *which* instructions the optimizer stopped
+    // emitting and which it started, and the byte count is what pins the
+    // sizes.
+    removed.sort();
+    remaining.sort();
     (removed, remaining, before_bytes.len() - after_bytes.len())
 }
 
-/// `block-exit.k816`: two scoped-block operations go, and the landing pads
-/// stay.
+/// `block-exit.k816`: the scoped-block operations whose bodies observe
+/// nothing go, and every landing pad stays.
 ///
-/// The `rep #$20` that enters `native_exit`'s block is dead because nothing
-/// inside the block reads M — the body is one `bra` — and the pad on the taken
-/// edge re-establishes the width for everything below. The `sep #$20` that
+/// A block whose body is one `bra` observes neither axis, so its *enter* is
+/// dead: the pad on the taken edge re-establishes the width for everything
+/// below, and the pad is the only path out. `native_exit` has one such block
+/// and `nested_exit` has two nested ones. The `sep #$20` that
 /// `generated_exit` restores on its *back edge* is dead for the same reason
-/// one step around: every path from it re-enters the loop through the block's
+/// one step around — every path from it re-enters the loop through the block's
 /// own `rep #$20`.
 ///
-/// Both landing pads survive. The pad is what makes a branch out of a scoped
-/// block correct, and neither of these removals is on that edge.
+/// Every landing pad survives. The pad is what makes a branch out of a scoped
+/// block correct, and none of these removals is on that edge: `nested_exit`'s
+/// pair of restores is *folded*, not dropped.
 #[test]
-fn the_optimized_block_exit_fixture_drops_two_redundant_scoped_operations() {
+fn the_optimized_block_exit_fixture_drops_the_enters_no_body_observes() {
     let (removed, added, bytes) = optimizer_effect(
         "block-exit",
         "block-exit.k816",
         include_str!("golden/block-exit.k816"),
     );
-    assert_eq!(removed, vec!["rep     #$20", "sep     #$20"], "{removed:?}");
-    assert_eq!(added, Vec::<String>::new());
-    assert_eq!(bytes, 4, "two two-byte instructions");
+    // Sorted: `native_exit`'s block enter, `generated_exit`'s back-edge
+    // restore, `nested_exit`'s two enters, and its two pad restores, which
+    // fold rather than disappear.
+    assert_eq!(
+        removed,
+        vec![
+            "rep     #$10",
+            "rep     #$20",
+            "rep     #$20",
+            "sep     #$10",
+            "sep     #$20",
+            "sep     #$20",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(
+        added,
+        vec!["sep     #$30"],
+        "the pad's restores fold into one; nothing else is put back: {added:?}"
+    );
+    assert_eq!(bytes, 12 - 2, "six two-byte instructions out, one back in");
 }
 
 /// `width-bridging.k816`: one bridge bit goes, and it is the one no
@@ -2035,14 +2062,14 @@ fn the_optimized_native_modes_fixture_drops_what_the_next_line_overwrites() {
     assert_eq!(
         removed,
         vec![
-            "lda     #$01",
-            "txa",
-            "tyx",
-            "txs",
-            "clc",
-            "cld",
-            "cli",
-            "sep     #$20",
+            "clc",          // before `sec`
+            "cld",          // before `sed`
+            "cli",          // before `sei`
+            "lda     #$01", // before the `pla` in stack_forms
+            "sep     #$20", // before the `rep #$20` on the next line
+            "txa",          // before `tya`
+            "txs",          // before `tcs`
+            "tyx",          // before `tsx`
         ],
         "{removed:?}"
     );
@@ -2062,10 +2089,30 @@ fn the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change() {
     // is not the width pass's to touch. And the `sep #$20` above the fixed
     // label bridge goes, because the bridge re-establishes the width for every
     // arrival.
-    assert_eq!(removed, vec!["rep     #$21", "sep     #$20"], "{removed:?}");
-    assert_eq!(added, vec!["rep     #$01"], "{added:?}");
-    // The rewrite is the same length; only the removal costs bytes.
-    assert_eq!(bytes, 2);
+    // Sorted: the bridge to `observes_x` (two instructions, which fold into
+    // one), the `rep #$21` whose M bit is stripped, and the redundant change
+    // above the fixed label bridge.
+    assert_eq!(
+        removed,
+        vec![
+            "rep     #$10",
+            "rep     #$20",
+            "rep     #$21",
+            "sep     #$20",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(
+        added,
+        vec![
+            "rep     #$01", // the stripped mask, carry clear intact
+            "rep     #$30", // the folded bridge, which is the document's own table
+        ],
+        "{added:?}"
+    );
+    // The mask rewrite is the same length; the removal and the fold cost two
+    // bytes each.
+    assert_eq!(bytes, 4);
 }
 
 /// The cross-unit pair links, and both of unit A's bridges are still there.
@@ -2090,9 +2137,9 @@ fn the_cross_unit_mode_pair_links_with_both_bridges_intact() {
         assert!(errors.is_empty(), "{name}: {errors:?}");
         let assembly = result.assembly.expect("compilation succeeds");
         if name == "a" {
-            // Unit A's bridge to a callee it cannot see through is intact.
-            assert!(assembly.contains("rep     #$20"), "{assembly}");
-            assert!(assembly.contains("rep     #$10"), "{assembly}");
+            // Unit A's bridge to the callee is intact, folded into the one
+            // instruction the document's folding table asks for.
+            assert!(assembly.contains("rep     #$30"), "{assembly}");
         }
         let dir = work_dir(&format!("opt-crossunit-{name}"));
         let asm_path = dir.join("out.s");
@@ -2125,4 +2172,44 @@ fn the_cross_unit_mode_pair_links_with_both_bridges_intact() {
             .expect("read linked binary")
             .is_empty()
     );
+}
+
+/// The folding fixture, at the bytes.
+///
+/// Four merges and one mask rewrite, and three runs that must not merge: the
+/// opposite-direction pair, the pair one operation apart, and the pair whose
+/// composed result would drop a live index truncation.
+#[test]
+fn the_folding_fixture_merges_only_what_the_composed_transform_allows() {
+    let (removed, added, bytes) = optimizer_effect(
+        "opt-folding",
+        "opt-folding.k816",
+        include_str!("golden/opt-folding.k816"),
+    );
+    // Sorted, and identical lines in different functions cancel: the
+    // `rep #$01` and `sep #$01` of `identical_effects_opposite_results` are
+    // matched against the `rep #$01` that `cancelled_with_a_carry` gains and
+    // the `sep #$01` the carry pair folds to, so what is left is the four
+    // merged halves plus the stripped `rep #$21`.
+    assert_eq!(
+        removed,
+        vec![
+            "rep     #$10", // widen_both
+            "rep     #$20",
+            "rep     #$21", // cancelled_with_a_carry, whose M bit is stripped
+            "sep     #$10", // narrow_both
+            "sep     #$20",
+        ],
+        "{removed:?}"
+    );
+    assert_eq!(
+        added,
+        vec![
+            "rep     #$30", // widen_both
+            "sep     #$30", // narrow_both
+        ],
+        "{added:?}"
+    );
+    // Three merges of two-byte pairs; the mask rewrite is the same length.
+    assert_eq!(bytes, 6);
 }

@@ -277,9 +277,15 @@ Generated output:
 00000B: C2 30       rep #$30        ; enter @a16 @i16 block
 00000D: A9 01 00    lda #$0001      ; 16-bit
 000010: A2 01 00    ldx #$0001      ; 16-bit
-000013: E2 20       sep #$20        ; restore @a8 (i8 needs no SEP -- already restored by block exit)
+000013: E2 30       sep #$30        ; restore @a8 @i8 -- both axes, see below
 000015: A9 01       lda #$01        ; 8-bit
 ```
+
+Both axes are restored, including the index one.  Narrowing the index
+registers zeroes the high bytes of X and Y, which is a register write and not
+only a width change, and every register is live where a function returns -- so
+the `SEP`'s X bit is load-bearing even though nothing below it reads the X
+flag.  Earlier revisions of this document dropped it.
 
 Blocks can be nested.  Each level saves and restores independently.
 
@@ -385,24 +391,29 @@ Generated output:
 
 ### Interaction with dead mode elimination
 
-If a function inherits a module-level mode but its body contains no
-width-dependent instructions, the dead mode elimination pass strips the
-inherited contract entirely:
+If a function inherits a module-level mode but *nothing in the program* reads
+the flag that mode sets, the dead mode elimination pass drops the call-site
+bridge that establishes it: the contract it satisfies serves nothing.
 
 ```k65
 @a16 @i16
 
-func main {
-    nop             // not width-dependent
+func main @a8 @i8 {
+    nop             // reads neither M nor X
     call helper
 }
 
 func helper {
-    nop             // not width-dependent
+    nop             // reads neither M nor X
 }
 ```
 
-Output -- all REP/SEP removed, no call-site bridging:
+`main` annotates *both* axes, because the entry point's widths are the
+environment's and a module default that contradicts either of them is
+`K816-E0143` (see [The entry point](#the-entry-point)).  `helper` still
+inherits `@a16 @i16`, so the call site would bridge to it.
+
+Output -- the bridge removed, because no instruction anywhere reads M or X:
 
 ```asm
 000000: EA          nop
@@ -413,31 +424,69 @@ Output -- all REP/SEP removed, no call-site bridging:
 000006: 60          rts
 ```
 
+Add one `lda #1` to either body and the bridge comes back: an axis is
+"observed nowhere" only when nothing in the whole program depends on it.
+
 ## Optimisations
 
 ### Dead mode elimination
 
 The first optimisation pass scans each function to determine whether its
-`REP`/`SEP` instructions actually affect any subsequent width-dependent
-instruction.  If not, the mode-switch op is removed.
+`REP`/`SEP` instructions actually affect anything downstream.  If not, the
+mode bits are stripped from the mask, and the op is removed when the mask
+empties.
+
+**An axis is *observed* by any instruction that reads its flag**, not only by
+one carrying a width-dependent immediate.  The M and X flags size every load,
+store, ALU operation, compare, push, pull, index step, and width-dependent
+transfer: `rep #$20` before `lda addr` / `sta addr` carries no immediate at
+all, and deleting it turns a 16-bit load and store into 8-bit ones.  That is
+not a lost optimisation, it is a different program.
 
 **Algorithm:**
 
-1. **Compute effective needs** -- for each function, check whether its body
-   (or bodies of functions it calls) contains any ImmediateM or ImmediateX
-   instruction.  Propagate transitively through the call graph until stable.
+1. **Compute effective observation** -- for each function, record which axes
+   its body reads the flag of, or reaches code the compiler cannot see
+   through.  Propagate transitively through the call graph until stable; a
+   recursion cycle observes whatever any member observes.
 
-2. **Backward scan** -- walk each function's ops from end to start, tracking
-   `need_m` and `need_x` flags (initially false):
-   - ImmediateM instruction seen: set `need_m = true`
-   - ImmediateX instruction seen: set `need_x = true`
-   - JSR/JSL to known function: set flags from target's effective needs
-   - `Rep(mask)` / `Sep(mask)`: strip bits for unneeded flags; remove the op
-     entirely if mask becomes zero; reset the corresponding need flag
+2. **Backward scan** -- walk each function's basic blocks from end to start,
+   unioning over successors, tracking whether each axis is observed:
+   - an instruction that reads M or X: that axis is observed
+   - `JSR`/`JSL` to a known function: take the axis from the target's
+     effective observation, and keep the caller's own answer unless the
+     callee's exit contract *fixes* the axis
+   - a call or transfer the compiler cannot resolve: both axes are observed
+   - `Rep(mask)` / `Sep(mask)`: strip the bits of unobserved axes; remove the
+     op entirely if the mask becomes zero; the axes it establishes are no
+     longer observed above it
 
-3. **Clear dead contracts** -- if a function's body turns out not to need M
-   width at all, clear `a_width` from its contract.  Same for X width.  This
-   prevents call-site bridging for contracts that serve no purpose.
+   A `REP`/`SEP` mask is **not** a width operation -- it writes an arbitrary
+   set of P bits, and only two of the eight are widths.  `rep #$21` clears M
+   *and* the carry, so removing it because M is unobserved breaks the `bcc`
+   below it.  Bits outside M and X are ordinary flag writes and belong to the
+   passes that prove a flag write dead.
+
+3. **The exit contract is an observer.**  A function's published outbound
+   contract is what the rest of the program was compiled against, so the last
+   operation establishing it on each path to a return is live *whatever* the
+   backward scan says.  That holds for `Fixed(@aN)` and for `Preserve` alike:
+   a scoped block's restore is what makes `Preserve` true.  The entry point is
+   the exception, and only because nothing can call it.
+
+   Likewise, a **narrowing** bit carries a second obligation.  `SEP` on the
+   index axis zeroes the high bytes of X and Y, which is a register write and
+   subject to ordinary liveness -- `TXS` reads the X register and no flag, and
+   sees the difference.  A mode bit is dead only when the axis is unobserved
+   *and* the register write the bit performs is dead.
+
+4. **Contracts that serve nothing** -- an axis observed *nowhere* in the whole
+   program is one no instruction depends on, so a call bridge that establishes
+   it may go: the contract it satisfies serves nothing.  This is expressed as a
+   property of the operation stream rather than by rewriting a contract, and it
+   applies to the bridge only.  A published *exit* contract is never dropped on
+   this ground, because "nowhere" is a claim about the program and what the
+   compiler measured is the workspace it was handed.
 
 This pass runs **before** folding, so it operates on single-bit `Rep`/`Sep`
 ops fresh from lowering.
@@ -460,6 +509,17 @@ The algorithm accumulates pending `rep_bits` and `sep_bits` masks.  A new
 `Rep(mask)` adds to `rep_bits` and cancels corresponding `sep_bits`; a new
 `Sep(mask)` does the opposite.  On any non-mode op, the pending bits are
 flushed as one or two machine instructions.
+
+The cancellation row above is written for masks carrying width bits alone.
+Composition is per *bit*: `rep #$21` + `sep #$20` folds to `rep #$01` **and**
+`sep #$20`, because the composed clear mask still carries the carry.  And a
+narrowing the composed result no longer performs is a register write that has
+to be dead first: `sep #$10` + `rep #$10` composes to `rep #$10` only where X
+and Y are dead, since the original zeroed their high bytes on the way through.
+
+The rule is the composed status transform, never effect-set equality.
+`rep #$01` and `sep #$01` touch exactly the same state and leave the carry at
+opposite values.
 
 ## Compilation pipeline
 

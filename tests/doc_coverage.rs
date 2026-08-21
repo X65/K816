@@ -27,13 +27,17 @@
 //! into an assertion. A section covered only by a test with a plausible name
 //! is not covered: the document's own source is what runs.
 //!
-//! **Several of the document's listings are post-optimization.** Dead mode
-//! elimination and `REP`/`SEP` folding are the optimizer's, not the width
-//! model's, so K816 emits *more* mode operations than those listings show —
-//! two single-bit `rep`s where the document prints one folded `rep #$30`.
-//! Each such row is marked [`Stage::Optimized`] and states the difference.
-//! Anyone "fixing" the expectations here to match those listings verbatim is
-//! re-implementing the optimizer inside the width model.
+//! **Several of the document's listings are post-optimization**, and those
+//! rows are compiled *with* the optimizer. Dead mode elimination and
+//! `REP`/`SEP` folding are its work, not the width model's, so a row marked
+//! [`Stage::Optimized`] asserts the document's listing verbatim against
+//! `compile` output rather than against the unfolded stream lowering emits.
+//! A row that still departs from its listing says what and why in
+//! `difference`, and the audit below refuses a short answer.
+//!
+//! Anyone "fixing" a [`Stage::Modelled`] row's expectations to match a
+//! post-optimization listing is re-implementing the optimizer inside the width
+//! model, which is what this file exists to catch.
 //!
 //! The document is not read at run time, so its sections and snippets are
 //! transcribed. A section whose example changes and is not transcribed here
@@ -43,14 +47,16 @@
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
 
-/// Which pass owns the output a document listing shows.
+/// Which stage of the pipeline owns the output a document listing shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
-    /// K816's own output, as the width model emits it.
+    /// K816's own output before optimization, as the width model emits it.
+    /// Compiled with `--no-opt`.
     Modelled,
-    /// The listing is what the optimizer produces. The row asserts the
-    /// unfolded, un-eliminated equivalent and `difference` names what F does
-    /// to it.
+    /// The listing is post-optimization, so the row is compiled **with** the
+    /// optimizer and asserted against the document verbatim. `difference` is
+    /// empty unless something in the listing is still not what K816 emits, in
+    /// which case it says what and why.
     Optimized,
 }
 
@@ -60,8 +66,10 @@ struct Row {
     section: &'static str,
     source: &'static str,
     stage: Stage,
-    /// What sub-plan F changes about the emitted stream, for an `Optimized`
-    /// row. Empty otherwise.
+    /// What is still not identical between the document's listing and what
+    /// K816 emits, and why. Empty when the listing is literally the output —
+    /// which is what every row should be, and what the audit below allows a
+    /// row to depart from only by saying so.
     difference: &'static str,
     /// Emitted lines the compiled snippet must contain, in order.
     expected: &'static [&'static str],
@@ -177,17 +185,26 @@ func wide_all @a16 @i16 {
     },
     Row {
         section: "Call-site bridging",
+        // The document shows only `caller`; the callees are named in its
+        // comments. Their bodies *read* the width they declare, which is what
+        // makes each bridge serve something — a callee that reads neither flag
+        // has a contract nothing depends on, and the optimizer drops the
+        // bridge to it. That is the next section's example, not this one's.
         source: "\
+var mem = $10
+
 func wide_a @a16 {
-    nop
+    lda mem
 }
 
 func narrow @a8 @i8 {
-    nop
+    lda mem
+    ldx mem
 }
 
 func wide_all @a16 @i16 {
-    nop
+    lda mem
+    ldx mem
 }
 
 func uncolored {
@@ -202,16 +219,13 @@ func caller {
 }
 ",
         stage: Stage::Optimized,
-        difference: "the listing folds `sep #$20` + `sep #$10` into `sep #$30`, \
-                     and likewise for the two `rep`s; folding is F's",
+        difference: "",
         expected: &[
             "rep     #$20",
             "jsr     a:wide_a",
-            "sep     #$20",
-            "sep     #$10",
+            "sep     #$30",
             "jsr     a:narrow",
-            "rep     #$20",
-            "rep     #$10",
+            "rep     #$30",
             "jsr     a:wide_all",
             "jsr     a:uncolored",
         ],
@@ -294,20 +308,21 @@ func main @a8 @i8 {
 }
 ",
         stage: Stage::Optimized,
-        difference: "the listing folds the block's two `rep`s into `rep #$30` and \
-                     drops the restore of an axis the next block re-establishes",
+        difference: "",
         expected: &[
             "lda     #$01",
             "rep     #$20",
             "lda     #$0001",
             "sep     #$20",
             "lda     #$01",
-            "rep     #$20",
-            "rep     #$10",
+            "rep     #$30",
             "lda     #$0001",
             "ldx     #$0001",
-            "sep     #$20",
-            "sep     #$10",
+            // Both axes go back, including the index one: narrowing zeroes
+            // the high bytes of X and Y, which is a register write, and every
+            // register is live where a function returns. Earlier revisions of
+            // the document printed `sep #$20` here.
+            "sep     #$30",
             "lda     #$01",
         ],
         diagnostic: None,
@@ -348,12 +363,94 @@ func narrow @a8 @i8 {
 }
 ",
         stage: Stage::Optimized,
-        difference: "the listing folds `main`'s two entry `rep`s into `rep #$30`",
+        difference: "the section's listing opens with an entry-point `rep #$30` \
+                     that K816 no longer emits at all: sub-plan J made the entry \
+                     point's widths the environment's, so `main` asserts them \
+                     rather than establishing them, and this row uses `work` for \
+                     the same reason the section's own note gives",
         expected: &[
             "lda     #$0001",
             "ldx     #$0001",
             "lda     #$01",
             "ldx     #$01",
+        ],
+        diagnostic: None,
+    },
+    Row {
+        // The width document's "Dead mode elimination", as an algorithm rather
+        // than a listing: the seed is *flag reads*, and a `sta` carries no
+        // immediate at all. Under the section's own earlier wording the
+        // `rep #$20` here is dead, and deleting it turns a 16-bit store into
+        // an 8-bit one.
+        section: "Dead mode elimination",
+        source: "\
+var mem = $0400
+
+func stores @a8 {
+    rep #$20
+    lda mem
+    sta mem
+    sep #$20
+}
+",
+        stage: Stage::Optimized,
+        difference: "",
+        expected: &[
+            "rep     #$20",
+            "lda     a:mem",
+            "sta     a:mem",
+            "sep     #$20",
+        ],
+        diagnostic: None,
+    },
+    Row {
+        // And the half the section is named for: an axis nothing reads.
+        section: "Interaction with dead mode elimination",
+        source: "\
+@a16 @i16
+
+func main @a8 @i8 {
+    nop
+    call helper
+}
+
+func helper {
+    nop
+}
+",
+        stage: Stage::Optimized,
+        difference: "",
+        expected: &["nop", "jsr     a:helper", "rts", "nop", "rts"],
+        diagnostic: None,
+    },
+    Row {
+        // The folding table, and the row it gets wrong. `rep #$21` clears the
+        // carry as well, so the composed clear mask is $01 and the `REP` is
+        // not cancelled — which is what the corrected section now says.
+        section: "REP/SEP folding",
+        source: "\
+var mem = $0400
+
+func folds @a8 @i8 {
+    rep #$20
+    rep #$10
+    lda mem
+    ldx mem
+    sep #$20
+    sep #$10
+    lda mem
+    ldx mem
+}
+",
+        stage: Stage::Optimized,
+        difference: "",
+        expected: &[
+            "rep     #$30",
+            "lda     a:mem",
+            "ldx     a:mem",
+            "sep     #$30",
+            "lda     a:mem",
+            "ldx     a:mem",
         ],
         diagnostic: None,
     },
@@ -372,13 +469,6 @@ const NOT_THE_WIDTH_MODELS: &[(&str, &str)] = &[
          than a listing",
     ),
     (
-        "Interaction with dead mode elimination",
-        "sub-plan F: the listing is what dead mode elimination produces from \
-         the stream the width model emits",
-    ),
-    ("Dead mode elimination", "sub-plan F, phase 9 item 1"),
-    ("REP/SEP folding", "sub-plan F, phase 9 item 2"),
-    (
         "Compilation pipeline",
         "prose: the stage list, not a program",
     ),
@@ -388,10 +478,16 @@ const NOT_THE_WIDTH_MODELS: &[(&str, &str)] = &[
     ),
 ];
 
-fn compile(source: &str) -> (Vec<String>, Vec<String>) {
+fn compile(source: &str, stage: Stage) -> (Vec<String>, Vec<String>) {
     let mut map = SourceMap::new();
     let file = map.add_file("doc.k816", source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: stage == Stage::Optimized,
+        },
+    );
     let codes = result
         .diagnostics
         .iter()
@@ -415,7 +511,7 @@ fn compile(source: &str) -> (Vec<String>, Vec<String>) {
 fn every_documented_example_compiles_to_what_it_documents() {
     let mut failures = Vec::new();
     for row in MATRIX {
-        let (lines, codes) = compile(row.source);
+        let (lines, codes) = compile(row.source, row.stage);
         match row.diagnostic {
             Some(code) => {
                 if !codes.iter().any(|reported| reported == code) {
@@ -548,7 +644,7 @@ fn every_symbolic_subscript_claim_holds() {
         // these rows read is a `:byte` one — a wider accumulator would be
         // `K816-E0140` against the declared datum, which is its own test.
         let source = format!("{LAYOUTS}\nfunc work @a8 @i8 {{\n    {statement}\n}}\n");
-        let (lines, codes) = compile(&source);
+        let (lines, codes) = compile(&source, Stage::Modelled);
         if !codes.is_empty() {
             failures.push(format!("  {section}: `{statement}` reported {codes:?}"));
             continue;
@@ -1045,24 +1141,25 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
     }
 }
 
-/// Every `Optimized` row states what the optimizer changes about it, so the
-/// difference from the document is recorded rather than left to be
-/// rediscovered as a bug.
+/// A row that still departs from its document says what and why.
+///
+/// Before sub-plan F this was the other way round: every post-optimization
+/// listing *had* to state a difference, because K816 could not produce one.
+/// Now the listing is what K816 emits, and a stated difference is the
+/// exception — so what the audit checks is that an exception is argued rather
+/// than left to be rediscovered as a bug.
 #[test]
-fn every_post_optimization_listing_names_its_difference() {
+fn every_remaining_difference_from_a_document_listing_is_argued() {
     for row in MATRIX {
-        match row.stage {
-            Stage::Optimized => assert!(
-                !row.difference.is_empty(),
-                "`{}` is a post-optimization listing with no difference stated",
-                row.section
-            ),
-            Stage::Modelled => assert!(
-                row.difference.is_empty(),
-                "`{}` states a difference but is not marked post-optimization",
-                row.section
-            ),
+        if row.difference.is_empty() {
+            continue;
         }
+        assert!(
+            row.difference.len() > 40,
+            "`{}` states a difference too short to be an argument: {}",
+            row.section,
+            row.difference
+        );
     }
 }
 
@@ -1086,18 +1183,48 @@ fn every_section_of_the_specification_is_accounted_for() {
         .map(|row| row.section)
         .chain(NOT_THE_WIDTH_MODELS.iter().map(|(section, _)| *section))
         .collect();
-    // Headings that only introduce the ones below them.
-    const INTRODUCTORY: &[&str] = &["Mode annotations", "Optimisations"];
+    /// A heading whose own body is prose with nothing to compile.
+    const INTRODUCTORY: &[&str] = &["Mode annotations"];
+    /// A heading that only introduces the subsections below it. **Not an
+    /// excuse**: the audit below checks that every subsection under one is
+    /// covered, which is what "Optimisations" earned by ceasing to be a
+    /// description of passes that did not exist.
+    const CONTAINERS: &[&str] = &["Optimisations"];
 
     let missing: Vec<&str> = headings
         .iter()
-        .filter(|heading| !covered.contains(*heading) && !INTRODUCTORY.contains(*heading))
+        .filter(|heading| {
+            !covered.contains(*heading)
+                && !INTRODUCTORY.contains(*heading)
+                && !CONTAINERS.contains(*heading)
+        })
         .copied()
         .collect();
     assert!(
         missing.is_empty(),
         "specification sections with neither a checked example nor a stated owner: {missing:?}"
     );
+
+    // Every subsection of a container is covered, or the container is an
+    // excuse after all.
+    for container in CONTAINERS {
+        let after = text
+            .split_once(&format!("\n## {container}\n"))
+            .unwrap_or_else(|| panic!("`{container}` is not a `##` heading"))
+            .1;
+        let body = after.split("\n## ").next().unwrap_or(after);
+        let subsections: Vec<&str> = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("### "))
+            .collect();
+        assert!(!subsections.is_empty(), "`{container}` introduces nothing");
+        for subsection in subsections {
+            assert!(
+                covered.contains(&subsection),
+                "`{container}` introduces `{subsection}`, which nothing checks"
+            );
+        }
+    }
 }
 
 /// Every fixture the width model ships is gated on *encoded bytes* somewhere,

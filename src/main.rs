@@ -78,7 +78,9 @@ fn usage(prog_name: &str) {
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  compile [--no-opt] [-o OUT.s] FILE   compile K816 source to ca65 assembly");
-    eprintln!("  emit-ir [--after-opt] FILE           dump the lowered operation stream");
+    eprintln!("  emit-ir [--after-opt] [--explain] FILE");
+    eprintln!("                                       dump the lowered operation stream, and");
+    eprintln!("                                       with --explain what the optimizer did");
     eprintln!("  lsp                                  run the language server over stdio");
     eprintln!();
     eprintln!("Options:");
@@ -92,6 +94,8 @@ fn usage(prog_name: &str) {
 
 struct CommandLine {
     input: PathBuf,
+    /// Print what the optimizer did, after the dump (`emit-ir --explain`).
+    explain: bool,
     /// Sibling units, whose definitions this unit may refer to. K65 has no
     /// import syntax, so naming the other units is how a workspace is
     /// described until sub-plan I gives the driver a project surface.
@@ -112,6 +116,7 @@ fn parse_command_line(
     let mut input: Option<PathBuf> = None;
     let mut units: Vec<PathBuf> = Vec::new();
     let mut output: Option<PathBuf> = None;
+    let mut explain = false;
     let mut options = Options {
         optimize: !opt_flag_enables,
     };
@@ -156,6 +161,7 @@ fn parse_command_line(
                 let text = &arg["--message-format=".len()..];
                 set_message_format(prog_name, text, &mut message_format)?;
             }
+            "--explain" if opt_flag == "--after-opt" => explain = true,
             flag if flag == opt_flag => options.optimize = opt_flag_enables,
             _ if arg.starts_with('-') => {
                 render::render_tool_error(
@@ -178,6 +184,7 @@ fn parse_command_line(
     };
     Ok(CommandLine {
         input,
+        explain,
         units,
         output,
         options,
@@ -286,5 +293,13 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     print!("{ir}");
+    if command.explain {
+        match result.explanation {
+            Some(explanation) => print!("\n{explanation}"),
+            // `--explain` without `--after-opt`: there is no optimizer run to
+            // explain, and saying so beats printing nothing.
+            None => println!("\noptimizer: not run (add --after-opt)"),
+        }
+    }
     ExitCode::SUCCESS
 }

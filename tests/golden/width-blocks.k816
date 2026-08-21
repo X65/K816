@@ -6,6 +6,23 @@
 // more mode operations here than the document shows. Anyone "fixing" this
 // fixture's expected output to match the listing is re-implementing the
 // optimizer inside the width model.
+//
+// What the optimizer does to `scoped` is folding and nothing else: the two
+// `rep`s that enter the second block become `rep #$30`, and its two restores
+// become `sep #$30`. Every load stays — each one is read by the store or the
+// exit below it, and a load before a mode change is live whatever follows,
+// because a width transition redefines what a register write covers.
+//
+// The `sep #$30` is where this file and the document used to disagree. The
+// document printed `sep #$20` with the note "i8 needs no SEP -- already
+// restored by block exit", and that was wrong: narrowing the index registers
+// zeroes the high bytes of X and Y, which is a register write, and every
+// register is live where a function returns. Sub-plan F corrected the
+// document rather than the compiler.
+//
+// `nested` and `splitting` lose a block *enter* each, and those are not
+// folding: nothing inside either block reads the axis it establishes, and the
+// restore below re-establishes it for everything that follows.
 
 func scoped @a8 @i8 {
     lda #1              // 8-bit

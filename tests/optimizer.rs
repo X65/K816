@@ -338,6 +338,79 @@ fn native_and_hla_forms_optimize_identically() {
     assert_eq!(kinds(&hla), kinds(&native));
 }
 
+/// The same claim, once per pass.
+///
+/// Phase 9 requires that native and HLA-generated operations receive
+/// identical treatment, and one shared case does not show it: a pass that
+/// keyed on `Origin` would still agree about the slice's dead load. Each row
+/// below is one program written twice — the shorthand and the native sequence
+/// it expands to — and the two must optimize to the same operation stream and
+/// under the same pass.
+#[test]
+fn every_pass_treats_the_two_notations_identically() {
+    // `(what it exercises, HLA body, native body)`. The declarations and the
+    // contract are shared, so only the notation differs.
+    const CASES: &[(Pass, &str, &str)] = &[
+        (
+            Pass::RemoveOverwritten,
+            "a = #$00\n    a = #$01\n    CELL = a",
+            "lda #$00\n    lda #$01\n    sta CELL",
+        ),
+        (
+            Pass::CoalesceLoads,
+            "a = #$07\n    CELL = a\n    a = #$07\n    CELL = a",
+            "lda #$07\n    sta CELL\n    lda #$07\n    sta CELL",
+        ),
+        (
+            Pass::CollapseFlags,
+            "rep #$01\n    c-\n    a+#$01\n    CELL = a",
+            "rep #$01\n    clc\n    adc #$01\n    sta CELL",
+        ),
+        (
+            Pass::ZeroStores,
+            "CELL = a = 0\n    a = #$01\n    CELL = a",
+            "lda #$00\n    sta CELL\n    lda #$01\n    sta CELL",
+        ),
+    ];
+
+    for (pass, hla_body, native_body) in CASES {
+        let source =
+            |body: &str| format!("var CELL = $0400\n\nfunc f @a8 @i8 {{\n    {body}\n}}\n");
+        let (_, hla_file, hla_model, mut hla) = lowered(&source(hla_body));
+        let (_, native_file, native_model, mut native) = lowered(&source(native_body));
+        let hla_log = run(&mut hla, &hla_model, hla_file);
+        let native_log = run(&mut native, &native_model, native_file);
+
+        assert!(
+            hla_log.by_pass(*pass).count() > 0,
+            "{pass:?} did not fire on the shorthand form"
+        );
+        assert_eq!(
+            hla_log.by_pass(*pass).count(),
+            native_log.by_pass(*pass).count(),
+            "{pass:?} fired a different number of times per notation"
+        );
+        assert_eq!(
+            mnemonics(&hla, &hla_model, "f"),
+            mnemonics(&native, &native_model, "f"),
+            "{pass:?} left different streams per notation"
+        );
+        assert_eq!(
+            hla_log
+                .changes
+                .iter()
+                .map(|change| change.justification.clone())
+                .collect::<Vec<_>>(),
+            native_log
+                .changes
+                .iter()
+                .map(|change| change.justification.clone())
+                .collect::<Vec<_>>(),
+            "{pass:?} justified itself differently per notation"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The block view and its liveness (sub-plan F, task F1)
 // ---------------------------------------------------------------------------
@@ -884,4 +957,98 @@ fn a_branch_over_inline_data_does_not_shrink() {
         mnemonics.contains(&Mnemonic::Jmp),
         "the long form survives: {mnemonics:?}"
     );
+}
+
+/// **No `jsr`/`rts` or `jsl`/`rtl` pair is rewritten, anywhere.**
+///
+/// Phase 9 item 7 asks for *safe* tail calls, and the safe set K816 can
+/// identify is empty: `jsr f` + `rts` → `jmp f` leaves `f` running with the
+/// stack two bytes shallower and with a live slot holding the caller's own
+/// return address, and no fact K816 holds rules out `f` reading it. The stack
+/// is ordinary bank-zero memory, so `lda $01FE` reaches the frame without
+/// naming `S`.
+///
+/// Asserted on a fixture rather than left implicit, so that the day someone
+/// implements the rewrite without reading the reasoning, a test fails.
+#[test]
+fn no_call_and_return_pair_becomes_a_jump() {
+    for (name, source) in MODE_FIXTURES.iter().chain(&[("opt-liveout.k816", LIVEOUT)]) {
+        let (_, file, model, mut program) = lowered_as(name, source);
+        let before = tail_pairs(&program);
+        run(&mut program, &model, file);
+        assert_eq!(tail_pairs(&program), before, "`{name}`");
+    }
+
+    // And the fixture that carries both pairs on purpose, at the operations.
+    let (_, file, model, mut program) = lowered_as("opt-barriers.k816", BARRIERS);
+    run(&mut program, &model, file);
+    assert_eq!(
+        mnemonics(&program, &model, "tail_call"),
+        vec![Mnemonic::Jsr, Mnemonic::Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "long_tail"),
+        vec![Mnemonic::Jsl, Mnemonic::Rtl]
+    );
+}
+
+/// Every call immediately followed by a return, as `(call, return)` pairs.
+fn tail_pairs(program: &KProgram) -> Vec<(Mnemonic, Mnemonic)> {
+    program
+        .functions()
+        .flat_map(|function| {
+            function.ops.windows(2).filter_map(|pair| {
+                let (KOpKind::Instruction(first), KOpKind::Instruction(second)) =
+                    (&pair[0].kind, &pair[1].kind)
+                else {
+                    return None;
+                };
+                matches!(first.mnemonic, Mnemonic::Jsr | Mnemonic::Jsl)
+                    .then_some((first.mnemonic, second.mnemonic))
+                    .filter(|_| matches!(second.mnemonic, Mnemonic::Rts | Mnemonic::Rtl))
+            })
+        })
+        .collect()
+}
+
+/// Every change in every log carries the streams and the effects that
+/// justified it.
+///
+/// Phase 9's first success criterion, asserted over the whole fixture set
+/// rather than only where a test happened to look: a change with an empty
+/// `before`, or one whose instructions have no derivable effects, is a rewrite
+/// nothing can audit.
+#[test]
+fn every_recorded_change_carries_its_streams_and_its_effects() {
+    for (name, source) in MODE_FIXTURES.iter().chain(&[
+        ("opt-values.k816", VALUES),
+        ("opt-zero-store.k816", ZERO_STORE),
+        ("opt-liveout.k816", LIVEOUT),
+        ("opt-branch-range.k816", BRANCH_RANGE),
+        ("subscripts.k816", include_str!("golden/subscripts.k816")),
+    ]) {
+        let (_, file, model, mut program) = lowered_as(name, source);
+        for change in run(&mut program, &model, file).changes {
+            assert!(!change.before.is_empty(), "`{name}`: {change:?}");
+            assert!(
+                change.justification.len() > 20,
+                "`{name}`: {}",
+                change.justification
+            );
+            // The justification rests on effects, and the effects are derived
+            // from the ISA table rather than copied into the record — so what
+            // this checks is that every operation the change names *has* one.
+            let effects = change.effects();
+            let instructions = change
+                .before
+                .iter()
+                .filter(|op| matches!(op.kind, KOpKind::Instruction(_)))
+                .count();
+            assert_eq!(effects.len(), instructions, "`{name}`: {change:?}");
+            for effects in effects {
+                assert_ne!(effects.control, k816::effects::ControlEffect::Unknown);
+                assert_ne!(effects.memory, MemoryEffect::Unknown);
+            }
+        }
+    }
 }

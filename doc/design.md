@@ -394,6 +394,25 @@ pub fn optimize(program: &mut Program) {
 }
 ```
 
+**`rewrite_tail_calls` rewrites nothing, and that is a decision rather than a
+gap.** `implementation.md` phase 9 asks for *safe* tail calls, and the safe set
+K816 can identify is empty. Turning `jsr f` + `rts` into `jmp f` leaves `f`
+running with the stack two bytes shallower and with a live slot holding the
+caller's own return address, and licensing the rewrite needs a fact the
+compiler cannot have — that `f` never reads that slot. Opcode checks close only
+the routes that name `S`, because the stack is ordinary bank-zero memory and
+`lda $01FE` reaches the frame without it; alias analysis would have to refuse
+every callee that reads memory through anything but a compile-time-known
+non-stack address, which is close to refusing every callee for a rewrite worth
+one byte. `tests/golden/opt-barriers.k816` carries a `jsr`/`rts` pair asserting
+that nothing happens to it.
+
+Three things would unlock it, and each is a language decision rather than an
+optimizer one: an explicit stack-transparency declaration a function carries;
+the ABI rule that stack memory belongs to the implementation and a function may
+read only its own frame; or a whole-program proof about every reader of stack
+memory, which is out of reach while units compile separately.
+
 Each pass should operate on local basic blocks. No control-flow graph framework is required initially.
 
 The current [peephole optimizer](https://github.com/X65/K816/blob/main/crates/core/src/peephole.rs) already contains valuable behavior. Port the rules and their tests, but rebuild them on one complete effect model rather than carrying over all implementation details.

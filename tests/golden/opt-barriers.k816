@@ -107,3 +107,15 @@ func tail_call @a8 @i8 {
     jsr stacked
     rts
 }
+
+// The long form of the same pair, and the same answer with one more byte at
+// stake: `jsl` leaves three bytes on the stack instead of two, so the slot the
+// rewrite would reuse is one byte wider and no less live.
+far func long_tail @a8 @i8 {
+    far banked
+    rtl
+}
+
+far func banked @a8 @i8 {
+    nop
+}

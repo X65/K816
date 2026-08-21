@@ -241,3 +241,105 @@ fn the_unit_flag_carries_width_contracts_across_the_boundary() {
         "the sibling's exit contract is claimed before the load: {assembly}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The explanation surface (sub-plan F, task F8)
+// ---------------------------------------------------------------------------
+
+/// Runs `k816 emit-ir` on `text` with `args`, returning (stdout, success).
+fn emit_ir(test: &str, text: &str, args: &[&str]) -> (String, bool) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(test);
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let source = dir.join("input.k816");
+    std::fs::write(&source, text).expect("write source");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("emit-ir")
+        .args(args)
+        .arg(&source)
+        .output()
+        .expect("run k816");
+    (
+        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        output.status.success(),
+    )
+}
+
+/// A dead load, so there is exactly one thing for the optimizer to explain.
+const DEAD_LOAD: &str = "var SCREEN = $0400\n\nfunc main @a8 @i8 {\n\
+                         \x20   a = #$00\n    a = #$01\n    SCREEN = a\n}\n";
+
+/// `--explain` answers "where did my instruction go", which is why K816 ships
+/// no diagnostic for a correct optimization: a warning on every removal would
+/// be noise on every build.
+#[test]
+fn explain_names_the_pass_the_site_and_the_justification() {
+    let (stdout, success) = emit_ir("cli-explain", DEAD_LOAD, &["--after-opt", "--explain"]);
+    assert!(success);
+
+    // The dump comes first and is unchanged by the flag.
+    let (dump, explanation) = stdout
+        .split_once("optimizer:")
+        .unwrap_or_else(|| panic!("no explanation in: {stdout}"));
+    assert!(dump.contains("lda #$01"), "{dump}");
+    assert!(!dump.contains("lda #$00"), "the dead load is gone: {dump}");
+
+    assert!(
+        explanation.contains("remove-overwritten"),
+        "the pass is named: {explanation}"
+    );
+    assert!(
+        explanation.contains("main+"),
+        "the site is named: {explanation}"
+    );
+    assert!(
+        explanation.contains("lda #$00"),
+        "the operation is named: {explanation}"
+    );
+    assert!(
+        explanation.contains("writes A N Z, all overwritten by `lda #$01` before any read"),
+        "the justification is the one the pass recorded: {explanation}"
+    );
+}
+
+/// The flag says nothing when there is nothing to say, and says so.
+#[test]
+fn explain_is_honest_about_an_optimizer_that_did_not_run() {
+    // Nothing to remove: the log is empty and the surface says so rather than
+    // printing a heading with no rows.
+    let quiet = "var SCREEN = $0400\n\nfunc main @a8 @i8 {\n    a = #$01\n    SCREEN = a\n}\n";
+    let (stdout, success) = emit_ir("cli-explain-quiet", quiet, &["--after-opt", "--explain"]);
+    assert!(success);
+    assert!(stdout.contains("optimizer: no changes"), "{stdout}");
+
+    // And without `--after-opt` there is no optimizer run at all.
+    let (stdout, success) = emit_ir("cli-explain-unopt", DEAD_LOAD, &["--explain"]);
+    assert!(success);
+    assert!(
+        stdout.contains("lda #$00"),
+        "the dump is unoptimized: {stdout}"
+    );
+    assert!(
+        stdout.contains("optimizer: not run (add --after-opt)"),
+        "{stdout}"
+    );
+}
+
+/// The three commands phase 9 asks for keep working, unchanged.
+#[test]
+fn the_inspection_commands_still_answer_what_they_answered() {
+    let (before, success) = emit_ir("cli-ir-before", DEAD_LOAD, &[]);
+    assert!(success);
+    assert!(before.contains("lda #$00") && before.contains("lda #$01"));
+
+    let (after, success) = emit_ir("cli-ir-after", DEAD_LOAD, &["--after-opt"]);
+    assert!(success);
+    assert!(!after.contains("lda #$00") && after.contains("lda #$01"));
+    assert!(
+        !after.contains("optimizer:"),
+        "no explanation unasked: {after}"
+    );
+
+    let (stderr, success) = compile("cli-no-opt", DEAD_LOAD, &["--no-opt"]);
+    assert!(success, "{stderr}");
+}

@@ -174,6 +174,15 @@ pub struct IrResult {
     /// prints comes from the same [`optimize::Change`] the pass tests assert
     /// on, so the explanation and the test cannot disagree.
     pub log: Option<optimize::OptimizationLog>,
+    /// The same log, rendered — one line per change with its position, one
+    /// indented line with the justification the pass recorded.
+    ///
+    /// Carried beside the log rather than left to the caller because rendering
+    /// needs the unit's symbol table, and `main.rs` does not have one: all
+    /// compiler logic lives in the library, and the CLI displays what it is
+    /// handed. The two cannot disagree — the text comes from the same
+    /// [`optimize::Change`] the pass tests assert on.
+    pub explanation: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -192,6 +201,7 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
         return IrResult {
             ir: None,
             log: None,
+            explanation: None,
             diagnostics,
         };
     }
@@ -202,6 +212,7 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
         return IrResult {
             ir: None,
             log: None,
+            explanation: None,
             diagnostics,
         };
     }
@@ -216,9 +227,11 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
             },
         )
     });
+    let explanation = log.as_ref().map(|log| log.explain(&model.symbols));
     IrResult {
         ir: Some(program.dump(&model.symbols, map)),
         log,
+        explanation,
         diagnostics,
     }
 }

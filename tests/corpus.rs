@@ -399,3 +399,137 @@ fn corpus_case_names_are_unique() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The optimizer over the corpus (sub-plan F, task F8)
+// ---------------------------------------------------------------------------
+
+/// What the optimizer does to every corpus program, stated per file: the
+/// instruction lines it stops emitting, and why.
+///
+/// **Decision 21: an optimized program is compared to an unoptimized one at
+/// the bytes, and every difference is argued.** This is F's own success
+/// measure, as `examples/` compiling was E's — and the lines are listed here
+/// rather than accepted as a diff because non-negotiable 15 makes a re-blessed
+/// diff the single easiest way to ship a wrong-bytes bug in this sub-plan.
+///
+/// A program that does not compile has nothing to compare, and its row says so
+/// with the code that stops it.
+const OPTIMIZER_EFFECT: &[(&str, &[&str], &str)] = &[
+    (
+        "examples/fullstack/main.k816",
+        &["lda     #$00"],
+        "one dead load: the next line overwrites A, N, and Z before anything \
+         reads them. There is no mode operation in the file to eliminate or \
+         fold",
+    ),
+    (
+        "examples/hello_uart.k65",
+        &[],
+        "does not compile: K816-E0201, an evaluator bracket in operand position",
+    ),
+    (
+        "examples/k65/atari-xl/dli-example/main.k65",
+        &["rts"],
+        "the implicit return after a handler that ends in an unconditional \
+         transfer, which no edge reaches. Nothing else moves: the two reads of \
+         a hardware register stay, because value tracking never reads memory",
+    ),
+    (
+        "examples/k65/atari-xl/landscape/main.k65",
+        &["rts"],
+        "the implicit return after a `main` that loops forever. Both reads of \
+         the POKEY random-number register survive, which is the case decision \
+         14 is written for",
+    ),
+    (
+        "examples/k65/atari-xl/rainbow/main.k65",
+        &["rts"],
+        "the implicit return after a `main` that loops forever",
+    ),
+    (
+        "examples/k65/atari-xl/starfield/main.k65",
+        &[],
+        "does not compile: two K816-K65-0002, reserved legacy `rnd()` syntax",
+    ),
+    (
+        "examples/k65/atari-xl/include/defs.k65",
+        &[],
+        "declarations only: there is no code in it to optimize",
+    ),
+];
+
+/// The instruction lines of an emitted assembly, in order, without comments.
+fn instruction_lines(assembly: &str) -> Vec<String> {
+    assembly
+        .lines()
+        .map(|line| line.split(';').next().unwrap_or_default().trim_end())
+        .filter(|line| line.starts_with("        ") && !line.trim_start().starts_with('.'))
+        .map(|line| line.trim().to_owned())
+        .collect()
+}
+
+/// Every corpus program compiles the same, optimized or not, and every
+/// instruction the optimizer stopped emitting is named and argued.
+#[test]
+fn every_corpus_program_survives_the_optimizer_with_its_difference_stated() {
+    for (path, units, expected) in CORPUS {
+        let (_, removed_lines, why) = OPTIMIZER_EFFECT
+            .iter()
+            .find(|(named, _, _)| named == path)
+            .unwrap_or_else(|| panic!("{path} has no stated optimizer effect"));
+        assert!(why.len() > 30, "{path}: {why}");
+
+        let compile = |optimize: bool| {
+            let mut map = SourceMap::new();
+            let file = map.add_file(*path, read(path));
+            for unit in *units {
+                map.add_file(*unit, read(unit));
+            }
+            k816::compile_to_ca65(&map, file, &k816::Options { optimize })
+        };
+        let optimized = compile(true);
+        let codes: Vec<&str> = optimized
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        // The optimizer reports nothing and refuses nothing: it introduces no
+        // diagnostic at all, which is a decision rather than an oversight — a
+        // warning for a *correct* optimization would be noise on every build,
+        // and "where did my instruction go" is answered by
+        // `emit-ir --after-opt --explain` on demand.
+        assert_eq!(codes, *expected, "{path}");
+
+        let Some(optimized) = optimized.assembly else {
+            assert!(
+                why.starts_with("does not compile"),
+                "{path} produced no assembly but its row does not say so"
+            );
+            continue;
+        };
+        let unoptimized = compile(false).assembly.expect("both runs agree");
+
+        let mut remaining = instruction_lines(&optimized);
+        let mut removed: Vec<String> = Vec::new();
+        for line in instruction_lines(&unoptimized) {
+            match remaining.iter().position(|kept| *kept == line) {
+                Some(index) => {
+                    remaining.remove(index);
+                }
+                None => removed.push(line),
+            }
+        }
+        removed.sort();
+        assert!(
+            remaining.is_empty(),
+            "{path}: the optimizer emitted instructions the unoptimized run did not: \
+             {remaining:?}"
+        );
+        assert_eq!(removed, *removed_lines, "{path}: {why}");
+        assert!(
+            optimized.len() <= unoptimized.len(),
+            "{path}: the optimizer made the output longer"
+        );
+    }
+}

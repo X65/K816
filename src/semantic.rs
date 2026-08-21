@@ -125,6 +125,13 @@ pub struct Reservation {
     /// than in the segment its declaration happens to sit in — the direct
     /// page is "segment-orthogonal" and the document says so twice.
     pub direct_page: bool,
+    /// Filler bytes that must precede this reservation in the pool.
+    ///
+    /// Direct-page only, and it is what keeps an allocated slot off a *pinned*
+    /// one: a pinned declaration is an equate and reserves nothing, so without
+    /// these bytes in the way ld65 would hand out an address that is already
+    /// spoken for. Zero everywhere else.
+    pub padding: u32,
 }
 
 impl SemanticModel {
@@ -253,6 +260,7 @@ fn analyze(
     // contract is folded.
     analysis.defaults = analysis.module_defaults(file);
     analysis.declare_items(file);
+    analysis.place_direct_page();
     // Foreign names are declared *after* the unit's own, so a local
     // declaration always wins its name. A `const` or `var` initializer
     // therefore cannot fold a foreign name — which is right anyway: a
@@ -348,7 +356,10 @@ impl Analysis {
                     // alias that is not a symbol by then resolves as an
                     // undeclared name.
                     self.declare_aliases_of(symbol, func);
-                    self.declare_labels_in(symbol, &func.body);
+                    self.declare_labels_in(symbol, &func.body, func.kind);
+                    if func.kind == FunctionKind::Inline {
+                        self.check_inline_label_values(&func.body);
+                    }
                 }
                 ItemKind::Data(data) => self.declare_data_labels(data),
                 ItemKind::Var(_)
@@ -395,14 +406,92 @@ impl Analysis {
         }
     }
 
+    /// Refuses an `inline` body that uses one of its own labels as a *value*.
+    ///
+    /// Expansion turns those labels into the enclosing function's unnamed
+    /// targets, which is what keeps two use sites from colliding. A transfer
+    /// to one is rewritten to the anchor and works; an *expression*
+    /// mentioning one cannot be, because the lowered expression vocabulary
+    /// names symbols and the symbol is exactly what expansion removed. The
+    /// operand that came out named a definition that no longer existed, and
+    /// ca65 refused the file — so it is refused here instead, where the
+    /// message can say why.
+    ///
+    /// A branch, a `goto`, and a plain `lda .spot` are all fine: those carry
+    /// the label as a *target*, which expansion does rewrite.
+    fn check_inline_label_values(&mut self, block: &crate::ast::Block) {
+        for statement in &block.statements {
+            match &statement.kind {
+                StatementKind::Native(native) => {
+                    if let Some(operand) = &native.operand {
+                        for (expr, target) in native_operand_expressions(operand) {
+                            self.report_label_value(expr, target);
+                        }
+                    }
+                }
+                StatementKind::Hla(hla) => {
+                    for (expr, target) in hla_expressions(hla) {
+                        self.report_label_value(expr, target);
+                    }
+                }
+                StatementKind::WidthBlock(width) => self.check_inline_label_values(&width.body),
+                StatementKind::Nocross(body) => self.check_inline_label_values(body),
+                StatementKind::Loop(loop_statement) => {
+                    self.check_inline_label_values(&loop_statement.body);
+                }
+                StatementKind::Conditional(conditional) => {
+                    self.check_inline_label_values(&conditional.body);
+                    if let Some(otherwise) = &conditional.otherwise {
+                        self.check_inline_label_values(otherwise);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Reports every `.name` inside `expr` that expansion cannot rewrite.
+    ///
+    /// `target` marks the one shape it can: a bare `.spot` as the whole of an
+    /// *address* operand, which is what `lda .spot` and every branch carry,
+    /// and which becomes a reference to the anchor. A bare `.spot` as an
+    /// *immediate* is not that shape — it is the label's address as a number
+    /// — and neither is anything compound.
+    fn report_label_value(&mut self, expr: &Expr, target: bool) {
+        if target && matches!(expr.kind, ExprKind::LocalSymbol(_)) {
+            return;
+        }
+        let mut found = Vec::new();
+        collect_local_symbols(expr, &mut found);
+        for name in found {
+            self.diagnostics.push(inline_label_as_a_value(name));
+        }
+    }
+
     /// Declares the labels of one function body. A global label is visible
     /// across the unit; a `.name` label is scoped to `owner`, so two
     /// functions may use the same one.
-    fn declare_labels_in(&mut self, owner: SymbolId, block: &crate::ast::Block) {
+    ///
+    /// An `inline` body may declare only the local kind. Its labels are
+    /// renamed per expansion — they become the enclosing function's unnamed
+    /// targets — so a *global* one would be a unit-level name with no
+    /// definition left to point at, exported and undefined, and two use sites
+    /// would ask for two of it.
+    fn declare_labels_in(
+        &mut self,
+        owner: SymbolId,
+        block: &crate::ast::Block,
+        kind: FunctionKind,
+    ) {
         for statement in &block.statements {
             match &statement.kind {
                 StatementKind::Label(label) => {
                     if label.name.provenance == Provenance::Synthetic {
+                        continue;
+                    }
+                    if kind == FunctionKind::Inline && label.scope == crate::ast::LabelScope::Global
+                    {
+                        self.diagnostics.push(global_label_in_inline(label));
                         continue;
                     }
                     let kind = SymbolKind::Label {
@@ -426,15 +515,17 @@ impl Analysis {
                 }
                 // Labels nest wherever a block does; the scope stays the
                 // enclosing function's either way.
-                StatementKind::WidthBlock(width) => self.declare_labels_in(owner, &width.body),
-                StatementKind::Nocross(body) => self.declare_labels_in(owner, body),
+                StatementKind::WidthBlock(width) => {
+                    self.declare_labels_in(owner, &width.body, kind)
+                }
+                StatementKind::Nocross(body) => self.declare_labels_in(owner, body, kind),
                 StatementKind::Loop(loop_statement) => {
-                    self.declare_labels_in(owner, &loop_statement.body);
+                    self.declare_labels_in(owner, &loop_statement.body, kind);
                 }
                 StatementKind::Conditional(conditional) => {
-                    self.declare_labels_in(owner, &conditional.body);
+                    self.declare_labels_in(owner, &conditional.body, kind);
                     if let Some(otherwise) = &conditional.otherwise {
-                        self.declare_labels_in(owner, otherwise);
+                        self.declare_labels_in(owner, otherwise, kind);
                     }
                 }
                 StatementKind::Data(data) => self.declare_data_labels(data),
@@ -1734,6 +1825,11 @@ impl Analysis {
                     symbol,
                     bytes: allocation.total,
                     direct_page,
+                    // Filled in once every declaration has been seen: a
+                    // pinned slot declared *after* this one still has to be
+                    // avoided, and nothing knows the whole pinned set until
+                    // the pass is over.
+                    padding: 0,
                 },
             );
         }
@@ -1769,6 +1865,31 @@ impl Analysis {
             self.direct_page_reported = true;
             self.diagnostics
                 .push(direct_page_overflow(var, span, claimed));
+        }
+    }
+
+    /// Gives every allocated direct-page slot the filler that keeps it off a
+    /// pinned one.
+    ///
+    /// A second pass, and it has to be: the pool is first-fit *around* the
+    /// pinned addresses, and a pinned declaration may come after an allocated
+    /// one in the file. Nothing knows the whole pinned set until every
+    /// declaration has been read.
+    ///
+    /// Order matters twice over. The placement walks the reservations in
+    /// declaration order because that is the order ld65 lays the pool out in,
+    /// and the document says the allocator is first-fit in declaration order
+    /// within a unit.
+    fn place_direct_page(&mut self) {
+        for reservation in self.model.reservations.values_mut() {
+            if !reservation.direct_page {
+                continue;
+            }
+            // `None` is the page being full, which `E0133` already reported
+            // against the declaration that exhausted it. Emitting the slot
+            // without filler is the least wrong thing left: the diagnostic
+            // stops the compile before any of it reaches ld65.
+            reservation.padding = self.direct_page.place(reservation.bytes).unwrap_or(0);
         }
     }
 
@@ -2294,6 +2415,115 @@ fn eval_call_text(name: EvalCallName) -> &'static str {
         EvalCallName::Print => "print",
         EvalCallName::Error => "error",
     }
+}
+
+/// Every `.name` mentioned anywhere inside an expression.
+fn collect_local_symbols<'a>(expr: &'a Expr, found: &mut Vec<&'a crate::ast::Name>) {
+    match &expr.kind {
+        ExprKind::LocalSymbol(name) => found.push(name),
+        ExprKind::Unary(unary) => collect_local_symbols(&unary.operand, found),
+        ExprKind::Binary(binary) => {
+            collect_local_symbols(&binary.left, found);
+            collect_local_symbols(&binary.right, found);
+        }
+        ExprKind::Field(access) => collect_local_symbols(&access.base, found),
+        ExprKind::Subscript(subscript) => {
+            collect_local_symbols(&subscript.base, found);
+            collect_local_symbols(&subscript.index, found);
+        }
+        ExprKind::Metadata(query) => collect_local_symbols(&query.base, found),
+        ExprKind::TypedView(view) => collect_local_symbols(&view.base, found),
+        _ => {}
+    }
+}
+
+/// The expressions one native operand carries, and whether each sits in the
+/// *target* position expansion can rewrite.
+fn native_operand_expressions(operand: &crate::ast::NativeOperand) -> Vec<(&Expr, bool)> {
+    use crate::ast::NativeOperand;
+    match operand {
+        NativeOperand::Immediate(expr) => vec![(expr, false)],
+        // An unindexed address is the branch-and-load shape: `bra .spot`,
+        // `lda .spot`. Indexed, it is arithmetic on the label's address.
+        NativeOperand::Address(address) => vec![(&address.value, address.index.is_none())],
+        NativeOperand::Indirect(indirect) => vec![(&indirect.value, false)],
+        NativeOperand::LongIndirect(indirect) => vec![(&indirect.value, false)],
+        NativeOperand::BlockMove(moves) => {
+            vec![(&moves.source, false), (&moves.destination, false)]
+        }
+        NativeOperand::Register(_) => Vec::new(),
+    }
+}
+
+/// The expressions one HLA statement carries.
+fn hla_expressions(hla: &HlaStatement) -> Vec<(&Expr, bool)> {
+    use crate::ast::HlaOperandKind;
+    let operands: Vec<&crate::ast::HlaOperand> = match hla {
+        HlaStatement::Assign(assign) => assign
+            .targets
+            .iter()
+            .chain(std::iter::once(&assign.source))
+            .collect(),
+        HlaStatement::Arithmetic(arithmetic) => vec![&arithmetic.operand],
+        HlaStatement::Shift(shift) => vec![&shift.target],
+        HlaStatement::Step(step) => vec![&step.target],
+        _ => Vec::new(),
+    };
+    operands
+        .into_iter()
+        .filter_map(|operand| match &operand.kind {
+            HlaOperandKind::Immediate(expr) => Some((expr, false)),
+            HlaOperandKind::Memory(address) => Some((&address.value, address.index.is_none())),
+            HlaOperandKind::Indirect(indirect) => Some((&indirect.value, false)),
+            HlaOperandKind::Register(_) | HlaOperandKind::Error => None,
+        })
+        .collect()
+}
+
+/// An `inline`'s own label, used where only a name would do.
+fn inline_label_as_a_value(name: &crate::ast::Name) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        format!(
+            "`{}` is an `inline` label, which has no address to take",
+            name.text
+        ),
+        Label::new(name.span, "used here as a value, not as a target"),
+    )
+    .with_note(
+        "expansion renames an `inline`'s labels per use site — they become the enclosing \
+         function's unnamed targets — so there is no name left for an expression to \
+         mention, though a branch or a plain `lda .name` still reaches one",
+    )
+    .with_help(
+        "use a unit-level label outside the `inline`, or make the section a `func`, which \
+         has one address",
+    )
+    .with_docs("doc/syntax-reference.md#inline")
+}
+
+/// A unit-level label written inside an `inline` body.
+fn global_label_in_inline(label: &crate::ast::LabelStatement) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DUPLICATE_SYMBOL,
+        format!(
+            "`{}` is a unit-level label inside an `inline`, which has no one address",
+            label.name.text
+        ),
+        Label::new(
+            label.name.span,
+            "every use site would define this name again",
+        ),
+    )
+    .with_note(
+        "an `inline` body is copied into each use site and its labels are renamed per \
+         copy, so a name the whole unit can see has no definition left to point at",
+    )
+    .with_help(format!(
+        "make it local — `.{}` — or move the code into a `func`, which has one address",
+        label.name.text
+    ))
+    .with_docs("doc/syntax-reference.md#inline")
 }
 
 /// Whether the entry ABI answers for this section, and as what.

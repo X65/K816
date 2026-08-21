@@ -1154,6 +1154,57 @@ func f @a8 @i8 {
     );
 }
 
+/// A `goto` out of a scoped width block restores the width, like every other
+/// way of leaving one.
+///
+/// The restore is chosen by looking at each transfer's *target*, and a
+/// `goto` — and a native `jmp` — carries an address where a branch carries an
+/// anchor or a label. Missing that shape left the block with no restore at
+/// all: the CPU stayed 16-bit and the assembler was told 8-bit, which is a
+/// silent miscompile of everything after the label.
+#[test]
+fn a_goto_out_of_a_width_block_restores_it_too() {
+    for source in [
+        "func f @a8 @i8 {\n    @a16 {\n        goto .out\n    }\n.out:\n    lda #$12\n}\n",
+        "func f @a8 @i8 {\n    @a16 {\n        jmp .out\n    }\n.out:\n    lda #$12\n}\n",
+        // Both axes, and a conditional `goto` too.
+        "func f @a8 @i8 {\n    @a16 @i16 {\n        a?0\n        == goto .out\n    }\n.out:\n    lda #$12\n}\n",
+    ] {
+        let (_, _, diagnostics) = analyze(source);
+        assert_eq!(codes(&diagnostics), Vec::<&str>::new(), "`{source}`");
+
+        let mut map = SourceMap::new();
+        let file = map.add_file("goto.k816", source);
+        let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false })
+            .assembly
+            .expect("compiles");
+        assert!(
+            assembly.contains("sep     #$20"),
+            "the accumulator is restored before control leaves:\n{assembly}"
+        );
+        // And the claim after the label matches: an 8-bit immediate.
+        assert!(
+            assembly.contains("lda     #$12"),
+            "and the immediate is sized by it:\n{assembly}"
+        );
+    }
+
+    // A `goto` to a label *inside* the block does not leave it, so nothing is
+    // restored — the distinction the fix turns on.
+    let source =
+        "func f @a8 @i8 {\n    @a16 {\n        goto .again\n.again:\n        nop\n    }\n}\n";
+    let mut map = SourceMap::new();
+    let file = map.add_file("inside.k816", source);
+    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false })
+        .assembly
+        .expect("compiles");
+    assert_eq!(
+        assembly.matches("sep     #$20").count(),
+        1,
+        "only the block's own exit restores:\n{assembly}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Call contracts
 // ---------------------------------------------------------------------------

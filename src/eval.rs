@@ -110,7 +110,7 @@ pub fn fold(expr: &EvalExpr, bindings: &Bindings<'_>) -> Result<i64, Unsupported
             if *is_suffix || operator == "++" || operator == "--" {
                 return Err(Unsupported::Form {
                     span: expr.span,
-                    what: "increment and decrement",
+                    what: "increment and decrement operators",
                 });
             }
             let value = fold(operand, bindings)?;
@@ -121,7 +121,7 @@ pub fn fold(expr: &EvalExpr, bindings: &Bindings<'_>) -> Result<i64, Unsupported
                 "!" => Ok(i64::from(value == 0)),
                 _ => Err(Unsupported::Form {
                     span: expr.span,
-                    what: "this operator",
+                    what: "these operators",
                 }),
             }
         }
@@ -165,7 +165,7 @@ pub fn fold(expr: &EvalExpr, bindings: &Bindings<'_>) -> Result<i64, Unsupported
                 "||" => logical(a != 0 || b != 0),
                 _ => Err(Unsupported::Form {
                     span: expr.span,
-                    what: "this operator",
+                    what: "these operators",
                 }),
             }
         }
@@ -174,13 +174,26 @@ pub fn fold(expr: &EvalExpr, bindings: &Bindings<'_>) -> Result<i64, Unsupported
             consequence,
             alternative,
         } => {
-            // Both arms fold, so a body that is wrong in the branch this
-            // iteration did not take is still reported — the loop would
-            // otherwise refuse on iteration 7 and not on iteration 6.
+            // Both arms fold, and a failure in *either* is the answer — a
+            // body that is wrong in the branch this iteration did not take is
+            // still wrong, and reporting it only on the iteration that takes
+            // it would make `for i=0..255` refuse on step 7 and not on step
+            // 6. Returning the taken arm's `Result` alone discarded the other
+            // one silently: `1 ? 7 : sin(i)` emitted `$07` and said nothing
+            // about `sin`.
             let taken = fold(condition, bindings)? != 0;
             let consequence = fold(consequence, bindings);
             let alternative = fold(alternative, bindings);
-            if taken { consequence } else { alternative }
+            match (consequence, alternative) {
+                (Ok(consequence), Ok(alternative)) => {
+                    Ok(if taken { consequence } else { alternative })
+                }
+                // The taken arm's complaint first, because it is the one the
+                // author is most likely to have meant to write.
+                (Err(taken_arm), _) if taken => Err(taken_arm),
+                (_, Err(other_arm)) => Err(other_arm),
+                (Err(other_arm), _) => Err(other_arm),
+            }
         }
         // A list's value is its last item, and the ones before it are only
         // useful for their side effects — which this subset does not have.
@@ -188,32 +201,32 @@ pub fn fold(expr: &EvalExpr, bindings: &Bindings<'_>) -> Result<i64, Unsupported
             Some(last) if items.len() == 1 => fold(last, bindings),
             _ => Err(Unsupported::Form {
                 span: expr.span,
-                what: "an expression list",
+                what: "expression lists",
             }),
         },
-        EvalExprKind::Float(text) => Err(Unsupported::Numeric {
+        EvalExprKind::Float(_) => Err(Unsupported::Numeric {
             span: expr.span,
-            what: format!("the floating-point literal `{text}`"),
+            what: "floating-point literals".to_owned(),
         }),
         EvalExprKind::Call { name, .. } => Err(Unsupported::Numeric {
             span: expr.span,
-            what: format!("a call to `{}`", name.text),
+            what: format!("calls to `{}`", name.text),
         }),
         EvalExprKind::String(_) => Err(Unsupported::Form {
             span: expr.span,
-            what: "a string",
+            what: "strings",
         }),
         EvalExprKind::Assignment { .. } => Err(Unsupported::Form {
             span: expr.span,
-            what: "assignment",
+            what: "assignments",
         }),
         EvalExprKind::Subscript { .. } => Err(Unsupported::Form {
             span: expr.span,
-            what: "subscripting",
+            what: "subscripts",
         }),
         EvalExprKind::Member { .. } => Err(Unsupported::Form {
             span: expr.span,
-            what: "member access",
+            what: "member accesses",
         }),
         // A reserved call reports itself through `K816-K65-0002`, and an
         // error node reported itself as a syntax error; both are already
@@ -300,5 +313,19 @@ mod tests {
         // A reserved call has already been reported as reserved legacy
         // syntax, so folding it adds nothing (sub-plan E, decision 18).
         assert_eq!(eval("rnd() & 255", 0), Err(Unsupported::Reported));
+
+        // An arm the condition does not take is still checked: a body that
+        // cannot fold is a body that cannot fold, whichever way the branch
+        // went on this iteration.
+        assert!(matches!(
+            eval("1 ? 7 : sin(x)", 0),
+            Err(Unsupported::Numeric { .. })
+        ));
+        assert!(matches!(
+            eval("0 ? sin(x) : 7", 0),
+            Err(Unsupported::Numeric { .. })
+        ));
+        assert_eq!(eval("1 ? 7 : 9", 0), Ok(7));
+        assert_eq!(eval("0 ? 7 : 9", 0), Ok(9));
     }
 }

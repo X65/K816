@@ -1249,6 +1249,27 @@ impl<'a> Resolver<'a> {
         OperandSource::hla(operand)
     }
 
+    /// True when this operand names a *declared place*: a variable, or an
+    /// accessor rooted in one.
+    ///
+    /// Narrower than "not a value". `mem+1` denotes a place too, but it is
+    /// arithmetic over a name rather than a name, and the zero-store shortcut
+    /// is documented for "a variable identifier (possibly with `,x` or `,y`
+    /// indexing)" — a rule that exists so a bare `$10 = 0` is not read as a
+    /// spelling of `stz $10`. The accessors count, because `TASKS.state` is
+    /// as declared a place as `TASKS` is; arithmetic does not.
+    pub fn names_a_place(&self, operand: &HlaOperand) -> bool {
+        let HlaOperandKind::Memory(address) = &operand.kind else {
+            return false;
+        };
+        let Some(name) = base_name(&address.value) else {
+            return false;
+        };
+        self.symbols
+            .lookup(&name.text)
+            .is_some_and(|id| self.symbols.kind(id).is_addressable())
+    }
+
     /// The value expression an operand denotes, or `None` when it names a
     /// place.
     pub fn hla_value<'b>(&self, operand: &'b HlaOperand) -> Option<&'b Expr> {
@@ -2259,6 +2280,9 @@ fn unsupported_eval(unsupported: eval::Unsupported) -> Option<Diagnostic> {
     let diagnostic = match unsupported {
         eval::Unsupported::Numeric { span, what } => compat::unimplemented(
             span,
+            // `unimplemented` reads its argument as a plural noun phrase, so
+            // the phrase is plural: "floating-point literals", not "the
+            // floating-point literal `1.5`".
             &format!("{what} in a `for … eval` body"),
             compat::Owner::Compatibility,
         )

@@ -423,15 +423,17 @@ fn without_a_register(
     assign: &HlaAssignment,
     site: Span,
 ) -> Option<Vec<Classified>> {
-    // The shortcut is a store of zero into a declared name. A bare address
+    // The shortcut is a store of zero into a declared *name*. A bare address
     // literal does not take it — `$10 = 0` is not a spelling of `stz $10`
-    // (`doc/syntax-reference.md`, "Zero-Store Shortcut") — and neither does a
-    // non-zero constant, which has no instruction and must name the register
-    // that carries it.
+    // (`doc/syntax-reference.md`, "Zero-Store Shortcut") — and neither does
+    // arithmetic over a name: `mem+1 = 0` is a place, but the documented rule
+    // is a variable identifier, indexed or accessed, and not an expression
+    // K816 happens to be able to address. Nor does a non-zero constant, which
+    // has no instruction and must name the register that carries it.
     let named = assign
         .targets
         .iter()
-        .all(|target| resolver.hla_value(target).is_none());
+        .all(|target| resolver.names_a_place(target));
     let zero = resolver
         .hla_value(&assign.source)
         .and_then(|value| resolver.fold(value))

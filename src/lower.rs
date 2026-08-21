@@ -88,6 +88,7 @@ fn fill_code_subblocks<'a>(
             widths: widths(ordinal),
             ops: Vec::new(),
             checked_calls: Vec::new(),
+            nocross: Vec::new(),
             diagnostics: Vec::new(),
             anchors: 0,
             loops: Vec::new(),
@@ -96,6 +97,12 @@ fn fill_code_subblocks<'a>(
             expanding: Vec::new(),
         };
         lowering.block(subblock.body);
+        // A subblock's branches are branches: they need relaxing exactly as a
+        // function body's do, and its `nocross` guard cannot be measured
+        // until they have been. Without this a conditional over 200 bytes of
+        // code kept its short branch and ca65 refused the file.
+        lowering.relax_branches();
+        lowering.finish_nocross();
         let code = std::mem::take(&mut lowering.ops);
         let code = lowering.guarded(code, subblock.nocross, subblock.span);
         diagnostics.append(&mut lowering.diagnostics);
@@ -187,6 +194,7 @@ pub fn lower_unit(
             widths: model.width(info.symbol),
             ops: Vec::new(),
             checked_calls: Vec::new(),
+            nocross: Vec::new(),
             diagnostics: Vec::new(),
             anchors: 0,
             loops: Vec::new(),
@@ -206,6 +214,7 @@ pub fn lower_unit(
             lowering.implicit_return(func.body.span);
         }
         lowering.relax_branches();
+        lowering.finish_nocross();
 
         checked_calls.push((program.functions().count(), lowering.checked_calls));
         program.push_function(KFunction {
@@ -229,6 +238,20 @@ pub fn lower_unit(
             Origin::CompilerGenerated,
         ));
         for (reservation, span) in direct_page {
+            // The filler that steps over the pinned slots below this one.
+            // Emitted as an unnamed reservation because that is all it is:
+            // bytes ld65 must not hand to anyone, standing in for addresses
+            // the source already claimed by pinning them.
+            if reservation.padding > 0 {
+                program.push_op(
+                    KOp::new(
+                        KOpKind::Data(DataOp::Reserve(KExpr::number(reservation.padding))),
+                        span,
+                        Origin::CompilerGenerated,
+                    )
+                    .because(Reason::PinnedSlot),
+                );
+            }
             for op in reserve(reservation, span) {
                 program.push_op(op);
             }
@@ -489,6 +512,8 @@ struct Lowering<'a> {
     ops: Vec<KOp>,
     /// Calls that stated a register flow, for the damage scan after lowering.
     checked_calls: Vec<CheckedCall>,
+    /// `nocross` runs waiting for their length, which relaxation decides.
+    nocross: Vec<NocrossRun>,
     diagnostics: Vec<Diagnostic>,
     /// How many branch targets this function has generated so far.
     anchors: u32,
@@ -567,6 +592,24 @@ struct LoopAnchors {
 
 /// A checked call, recorded while lowering so the block-local scan can find
 /// its operation without matching by position afterwards.
+/// A `nocross` run whose length is not known until relaxation has finished.
+///
+/// Both indices move when a branch widens, which is why they are recorded
+/// rather than measured: an index taken before relaxation and read after it
+/// points at a different instruction.
+#[derive(Clone, Copy, Debug)]
+struct NocrossRun {
+    /// The first operation of the guarded run.
+    start: usize,
+    /// The `NocrossGuard` that closes it, waiting for its length.
+    guard: usize,
+    span: Span,
+    /// A `nocross code { }` subblock rather than a `nocross { }` statement —
+    /// the two say the same thing about the bytes and name themselves
+    /// differently when they do not fit.
+    subblock: bool,
+}
+
 struct CheckedCall {
     /// Index of the `jsr` within its function's operation stream.
     op: usize,
@@ -644,10 +687,10 @@ impl<'a> Lowering<'a> {
         if !nocross {
             return code;
         }
+        // `code` is finished — its branches have chosen their forms — so the
+        // length is the length, and the guard can be closed here rather than
+        // recorded for later.
         let length: u32 = code.iter().map(byte_length).sum();
-        let mut code = code;
-        // The run being measured is the subblock itself, so nothing K816
-        // added around it can be blamed for the size.
         if length > 256 {
             self.diagnostics.push(
                 Diagnostic::error(
@@ -658,6 +701,7 @@ impl<'a> Lowering<'a> {
                 .with_docs("doc/syntax-reference.md#code--subblocks"),
             );
         }
+        let mut code = code;
         code.push(KOp::new(
             KOpKind::NocrossGuard { length },
             span,
@@ -705,10 +749,34 @@ impl<'a> Lowering<'a> {
                 _ => None,
             })
             .collect();
+        // A label this statement defines, for the address operands that name
+        // one: a `goto` inside the block to a label inside the block does not
+        // leave it.
+        let defines = |expr: &KExpr| match expr {
+            KExpr::Symbol(symbol) => self.ops[start..]
+                .iter()
+                .any(|op| op.kind == KOpKind::Label(*symbol)),
+            _ => false,
+        };
         let leaves = |operand: &Option<Operand>| match operand {
             Some(Operand::Anchor(anchor)) => !internal.contains(anchor),
             Some(Operand::Label(_)) => true,
-            _ => false,
+            // `goto` and a native `jmp` carry an *address*, which is a target
+            // like any other. Missing these left a block by `goto` with no
+            // restore at all: the CPU stayed 16-bit and the assembler was
+            // told 8-bit, which is the silent miscompile decision 9 exists to
+            // prevent.
+            Some(Operand::Address { expr, .. }) => !defines(expr),
+            // `jmp (vec)` and `jml [vec]` go somewhere K816 cannot name, so
+            // they cannot be shown to stay inside.
+            Some(Operand::Indirect { .. }) => true,
+            // A *return* leaves the function, where the block's restore is
+            // moot: what holds after it is the caller's contract, not this
+            // block's width. Everything else here carries no target.
+            None
+            | Some(Operand::Immediate(_) | Operand::StackRelative(_) | Operand::BlockMove { .. }) => {
+                false
+            }
         };
 
         let mut outgoing: Vec<(usize, Option<Operand>)> = Vec::new();
@@ -897,6 +965,62 @@ impl<'a> Lowering<'a> {
         .because(Reason::LongBranch);
         let landing = KOp::new(KOpKind::Anchor(past), op.span, Origin::CompilerGenerated);
         self.ops.splice(index..=index, [guard, jump, landing]);
+        self.shift_records(index, 2);
+    }
+
+    /// Moves every index recorded during lowering past an insertion.
+    ///
+    /// Lowering hands two things forward by *position* — the `jsr` of a
+    /// checked call, and the bounds of a `nocross` run — and relaxation
+    /// rewrites the stream underneath both. An index taken before and read
+    /// after points at a different instruction: the damaged-register scan
+    /// looked at the wrong operation and stopped warning, and a run measured
+    /// itself from the wrong place.
+    fn shift_records(&mut self, at: usize, added: usize) {
+        for call in &mut self.checked_calls {
+            if call.op > at {
+                call.op += added;
+            }
+        }
+        for run in &mut self.nocross {
+            if run.start > at {
+                run.start += added;
+            }
+            if run.guard > at {
+                run.guard += added;
+            }
+        }
+    }
+
+    /// Gives every `nocross` run the length relaxation left it with.
+    ///
+    /// Runs after `relax_branches`, and has to: a run is a claim about where
+    /// its *emitted bytes* land, and until the last branch has chosen its
+    /// form there are no emitted bytes to count.
+    fn finish_nocross(&mut self) {
+        for run in std::mem::take(&mut self.nocross) {
+            let length: u32 = self.ops[run.start..run.guard].iter().map(byte_length).sum();
+            if let KOpKind::NocrossGuard { length: recorded } = &mut self.ops[run.guard].kind {
+                *recorded = length;
+            }
+            if run.subblock {
+                if length > 256 {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::NOCROSS_TOO_LARGE,
+                            format!(
+                                "this `nocross code` run is {length} bytes, which cannot fit \
+                                 a page"
+                            ),
+                            Label::new(run.span, "a page is 256 bytes"),
+                        )
+                        .with_docs("doc/syntax-reference.md#code--subblocks"),
+                    );
+                }
+                continue;
+            }
+            self.check_nocross_fits(run.start, length, run.span);
+        }
     }
 
     /// True when anything emitted since `start` branches to `anchor`.
@@ -1374,13 +1498,22 @@ impl<'a> Lowering<'a> {
             StatementKind::Nocross(body) => {
                 let start = self.ops.len();
                 self.block(body);
-                let length: u32 = self.ops[start..].iter().map(byte_length).sum();
-                self.check_nocross_fits(start, length, span);
+                // The length is *not* known yet: branch relaxation runs after
+                // the whole body is lowered and can add three bytes to every
+                // branch it widens. Measuring here gave a guard that asserted
+                // a page fit for a run the assembler never saw, and let an
+                // oversized one past the check entirely.
                 self.push(
-                    KOpKind::NocrossGuard { length },
+                    KOpKind::NocrossGuard { length: 0 },
                     span,
                     Origin::CompilerGenerated,
                 );
+                self.nocross.push(NocrossRun {
+                    start,
+                    guard: self.ops.len() - 1,
+                    span,
+                    subblock: false,
+                });
             }
             StatementKind::Goto(goto) => {
                 let Some(jump) = self.goto_jump(statement, goto) else {
@@ -1405,14 +1538,44 @@ impl<'a> Lowering<'a> {
                 // function: the solver flattened it into this graph, so its
                 // statements lower with the widths tracked around them.
                 let mut ops = walked.ops;
+                // Each guarded subblock's run, as `(start, guard)` inside
+                // `ops`. The code joins *this function's* stream, so its
+                // branches relax with the rest of the body — which means the
+                // guard cannot be measured here either.
+                let mut runs: Vec<(usize, usize, Span)> = Vec::new();
                 for subblock in walked.code.into_iter().rev() {
                     let start = self.ops.len();
                     self.block(subblock.body);
-                    let code = self.ops.split_off(start);
-                    let code = self.guarded(code, subblock.nocross, subblock.span);
+                    let mut code = self.ops.split_off(start);
+                    if subblock.nocross {
+                        code.push(KOp::new(
+                            KOpKind::NocrossGuard { length: 0 },
+                            subblock.span,
+                            Origin::CompilerGenerated,
+                        ));
+                    }
+                    // The subblocks are spliced back to front, so everything
+                    // already recorded sits after this insertion point.
+                    let added = code.len();
+                    for (start, guard, _) in &mut runs {
+                        *start += added;
+                        *guard += added;
+                    }
+                    if subblock.nocross {
+                        runs.push((subblock.at, subblock.at + added - 1, subblock.span));
+                    }
                     ops.splice(subblock.at..subblock.at, code);
                 }
                 self.push(KOpKind::SkipData, span, Origin::CompilerGenerated);
+                let base = self.ops.len();
+                for (start, guard, guard_span) in runs {
+                    self.nocross.push(NocrossRun {
+                        start: base + start,
+                        guard: base + guard,
+                        span: guard_span,
+                        subblock: true,
+                    });
+                }
                 self.ops.extend(ops);
                 self.push(KOpKind::SkipTarget, span, Origin::CompilerGenerated);
             }
@@ -1690,6 +1853,7 @@ impl<'a> Lowering<'a> {
             widths: self.model.width(section),
             ops: Vec::new(),
             checked_calls: Vec::new(),
+            nocross: Vec::new(),
             diagnostics: Vec::new(),
             anchors: 0,
             loops: Vec::new(),

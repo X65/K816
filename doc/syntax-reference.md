@@ -618,6 +618,18 @@ Damage tracking for contract-bearing bare calls is **block-local**: after every 
 
 Exit-width annotations in a `->` clause are **check-only**. They describe the widths the function body must actually have at every reachable return; they do not force the caller into that mode by declaration alone. If no exit-width annotation is present, a checked bare call adopts the callee's inferred exit mode from its reachable returns. An inferred exit mode of `Unknown` (callee not yet parsed, cross-unit reference, or body variants that are neither uniformly `Fixed` nor uniformly `Preserve`) is treated at the call site as `Preserve` — the caller's tracked widths are left unchanged. See *Unknown exit contracts preserve caller mode* in [register-width-aware-syntax.md](register-width-aware-syntax.md).
 
+An `inline` body's labels are renamed at each use site — they become the
+enclosing function's unnamed targets — and two rules follow from that:
+
+- **Its labels must be local.** A unit-level label inside an `inline` would be
+  a name the whole unit can see with no definition left to point at, and two
+  use sites would ask for two of it: `K816-E0102`.
+- **They can be branched to, not taken the address of.** `bra .spot`,
+  `goto .spot`, and `lda .spot` all name the label as a *target* and are
+  rewritten; `lda #.spot` asks for its address as a number, and there is no
+  name left for the expression to mention: `K816-E0115`. Put the label outside
+  the `inline`, or make the section a `func`, which has one address.
+
 ### Why aliases are inline-only
 
 K65 has no general parameter-passing mechanism. A `func` is reached by `JSR` (or `JSL`), and the only things that survive that jump are the machine's own registers and whatever the caller left in memory. There is no stack frame, no argument area, and no convention for passing a value the compiler makes up. So a `func` contract can name only what the hardware can actually carry across a call: `a`, `x`, and `y`.
@@ -1288,7 +1300,7 @@ func main {
 }
 ```
 
-The LHS must be a variable identifier (possibly with `,x` or `,y` indexing); a bare address literal like `$10 = 0` is not a shortcut for `stz $10`. The RHS must fold to literal zero at parse time — non-zero constants are rejected with *"non-zero constant stores must go through a register: use 'mem = a = value'"*. Addressing modes outside `STZ`'s support (`(mem),y`, `[mem]`, stack-relative, etc.) are rejected at lowering time.
+The LHS must name a declared place: a variable identifier, optionally indexed (`,x` / `,y`) or accessed (`TASKS.state`). Arithmetic over one is not a name — `mem+1 = 0` needs a register, as does a bare address literal like `$10 = 0`, which is not a shortcut for `stz $10`. The RHS must fold to literal zero at parse time — non-zero constants are rejected with *"non-zero constant stores must go through a register: use 'mem = a = value'"*. Addressing modes outside `STZ`'s support (`(mem),y`, `[mem]`, stack-relative, etc.) are rejected at lowering time.
 
 For chains that genuinely do want the accumulator loaded too (e.g. storing the same zero to several cells and leaving `A = 0` for a subsequent operation), keep the traditional `mem1 = mem2 = a = 0` form — the compiler's peephole rewrites each supported `STA` to `STZ` and drops the leading `LDA #0` when `A` is dead afterwards.
 

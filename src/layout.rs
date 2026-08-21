@@ -197,6 +197,8 @@ pub struct DirectPage {
     /// The byte offsets pinned slots cover, as a set, so an overlap is
     /// counted once.
     pinned: std::collections::BTreeSet<u32>,
+    /// How far into the page the allocator has got, for [`place`](Self::place).
+    cursor: u32,
 }
 
 impl DirectPage {
@@ -220,6 +222,37 @@ impl DirectPage {
             }
         }
         self.claimed()
+    }
+
+    /// Places an allocated slot of `bytes`, first-fit around the pinned ones,
+    /// and answers the filler that has to precede it.
+    ///
+    /// The pool is emitted as a run of reservations that ld65 lays out in
+    /// order from the page base, so the *only* way to keep an allocated slot
+    /// off a pinned byte is to reserve the bytes in between. Without that
+    /// filler a `var dp p = $00` and a `var dp q` both land at offset zero —
+    /// a pinned declaration reserves no linker space, so nothing was in the
+    /// allocator's way.
+    ///
+    /// `None` when the page has no run of `bytes` free, which is the overflow
+    /// [`claimed`](Self::claimed) reports; the caller has already said so.
+    pub fn place(&mut self, bytes: u32) -> Option<u32> {
+        let bytes = bytes.max(1);
+        let mut start = self.cursor;
+        while start.saturating_add(bytes) <= DIRECT_PAGE_BYTES {
+            match (start..start + bytes).find(|offset| self.pinned.contains(offset)) {
+                // A pinned byte in the way: the next candidate starts after
+                // it, and never before, since everything below is either
+                // taken or pinned.
+                Some(taken) => start = taken + 1,
+                None => {
+                    let padding = start - self.cursor;
+                    self.cursor = start + bytes;
+                    return Some(padding);
+                }
+            }
+        }
+        None
     }
 
     /// The bytes of the page this unit has claimed, allocated and pinned.
@@ -313,6 +346,28 @@ mod tests {
         let layout = packing.finish();
         assert_eq!(layout.field("str").expect("packed").offset, 3);
         assert_eq!(layout.size, 8, "2 + 1 + 5, packed and in order");
+    }
+
+    #[test]
+    fn an_allocated_slot_is_placed_around_the_pinned_ones() {
+        let mut page = DirectPage::default();
+        page.pin(0x00, 1);
+        page.pin(0x04, 2);
+
+        // The first free byte is 1, so one byte of filler steps over the
+        // pinned slot at 0.
+        assert_eq!(page.place(1), Some(1));
+        // 2 and 3 are free and adjacent, so the next two-byte slot needs no
+        // filler at all.
+        assert_eq!(page.place(2), Some(0));
+        // 4 and 5 are pinned, so a slot after them steps over both.
+        assert_eq!(page.place(1), Some(2));
+
+        // A run that cannot fit anywhere is refused rather than overlapped.
+        let mut page = DirectPage::default();
+        page.pin(0x80, 1);
+        assert_eq!(page.place(0x81), None, "no run of 129 bytes avoids $80");
+        assert_eq!(page.place(0x80), Some(0), "but 128 fit below it");
     }
 
     #[test]

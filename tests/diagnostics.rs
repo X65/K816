@@ -378,6 +378,25 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::ENTRY_ABI_MISMATCH,
         caret: "@a16",
     },
+    // An `inline`'s labels are renamed per use site, so neither a unit-level
+    // one nor an expression mentioning one has anything to name.
+    Case {
+        source: "inline probe @a8 {\nspot:\n    nop\n}\n",
+        code: DiagnosticCode::DUPLICATE_SYMBOL,
+        caret: "spot",
+    },
+    Case {
+        source: "inline probe @a8 {\n.spot:\n    lda #.spot\n}\n",
+        code: DiagnosticCode::SYMBOL_KIND_MISMATCH,
+        caret: ".spot",
+    },
+    // The zero-store shortcut is for a declared name, not for arithmetic
+    // that happens to address one.
+    Case {
+        source: "var mem = $0400\nfunc f @a8 @i8 {\n    mem+1 = 0\n}\n",
+        code: DiagnosticCode::NO_SUCH_INSTRUCTION,
+        caret: "0",
+    },
 ];
 
 /// Codes no `FAMILY` row can reach, and what covers them instead.

@@ -1484,6 +1484,184 @@ fn the_paired_hla_fixtures_assemble() {
     }
 }
 
+/// An allocated direct-page slot never lands on a pinned one.
+///
+/// A pinned declaration is an equate and reserves no linker space, so nothing
+/// stands in the allocator's way: `var dp p = $00` and `var dp q` both came
+/// out at offset zero. The pool now reserves the pinned bytes as filler, so
+/// ld65's cursor steps over them.
+#[test]
+fn the_direct_page_pool_steps_over_its_pinned_slots() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "pool.k816",
+        "var dp pinned = $00\n\
+         var dp gap = $02\n\
+         var dp first\n\
+         var dp second\n\
+         func run @a8 @i8 {\n\
+         \x20   a = pinned\n\
+         \x20   a = gap\n\
+         \x20   a = first\n\
+         \x20   a = second\n\
+         }\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    // The pool is laid out in order from the page base, so the filler is what
+    // decides where each allocated slot lands: one byte over the pinned $00,
+    // then `first` at $01, then one byte over the pinned $02, then `second`.
+    let pool = assembly
+        .find(".segment \"ZEROPAGE\"")
+        .expect("the pool has a segment");
+    let pool: Vec<&str> = assembly[pool..]
+        .lines()
+        .filter_map(|line| line.split(';').next())
+        .map(str::trim)
+        .filter(|line| line.starts_with(".res") || line.ends_with(':'))
+        .collect();
+    assert_eq!(
+        pool,
+        [
+            ".res     $01",
+            "first:",
+            ".res     $01",
+            ".res     $01",
+            "second:",
+            ".res     $01",
+        ],
+        "{assembly}"
+    );
+
+    // And ld65 agrees: linked, the four are at four different addresses.
+    let bytes = assemble_and_link("dp-pool", &assembly, "vars");
+    // `lda z:pinned` is $A5 $00; the three that follow each name a distinct
+    // one-byte address, and none of them is $00 or $02.
+    let loads: Vec<u8> = bytes
+        .chunks(2)
+        .take(4)
+        .filter(|chunk| chunk[0] == 0xA5)
+        .map(|chunk| chunk[1])
+        .collect();
+    assert_eq!(loads.len(), 4, "{bytes:02X?}");
+    assert_eq!(loads[0], 0x00, "the pinned one keeps its address");
+    assert_eq!(loads[1], 0x02, "and so does the second");
+    assert!(
+        loads[2] != 0x00 && loads[2] != 0x02 && loads[3] != 0x00 && loads[3] != 0x02,
+        "the allocated ones avoid both: {loads:02X?}"
+    );
+    assert_ne!(loads[2], loads[3], "and each other: {loads:02X?}");
+}
+
+/// A branch inside a top-level `data { code { } }` is relaxed like any other.
+///
+/// The subblock gets a `Lowering` of its own, and relaxation is per-stream —
+/// so a conditional over 200 bytes of code kept its short branch and ca65
+/// refused the file. Assembled here, because ca65 is the only thing that can
+/// answer whether a relative branch reaches.
+#[test]
+fn a_branch_inside_a_data_code_subblock_is_relaxed() {
+    let body = "nop\n        ".repeat(200);
+    let source = format!(
+        "data blk {{\n  0\n  code {{\n    @a8 {{\n      a?0\n      == {{\n        {body}\n      }}\n    }}\n  }}\n}}\n"
+    );
+    let mut map = SourceMap::new();
+    let file = map.add_file("data-branch.k816", &source);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "the fixture must compile");
+    let assembly = result.assembly.expect("compilation succeeds");
+    assert!(
+        assembly.contains("jmp     "),
+        "the branch is widened to a jump:\n{assembly}"
+    );
+    assemble_and_link("data-branch", &assembly, "slice");
+}
+
+/// A `nocross` run is measured after relaxation, not before.
+///
+/// Relaxation adds three bytes to every branch it widens, so a run measured
+/// while it still held short branches asserted a page fit for bytes the
+/// assembler never saw — and let an oversized run past the check entirely.
+#[test]
+fn a_nocross_run_is_measured_after_its_branches_settle() {
+    let body = "nop\n        ".repeat(250);
+    let source = format!(
+        "func f @a8 @i8 {{\n    nocross {{\n        a?0\n        == {{\n        {body}\n        }}\n    }}\n}}\n"
+    );
+    let mut map = SourceMap::new();
+    let file = map.add_file("nocross.k816", &source);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        ["K816-E0112"],
+        "253 written bytes become 258 once the branch widens, which is a page over"
+    );
+
+    // A run that still fits carries the *relaxed* length in its guard.
+    let body = "nop\n        ".repeat(200);
+    let source = format!(
+        "func f @a8 @i8 {{\n    nocross {{\n        a?0\n        == {{\n        {body}\n        }}\n    }}\n}}\n"
+    );
+    let mut map = SourceMap::new();
+    let file = map.add_file("nocross-fits.k816", &source);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![]);
+    let assembly = result.assembly.expect("compiles");
+    // 200 nops, `cmp #$00`, and the widened branch's five bytes.
+    assert!(
+        assembly.contains(".hibyte(* - 208)"),
+        "the guard counts the relaxed run:\n{}",
+        assembly
+            .lines()
+            .filter(|l| l.contains("assert"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// A widened branch does not lose the damaged-register warning behind it.
+///
+/// Lowering records a checked call by its *index* in the operation stream,
+/// and relaxation rewrites that stream — so an index taken before and read
+/// after pointed at a different instruction, and the damage scan looked at
+/// the wrong one and said nothing.
+#[test]
+fn a_widened_branch_does_not_hide_a_damaged_register() {
+    let body = "nop\n        ".repeat(200);
+    let with_branch = format!(
+        "var mem = $10\n\n\
+         func callee @a8 @i8 (a) -> a {{\n    x++\n}}\n\n\
+         func caller @a8 @i8 {{\n\
+         \x20   x = mem\n\
+         \x20   a?0\n\
+         \x20   == {{\n        {body}\n    }}\n\
+         \x20   a = #1\n\
+         \x20   callee a -> a\n\
+         \x20   mem = x\n\
+         }}\n"
+    );
+    let mut map = SourceMap::new();
+    let file = map.add_file("damage.k816", &with_branch);
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        ["K816-W0123"],
+        "the callee still steps X, and the caller still reads it"
+    );
+}
+
 /// The section kinds that are not subroutines, through the assembler.
 ///
 /// `inline` is the one construct that changes the *shape* of the operation

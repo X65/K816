@@ -99,6 +99,11 @@ impl KOp {
 pub enum Reason {
     /// `main` has no caller, so its contract is established at entry.
     EntryPoint,
+    /// Direct-page bytes reserved so the allocator steps over a *pinned*
+    /// slot. A pinned declaration is an equate and reserves nothing, so
+    /// without these the linker would hand an allocated variable an address
+    /// the source had already claimed.
+    PinnedSlot,
     /// The function's declared entry contract, assumed rather than executed:
     /// its caller is what bridges to it.
     EntryContract,
@@ -152,6 +157,7 @@ impl Reason {
     pub fn describe(self, name: impl Fn(SymbolId) -> String) -> String {
         match self {
             Self::EntryPoint => "entry-point width setup".to_owned(),
+            Self::PinnedSlot => "stepping over a pinned direct-page slot".to_owned(),
             Self::EntryContract => "the function's entry contract, assumed".to_owned(),
             Self::ModeSet => "the width set here".to_owned(),
             Self::BlockEnter => "entering the width block".to_owned(),

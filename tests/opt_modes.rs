@@ -698,3 +698,36 @@ func wide_index @a16 @i16 {
         ]
     );
 }
+
+/// A transfer K816 cannot name observes both axes.
+///
+/// The block graph answers the *reachability* question by making every label
+/// in the function a successor of an unresolved transfer. That says nothing
+/// about a target outside the function, which is where an indirect
+/// `jmp (vec)` most often goes — and the code it reaches may read either width
+/// flag. `main`'s inferred exit constrains nobody, so nothing else here keeps
+/// this `rep` alive.
+#[test]
+fn an_unresolvable_transfer_observes_both_axes() {
+    let (model, program, log) =
+        optimized("var VECTOR = $0300\n\nfunc main @a8 @i8 {\n    rep #$20\n    jmp (VECTOR)\n}\n");
+    assert_eq!(log.by_pass(Pass::EliminateDeadModes).count(), 0);
+    assert_eq!(
+        instructions(&program, &model, "main"),
+        vec![(Mnemonic::Rep, Some(0x20)), (Mnemonic::Jmp, None)]
+    );
+
+    // The index axis too, and through a call whose target is a variable
+    // holding an address — the legacy idiom for reaching a ROM routine.
+    let (model, program, log) =
+        optimized("var rom = $F9C2\n\nfunc main @a8 @i8 {\n    rep #$30\n    call rom\n}\n");
+    assert_eq!(log.by_pass(Pass::EliminateDeadModes).count(), 0);
+    assert_eq!(
+        instructions(&program, &model, "main"),
+        vec![
+            (Mnemonic::Rep, Some(0x30)),
+            (Mnemonic::Jsr, None),
+            (Mnemonic::Rts, None)
+        ]
+    );
+}

@@ -15,7 +15,8 @@
 //
 // Its sibling `opt-modes-unit.k816` carries the two cross-unit claims.
 
-var CELL = $0400
+var CELL   = $0400
+var VECTOR = $0300
 
 // **Probe 5.** A `rep #$20` before `lda addr` / `sta addr` must survive though
 // no immediate is in sight. The M flag sizes the load and the store, so
@@ -87,4 +88,18 @@ func bridges_to_a_reader @a8 @i8 {
 func observes_x @a16 @i16 {
     ldx #$0102
     CELL,x = a
+}
+
+// **A transfer K816 cannot name observes both axes.** `main`'s inferred exit
+// constrains nobody, so the exit-contract guard is off, and the only thing
+// keeping this `rep` alive is that the jump reaches code the compiler is not
+// looking at — which may read either width flag. Without that the vector's
+// target runs at a width its caller stopped establishing, and the assembly
+// still assembles.
+//
+// The implicit return below the jump is a different matter: no edge reaches
+// it, and the compiler is what wrote it.
+func main @a8 @i8 {
+    rep #$30
+    jmp (VECTOR)
 }

@@ -483,6 +483,42 @@ impl InstructionSpec {
         }
     }
 
+    /// The bytes this instruction encodes: the opcode plus its operand.
+    ///
+    /// **Over-estimated where the answer depends on something the table does
+    /// not know.** A width-dependent immediate counts as its longest form,
+    /// because over-estimating is the safe direction for every consumer: a
+    /// branch that thinks the distance is longer than it is emits a longer
+    /// form and still assembles, and a `nocross` run that thinks it is bigger
+    /// than it is reports a fit problem that does not exist rather than
+    /// missing one that does. An under-estimate does neither.
+    ///
+    /// The answer lives here, beside [`OperandWidth`], rather than in each
+    /// caller: lowering needs it to choose a branch form and to measure a
+    /// `nocross` run, and the optimizer needs it to decide whether a branch
+    /// E emitted long now reaches. Two implementations would put the same
+    /// branch in two places.
+    pub fn encoded_length(&self) -> u32 {
+        1 + match self.operand.width {
+            OperandWidth::None => 0,
+            OperandWidth::Immediate(class) => match class {
+                ImmediateWidthClass::Fixed8 => 1,
+                ImmediateWidthClass::Fixed16 => 2,
+                ImmediateWidthClass::MDependent | ImmediateWidthClass::XDependent => 2,
+            },
+            OperandWidth::Address(encoding) => match encoding {
+                AddressEncoding::Direct => 1,
+                AddressEncoding::Absolute => 2,
+                AddressEncoding::Long => 3,
+            },
+            OperandWidth::BankPair => 2,
+            OperandWidth::Displacement => match self.mode {
+                AddressingMode::RelativeLong => 2,
+                _ => 1,
+            },
+        }
+    }
+
     /// The address encoding this spec's operand uses, if it encodes one.
     pub fn encoding(&self) -> Option<AddressEncoding> {
         match self.operand.width {
@@ -1004,6 +1040,48 @@ mod tests {
         for expected in all_specs() {
             assert_eq!(spec(expected.mnemonic, expected.mode), Some(expected));
         }
+    }
+
+    /// Every legal instruction has an encoded length, and it is the opcode
+    /// plus the widest form its operand can take.
+    ///
+    /// Over-estimating is the safe direction for both consumers: lowering
+    /// chooses a longer branch form and still assembles, and the optimizer
+    /// refuses to shrink a branch it cannot show reaches. An under-estimate
+    /// does neither, which is a `Range error` from ca65 at best.
+    #[test]
+    fn every_instruction_encodes_between_one_and_four_bytes() {
+        for spec in all_specs() {
+            let length = spec.encoded_length();
+            assert!(
+                (1..=4).contains(&length),
+                "{:?} {:?} encodes {length} bytes",
+                spec.mnemonic,
+                spec.mode
+            );
+        }
+        // The widest immediate wins where the width is not known here.
+        let lda = spec(Mnemonic::Lda, AddressingMode::Immediate).expect("lda #imm");
+        assert_eq!(lda.encoded_length(), 3);
+        // And a fixed one is its own size.
+        let sep = spec(Mnemonic::Sep, AddressingMode::Immediate).expect("sep #imm");
+        assert_eq!(sep.encoded_length(), 2);
+        // A long address is three bytes of operand.
+        let long = spec(Mnemonic::Lda, AddressingMode::AbsoluteLong).expect("lda long");
+        assert_eq!(long.encoded_length(), 4);
+        // A relative branch is one byte of displacement; the long one is two.
+        assert_eq!(
+            spec(Mnemonic::Bcc, AddressingMode::Relative)
+                .expect("bcc")
+                .encoded_length(),
+            2
+        );
+        assert_eq!(
+            spec(Mnemonic::Brl, AddressingMode::RelativeLong)
+                .expect("brl")
+                .encoded_length(),
+            3
+        );
     }
 
     #[test]

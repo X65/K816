@@ -498,6 +498,9 @@ struct Flow {
     reachable: Vec<bool>,
     /// Operations inside a `nocross`-guarded run, which no pass may change.
     frozen: Vec<bool>,
+    /// Where control may go from each operation, resolved against this
+    /// function.
+    transfers: Vec<Transfer>,
     /// Instructions the dead-write pass will remove.
     ///
     /// Computed as an *analysis* rather than discovered one removal at a time,
@@ -541,6 +544,7 @@ impl Flow {
             reachable,
             frozen,
             doomed,
+            transfers,
         }
     }
 
@@ -1075,10 +1079,10 @@ impl Observation {
         self.after[axis_slot(axis)][index]
     }
 
-    fn build(ops: &[KOp], flow: &Flow, unit: &Unit<'_>) -> Self {
+    fn build(ops: &[KOp], flow: &Flow, transfers: &[Transfer], unit: &Unit<'_>) -> Self {
         let after = [
-            observe_axis(ops, flow, unit, Axis::Accumulator),
-            observe_axis(ops, flow, unit, Axis::Index),
+            observe_axis(ops, flow, transfers, unit, Axis::Accumulator),
+            observe_axis(ops, flow, transfers, unit, Axis::Index),
         ];
         Self { after }
     }
@@ -1099,7 +1103,13 @@ fn axis_flag(axis: Axis) -> FlagSet {
 }
 
 /// The backward dataflow for one axis.
-fn observe_axis(ops: &[KOp], flow: &Flow, unit: &Unit<'_>, axis: Axis) -> Vec<bool> {
+fn observe_axis(
+    ops: &[KOp],
+    flow: &Flow,
+    transfers: &[Transfer],
+    unit: &Unit<'_>,
+    axis: Axis,
+) -> Vec<bool> {
     let exit_seed = unit.observed_at_exit(axis);
     let mut after = vec![false; ops.len()];
     let mut at_entry = vec![false; flow.blocks.len()];
@@ -1123,7 +1133,7 @@ fn observe_axis(ops: &[KOp], flow: &Flow, unit: &Unit<'_>, axis: Axis) -> Vec<bo
                 // is what keeps a second `optimize()` finding no work, since
                 // that pass runs third and this one runs first.
                 if !flow.doomed[op] {
-                    observed = observes_before(&ops[op], unit, axis, observed);
+                    observed = observes_before(&ops[op], transfers[op], unit, axis, observed);
                 }
             }
             if observed != at_entry[index] {
@@ -1136,7 +1146,15 @@ fn observe_axis(ops: &[KOp], flow: &Flow, unit: &Unit<'_>, axis: Axis) -> Vec<bo
 }
 
 /// Whether the axis is observed *before* one operation.
-fn observes_before(op: &KOp, unit: &Unit<'_>, axis: Axis, after: bool) -> bool {
+fn observes_before(op: &KOp, transfer: Transfer, unit: &Unit<'_>, axis: Axis, after: bool) -> bool {
+    // A branch or jump this function cannot name reaches code K816 is not
+    // looking at, which may read either flag. The block graph answers the
+    // *reachability* question by making every label a successor; that says
+    // nothing about a target outside the function, which is where an indirect
+    // `jmp (vec)` most often goes.
+    if transfer.opaque {
+        return true;
+    }
     let Some(effects) = effects_of(op) else {
         // A label, a width claim, a directive: it emits no bytes, reads no
         // flag, and establishes nothing.
@@ -1231,7 +1249,7 @@ fn axis_bit(axis: Axis) -> u8 {
 fn eliminate_dead_mode_changes(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
     loop {
         let flow = Flow::build(ops, unit);
-        let observation = Observation::build(ops, &flow, unit);
+        let observation = Observation::build(ops, &flow, &flow.transfers, unit);
         let Some((index, kept, dead)) = (0..ops.len())
             .filter_map(|index| strip(ops, &flow, &observation, unit, index))
             .next()
@@ -2319,21 +2337,6 @@ fn size_bound(op: &KOp) -> Bound {
     }
 }
 
-/// The byte offset of every operation, or `None` when something between is
-/// unbounded.
-fn offsets(ops: &[KOp]) -> Vec<Option<u32>> {
-    let mut out = Vec::with_capacity(ops.len());
-    let mut offset = Some(0u32);
-    for op in ops {
-        out.push(offset);
-        offset = match (offset, size_bound(op)) {
-            (Some(offset), Bound::Bytes(size)) => Some(offset.saturating_add(size)),
-            _ => None,
-        };
-    }
-    out
-}
-
 /// Puts a long-form branch back into its short form once the distance fits.
 ///
 /// The pass computes an **upper** bound, shrinks only when the bound fits,
@@ -2347,7 +2350,8 @@ fn offsets(ops: &[KOp]) -> Vec<Option<u32>> {
 /// this pass.
 fn shrink_branches(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
     loop {
-        let Some((index, shrunk)) = first_shrinkable(ops) else {
+        let flow = Flow::build(ops, unit);
+        let Some((index, shrunk)) = first_shrinkable(ops, &flow) else {
             return;
         };
         let before = ops[index..index + 3].to_vec();
@@ -2370,12 +2374,22 @@ fn shrink_branches(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLo
 }
 
 /// The first long-form branch whose short form reaches, and what replaces it.
-fn first_shrinkable(ops: &[KOp]) -> Option<(usize, KOp)> {
-    (0..ops.len().saturating_sub(2)).find_map(|index| shrinkable(ops, index))
+fn first_shrinkable(ops: &[KOp], flow: &Flow) -> Option<(usize, KOp)> {
+    (0..ops.len().saturating_sub(2)).find_map(|index| shrinkable(ops, flow, index))
 }
 
 /// The three-operation idiom at `index`, collapsed, when it may be.
-fn shrinkable(ops: &[KOp], index: usize) -> Option<(usize, KOp)> {
+fn shrinkable(ops: &[KOp], flow: &Flow, index: usize) -> Option<(usize, KOp)> {
+    // A `nocross` guard records the byte length of the run it closes, and
+    // shrinking a branch inside one would leave that link-time assertion
+    // covering bytes the `nocross` never claimed.
+    if ops[index..index + 3]
+        .iter()
+        .enumerate()
+        .any(|(offset, _)| flow.frozen[index + offset])
+    {
+        return None;
+    }
     // The shape lowering emits: an inverted conditional branch over a jump,
     // and the anchor it lands on.
     let KOpKind::Instruction(guard) = &ops[index].kind else {
@@ -2438,10 +2452,26 @@ fn shrinkable(ops: &[KOp], index: usize) -> Option<(usize, KOp)> {
             .position(|op| op.kind == KOpKind::Label(*symbol))?,
         _ => return None,
     };
-    let positions = offsets(&candidate);
-    let from = positions[index]? + crate::lower::byte_length(&shrunk);
-    let to = positions[target]?;
-    let distance = i64::from(to) - i64::from(from);
+    // A relative branch counts from the instruction after it, so the span is
+    // the operations *between* the two — and the bound is summed over exactly
+    // those. Measuring from the start of the function instead would let one
+    // unbounded operation anywhere above the branch refuse a shrink that has
+    // nothing to do with it.
+    let span = if target > index {
+        index + 1..target
+    } else {
+        target..index + 1
+    };
+    let mut distance: i64 = 0;
+    for op in &candidate[span] {
+        match size_bound(op) {
+            Bound::Bytes(size) => distance += i64::from(size),
+            Bound::Unbounded => return None,
+        }
+    }
+    if target <= index {
+        distance = -distance;
+    }
     (-128..=127).contains(&distance).then_some((index, shrunk))
 }
 
@@ -2528,18 +2558,19 @@ mod tests {
         );
     }
 
-    /// An unbounded operation between a branch and its target makes the whole
-    /// distance unanswerable, rather than merely large.
+    /// A branch measures the operations *between* it and its target, so one
+    /// unbounded operation refuses the shrink and one outside the span does
+    /// not.
     #[test]
-    fn an_unbounded_operation_poisons_every_offset_after_it() {
-        let ops = vec![
-            op(KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)]))),
-            op(KOpKind::Segment {
-                name: crate::op::SegmentName::new("OTHER"),
-                addressing: None,
-            }),
-            op(KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)]))),
-        ];
-        assert_eq!(offsets(&ops), vec![Some(0), Some(1), None]);
+    fn the_span_a_branch_measures_is_what_lies_between_it_and_its_target() {
+        let unbounded = op(KOpKind::Segment {
+            name: crate::op::SegmentName::new("OTHER"),
+            addressing: None,
+        });
+        assert_eq!(size_bound(&unbounded), Bound::Unbounded);
+        assert_eq!(
+            size_bound(&op(KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)])))),
+            Bound::Bytes(1)
+        );
     }
 }

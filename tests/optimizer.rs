@@ -1052,3 +1052,21 @@ fn every_recorded_change_carries_its_streams_and_its_effects() {
         }
     }
 }
+
+/// A `nocross` guard freezes the branch inside it too.
+///
+/// The guard records the byte length of the run it closes, so shrinking a
+/// branch inside one would leave a link-time assertion covering bytes the
+/// `nocross` never claimed. Nothing in the run moves — not the dead `clc`,
+/// and not the branch — and the reason is the guard rather than the distance.
+#[test]
+fn nothing_inside_a_nocross_run_shrinks_or_is_removed() {
+    let (_, file, model, mut program) = lowered_as("opt-branch-range.k816", BRANCH_RANGE);
+    let before = mnemonics(&program, &model, "frozen_run");
+    run(&mut program, &model, file);
+    assert_eq!(mnemonics(&program, &model, "frozen_run"), before);
+    assert!(
+        before.contains(&Mnemonic::Clc) && before.contains(&Mnemonic::Jmp),
+        "the dead `clc` and the long form are both in it: {before:?}"
+    );
+}

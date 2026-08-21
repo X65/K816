@@ -36,7 +36,7 @@ use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
 use crate::expand;
 use crate::hla;
-use crate::isa::{AddressEncoding, AddressingMode, ImmediateWidthClass, Mnemonic, OperandWidth};
+use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
 use crate::op::{
     AnchorId, AxisState, DataOp, Instruction, KFunction, KOp, KOpKind, KProgram, ModeState,
     Operand, Origin, Reason, RegisterWidth, SegmentName,
@@ -343,29 +343,9 @@ pub fn byte_length(op: &KOp) -> u32 {
             _ => 0,
         };
     };
-    let Some(spec) = instruction.spec() else {
-        return 0;
-    };
-    1 + match spec.operand.width {
-        OperandWidth::None => 0,
-        OperandWidth::Immediate(class) => match class {
-            ImmediateWidthClass::Fixed8 => 1,
-            ImmediateWidthClass::Fixed16 => 2,
-            // The width may be unknown here, and the longer form is the one
-            // that cannot make an estimate too small.
-            ImmediateWidthClass::MDependent | ImmediateWidthClass::XDependent => 2,
-        },
-        OperandWidth::Address(encoding) => match encoding {
-            AddressEncoding::Direct => 1,
-            AddressEncoding::Absolute => 2,
-            AddressEncoding::Long => 3,
-        },
-        OperandWidth::BankPair => 2,
-        OperandWidth::Displacement => match instruction.mode {
-            AddressingMode::RelativeLong => 2,
-            _ => 1,
-        },
-    }
+    // The instruction half of the answer is the ISA table's, beside
+    // `OperandWidth`: a `KOp` stream is what this function adds on top.
+    instruction.spec().map_or(0, |spec| spec.encoded_length())
 }
 
 /// The bytes a data directive emits.

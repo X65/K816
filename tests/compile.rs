@@ -2116,6 +2116,10 @@ fn the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change() {
             "rep     #$10",
             "rep     #$20",
             "rep     #$21",
+            // The implicit return below `main`'s indirect jump, which no edge
+            // reaches. The `rep #$30` above that jump stays: a transfer K816
+            // cannot name observes both axes.
+            "rts",
             "sep     #$20",
         ],
         "{removed:?}"
@@ -2128,9 +2132,9 @@ fn the_mode_fixture_strips_one_mask_bit_and_removes_one_redundant_change() {
         ],
         "{added:?}"
     );
-    // The mask rewrite is the same length; the removal and the fold cost two
-    // bytes each.
-    assert_eq!(bytes, 4);
+    // The mask rewrite is the same length; the removal, the fold, and the
+    // unreachable return cost two, two, and one.
+    assert_eq!(bytes, 5);
 }
 
 /// The cross-unit pair links, and both of unit A's bridges are still there.

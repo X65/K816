@@ -15,6 +15,97 @@
 
 var mem = $10
 
+// A long-form branch inside a `nocross` run. The `clc` below is dead — the
+// `sec` on the next line overwrites the carry before anything reads it — and it
+// stays, because the guard records the byte length of the run it closes: taking
+// a byte out of one would leave a link-time assertion covering bytes the
+// `nocross` never claimed. The branch does not shrink either, for the same
+// reason and not because its distance is still too far.
+//
+// Everything in the run is width-independent on purpose. A `nocross` length is
+// measured with lowering's over-estimate, so a width-dependent immediate inside
+// one makes the guard cover a byte the run does not contain — which is
+// sub-plan E's known trade and not something to demonstrate here.
+func frozen_run @a8 @i8 {
+    nocross {
+        a?mem
+        >= {
+            clc
+            sec
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+            mem++
+        }
+        mem++
+    }
+    mem++
+}
+
 // The body is a run of dead `ldx` — each overwritten by the next — so it is
 // well past a relative branch's reach at lowering and well inside it after the
 // dead-write pass. The `>=` conditional's branch is emitted long and shrinks.

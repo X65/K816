@@ -271,6 +271,7 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
         collapse_redundant_flags(&unit, &mut function.ops, &mut log);
         rewrite_zero_stores(&unit, &mut function.ops, &mut log);
         remove_unreachable(&unit, &mut function.ops, &mut log);
+        shrink_branches(&unit, &mut function.ops, &mut log);
     }
     log
 }
@@ -2276,5 +2277,269 @@ fn remove_unreachable(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optimizatio
     }
     for index in unreachable.into_iter().rev() {
         ops.remove(index);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Branch shrinking
+// ---------------------------------------------------------------------------
+
+/// An upper bound on the bytes one operation encodes, or a refusal.
+///
+/// E emits the inverted-branch-plus-`jmp` form wherever its conservative
+/// estimate cannot prove a short branch reaches; once the byte-removing passes
+/// have run, some of those now reach. But a `KOp` stream between a branch and
+/// its target is not only instructions, and instruction lengths alone do not
+/// give a distance (`plans/05-optimizer.md` decision 19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bound {
+    Bytes(u32),
+    /// The answer depends on something only ld65 knows.
+    Unbounded,
+}
+
+/// The upper bound on one operation's encoded size.
+fn size_bound(op: &KOp) -> Bound {
+    match &op.kind {
+        // The target moves to a different segment, and ld65 owns where.
+        KOpKind::Segment { .. } => Bound::Unbounded,
+        // `.align n` emits up to `n - 1` bytes of padding — an upper bound
+        // only, which is all this pass needs.
+        KOpKind::Align(expr) => match expr.value() {
+            Some(value) => Bound::Bytes(value.get().saturating_sub(1)),
+            None => Bound::Unbounded,
+        },
+        KOpKind::Data(crate::op::DataOp::Reserve(expr)) => match expr.value() {
+            Some(value) => Bound::Bytes(value.get()),
+            None => Bound::Unbounded,
+        },
+        // Everything else is what lowering measures, which is where the
+        // instruction half of the answer lives.
+        _ => Bound::Bytes(crate::lower::byte_length(op)),
+    }
+}
+
+/// The byte offset of every operation, or `None` when something between is
+/// unbounded.
+fn offsets(ops: &[KOp]) -> Vec<Option<u32>> {
+    let mut out = Vec::with_capacity(ops.len());
+    let mut offset = Some(0u32);
+    for op in ops {
+        out.push(offset);
+        offset = match (offset, size_bound(op)) {
+            (Some(offset), Bound::Bytes(size)) => Some(offset.saturating_add(size)),
+            _ => None,
+        };
+    }
+    out
+}
+
+/// Puts a long-form branch back into its short form once the distance fits.
+///
+/// The pass computes an **upper** bound, shrinks only when the bound fits,
+/// refuses across any unbounded operation or any segment change, and iterates
+/// to its own fixpoint because each shrink brings other branches closer. It
+/// never grows a branch: growing is E's decision at lowering, where the width
+/// states are known.
+///
+/// Every shrunk branch is gated on ca65 accepting the output, because a wrong
+/// bound is a `Range error` and not a silent one — which is the one mercy in
+/// this pass.
+fn shrink_branches(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    loop {
+        let Some((index, shrunk)) = first_shrinkable(ops) else {
+            return;
+        };
+        let before = ops[index..index + 3].to_vec();
+        ops.splice(index..index + 3, [shrunk.clone()]);
+        log.changes.push(Change {
+            pass: Pass::ShrinkBranches,
+            site: Site {
+                function: unit.function,
+                index,
+            },
+            before,
+            after: vec![shrunk],
+            witness: None,
+            justification: String::from(
+                "the target is within a relative branch's reach now, by an upper bound over \
+                 every operation between them",
+            ),
+        });
+    }
+}
+
+/// The first long-form branch whose short form reaches, and what replaces it.
+fn first_shrinkable(ops: &[KOp]) -> Option<(usize, KOp)> {
+    (0..ops.len().saturating_sub(2)).find_map(|index| shrinkable(ops, index))
+}
+
+/// The three-operation idiom at `index`, collapsed, when it may be.
+fn shrinkable(ops: &[KOp], index: usize) -> Option<(usize, KOp)> {
+    // The shape lowering emits: an inverted conditional branch over a jump,
+    // and the anchor it lands on.
+    let KOpKind::Instruction(guard) = &ops[index].kind else {
+        return None;
+    };
+    if guard.mode != crate::isa::AddressingMode::Relative {
+        return None;
+    }
+    let Some(Operand::Anchor(past)) = &guard.operand else {
+        return None;
+    };
+    let KOpKind::Instruction(jump) = &ops[index + 1].kind else {
+        return None;
+    };
+    if jump.mnemonic != Mnemonic::Jmp || ops[index + 1].reason != Some(Reason::LongBranch) {
+        return None;
+    }
+    if ops[index + 2].kind != KOpKind::Anchor(*past) {
+        return None;
+    }
+    // The landing pad exists only for this idiom. If anything else names it,
+    // collapsing the idiom deletes a target.
+    let named_elsewhere = ops.iter().enumerate().any(|(at, op)| {
+        at != index
+            && matches!(&op.kind, KOpKind::Instruction(instruction)
+                if instruction.operand == Some(Operand::Anchor(*past)))
+    });
+    if named_elsewhere {
+        return None;
+    }
+    let short = crate::lower::inverse_branch(guard.mnemonic)?;
+
+    // The branch takes its target as a displacement ca65 computes, which is
+    // the spelling the jump had to give up.
+    let operand = match jump.operand.clone()? {
+        Operand::Address {
+            expr, index: None, ..
+        } => Operand::Label(expr),
+        anchor @ Operand::Anchor(_) => anchor,
+        _ => return None,
+    };
+    let mut shrunk = ops[index].clone();
+    shrunk.kind = KOpKind::Instruction(crate::op::Instruction::new(
+        short,
+        crate::isa::AddressingMode::Relative,
+        Some(operand.clone()),
+    ));
+
+    // Measured on the stream the shrink would leave behind: each shrink brings
+    // every branch that spans it three bytes closer, and checking here is what
+    // makes the fixpoint terminate on distances rather than on a counter.
+    let mut candidate: Vec<KOp> = ops.to_vec();
+    candidate.splice(index..index + 3, [shrunk.clone()]);
+    let target = match &operand {
+        Operand::Anchor(anchor) => candidate
+            .iter()
+            .position(|op| op.kind == KOpKind::Anchor(*anchor))?,
+        Operand::Label(KExpr::Symbol(symbol)) => candidate
+            .iter()
+            .position(|op| op.kind == KOpKind::Label(*symbol))?,
+        _ => return None,
+    };
+    let positions = offsets(&candidate);
+    let from = positions[index]? + crate::lower::byte_length(&shrunk);
+    let to = positions[target]?;
+    let distance = i64::from(to) - i64::from(from);
+    (-128..=127).contains(&distance).then_some((index, shrunk))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::op::DataOp;
+    use crate::source::{FileId, SourceMap, Span};
+
+    fn span() -> Span {
+        let mut map = SourceMap::new();
+        let id: FileId = map.add_file("t.k816", "func f { }");
+        Span::new(id, 0, 4)
+    }
+
+    fn op(kind: KOpKind) -> KOp {
+        KOp::new(kind, span(), Origin::CompilerGenerated)
+    }
+
+    /// Decision 19's table, asserted directly.
+    ///
+    /// Three of its rows name operations the language cannot yet put inside a
+    /// function body — there is no `align`, no link-time `.res`, and no
+    /// `segment` in a K65 statement position — so there is no fixture that can
+    /// reach them. The rule is still the rule, and the day a sub-plan makes
+    /// one of them expressible, this is what says what the bound has to be.
+    #[test]
+    fn the_size_bound_refuses_what_only_ld65_can_answer() {
+        // A segment change: the target moves somewhere ld65 places, so there
+        // is no distance to measure at all.
+        assert_eq!(
+            size_bound(&op(KOpKind::Segment {
+                name: crate::op::SegmentName::new("OTHER"),
+                addressing: None,
+            })),
+            Bound::Unbounded
+        );
+
+        // `.align n` emits up to `n - 1` bytes of padding — an upper bound,
+        // which is what this pass needs and all it needs.
+        assert_eq!(
+            size_bound(&op(KOpKind::Align(KExpr::number(64)))),
+            Bound::Bytes(63)
+        );
+        assert_eq!(
+            size_bound(&op(KOpKind::Align(KExpr::Symbol(
+                crate::symbol::SymbolId::from_index(0)
+            )))),
+            Bound::Unbounded
+        );
+
+        // A reservation is its folded constant, and unbounded when the count
+        // is link-time.
+        assert_eq!(
+            size_bound(&op(KOpKind::Data(DataOp::Reserve(KExpr::number(12))))),
+            Bound::Bytes(12)
+        );
+        assert_eq!(
+            size_bound(&op(KOpKind::Data(DataOp::Reserve(KExpr::Symbol(
+                crate::symbol::SymbolId::from_index(0)
+            ))))),
+            Bound::Unbounded
+        );
+
+        // The rows that emit nothing, and the one that emits a jump.
+        assert_eq!(size_bound(&op(KOpKind::SkipTarget)), Bound::Bytes(0));
+        assert_eq!(size_bound(&op(KOpKind::SkipData)), Bound::Bytes(3));
+        assert_eq!(
+            size_bound(&op(KOpKind::ModeAssumption(ModeState::unknown()))),
+            Bound::Bytes(0)
+        );
+        assert_eq!(
+            size_bound(&op(KOpKind::NocrossGuard { length: 40 })),
+            Bound::Bytes(0)
+        );
+
+        // And a data entry is its values times their width.
+        assert_eq!(
+            size_bound(&op(KOpKind::Data(DataOp::Word(vec![
+                KExpr::number(1),
+                KExpr::number(2),
+            ])))),
+            Bound::Bytes(4)
+        );
+    }
+
+    /// An unbounded operation between a branch and its target makes the whole
+    /// distance unanswerable, rather than merely large.
+    #[test]
+    fn an_unbounded_operation_poisons_every_offset_after_it() {
+        let ops = vec![
+            op(KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)]))),
+            op(KOpKind::Segment {
+                name: crate::op::SegmentName::new("OTHER"),
+                addressing: None,
+            }),
+            op(KOpKind::Data(DataOp::Byte(vec![KExpr::number(0)]))),
+        ];
+        assert_eq!(offsets(&ops), vec![Some(0), Some(1), None]);
     }
 }

@@ -931,6 +931,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "the_barrier_fixture_assembles_and_the_optimizer_changes_no_byte",
         ),
         (
+            "opt-branch-range.k816",
+            "every_shrunk_branch_is_one_ca65_accepts",
+        ),
+        (
             "opt-crossunit-a.k816",
             "the_cross_unit_mode_pair_links_with_both_bridges_intact",
         ),

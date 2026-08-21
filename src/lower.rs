@@ -285,7 +285,7 @@ fn reserve(reservation: &Reservation, span: Span) -> [KOp; 2] {
 ///
 /// Only the conditional branches have one: `BRA` is always taken, so the long
 /// form of an unconditional branch is the jump alone.
-fn inverse_branch(mnemonic: Mnemonic) -> Option<Mnemonic> {
+pub fn inverse_branch(mnemonic: Mnemonic) -> Option<Mnemonic> {
     Some(match mnemonic {
         Mnemonic::Bcc => Mnemonic::Bcs,
         Mnemonic::Bcs => Mnemonic::Bcc,
@@ -335,6 +335,10 @@ pub fn byte_length(op: &KOp) -> u32 {
     let KOpKind::Instruction(instruction) = &op.kind else {
         return match &op.kind {
             KOpKind::Data(data) => data_length(data),
+            // The jump around inline data is an `jmp abs`, which is three
+            // bytes and not zero: a branch that steps over a data block has
+            // to count it or it measures its own distance short.
+            KOpKind::SkipData => 3,
             // Labels, anchors, width claims, and directives emit no bytes.
             _ => 0,
         };
@@ -949,7 +953,14 @@ impl<'a> Lowering<'a> {
             return;
         };
         let past = self.anchor();
-        let guard = KOp::new(
+        // The guard keeps the *original* branch's reason. It is still the
+        // branch that instruction was, testing the same condition through its
+        // inverse, and the annotation on the emitted line should say so; what
+        // is new here is the jump, and that is what carries `LongBranch`. It
+        // is also what lets the optimizer put the short form back with the
+        // annotation it had before, once the distance has closed
+        // (`plans/05-optimizer.md` decision 19).
+        let mut guard = KOp::new(
             KOpKind::Instruction(Instruction::new(
                 inverse,
                 AddressingMode::Relative,
@@ -957,8 +968,8 @@ impl<'a> Lowering<'a> {
             )),
             op.span,
             op.origin,
-        )
-        .because(Reason::LongBranch);
+        );
+        guard.reason = op.reason;
         let jump = KOp::new(
             KOpKind::Instruction(Instruction::new(
                 Mnemonic::Jmp,

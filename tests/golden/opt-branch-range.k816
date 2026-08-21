@@ -1,0 +1,239 @@
+// Sub-plan F fixture: putting a long-form branch back.
+//
+// ca65 does not relax branches, so K816 chooses each form itself, and E chose
+// conservatively: wherever its estimate at lowering could not prove a short
+// branch reaches, it emitted the inverted-branch-over-a-jump idiom (sub-plan
+// E, decision 7). Once the byte-removing passes have run, some of those
+// distances have closed.
+//
+// The pass computes an **upper** bound over every operation between the branch
+// and its target, shrinks only when the bound fits, and refuses across
+// anything it cannot bound. It never grows a branch: growing is E's decision
+// at lowering, where the width states are known. Every shrink here is gated on
+// ca65 accepting the output, because a wrong bound is a `Range error` and not
+// a silent one.
+
+var mem = $10
+
+// The body is a run of dead `ldx` — each overwritten by the next — so it is
+// well past a relative branch's reach at lowering and well inside it after the
+// dead-write pass. The `>=` conditional's branch is emitted long and shrinks.
+func now_fits @a8 @i16 {
+    a?10
+    >= {
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        mem++
+    }
+    mem++
+}
+
+// Two conditionals, one inside the other. The inner one's long form is three
+// bytes wider than its short one, so the outer branch only reaches after the
+// inner has shrunk — which is why the pass iterates to its own fixpoint rather
+// than making one decision per branch.
+func second_fits_after_the_first @a8 @i16 {
+    a?10
+    >= {
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        ldx #$0102
+        a?20
+        >= {
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            ldx #$0102
+            mem++
+        }
+        mem++
+    }
+    mem++
+}
+
+
+// A branch over inline data. The `data` block emits 128 bytes that no pass may
+// remove, and the jump around them is three bytes more, so this branch is out
+// of reach at lowering and stays out of reach after everything else has gone.
+// It is the case that proves the bound counts what is *not* an instruction:
+// with the data measured as nothing, the pass would shrink a branch ca65 then
+// refuses with a range error.
+func data_is_counted @a8 @i16 {
+    a?10
+    >= {
+        ldx #$0102
+        ldx #$0102
+        data pad {
+            repeat 128 { $AA }
+        }
+        mem++
+    }
+    mem++
+}

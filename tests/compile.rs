@@ -2364,3 +2364,64 @@ fn the_zero_store_fixture_rewrites_per_store_and_drops_one_load() {
     // `STZ` is the same length as `STA`, so only the five loads cost bytes.
     assert_eq!(bytes, 5 * 2);
 }
+
+/// The branch fixture, through ca65.
+///
+/// This is the gate that matters for shrinking: a wrong bound is a `Range
+/// error` from the assembler, which is the one mercy in the pass. Both forms
+/// are assembled and linked, and the optimized one is smaller by exactly the
+/// idiom's overhead per shrunk branch — three bytes each — on top of what the
+/// dead-write pass took.
+#[test]
+fn every_shrunk_branch_is_one_ca65_accepts() {
+    let (removed, added, bytes) = optimizer_effect(
+        "opt-branch-range",
+        "opt-branch-range.k816",
+        include_str!("golden/opt-branch-range.k816"),
+    );
+    // Each shrink turns `bcs :+` + `jmp target` into `bcc target`: two lines
+    // out, one line in, three bytes saved. There are three of them.
+    assert_eq!(
+        removed
+            .iter()
+            .filter(|line| line.starts_with("bcs"))
+            .count(),
+        3
+    );
+    assert_eq!(
+        removed
+            .iter()
+            .filter(|line| line.starts_with("jmp"))
+            .count(),
+        3
+    );
+    assert_eq!(
+        added.iter().filter(|line| line.starts_with("bcc")).count(),
+        3
+    );
+    // The rest of the difference is the dead `ldx` run each body is made of.
+    // Every one of them is overwritten by the next; what survives is the last
+    // load on each path, which is live at the function's exit.
+    let dead_loads = removed
+        .iter()
+        .filter(|line| line.starts_with("ldx"))
+        .count();
+    assert_eq!(dead_loads, 174);
+    assert_eq!(bytes, 3 * 3 + dead_loads * 3);
+}
+
+/// **Moved by sub-plan F, task F7.** `branch-range.k816` is E's own fixture:
+/// a body of `mem++` statements long enough that the conditional cannot reach
+/// its target. Nothing in it is dead, so nothing shrinks, and its long form is
+/// still the long form after the optimizer has run.
+#[test]
+fn the_e_branch_fixture_keeps_its_long_form() {
+    let (removed, added, bytes) = optimizer_effect(
+        "branch-range",
+        "branch-range.k816",
+        include_str!("golden/branch-range.k816"),
+    );
+    assert_eq!(removed, Vec::<String>::new());
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(bytes, 0);
+}

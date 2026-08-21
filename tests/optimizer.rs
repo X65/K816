@@ -32,7 +32,7 @@ use k816::effects::{ControlEffect, FlagSet, MemoryEffect, RegisterSet};
 use k816::isa::Mnemonic;
 use k816::linkage::Linkage;
 use k816::lower::lower;
-use k816::op::{KFunction, KOpKind, KProgram, Operand, Origin};
+use k816::op::{KFunction, KOpKind, KProgram, Operand, Origin, Reason};
 use k816::optimize::{Context, OptimizationLog, Pass, optimize};
 use k816::parser::parse_source;
 use k816::semantic::{SemanticModel, analyze_file};
@@ -824,5 +824,64 @@ func caller @a8 @i8 {
             Mnemonic::Sta,
             Mnemonic::Rts
         ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Branch shrinking (sub-plan F, task F7)
+// ---------------------------------------------------------------------------
+
+const BRANCH_RANGE: &str = include_str!("golden/opt-branch-range.k816");
+
+/// A branch E emitted long, because its estimate at lowering could not prove
+/// the short form reached, goes back to the short form once it does.
+///
+/// It comes back with the reason it had, which is why lowering leaves the
+/// original reason on the guard rather than overwriting it: the annotation on
+/// the emitted line still says what the branch is *for*, and only the jump
+/// says why the idiom was there.
+#[test]
+fn a_long_branch_whose_distance_closed_goes_back_to_the_short_form() {
+    let (_, file, model, mut program) = lowered_as("opt-branch-range.k816", BRANCH_RANGE);
+    let log = run(&mut program, &model, file);
+
+    let shrunk: Vec<_> = log.by_pass(Pass::ShrinkBranches).collect();
+    assert_eq!(
+        shrunk.len(),
+        3,
+        "one in the first function, two in the second"
+    );
+    assert_eq!(shrunk[0].before.len(), 3, "guard, jump, landing pad");
+    assert_eq!(shrunk[0].after.len(), 1);
+    assert_eq!(shrunk[0].after[0].reason, Some(Reason::InvertedBranch));
+    assert_eq!(
+        shrunk[0].justification,
+        "the target is within a relative branch's reach now, by an upper bound over every \
+         operation between them"
+    );
+
+    // Nothing is left of the idiom in the two functions that shrank.
+    for name in ["now_fits", "second_fits_after_the_first"] {
+        assert!(
+            !mnemonics(&program, &model, name).contains(&Mnemonic::Jmp),
+            "`{name}` still has a long-form branch"
+        );
+    }
+}
+
+/// The bound counts what is not an instruction.
+///
+/// `data_is_counted`'s body carries 128 bytes of inline data and the jump
+/// around them. With the data measured as nothing, the pass would shrink a
+/// branch ca65 then refuses with a range error — so the branch stays long,
+/// after every other pass has taken what it can from the same body.
+#[test]
+fn a_branch_over_inline_data_does_not_shrink() {
+    let (_, file, model, mut program) = lowered_as("opt-branch-range.k816", BRANCH_RANGE);
+    run(&mut program, &model, file);
+    let mnemonics = mnemonics(&program, &model, "data_is_counted");
+    assert!(
+        mnemonics.contains(&Mnemonic::Jmp),
+        "the long form survives: {mnemonics:?}"
     );
 }

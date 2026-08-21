@@ -101,6 +101,33 @@ func xba_reports_on_the_low_byte @a16 @i16 {
     nop
 }
 
+// **A memory load establishes nothing and clears what was there.** The first
+// `lda #$07` is dead — `lda CELL` overwrites A, N, and Z — and the second is
+// *not* redundant, because the tracker has no idea what the load put in the
+// accumulator. Decision 14's other half: not coalescing the memory read is one
+// claim, and not carrying a stale value across it is the other.
+func memory_clears_the_tracker @a8 @i8 {
+    lda #$07
+    a = CELL
+    lda #$07
+    CELL = a
+}
+
+// **A mask that sets N and Z clears the flag provenance.** `sep #$82` writes
+// the negative and zero flags directly, so the second `lda #$07` is not a
+// no-op however much the accumulator agrees: it puts N and Z back to what the
+// value says, and the `beq` below reads them. Without this the branch tests
+// the flags the mask left.
+func a_mask_can_write_n_and_z @a8 @i8 {
+    lda #$07
+    sep #$82
+    lda #$07
+    == goto .out
+    nop
+.out:
+    nop
+}
+
 // **Two reads of a hardware register.** Both survive. K65 has no `volatile`
 // and no way to acquire one — a fixed-address `var` is how the language spells
 // a memory-mapped register — so a second read of one address is never

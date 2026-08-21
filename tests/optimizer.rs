@@ -1088,3 +1088,48 @@ fn xba_leaves_the_tracked_flags_unknown() {
         ]
     );
 }
+
+/// A memory load establishes nothing, and clears what was there.
+///
+/// Decision 14 has two halves. Not coalescing the memory read is the one the
+/// hardware-register case makes; not carrying a stale value *across* it is the
+/// other, and it is what keeps the second `lda #$07` below.
+#[test]
+fn a_memory_load_clears_the_tracked_value() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    run(&mut program, &model, file);
+    assert_eq!(
+        mnemonics(&program, &model, "memory_clears_the_tracker"),
+        vec![
+            Mnemonic::Lda, // from memory: the first `lda #$07` was dead
+            Mnemonic::Lda, // stays: nothing knows what memory held
+            Mnemonic::Sta,
+            Mnemonic::Rts
+        ]
+    );
+}
+
+/// A `SEP`/`REP` mask can write N and Z directly, and then the flags no longer
+/// report on the tracked value.
+///
+/// `sep #$82` sets the negative and zero flags, so the load after it is not a
+/// no-op however much the accumulator agrees — it puts N and Z back to what the
+/// value says, and the branch below reads them. The mask is one of the few
+/// operations the tracker follows *through* rather than dying at, which is what
+/// makes this worth asserting.
+#[test]
+fn a_mask_that_writes_n_and_z_clears_the_flag_provenance() {
+    let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
+    run(&mut program, &model, file);
+    assert_eq!(
+        mnemonics(&program, &model, "a_mask_can_write_n_and_z"),
+        vec![
+            Mnemonic::Sep, // the first `lda #$07` was dead: this overwrote N and Z
+            Mnemonic::Lda, // stays: the mask wrote the flags, the load reports again
+            Mnemonic::Beq,
+            Mnemonic::Nop,
+            Mnemonic::Nop,
+            Mnemonic::Rts
+        ]
+    );
+}

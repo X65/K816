@@ -2256,8 +2256,14 @@ fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
     assert_eq!(
         removed,
         vec![
-            "clc",            // repeated_clear
-            "lda     #$07",   // repeated_load
+            "clc",          // repeated_clear
+            "lda     #$07", // repeated_load
+            // …and the two loads a memory read and a mask that writes N and Z
+            // each left dead behind them. Their *second* halves stay: neither
+            // a memory read nor a flag-writing mask leaves the tracker able to
+            // say the load after it changes nothing.
+            "lda     #$07",
+            "lda     #$07",
             "ldx     #$0000", // lanes_agree, where sixteen known bits moved
             // …and the four stores of a known-zero accumulator, which the
             // zero-store peephole rewrites on its way past.
@@ -2278,9 +2284,9 @@ fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
         ],
         "{added:?}"
     );
-    // `STZ` is the same length as `STA`, so only the three deletions cost
-    // bytes: a one-byte `clc`, a two-byte load, and a three-byte one.
-    assert_eq!(bytes, 1 + 2 + 3);
+    // `STZ` is the same length as `STA`, so only the deletions cost bytes: a
+    // one-byte `clc`, three two-byte loads, and a three-byte `ldx`.
+    assert_eq!(bytes, 1 + 3 * 2 + 3);
 }
 
 /// **Moved by sub-plan F, task F4.** `subscripts.k816` writes a run of
@@ -2570,12 +2576,12 @@ const FIXTURE_EFFECTS: &[Effect] = &[
         "opt-values.k816",
         &[
             ("clc", 1),
-            ("lda     #$07", 1),
+            ("lda     #$07", 3),
             ("ldx     #$0000", 1),
             ("sta     a:CELL,x", 4),
         ],
         &[("stz     a:CELL,x", 4)],
-        "a repeated load, a redundant `clc`, an `ldx` sixteen known bits made redundant, and four stores of a known-zero accumulator",
+        "a repeated load, two more that a memory read and an N/Z-writing mask left dead behind them, a redundant `clc`, an `ldx` sixteen known bits made redundant, and four stores of a known-zero accumulator",
     ),
     (
         "opt-zero-store.k816",

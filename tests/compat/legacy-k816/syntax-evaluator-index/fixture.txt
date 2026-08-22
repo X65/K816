@@ -2,10 +2,10 @@ row       evelem-index
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
 
 `index` and the `[ ]` indexing operator.
 

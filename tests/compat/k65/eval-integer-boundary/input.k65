@@ -19,6 +19,13 @@ data boundary {
   [ 16777217 - 16777216 ]              // 2^24+1 and 2^24 as two literals
   [ 16777216 + 1 - 16777216 ]          // the same sum inside one expression
   [ ( 0.1 + 0.2 - 0.3 ) * 1000000000 ] // is the arithmetic single or double?
+
+  // And what the conversion converts *to*. `doeval` narrows through a C++
+  // `int` (`compiler_src.cpp:392`), so the interesting boundary is $7FFFFFFF
+  // rather than anything 64-bit, and past it the conversion is undefined
+  // behaviour rather than a wrap. All four of these are out of range: the
+  // first because `f32(2147483647)` is 2147483648.0, which `int` cannot hold.
+  [ 2147483647 ] [ 2147483648 ] [ 3000000000 ] [ 0 - 2147483649 ]
 }
 
 main {

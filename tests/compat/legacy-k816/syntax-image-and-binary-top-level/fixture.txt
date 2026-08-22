@@ -2,12 +2,12 @@ row       topelem-binary
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-K65-0001
-expect    K816-K65-0001
-expect    K816-E0201
-expect    K816-E0101
-expect    K816-E0101
-expect    K816-E0101
+expect    input.k65 K816-K65-0001
+expect    input.k65 K816-K65-0001
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
 
 `image NAME = "file"` and `binary NAME = "file"` at top level.
 

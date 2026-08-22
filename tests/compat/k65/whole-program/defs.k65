@@ -1,0 +1,21 @@
+// A whole K65 program, part one: the declarations.
+//
+// Written for this corpus rather than copied from anywhere.  Unlike the
+// single-claim fixtures beside it, what this one is for is the *combination* —
+// the way a real source mixes constructs that the other fixtures isolate.
+// `fixture.txt` lists them.
+//
+// The TIA register names come from the A2600 system script, which the original
+// compiler runs before the first unit (`workdir/system_a2600.nut` in the K65
+// checkout), so nothing declares them here.
+
+bank core
+
+// A comma list with an address on the first name and the `?` marker on the
+// last: three consecutive bytes at $80, $81, $82, and one compile-time line
+// saying where `phase` landed.
+var frame = 0x80, cursor, phase?
+
+inline wsync   { WSYNC = a }
+inline blank   { VBLANK = a = 2 }
+inline unblank { VBLANK = a = 0 }

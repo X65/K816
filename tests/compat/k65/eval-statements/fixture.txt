@@ -2,25 +2,25 @@ row       evalinstr-statements
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
 
 **`if`/`else`, `while`, blocks and `evalfunc` all work, and recursion does
 not.**  The golden is `05 64 2A 07 08 0C`: the `while` counted to five, the

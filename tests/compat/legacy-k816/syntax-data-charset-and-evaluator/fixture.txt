@@ -2,9 +2,9 @@ row       data-evaluator-entry
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0101
-expect    K816-E0201
-expect    K816-E0201
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
 
 `charset` and an `evaluator [ ]` entry in one data block.
 

@@ -1,0 +1,52 @@
+// A whole K65 program, part two: the data and the code.
+
+bank core
+
+const TILE_ROWS   = 8
+const RAMP_LENGTH = 15
+
+// `image` with `tiles`: four eight-pixel-wide tiles scanned out of
+// `sheet.bmp`, each byte gathered left to right and each tile's rows going up.
+data glyphs {
+  align 256
+  image sheet 0 0 8 > 8 v
+  tiles 8 8 3
+}
+
+// `for … eval` over the evaluator, with an `evaluator [ ]` transform in front
+// of it: each generated value is doubled and offset before it lands.  Note
+// that a `for` bound is a `Number`, so a `const` has to arrive through a
+// bracket — `0 .. RAMP_LENGTH` does not parse.
+data ramp {
+  evaluator [ x * 2 + 1 ]
+  for i = 0 .. [ RAMP_LENGTH ] eval [ i * i / RAMP_LENGTH ]
+}
+
+// Brackets in data entries, reading a `const` and a data section by name.
+data limits {
+  [ TILE_ROWS ] [ RAMP_LENGTH + 1 ] [ index(ramp, 3) ]
+}
+
+main {
+  i+ d-
+  s = x = 0xFF
+  a = 0
+  { CXCLR,x = a  x-- }!=
+
+  {                                 // the frame loop
+    blank
+    a = [ TILE_ROWS ]               // a bracket in operand position
+    cursor = a
+    x = 0
+
+    {                               // the scanline loop
+      wsync HMOVE = a               // a bare call and a store, on one line
+      a = glyphs,x
+      GRP0 = a
+      x++
+      { a = x  a ? [ TILE_ROWS ] }<
+    } always
+
+    unblank
+  } always
+}

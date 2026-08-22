@@ -1,0 +1,17 @@
+// Oracle question: what does `#if UNDEFINED` do?
+//
+// `PPIfNumber -> AllIdent` evaluates the name through the evaluator
+// (`compiler.inc:24`), and `getevalvar` has no "undefined is zero" branch.  So
+// the answer is a refusal, and the refusal is what this fixture is evidence
+// for - `oracle.err` beside it rather than `oracle.hex`.
+//
+// Decision 9 rules that an undeclared name in a `#if` is an error in K816 too;
+// this is the measurement behind it.
+
+#if NOT_DECLARED_ANYWHERE
+const UNREACHED = 1
+#endif
+
+main {
+  return
+}

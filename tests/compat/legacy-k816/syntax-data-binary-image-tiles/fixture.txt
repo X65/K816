@@ -2,9 +2,9 @@ row       data-image-tiles
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-K65-0001
-expect    K816-K65-0001
-expect    K816-E0201
+expect    input.k65 K816-K65-0001
+expect    input.k65 K816-K65-0001
+expect    input.k65 K816-E0201
 
 `image` with `tiles` and `colormode` inside a data block, and `binary` beside
 it.

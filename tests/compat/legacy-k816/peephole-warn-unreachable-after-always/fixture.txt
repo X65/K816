@@ -2,7 +2,7 @@ row       k816-unreachable-warning
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0104
+expect    input.k65 K816-E0104
 
 Code between `} always` and the next label is unreachable, and the legacy
 compiler warned once per dropped instruction.

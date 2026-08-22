@@ -2,8 +2,8 @@ row       k816-far-function
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-W0125
-expect    K816-E0104
+expect    input.k65 K816-W0125
+expect    input.k65 K816-E0104
 
 A far function with no width annotation, plus the branch-to-next-label and
 tail-call shapes.

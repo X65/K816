@@ -27,7 +27,7 @@ help: use `...` temporarily, or follow implementation status at <docs URL>
 ```
 
 The compatibility work should have its own manifest. It has one:
-[`plans/compat-manifest.md`](../plans/compat-manifest.md), a row per rule of
+[`k65-compat-manifest.md`](k65-compat-manifest.md), a row per rule of
 the original compiler's grammar and a row per K816 construct that is not one,
 each with a status, the fixture that proves it, and — where the status is not
 `compatible` — the reason. `tests/compat.rs` reads it.

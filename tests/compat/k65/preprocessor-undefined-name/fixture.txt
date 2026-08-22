@@ -1,0 +1,20 @@
+row       ppifnumber-condition
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+
+`#if UNDEFINED` is an error in the original, and the golden is the refusal:
+
+    Line 12: Undeclared eval variable 'NOT_DECLARED_ANYWHERE'
+
+`PPIfNumber -> AllIdent` evaluates the name through the evaluator
+(`compiler.inc:24`), and `getevalvar` has no "an unknown name is zero" branch —
+so an undeclared condition does not quietly take the false side, which is what
+a C programmer would expect it to do. Decision 9 rules the same for K816, and
+this is the measurement behind it.
+
+Unlike `eval-refusals` beside it, this refusal is clean: exit 1, with the
+compiler's own diagnostic, because the preprocessor's evaluation happens
+outside the path that aborts.

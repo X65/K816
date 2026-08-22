@@ -2,8 +2,8 @@ row       number-eval-bracket
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0002
-expect    K816-E0201
+expect    input.k65 K816-E0002
+expect    input.k65 K816-E0201
 
 An evaluator bracket the legacy compiler could not parse, which it then
 re-parsed as a K65 const expression - the "dual parse" of

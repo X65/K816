@@ -1,0 +1,27 @@
+row       evelem-call
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0201
+
+`abs` is not in the original's evaluator library, and the golden is the
+refusal.
+
+`plans/06-compatibility.md` decision 5 lists `abs` among the functions G4
+implements. The original's opcode table does not contain it, so a source that
+calls it does not compile — which makes `abs` in K816 a `K816-extension` row
+rather than compatibility, and G10's strict mode has to reject it.
+
+The refusal is a *silent* one, and `oracle.err` records that too: the original
+prints "Unknown evaluator function" through its own `Error`, and then dies
+inside the C++ evaluator's unwind before anything reaches the terminal — with
+the output unbuffered as well, so it is the compiler losing the message rather
+than a pipe. Exit 134, no diagnostic. A K816 user who hits this today gets a
+better answer than the oracle does, which is a rare direction for a
+compatibility row to run.
+
+Two further absences are measured the same way and cannot share this fixture,
+because the first one ends the build: `[1 || 0]`, because `EvLogOr` and
+`EvLogAnd` are both spelled `&&` in the original grammar so `||` is not a
+token at all, and `[1e3]`, because the live `RawFloat` terminal has no
+exponent form.

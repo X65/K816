@@ -1,0 +1,23 @@
+// Oracle question: is `abs` in the original's evaluator library?
+//
+// `plans/06-compatibility.md` decision 5 lists `abs` among the functions G4
+// implements.  The original's table does not have it
+// (`src/gen/compiler_evops.inl`), so a source that calls it does not compile -
+// which makes `abs` in K816 a `K816-extension` row rather than compatibility.
+//
+// The refusal is the golden.  Two more absences are measured the same way and
+// cannot share this fixture, because the first one ends the build:
+//
+//   - `[1 || 0]` - `EvLogOr` and `EvLogAnd` are *both* spelled `&&`
+//     (`compiler.inc:390,393`), so `||` is not a token at all.
+//   - `[1e3]` - the live `RawFloat` terminal is `[0-9]*[.][0-9]+`, with no
+//     exponent form; the commented-out terminals above it had one.
+
+data t {
+  [ abs(0 - 5) ]
+}
+
+main {
+  a = t
+  return
+}

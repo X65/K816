@@ -1,0 +1,15 @@
+# The oracle's pin.
+#
+# A golden under `tests/compat/k65/` is evidence about a *particular* build of
+# the original K65 compiler, so this file names which one.  `oracle.sh` refuses
+# to run against a checkout that does not match — a different revision, or a
+# dirty tree — and `tests/compat.rs` checks that every committed golden records
+# this revision.
+#
+# Moving the pin is a deliberate act: edit this file, re-run every fixture
+# under `tests/compat/k65/`, and review the goldens that moved.
+#
+# The upstream is <https://github.com/Krzysiek-K/k65>.
+
+k65-revision 920a4e40e853c4cb563302f3c88d81ba4687c4ed
+k65-version  version 0.2.1, build Feb  9 2026 02:31:38

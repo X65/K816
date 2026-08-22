@@ -21,7 +21,7 @@
 /*****************************************************************************/
 
 //! Sub-plan G's corpus: three sets of fixtures under `tests/compat/`, and
-//! `plans/compat-manifest.md`, which classifies every rule of the original K65
+//! `doc/k65-compat-manifest.md`, which classifies every rule of the original K65
 //! grammar and every K816 construct that is not one of them.
 //!
 //! The three sets answer different questions
@@ -84,7 +84,10 @@ struct Fixture {
     config: String,
     compare: String,
     units: Vec<String>,
-    expect: Vec<String>,
+    /// `(unit, code)` in the order the compiler reports them, unit by unit.
+    /// Every unit is compiled as an entry, so a fixture with siblings has an
+    /// expectation per unit rather than one for whichever happens to be last.
+    expect: Vec<(String, String)>,
 }
 
 fn fixtures() -> Vec<Fixture> {
@@ -124,7 +127,17 @@ fn fixtures() -> Vec<Fixture> {
                 units: one("units").split_whitespace().map(String::from).collect(),
                 expect: keys
                     .get("expect")
-                    .map(|v| v.iter().map(|s| s.to_string()).collect())
+                    .map(|v| {
+                        v.iter()
+                            .map(|value| {
+                                let (unit, code) =
+                                    value.split_once(char::is_whitespace).unwrap_or_else(|| {
+                                        panic!("{name}: `expect {value}` is not `<unit> <code>`")
+                                    });
+                                (unit.to_string(), code.trim().to_string())
+                            })
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 name,
                 dir,
@@ -135,30 +148,44 @@ fn fixtures() -> Vec<Fixture> {
     out
 }
 
-/// Compiles a fixture's units, returning the diagnostic codes and, when there
-/// are none, the assembly.
-fn compile(fixture: &Fixture) -> (Vec<String>, Option<String>) {
-    let mut map = SourceMap::new();
-    let mut entry = None;
+/// Compiles each of a fixture's units as an entry, with the others as its
+/// siblings — the shape `--unit` gives the command line.
+///
+/// Every unit is compiled, not just the last: a fixture's units are a program,
+/// and a program's second file reports its own diagnostics. Compiling only one
+/// of them lets the rest rot unnoticed, which is exactly what happened to this
+/// harness's first version.
+fn compile(fixture: &Fixture) -> (Vec<(String, String)>, Vec<String>) {
+    let mut codes = Vec::new();
+    let mut assemblies = Vec::new();
     for unit in &fixture.units {
-        let path = fixture.dir.join(unit);
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: cannot read {unit}: {e}", fixture.name));
-        // The last unit is the one compiled; the others are its siblings, the
-        // same shape `--unit` gives the command line.
-        entry = Some(map.add_file(path.to_string_lossy(), text));
+        let mut map = SourceMap::new();
+        let mut entry = None;
+        for other in &fixture.units {
+            let path = fixture.dir.join(other);
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: cannot read {other}: {e}", fixture.name));
+            let id = map.add_file(path.to_string_lossy(), text);
+            if other == unit {
+                entry = Some(id);
+            }
+        }
+        let result = compile_to_ca65(
+            &map,
+            entry.expect("the entry unit is one of the units"),
+            &Options { optimize: true },
+        );
+        codes.extend(
+            result
+                .diagnostics
+                .iter()
+                .map(|d| (unit.clone(), d.code.as_str().to_string())),
+        );
+        if let Some(assembly) = result.assembly {
+            assemblies.push(assembly);
+        }
     }
-    let result = compile_to_ca65(
-        &map,
-        entry.expect("a fixture names at least one unit"),
-        &Options { optimize: true },
-    );
-    let codes = result
-        .diagnostics
-        .iter()
-        .map(|d| d.code.as_str().to_string())
-        .collect();
-    (codes, result.assembly)
+    (codes, assemblies)
 }
 
 /// Reads a committed `.hex` golden: `origin AAAA` then hex bytes per line,
@@ -213,27 +240,31 @@ fn format_hex(origin: u32, bytes: &[u8]) -> String {
 /// it. That is a fair trade for `atarixl.cfg`, which fills 20 KiB: a golden
 /// that is mostly zeros is a golden nobody reads. A fixture that needs to
 /// assert a trailing zero ends with something else.
-fn assemble_and_link(fixture: &Fixture, assembly: &str) -> Vec<u8> {
+fn assemble_and_link(fixture: &Fixture, assemblies: &[String]) -> Vec<u8> {
     let dir = work_dir("compat");
     let stem = fixture.name.replace('/', "-");
-    let asm = dir.join(format!("{stem}.s"));
-    let obj = dir.join(format!("{stem}.o"));
     let bin = dir.join(format!("{stem}.bin"));
-    std::fs::write(&asm, assembly).expect("write assembly");
-    run_ok(
-        Command::new(tool("CA65", "ca65"))
-            .arg(&asm)
-            .args(["-o".as_ref(), obj.as_os_str()]),
-        "ca65 (build it with `make -C ../.. ca65` first)",
-    );
+    let mut objects = Vec::new();
+    for (index, assembly) in assemblies.iter().enumerate() {
+        let asm = dir.join(format!("{stem}-{index}.s"));
+        let obj = dir.join(format!("{stem}-{index}.o"));
+        std::fs::write(&asm, assembly).expect("write assembly");
+        run_ok(
+            Command::new(tool("CA65", "ca65"))
+                .arg(&asm)
+                .args(["-o".as_ref(), obj.as_os_str()]),
+            "ca65 (build it with `make -C ../.. ca65` first)",
+        );
+        objects.push(obj);
+    }
     let config = compat_dir().join(&fixture.config);
-    run_ok(
-        Command::new(tool("LD65", "ld65"))
-            .args(["-C".as_ref(), config.as_os_str()])
-            .args(["-o".as_ref(), bin.as_os_str()])
-            .arg(&obj),
-        "ld65 (build it with `make -C ../.. ld65` first)",
-    );
+    let mut link = Command::new(tool("LD65", "ld65"));
+    link.args(["-C".as_ref(), config.as_os_str()])
+        .args(["-o".as_ref(), bin.as_os_str()]);
+    for object in &objects {
+        link.arg(object);
+    }
+    run_ok(&mut link, "ld65 (build it with `make -C ../.. ld65` first)");
     let mut bytes = std::fs::read(&bin).expect("read linked binary");
     while bytes.last() == Some(&0) {
         bytes.pop();
@@ -251,7 +282,7 @@ fn assemble_and_link(fixture: &Fixture, assembly: &str) -> Vec<u8> {
 #[test]
 fn every_fixture_behaves_as_its_header_says() {
     for fixture in fixtures() {
-        let (codes, assembly) = compile(&fixture);
+        let (codes, assemblies) = compile(&fixture);
         assert_eq!(
             codes, fixture.expect,
             "{}: the diagnostics changed",
@@ -265,10 +296,13 @@ fn every_fixture_behaves_as_its_header_says() {
                 fixture.name
             ),
             "bytes" => {
-                let assembly = assembly.unwrap_or_else(|| {
-                    panic!("{}: `compare bytes` but nothing was emitted", fixture.name)
-                });
-                let bytes = assemble_and_link(&fixture, &assembly);
+                assert_eq!(
+                    assemblies.len(),
+                    fixture.units.len(),
+                    "{}: `compare bytes` but not every unit emitted assembly",
+                    fixture.name
+                );
+                let bytes = assemble_and_link(&fixture, &assemblies);
                 let (origin, expected) = read_hex(&fixture.dir.join("expected.hex"));
                 assert_eq!(
                     format_hex(origin, &bytes),
@@ -310,6 +344,172 @@ fn the_link_configurations_are_the_ones_the_fixtures_name() {
 }
 
 // ---------------------------------------------------------------------------
+// Oracle evidence
+// ---------------------------------------------------------------------------
+
+/// Adler-32, matching the awk in `oracle.sh`.
+///
+/// A staleness detector rather than a security primitive — the same framing
+/// `tests/corpus.rs` uses for the generated-parser fingerprint. It is this and
+/// not something stronger because both sides have to compute it and one of
+/// them is a POSIX shell script.
+fn adler32(bytes: &[u8]) -> String {
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in bytes {
+        a = (a + u32::from(*byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    format!("{b:04X}{a:04X}")
+}
+
+/// `key value` lines from a golden's `#`-comment header.
+fn header_fields(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("# ") else {
+            continue;
+        };
+        if let Some((key, value)) = rest.trim_end().split_once(char::is_whitespace) {
+            out.push((key.to_string(), value.trim().to_string()));
+        }
+    }
+    out
+}
+
+fn oracle_lock() -> (String, String) {
+    let text = std::fs::read_to_string(compat_dir().join("oracle.lock"))
+        .expect("read tests/compat/oracle.lock");
+    let field = |key: &str| -> String {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or_else(|| panic!("oracle.lock has no `{key}`"))
+            .trim()
+            .to_string()
+    };
+    (field("k65-revision"), field("k65-version"))
+}
+
+/// Every oracle golden is bound to the compiler that made it and to the
+/// sources it was made from.
+///
+/// The goldens are the only evidence in the tree for what the original K65
+/// compiler does, and `cargo test` cannot re-derive them — the compiler is
+/// outside the tree and may not be installed. So the binding is checked
+/// instead: an input edited without re-running `oracle.sh` fails here, and so
+/// does a golden produced against a compiler the lock does not name. Without
+/// this the fixtures could drift from their evidence and stay green, which is
+/// worse than having no evidence at all.
+#[test]
+fn every_oracle_golden_is_bound_to_its_inputs_and_its_compiler() {
+    let (revision, version) = oracle_lock();
+    let generated = [
+        "oracle.hex",
+        "oracle.lst",
+        "oracle.err",
+        "fixture.txt",
+        "expected.hex",
+        "PROVENANCE.md",
+    ];
+
+    let mut checked = 0;
+    for fixture in fixtures().iter().filter(|f| f.name.starts_with("k65/")) {
+        let hex = fixture.dir.join("oracle.hex");
+        let err = fixture.dir.join("oracle.err");
+        let golden = match (hex.exists(), err.exists()) {
+            (true, false) => hex,
+            (false, true) => err,
+            (true, true) => panic!(
+                "{}: has both oracle.hex and oracle.err - one build, one result",
+                fixture.name
+            ),
+            (false, false) => panic!(
+                "{}: is under k65/ and has no oracle golden. Produce one with \
+                 `tests/compat/oracle.sh {}`, or move the fixture to k816/ if \
+                 it is not asking the original anything.",
+                fixture.name,
+                fixture.dir.display()
+            ),
+        };
+        let text = std::fs::read_to_string(&golden)
+            .unwrap_or_else(|e| panic!("{}: cannot read its golden: {e}", fixture.name));
+        let fields = header_fields(&text);
+        let one = |key: &str| -> String {
+            fields
+                .iter()
+                .find(|(k, _)| k == key)
+                .unwrap_or_else(|| panic!("{}: its golden records no `{key}`", fixture.name))
+                .1
+                .clone()
+        };
+        assert_eq!(
+            one("revision"),
+            revision,
+            "{}: its golden was produced against a K65 revision oracle.lock does \
+             not pin. Re-run tests/compat/oracle.sh, or move the pin deliberately.",
+            fixture.name
+        );
+        assert_eq!(
+            one("compiler"),
+            version,
+            "{}: its golden records a compiler build oracle.lock does not pin",
+            fixture.name
+        );
+
+        // Every recorded input still hashes to what it hashed to.
+        let mut recorded = BTreeSet::new();
+        for (key, value) in &fields {
+            if key != "input" {
+                continue;
+            }
+            let mut words = value.split_whitespace();
+            let name = words.next().expect("an input line names a file");
+            let expected = words
+                .nth(1)
+                .unwrap_or_else(|| panic!("{}: `input {value}` has no checksum", fixture.name));
+            let bytes = std::fs::read(fixture.dir.join(name)).unwrap_or_else(|e| {
+                panic!(
+                    "{}: its golden records the input `{name}`, which is gone: {e}",
+                    fixture.name
+                )
+            });
+            assert_eq!(
+                adler32(&bytes),
+                expected,
+                "{}: `{name}` changed since its golden was produced. Re-run \
+                 tests/compat/oracle.sh and review what moved.",
+                fixture.name
+            );
+            recorded.insert(name.to_string());
+        }
+        assert!(
+            !recorded.is_empty(),
+            "{}: its golden records no inputs at all",
+            fixture.name
+        );
+
+        // And nothing the build reads is missing from that list.
+        for entry in std::fs::read_dir(&fixture.dir).expect("read fixture directory") {
+            let path = entry.expect("read fixture entry").path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if generated.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                recorded.contains(&name),
+                "{}: `{name}` is an input the golden does not record. Re-run \
+                 tests/compat/oracle.sh.",
+                fixture.name
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "no oracle fixtures were checked");
+}
+
+// ---------------------------------------------------------------------------
 // The manifest
 // ---------------------------------------------------------------------------
 
@@ -320,7 +520,7 @@ struct Row {
     fixture: String,
 }
 
-/// Parses `plans/compat-manifest.md`.
+/// Parses `doc/k65-compat-manifest.md`.
 ///
 /// The file is written to be read by this function — one row per line, fixed
 /// columns — which `tests/manifest.rs` could not do for the feature manifest
@@ -328,8 +528,8 @@ struct Row {
 /// the same way; the grammar table carries line numbers and the extension
 /// table does not.
 fn manifest_rows() -> (Vec<Row>, String) {
-    let text = std::fs::read_to_string(root().join("plans/compat-manifest.md"))
-        .expect("read plans/compat-manifest.md");
+    let text = std::fs::read_to_string(root().join("doc/k65-compat-manifest.md"))
+        .expect("read doc/k65-compat-manifest.md");
     let mut rows = Vec::new();
     for line in text.lines() {
         let line = line.trim();

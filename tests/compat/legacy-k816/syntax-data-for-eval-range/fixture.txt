@@ -2,8 +2,8 @@ row       data-for-eval
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0201
-expect    K816-E0101
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0101
 
 A `for ... eval` range whose bounds come from a top-level `[ FACTOR = 3 ]`
 block the body reads.

@@ -1,0 +1,63 @@
+row       k65-corpus-whole-program
+config    a2600.cfg
+compare   diagnostics
+units     defs.k65 main.k65
+expect    defs.k65 K816-E0001
+expect    defs.k65 K816-E0001
+expect    defs.k65 K816-E0001
+expect    defs.k65 K816-E0101
+expect    defs.k65 K816-E0101
+expect    defs.k65 K816-E0104
+expect    defs.k65 K816-E0101
+expect    defs.k65 K816-E0104
+expect    defs.k65 K816-E0101
+expect    main.k65 K816-E0001
+expect    main.k65 K816-E0001
+expect    main.k65 K816-E0001
+expect    main.k65 K816-K65-0001
+expect    main.k65 K816-E0101
+expect    main.k65 K816-E0201
+expect    main.k65 K816-E0201
+expect    main.k65 K816-E0201
+expect    main.k65 K816-E0201
+expect    main.k65 K816-E0201
+expect    main.k65 K816-E0106
+expect    main.k65 K816-E0101
+expect    main.k65 K816-E0101
+expect    main.k65 K816-E0201
+expect    main.k65 K816-E0101
+expect    main.k65 K816-E0101
+expect    main.k65 K816-E0101
+expect    main.k65 K816-E0201
+
+A whole K65 program, written for this corpus, in two units.
+
+Every other fixture here isolates one claim. This one exists because a real
+source does not: it mixes `bank`, a `var` comma list with the `?` marker,
+`inline` sections called by name, a bare call and a store on one line
+(`wsync HMOVE = a`), `align`, `image` with `tiles`, `for … eval` behind an
+`evaluator [ ]` transform, and evaluator brackets in three positions —
+operand, data entry and `for` bound. Constructs that each parse in isolation
+can still collide, and this is where that shows.
+
+It replaces a program vendored from the original K65 distribution. That copy
+came with no licence and no redistribution permission, so it is gone; this is
+independently authored, and `sheet.bmp` with it — a 32×16 24-bpp bitmap whose
+pixel at column *x*, row *y* is black when bit *x* mod 8 of ⌊*x*/8⌋ + *y* is
+set, so each of its four tiles carries a different, checkable bit pattern.
+
+Three things it taught while being written, none of them in any document:
+
+  - `tiles` is a keyword, so `image tiles …` does not parse — an image's name
+    cannot be `tiles`.
+  - a `for` bound is a `Number`, and a `const` is an `Ident`, so
+    `for i = 0 .. RAMP_LENGTH` does not parse and `0 .. [ RAMP_LENGTH ]`
+    does.
+  - the original aborts without a diagnostic on all three, which is why
+    `oracle.sh` prints the compiler's log when a build it expected to succeed
+    fails.
+
+The count below is the task-by-task measure: it falls at G2 (the comma list
+and the bare-call lines), G4 (the brackets and `for … eval`) and G6 (`image`,
+which stays refused, and the `evaluator [ ]` transform, which lands). Both
+units are compiled as entries, so both report.

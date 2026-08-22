@@ -1,15 +1,15 @@
-row       ppifnumber-condition
+row       instr-preprocessor
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0001
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
-expect    K816-E0201
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
+expect    input.k65 K816-E0201
 
 Preprocessor regions at statement and data-entry level, with `#if !0` among
 the conditions.

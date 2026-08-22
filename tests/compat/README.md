@@ -5,7 +5,7 @@ under one of the three sets below is one fixture: sources, a `fixture.txt`
 that says what K816 does with them and why, and — where there is one — a
 committed golden.
 
-`plans/compat-manifest.md` classifies every rule of the original K65 grammar
+`doc/k65-compat-manifest.md` classifies every rule of the original K65 grammar
 and every K816 construct that is not one of them. Each fixture names the row it
 answers to; each row names the fixture that proves it. `tests/compat.rs` checks
 that the two index each other, and that no line of the original grammar was
@@ -38,15 +38,25 @@ questions no document of either compiler answers — what `?` after a variable
 name emits, whether an evaluator bracket sees a `const`, whether a value past
 `$FF` wraps or is refused, what `align 256 + 8` places where.
 
-`cargo test` never runs the original compiler. `oracle.sh` is how those bytes
-were produced and how they are re-produced; the header of each golden carries
-the exact invocation, so a reader can check provenance without taking the
-committed bytes on faith (decision 2).
+`cargo test` never runs the original compiler, and a committed golden is
+evidence only if it is bound to what produced it. So each one records the
+pinned K65 revision from `oracle.lock` and an Adler-32 checksum of every input
+the build reads, and `tests/compat.rs` re-checks both without running anything:
+an input edited without re-running the script fails, a golden produced against
+a compiler the lock does not name fails, an input the golden does not record
+fails, and a `k65/` fixture with no golden at all fails.
 
-`a2600-tutorial-03/` is a whole program vendored from the original
-distribution rather than a fixture written here; `PROVENANCE.md` in that
-directory says where it came from and why it lives here and not under
-`examples/`.
+**A refusal is a result too.** A fixture whose `oracle.conf` says
+`expect failure` gets an `oracle.err` instead of an `oracle.hex`, carrying the
+exit status and the compiler's own diagnostics. `preprocessor-undefined-name`
+and `eval-refusals` are the two: what they prove is that the original *rejects*
+those sources, and a build that started succeeding would be as much of a change
+as different bytes.
+
+`whole-program/` is the one fixture that is a program rather than a claim — two
+units mixing the constructs the others isolate. It is authored here, bitmap
+included; it replaced a program copied from the original K65 distribution,
+which came with no licence and no redistribution permission.
 
 ### `k816/`
 
@@ -65,11 +75,11 @@ fixture's own note.
 | --- | --- | --- |
 | Does the evaluator see a `const`? | **Yes** — and a data label, as a *section*. Only a `var` fails to resolve. | `k65/eval-sees-consts` |
 | Is a value outside the context's range wrapped or refused? | **Wrapped, silently.** `[300]` in a byte is `$2C`. | `k65/eval-integer-boundary` |
-| How does a value cross an integer boundary? | `i64(floor(f32(v) + 0.5f32))` — round half **up**, over `f64` arithmetic between `f32` ends. | `k65/eval-integer-boundary` |
+| How does a value cross an integer boundary? | `i32(floor(f32(v) + 0.5f32))` — round half **up**, over `f64` arithmetic between `f32` ends. Past `int` range the original's conversion is undefined behaviour; this build yields `INT_MIN` for every out-of-range value, `2147483647` included, because `f32` of it is 2³¹. | `k65/eval-integer-boundary` |
 | What does `var X ?` emit? | **Nothing.** It prints the variable's address at compile time. | `k65/declaration-comma-lists` |
 | Is `align` accepted at the start of a `func`? | **Yes**, and so is `address`, in `func`, `naked`, `main` and `data` alike. | `k65/align-and-address` |
 | What does `align 256 + 8` place? | The section at an address **congruent to 8 modulo 256**. | `k65/align-and-address` |
-| What does `#if UNDEFINED` do? | **Errors** — "Undeclared eval variable". | measured in G0; a fixture cannot hold a golden for a build that fails |
+| What does `#if UNDEFINED` do? | **Errors** — "Undeclared eval variable". | `k65/preprocessor-undefined-name` |
 | What bytes does `.LT+1 = a` produce? | `sta .LT+1`, absolute, **no diagnostic**. | `k65/label-offset-targets` |
 | What is a method call? | **Sugar**: `x.f(a)` is `f(x, a)` and `x.f` is `f(x)`. | `k65/eval-forms` |
 | What is a string value? | A value **inside** an evaluation — `+`, `==`, `<`, `print`, `error` — that cannot cross an integer boundary. | `k65/eval-forms` |
@@ -77,9 +87,9 @@ fixture's own note.
 | Is `evalfunc` recursion bounded? | **No — it is broken.** A self-call resolves to evaluator function zero. | `k65/eval-statements` |
 | What does `* N` emit? | **N cycles** of wait, spending an odd one on `NOP $80` — opcode `$04`, which is `TSB dp` on the 65816. | `k65/nop-and-wait` |
 
-Three more things the original does not have, found on the way and recorded in
-`plans/compat-manifest.md`: no `abs`, no `||` (both logical operators are
-spelled `&&` in its grammar), and `%` is a non-negative modulo.
+Three more things the original does not have, found on the way: no `abs`
+(`k65/eval-refusals`), no `||` — both logical operators are spelled `&&` in its
+grammar — and `%` is a non-negative modulo.
 
 ## `fixture.txt`
 
@@ -88,10 +98,14 @@ spelled `&&` in its grammar), and `%` is a non-negative modulo.
     row       the manifest row this fixture answers to
     config    the ld65 configuration to link with
     compare   `diagnostics` or `bytes`
-    units     the sources, in order; the last one is the compiled unit and the
-              others are its siblings, which is what `--unit` means on the
-              command line
-    expect    one diagnostic code, repeated - in the order K816 reports them
+    units     the sources, in order. **Every one is compiled**, each with the
+              others passed as siblings - which is what `--unit` means on the
+              command line. A program's second file reports its own
+              diagnostics, and compiling only one of them lets the rest rot
+              unnoticed.
+    expect    `<unit> <code>`, repeated - every unit is compiled as an
+              entry with the others as its siblings, and the expectations are
+              in the order the compiler reports them, unit by unit
 
 A fixture that does not compile lists its codes; a fixture that compiles cleanly
 commits its linked bytes as `expected.hex`, because "it compiles" is not the
@@ -106,7 +120,7 @@ and an argument does not belong in an assertion.
 | --- | --- | --- |
 | `legacy-stub.cfg` | `legacy-k816/` | The legacy compiler's own link stub: origin 0, `fixed_lo` at 16, `fixed_hi` at 32. An imported fixture's bytes mean the same thing here as they did there. |
 | `atarixl.cfg` | `k65/` | The Atari XL map the oracle fixtures were built with, `-lowAddr 0x2000`. |
-| `a2600.cfg` | `k65/a2600-tutorial-03/` | The 2600's 4 KiB cartridge at `$F000`, with the entry stub and vector table the system reserves. |
+| `a2600.cfg` | `k65/whole-program/` | The 2600's 4 KiB cartridge at `$F000`, with the entry stub and vector table the system reserves. |
 
 ## Re-deriving an oracle golden
 
@@ -114,8 +128,12 @@ and an argument does not belong in an assertion.
 K65_HOME=~/devel/X65/k65 tests/compat/oracle.sh tests/compat/k65/<fixture>
 ```
 
-`out/k65.exe` must be built in that checkout, and note that `bin/compiler.exe`
-beside it is the *grammar generator*, not the compiler. The script writes the
+`out/k65.exe` must be built in that checkout, the checkout must be at the
+revision `oracle.lock` pins and its tree must be clean — the script refuses
+otherwise, because a golden produced against an unknown compiler is not
+evidence. Moving the pin is deliberate: edit the lock, re-run every fixture,
+and review what moved. Note that `bin/compiler.exe` beside `out/k65.exe` is the
+*grammar generator*, not the compiler. The script writes the
 project file into the fixture directory and runs the compiler from `workdir/`,
 because the original resolves both a unit path and an `image`/`binary` file name
 against the project file's directory and needs `system_*.nut` on its own

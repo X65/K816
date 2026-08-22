@@ -26,8 +26,17 @@
 # compiler and freezes the answer beside the fixture.
 #
 # `cargo test` never runs this (plans/06-compatibility.md decision 2).  The
-# goldens are committed bytes; this script is how they were produced and how
-# they are re-produced when a fixture changes.
+# goldens are committed; this script is how they were produced and how they are
+# re-produced when a fixture changes.  **A committed golden is evidence only if
+# it is bound to what produced it**, so each one records
+#
+#   - the pinned K65 revision from `oracle.lock`, which this script refuses to
+#     run against a checkout that does not match, and
+#   - an Adler-32 checksum of every input the build reads.
+#
+# `tests/compat.rs` re-checks both without running anything: a source edited
+# without re-running this script fails, and so does a golden produced against
+# a different compiler.
 #
 # Usage:
 #     tests/compat/oracle.sh tests/compat/k65/<fixture>...
@@ -40,16 +49,22 @@
 #     lowaddr  0x2000         # -lowAddr, AtariXL only
 #     bank     main           # the bank every unit is compiled into
 #     units    defs.k65 input.k65
+#     expect   failure        # optional: the original is *supposed* to reject
+#                             #           this source, and the refusal is the
+#                             #           golden
 #
 # The script writes `oracle.hex` (the program image with its provenance
-# header) and `oracle.lst` (the compiler's listing) into the fixture
-# directory.
+# header) and `oracle.lst` (the compiler's listing), or `oracle.err` for a
+# fixture that expects a refusal.
 #
 # The K65 checkout is found through $K65_HOME, defaulting to ~/devel/X65/k65.
 # `out/k65.exe` must be built and the compiler must run from `workdir/`, so
 # that `system_*.nut` resolves (probe 7).
 
 set -e
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+LOCK=$HERE/oracle.lock
 
 K65_HOME=${K65_HOME:-$HOME/devel/X65/k65}
 K65=$K65_HOME/out/k65.exe
@@ -69,10 +84,70 @@ fi
 
 [ $# -gt 0 ] || { echo "usage: oracle.sh <fixture-dir>..." >&2; exit 2; }
 
+# ---------------------------------------------------------------------------
+# The pin
+#
+# A golden is only evidence about a *particular* compiler.  `oracle.lock` names
+# which one, and a checkout that is not it — a different revision, or a dirty
+# tree — is refused rather than quietly producing goldens nothing can trace.
+# Moving the pin is a deliberate act: edit the lock, re-run every fixture, and
+# review the goldens that moved.
+# ---------------------------------------------------------------------------
+PINNED=$(awk '$1=="k65-revision" {print $2}' "$LOCK")
+REVISION=$(git -C "$K65_HOME" rev-parse HEAD 2>/dev/null || echo unknown)
+if [ -n "$(git -C "$K65_HOME" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    REVISION="$REVISION-dirty"
+fi
+if [ "$REVISION" != "$PINNED" ]; then
+    echo "oracle.sh: $K65_HOME is at $REVISION;" >&2
+    echo "  tests/compat/oracle.lock pins $PINNED." >&2
+    echo "  Check out the pinned revision, or move the pin deliberately and" >&2
+    echo "  re-run every fixture under tests/compat/k65/." >&2
+    exit 1
+fi
+
 # Run from `workdir/` even for the banner: the compiler writes a `program.gmap`
 # and a `test_raw.sym` into whatever directory it starts in.
 VERSION=$( ( cd "$WORKDIR" && "$K65" ) 2>&1 \
     | sed -n 's/^K65 compiler, \(.*\)\.$/\1/p' | head -1 | tr -d '\r')
+PINNED_VERSION=$(sed -n 's/^k65-version  *//p' "$LOCK")
+if [ "$VERSION" != "$PINNED_VERSION" ]; then
+    echo "oracle.sh: the compiler reports '$VERSION';" >&2
+    echo "  tests/compat/oracle.lock pins '$PINNED_VERSION'." >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Adler-32, as a staleness detector rather than a security primitive — the
+# framing `tests/corpus.rs` already uses for the generated-parser fingerprint.
+# It is here rather than a stronger hash because both this script and
+# `tests/compat.rs` have to compute it, and this one has only awk.
+# ---------------------------------------------------------------------------
+adler32() {
+    od -An -tu1 -v "$1" | awk '
+        BEGIN { a = 1; b = 0 }
+        { for (i = 1; i <= NF; i++) { a = (a + $i) % 65521; b = (b + a) % 65521 } }
+        END { printf "%04X%04X", b, a }'
+}
+
+# Files a fixture directory holds that are *not* inputs to the original: this
+# script's own output, and K816's side of the fixture.
+is_generated() {
+    case $1 in
+    oracle.hex|oracle.lst|oracle.err|fixture.txt|expected.hex|PROVENANCE.md|*.k65proj)
+        return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+inputs_of() {
+    for path in "$1"/*; do
+        [ -f "$path" ] || continue
+        name=${path##*/}
+        is_generated "$name" && continue
+        printf '%s\n' "$name"
+    done
+}
 
 # ---------------------------------------------------------------------------
 # byte at offset $1 of file $2, as decimal
@@ -106,6 +181,35 @@ framing() {
     esac
 }
 
+# ---------------------------------------------------------------------------
+# The header every golden carries.  Written by `provenance <dir> <name>`.
+# ---------------------------------------------------------------------------
+provenance() {
+    _dir=$1; _name=$2
+    echo "# This file is generated by tests/compat/oracle.sh and is committed so"
+    echo "# that the suite does not depend on a compiler outside the tree"
+    echo "# (plans/06-compatibility.md decision 2).  \`cargo test\` never runs the"
+    echo "# original; it re-checks the revision and the checksums below, so a"
+    echo "# source edited without re-running the script fails."
+    echo "#"
+    echo "# fixture   $_name"
+    echo "# compiler  $VERSION"
+    echo "# revision  $REVISION"
+    echo "# command   cd \$K65_HOME/workdir && ../out/k65.exe @<this-directory>/$_name.k65proj"
+    inputs_of "$_dir" | while read -r _input; do
+        printf '# input     %-16s adler32 %s  %s bytes\n' \
+            "$_input" "$(adler32 "$_dir/$_input")" \
+            "$(wc -c < "$_dir/$_input" | tr -d ' ')"
+    done
+    echo "# project"
+    # The scratch directory the output goes to is this run's, not the
+    # fixture's, so it is rewritten to `./` - a golden that changed because
+    # mktemp picked a different name is a golden nobody can trust.
+    sed 's|'"$out"'/|./|g; s/^/#     /; s/[ \t]*$//' "$_dir/$_name.k65proj" \
+        | sed 's/^#     $/#/'
+    echo "#"
+}
+
 for dir in "$@"; do
     dir=$(cd "$dir" && pwd)
     conf=$dir/oracle.conf
@@ -115,14 +219,14 @@ for dir in "$@"; do
     lowaddr=$(awk '$1=="lowaddr" {print $2}' "$conf")
     bank=$(awk '$1=="bank"    {print $2}' "$conf")
     units=$(awk '$1=="units"   {$1=""; print}' "$conf")
-    : "${system:=AtariXL}" "${bank:=main}"
+    expect=$(awk '$1=="expect"  {print $2}' "$conf")
+    : "${system:=AtariXL}" "${bank:=main}" "${expect:=success}"
 
     name=$(basename "$dir")
     out=$(mktemp -d)
     # The project file goes into the fixture directory and names its units
     # relatively, because the original resolves both a unit path and an
-    # `image`/`binary` file name against the project file's directory - which
-    # is how the a2600 tutorial finds its `sprites.bmp`.
+    # `image`/`binary` file name against the project file's directory.
     proj=$dir/$name.k65proj
 
     {
@@ -136,12 +240,42 @@ for dir in "$@"; do
         echo "-link"
     } > "$proj"
 
-    ( cd "$WORKDIR" && "$K65" "@$proj" ) > "$out/log" 2>&1 || {
-        echo "oracle.sh: the original compiler rejected $name:" >&2
+    status=0
+    ( cd "$WORKDIR" && "$K65" "@$proj" ) > "$out/log" 2>&1 || status=$?
+
+    if [ "$expect" = failure ]; then
+        if [ "$status" -eq 0 ]; then
+            echo "oracle.sh: $name says \`expect failure\` but the original accepted it" >&2
+            rm -rf "$out" "$proj"
+            exit 1
+        fi
+        {
+            provenance "$dir" "$name"
+            echo "# The original is *expected* to reject this source: the refusal is what"
+            echo "# the fixture is evidence for, and a build that started succeeding would"
+            echo "# be as much of a change as different bytes."
+            echo "#"
+            echo "# Only the compiler's own \`Line N:\` diagnostics are kept.  It aborts"
+            echo "# rather than exiting on most of these — the C++ evaluator's error path"
+            echo "# unwinds through a bad free — and the allocator's message on the way"
+            echo "# out is the C library's, not the compiler's."
+            echo
+            echo "exit $status"
+            grep '^Line ' "$out/log" || echo "(no diagnostic before the abort)"
+        } > "$dir/oracle.err"
+        rm -f "$dir/oracle.hex" "$dir/oracle.lst"
+        rm -rf "$out" "$proj"
+        echo "oracle.sh: $name -> oracle.err (refused, exit $status)"
+        continue
+    fi
+
+    if [ "$status" -ne 0 ]; then
+        echo "oracle.sh: the original compiler rejected $name (exit $status):" >&2
         sed -n '/^Compiling file/,$p' "$out/log" >&2
+        tail -3 "$out/log" >&2
         rm -f "$proj"
         exit 1
-    }
+    fi
 
     image=$out/$name.bin
     set -- $(framing "$system" "$image")
@@ -151,19 +285,7 @@ for dir in "$@"; do
     {
         echo "# Oracle golden - the bytes the original K65 compiler produced."
         echo "#"
-        echo "# This file is generated by tests/compat/oracle.sh and is committed so"
-        echo "# that the suite does not depend on a compiler outside the tree"
-        echo "# (plans/06-compatibility.md decision 2).  \`cargo test\` never runs the"
-        echo "# original; a reader who wants to check provenance re-runs the command"
-        echo "# below."
-        echo "#"
-        echo "# fixture   $name"
-        echo "# compiler  $VERSION"
-        echo "# command   cd \$K65_HOME/workdir && ../out/k65.exe @<this-directory>/$name.k65proj"
-        echo "# project"
-        sed 's/^/#     /; s|'"$out"'/|./|g; s/[ \t]*$//' "$proj" \
-            | sed 's/^#     $/#/'
-        echo "#"
+        provenance "$dir" "$name"
         case $system in
         A2600)
             echo "# The A2600 system writes the raw 4 KiB cartridge image of \$F000..\$FFFF"
@@ -196,12 +318,14 @@ for dir in "$@"; do
         {
             echo "; Oracle listing - the original K65 compiler's own .lst for this"
             echo "; fixture, kept for the rows compared at the instruction sequence"
-            echo "; rather than at the bytes.  Generated by tests/compat/oracle.sh."
+            echo "; rather than at the bytes.  Generated by tests/compat/oracle.sh;"
+            echo "; oracle.hex beside it carries the provenance for both."
             echo ";"
             sed 's|'"$dir"'/|./|g' "$out/$name.lst"
         } > "$dir/oracle.lst"
     fi
 
+    rm -f "$dir/oracle.err"
     rm -rf "$out" "$proj"
-    echo "oracle.sh: $name -> $(basename "$hex") ($length bytes at $(printf '$%04X' "$origin"))"
+    echo "oracle.sh: $name -> oracle.hex ($length bytes at $(printf '$%04X' "$origin"))"
 done

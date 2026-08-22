@@ -2,12 +2,12 @@ row       var-declaration
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    K816-E0001
-expect    K816-E0001
-expect    K816-E0101
-expect    K816-E0101
-expect    K816-E0101
-expect    K816-E0101
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
 
 **`?` prints the variable's address at compile time and emits nothing.**  The
 golden is `A5 80 A5 81 A5 82 A9 07` - three zero-page loads and an immediate -

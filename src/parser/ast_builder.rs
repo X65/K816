@@ -591,11 +591,11 @@ impl AstBuilder<'_> {
                 "label" => statements.push(self.label(child)),
                 "native_instruction" => statements.push(self.native_instruction(child)),
                 "block_move" => statements.push(self.block_move(child)),
-                "hla_assignment" => statements.push(self.hla_assignment(child)),
+                "hla_assignment" => statements.extend(self.hla_assignment(child)),
                 "hla_exchange" => statements.push(self.hla_exchange(child)),
                 "hla_arithmetic" => statements.push(self.hla_arithmetic(child)),
                 "hla_shift" => statements.push(self.hla_shift(child)),
-                "hla_step" => statements.push(self.hla_step(child)),
+                "hla_step" => statements.extend(self.hla_step(child)),
                 "hla_flag" => statements.push(self.hla_flag(child)),
                 "hla_stack" => statements.push(self.hla_stack(child)),
                 "hla_nop" => statements.push(Statement::new(
@@ -671,6 +671,14 @@ impl AstBuilder<'_> {
                 "bare_call" => statements.push(self.bare_call(child)),
                 "hla_illegal" => {
                     self.deferred(child, "the illegal-opcode HLA forms");
+                    statements.push(Statement::new(StatementKind::Error, self.span(child)));
+                }
+                // A code section may open with a placement directive, as the
+                // original's `Align` slot allows. What it *means* inside a
+                // body — a section that starts at a boundary, or a hole in
+                // the middle of one — is G2's.
+                "align_directive" | "address_directive" => {
+                    self.deferred(child, "placement directives in a code section");
                     statements.push(Statement::new(StatementKind::Error, self.span(child)));
                 }
                 "line_comment" | "block_comment" => {}
@@ -801,13 +809,31 @@ impl AstBuilder<'_> {
 
     /// An assignment chain. The rightmost operand is the source; everything
     /// to its left is a target, in the order the value flows through them.
-    fn hla_assignment(&mut self, node: Node<'_>) -> Statement {
+    /// One or two statements: `wsync HMOVE = a` is a call and a store.
+    fn hla_assignment(&mut self, node: Node<'_>) -> Vec<Statement> {
         let mut cursor = node.walk();
-        let mut operands: Vec<HlaOperand> = node
+        let operand_nodes: Vec<Node<'_>> = node
             .children_by_field_name("operand", &mut cursor)
-            .map(|operand| self.hla_operand(operand))
             .collect();
-        let span = self.span(node);
+        let mut statements = Vec::new();
+        let mut split = false;
+        if let Some(first) = operand_nodes.first()
+            && let Some(call) = self.leading_bare_call(*first)
+        {
+            statements.push(call);
+            split = true;
+        }
+        let mut operands: Vec<HlaOperand> = operand_nodes
+            .iter()
+            .enumerate()
+            .map(|(index, operand)| self.hla_operand_after_split(*operand, split && index == 0))
+            .collect();
+        let node_span = self.span(node);
+        // The store starts where the call ended.
+        let span = match operands.first() {
+            Some(first) if split => Span::new(node_span.file, first.span.start, node_span.end),
+            _ => node_span,
+        };
         let source = operands.pop().unwrap_or_else(|| {
             // The grammar guarantees at least two operands; recovery may not.
             HlaOperand {
@@ -815,22 +841,79 @@ impl AstBuilder<'_> {
                 span: Span::empty_at(span.file, span.end),
             }
         });
-        Statement::new(
+        statements.push(Statement::new(
             StatementKind::Hla(HlaStatement::Assign(HlaAssignment {
                 targets: operands,
                 source,
             })),
             span,
-        )
+        ));
+        statements
+    }
+
+    /// Decision 16: `wsync HMOVE = a` is a call and a store, not one store
+    /// through an operand prefixed by `wsync`.
+    ///
+    /// The grammar cannot make this call. `dp` and `abs` reach the prefix
+    /// slot as *identifiers*, deliberately, so that they stay usable as
+    /// names — `lda dp` loads the variable `dp` — and a literal token for
+    /// them would win in the lexer wherever an identifier is also valid,
+    /// which breaks the operand prefix it was meant to protect. So the
+    /// spelling is checked here, the one place that can see it, exactly as
+    /// [`Self::address_encoding`] already checks it for operands.
+    ///
+    /// Returns the call statement when a statement-leading target carries a
+    /// prefix that is not one of the three; the caller then builds the rest
+    /// of the statement with that prefix ignored.
+    /// `node`'s span with its `encoding` prefix trimmed off the front, for
+    /// the statement that remains once the prefix has become a call.
+    fn after_prefix(&mut self, node: Node<'_>) -> Span {
+        let span = self.span(node);
+        match node.child_by_field_name("value") {
+            Some(value) => Span::new(span.file, self.span(value).start, span.end),
+            None => span,
+        }
+    }
+
+    fn leading_bare_call(&mut self, node: Node<'_>) -> Option<Statement> {
+        if node.kind() != "address" {
+            return None;
+        }
+        let encoding = node.child_by_field_name("encoding")?;
+        if matches!(self.text(encoding), "dp" | "abs" | "far") {
+            return None;
+        }
+        Some(Statement::new(
+            StatementKind::BareCall(BareCall {
+                target: self.name(Some(encoding), node),
+                arguments: None,
+                outputs: None,
+            }),
+            self.span(encoding),
+        ))
     }
 
     fn hla_operand(&mut self, node: Node<'_>) -> HlaOperand {
-        let span = self.span(node);
+        self.hla_operand_after_split(node, false)
+    }
+
+    /// `split` is set when [`Self::leading_bare_call`] already took this
+    /// operand's `encoding` child as a statement of its own.
+    fn hla_operand_after_split(&mut self, node: Node<'_>, split: bool) -> HlaOperand {
+        let span = if split {
+            self.after_prefix(node)
+        } else {
+            self.span(node)
+        };
         let kind = match node.kind() {
             "register" => HlaOperandKind::Register(self.register(Some(node), node)),
             "immediate" => HlaOperandKind::Immediate(self.immediate_value(node)),
             "address" => HlaOperandKind::Memory(AddressOperand {
-                encoding: self.address_encoding(node),
+                encoding: if split {
+                    None
+                } else {
+                    self.address_encoding(node)
+                },
                 offset_marker: node
                     .child_by_field_name("marker")
                     .map(|marker| self.span(marker)),
@@ -924,27 +1007,45 @@ impl AstBuilder<'_> {
         )
     }
 
-    fn hla_step(&mut self, node: Node<'_>) -> Statement {
-        let span = self.span(node);
+    fn hla_step(&mut self, node: Node<'_>) -> Vec<Statement> {
+        let mut span = self.span(node);
         let Some((operator, op_span)) = self.operator(node, "an increment statement") else {
-            return Statement::new(StatementKind::Error, span);
+            return vec![Statement::new(StatementKind::Error, span)];
         };
         let op = match operator.as_str() {
             "++" => StepOp::Increment,
             "--" => StepOp::Decrement,
             _ => {
                 self.unexpected(node, "an increment statement");
-                return Statement::new(StatementKind::Error, span);
+                return vec![Statement::new(StatementKind::Error, span)];
             }
         };
-        Statement::new(
+        // `wsync HMOVE++`, like the assignment form, is a call and a step.
+        let mut statements = Vec::new();
+        let mut split = false;
+        if let Some(target) = node.child_by_field_name("target")
+            && let Some(call) = self.leading_bare_call(target)
+        {
+            span = Span::new(span.file, self.after_prefix(target).start, span.end);
+            statements.push(call);
+            split = true;
+        }
+        let target = match node.child_by_field_name("target") {
+            Some(target) => self.hla_operand_after_split(target, split),
+            None => HlaOperand {
+                kind: HlaOperandKind::Error,
+                span: Span::empty_at(span.file, span.start),
+            },
+        };
+        statements.push(Statement::new(
             StatementKind::Hla(HlaStatement::Step(HlaStep {
-                target: self.hla_target(node, span),
+                target,
                 op,
                 op_span,
             })),
             span,
-        )
+        ));
+        statements
     }
 
     fn hla_target(&mut self, node: Node<'_>, span: Span) -> HlaOperand {
@@ -1496,7 +1597,16 @@ impl AstBuilder<'_> {
                 DataEntryKind::Segment(self.name(node.child_by_field_name("name"), node))
             }
             "align_directive" => {
-                DataEntryKind::Align(self.expr(node.child_by_field_name("boundary"), node))
+                // `align N + M` is a boundary and an offset, and the offset
+                // is not implemented: G2 lowers it to `.align N` followed by
+                // `.res M`. Announced rather than folded, because folding it
+                // to `align N+M` places the section somewhere else entirely.
+                if node.child_by_field_name("offset").is_some() {
+                    self.deferred(node, "`align N + M` offsets");
+                    DataEntryKind::Error
+                } else {
+                    DataEntryKind::Align(self.expr(node.child_by_field_name("boundary"), node))
+                }
             }
             "address_directive" => {
                 DataEntryKind::Address(self.expr(node.child_by_field_name("address"), node))

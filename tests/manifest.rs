@@ -695,15 +695,24 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`o`/`O` as the overflow flag",
-        source: "func f @a8 @i8 {\n  o-\n  o-? { nop }\n}\n",
+        // `var o` rides along: the alias must not cost the name. A token for
+        // `o` would win in the lexer wherever an identifier is also valid,
+        // and this store would stop being one.
+        source: "var o = $0400\nfunc f @a8 @i8 {\n  o-\n  o-? { nop }\n  o = a\n}\n",
         expect: Expect::Compiles,
         case: "The overflow flag is spelled o as well as v",
     },
     Row {
         group: "`align N + M`",
         source: "data table {\n  align 16 + 4\n  1 2 3\n}\n",
-        expect: Expect::Compiles,
+        expect: Expect::Parses,
         case: "A boundary with an offset",
+    },
+    Row {
+        group: "Placement directives in a code section",
+        source: "func f @a8 @i8 {\n  align 256\n  nop\n}\n",
+        expect: Expect::Parses,
+        case: "A code section opens with a placement directive",
     },
     Row {
         group: "Evaluator preprocessor conditions",
@@ -754,10 +763,10 @@ const AUDIT: &[Row] = &[
         case: "The illegal-opcode HLA forms",
     },
     Row {
-        group: "A bare call followed by a statement",
+        group: "A statement-leading prefix",
         source: "var HMOVE = $0400\nfunc wsync @a8 @i8 {\n  nop\n}\nfunc f @a8 @i8 {\n  wsync HMOVE = a\n}\n",
         expect: Expect::Compiles,
-        case: "A bare call followed by a statement is two statements",
+        case: "A statement-leading prefix keeps its shape in the tree",
     },
 ];
 

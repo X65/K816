@@ -460,6 +460,48 @@
             "named": true
           }
         ]
+      },
+      "offset": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "local_identifier",
+            "named": true
+          },
+          {
+            "type": "metadata_query",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "subscript_expression",
+            "named": true
+          }
+        ]
       }
     }
   },
@@ -733,6 +775,14 @@
       "multiple": true,
       "required": false,
       "types": [
+        {
+          "type": "address_directive",
+          "named": true
+        },
+        {
+          "type": "align_directive",
+          "named": true
+        },
         {
           "type": "bare_call",
           "named": true
@@ -4471,6 +4521,10 @@
         "types": [
           {
             "type": "address",
+            "named": true
+          },
+          {
+            "type": "immediate",
             "named": true
           },
           {

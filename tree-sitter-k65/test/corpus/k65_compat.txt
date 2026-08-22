@@ -47,16 +47,22 @@ var abstract_free?
 The overflow flag is spelled o as well as v
 ================================================================================
 
+var o = $0400
 func f @a8 @i8 {
   o-
   v-
   o-? { nop }
   o+? { nop }
+  o = a
 }
 
 --------------------------------------------------------------------------------
 
 (source_file
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (func_declaration
     name: (identifier)
     width: (width_annotation)
@@ -75,7 +81,11 @@ func f @a8 @i8 {
         condition: (branch_condition)
         body: (block
           (native_instruction
-            mnemonic: (mnemonic)))))))
+            mnemonic: (mnemonic))))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register)))))
 
 ================================================================================
 A boundary with an offset
@@ -93,9 +103,8 @@ data table {
     name: (identifier)
     body: (data_body
       (align_directive
-        boundary: (binary_expression
-          left: (number)
-          right: (number)))
+        boundary: (number)
+        offset: (number))
       (data_value
         value: (number))
       (data_value
@@ -396,14 +405,16 @@ func f @a8 @i8 {
           value: (number))))))
 
 ================================================================================
-A bare call followed by a statement is two statements
+A statement-leading prefix keeps its shape in the tree
 ================================================================================
 
 var HMOVE = $0400
+var target = $0400
 func f @a8 @i8 {
   wsync HMOVE = a
-  wsync
-  nop
+  abs target = a
+  dp target = a
+  far target = a
 }
 
 --------------------------------------------------------------------------------
@@ -413,18 +424,104 @@ func f @a8 @i8 {
     entry: (var_entry
       name: (identifier)
       address: (number)))
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (func_declaration
     name: (identifier)
     width: (width_annotation)
     width: (width_annotation)
     body: (block
-      (bare_call
-        target: (identifier))
       (hla_assignment
         operand: (address
+          encoding: (address_encoding)
           value: (identifier))
         operand: (register))
-      (bare_call
-        target: (identifier))
+      (hla_assignment
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier))
+        operand: (register))
+      (hla_assignment
+        operand: (address
+          encoding: (address_encoding)
+          value: (identifier))
+        operand: (register)))))
+
+================================================================================
+A code section opens with a placement directive
+================================================================================
+
+func g @a8 @i8 {
+  align 256
+  nop
+}
+
+naked h {
+  address $2040
+  nop
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (align_directive
+        boundary: (number))
+      (native_instruction
+        mnemonic: (mnemonic))))
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (address_directive
+        address: (number))
       (native_instruction
         mnemonic: (mnemonic)))))
+
+================================================================================
+A semicolon terminates an evaluator statement
+================================================================================
+
+data d {
+  [ 1 ; 2 ; ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          (number)
+          (number))))))
+
+================================================================================
+A bare semicolon is not an evaluator statement
+:error
+================================================================================
+
+data d {
+  [ ; ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          (MISSING identifier))))))

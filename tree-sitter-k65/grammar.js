@@ -188,6 +188,11 @@ export default grammar({
     // `c+` is a flag operation and `a+mem` is arithmetic; the two look alike
     // until the token after the operator arrives.
     [$.hla_arithmetic, $.hla_flag],
+    // `o-` is a flag operation and `o - 1` an expression, so an identifier at
+    // the start of a statement followed by `+` or `-` belongs to either until
+    // the token after the operator arrives.
+    [$.hla_flag, $.bare_call, $._expression, $._address_encoding],
+    [$.hla_flag, $._expression],
     // A shift target and a NOP count accept only atoms, so an atom at the
     // start of a statement may belong to either that restricted rule or the
     // full expression grammar until the statement's shape is known.
@@ -235,9 +240,7 @@ export default grammar({
     // Inside `(`, an identifier may be an encoding prefix or the operand
     // expression itself — the same one-token-late decision as above.
     [$.address, $._expression],
-    // `_statement_address` is the same rule in statement-leading position and
-    // needs the same one-token-late decision.
-    [$.bare_call, $._expression, $._statement_address],
+    [$.bare_call, $._expression, $.address],
     // `lda (foo)` is an indirect operand, not a parenthesized address — the
     // dynamic precedences settle it.
     [$.indirect, $.parenthesized_expression],
@@ -519,7 +522,26 @@ export default grammar({
     // rest of the section generates; `x` is the byte.
     evaluator_entry: $ => seq('evaluator', field('body', $.eval_bracket)),
 
-    align_directive: $ => seq('align', field('boundary', $._expression)),
+    // `align N` is a boundary; `align N + M` is a boundary *and* an offset —
+    // the section starts at an address congruent to M modulo N
+    // (`compiler.inc:135`, `setalign(a, offs)`). The `+` is not the
+    // expression operator here, which is why the two-operand form is its own
+    // alternative over atoms and outranks the arithmetic reading. A folded
+    // sum is still available as `align (N + M)`.
+    align_directive: $ =>
+      choice(
+        // Above `PREC.add`, because the competing reading is the expression
+        // `16 + 4`: at the `+` the parser chooses between continuing that
+        // sum and reducing the boundary, and the boundary wins.
+        prec.dynamic(
+          10,
+          prec(
+            PREC.access + 1,
+            seq('align', field('boundary', $._atom), '+', field('offset', $._atom)),
+          ),
+        ),
+        seq('align', field('boundary', $._expression)),
+      ),
 
     address_directive: $ => seq('address', field('address', $._expression)),
 
@@ -827,6 +849,14 @@ export default grammar({
 
     _statement: $ =>
       choice(
+        // `Align` sits between `SecStart` and the body of `func`, `naked`,
+        // `main` *and* `data` in the original (`compiler.inc:121-136`), so a
+        // code section may open with one. K816 accepts it as an ordinary
+        // statement rather than a header slot: a placement directive part-way
+        // through a body is nonsense the analysis can refuse with a sentence,
+        // where a header-only rule refuses it with a parse error.
+        $.align_directive,
+        $.address_directive,
         $.label,
         $.native_instruction,
         $.block_move,
@@ -945,50 +975,6 @@ export default grammar({
         ),
       ),
 
-    // The same address, in the one place where the prefix reading is wrong:
-    // at the start of a statement. `wsync HMOVE = a` is a call and a store,
-    // not a store through an operand prefixed by `wsync` — two identifiers
-    // there are two statements, and only `dp`, `abs`, and `far` are prefixes.
-    // The parser cannot check the spelling: those three reach the slot as
-    // identifiers, deliberately, so that they stay usable as names. So the
-    // split is preferred by dynamic precedence, below `bare_call`'s own -2 —
-    // and only here, which is why this is a separate rule and `lda dp addr`
-    // is untouched.
-    //
-    // The cost is that `dp target = a` is also read as a call and a store.
-    // A prefix on a *store target* changes no encoding a K816 program can
-    // observe — where the variable lives is what its storage class already
-    // says — so nothing is lost that the prefixed operand form does not
-    // still provide.
-    _statement_address: $ =>
-      choice(
-        prec.dynamic(
-          1,
-          seq(
-            optional(field('marker', '&')),
-            field('value', $._expression),
-            optional($._index_suffix),
-          ),
-        ),
-        prec.dynamic(
-          2,
-          seq(
-            field('encoding', alias($.identifier, $.address_encoding)),
-            field('marker', '&'),
-            field('value', $._expression),
-            optional($._index_suffix),
-          ),
-        ),
-        prec.dynamic(
-          -3,
-          seq(
-            field('encoding', $._address_encoding),
-            field('value', $._expression),
-            optional($._index_suffix),
-          ),
-        ),
-      ),
-
     // `dp` and `abs` reach the operand slot as identifiers, because they are
     // reserved only here and stay available as names. `far` cannot: it is a
     // keyword elsewhere — `far func`, `call far`, and the keyword-less far
@@ -1049,7 +1035,7 @@ export default grammar({
     // to, is the HLA lowering work; the grammar only records the chain.
     hla_assignment: $ =>
       seq(
-        field('operand', $._hla_target),
+        field('operand', $._hla_operand),
         repeat1(seq('=', field('operand', $._hla_operand))),
       ),
 
@@ -1089,9 +1075,18 @@ export default grammar({
     // The flag name shares the register token — `c` and `d` are both — so
     // which it is follows from the statement, and the builder checks that the
     // name is one of the four flags with a shorthand.
+    // `o`/`O` is the original's spelling of the overflow flag and reaches
+    // this slot as an *identifier*, not as a token of its own: a token would
+    // win in the lexer wherever an identifier is also valid, and
+    // `var o = $0400` followed by `o = a` would stop being a store. The
+    // builder checks that the name is one of the flags with a shorthand,
+    // which it had to do for `c`, `d`, `i` and `v` already.
     hla_flag: $ =>
       seq(
-        field('flag', alias($.register, $.flag_name)),
+        field(
+          'flag',
+          choice(alias($.register, $.flag_name), alias($.identifier, $.flag_name)),
+        ),
         field('operator', choice('+', '-')),
       ),
 
@@ -1136,11 +1131,11 @@ export default grammar({
             ),
             field('operand', $._hla_operand),
           ),
-          // The target is spelled with `_hla_target`, the assignment chain's
-          // own head, so that `mem = a` and `mem = a & x` share a parse state
-          // up to the `&` instead of forking at the `=`.
+          // The target is spelled with `_hla_operand`, the assignment
+          // chain's own alphabet, so that `mem = a` and `mem = a & x` share a
+          // parse state up to the `&` instead of forking at the `=`.
           seq(
-            field('target', $._hla_target),
+            field('target', $._hla_operand),
             field('operator', '='),
             field('left', $.register),
             '&',
@@ -1156,8 +1151,7 @@ export default grammar({
         ),
       ),
 
-    _hla_target: $ =>
-      choice($.register, alias($._statement_address, $.address), $.indirect),
+    _hla_target: $ => choice($.register, $.address, $.indirect),
 
     // The shift target is deliberately *not* the full operand grammar. `<<`
     // and `>>` are expression operators too, so a target that could contain
@@ -1210,9 +1204,6 @@ export default grammar({
             // two rules over the same spelling; the builder decides which
             // meaning the statement asked for.
             'p', 'P', 'flag', 'i', 'I', 'v', 'V',
-            // `o`/`O` is the original's spelling of the overflow flag,
-            // wherever `v`/`V` is accepted.
-            'o', 'O',
           ),
         ),
       ),
@@ -1348,13 +1339,19 @@ export default grammar({
     // A bracket holds a *statement list*, not a single expression: the
     // original's `EvalCode` is a run of instructions, juxtaposed or separated
     // by `;`, and the bracket's value is the last one's.
-    eval_bracket: $ => seq('[', repeat1(choice($._eval_statement, ';')), ']'),
+    eval_bracket: $ => seq('[', repeat1($._eval_statement_item), ']'),
+
+    // A `;` terminates a statement; it is never a statement of its own, so
+    // `[ ; ]`, `[ ; 1 ]` and `[ 1 ;; ]` are not evaluator code. The original
+    // is stricter still — `EvalCode -> EvalInstr ;` puts a semicolon only
+    // after the *first* instruction — which is an accident of its LALR
+    // grammar that nothing writes and nothing could depend on.
+    _eval_statement_item: $ => seq($._eval_statement, optional(';')),
 
     _eval_statement: $ =>
       choice($.eval_if, $.eval_while, $.eval_statement_block, $._eval_expression),
 
-    eval_statement_block: $ =>
-      seq('{', repeat1(choice($._eval_statement, ';')), '}'),
+    eval_statement_block: $ => seq('{', repeat1($._eval_statement_item), '}'),
 
     // `if C S`, `if C S else S`. `prec.right` attaches an `else` to the
     // nearest `if`, which is what the original's LALR shift does.

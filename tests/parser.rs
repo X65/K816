@@ -677,6 +677,63 @@ source_file 0..91
     );
 }
 
+/// Decision 16, and the two halves of it that pull in opposite directions.
+///
+/// The CST cannot tell these apart — both are one `address` with an
+/// `encoding` — so the split lives in the AST builder and is pinned here.
+#[test]
+fn a_statement_leading_prefix_is_a_call_unless_it_is_one_of_the_three() {
+    let source = "var HMOVE = $0400\nvar target = $0400\n\
+                  func f @a8 @i8 {\n  wsync HMOVE = a\n  abs target = a\n  \
+                  wsync target++\n}\n";
+    let mut map = SourceMap::new();
+    let id = map.add_file("split.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let ItemKind::Func(function) = &result.file.items[2].kind else {
+        panic!("expected the function");
+    };
+    let kinds: Vec<String> = function
+        .body
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::BareCall(call) => format!("call {}", call.target.text),
+            StatementKind::Hla(HlaStatement::Assign(assign)) => {
+                format!("store {:?}", encoding_of(&assign.targets[0]))
+            }
+            StatementKind::Hla(HlaStatement::Step(step)) => {
+                format!("step {:?}", encoding_of(&step.target))
+            }
+            other => format!("{other:?}"),
+        })
+        .collect();
+    // `wsync` is not a prefix, so it is a call and the store keeps no
+    // encoding; `abs` is one, so it stays the store's encoding and no call is
+    // invented.
+    assert_eq!(
+        kinds,
+        [
+            "call wsync",
+            "store None",
+            "store Some(Absolute)",
+            "call wsync",
+            "step None",
+        ]
+    );
+}
+
+/// The encoding an HLA memory operand carries, if any.
+fn encoding_of(operand: &k816::ast::HlaOperand) -> Option<k816::ast::StorageClassKind> {
+    match &operand.kind {
+        k816::ast::HlaOperandKind::Memory(address) => {
+            address.encoding.as_ref().map(|encoding| encoding.kind)
+        }
+        _ => None,
+    }
+}
+
 #[test]
 fn hla_slice_ast_snapshot_is_exact() {
     let mut map = SourceMap::new();

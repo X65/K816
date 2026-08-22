@@ -12,8 +12,9 @@ var OK = 1
   (ERROR
     (number))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 A malformed statement recovers at the next one
@@ -87,11 +88,12 @@ var v[
 
 (source_file
   (var_declaration
-    name: (identifier)
-    fields: (field_list
-      (field_declaration
-        name: (local_identifier))
-      (ERROR))))
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier))
+        (ERROR)))))
 
 ================================================================================
 A malformed call contract recovers
@@ -147,9 +149,8 @@ data d {
     body: (data_body
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
-            left: (number)
-            right: (MISSING identifier)))))))
+          (number)
+          (ERROR))))))
 
 ================================================================================
 An unclosed function still yields the next one

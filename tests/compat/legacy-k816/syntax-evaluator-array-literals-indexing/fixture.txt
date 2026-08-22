@@ -3,6 +3,9 @@ config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0201
 expect    input.k65 K816-E0201
 expect    input.k65 K816-E0201
 expect    input.k65 K816-E0201
@@ -16,4 +19,12 @@ literal: `Number -> [ EvalCode ]` and `EvalCode`'s comma is the *pop* operator
 fixture as truth would have enshrined a construct K65 never had, which is what
 decision 2 is for.
 
-Today: one `K816-E0001` on the literal and three `K816-E0201`.
+Today, after G1: three `K816-E0001` and four `K816-E0201`.  Before G1 it was
+one and three.  The construct that fails is the same one - `[` cannot open a
+value inside an evaluator expression, because there is no array literal to
+open - but a bracket now holds a *statement list*, so recovery from the stray
+`[` ends the enclosing block at the literal's `]` and the two entries after it
+are re-parented at the file root instead of being swallowed by one error node.
+More diagnostics over the same defect, all of them pointing at source the
+original also refuses.  `arr[1]` and `index(arr, 2)` themselves still parse -
+`tree-sitter-k65/test/corpus/expressions.txt`, "Evaluator indexing".

@@ -42,6 +42,7 @@ use crate::ast::{
     StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr,
     UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
 };
+use crate::compat::{self, Owner};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
 
@@ -191,6 +192,22 @@ impl AstBuilder<'_> {
     /// diagnostic is the one the author needs, and it has already been
     /// collected. A builder bug in a file that parses cleanly still reports,
     /// which is the case this code was written for.
+    /// Records that `feature` is a construct sub-plan G1 taught the grammar
+    /// and no later task has given a meaning to yet.
+    ///
+    /// It is a *diagnostic*, not silence: G1 is one regeneration with no
+    /// semantics attached, and a construct that parsed and then compiled to
+    /// nothing would be a miscompilation for as long as the window lasted.
+    /// Each arm goes as its task lands — G2 for the refusals, G4 for the
+    /// evaluator, G6 for `evaluator [ ]`.
+    fn deferred(&mut self, node: Node<'_>, feature: &str) {
+        self.diagnostics.push(compat::unimplemented(
+            self.span(node),
+            feature,
+            Owner::Compatibility,
+        ));
+    }
+
     fn unexpected(&mut self, node: Node<'_>, context: &str) {
         if self.recovered {
             return;
@@ -207,7 +224,7 @@ impl AstBuilder<'_> {
         let mut cursor = root.walk();
         for child in root.named_children(&mut cursor) {
             match child.kind() {
-                "var_declaration" => items.push(self.var_declaration(child)),
+                "var_declaration" => items.extend(self.var_declaration(child)),
                 "const_declaration" => items.push(self.const_declaration(child)),
                 "module_width" => {
                     if let Some(width) = node_width(self, child) {
@@ -253,6 +270,8 @@ impl AstBuilder<'_> {
                     ),
                     span: self.span(child),
                 }),
+                "bank_declaration" => self.deferred(child, "`bank` declarations"),
+                "evalfunc_declaration" => self.deferred(child, "`evalfunc` definitions"),
                 "line_comment" | "block_comment" => {}
                 "ERROR" => items.push(Item {
                     kind: ItemKind::Error,
@@ -270,7 +289,27 @@ impl AstBuilder<'_> {
         AstFile { items }
     }
 
-    fn var_declaration(&mut self, node: Node<'_>) -> Item {
+    /// One `var` keyword, one [`Item`] per entry: `var a, b` is `var a` and
+    /// `var b`, which is all the comma is. The first entry carries the whole
+    /// declaration's span so that a single-name declaration — every one
+    /// written before the group form existed — points where it always did.
+    fn var_declaration(&mut self, node: Node<'_>) -> Vec<Item> {
+        let is_abstract = node.child_by_field_name("abstract").is_some();
+        let mut cursor = node.walk();
+        let entries: Vec<Node<'_>> = node.children_by_field_name("entry", &mut cursor).collect();
+        let mut items = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.into_iter().enumerate() {
+            let span = if index == 0 {
+                self.span(node)
+            } else {
+                self.span(entry)
+            };
+            items.push(self.var_entry(entry, is_abstract, span));
+        }
+        items
+    }
+
+    fn var_entry(&mut self, node: Node<'_>, is_abstract: bool, span: Span) -> Item {
         let name = self.name(node.child_by_field_name("name"), node);
         let storage = node
             .child_by_field_name("storage")
@@ -291,10 +330,12 @@ impl AstBuilder<'_> {
         let address = node
             .child_by_field_name("address")
             .map(|address| self.expr(Some(address), node));
+        // The `?` marker is read and dropped. It set a listing flag in the
+        // original and moved no byte, which G0's oracle run confirmed.
         Item {
             kind: ItemKind::Var(VarDeclaration {
                 name,
-                is_abstract: node.child_by_field_name("abstract").is_some(),
+                is_abstract,
                 storage,
                 width,
                 size,
@@ -302,7 +343,7 @@ impl AstBuilder<'_> {
                 count,
                 address,
             }),
-            span: self.span(node),
+            span,
         }
     }
 
@@ -628,6 +669,10 @@ impl AstBuilder<'_> {
                     self.span(child),
                 )),
                 "bare_call" => statements.push(self.bare_call(child)),
+                "hla_illegal" => {
+                    self.deferred(child, "the illegal-opcode HLA forms");
+                    statements.push(Statement::new(StatementKind::Error, self.span(child)));
+                }
                 "line_comment" | "block_comment" => {}
                 "ERROR" => statements.push(Statement::new(StatementKind::Error, self.span(child))),
                 _ => {
@@ -925,7 +970,9 @@ impl AstBuilder<'_> {
             Some("c") => FlagKind::Carry,
             Some("d") => FlagKind::Decimal,
             Some("i") => FlagKind::Interrupt,
-            Some("v") => FlagKind::Overflow,
+            // `o` is the original's spelling of the overflow flag; `v` is
+            // K816's. One flag, two names.
+            Some("v") | Some("o") => FlagKind::Overflow,
             other => {
                 self.diagnostics.push(
                     Diagnostic::error(
@@ -1026,7 +1073,7 @@ impl AstBuilder<'_> {
                     Some('c') => TestableFlag::Carry,
                     Some('n') => TestableFlag::Negative,
                     Some('z') => TestableFlag::Zero,
-                    Some('v') => TestableFlag::Overflow,
+                    Some('v') | Some('o') => TestableFlag::Overflow,
                     _ => {
                         self.unexpected(node, "a branch condition");
                         return fallback;
@@ -1283,10 +1330,19 @@ impl AstBuilder<'_> {
                 target: Box::new(self.eval_expr(node.child_by_field_name("target"), node)),
                 value: Box::new(self.eval_expr(node.child_by_field_name("value"), node)),
             },
-            "eval_subscript" => EvalExprKind::Subscript {
-                base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
-                index: Box::new(self.eval_expr(node.child_by_field_name("index"), node)),
-            },
+            "eval_subscript" => {
+                let mut cursor = node.walk();
+                let indices = node.children_by_field_name("index", &mut cursor).count();
+                if indices > 1 {
+                    self.deferred(node, "two-dimensional evaluator indexing");
+                    EvalExprKind::Error
+                } else {
+                    EvalExprKind::Subscript {
+                        base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
+                        index: Box::new(self.eval_expr(node.child_by_field_name("index"), node)),
+                    }
+                }
+            }
             "eval_member" => EvalExprKind::Member {
                 base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
                 field: self.name(node.child_by_field_name("field"), node),
@@ -1312,12 +1368,48 @@ impl AstBuilder<'_> {
                 }
                 EvalExprKind::List(items)
             }
+            "eval_if" | "eval_while" | "eval_statement_block" => {
+                self.deferred(node, "evaluator statements");
+                EvalExprKind::Error
+            }
+            "eval_method_call" => {
+                self.deferred(node, "evaluator method calls");
+                EvalExprKind::Error
+            }
+            "eval_pi" => {
+                self.deferred(node, "the evaluator constant `pi`");
+                EvalExprKind::Error
+            }
             _ => {
                 self.unexpected(node, "an evaluator expression");
                 EvalExprKind::Error
             }
         };
         EvalExpr { kind, span }
+    }
+
+    /// The interior of `[ ... ]`: a run of evaluator statements, whose value
+    /// is the last one's.
+    ///
+    /// A single expression is the shape every bracket had before G1 and is
+    /// built as before. A run of two or more is the original's statement
+    /// sequencing, and sub-plan G4 is what interprets it.
+    fn eval_bracket(&mut self, node: Node<'_>) -> EvalExpr {
+        let mut cursor = node.walk();
+        let statements: Vec<Node<'_>> = node
+            .named_children(&mut cursor)
+            .filter(|child| !matches!(child.kind(), "line_comment" | "block_comment"))
+            .collect();
+        match statements.len() {
+            1 => self.eval_expr(Some(statements[0]), node),
+            _ => {
+                self.deferred(node, "evaluator statement sequences");
+                EvalExpr {
+                    kind: EvalExprKind::Error,
+                    span: self.span(node),
+                }
+            }
+        }
     }
 
     fn eval_call_name(&mut self, node: Option<Node<'_>>) -> EvalCallName {
@@ -1343,9 +1435,18 @@ impl AstBuilder<'_> {
         };
         PreprocessorDirective {
             kind,
-            condition: node
-                .child_by_field_name("condition")
-                .map(|condition| self.expr(Some(condition), node)),
+            // The condition is an evaluator expression — `#if C` is `#if [C]`
+            // — which is where `!`, `&&`, `||`, and the ternary come from.
+            // It is carried as an `Expr` wrapping an `EvalExpr`, the same
+            // shape a bracket produces, until sub-plan G5 gives the
+            // directive a condition type of its own.
+            condition: node.child_by_field_name("condition").map(|condition| {
+                let span = self.span(condition);
+                Expr {
+                    kind: ExprKind::Eval(Box::new(self.eval_expr(Some(condition), node))),
+                    span,
+                }
+            }),
             message: node
                 .child_by_field_name("message")
                 .map(|message| decode_string(self.text(message))),
@@ -1444,6 +1545,10 @@ impl AstBuilder<'_> {
             ),
             "reserved_image_block" => {
                 DataEntryKind::Reserved(self.reserved(node, ReservedKind::ImageBlock))
+            }
+            "evaluator_entry" => {
+                self.deferred(node, "`evaluator [ ]` data entries");
+                DataEntryKind::Error
             }
             "for_eval" => DataEntryKind::ForEval {
                 variable: self.name(node.child_by_field_name("variable"), node),
@@ -1733,9 +1838,7 @@ impl AstBuilder<'_> {
                 }
             }
             "eval_bracket" => Expr {
-                kind: ExprKind::Eval(Box::new(
-                    self.eval_expr(node.child_by_field_name("expression"), node),
-                )),
+                kind: ExprKind::Eval(Box::new(self.eval_bracket(node))),
                 span,
             },
             "char_literal" => {

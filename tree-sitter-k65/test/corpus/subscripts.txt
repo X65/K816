@@ -12,18 +12,19 @@ var TASKS[
 
 (source_file
   (var_declaration
-    name: (identifier)
-    fields: (field_list
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix)))
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix)))
+      address: (number))))
 
 ================================================================================
 Field lists nest
@@ -41,21 +42,22 @@ var REGS[
 
 (source_file
   (var_declaration
-    name: (identifier)
-    fields: (field_list
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        fields: (field_list
-          (field_declaration
-            name: (local_identifier)
-            type: (type_suffix))
-          (field_declaration
-            name: (local_identifier)
-            type: (type_suffix)))))
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          fields: (field_list
+            (field_declaration
+              name: (local_identifier)
+              type: (type_suffix))
+            (field_declaration
+              name: (local_identifier)
+              type: (type_suffix)))))
+      address: (number))))
 
 ================================================================================
 Field counts follow the field width
@@ -72,23 +74,24 @@ var COMP[
 
 (source_file
   (var_declaration
-    name: (identifier)
-    fields: (field_list
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix)
-        size: (number))
-      (field_declaration
-        name: (local_identifier)
-        size: (number)))
-    count: (number)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix)
+          size: (number))
+        (field_declaration
+          name: (local_identifier)
+          size: (number)))
+      count: (number)
+      address: (number))))
 
 ================================================================================
 Declaration-level default field width
@@ -100,13 +103,14 @@ abstract var POINT:byte[ .x .y ]
 
 (source_file
   (var_declaration
-    name: (identifier)
-    type: (type_suffix)
-    fields: (field_list
-      (field_declaration
-        name: (local_identifier))
-      (field_declaration
-        name: (local_identifier)))))
+    entry: (var_entry
+      name: (identifier)
+      type: (type_suffix)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier))
+        (field_declaration
+          name: (local_identifier))))))
 
 ================================================================================
 Abstract layout declarations
@@ -122,17 +126,18 @@ abstract var DEV_HANDLER[
 
 (source_file
   (var_declaration
-    name: (identifier)
-    fields: (field_list
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix))
-      (field_declaration
-        name: (local_identifier)
-        type: (type_suffix)))))
+    entry: (var_entry
+      name: (identifier)
+      fields: (field_list
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))
+        (field_declaration
+          name: (local_identifier)
+          type: (type_suffix))))))
 
 ================================================================================
 Field access and repeat element accessors

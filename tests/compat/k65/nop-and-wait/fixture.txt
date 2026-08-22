@@ -3,7 +3,6 @@ config    atarixl.cfg
 compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0001
-expect    input.k65 K816-E0001
 
 **`* N` waits N *cycles*, and it spends an odd one on an illegal opcode.**  The
 golden is
@@ -26,6 +25,10 @@ reproduced.  Compatibility here is not cheap, it is impossible, so K816 keeps
 its own meaning for `* N` and `%` (`doc/syntax-reference.md`: N NOPs, and
 `BRK`), `--strict-k65` warns, and the row is `intentionally-changed` with this
 golden as its evidence.
+
+Since G1 there is one `K816-E0001` here, not two: the grammar takes `o` as a
+flag name, so `o-` parses.  The one left is `z?? z!!`, which is the status
+register spelled `z` - a K65 form no decision has reached yet.
 
 `o-` is the other half of the fixture and needs no argument: `Flag -> o` is the
 original's spelling of the overflow flag (`compiler.inc:259-260`) and `B8` is

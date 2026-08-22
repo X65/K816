@@ -1,13 +1,7 @@
 row       var-declaration
 config    atarixl.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0001
-expect    input.k65 K816-E0001
-expect    input.k65 K816-E0101
-expect    input.k65 K816-E0101
-expect    input.k65 K816-E0101
-expect    input.k65 K816-E0101
 
 **`?` prints the variable's address at compile time and emits nothing.**  The
 golden is `A5 80 A5 81 A5 82 A9 07` - three zero-page loads and an immediate -
@@ -19,6 +13,18 @@ and the compiler prints one extra line while building it:
 `var(...)` as its `verbose` argument, and the only thing it reaches is that
 `printf` (`compiler_src.cpp:446`).  K816 accepting and ignoring it (decision
 13) moves no byte, which is what the golden had to show.
+
+Since G1 this fixture **compiles**, so it compares bytes rather than
+diagnostics.  Before G1 it produced six diagnostics - two syntax errors where
+the commas were, and four undeclared names as a consequence.
+
+`expected.hex` is K816's, and it is not the golden's `A5 80 A5 81 A5 82 A9 07`:
+`anim` keeps its `$80`, but `cntX` and `cntY` are linker-allocated, and
+`atarixl.cfg` gives the linker one segment, so they land at `$2000`/`$2001` -
+inside the code - and the loads are absolute.  Where an unaddressed variable
+goes is the link configuration's answer, not the language's; the row this
+fixture serves is the comma list and the `?` marker, and on those the two
+compilers agree.
 
 Two more things the golden settles:
 

@@ -58,6 +58,17 @@ enum Expect {
     Deferred,
     /// Parses, and reports itself as reserved legacy syntax.
     Reserved,
+    /// Parses, and answers `NOT_YET_IMPLEMENTED` from the AST builder — the
+    /// grammar names the construct and no task has given it a meaning.
+    ///
+    /// This is sub-plan G1's state and only G1's: G1 is one grammar
+    /// regeneration with no semantics attached, so every construct it teaches
+    /// the parser is announced rather than silently dropped. Each row here
+    /// becomes `Compiles` or `Reserved` as its task lands — G2 for the
+    /// refusals and the declaration forms, G4 for the evaluator, G5 for the
+    /// preprocessor, G6 for `evaluator [ ]` — and G10 is where none may be
+    /// left.
+    Parses,
 }
 
 /// One manifest §2 row: the group, a snippet in that syntax, what the snippet
@@ -666,6 +677,88 @@ const AUDIT: &[Row] = &[
         expect: Expect::Compiles,
         case: "Compound operand expressions",
     },
+    // ---- The K65 compatibility surface, taught to the grammar by G1 -------
+    //
+    // Every row below parses and announces itself; the task that gives each a
+    // meaning is named in `Expect::Parses`.
+    Row {
+        group: "`bank` selection",
+        source: "bank core\n",
+        expect: Expect::Parses,
+        case: "Bank selection",
+    },
+    Row {
+        group: "`var` groups and the `?` marker",
+        source: "var anim = $80, cntX, cntY?\n",
+        expect: Expect::Compiles,
+        case: "Variable groups and the verbose marker",
+    },
+    Row {
+        group: "`o`/`O` as the overflow flag",
+        source: "func f @a8 @i8 {\n  o-\n  o-? { nop }\n}\n",
+        expect: Expect::Compiles,
+        case: "The overflow flag is spelled o as well as v",
+    },
+    Row {
+        group: "`align N + M`",
+        source: "data table {\n  align 16 + 4\n  1 2 3\n}\n",
+        expect: Expect::Compiles,
+        case: "A boundary with an offset",
+    },
+    Row {
+        group: "Evaluator preprocessor conditions",
+        source: "#if !DEBUG\n#endif\n",
+        expect: Expect::Deferred,
+        case: "A preprocessor condition is an evaluator expression",
+    },
+    Row {
+        group: "Evaluator statements",
+        source: "data d {\n  [ if x > 0 y = 1 else y = 2 ]\n}\n",
+        expect: Expect::Parses,
+        case: "Evaluator statements",
+    },
+    Row {
+        group: "`evalfunc` definitions",
+        source: "evalfunc twice(n) [ n * 2 ]\n",
+        expect: Expect::Parses,
+        case: "Evaluator functions",
+    },
+    Row {
+        group: "Two-dimensional evaluator indexing",
+        source: "data d {\n  [ grid[2, 3] ]\n}\n",
+        expect: Expect::Parses,
+        case: "Evaluator indexing",
+    },
+    Row {
+        group: "Evaluator method calls",
+        source: "data d {\n  [ tab.index(3) ]\n}\n",
+        expect: Expect::Parses,
+        case: "Evaluator member access and method calls",
+    },
+    Row {
+        group: "The evaluator constant `pi`",
+        source: "data d {\n  [ pi ]\n}\n",
+        expect: Expect::Parses,
+        case: "The evaluator constant pi",
+    },
+    Row {
+        group: "`evaluator [ ]` data entries",
+        source: "data d {\n  evaluator [ x * 2 ]\n}\n",
+        expect: Expect::Parses,
+        case: "An evaluator data entry",
+    },
+    Row {
+        group: "Illegal-opcode HLA forms",
+        source: "var mem = $0400\nfunc f @a8 @i8 {\n  a&.#$0f\n  mem = a&x\n}\n",
+        expect: Expect::Parses,
+        case: "The illegal-opcode HLA forms",
+    },
+    Row {
+        group: "A bare call followed by a statement",
+        source: "var HMOVE = $0400\nfunc wsync @a8 @i8 {\n  nop\n}\nfunc f @a8 @i8 {\n  wsync HMOVE = a\n}\n",
+        expect: Expect::Compiles,
+        case: "A bare call followed by a statement is two statements",
+    },
 ];
 
 /// Every case name in the corpus, read from the same files the corpus runner
@@ -708,17 +801,56 @@ fn every_manifest_syntax_group_parses() {
         let mut map = SourceMap::new();
         let id = map.add_file("audit.k65", row.source);
         let parsed = parse_source(map.file(id), None);
-        if !parsed.diagnostics.is_empty() {
+        // A `Parses` row's construct is announced by the AST builder, so its
+        // deferral rides in with the syntax diagnostics and is not one.
+        let syntax: Vec<&k816::diagnostic::Diagnostic> = parsed
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                row.expect != Expect::Parses
+                    || diagnostic.code != k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED
+            })
+            .collect();
+        if !syntax.is_empty() {
             failures.push(format!(
                 "  {}\n    syntax diagnostics: {:?}\n    source: {:?}",
                 row.group,
-                parsed
-                    .diagnostics
+                syntax
                     .iter()
                     .map(|diagnostic| diagnostic.title.as_str())
                     .collect::<Vec<_>>(),
                 row.source
             ));
+            continue;
+        }
+        if row.expect == Expect::Parses {
+            // Announced, and by G: a row that has gone quiet is a construct
+            // that landed without anyone flipping the row, and one that names
+            // a different owner is a mis-filed arm.
+            let mine: Vec<&k816::diagnostic::Diagnostic> = parsed
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.code == k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED
+                        && diagnostic
+                            .notes
+                            .iter()
+                            .any(|note| note.contains("sub-plan G "))
+                })
+                .collect();
+            if mine.is_empty() {
+                failures.push(format!(
+                    "  {}\n    expected the builder to defer to sub-plan G, got {:?} — \
+                     if the construct landed, flip the row\n    source: {:?}",
+                    row.group,
+                    parsed
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.code.as_str())
+                        .collect::<Vec<_>>(),
+                    row.source
+                ));
+            }
             continue;
         }
         if row.expect == Expect::Compiles {

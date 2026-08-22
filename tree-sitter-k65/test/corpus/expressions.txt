@@ -8,12 +8,13 @@ var OR_BINDS_LOOSEST = FLAG_A | FLAG_B & MASK
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (binary_expression
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
         left: (identifier)
-        right: (identifier)))))
+        right: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
 
 ================================================================================
 Addition binds tighter than bitwise AND
@@ -25,12 +26,13 @@ var SUM_THEN_MASK = A + B & C
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (binary_expression
-        left: (identifier)
-        right: (identifier))
-      right: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (identifier)))))
 
 ================================================================================
 Binary operators are left-associative
@@ -42,12 +44,13 @@ var CHAINED = A - B - C
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (binary_expression
-        left: (identifier)
-        right: (identifier))
-      right: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (binary_expression
+          left: (identifier)
+          right: (identifier))
+        right: (identifier)))))
 
 ================================================================================
 Every binary operator token
@@ -66,45 +69,53 @@ var IOR = A | B
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (identifier)))))
 
 ================================================================================
 Unary operators repeat in the order written
@@ -117,15 +128,17 @@ var NOT_OF_NEG = ~-FOO
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (unary_expression
-      operand: (unary_expression
-        operand: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (unary_expression
+        operand: (unary_expression
+          operand: (identifier)))))
   (var_declaration
-    name: (identifier)
-    address: (unary_expression
-      operand: (unary_expression
-        operand: (identifier)))))
+    entry: (var_entry
+      name: (identifier)
+      address: (unary_expression
+        operand: (unary_expression
+          operand: (identifier))))))
 
 ================================================================================
 Parentheses regroup an expression
@@ -137,13 +150,14 @@ var GROUPED = (A | B) & C
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (parenthesized_expression
-        (binary_expression
-          left: (identifier)
-          right: (identifier)))
-      right: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (parenthesized_expression
+          (binary_expression
+            left: (identifier)
+            right: (identifier)))
+        right: (identifier)))))
 
 ================================================================================
 Address byte operators take the whole offset expression
@@ -158,25 +172,29 @@ var FAR = &&&ptr
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (address_of_expression
-      operand: (binary_expression
-        left: (identifier)
-        right: (number))))
+    entry: (var_entry
+      name: (identifier)
+      address: (address_of_expression
+        operand: (binary_expression
+          left: (identifier)
+          right: (number)))))
   (var_declaration
-    name: (identifier)
-    address: (address_of_expression
-      operand: (binary_expression
-        left: (identifier)
-        right: (number))))
+    entry: (var_entry
+      name: (identifier)
+      address: (address_of_expression
+        operand: (binary_expression
+          left: (identifier)
+          right: (number)))))
   (var_declaration
-    name: (identifier)
-    address: (address_of_expression
-      operand: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (address_of_expression
+        operand: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (address_of_expression
-      operand: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (address_of_expression
+        operand: (identifier)))))
 
 ================================================================================
 Address byte operators bind tighter than the bitwise operators
@@ -188,11 +206,12 @@ var MASKED = &<ptr & $F0
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (address_of_expression
-        operand: (identifier))
-      right: (number))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (address_of_expression
+          operand: (identifier))
+        right: (number)))))
 
 ================================================================================
 Infix double ampersand is the address-of gotcha
@@ -205,17 +224,19 @@ var SPELLED_OUT = FOO & (&&BAR)
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (address_and_expression
-      left: (identifier)
-      right: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (address_and_expression
+        left: (identifier)
+        right: (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (parenthesized_expression
-        (address_of_expression
-          operand: (identifier))))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (parenthesized_expression
+          (address_of_expression
+            operand: (identifier)))))))
 
 ================================================================================
 Evaluator brackets are expression atoms
@@ -230,25 +251,29 @@ var NESTED = BASE + [SIZE]
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (eval_bracket
-      expression: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (eval_bracket
+        (number))))
   (var_declaration
-    name: (identifier)
-    address: (eval_bracket
-      expression: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      address: (eval_bracket
+        (identifier))))
   (var_declaration
-    name: (identifier)
-    address: (eval_bracket
-      expression: (eval_binary
+    entry: (var_entry
+      name: (identifier)
+      address: (eval_bracket
+        (eval_binary
+          left: (identifier)
+          right: (identifier)))))
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
         left: (identifier)
-        right: (identifier))))
-  (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (eval_bracket
-        expression: (identifier)))))
+        right: (eval_bracket
+          (identifier))))))
 
 ================================================================================
 Expressions are accepted as immediate operands
@@ -289,7 +314,8 @@ var BROKEN = A |
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (identifier)
-      right: (MISSING identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (identifier)
+        right: (MISSING identifier)))))

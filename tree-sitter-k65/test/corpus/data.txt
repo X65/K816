@@ -172,7 +172,7 @@ data bytes {
           operand: (identifier)))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (number)
             right: (number)))))))
 
@@ -253,7 +253,7 @@ data SineX {
         from: (number)
         to: (number)
         body: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (eval_parenthesized
               (eval_binary
                 left: (eval_binary
@@ -264,7 +264,7 @@ data SineX {
                         left: (eval_binary
                           left: (identifier)
                           right: (number))
-                        right: (identifier))
+                        right: (eval_pi))
                       right: (number)))
                   right: (float))
                 right: (float)))
@@ -274,7 +274,7 @@ data SineX {
         from: (number)
         to: (number)
         body: (eval_bracket
-          expression: (identifier))))))
+          (identifier))))))
 
 ================================================================================
 An inline data block inside a function
@@ -361,55 +361,55 @@ data eval {
     body: (data_body
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (number)
             right: (eval_binary
               left: (number)
               right: (number)))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (eval_binary
               left: (number)
               right: (number))
             right: (number))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (eval_binary
               left: (identifier)
               right: (identifier))
             right: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (eval_binary
               left: (identifier)
               right: (identifier))
             right: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (eval_binary
               left: (identifier)
               right: (identifier))
             right: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (eval_binary
               left: (identifier)
               right: (identifier))
             right: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_ternary
+          (eval_ternary
             condition: (identifier)
             consequence: (identifier)
             alternative: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_list
+          (eval_list
             item: (eval_assignment
               target: (identifier)
               value: (number))
@@ -418,40 +418,40 @@ data eval {
               value: (number)))))
       (data_value
         value: (eval_bracket
-          expression: (eval_unary
+          (eval_unary
             operand: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_unary
+          (eval_unary
             operand: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_unary
+          (eval_unary
             operand: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_unary
+          (eval_unary
             operand: (identifier))))
       (data_value
         value: (eval_bracket
-          expression: (eval_subscript
+          (eval_subscript
             base: (identifier)
             index: (number))))
       (data_value
         value: (eval_bracket
-          expression: (eval_member
+          (eval_member
             base: (identifier)
             field: (field_name))))
       (data_value
         value: (eval_bracket
-          expression: (eval_call
+          (eval_call
             name: (identifier)
             argument: (identifier)
             argument: (number)
             argument: (number))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (float)
             right: (float)))))))
 
@@ -510,7 +510,7 @@ data d {
           operand: (identifier)))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (number)
             right: (number))))
       (data_value
@@ -571,4 +571,3 @@ data d {
         body: (block
           (native_instruction
             mnemonic: (mnemonic)))))))
-

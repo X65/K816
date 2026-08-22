@@ -333,9 +333,9 @@ func main @a8 @i8 {
         operand: (register)
         operand: (address
           value: (eval_bracket
-            expression: (number))))
+            (number))))
       (hla_assignment
         operand: (register)
         operand: (address
           value: (eval_bracket
-            expression: (identifier)))))))
+            (identifier)))))))

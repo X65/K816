@@ -1,0 +1,430 @@
+================================================================================
+Bank selection
+================================================================================
+
+bank core
+bank default
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (bank_declaration
+    name: (identifier))
+  (bank_declaration
+    name: (identifier)))
+
+================================================================================
+Variable groups and the verbose marker
+================================================================================
+
+var anim = $80, cntX, cntY?
+var dp lo, dp hi
+var abstract_free?
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      address: (number))
+    entry: (var_entry
+      name: (identifier))
+    entry: (var_entry
+      name: (identifier)))
+  (var_declaration
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier))
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier)))
+  (var_declaration
+    entry: (var_entry
+      name: (identifier))))
+
+================================================================================
+The overflow flag is spelled o as well as v
+================================================================================
+
+func f @a8 @i8 {
+  o-
+  v-
+  o-? { nop }
+  o+? { nop }
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic))))
+      (conditional_block
+        condition: (branch_condition)
+        body: (block
+          (native_instruction
+            mnemonic: (mnemonic)))))))
+
+================================================================================
+A boundary with an offset
+================================================================================
+
+data table {
+  align 16 + 4
+  1 2 3
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (align_directive
+        boundary: (binary_expression
+          left: (number)
+          right: (number)))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number))
+      (data_value
+        value: (number)))))
+
+================================================================================
+A preprocessor condition is an evaluator expression
+================================================================================
+
+#if !DEBUG
+#elif LEVEL > 1 && !QUIET
+#else
+#endif
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (preprocessor_directive
+    directive: (directive_name)
+    condition: (eval_unary
+      operand: (identifier)))
+  (preprocessor_directive
+    directive: (directive_name)
+    condition: (eval_binary
+      left: (eval_binary
+        left: (identifier)
+        right: (number))
+      right: (eval_unary
+        operand: (identifier))))
+  (preprocessor_directive
+    directive: (directive_name))
+  (preprocessor_directive
+    directive: (directive_name)))
+
+================================================================================
+Evaluator statements
+================================================================================
+
+data d {
+  [ if x > 0 y = 1 else y = 2 ]
+  [ i = 0 while i < 4 { i++ i } i ]
+  [ { a = 1 b = 2 } ; a + b ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          (eval_if
+            condition: (eval_binary
+              left: (identifier)
+              right: (number))
+            consequence: (eval_assignment
+              target: (identifier)
+              value: (number))
+            alternative: (eval_assignment
+              target: (identifier)
+              value: (number)))))
+      (data_value
+        value: (eval_bracket
+          (eval_assignment
+            target: (identifier)
+            value: (number))
+          (eval_while
+            condition: (eval_binary
+              left: (identifier)
+              right: (number))
+            body: (eval_statement_block
+              (eval_unary
+                operand: (identifier))
+              (identifier)))
+          (identifier)))
+      (data_value
+        value: (eval_bracket
+          (eval_statement_block
+            (eval_assignment
+              target: (identifier)
+              value: (number))
+            (eval_assignment
+              target: (identifier)
+              value: (number)))
+          (eval_binary
+            left: (identifier)
+            right: (identifier)))))))
+
+================================================================================
+Evaluator functions
+================================================================================
+
+evalfunc lerp(a, b, t) [ a + (b - a) * t ]
+evalfunc twice(n) { n * 2 }
+evalfunc zero() [ 0 ]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (evalfunc_declaration
+    name: (identifier)
+    parameter: (identifier)
+    parameter: (identifier)
+    parameter: (identifier)
+    body: (eval_bracket
+      (eval_binary
+        left: (identifier)
+        right: (eval_binary
+          left: (eval_parenthesized
+            (eval_binary
+              left: (identifier)
+              right: (identifier)))
+          right: (identifier)))))
+  (evalfunc_declaration
+    name: (identifier)
+    parameter: (identifier)
+    body: (eval_statement_block
+      (eval_binary
+        left: (identifier)
+        right: (number))))
+  (evalfunc_declaration
+    name: (identifier)
+    body: (eval_bracket
+      (number))))
+
+================================================================================
+Evaluator indexing
+================================================================================
+
+data d {
+  [ tab[1] ]
+  [ grid[2, 3] ]
+  [ index(tab, 2) ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          (eval_subscript
+            base: (identifier)
+            index: (number))))
+      (data_value
+        value: (eval_bracket
+          (eval_subscript
+            base: (identifier)
+            index: (number)
+            index: (number))))
+      (data_value
+        value: (eval_bracket
+          (eval_call
+            name: (identifier)
+            argument: (identifier)
+            argument: (number)))))))
+
+================================================================================
+Evaluator member access and method calls
+================================================================================
+
+data d {
+  [ tab.size ]
+  [ tab.index(3) ]
+  [ tab.index() ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          (eval_member
+            base: (identifier)
+            field: (field_name))))
+      (data_value
+        value: (eval_bracket
+          (eval_method_call
+            base: (identifier)
+            method: (field_name)
+            argument: (number))))
+      (data_value
+        value: (eval_bracket
+          (eval_method_call
+            base: (identifier)
+            method: (field_name)))))))
+
+================================================================================
+The evaluator constant pi
+================================================================================
+
+data d {
+  [ pi ]
+  [ pi * 2 ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (eval_bracket
+          (eval_pi)))
+      (data_value
+        value: (eval_bracket
+          (eval_binary
+            left: (eval_pi)
+            right: (number)))))))
+
+================================================================================
+An evaluator data entry
+================================================================================
+
+data d {
+  evaluator [ x * 2 + 1 ]
+  for i = 0 .. 3 eval [ i ]
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (evaluator_entry
+        body: (eval_bracket
+          (eval_binary
+            left: (eval_binary
+              left: (identifier)
+              right: (number))
+            right: (number))))
+      (for_eval
+        variable: (identifier)
+        from: (number)
+        to: (number)
+        body: (eval_bracket
+          (identifier))))))
+
+================================================================================
+The illegal-opcode HLA forms
+================================================================================
+
+var mem = $0400
+func f @a8 @i8 {
+  a&.#$0f
+  a?--mem
+  a-++mem
+  mem = a&x
+  x &= a-#1
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (hla_illegal
+        register: (register)
+        operator: (illegal_operator)
+        operand: (immediate
+          value: (number)))
+      (hla_illegal
+        register: (register)
+        operator: (illegal_operator)
+        operand: (address
+          value: (identifier)))
+      (hla_illegal
+        register: (register)
+        operator: (illegal_operator)
+        operand: (address
+          value: (identifier)))
+      (hla_illegal
+        target: (address
+          value: (identifier))
+        left: (register)
+        right: (register))
+      (hla_illegal
+        target: (register)
+        left: (register)
+        operand: (immediate
+          value: (number))))))
+
+================================================================================
+A bare call followed by a statement is two statements
+================================================================================
+
+var HMOVE = $0400
+func f @a8 @i8 {
+  wsync HMOVE = a
+  wsync
+  nop
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (var_declaration
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
+  (func_declaration
+    name: (identifier)
+    width: (width_annotation)
+    width: (width_annotation)
+    body: (block
+      (bare_call
+        target: (identifier))
+      (hla_assignment
+        operand: (address
+          value: (identifier))
+        operand: (register))
+      (bare_call
+        target: (identifier))
+      (native_instruction
+        mnemonic: (mnemonic)))))

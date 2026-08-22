@@ -8,8 +8,9 @@ var SCREEN = $0400
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Number literal forms
@@ -23,14 +24,17 @@ var C = 42
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Empty function with width annotations
@@ -94,8 +98,9 @@ func main @a8 @i16 {
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (func_declaration
     name: (identifier)
     width: (width_annotation)
@@ -134,8 +139,9 @@ func main @a8 @i16 {
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (func_declaration
     name: (identifier)
     width: (width_annotation)
@@ -205,8 +211,9 @@ func main /* inline */ @a8 {
 (source_file
   (line_comment)
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (line_comment)
   (block_comment)
   (func_declaration

@@ -11,17 +11,21 @@ var ONE_DIGIT = %0
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Hexadecimal literal forms
@@ -36,17 +40,21 @@ var WIDE = $00FFFFFF
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Numbers keep their leading zero digits
@@ -60,14 +68,17 @@ var HEX_ZERO = 0x0
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Character literals
@@ -82,17 +93,21 @@ var QUOTE = '"'
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal)))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal))))
 
 ================================================================================
 Character literal escapes
@@ -109,23 +124,29 @@ var HEX = '\x41'
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal)))
   (var_declaration
-    name: (identifier)
-    address: (char_literal)))
+    entry: (var_entry
+      name: (identifier)
+      address: (char_literal))))
 
 ================================================================================
 An unknown escape is malformed source
@@ -139,15 +160,17 @@ var OK = 1
 
 (source_file
   (var_declaration
-    name: (identifier)
-    (ERROR
-      (UNEXPECTED 'q'))
-    address: (identifier))
+    entry: (var_entry
+      name: (identifier)
+      (ERROR
+        (UNEXPECTED 'q'))
+      address: (identifier)))
   (ERROR
     (UNEXPECTED '\n'))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Literals as immediate operands
@@ -203,20 +226,25 @@ var x = 4
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Comment edge cases
@@ -239,18 +267,21 @@ var C = 2
   (line_comment)
   (line_comment)
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (line_comment)
   (block_comment)
   (block_comment)
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (block_comment)
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 A line comment need not be terminated at end of file
@@ -262,8 +293,9 @@ var A = 0
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (line_comment))
 
 ================================================================================
@@ -278,10 +310,11 @@ var A = 0
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (binary_expression
-      left: (number)
-      (ERROR)
-      (ERROR
-        (identifier))
-      right: (identifier))))
+    entry: (var_entry
+      name: (identifier)
+      address: (binary_expression
+        left: (number)
+        (ERROR)
+        (ERROR
+          (identifier))
+        right: (identifier)))))

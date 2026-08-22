@@ -3,10 +3,11 @@ config    atarixl.cfg
 compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0001
-expect    input.k65 K816-E0002
 expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0101
 expect    input.k65 K816-E0127
-expect    input.k65 K816-E0104
+expect    input.k65 K816-E0127
 
 **`align` and `address` are accepted at the start of a code section, and
 `align N + M` means "at an address congruent to M modulo N".**
@@ -22,7 +23,12 @@ to be a power of two in `1..65536` and `offs` to be less than `a`, and marks
 every start address that is not congruent to `offs` unusable.
 
 K816 reads `align 256 + 8` as `align 264` today, and inside a `func` body it
-does not parse at all.  Decision 15's lowering - `.align N` followed by
+does not parse at all.  G1 changed *how* it fails to parse, not whether:
+`align 256 + 8` at the head of a body is now a bare call to `align` followed
+by a stray expression, where before it was one operand-prefixed address.  That
+is decision 16's fix arriving - two identifiers at the start of a statement are
+two statements - and it moves the error codes this fixture records without
+moving the construct any closer to compiling.  Decision 15's lowering - `.align N` followed by
 `.res M` - puts the label at the same congruence class, and differs from the
 original in emitting M filler bytes where the original leaves the linker a gap.
 That difference is `backend-different`, and G2 lands it.

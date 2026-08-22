@@ -10,15 +10,18 @@ var far handler = 0x030000
 
 (source_file
   (var_declaration
-    storage: (storage_class)
-    name: (identifier))
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier)))
   (var_declaration
-    storage: (storage_class)
-    name: (identifier))
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier)))
   (var_declaration
-    storage: (storage_class)
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 The storage prefix slot does not reserve dp as a name
@@ -31,11 +34,13 @@ var abs = 1
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))
 
 ================================================================================
 Typed width suffixes
@@ -49,16 +54,19 @@ var p:far = 0x3000
 
 (source_file
   (var_declaration
-    name: (identifier)
-    type: (type_suffix)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      type: (type_suffix)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    type: (type_suffix))
+    entry: (var_entry
+      name: (identifier)
+      type: (type_suffix)))
   (var_declaration
-    name: (identifier)
-    type: (type_suffix)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      type: (type_suffix)
+      address: (number))))
 
 ================================================================================
 Array spans and allocation counts
@@ -72,17 +80,20 @@ var sprites[8] * NUM_SPRITES
 
 (source_file
   (var_declaration
-    name: (identifier)
-    size: (number)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      size: (number)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    type: (type_suffix)
-    count: (number))
+    entry: (var_entry
+      name: (identifier)
+      type: (type_suffix)
+      count: (number)))
   (var_declaration
-    name: (identifier)
-    size: (number)
-    count: (identifier)))
+    entry: (var_entry
+      name: (identifier)
+      size: (number)
+      count: (identifier))))
 
 ================================================================================
 An array span is the declaration's, not a new evaluator block
@@ -95,12 +106,14 @@ var buffer[32]
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (line_comment)
   (var_declaration
-    name: (identifier)
-    size: (number)))
+    entry: (var_entry
+      name: (identifier)
+      size: (number))))
 
 ================================================================================
 Linker-allocated variables have no initializer
@@ -113,10 +126,12 @@ var dp scratch
 
 (source_file
   (var_declaration
-    name: (identifier))
+    entry: (var_entry
+      name: (identifier)))
   (var_declaration
-    storage: (storage_class)
-    name: (identifier)))
+    entry: (var_entry
+      storage: (storage_class)
+      name: (identifier))))
 
 ================================================================================
 Constant groups with enum-like auto-increment
@@ -176,12 +191,14 @@ var scratch
   (segment_declaration
     name: (identifier))
   (var_declaration
-    name: (identifier)
-    type: (type_suffix))
+    entry: (var_entry
+      name: (identifier)
+      type: (type_suffix)))
   (segment_declaration
     name: (identifier))
   (var_declaration
-    name: (identifier)))
+    entry: (var_entry
+      name: (identifier))))
 
 ================================================================================
 Global and local labels
@@ -260,11 +277,13 @@ func main @a8 {
 
 (source_file
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (func_declaration
     name: (identifier)
     width: (width_annotation)
@@ -293,5 +312,6 @@ var OK = 1
   (ERROR
     (number))
   (var_declaration
-    name: (identifier)
-    address: (number)))
+    entry: (var_entry
+      name: (identifier)
+      address: (number))))

@@ -55,7 +55,14 @@
  *     `for ... eval`, and the evaluator's own operator table;
  *   - the remaining namespace: preprocessor directives, `binary` inclusion,
  *     and the reserved `image` and evaluator side-effect forms, which are
- *     named nodes so legacy source never yields `ERROR`.
+ *     named nodes so legacy source never yields `ERROR`;
+ *   - the K65 compatibility surface (sub-plan G1): `bank`, `var` groups and
+ *     the `?` marker, `o`/`O` as the overflow flag, `align N + M`, an
+ *     evaluator `#if` condition, the evaluator's statement layer (`if`,
+ *     `else`, `while`, blocks) with `evalfunc`, `pi`, two-dimensional
+ *     indexing and method calls, the `evaluator [ ]` data entry, the five
+ *     illegal-opcode HLA forms, and the fix that makes a bare call followed
+ *     by a statement two statements.
  *
  * Grammar regeneration is a maintainer operation: `npx tree-sitter-cli@0.26
  * generate` in this directory; the generated `src/parser.c` and metadata are
@@ -190,9 +197,8 @@ export default grammar({
     // `var dp counter` and `far func f` both alias an identifier into a
     // marker slot, which leaves the parser holding two identifiers before it
     // knows which is which.
-    [$.var_declaration],
+    [$.var_entry],
     [$.bare_call, $._expression],
-    [$.bare_call, $._expression, $.address],
     // A statement-leading `far` opens either the keyword-less far call or an
     // operand prefix on an instruction whose mnemonic is still to come.
     [$.call_statement, $._address_encoding],
@@ -207,6 +213,10 @@ export default grammar({
     // interior is a different grammar over some of the same tokens.
     [$._expression, $._eval_expression],
     [$._expression, $._eval_expression, $._address_encoding],
+    // `lda [ptr]` opens an indirect-long operand and `lda [x ~ 1]` an
+    // evaluator bracket, and the identifier inside could still be either an
+    // encoding prefix or the start of an evaluator statement.
+    [$._eval_expression, $._address_encoding],
     // A comma inside `f(a, b)` separates arguments; elsewhere it is the
     // evaluator's expression-list operator.
     [$._eval_argument, $._eval_expression],
@@ -225,6 +235,9 @@ export default grammar({
     // Inside `(`, an identifier may be an encoding prefix or the operand
     // expression itself — the same one-token-late decision as above.
     [$.address, $._expression],
+    // `_statement_address` is the same rule in statement-leading position and
+    // needs the same one-token-late decision.
+    [$.bare_call, $._expression, $._statement_address],
     // `lda (foo)` is an indirect operand, not a parenthesized address — the
     // dynamic precedences settle it.
     [$.indirect, $.parenthesized_expression],
@@ -248,7 +261,26 @@ export default grammar({
         $.preprocessor_directive,
         $.binary_declaration,
         $.reserved_image_toplevel,
+        $.bank_declaration,
+        $.evalfunc_declaration,
       ),
+
+    // `evalfunc name(a, b) [ ... ]` — a user-defined evaluator function. The
+    // body takes either spelling of a statement list.
+    evalfunc_declaration: $ =>
+      seq(
+        'evalfunc',
+        field('name', $.identifier),
+        '(',
+        optional(commaSep1(field('parameter', $.identifier))),
+        ')',
+        field('body', choice($.eval_bracket, $.eval_statement_block)),
+      ),
+
+    // `bank NAME` — the original's per-section bank selector. Recognized as
+    // its own node so the compatibility layer can name it and point at
+    // `segment`, rather than letting it arrive as a parse error.
+    bank_declaration: $ => seq('bank', field('name', $.identifier)),
 
     // The `var` family:
     //
@@ -264,10 +296,19 @@ export default grammar({
     // `var dp = 0` still declares a variable named `dp`, which a keyword token
     // would swallow. The builder checks that the prefix is one of the three
     // storage classes.
+    // One `var` keyword introduces a comma-separated group, exactly as
+    // `const` does: `var anim = $80, cntX, cntY` declares three. Each entry
+    // carries its own storage class, width, span, count, and address, so the
+    // group is shorthand for repeating the keyword and nothing more.
     var_declaration: $ =>
       seq(
         optional(field('abstract', 'abstract')),
         'var',
+        commaSep1(field('entry', $.var_entry)),
+      ),
+
+    var_entry: $ =>
+      seq(
         optional(field('storage', alias($.identifier, $.storage_class))),
         field('name', $.identifier),
         optional(field('type', $.type_suffix)),
@@ -280,6 +321,9 @@ export default grammar({
         optional(prec.dynamic(1, $._span_or_fields)),
         optional(seq('*', field('count', $._expression))),
         optional(seq('=', field('address', $._expression))),
+        // The original's `Verbose` marker. It set a listing flag and emitted
+        // no byte, so it is recognized here and carried no further.
+        optional(field('verbose', '?')),
       ),
 
     // `[32]` is a raw span, `[ .x :word ]` a symbolic field list. Which one a
@@ -467,8 +511,13 @@ export default grammar({
         $.preprocessor_directive,
         $.binary_entry,
         $.reserved_image_block,
+        $.evaluator_entry,
         $.data_value,
       ),
+
+    // `evaluator [ ... ]` installs a per-byte transform over the bytes the
+    // rest of the section generates; `x` is the byte.
+    evaluator_entry: $ => seq('evaluator', field('body', $.eval_bracket)),
 
     align_directive: $ => seq('align', field('boundary', $._expression)),
 
@@ -607,7 +656,10 @@ export default grammar({
       choice(
         seq(
           field('directive', alias(token(choice('#if', '#elif')), $.directive_name)),
-          field('condition', $._expression),
+          // The condition is an *evaluator* expression, not a K65 one: the
+          // original evaluates `#if` through the same interpreter, which is
+          // where `!`, `&&`, `||`, and the ternary live.
+          field('condition', $._eval_expression),
         ),
         field('directive', alias(token(choice('#else', '#endif')), $.directive_name)),
         seq(
@@ -672,7 +724,13 @@ export default grammar({
           '<',
           '>',
           // Flag tests: `c+?`, `c-?`, `n+?`, ... for the six testable flags.
-          seq(choice('c', 'C', 'n', 'N', 'z', 'Z', 'v', 'V'), choice('+', '-'), '?'),
+          // `o`/`O` is the original's spelling of the overflow flag and is
+          // accepted wherever `v`/`V` is.
+          seq(
+            choice('c', 'C', 'n', 'N', 'z', 'Z', 'v', 'V', 'o', 'O'),
+            choice('+', '-'),
+            '?',
+          ),
         ),
       ),
 
@@ -775,6 +833,7 @@ export default grammar({
         $.hla_assignment,
         $.hla_exchange,
         $.hla_arithmetic,
+        $.hla_illegal,
         $.hla_shift,
         $.hla_step,
         $.hla_flag,
@@ -886,6 +945,50 @@ export default grammar({
         ),
       ),
 
+    // The same address, in the one place where the prefix reading is wrong:
+    // at the start of a statement. `wsync HMOVE = a` is a call and a store,
+    // not a store through an operand prefixed by `wsync` — two identifiers
+    // there are two statements, and only `dp`, `abs`, and `far` are prefixes.
+    // The parser cannot check the spelling: those three reach the slot as
+    // identifiers, deliberately, so that they stay usable as names. So the
+    // split is preferred by dynamic precedence, below `bare_call`'s own -2 —
+    // and only here, which is why this is a separate rule and `lda dp addr`
+    // is untouched.
+    //
+    // The cost is that `dp target = a` is also read as a call and a store.
+    // A prefix on a *store target* changes no encoding a K816 program can
+    // observe — where the variable lives is what its storage class already
+    // says — so nothing is lost that the prefixed operand form does not
+    // still provide.
+    _statement_address: $ =>
+      choice(
+        prec.dynamic(
+          1,
+          seq(
+            optional(field('marker', '&')),
+            field('value', $._expression),
+            optional($._index_suffix),
+          ),
+        ),
+        prec.dynamic(
+          2,
+          seq(
+            field('encoding', alias($.identifier, $.address_encoding)),
+            field('marker', '&'),
+            field('value', $._expression),
+            optional($._index_suffix),
+          ),
+        ),
+        prec.dynamic(
+          -3,
+          seq(
+            field('encoding', $._address_encoding),
+            field('value', $._expression),
+            optional($._index_suffix),
+          ),
+        ),
+      ),
+
     // `dp` and `abs` reach the operand slot as identifiers, because they are
     // reserved only here and stay available as names. `far` cannot: it is a
     // keyword elsewhere — `far func`, `call far`, and the keyword-less far
@@ -946,7 +1049,7 @@ export default grammar({
     // to, is the HLA lowering work; the grammar only records the chain.
     hla_assignment: $ =>
       seq(
-        field('operand', $._hla_operand),
+        field('operand', $._hla_target),
         repeat1(seq('=', field('operand', $._hla_operand))),
       ),
 
@@ -1003,7 +1106,58 @@ export default grammar({
     // takes the same character, but only with digits attached.
     hla_break: _ => '%',
 
-    _hla_target: $ => choice($.register, $.address, $.indirect),
+    // The five HLA spellings of 6502 *illegal* opcodes. On the 65816 those
+    // encodings are different, real instructions, so the forms are recognized
+    // as one named node and refused rather than reinterpreted; `operator`
+    // says which of the five it is.
+    //
+    //   a&.#$0F     ANC        a?--mem    DCP        a-++mem   ISC
+    //   mem = a&x   SAX        x &= a-#1  AXS
+    //
+    // `prec(1)` settles the one place where the shorter reading is also
+    // legal: after `mem = a`, an `&` could start a fresh address-marker
+    // statement. The SAX form wins, which is what the original does.
+    hla_illegal: $ =>
+      prec(
+        1,
+        choice(
+          seq(
+            field('register', $.register),
+            // One token each, so the tree names which of the three it is.
+            // The original's grammar allows space inside `? --` and `- ++`
+            // (`ArithOp -> ? --`); K816 takes them whole, which no attested
+            // source notices and which keeps `--` and `++` unambiguous.
+            field(
+              'operator',
+              alias(
+                choice(token('&.'), token('?--'), token('-++')),
+                $.illegal_operator,
+              ),
+            ),
+            field('operand', $._hla_operand),
+          ),
+          // The target is spelled with `_hla_target`, the assignment chain's
+          // own head, so that `mem = a` and `mem = a & x` share a parse state
+          // up to the `&` instead of forking at the `=`.
+          seq(
+            field('target', $._hla_target),
+            field('operator', '='),
+            field('left', $.register),
+            '&',
+            field('right', $.register),
+          ),
+          seq(
+            field('target', $.register),
+            field('operator', '&='),
+            field('left', $.register),
+            '-',
+            field('operand', $._hla_operand),
+          ),
+        ),
+      ),
+
+    _hla_target: $ =>
+      choice($.register, alias($._statement_address, $.address), $.indirect),
 
     // The shift target is deliberately *not* the full operand grammar. `<<`
     // and `>>` are expression operators too, so a target that could contain
@@ -1056,6 +1210,9 @@ export default grammar({
             // two rules over the same spelling; the builder decides which
             // meaning the statement asked for.
             'p', 'P', 'flag', 'i', 'I', 'v', 'V',
+            // `o`/`O` is the original's spelling of the overflow flag,
+            // wherever `v`/`V` is accepted.
+            'o', 'O',
           ),
         ),
       ),
@@ -1188,7 +1345,37 @@ export default grammar({
 
     // `[ ... ]` invokes the compile-time evaluator, whose interior is its own
     // grammar over `EVAL_PREC` — not the K65 expression layer around it.
-    eval_bracket: $ => seq('[', field('expression', $._eval_expression), ']'),
+    // A bracket holds a *statement list*, not a single expression: the
+    // original's `EvalCode` is a run of instructions, juxtaposed or separated
+    // by `;`, and the bracket's value is the last one's.
+    eval_bracket: $ => seq('[', repeat1(choice($._eval_statement, ';')), ']'),
+
+    _eval_statement: $ =>
+      choice($.eval_if, $.eval_while, $.eval_statement_block, $._eval_expression),
+
+    eval_statement_block: $ =>
+      seq('{', repeat1(choice($._eval_statement, ';')), '}'),
+
+    // `if C S`, `if C S else S`. `prec.right` attaches an `else` to the
+    // nearest `if`, which is what the original's LALR shift does.
+    eval_if: $ =>
+      prec.right(
+        seq(
+          'if',
+          field('condition', $._eval_expression),
+          field('consequence', $._eval_statement),
+          optional(seq('else', field('alternative', $._eval_statement))),
+        ),
+      ),
+
+    eval_while: $ =>
+      prec.right(
+        seq(
+          'while',
+          field('condition', $._eval_expression),
+          field('body', $._eval_statement),
+        ),
+      ),
 
     // ---- The compile-time evaluator ---------------------------------------
 
@@ -1211,6 +1398,8 @@ export default grammar({
         $.eval_assignment,
         $.eval_subscript,
         $.eval_member,
+        $.eval_method_call,
+        $.eval_pi,
       ),
 
     _eval_expression: $ =>
@@ -1229,6 +1418,8 @@ export default grammar({
         $.eval_assignment,
         $.eval_subscript,
         $.eval_member,
+        $.eval_method_call,
+        $.eval_pi,
         $.eval_list,
       ),
 
@@ -1265,16 +1456,48 @@ export default grammar({
         ),
       ),
 
+    /// `pi` — the original's one built-in constant, a keyword rather than a
+    /// name, so an evaluator variable cannot shadow it.
+    eval_pi: _ => 'pi',
+
+    // `data[i]` selects a byte of a section, `data[row, col]` a cell of a
+    // two-dimensional one. An index is an *argument*, not a full expression:
+    // the comma between two indices is the separator, never the evaluator's
+    // comma operator.
     eval_subscript: $ =>
       prec(
         EVAL_PREC.suffix,
-        seq(field('base', $._eval_expression), '[', field('index', $._eval_expression), ']'),
+        seq(
+          field('base', $._eval_expression),
+          '[',
+          field('index', $._eval_argument),
+          optional(seq(',', field('index', $._eval_argument))),
+          ']',
+        ),
       ),
 
     eval_member: $ =>
       prec.left(
         EVAL_PREC.suffix,
         seq(field('base', $._eval_expression), field('field', $.field_name)),
+      ),
+
+    // `x.f(a)` — sugar for `f(x, a)`. The dot must follow the base with no
+    // space, which is the same rule `field_access` uses in the K65 layer.
+    //
+    // Binds tighter than `eval_member`, which is the same rule minus the
+    // argument list: at the `(` the parser chooses between reducing the
+    // member access and shifting into the call, and the call wins.
+    eval_method_call: $ =>
+      prec(
+        EVAL_PREC.suffix + 1,
+        seq(
+          field('base', $._eval_expression),
+          field('method', $.field_name),
+          '(',
+          optional(commaSep1(field('argument', $._eval_argument))),
+          ')',
+        ),
       ),
 
     eval_unary: $ =>

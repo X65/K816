@@ -2,21 +2,16 @@ row       k65-corpus-whole-program
 config    a2600.cfg
 compare   diagnostics
 units     defs.k65 main.k65
-expect    defs.k65 K816-E0001
-expect    defs.k65 K816-E0001
-expect    defs.k65 K816-E0001
-expect    defs.k65 K816-E0101
+expect    defs.k65 K816-E0201
 expect    defs.k65 K816-E0101
 expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
 expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
 expect    main.k65 K816-E0001
-expect    main.k65 K816-E0001
-expect    main.k65 K816-E0001
-expect    main.k65 K816-K65-0001
-expect    main.k65 K816-E0101
 expect    main.k65 K816-E0201
+expect    main.k65 K816-E0201
+expect    main.k65 K816-K65-0001
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0201
@@ -27,8 +22,15 @@ expect    main.k65 K816-E0101
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
-expect    main.k65 K816-E0101
 expect    main.k65 K816-E0201
+
+Since G1: twenty-one diagnostics, where before there were twenty-seven.  Six
+syntax errors went - the `for i = 0 .. [ ]` bound and the `evaluator [ ]` entry
+in `defs.k65`, the two bare-call lines in `main.k65` - and the undeclared names
+that followed from them went with them.  One `K816-E0001` remains, on
+`image sheet 0 0 8 > 8 v`: `8 >` with a space between is not the `image_scan`
+token, and `image` is refused anyway (`K816-K65-0001`), so the loose argument
+run is not worth a grammar rule.
 
 A whole K65 program, written for this corpus, in two units.
 

@@ -652,8 +652,9 @@ fn hla_slice_cst_snapshot_is_exact() {
         "\
 source_file 0..91
   var_declaration 0..18
-    name: identifier 4..10
-    address: number 13..18
+    entry: var_entry 4..18
+      name: identifier 4..10
+      address: number 13..18
   func_declaration 20..90
     name: identifier 25..29
     width: width_annotation 30..33
@@ -860,11 +861,13 @@ fn lexical_cst_snapshot_is_exact() {
         "\
 source_file 0..91
   var_declaration 0..15
-    name: identifier 4..7
-    address: number 10..15
+    entry: var_entry 4..15
+      name: identifier 4..7
+      address: number 10..15
   var_declaration 16..29
-    name: identifier 20..22
-    address: char_literal 25..29
+    entry: var_entry 20..29
+      name: identifier 20..22
+      address: char_literal 25..29
   func_declaration 31..90
     name: identifier 36..40
     width: width_annotation 41..44

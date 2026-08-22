@@ -19,19 +19,22 @@ var C = 3
     directive: (directive_name)
     condition: (identifier))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (preprocessor_directive
     directive: (directive_name)
     condition: (identifier))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (preprocessor_directive
     directive: (directive_name))
   (var_declaration
-    name: (identifier)
-    address: (number))
+    entry: (var_entry
+      name: (identifier)
+      address: (number)))
   (preprocessor_directive
     directive: (directive_name))
   (preprocessor_directive
@@ -186,18 +189,18 @@ data stars {
     body: (data_body
       (data_value
         value: (eval_bracket
-          expression: (reserved_eval_call
+          (reserved_eval_call
             name: (reserved_function))))
       (data_value
         value: (eval_bracket
-          expression: (eval_binary
+          (eval_binary
             left: (number)
             right: (reserved_eval_call
               name: (reserved_function)
               argument: (identifier)))))
       (data_value
         value: (eval_bracket
-          expression: (eval_call
+          (eval_call
             name: (identifier)
             argument: (reserved_eval_call
               name: (reserved_function)
@@ -205,23 +208,23 @@ data stars {
             argument: (number))))
       (data_value
         value: (eval_bracket
-          expression: (reserved_eval_call
+          (reserved_eval_call
             name: (reserved_function)
             argument: (identifier)
             argument: (number))))
       (data_value
         value: (eval_bracket
-          expression: (reserved_eval_call
+          (reserved_eval_call
             name: (reserved_function)
             argument: (string))))
       (data_value
         value: (eval_bracket
-          expression: (reserved_eval_call
+          (reserved_eval_call
             name: (reserved_function)
             argument: (string))))
       (data_value
         value: (eval_bracket
-          expression: (reserved_eval_call
+          (reserved_eval_call
             name: (reserved_function)
             argument: (number)
             argument: (number)

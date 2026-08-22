@@ -464,6 +464,22 @@
     }
   },
   {
+    "type": "bank_declaration",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "bare_call",
     "named": true,
     "fields": {
@@ -767,6 +783,10 @@
         },
         {
           "type": "hla_flag",
+          "named": true
+        },
+        {
+          "type": "hla_illegal",
           "named": true
         },
         {
@@ -1433,6 +1453,10 @@
           "named": true
         },
         {
+          "type": "evaluator_entry",
+          "named": true
+        },
+        {
           "type": "for_eval",
           "named": true
         },
@@ -1692,7 +1716,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -1758,7 +1790,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -1830,7 +1870,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -1982,7 +2030,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2040,73 +2096,92 @@
   {
     "type": "eval_bracket",
     "named": true,
-    "fields": {
-      "expression": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "char_literal",
-            "named": true
-          },
-          {
-            "type": "eval_assignment",
-            "named": true
-          },
-          {
-            "type": "eval_binary",
-            "named": true
-          },
-          {
-            "type": "eval_call",
-            "named": true
-          },
-          {
-            "type": "eval_list",
-            "named": true
-          },
-          {
-            "type": "eval_member",
-            "named": true
-          },
-          {
-            "type": "eval_parenthesized",
-            "named": true
-          },
-          {
-            "type": "eval_subscript",
-            "named": true
-          },
-          {
-            "type": "eval_ternary",
-            "named": true
-          },
-          {
-            "type": "eval_unary",
-            "named": true
-          },
-          {
-            "type": "float",
-            "named": true
-          },
-          {
-            "type": "identifier",
-            "named": true
-          },
-          {
-            "type": "number",
-            "named": true
-          },
-          {
-            "type": "reserved_eval_call",
-            "named": true
-          },
-          {
-            "type": "string",
-            "named": true
-          }
-        ]
-      }
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "char_literal",
+          "named": true
+        },
+        {
+          "type": "eval_assignment",
+          "named": true
+        },
+        {
+          "type": "eval_binary",
+          "named": true
+        },
+        {
+          "type": "eval_call",
+          "named": true
+        },
+        {
+          "type": "eval_if",
+          "named": true
+        },
+        {
+          "type": "eval_list",
+          "named": true
+        },
+        {
+          "type": "eval_member",
+          "named": true
+        },
+        {
+          "type": "eval_method_call",
+          "named": true
+        },
+        {
+          "type": "eval_parenthesized",
+          "named": true
+        },
+        {
+          "type": "eval_pi",
+          "named": true
+        },
+        {
+          "type": "eval_statement_block",
+          "named": true
+        },
+        {
+          "type": "eval_subscript",
+          "named": true
+        },
+        {
+          "type": "eval_ternary",
+          "named": true
+        },
+        {
+          "type": "eval_unary",
+          "named": true
+        },
+        {
+          "type": "eval_while",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "reserved_eval_call",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -2138,7 +2213,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2188,6 +2271,258 @@
     }
   },
   {
+    "type": "eval_if",
+    "named": true,
+    "fields": {
+      "alternative": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_if",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_statement_block",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "eval_while",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "consequence": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_if",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_statement_block",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "eval_while",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "eval_list",
     "named": true,
     "fields": {
@@ -2220,7 +2555,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2292,7 +2635,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2342,6 +2693,166 @@
     }
   },
   {
+    "type": "eval_method_call",
+    "named": true,
+    "fields": {
+      "argument": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "base": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "method": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "field_name",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "eval_parenthesized",
     "named": true,
     "fields": {},
@@ -2374,7 +2885,15 @@
           "named": true
         },
         {
+          "type": "eval_method_call",
+          "named": true
+        },
+        {
           "type": "eval_parenthesized",
+          "named": true
+        },
+        {
+          "type": "eval_pi",
           "named": true
         },
         {
@@ -2387,6 +2906,97 @@
         },
         {
           "type": "eval_unary",
+          "named": true
+        },
+        {
+          "type": "float",
+          "named": true
+        },
+        {
+          "type": "identifier",
+          "named": true
+        },
+        {
+          "type": "number",
+          "named": true
+        },
+        {
+          "type": "reserved_eval_call",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "eval_statement_block",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "char_literal",
+          "named": true
+        },
+        {
+          "type": "eval_assignment",
+          "named": true
+        },
+        {
+          "type": "eval_binary",
+          "named": true
+        },
+        {
+          "type": "eval_call",
+          "named": true
+        },
+        {
+          "type": "eval_if",
+          "named": true
+        },
+        {
+          "type": "eval_list",
+          "named": true
+        },
+        {
+          "type": "eval_member",
+          "named": true
+        },
+        {
+          "type": "eval_method_call",
+          "named": true
+        },
+        {
+          "type": "eval_parenthesized",
+          "named": true
+        },
+        {
+          "type": "eval_pi",
+          "named": true
+        },
+        {
+          "type": "eval_statement_block",
+          "named": true
+        },
+        {
+          "type": "eval_subscript",
+          "named": true
+        },
+        {
+          "type": "eval_ternary",
+          "named": true
+        },
+        {
+          "type": "eval_unary",
+          "named": true
+        },
+        {
+          "type": "eval_while",
           "named": true
         },
         {
@@ -2445,7 +3055,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2483,7 +3101,7 @@
         ]
       },
       "index": {
-        "multiple": false,
+        "multiple": true,
         "required": true,
         "types": [
           {
@@ -2503,15 +3121,19 @@
             "named": true
           },
           {
-            "type": "eval_list",
-            "named": true
-          },
-          {
             "type": "eval_member",
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2583,7 +3205,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2649,7 +3279,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2715,7 +3353,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2787,7 +3433,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -2851,6 +3505,228 @@
           {
             "type": "~",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "eval_while",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_if",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_statement_block",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "eval_while",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "char_literal",
+            "named": true
+          },
+          {
+            "type": "eval_assignment",
+            "named": true
+          },
+          {
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "float",
+            "named": true
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "number",
+            "named": true
+          },
+          {
+            "type": "reserved_eval_call",
+            "named": true
+          },
+          {
+            "type": "string",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "evalfunc_declaration",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
+            "type": "eval_statement_block",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "parameter": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "evaluator_entry",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "eval_bracket",
+            "named": true
           }
         ]
       }
@@ -3510,6 +4386,100 @@
           {
             "type": "-",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "hla_illegal",
+    "named": true,
+    "fields": {
+      "left": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      },
+      "operand": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "address",
+            "named": true
+          },
+          {
+            "type": "immediate",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          },
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      },
+      "operator": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "&=",
+            "named": false
+          },
+          {
+            "type": "=",
+            "named": false
+          },
+          {
+            "type": "illegal_operator",
+            "named": true
+          }
+        ]
+      },
+      "register": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      },
+      "right": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "register",
+            "named": true
+          }
+        ]
+      },
+      "target": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "address",
+            "named": true
+          },
+          {
+            "type": "indirect",
+            "named": true
+          },
+          {
+            "type": "register",
+            "named": true
           }
         ]
       }
@@ -4310,27 +5280,55 @@
         "required": false,
         "types": [
           {
-            "type": "address_and_expression",
-            "named": true
-          },
-          {
-            "type": "address_of_expression",
-            "named": true
-          },
-          {
-            "type": "binary_expression",
-            "named": true
-          },
-          {
             "type": "char_literal",
             "named": true
           },
           {
-            "type": "eval_bracket",
+            "type": "eval_assignment",
             "named": true
           },
           {
-            "type": "field_access",
+            "type": "eval_binary",
+            "named": true
+          },
+          {
+            "type": "eval_call",
+            "named": true
+          },
+          {
+            "type": "eval_list",
+            "named": true
+          },
+          {
+            "type": "eval_member",
+            "named": true
+          },
+          {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
+            "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
+            "named": true
+          },
+          {
+            "type": "eval_subscript",
+            "named": true
+          },
+          {
+            "type": "eval_ternary",
+            "named": true
+          },
+          {
+            "type": "eval_unary",
+            "named": true
+          },
+          {
+            "type": "float",
             "named": true
           },
           {
@@ -4338,31 +5336,15 @@
             "named": true
           },
           {
-            "type": "local_identifier",
-            "named": true
-          },
-          {
-            "type": "metadata_query",
-            "named": true
-          },
-          {
             "type": "number",
             "named": true
           },
           {
-            "type": "parenthesized_expression",
+            "type": "reserved_eval_call",
             "named": true
           },
           {
-            "type": "subscript_expression",
-            "named": true
-          },
-          {
-            "type": "typed_view",
-            "named": true
-          },
-          {
-            "type": "unary_expression",
+            "type": "string",
             "named": true
           }
         ]
@@ -4428,7 +5410,15 @@
             "named": true
           },
           {
+            "type": "eval_method_call",
+            "named": true
+          },
+          {
             "type": "eval_parenthesized",
+            "named": true
+          },
+          {
+            "type": "eval_pi",
             "named": true
           },
           {
@@ -4586,6 +5576,10 @@
       "required": false,
       "types": [
         {
+          "type": "bank_declaration",
+          "named": true
+        },
+        {
           "type": "binary_declaration",
           "named": true
         },
@@ -4599,6 +5593,10 @@
         },
         {
           "type": "eval_block",
+          "named": true
+        },
+        {
+          "type": "evalfunc_declaration",
           "named": true
         },
         {
@@ -5029,6 +6027,22 @@
           }
         ]
       },
+      "entry": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "var_entry",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "var_entry",
+    "named": true,
+    "fields": {
       "address": {
         "multiple": false,
         "required": false,
@@ -5252,6 +6266,16 @@
           {
             "type": "type_suffix",
             "named": true
+          }
+        ]
+      },
+      "verbose": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "?",
+            "named": false
           }
         ]
       }
@@ -5516,6 +6540,10 @@
     "named": false
   },
   {
+    "type": "bank",
+    "named": false
+  },
+  {
     "type": "binary",
     "named": false
   },
@@ -5573,6 +6601,18 @@
     "named": false
   },
   {
+    "type": "eval_pi",
+    "named": true
+  },
+  {
+    "type": "evalfunc",
+    "named": false
+  },
+  {
+    "type": "evaluator",
+    "named": false
+  },
+  {
     "type": "far",
     "named": false
   },
@@ -5602,6 +6642,14 @@
   },
   {
     "type": "identifier",
+    "named": true
+  },
+  {
+    "type": "if",
+    "named": false
+  },
+  {
+    "type": "illegal_operator",
     "named": true
   },
   {
@@ -5687,6 +6735,10 @@
   },
   {
     "type": "var",
+    "named": false
+  },
+  {
+    "type": "while",
     "named": false
   },
   {

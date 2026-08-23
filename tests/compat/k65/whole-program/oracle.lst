@@ -6,7 +6,7 @@
 ; section glyphs
 glyphs
 ;    align 256
-;    image sheet 0 0 8 > 8 v
+;    image sheet 0 0 8> 8v
     .byte   #$FF
     .byte   #$7F
     .byte   #$BF

@@ -387,6 +387,20 @@ fn dump_ast(file: &AstFile) -> String {
                         StatementKind::Preprocessor(directive) => {
                             format!("preprocessor {:?}", directive.kind)
                         }
+                        StatementKind::Align(align) => match &align.offset {
+                            Some(offset) => format!(
+                                "align {} + {}",
+                                dump_expr(&align.boundary.kind),
+                                dump_expr(&offset.kind)
+                            ),
+                            None => format!("align {}", dump_expr(&align.boundary.kind)),
+                        },
+                        StatementKind::Address(address) => {
+                            format!("address {}", dump_expr(&address.kind))
+                        }
+                        StatementKind::Reserved(reserved) => {
+                            format!("reserved {:?}", reserved.kind)
+                        }
                         StatementKind::Error => "error".to_owned(),
                     };
                     out.push_str(&format!(
@@ -720,6 +734,61 @@ fn a_statement_leading_prefix_is_a_call_unless_it_is_one_of_the_three() {
             "store Some(Absolute)",
             "call wsync",
             "step None",
+        ]
+    );
+}
+
+/// A flag statement ends at its sign, and K65 is newline-insensitive, so a
+/// flag name followed by `+` or `-` and then anything an expression can
+/// continue with parses as one long store instead.
+///
+/// The CST cannot tell these apart either — the flag names stay ordinary
+/// identifiers so that `var o` keeps being a declaration — so the split
+/// lives in the AST builder beside decision 16's, and is pinned here.
+/// `mem+1 = a` is the case it must *not* fire on: that is decision 17's
+/// store, and `mem` is not a flag.
+#[test]
+fn a_flag_statement_is_peeled_off_the_store_that_swallowed_it() {
+    let source = "var mem = $80
+func f @a8 @i8 {
+  i+ d-
+  s = x = $FF
+                    o-
+  mem = a
+  mem+1 = a
+}
+";
+    let mut map = SourceMap::new();
+    let id = map.add_file("flags.k65", source);
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+
+    let ItemKind::Func(function) = &result.file.items[1].kind else {
+        panic!("expected the function");
+    };
+    let kinds: Vec<String> = function
+        .body
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::Hla(HlaStatement::Flag(flag)) => {
+                format!("{:?}{}", flag.flag, if flag.set { "+" } else { "-" })
+            }
+            StatementKind::Hla(HlaStatement::Assign(assign)) => {
+                format!("store {} targets", assign.targets.len())
+            }
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "Interrupt+",
+            "Decimal-",
+            "store 2 targets",
+            "Overflow-",
+            "store 1 targets",
+            "store 1 targets",
         ]
     );
 }

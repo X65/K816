@@ -48,11 +48,11 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    AddressEncoding as AstEncoding, AddressOperand, Block, BlockMoveOperand, DataBlock, DataEntry,
-    DataEntryKind, DataValue, Expr, ExprKind, FieldAccess, HlaOperand, HlaOperandKind,
-    IndexRegisterKind, IndirectOperand, LongIndirectOperand, MetadataQuery, MetadataQueryKind,
-    Name, NativeInstruction, NativeOperand, Register, StorageClassKind, SubscriptExpr,
-    TypeWidthKind,
+    AddressEncoding as AstEncoding, AddressOperand, AlignDirective, Block, BlockMoveOperand,
+    DataBlock, DataEntry, DataEntryKind, DataValue, Expr, ExprKind, FieldAccess, HlaOperand,
+    HlaOperandKind, IndexRegisterKind, IndirectOperand, LongIndirectOperand, MetadataQuery,
+    MetadataQueryKind, Name, NativeInstruction, NativeOperand, Register, StorageClassKind,
+    SubscriptExpr, TypeWidthKind,
 };
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
@@ -236,6 +236,44 @@ fn base_name(expr: &Expr) -> Option<&Name> {
         ExprKind::Field(access) => base_name(&access.base),
         ExprKind::Subscript(subscript) => base_name(&subscript.base),
         ExprKind::TypedView(view) => base_name(&view.base),
+        _ => None,
+    }
+}
+
+/// The symbol an *offset* expression is rooted in: `slot+1`, `.LT+1`,
+/// `payload+2`, and the same with `-`.
+///
+/// Deliberately not part of [`base_name`], which answers "does this name a
+/// declared place" for the zero-store shortcut, and where `mem+1` is
+/// arithmetic rather than a name. Here the question is narrower and
+/// different: an offset from a symbol is still *at* that symbol's address
+/// size, and `a = slot+1` and `slot+1 = a` disagreeing about the encoding of
+/// the same expression is not something a compatibility row could defend
+/// (`plans/06-compatibility.md` decision 17).
+///
+/// One side of the `+` must be rooted in a name and the other must not, so
+/// that nothing here has to choose between two symbols. `-` takes its base
+/// from the left only: `4 - slot` is not an offset from `slot`.
+fn offset_base_name(expr: &Expr) -> Option<&Name> {
+    if let Some(name) = base_name(expr) {
+        return Some(name);
+    }
+    let ExprKind::Binary(binary) = &expr.kind else {
+        return None;
+    };
+    match binary.op {
+        crate::ast::BinaryOp::Add => {
+            match (
+                offset_base_name(&binary.left),
+                offset_base_name(&binary.right),
+            ) {
+                (Some(name), None) | (None, Some(name)) => Some(name),
+                _ => None,
+            }
+        }
+        crate::ast::BinaryOp::Sub => {
+            offset_base_name(&binary.left).filter(|_| offset_base_name(&binary.right).is_none())
+        }
         _ => None,
     }
 }
@@ -1708,7 +1746,10 @@ impl<'a> Resolver<'a> {
         // Through a subscript and a typed view too: `COMP[2]` and `x:byte`
         // are the declaration's storage seen from a use site, so the
         // encoding is the declaration's as much as a bare name's is.
-        if let Some(name) = base_name(value)
+        // An offset from a name rides along: `slot+1` is one byte past
+        // `slot`, so it is in the same page and takes the same encoding
+        // (decision 17).
+        if let Some(name) = offset_base_name(value)
             && let Some(id) = self.symbols.lookup(&name.text)
             && let Some(size) = self.symbols.kind(id).address_size()
         {
@@ -2519,15 +2560,7 @@ impl Resolver<'_> {
                         Origin::User,
                     ));
                 }
-                DataEntryKind::Align(count) => {
-                    if let Some(value) = self.constant(count, "`align` counts") {
-                        ops.push(KOp::new(
-                            KOpKind::Align(KExpr::number(value)),
-                            entry.span,
-                            Origin::User,
-                        ));
-                    }
-                }
+                DataEntryKind::Align(align) => ops.extend(self.align_ops(align, entry.span)),
                 DataEntryKind::Address(address) => {
                     let Some(value) = self.constant(address, "`address` placements") else {
                         continue;
@@ -2936,6 +2969,99 @@ impl Resolver<'_> {
             return None;
         }
         (run > 0).then_some(run)
+    }
+
+    /// The operations an `align` directive emits, with the original's two
+    /// checks applied.
+    ///
+    /// `align N + M` is a boundary *and* an offset — "at an address
+    /// congruent to M modulo N" — and it lowers to `.align N` followed by
+    /// `.res M`. Folding the two into `align N+M` would place the bytes at a
+    /// multiple of the sum, which is neither reading of the source; that is
+    /// what K816 did before sub-plan G, silently (`postmortem.md` §G.1.9b).
+    ///
+    /// The difference from the original is the M filler bytes: the original
+    /// leaves its linker a gap and K816 emits `.res M`, which is the
+    /// `backend-different` half of decision 15's row.
+    pub fn align_ops(&mut self, align: &AlignDirective, span: Span) -> Vec<KOp> {
+        let Some(boundary) = self.constant(&align.boundary, "`align` boundaries") else {
+            return Vec::new();
+        };
+        let offset = match &align.offset {
+            Some(offset) => match self.constant(offset, "`align` offsets") {
+                Some(offset) => offset,
+                None => return Vec::new(),
+            },
+            None => 0,
+        };
+        // The original's `setalign` (`compiler_src.cpp:877`). Adopted in G2
+        // as a deliberate narrowing: an alignment that is not a power of two
+        // has no congruence class ca65 can place, and an offset outside the
+        // boundary names one that can never be reached.
+        if boundary == 0 || boundary > 0x1_0000 || !boundary.is_power_of_two() {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::ALIGN_UNREACHABLE,
+                    format!("`align {boundary}` is not a power of two in 1..65536"),
+                    Label::new(align.boundary.span, "no address is aligned to this"),
+                )
+                .with_help("use a power of two: 2, 4, 8, … up to 65536")
+                .with_docs("doc/syntax-reference.md#placement-directives"),
+            );
+            return Vec::new();
+        }
+        if offset >= boundary {
+            self.report(
+                Diagnostic::error(
+                    DiagnosticCode::ALIGN_UNREACHABLE,
+                    format!("an offset of {offset} is not inside a boundary of {boundary}"),
+                    Label::new(
+                        align.offset.as_ref().map_or(span, |offset| offset.span),
+                        "no address is congruent to this",
+                    ),
+                )
+                .with_note(format!(
+                    "`align {boundary} + {offset}` means \"congruent to {offset} \
+                     modulo {boundary}\", so the offset must be less than the boundary"
+                ))
+                .with_docs("doc/syntax-reference.md#placement-directives"),
+            );
+            return Vec::new();
+        }
+        let mut ops = vec![KOp::new(
+            KOpKind::Align(KExpr::number(boundary)),
+            span,
+            Origin::User,
+        )];
+        if offset > 0 {
+            ops.push(KOp::new(
+                KOpKind::Data(DataOp::Reserve(KExpr::number(offset))),
+                span,
+                Origin::CompilerGenerated,
+            ));
+        }
+        ops
+    }
+
+    /// The segment switch an `address` directive at the head of a code
+    /// section becomes, and the warning that says what to paste into ld65.
+    ///
+    /// A code section is identified like a *named* data block: a section name
+    /// is unique across the workspace, so the segment name is stable under
+    /// any edit that does not rename the section.
+    pub fn code_address_op(&mut self, address: &Expr, span: Span, section: &str) -> Option<KOp> {
+        let value = self.constant(address, "`address` placements")?;
+        let site = DataSite::Named(section.to_owned());
+        let segment = address_segment(&site, value, 1);
+        self.report_address_placement(span, &segment, value, &site);
+        Some(KOp::new(
+            KOpKind::Segment {
+                name: segment,
+                addressing: None,
+            },
+            span,
+            Origin::CompilerGenerated,
+        ))
     }
 
     /// `address` needs an ld65 config entry, and K816 does not write linker

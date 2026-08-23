@@ -273,6 +273,8 @@ func main {
 
 Auto-shrink behavior applies only when the address is known at compile time — numeric literals (`lda $80`) and Fixed vars (`var addr = $0080`). For unprefixed operands in that category, an address that fits in page 0 picks DirectPage encoding if the instruction supports it; otherwise Absolute, with AbsoluteLong reserved for cross-bank values.
 
+An offset from a name is at the name's address size. `slot+1` is one byte past `slot`, so it takes `slot`'s encoding rather than falling back to Absolute, and it does so in reads and in stores alike — `a = slot+1` and `slot+1 = a` cannot disagree about how the same expression is encoded. The rule follows the *base* of the offset: one side of a `+` must be rooted in a name and the other must not, and a `-` takes its base from the left only.
+
 Allocated vars (those without an `= addr` initializer) are excluded from auto-shrink: the linker assigns the final address at link time, so the assembler cannot prove DP fit during encoding and defaults to 16-bit Absolute. To put an Allocated var in direct page, opt in with the declaration-position `dp` prefix (`var dp counter:byte`) — the assembler emits a 1-byte DP-width relocation, and the linker rejects it if the resolved address overflows `$00..$FF`. The same applies in reverse: declaration-position `abs` / `far` prefixes bias plain references toward Absolute / AbsoluteLong on Fixed vars.
 
 `dp` and `abs` are recognized **only in the prefix slot** (immediately before an operand expression, or between `var` and the variable name), so they remain available as variable, label, and evaluator-function names (e.g. `var dp = 0` and the `abs(x)` evaluator function still work).
@@ -874,6 +876,59 @@ data MyData4 {
   1 2 3 4 5 6 7 8
 }
 ```
+
+#### `align N + M` — a boundary and an offset
+
+`align` takes an optional offset, and the `+` is **not** the expression
+operator: `align 16 + 4` asks for an address congruent to 4 modulo 16, not
+for `align 20`. It lowers to `.align 16` followed by `.res 4`, and the
+section's label comes after the pair, so the label names the congruent
+address rather than the boundary.
+
+```k65
+data offset_table {
+  align 16 + 4          // offset_table lands at $..04, $..14, $..24, …
+  1 2 3
+}
+```
+
+The boundary must be a power of two in `1..65536`, and the offset must be
+less than the boundary — otherwise the directive names a congruence class no
+address is in, and the compiler reports `K816-E0144`.
+
+`.res` emits the offset bytes as fill. The original K65 compiler recorded the
+congruence for its own linker and left a gap instead; the bytes are what ld65
+fills that region with (`fillval` in your config).
+
+An `.align` inside a segment is a request ld65 checks against the *segment's*
+own alignment, not against the address it happens to start at. A config whose
+segment says nothing gets a warning even when the start address already
+satisfies the request, so a config hosting aligned sections should declare it:
+
+```
+SEGMENTS {
+    CODE: load = MAIN, type = ro, align = $100;
+}
+```
+
+#### Placement directives on a code section
+
+`align` and `address` also open a **code** section — a `func`, `naked`, or
+`main` — where they place the whole section:
+
+```k65
+func handler @a8 @i8 {
+  align 256 + 8         // handler lands at $..08, $..08 + $100, …
+  a = 1
+  return
+}
+```
+
+There they are the section's **first statement**, and only that: a placement
+directive further down would have to move bytes that are already placed, and
+the compiler reports `K816-E0111` naming the rule. Data blocks are the
+exception — a directive may sit between entries there, and applies from that
+point on.
 
 ### Raw Bytes and Strings
 

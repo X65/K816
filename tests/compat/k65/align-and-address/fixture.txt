@@ -2,10 +2,8 @@ row       align-directive
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
 expect    input.k65 K816-E0104
+expect    input.k65 K816-W0116
 expect    input.k65 K816-E0104
 
 **`align` and `address` are accepted at the start of a code section, and
@@ -21,18 +19,24 @@ zero-fills the gaps.
 to be a power of two in `1..65536` and `offs` to be less than `a`, and marks
 every start address that is not congruent to `offs` unusable.
 
-Since G1 nothing here is a syntax error.  The grammar has both forms - the
-offset (`align N + M`, its own alternative over atoms, because the `+` is not
-the expression operator) and the placement directives at the head of a code
-section - and each announces itself as `K816-E0201` until G2 lowers it.  The
-two `K816-E0104` are the `a = 1` and `a = 2` in sections whose width the
-refused directives left unknown.
+Since G2 nothing here is refused.  `align N + M` lowers to `.align N` followed
+by `.res M`, the section's label follows the pair so that it lands in the
+congruence class the source asked for, and a leading `address` becomes the
+same synthetic segment a data block's `address` entry does - which is the
+`K816-W0116` below, carrying the `SEGMENTS` line to paste.
 
-What G1 deliberately did *not* do is let `align 16 + 4` compile.  Before this
+The two `K816-E0104` are not a compatibility gap.  `aligned` and `addressed`
+carry no width annotation and are reached only by a call, so K816 cannot size
+`a = 1`; the original had no width model to be unable to answer.  They are why
+this fixture still compares diagnostics rather than bytes - `tests/compat/k816/
+align-offset/` is where the emitted pair and the label's position are asserted
+against bytes, on a source that can carry `@a8`.
+
+What G1 deliberately did *not* do is let `align 16 + 4` compile.  Before that
 task K816 folded the sum and emitted `.align $14`, which places the section at
 a multiple of twenty - a different address from either reading of the source,
-and emitted without a word.  Refusing it is the correction; decision 15's
-lowering (`.align N` then `.res M`) is G2's.  Decision 15's lowering - `.align N` followed by
-`.res M` - puts the label at the same congruence class, and differs from the
-original in emitting M filler bytes where the original leaves the linker a gap.
-That difference is `backend-different`, and G2 lands it.
+and emitted without a word (`postmortem.md` §G.1.9b).
+
+K816 differs from the original in one way that is the backend's: `.res M`
+emits M filler bytes where the original leaves its linker a gap.  That is the
+`backend-different` half of the row.

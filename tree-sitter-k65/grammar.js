@@ -1199,11 +1199,18 @@ export default grammar({
             'a', 'A', 'b', 'B', 'c', 'C', 'd', 'D',
             's', 'S', 'x', 'X', 'y', 'Y',
             // The status register, whose stack shorthand spells it either
-            // way, and the two flags that are not registers at all. One token
-            // for all of them keeps the lexer from having to choose between
-            // two rules over the same spelling; the builder decides which
-            // meaning the statement asked for.
-            'p', 'P', 'flag', 'i', 'I', 'v', 'V',
+            // way. One token for the registers keeps the lexer from having
+            // to choose between two rules over the same spelling; the
+            // builder decides which meaning the statement asked for.
+            'p', 'P', 'flag',
+            // `i` and `v` are deliberately *not* here. They are flags, not
+            // registers, and no rule but `hla_flag` has a use for them —
+            // while every rule this token reaches gains them, which is what
+            // went wrong: `i+ d-` (SEI then CLD) read as the arithmetic
+            // `i + d`, because `hla_arithmetic` takes a register and `i` was
+            // one. They reach the flag slot as identifiers, the same way
+            // `o` does and for the same reason (`postmortem.md` §G.1.16,
+            // §G.1.8b).
           ),
         ),
       ),

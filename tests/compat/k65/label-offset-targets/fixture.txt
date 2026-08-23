@@ -14,13 +14,20 @@ about it.**  The golden's `main` is
 which is decision 17 measured: no diagnostic, no comment in the listing, and
 the local label `.LT` mangled to `__local1_LT`.
 
-K816 compiles this fixture cleanly today and emits the same three stores in the
-same order.  One difference, recorded rather than fixed here: K816 assembles
-`slot+1` as `a:slot + $01` where the original used zero page (`85 81`), even
-though it does choose direct page for `slot` itself.  The offset form loses
-the direct-page decision.  That is G2's to settle - decision 17 says "plain
-store, no diagnostic" and says nothing about the addressing mode - so the
-manifest row stays `open` until then.
+K816 compiles this fixture cleanly and emits the same three stores, in the same
+order and in the same encodings.
+
+The third one is what G2 changed.  K816 used to assemble `slot+1` as
+`a:slot + $01` where the original used zero page (`85 81`), even though it did
+choose direct page for `slot` itself: the offset form lost the direct-page
+decision.  Decision 17 says "plain store, no diagnostic" and says nothing about
+the addressing mode, so G0 left the row `open`; the pre-G2 interview settled it
+as **an offset expression inherits the base symbol's address size**, in reads as
+well as stores.  `a = slot+1` and `slot+1 = a` disagreeing about the encoding of
+the same expression is not something the manifest could have defended.
+`resolve.rs::offset_base_name` is the rule, and it is deliberately *not* the
+`base_name` the zero-store shortcut asks with - `mem+1 = 0` is still arithmetic
+rather than a named place.
 
 The other difference is layout, and it is not a difference in this compiler:
 the original's Atari XL linker prepends a `__start` section at `$2000` holding

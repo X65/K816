@@ -684,7 +684,7 @@ const AUDIT: &[Row] = &[
     Row {
         group: "`bank` selection",
         source: "bank core\n",
-        expect: Expect::Parses,
+        expect: Expect::Reserved,
         case: "Bank selection",
     },
     Row {
@@ -705,13 +705,13 @@ const AUDIT: &[Row] = &[
     Row {
         group: "`align N + M`",
         source: "data table {\n  align 16 + 4\n  1 2 3\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "A boundary with an offset",
     },
     Row {
         group: "Placement directives in a code section",
         source: "func f @a8 @i8 {\n  align 256\n  nop\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Compiles,
         case: "A code section opens with a placement directive",
     },
     Row {
@@ -759,7 +759,7 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Illegal-opcode HLA forms",
         source: "var mem = $0400\nfunc f @a8 @i8 {\n  a&.#$0f\n  mem = a&x\n}\n",
-        expect: Expect::Parses,
+        expect: Expect::Reserved,
         case: "The illegal-opcode HLA forms",
     },
     Row {

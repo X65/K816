@@ -397,6 +397,36 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::NO_SUCH_INSTRUCTION,
         caret: "0",
     },
+    // Sub-plan G's refusals. An `align` whose congruence class is empty, the
+    // removed `bank`, and the two of the five illegal-opcode forms that
+    // stand for the three shapes the grammar has.
+    Case {
+        source: "data d {\n    align 3\n    1 2\n}\n",
+        code: DiagnosticCode::ALIGN_UNREACHABLE,
+        caret: "3",
+    },
+    Case {
+        source: "data d {\n    align 16 + 16\n    1 2\n}\n",
+        code: DiagnosticCode::ALIGN_UNREACHABLE,
+        caret: "16",
+    },
+    Case {
+        source: "bank core\n",
+        code: DiagnosticCode::K65_REMOVED_BANK,
+        caret: "bank",
+    },
+    Case {
+        source: "func f @a8 @i8 {\n    a&.#$0f\n}\n",
+        code: DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE,
+        caret: "&.",
+    },
+    // A placement directive that is not the section's first statement is the
+    // same complaint a misplaced `segment` gets.
+    Case {
+        source: "func f @a8 @i8 {\n    nop\n    align 16\n}\n",
+        code: DiagnosticCode::SEGMENT_PLACEMENT,
+        caret: "align 16",
+    },
 ];
 
 /// Codes no `FAMILY` row can reach, and what covers them instead.

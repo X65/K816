@@ -203,15 +203,24 @@ pub fn lower_unit(
             expanding: Vec::new(),
         };
 
+        // A leading `align` or `address` places the whole section, so its
+        // operations go *before* the label: the label has to land at the
+        // address the directive chose, which is what placing a section at an
+        // offset means (decision 15). Analysis has already established that
+        // there is at most one and that it is first.
+        let placement = lowering.section_placement(&func.body, &func.name.text);
         lowering.push(KOpKind::Label(info.symbol), func.name.span, Origin::User);
         lowering.entry(func.name.span);
-        lowering.block(&func.body);
+        lowering.block_from(&func.body, placement.statements);
         // `naked` is the section kind that gets no closing `rts`. That is the
         // whole of what the keyword means (`doc/syntax-reference.md`): it
         // carries no special width rule, and its exit is inferred from its
         // reachable returns like any other section's.
         if func.kind != FunctionKind::Naked {
             lowering.implicit_return(func.body.span);
+        }
+        if placement.restores_segment {
+            lowering.restore_segment(func.body.span);
         }
         lowering.relax_branches();
         lowering.finish_nocross();
@@ -607,12 +616,28 @@ struct CheckedCall {
     span: Span,
 }
 
+/// What a section's leading placement directive left the caller to do.
+#[derive(Clone, Copy, Debug, Default)]
+struct Placement {
+    /// Body statements the directive consumed, which the body walk skips.
+    statements: usize,
+    /// The directive switched segments, so the switch is undone after the
+    /// body — the placement is this section's, not every section's after it.
+    restores_segment: bool,
+}
+
 impl<'a> Lowering<'a> {
     /// Lowers every statement of a block, which is how a body nested in a
     /// conditional or a loop reaches the same per-statement machinery — its
     /// bridges, its width state, its origins — as a top-level one.
     fn block(&mut self, block: &crate::ast::Block) {
-        for statement in &block.statements {
+        self.block_from(block, 0);
+    }
+
+    /// The block from `start` on, which is how a section body is lowered
+    /// after its leading placement directive has already been emitted.
+    fn block_from(&mut self, block: &crate::ast::Block, start: usize) {
+        for statement in &block.statements[start.min(block.statements.len())..] {
             self.statement(statement);
         }
     }
@@ -1342,6 +1367,16 @@ impl<'a> Lowering<'a> {
 
     fn statement_kind(&mut self, statement: &crate::ast::Statement, span: Span) {
         match &statement.kind {
+            // Emitted by `section_placement`, before the section's label.
+            // Reaching one here means analysis let a mis-positioned
+            // directive through, which is a compiler bug rather than a
+            // program that silently loses its placement.
+            StatementKind::Align(_) | StatementKind::Address(_) => {
+                self.skipped(span, "a placement directive outside a section head")
+            }
+            // A refused K65 construct never reaches lowering: analysis
+            // reports it and stops the build.
+            StatementKind::Reserved(_) => self.skipped(span, "a reserved K65 construct"),
             StatementKind::Native(native) => {
                 // Analysis already classified this instruction and reported
                 // anything wrong with it, so a second answer here would be a
@@ -2046,6 +2081,56 @@ impl<'a> Lowering<'a> {
             return self.skipped(span, what);
         }
         self.diagnostics.extend(reported);
+    }
+
+    /// Emits the section's leading placement directive, if it has one, and
+    /// says what the caller has to do about it.
+    ///
+    /// [`Placement::statements`] is how many of the body's statements it
+    /// consumed, so the body walk can skip them; `restores_segment` says the
+    /// directive switched segments and the switch has to be undone after the
+    /// body, so that placing *this* section does not place every section
+    /// after it. That is the rule a block-local `segment` already follows.
+    fn section_placement(&mut self, body: &crate::ast::Block, section: &str) -> Placement {
+        let Some(statement) = body.statements.first() else {
+            return Placement::default();
+        };
+        let mut resolver = Resolver::new(&self.model.symbols).in_function(self.function);
+        let (ops, restores_segment) = match &statement.kind {
+            StatementKind::Align(align) => (resolver.align_ops(align, statement.span), false),
+            StatementKind::Address(address) => (
+                resolver
+                    .code_address_op(address, statement.span, section)
+                    .into_iter()
+                    .collect(),
+                true,
+            ),
+            _ => return Placement::default(),
+        };
+        // Analysis walked the same directive through the same resolver, so a
+        // diagnostic here would be a second copy of one already reported.
+        drop(resolver);
+        // A directive that folded to nothing — its operand did not resolve —
+        // still consumed the statement, and still must not leave a segment
+        // switch the ops do not contain.
+        let restores_segment = restores_segment && !ops.is_empty();
+        self.ops.extend(ops);
+        Placement {
+            statements: 1,
+            restores_segment,
+        }
+    }
+
+    /// Restores the unit's default segment after a placed section.
+    fn restore_segment(&mut self, span: Span) {
+        self.push(
+            KOpKind::Segment {
+                name: SegmentName::new(resolve::OUTER_SEGMENT),
+                addressing: None,
+            },
+            span,
+            Origin::CompilerGenerated,
+        );
     }
 
     /// Records that lowering skipped a construct semantic analysis should

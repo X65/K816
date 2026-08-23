@@ -2,35 +2,55 @@ row       k65-corpus-whole-program
 config    a2600.cfg
 compare   diagnostics
 units     defs.k65 main.k65
-expect    defs.k65 K816-E0201
+expect    defs.k65 K816-K65-0003
 expect    defs.k65 K816-E0101
 expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
 expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
-expect    main.k65 K816-E0001
 expect    main.k65 K816-E0201
-expect    main.k65 K816-E0201
+expect    main.k65 K816-K65-0003
 expect    main.k65 K816-K65-0001
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0201
-expect    main.k65 K816-E0106
-expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0201
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0201
 
-Since G1: twenty-one diagnostics, where before there were twenty-seven.  Six
-syntax errors went - the `for i = 0 .. [ ]` bound and the `evaluator [ ]` entry
-in `defs.k65`, the two bare-call lines in `main.k65` - and the undeclared names
-that followed from them went with them.  One `K816-E0001` remains, on
-`image sheet 0 0 8 > 8 v`: `8 >` with a space between is not the `image_scan`
-token, and `image` is refused anyway (`K816-K65-0001`), so the loose argument
-run is not worth a grammar rule.
+Since G2: eighteen diagnostics, and **no `K816-E0001`** - which is the task's
+done criterion.  Three things went with G1's twenty-one.
+
+  - The one syntax error was this fixture's own bug, not a compatibility gap.
+    It wrote the image scan word as `8 > 8 v`; every attested source writes
+    `8>` with no space, and so does `image_scan`.  The original tolerates the
+    spaced form - re-running `oracle.sh` over the corrected source produced a
+    byte-identical `oracle.hex`, only the checksum line moved - and the
+    manifest's `topelem-image` row says so.  K816 does not, and no rule is
+    worth spending on a spelling no source uses for a construct that is
+    refused anyway.
+  - `i+ d-` - SEI then CLD - used to parse as the arithmetic `i + d` followed
+    by a statement starting `-`, which reached the AST builder as a register
+    named `i` and answered `K816-E0900`.  The ERROR node above hid it: the
+    builder suppresses internal reports once recovery has fired, so fixing the
+    image line is what exposed it.  Two changes close it, both in
+    `postmortem.md` §G.1.16: `i` and `v` leave the shared register token, since
+    they are flags and no rule but `hla_flag` wants them; and the flag
+    statements a store swallowed are peeled back off in the AST builder, the
+    way decision 16's leading call already is.
+  - `s = x = 0xFF` followed from it: `s` had been reading as part of that
+    swallowed expression rather than as the stack pointer.
+
+The two `K816-K65-0003` are `bank core`, refused in both units (decision 10),
+and `K816-K65-0001` is `image` (decision 12's neighbour, G6's to keep refused).
+The `K816-E0101` are the TIA register names, which the original's A2600 system
+script declares before the first unit and K816 has no equivalent of; the
+`K816-E0104` are `lda` immediates in `inline` sections no annotated caller has
+reached yet.  Neither is a compatibility gap, and both are the environment's
+rather than the language's.
 
 A whole K65 program, written for this corpus, in two units.
 
@@ -59,7 +79,6 @@ Three things it taught while being written, none of them in any document:
     `oracle.sh` prints the compiler's log when a build it expected to succeed
     fails.
 
-The count below is the task-by-task measure: it falls at G2 (the comma list
-and the bare-call lines), G4 (the brackets and `for … eval`) and G6 (`image`,
+What remains falls at G4 (the brackets and `for … eval`) and G6 (`image`,
 which stays refused, and the `evaluator [ ]` transform, which lands). Both
 units are compiled as entries, so both report.

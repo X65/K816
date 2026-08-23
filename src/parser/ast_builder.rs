@@ -27,20 +27,21 @@
 //! malformed file still yields a navigable AST.
 
 use crate::ast::{
-    AddressEncoding, AddressOperand, ArithmeticOp, AstFile, BareCall, BinaryDeclaration,
-    BinaryExpr, BinaryOp, Block, BlockMoveOperand, BranchCondition, BranchConditionKind,
-    CallArgument, CallContract, CallStatement, ComparisonKind, ConditionalBlock, ConditionalJump,
-    ConstDeclaration, ConstEntry, ContractOutputs, ContractParameter, DataBlock, DataEntry,
-    DataEntryKind, DataValue, EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, FieldAccess,
-    FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
-    HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
-    HlaStatement, HlaStep, IndexRegister, IndexRegisterKind, IndirectOperand, Item, ItemKind,
-    LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery,
-    MetadataQueryKind, Name, NativeInstruction, NativeOperand, PreprocessorDirective,
-    PreprocessorKind, Register, RegisterKind, ReservedCall, ReservedConstruct, ReservedKind,
-    ReturnKind, ShiftOp, StackOp, Statement, StatementKind, StepOp, StmtId, StorageClass,
-    StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr,
-    UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation, WidthAnnotationKind, WidthBlock,
+    AddressEncoding, AddressOperand, AlignDirective, ArithmeticOp, AstFile, BareCall,
+    BinaryDeclaration, BinaryExpr, BinaryOp, Block, BlockMoveOperand, BranchCondition,
+    BranchConditionKind, CallArgument, CallContract, CallStatement, ComparisonKind,
+    ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry, ContractOutputs,
+    ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue, EvalCallName, EvalExpr,
+    EvalExprKind, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function, FunctionKind,
+    GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
+    HlaShift, HlaStack, HlaStatement, HlaStep, IllegalOpcode, IndexRegister, IndexRegisterKind,
+    IndirectOperand, Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand,
+    LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name, NativeInstruction,
+    NativeOperand, PreprocessorDirective, PreprocessorKind, Register, RegisterKind, ReservedCall,
+    ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind,
+    StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth,
+    TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
+    WidthAnnotationKind, WidthBlock,
 };
 use crate::compat::{self, Owner};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -126,6 +127,9 @@ fn number_statement(statement: &mut Statement, next: &mut u32) {
         | StatementKind::Repeat
         | StatementKind::Preprocessor(_)
         | StatementKind::Return(_)
+        | StatementKind::Align(_)
+        | StatementKind::Address(_)
+        | StatementKind::Reserved(_)
         | StatementKind::Error => {}
     }
 }
@@ -270,7 +274,13 @@ impl AstBuilder<'_> {
                     ),
                     span: self.span(child),
                 }),
-                "bank_declaration" => self.deferred(child, "`bank` declarations"),
+                "bank_declaration" => {
+                    let reserved = self.reserved_at(child, ReservedKind::Bank, child.child(0));
+                    items.push(Item {
+                        kind: ItemKind::Reserved(reserved),
+                        span: self.span(child),
+                    });
+                }
                 "evalfunc_declaration" => self.deferred(child, "`evalfunc` definitions"),
                 "line_comment" | "block_comment" => {}
                 "ERROR" => items.push(Item {
@@ -669,18 +679,20 @@ impl AstBuilder<'_> {
                     self.span(child),
                 )),
                 "bare_call" => statements.push(self.bare_call(child)),
-                "hla_illegal" => {
-                    self.deferred(child, "the illegal-opcode HLA forms");
-                    statements.push(Statement::new(StatementKind::Error, self.span(child)));
-                }
-                // A code section may open with a placement directive, as the
-                // original's `Align` slot allows. What it *means* inside a
-                // body — a section that starts at a boundary, or a hole in
-                // the middle of one — is G2's.
-                "align_directive" | "address_directive" => {
-                    self.deferred(child, "placement directives in a code section");
-                    statements.push(Statement::new(StatementKind::Error, self.span(child)));
-                }
+                "hla_illegal" => statements.push(self.hla_illegal(child)),
+                // A code section may open with a placement directive, as
+                // the original's `Align` slot allows. The grammar takes one
+                // anywhere in a body so that one further down is refused
+                // with a sentence rather than `expected a statement`; the
+                // position rule is `semantic.rs`'s.
+                "align_directive" => statements.push(Statement::new(
+                    StatementKind::Align(self.align_directive(child)),
+                    self.span(child),
+                )),
+                "address_directive" => statements.push(Statement::new(
+                    StatementKind::Address(self.expr(child.child_by_field_name("address"), child)),
+                    self.span(child),
+                )),
                 "line_comment" | "block_comment" => {}
                 "ERROR" => statements.push(Statement::new(StatementKind::Error, self.span(child))),
                 _ => {
@@ -823,15 +835,34 @@ impl AstBuilder<'_> {
             statements.push(call);
             split = true;
         }
-        let mut operands: Vec<HlaOperand> = operand_nodes
+        // `i+ d-` followed by `s = x = $FF` is three statements. Peeled
+        // before the operands are built, because what it leaves behind is a
+        // different first operand.
+        let peeled = match operand_nodes.first() {
+            Some(first) if !split => self.leading_flag_statements(*first),
+            _ => None,
+        };
+        let mut operands: Vec<HlaOperand> = Vec::with_capacity(operand_nodes.len());
+        let mut rest = operand_nodes.as_slice();
+        let flagged = peeled.is_some();
+        if let Some((flags, remainder)) = peeled {
+            statements.extend(flags);
+            let operand = self.offset_remainder_operand(remainder);
+            operands.push(operand);
+            rest = &operand_nodes[1..];
+        }
+        let built: Vec<HlaOperand> = rest
             .iter()
             .enumerate()
             .map(|(index, operand)| self.hla_operand_after_split(*operand, split && index == 0))
             .collect();
+        operands.extend(built);
         let node_span = self.span(node);
-        // The store starts where the call ended.
+        // The store starts where the call, or the last flag statement, ended.
         let span = match operands.first() {
-            Some(first) if split => Span::new(node_span.file, first.span.start, node_span.end),
+            Some(first) if split || flagged => {
+                Span::new(node_span.file, first.span.start, node_span.end)
+            }
             _ => node_span,
         };
         let source = operands.pop().unwrap_or_else(|| {
@@ -891,6 +922,135 @@ impl AstBuilder<'_> {
             }),
             self.span(encoding),
         ))
+    }
+
+    /// The flags with a set/clear shorthand, as the source spells them.
+    ///
+    /// `o` is the original's name for the overflow flag and `v` is K816's;
+    /// `c` and `d` name registers as well, and which one a statement meant
+    /// follows from its shape rather than from the spelling.
+    fn flag_spelling(&self, node: Node<'_>) -> bool {
+        matches!(node.kind(), "identifier" | "register")
+            && matches!(
+                self.text(node).to_ascii_lowercase().as_str(),
+                "c" | "d" | "i" | "v" | "o"
+            )
+    }
+
+    /// `i+ d-` followed by `s = x = $FF` is three statements — SEI, CLD, and
+    /// a store — not one store into `i + d - s`.
+    ///
+    /// K65 is newline-insensitive and a flag statement ends at its sign, so
+    /// a flag name followed by `+` or `-` and then anything an expression can
+    /// continue with has two complete readings. The original has no such
+    /// ambiguity: `Flag` there is a terminal class distinct from `Ident`
+    /// (`compiler.inc:253-260`), so `o - s` can never be an expression. K816
+    /// keeps the flag names usable as identifiers on purpose — a token for
+    /// them wins in the lexer wherever an identifier is also valid, and
+    /// `var o` stops being a declaration (`postmortem.md` §G.1.16) — so the
+    /// spelling is checked here, the one place that can see it, exactly as
+    /// [`Self::leading_bare_call`] checks the operand prefix.
+    ///
+    /// Returns the flag statements and the node the assignment's first
+    /// operand should be built from instead. Fires only when *every* name it
+    /// would peel is a flag spelling, so `slot+1 = a` and `payload+2 = a`
+    /// stay the single stores decision 17 says they are.
+    fn leading_flag_statements<'t>(
+        &mut self,
+        node: Node<'t>,
+    ) -> Option<(Vec<Statement>, Node<'t>)> {
+        if node.kind() != "address"
+            || node.child_by_field_name("index").is_some()
+            || node.child_by_field_name("marker").is_some()
+            || node.child_by_field_name("encoding").is_some()
+        {
+            return None;
+        }
+        // The left spine, outermost first: `(i + d) - s` is `-` over `s`,
+        // then `+` over `d`, and `i` is what is left at the bottom.
+        let mut chain = Vec::new();
+        let mut current = node.child_by_field_name("value")?;
+        while current.kind() == "binary_expression" {
+            let operator = current.child_by_field_name("operator")?;
+            if !matches!(self.text(operator), "+" | "-") {
+                return None;
+            }
+            chain.push((operator, current.child_by_field_name("right")?));
+            current = current.child_by_field_name("left")?;
+        }
+        if chain.is_empty() {
+            return None;
+        }
+        chain.reverse();
+        // Every name but the last belongs to a flag statement; the last is
+        // the operand the store is actually into.
+        if !self.flag_spelling(current) {
+            return None;
+        }
+        let mut names = vec![current];
+        for (_, right) in &chain[..chain.len() - 1] {
+            if !self.flag_spelling(*right) {
+                return None;
+            }
+            names.push(*right);
+        }
+        let remainder = chain[chain.len() - 1].1;
+        let statements = names
+            .into_iter()
+            .zip(chain.iter())
+            .map(|(name, (operator, _))| self.flag_statement(name, *operator))
+            .collect();
+        Some((statements, remainder))
+    }
+
+    /// One peeled flag statement, from the name and the sign that follows it.
+    fn flag_statement(&mut self, name: Node<'_>, operator: Node<'_>) -> Statement {
+        let flag_span = self.span(name);
+        let span = Span::new(flag_span.file, flag_span.start, self.span(operator).end);
+        let flag = match self.text(name).to_ascii_lowercase().as_str() {
+            "c" => FlagKind::Carry,
+            "d" => FlagKind::Decimal,
+            "i" => FlagKind::Interrupt,
+            _ => FlagKind::Overflow,
+        };
+        Statement::new(
+            StatementKind::Hla(HlaStatement::Flag(HlaFlag {
+                flag,
+                set: self.text(operator) == "+",
+                flag_span,
+            })),
+            span,
+        )
+    }
+
+    /// The store target left behind once the flag statements in front of it
+    /// have been peeled off.
+    ///
+    /// It arrived inside an expression, so a register spelling reached the
+    /// tree as an identifier — `s` in `i+ d- s = x = $FF` is the stack
+    /// pointer, and building it as memory would report an undeclared `s`.
+    fn offset_remainder_operand(&mut self, node: Node<'_>) -> HlaOperand {
+        let span = self.span(node);
+        if node.kind() == "identifier"
+            && matches!(
+                self.text(node).to_ascii_lowercase().as_str(),
+                "a" | "b" | "c" | "d" | "s" | "x" | "y" | "p" | "flag"
+            )
+        {
+            return HlaOperand {
+                kind: HlaOperandKind::Register(self.register(Some(node), node)),
+                span,
+            };
+        }
+        HlaOperand {
+            kind: HlaOperandKind::Memory(AddressOperand {
+                encoding: None,
+                offset_marker: None,
+                value: self.expr(Some(node), node),
+                index: None,
+            }),
+            span,
+        }
     }
 
     fn hla_operand(&mut self, node: Node<'_>) -> HlaOperand {
@@ -1560,13 +1720,71 @@ impl AstBuilder<'_> {
     /// The `keyword` field of a reserved construct, or the whole node when
     /// recovery lost it.
     fn reserved(&mut self, node: Node<'_>, kind: ReservedKind) -> ReservedConstruct {
+        let keyword = node.child_by_field_name("keyword");
+        self.reserved_at(node, kind, keyword)
+    }
+
+    /// A reserved construct whose keyword the grammar does not field-name.
+    ///
+    /// `bank` and the illegal-opcode operators were taught to the grammar by
+    /// G1, which was the one regeneration this sub-plan gets; naming their
+    /// keywords would need a second. The node the caller passes is the one
+    /// the diagnostic underlines, and the whole construct is the fallback.
+    fn reserved_at(
+        &mut self,
+        node: Node<'_>,
+        kind: ReservedKind,
+        keyword: Option<Node<'_>>,
+    ) -> ReservedConstruct {
+        let name = node
+            .child_by_field_name("name")
+            .filter(|name| name.kind() == "identifier")
+            .map(|name| self.name(Some(name), node));
         ReservedConstruct {
             kind,
-            keyword_span: node
-                .child_by_field_name("keyword")
+            keyword_span: keyword
                 .map(|keyword| self.span(keyword))
                 .unwrap_or_else(|| self.span(node)),
+            name,
         }
+    }
+
+    /// `align N`, and the original's `align N + M`.
+    ///
+    /// The `+` is the grammar's own alternative rather than the expression
+    /// operator, so the two operands arrive separately and nothing folds
+    /// them: the offset is a congruence, not a term.
+    fn align_directive(&mut self, node: Node<'_>) -> AlignDirective {
+        AlignDirective {
+            boundary: self.expr(node.child_by_field_name("boundary"), node),
+            offset: node
+                .child_by_field_name("offset")
+                .map(|offset| self.expr(Some(offset), node)),
+        }
+    }
+
+    /// One of the five HLA forms that spell an undocumented 6502 opcode.
+    ///
+    /// Which of the five is read off the `operator` field alone. Each of the
+    /// five operators appears in exactly one rule of the original's grammar,
+    /// so the operator names the mnemonic; the register slots are wider here
+    /// only because `$.register` is one token class, and a source that fills
+    /// one differently was not a K65 program either.
+    fn hla_illegal(&mut self, node: Node<'_>) -> Statement {
+        let operator = node.child_by_field_name("operator");
+        let opcode = match operator.map(|operator| self.text(operator)) {
+            Some("&.") => IllegalOpcode::Anc,
+            Some("?--") => IllegalOpcode::Dcp,
+            Some("-++") => IllegalOpcode::Isc,
+            Some("=") => IllegalOpcode::Sax,
+            Some("&=") => IllegalOpcode::Axs,
+            _ => {
+                self.unexpected(node, "an illegal-opcode HLA form");
+                return Statement::new(StatementKind::Error, self.span(node));
+            }
+        };
+        let reserved = self.reserved_at(node, ReservedKind::IllegalOpcode(opcode), operator);
+        Statement::new(StatementKind::Reserved(reserved), self.span(node))
     }
 
     fn data_block(&mut self, node: Node<'_>) -> DataBlock {
@@ -1596,18 +1814,7 @@ impl AstBuilder<'_> {
             "segment_declaration" => {
                 DataEntryKind::Segment(self.name(node.child_by_field_name("name"), node))
             }
-            "align_directive" => {
-                // `align N + M` is a boundary and an offset, and the offset
-                // is not implemented: G2 lowers it to `.align N` followed by
-                // `.res M`. Announced rather than folded, because folding it
-                // to `align N+M` places the section somewhere else entirely.
-                if node.child_by_field_name("offset").is_some() {
-                    self.deferred(node, "`align N + M` offsets");
-                    DataEntryKind::Error
-                } else {
-                    DataEntryKind::Align(self.expr(node.child_by_field_name("boundary"), node))
-                }
-            }
+            "align_directive" => DataEntryKind::Align(self.align_directive(node)),
             "address_directive" => {
                 DataEntryKind::Address(self.expr(node.child_by_field_name("address"), node))
             }

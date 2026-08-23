@@ -322,6 +322,13 @@ pub enum StatementKind {
     Nocross(Block),
     /// `data { ... }` inside a function body, emitting bytes inline.
     Data(DataBlock),
+    /// `align N` / `align N + M` at the head of a code section.
+    Align(AlignDirective),
+    /// `address $addr` at the head of a code section.
+    Address(Expr),
+    /// An HLA form that spells an undocumented 6502 opcode — recognized,
+    /// reserved, never reinterpreted.
+    Reserved(ReservedConstruct),
     /// A preprocessor directive inside a code section.
     Preprocessor(PreprocessorDirective),
     Return(ReturnKind),
@@ -920,8 +927,8 @@ pub struct DataEntry {
 pub enum DataEntryKind {
     /// `segment NAME`, legal only as the first entry.
     Segment(Name),
-    /// `align N`
-    Align(Expr),
+    /// `align N`, or `align N + M`.
+    Align(AlignDirective),
     /// `address $addr`
     Address(Expr),
     /// `nocross` — guards the run of statically-sizeable entries that
@@ -965,6 +972,19 @@ pub enum DataEntryKind {
     Error,
 }
 
+/// `align N`, and the original's `align N + M`.
+///
+/// The offset is not the expression operator's `+`: `align 16 + 4` means
+/// "at an address congruent to 4 modulo 16", not `align 20`. K816 lowers the
+/// pair to `.align N` followed by `.res M`, and the section's label follows
+/// both so that it lands in the congruence class the source asked for
+/// (`plans/06-compatibility.md` decision 15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlignDirective {
+    pub boundary: Expr,
+    pub offset: Option<Expr>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreprocessorDirective {
     pub kind: PreprocessorKind,
@@ -1000,6 +1020,10 @@ pub struct ReservedConstruct {
     pub kind: ReservedKind,
     /// The keyword itself, so the diagnostic can point at it precisely.
     pub keyword_span: Span,
+    /// The name the construct declares, when it declares one — `bank core`,
+    /// `image sheet = "…"`. A migration diagnostic that can quote the name
+    /// hands back a line the author can paste.
+    pub name: Option<Name>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1010,6 +1034,31 @@ pub enum ReservedKind {
     ImageTopLevel,
     /// A reserved evaluator function used as a whole construct.
     EvalCall(EvalCallName),
+    /// `bank NAME` — removed, with `segment NAME` named as the replacement.
+    Bank,
+    /// One of the five HLA forms that spell an undocumented 6502 opcode.
+    IllegalOpcode(IllegalOpcode),
+}
+
+/// The five K65 HLA forms whose bytes are illegal 6502 opcodes.
+///
+/// Their encodings are real, documented instructions on the 65816 — a
+/// different instruction each — so there is nothing to be compatible *with*,
+/// and `doc/design.md` §1 puts them outside the instruction sets K816
+/// assembles. Named individually so the diagnostic can say which byte column
+/// the source landed in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IllegalOpcode {
+    /// `a &. imm` — ANC.
+    Anc,
+    /// `mem = a & x` — SAX.
+    Sax,
+    /// `x &= a - imm` — AXS.
+    Axs,
+    /// `a ?-- mem` — DCP.
+    Dcp,
+    /// `a -++ mem` — ISC.
+    Isc,
 }
 
 /// The evaluator functions that mutate sections, print, or randomize, which

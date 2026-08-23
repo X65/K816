@@ -1,0 +1,28 @@
+row       instr-sax
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-K65-0004
+expect    input.k65 K816-K65-0004
+expect    input.k65 K816-K65-0004
+expect    input.k65 K816-K65-0004
+expect    input.k65 K816-K65-0004
+
+**All five illegal-opcode forms are refused, each by the same code.**
+
+One code for the family, because it is one complaint: the encoding is not an
+instruction K816 assembles.  Which of the five is in the message, along with
+what the 65816 does with those bytes - and the help stops there.  It names no
+replacement sequence: offering one would be K816 spelling an illegal opcode on
+the author's behalf, and for `SAX` and `AXS` there is no clean substitute to
+offer anyway.
+
+The five span three grammar shapes - `register op operand`, `target = reg &
+reg`, and `reg &= reg - operand` - so a fixture with fewer than five would
+leave a shape untested.  Five diagnostics and five statements is the whole
+claim: no form silently compiles, and none of them takes down the parse.
+
+Two of the encodings are the argument in miniature.  `DCP abs,y` is `$DB`,
+which is `STP` on the 65816 - the processor stops.  `ISC abs,y` is `$FB`,
+which is `XCE` - the processor leaves native mode.  A compatibility shim for
+these would not be a shim; it would be a different program.

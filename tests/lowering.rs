@@ -307,6 +307,61 @@ func work @a8 @i16 {
     );
 }
 
+/// Decision 15: a leading placement directive places the *section*, so its
+/// operations precede the section's label — and an `address` puts the label
+/// in a segment of its own, which has to be left again at the end of the
+/// body or every later section is placed with it.
+#[test]
+fn a_placement_directive_wraps_the_section_it_opens() {
+    let aligned = dump("func at @a8 @i8 {\n  align 16 + 4\n  a = 1\n  return\n}\n");
+    let operations: Vec<&str> = aligned
+        .lines()
+        .filter_map(|line| line.split_once(';'))
+        .map(|(text, _)| text.trim())
+        .filter(|text| !text.is_empty())
+        .collect();
+    assert_eq!(
+        operations,
+        vec![
+            "align $10",
+            // The four bytes come before the label, so `at` names the
+            // congruent address rather than the boundary.
+            "res $04",
+            "label at",
+            "mode-assume @a8 @i8",
+            "lda #$01",
+            "rts",
+        ]
+    );
+
+    let placed = dump("func at @a8 @i8 {\n  address $2040\n  a = 1\n  return\n}\n");
+    let segments: Vec<&str> = placed
+        .lines()
+        .filter_map(|line| line.split_once(';'))
+        .map(|(text, _)| text.trim())
+        .filter(|text| text.starts_with("segment"))
+        .collect();
+    assert_eq!(
+        segments,
+        vec!["segment K816_AT_2040__AT", "segment CODE"],
+        "the placed segment is entered before the label and left after the body"
+    );
+
+    // Every section kind the original's `Align` slot sits in: `func` above,
+    // and `naked` and `main` here (`compiler.inc:121-123`). A data block is
+    // the one place a directive may also sit *between* entries, which is
+    // K816's own rule and decision 15 leaves alone.
+    for section in ["naked bare @a8 @i8", "main @a8 @i8"] {
+        let dumped = dump(&format!("{section} {{\n  align 8\n  a = 1\n}}\n"));
+        let first = dumped
+            .lines()
+            .filter_map(|line| line.split_once(';'))
+            .map(|(text, _)| text.trim())
+            .find(|text| !text.is_empty());
+        assert_eq!(first, Some("align $08"), "`{section}` opens with its align");
+    }
+}
+
 #[test]
 fn a_native_only_function_lowers_without_any_hla_statement() {
     let program = lower_program(

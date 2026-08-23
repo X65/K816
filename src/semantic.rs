@@ -30,8 +30,8 @@
 
 use crate::ast::{
     self, AstFile, ContractParameter, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr,
-    EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement, ItemKind, RegisterKind,
-    ReservedKind, Statement, StatementKind,
+    EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement, IllegalOpcode, ItemKind,
+    RegisterKind, ReservedKind, Statement, StatementKind,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -606,6 +606,9 @@ impl Analysis {
                 | StatementKind::Repeat
                 | StatementKind::Preprocessor(_)
                 | StatementKind::Return(_)
+                | StatementKind::Align(_)
+                | StatementKind::Address(_)
+                | StatementKind::Reserved(_)
                 | StatementKind::Error => {}
             }
         }
@@ -1348,7 +1351,7 @@ impl Analysis {
                 continue;
             };
             self.current_function = Some(function.symbol);
-            self.check_block(WidthScope::Function(function.symbol), &func.body);
+            self.check_block_at(WidthScope::Function(function.symbol), &func.body, true);
             self.current_function = None;
         }
     }
@@ -1412,7 +1415,33 @@ impl Analysis {
 
     /// Checks one block's statements, and the blocks nested in them.
     fn check_block(&mut self, scope: WidthScope, block: &crate::ast::Block) {
-        for statement in &block.statements {
+        self.check_block_at(scope, block, false);
+    }
+
+    /// `is_section_body` is true for the one block that *is* a code section,
+    /// which is the only place a placement directive can sit — and only as
+    /// its first statement.
+    ///
+    /// The original's grammar puts the slot there and nowhere else: `Align`
+    /// is one optional directive between `SecStart` and `Sequence`
+    /// (`compiler.inc:121-136`). K816's grammar takes one anywhere in a body
+    /// on purpose, so that one further down is refused with a sentence
+    /// instead of `expected a statement` (decision 15).
+    fn check_block_at(
+        &mut self,
+        scope: WidthScope,
+        block: &crate::ast::Block,
+        is_section_body: bool,
+    ) {
+        for (index, statement) in block.statements.iter().enumerate() {
+            if matches!(
+                statement.kind,
+                StatementKind::Align(_) | StatementKind::Address(_)
+            ) && !(is_section_body && index == 0)
+            {
+                self.diagnostics
+                    .push(placement_not_at_section_head(statement));
+            }
             let widths = self.widths_at(scope, statement);
             self.check_statement(statement, widths);
             // A nested body is ordinary code, checked with the state the
@@ -1533,6 +1562,30 @@ impl Analysis {
 
     fn check_statement(&mut self, statement: &Statement, widths: ModeState) {
         match &statement.kind {
+            // The walk is shared with lowering, so the checks the directive
+            // has to pass — a power-of-two boundary, an offset inside it, an
+            // ld65 entry for `address` — are reported here exactly once and
+            // by the same code that emits the operations.
+            StatementKind::Align(align) => {
+                let mut resolver = self.resolver();
+                resolver.align_ops(align, statement.span);
+                let resolved = resolver.finish();
+                self.absorb(resolved);
+            }
+            StatementKind::Address(address) => {
+                let section = self
+                    .current_function
+                    .map(|symbol| self.model.symbols.name(symbol).to_owned())
+                    .unwrap_or_default();
+                let mut resolver = self.resolver();
+                resolver.code_address_op(address, statement.span, &section);
+                let resolved = resolver.finish();
+                self.absorb(resolved);
+            }
+            StatementKind::Reserved(reserved) => {
+                let diagnostic = reserved_diagnostic(reserved);
+                self.diagnostics.push(diagnostic);
+            }
             StatementKind::Native(native) => {
                 // Classification is shared with lowering, so the two cannot
                 // disagree about which addressing mode an operand selects.
@@ -1615,9 +1668,13 @@ impl Analysis {
                     let diagnostic = reserved_diagnostic(reserved);
                     self.diagnostics.push(diagnostic);
                 }
-                DataEntryKind::Align(expr) | DataEntryKind::Address(expr) => {
-                    self.report_reserved_in_expr(expr)
+                DataEntryKind::Align(align) => {
+                    self.report_reserved_in_expr(&align.boundary);
+                    if let Some(offset) = &align.offset {
+                        self.report_reserved_in_expr(offset);
+                    }
                 }
+                DataEntryKind::Address(expr) => self.report_reserved_in_expr(expr),
                 DataEntryKind::Typed { values, .. } => {
                     for value in values {
                         if let DataValue::Expr(expr) = value {
@@ -2493,6 +2550,29 @@ fn first_non_offset(expr: &Expr) -> Option<Span> {
     }
 }
 
+/// A placement directive that is not the first statement of a code section.
+///
+/// It is the same complaint `segment` gets in a data block — placement is a
+/// property of where the section's bytes land, and there is no answer to give
+/// once bytes are already placed before it.
+fn placement_not_at_section_head(statement: &Statement) -> Diagnostic {
+    let keyword = match statement.kind {
+        StatementKind::Align(_) => "align",
+        _ => "address",
+    };
+    Diagnostic::error(
+        DiagnosticCode::SEGMENT_PLACEMENT,
+        format!("an `{keyword}` directive must be the first statement of its code section"),
+        Label::new(statement.span, "bytes are already placed before this"),
+    )
+    .with_note(
+        "a placement directive moves the whole section, so it has to be read \
+         before any of its bytes are emitted",
+    )
+    .with_help("move it to just after the section's opening `{`")
+    .with_docs("doc/syntax-reference.md#placement-directives")
+}
+
 /// The `K816-K65-####` diagnostic for a reserved legacy construct.
 fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
     let (code, construct) = match reserved.kind {
@@ -2503,8 +2583,60 @@ fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
             eval_call_text(name),
         ),
+        // The two G2 refusals do not read as "reserved, coming later", so
+        // they do not share the reserved wording: `bank` is removed and has
+        // a replacement, and an illegal opcode is outside the instruction
+        // sets K816 assembles at all (`doc/design.md` §1).
+        ReservedKind::Bank => {
+            let name = reserved.name.as_ref().map_or("NAME", |name| &name.text);
+            return compat::k65_removed_bank(reserved.keyword_span, name);
+        }
+        ReservedKind::IllegalOpcode(opcode) => {
+            let (form, illegal, native) = illegal_opcode_text(opcode);
+            return compat::k65_illegal_opcode(reserved.keyword_span, form, illegal, native);
+        }
     };
     compat::k65_reserved(code, reserved.keyword_span, construct)
+}
+
+/// What an illegal-opcode HLA form is spelled, what 6502 opcode it means, and
+/// what the 65816 does with the same bytes.
+///
+/// The 65816 column is `doc/w65c816s.md` Table 5-4 read against the original's
+/// own opcode table (`k65/src/asm.cpp:68-89`). Two of the five land on
+/// `STP` and `XCE` — an accidental processor stop and an accidental mode
+/// switch — which is the clearest statement of why the forms cannot simply
+/// be carried over.
+fn illegal_opcode_text(opcode: IllegalOpcode) -> (&'static str, &'static str, &'static str) {
+    match opcode {
+        IllegalOpcode::Anc => (
+            "a &. n",
+            "ANC",
+            "`PHD`, which pushes the direct-page register",
+        ),
+        IllegalOpcode::Sax => (
+            "mem = a & x",
+            "SAX",
+            "`STA` in its long, indirect-long and stack-relative forms",
+        ),
+        IllegalOpcode::Axs => (
+            "x &= a - n",
+            "AXS",
+            "`WAI`, which stops the processor until an interrupt",
+        ),
+        IllegalOpcode::Dcp => (
+            "a ?-- mem",
+            "DCP",
+            "`CMP` in its long, indirect-long and stack-relative forms — and \
+             `STP`, which stops the processor, for an `abs,y` operand",
+        ),
+        IllegalOpcode::Isc => (
+            "a -++ mem",
+            "ISC",
+            "`SBC` in its long, indirect-long and stack-relative forms — and \
+             `XCE`, which leaves native mode, for an `abs,y` operand",
+        ),
+    }
 }
 
 /// The source spelling of a reserved evaluator function.

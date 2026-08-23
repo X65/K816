@@ -1,0 +1,31 @@
+row       align-directive
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**`align N + M` lowers to `.align N` then `.res M`, and the section's label
+follows the pair.**
+
+Decision 15 says what `align N + M` means and `k65/align-and-address` is the
+original's answer proving it; this is K816's side of the same claim, asserted
+at the bytes.  It has to be a separate fixture because the oracle source
+carries no width annotations - the original had no width model - so K816
+cannot size its immediates and it can only compare diagnostics.
+
+Both readings the lowering has to get right are here:
+
+  - `table` is at `$2004`, not at a multiple of twenty.  Folding `16 + 4` into
+    `align 20` is what K816 did before sub-plan G, silently
+    (`postmortem.md` §G.1.9b).
+  - the label comes *after* `.res`, so it names the congruent address rather
+    than the boundary.  Emitting it first would put the section's name four
+    bytes before its bytes.
+
+K816 differs from the original in one way, and it is the backend's: `.res M`
+emits M filler bytes where the original left its linker a gap.  ld65 fills them
+with `$00` here because `atarixl.cfg` says `fillval = $00`.
+
+One thing this fixture found: `.align` inside a segment makes ld65 warn unless
+the segment itself declares at least that alignment, even when its start
+address already satisfies it.  `atarixl.cfg` says `align = $100` on `CODE` for
+that reason, and `doc/syntax-reference.md` says so where `align` is described.

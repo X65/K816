@@ -4290,8 +4290,8 @@ static const TSCharacterRange sym_branch_condition_character_set_1[] = {
 };
 
 static const TSCharacterRange aux_sym_register_token1_character_set_1[] = {
-  {'A', 'D'}, {'I', 'I'}, {'P', 'P'}, {'S', 'S'}, {'V', 'V'}, {'X', 'Y'}, {'a', 'd'}, {'f', 'f'},
-  {'i', 'i'}, {'p', 'p'}, {'s', 's'}, {'v', 'v'}, {'x', 'y'},
+  {'A', 'D'}, {'P', 'P'}, {'S', 'S'}, {'X', 'Y'}, {'a', 'd'}, {'f', 'f'}, {'p', 'p'}, {'s', 's'},
+  {'x', 'y'},
 };
 
 static bool ts_lex(TSLexer *lexer, TSStateId state) {
@@ -4333,20 +4333,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(73);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(210);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4452,20 +4452,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(3);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4500,20 +4500,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(4);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4548,20 +4548,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(4);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4596,20 +4596,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(6);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4644,20 +4644,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(6);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4692,20 +4692,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(8);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4740,20 +4740,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(8);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4784,20 +4784,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(10);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4825,7 +4825,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(11);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(176);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(176);
       END_STATE();
     case 12:
       if (lookahead == '!') ADVANCE(167);
@@ -4860,20 +4860,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(13);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -4908,20 +4908,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(13);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);
@@ -5044,7 +5044,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(19);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(216);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'Z') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'z')) ADVANCE(223);
@@ -5087,7 +5087,7 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
       if (lookahead == '{') ADVANCE(108);
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(23);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(176);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(176);
       END_STATE();
     case 24:
       if (lookahead == '*') ADVANCE(26);
@@ -5341,20 +5341,20 @@ static bool ts_lex(TSLexer *lexer, TSStateId state) {
         '}', 109,
         '~', 145,
         'C', 177,
-        'V', 177,
         'c', 177,
-        'v', 177,
-        'N', 222,
-        'O', 222,
-        'Z', 222,
-        'n', 222,
-        'o', 222,
-        'z', 222,
       );
       if (('\t' <= lookahead && lookahead <= '\r') ||
           lookahead == ' ') SKIP(73);
+      if (lookahead == 'N' ||
+          lookahead == 'O' ||
+          lookahead == 'V' ||
+          lookahead == 'Z' ||
+          lookahead == 'n' ||
+          lookahead == 'o' ||
+          lookahead == 'v' ||
+          lookahead == 'z') ADVANCE(222);
       if (('1' <= lookahead && lookahead <= '9')) ADVANCE(210);
-      if (set_contains(aux_sym_register_token1_character_set_1, 13, lookahead)) ADVANCE(178);
+      if (set_contains(aux_sym_register_token1_character_set_1, 9, lookahead)) ADVANCE(178);
       if (('E' <= lookahead && lookahead <= 'W') ||
           lookahead == '_' ||
           ('e' <= lookahead && lookahead <= 'w')) ADVANCE(223);

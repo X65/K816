@@ -525,3 +525,27 @@ data d {
       (data_value
         value: (eval_bracket
           (MISSING identifier))))))
+
+================================================================================
+The interrupt and overflow flags are not registers
+================================================================================
+
+main {
+  i+ d-
+  v-
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (return_statement))))

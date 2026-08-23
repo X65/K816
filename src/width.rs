@@ -935,7 +935,15 @@ impl Flattener<'_> {
                 }
             }
             StatementKind::Hla(hla) => self.hla(statement, hla),
-            StatementKind::Preprocessor(_) | StatementKind::Error => {
+            // A placement directive moves where the bytes land and touches
+            // no register; a reserved illegal-opcode form is refused before
+            // anything is emitted. Both fall through carrying the widths
+            // they were handed, like the two above them.
+            StatementKind::Align(_)
+            | StatementKind::Address(_)
+            | StatementKind::Reserved(_)
+            | StatementKind::Preprocessor(_)
+            | StatementKind::Error => {
                 self.push(id, span, Transfer::Identity, Control::fall_through());
             }
         }

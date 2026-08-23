@@ -1,0 +1,18 @@
+row       topelem-bank
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-K65-0003
+expect    input.k65 K816-K65-0003
+
+**`bank NAME` is refused, `bank default` with it, and the help names
+`segment`.**
+
+`K816-K65-0003` is a *removal*, not a reservation: the wording says so, and it
+carries the ld65 line to write instead.  An alias would have silently accepted
+a source whose memory map K816 does not reproduce, which decision 0 forbids -
+a K65 spelling never gets a K816 meaning.
+
+Two of them, because both spellings are refused.  If a later task decides to
+let `bank default` through, this fixture is where that shows up as a change
+rather than as a quiet difference.

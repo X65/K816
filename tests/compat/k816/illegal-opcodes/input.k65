@@ -1,0 +1,23 @@
+// Decision 12: the five HLA forms that spell undocumented 6502 opcodes are
+// recognized as named nodes and refused, and the help says what the 65816
+// does with the same bytes.
+//
+// Invented rather than measured, and deliberately so.  What the original
+// emitted for these is not evidence for anything K816 has to decide: K816
+// assembles the documented MOS 6502, WDC 65C02 and WDC 65C816 instruction
+// sets and nothing else (`doc/design.md` §1), so the argument is the
+// boundary, not a measurement.
+//
+// The 65816 column below is `doc/w65c816s.md` Table 5-4 read against the
+// original's own opcode table (`k65/src/asm.cpp:68-89`).
+
+var mem = 0x80
+
+main @a8 @i8 {
+  a &. #$0f        // ANC, $0B - PHD on the 65816
+  a ?-- mem        // DCP, $C7… - CMP long forms, and STP for abs,y
+  a -++ mem        // ISC, $E7… - SBC long forms, and XCE for abs,y
+  mem = a & x      // SAX, $87… - STA long forms
+  x &= a - #$03    // AXS, $CB - WAI
+  return
+}

@@ -6,4 +6,4 @@
 # compiler's, and `fixture.txt` says where the two differ and why.
 
 origin 2000
-2000  01 02 03 04 A9 01 8D 05 20 8D 02 20 8D 81 00 60
+2000  01 02 03 04 A9 01 8D 05 20 8D 02 20 85 81 60

@@ -65,14 +65,15 @@ impl DiagnosticCode {
     /// A bare `const` (or const-rooted expression) in address position.
     pub const CONST_IN_ADDRESS_POSITION: Self = Self("K816-E0110");
     /// A placement directive sits where it cannot take effect: a `segment`
-    /// that is not the first entry of its data block, or any of `segment` /
-    /// `align` / `address` / `nocross` inside a `repeat` body.
+    /// that is not the first entry of its data block, an `align` or
+    /// `address` that is not the first statement of its code section, or any
+    /// of `segment` / `align` / `address` / `nocross` inside a `repeat` body.
     ///
     /// One code because it is one complaint from where the author sits —
-    /// placement is a property of where the block's bytes land, and both
-    /// positions have no single answer to give: bytes are already placed
-    /// before the first, and a repetition would ask the second for one
-    /// answer per copy.
+    /// placement is a property of where the block's bytes land, and none of
+    /// the positions has an answer to give: bytes are already placed before
+    /// the first two, and a repetition would ask the third for one answer
+    /// per copy.
     pub const SEGMENT_PLACEMENT: Self = Self("K816-E0111");
     /// A `nocross`-guarded run exceeds 256 bytes.
     pub const NOCROSS_TOO_LARGE: Self = Self("K816-E0112");
@@ -208,6 +209,16 @@ impl DiagnosticCode {
     /// `REP` to make it true would be K816 deciding an ABI it does not own
     /// (`plans/09-entry-abi.md`).
     pub const ENTRY_ABI_MISMATCH: Self = Self("K816-E0143");
+    /// An `align` asks for a placement no address can satisfy: a boundary
+    /// that is not a power of two in `1..=65536`, or an offset that is not
+    /// less than the boundary.
+    ///
+    /// One code, because it is one complaint — the congruence class the
+    /// directive names is empty. Both halves are the original K65
+    /// compiler's own checks (`setalign`, `compiler_src.cpp:877`), adopted
+    /// so that `compatible` is a claim rather than a hope
+    /// (`plans/06-compatibility.md` decision 15).
+    pub const ALIGN_UNREACHABLE: Self = Self("K816-E0144");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -228,6 +239,21 @@ impl DiagnosticCode {
     /// Evaluator side-effect functions: `size`, `addbyte`, `color`, `rnd`,
     /// `print`, `error`.
     pub const K65_RESERVED_EVAL_FUNCTION: Self = Self("K816-K65-0002");
+    /// `bank NAME`. Removed rather than reserved: the bank-switching scheme
+    /// the original's linker implied is the ld65 configuration's, and
+    /// `segment NAME` is the spelling K816 has for it. An alias would
+    /// silently accept a source whose memory map K816 does not reproduce
+    /// (`plans/06-compatibility.md` decision 10).
+    pub const K65_REMOVED_BANK: Self = Self("K816-K65-0003");
+    /// The five HLA forms that spell undocumented 6502 opcodes: `a &. imm`,
+    /// `mem = a & x`, `x &= a - imm`, `a ?-- mem`, `a -++ mem`.
+    ///
+    /// Not "not implemented yet": K816 assembles the legal MOS 6502, WDC
+    /// 65C02 and WDC 65C816 instruction sets and nothing else
+    /// (`doc/design.md` §1), and every one of these encodings is a
+    /// *different*, documented 65816 instruction — two of them `STP` and
+    /// `XCE`. The help says which, and stops there.
+    pub const K65_UNSUPPORTED_ILLEGAL_OPCODE: Self = Self("K816-K65-0004");
 
     pub fn as_str(self) -> &'static str {
         self.0
@@ -436,8 +462,11 @@ mod tests {
         DiagnosticCode::ENTRY_ABI_MISMATCH,
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
+        DiagnosticCode::ALIGN_UNREACHABLE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+        DiagnosticCode::K65_REMOVED_BANK,
+        DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE,
     ];
 
     #[test]

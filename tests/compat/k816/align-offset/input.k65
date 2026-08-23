@@ -1,0 +1,26 @@
+// Decision 15's lowering, asserted at the bytes: `align N + M` is `.align N`
+// followed by `.res M`, and the section's label comes after the pair.
+//
+// The oracle fixture beside this one (`k65/align-and-address`) carries the
+// original's answer to what `align N + M` *means*.  It cannot carry this,
+// because its sections have no width annotation and K816 cannot size their
+// immediates; this source is invented, so it can say `@a8 @i8` and compile.
+//
+// `atarixl.cfg` starts the program at $2000.
+
+data table {
+  align 16 + 4
+  1 2 3
+}
+
+func aligned @a8 @i8 {
+  align 32 + 8
+  a = 1
+  return
+}
+
+main @a8 @i8 {
+  a = table
+  call aligned
+  return
+}

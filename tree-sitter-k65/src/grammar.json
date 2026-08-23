@@ -4163,22 +4163,6 @@
             {
               "type": "STRING",
               "value": "flag"
-            },
-            {
-              "type": "STRING",
-              "value": "i"
-            },
-            {
-              "type": "STRING",
-              "value": "I"
-            },
-            {
-              "type": "STRING",
-              "value": "v"
-            },
-            {
-              "type": "STRING",
-              "value": "V"
             }
           ]
         }

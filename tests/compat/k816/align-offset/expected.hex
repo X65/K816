@@ -1,0 +1,21 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# There is no oracle golden beside this one on purpose: the fixture is
+# invented, and what it asserts is K816's *lowering* of a meaning the oracle
+# already answered (`k65/align-and-address`).
+#
+# Read it as three placements:
+#
+#   $2000  .align $10 is already satisfied, .res $04 fills four bytes
+#   $2004  table - congruent to 4 modulo 16, and the label follows the pair
+#   $2007  three bytes of table, then .align $20 rounds to $2020
+#   $2028  aligned - congruent to 8 modulo 32, again after the .res
+#   $202B  main: lda $2004, jsr $2028, rts
+
+origin 2000
+2000  00 00 00 00 01 02 03 00 00 00 00 00 00 00 00 00
+2010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2020  00 00 00 00 00 00 00 00 A9 01 60 AD 04 20 20 28
+2030  20 60

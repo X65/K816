@@ -11,7 +11,7 @@
 # revision  920a4e40e853c4cb563302f3c88d81ba4687c4ed
 # command   cd $K65_HOME/workdir && ../out/k65.exe @<this-directory>/whole-program.k65proj
 # input     defs.k65         adler32 F7411CD9  848 bytes
-# input     main.k65         adler32 90C08485  1336 bytes
+# input     main.k65         adler32 C7928445  1334 bytes
 # input     oracle.conf      adler32 D3CD1034  56 bytes
 # input     sheet.bmp        adler32 31C26B83  1590 bytes
 # project

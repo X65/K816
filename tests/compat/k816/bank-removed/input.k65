@@ -1,0 +1,19 @@
+// Decision 10: `bank NAME` is removed, and every spelling of it is refused.
+//
+// Invented rather than measured.  What the original *did* with a bank is not
+// in question - it handed the name to its own linker - and K816 has no linker
+// to hand it to: ld65 owns the memory map, and `segment` is the spelling that
+// reaches it.  So there is nothing an oracle run could decide, and the claim
+// this fixture makes is about the refusal, not about bytes.
+
+bank core
+
+// `bank default` names the bank the original already compiled into, so it
+// moves no byte either way.  It is refused with the rest all the same:
+// carving a name out of the rule reopens the silent acceptance the refusal
+// was chosen over, and costs a second code and a second sentence.
+bank default
+
+main @a8 @i8 {
+  return
+}

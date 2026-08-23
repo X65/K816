@@ -9,7 +9,7 @@ const RAMP_LENGTH = 15
 // `sheet.bmp`, each byte gathered left to right and each tile's rows going up.
 data glyphs {
   align 256
-  image sheet 0 0 8 > 8 v
+  image sheet 0 0 8> 8v
   tiles 8 8 3
 }
 

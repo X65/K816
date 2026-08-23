@@ -112,9 +112,56 @@ pub fn k65_reserved(code: DiagnosticCode, span: Span, construct: &str) -> Diagno
     .with_docs("doc/k65-compat.md")
 }
 
+/// `bank NAME` is removed, and `segment NAME` is what replaced it.
+///
+/// A *removal* rather than a reservation, so the wording says so: nothing
+/// later in the plan brings `bank` back, and a message reading "not
+/// implemented yet" would promise otherwise. The one bank the original
+/// compiled into is named `default`, and it is refused with the rest — the
+/// declaration moves no byte either way, and carving a name out of the rule
+/// reopens the silent acceptance the refusal was chosen over
+/// (`plans/06-compatibility.md` decision 10).
+pub fn k65_removed_bank(span: Span, name: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::K65_REMOVED_BANK,
+        format!("K65 `bank {name}` is not a K816 declaration"),
+        Label::new(span, "K816 has no bank-switching model of its own"),
+    )
+    .with_note(
+        "the original's banks were its linker's; in K816 the memory map lives \
+         in the ld65 configuration",
+    )
+    .with_help(format!(
+        "write `segment {name}` and give `{name}` a `MEMORY`/`SEGMENTS` entry \
+         in your ld65 config"
+    ))
+    .with_docs("doc/k65-compat.md")
+}
+
+/// One of the five HLA forms whose bytes are undocumented 6502 opcodes.
+///
+/// `illegal` is the 6502 mnemonic the form is a spelling of; `native` says
+/// what the 65816 does with the same bytes. The help stops there on purpose:
+/// K816 assembles the documented instruction sets and nothing else
+/// (`doc/design.md` §1), and publishing a hand-rolled replacement sequence
+/// would be inviting back the thing that boundary excludes.
+pub fn k65_illegal_opcode(span: Span, form: &str, illegal: &str, native: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE,
+        format!("K65 `{form}` assembles the illegal 6502 opcode `{illegal}`"),
+        Label::new(span, "K816 does not assemble undocumented opcodes"),
+    )
+    .with_note(format!("on the 65816 those bytes are {native}"))
+    .with_help(
+        "K816 assembles the documented MOS 6502, WDC 65C02 and WDC 65C816 \
+         instruction sets only",
+    )
+    .with_docs("doc/k65-compat.md")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Owner, k65_reserved, unimplemented};
+    use super::{Owner, k65_illegal_opcode, k65_removed_bank, k65_reserved, unimplemented};
     use crate::diagnostic::DiagnosticCode;
     use crate::source::{FileId, SourceMap, Span};
 
@@ -132,6 +179,37 @@ mod tests {
             diagnostic.notes,
             ["implemented by sub-plan C (native translator)"]
         );
+    }
+
+    #[test]
+    fn bank_is_removed_rather_than_pending() {
+        let diagnostic = k65_removed_bank(span(), "core");
+        assert_eq!(diagnostic.code, DiagnosticCode::K65_REMOVED_BANK);
+        // The distinction the wording carries: `bank` is not coming back, so
+        // nothing here may read as a promise that it will.
+        assert!(!diagnostic.title.contains("yet"));
+        assert!(
+            diagnostic
+                .help
+                .is_some_and(|help| help.contains("segment core"))
+        );
+    }
+
+    #[test]
+    fn an_illegal_opcode_names_what_the_bytes_do_and_offers_nothing() {
+        let diagnostic = k65_illegal_opcode(span(), "a &. n", "ANC", "`PHD`");
+        assert_eq!(
+            diagnostic.code,
+            DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE
+        );
+        assert!(diagnostic.notes.iter().any(|note| note.contains("PHD")));
+        // No replacement sequence: the boundary is the answer, and a
+        // suggested substitute would be K816 spelling an illegal opcode for
+        // the author (`doc/design.md` §1). The help states the boundary and
+        // proposes nothing.
+        let help = diagnostic.help.expect("the boundary is stated");
+        assert!(help.contains("documented"));
+        assert!(!help.contains("instead") && !help.contains("write "));
     }
 
     #[test]

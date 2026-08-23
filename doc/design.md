@@ -22,6 +22,23 @@ It should not own:
 * a second build system
 * a generalized compile-time programming environment
 
+### The instruction set is the documented one
+
+K816 targets the **legal** MOS 6502, WDC 65C02 and WDC 65C816 instruction
+sets, and nothing else. Undocumented ("illegal") 6502 encodings are out of
+scope: K816 neither assembles them nor offers a way to spell one.
+
+This is a boundary rather than a gap, and it is worth stating because the
+original K65 crossed it. K65 has HLA spellings for five of them — `a&.imm`
+(ANC), `a?--mem` (DCP), `a-++mem` (ISC), `mem=a&x` (SAX), `x&=a-imm` (AXS) —
+and its `* N` cycle-wait spends an odd cycle through `$04`, a three-cycle
+`NOP zp` that does not exist in any published instruction set. Every one of
+those encodings is a *different, real* instruction on the 65816: `$04` is
+`TSB dp`, which reads and writes memory. So the forms cannot be carried over
+even in principle, and K816 recognizes each one and refuses it by name rather
+than quietly assembling something else. See
+[`k65-compat.md`](k65-compat.md).
+
 The pipeline becomes:
 
 ```mermaid

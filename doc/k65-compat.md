@@ -50,6 +50,36 @@ extensions, and that column existed only here.
 rather than a decision. The manifest spells that `open` and names the task that
 closes it, and no `open` row is allowed to survive the sub-plan.
 
+## Where the superset stops
+
+One rule above says "reserve every original K65 form" and another says
+"preserve even inconvenient quirks". Both have a floor, and it is the
+instruction set: K816 assembles the **legal** MOS 6502, WDC 65C02 and WDC
+65C816 instructions and nothing else ([`design.md`](design.md) §1). Where a
+K65 construct can only be expressed with an undocumented encoding, no amount
+of compatibility work reaches it — on the 65816 those bytes are a different,
+real instruction, so reproducing the K65 behaviour and reproducing the K65
+bytes are two incompatible goals and neither is the original's.
+
+Three constructs sit on that floor.
+
+* The five illegal-opcode HLA forms — `a&.imm` (ANC), `a?--mem` (DCP),
+  `a-++mem` (ISC), `mem=a&x` (SAX), `x&=a-imm` (AXS). Recognized as named
+  nodes and refused; the diagnostic says which 65816 instruction the encoding
+  would execute. It does **not** offer a replacement sequence: for two of the
+  five there is no clean one, and for the other three, publishing a
+  hand-rolled substitute for an encoding this project does not support is
+  inviting back what the boundary excludes.
+* `* N`, the cycle wait. The original spends an odd cycle through `$04`,
+  which is `TSB dp` on the 65816. K816 keeps its own documented meaning — N
+  `NOP`s — which is the one place a K65 spelling is given a K816 meaning, and
+  `--strict-k65` warns about it.
+* `%`, which the original also assembles as `$04` rather than `BRK`. Same
+  answer, same warning.
+
+These are `intentionally-changed` rows, not `compatible` ones, and the reason
+column is this section.
+
 This document is itself part of the authority chain now
 (`plans/implementation.md` §2, rule 4): it is the only one that says what
 compatibility *means*, and the manifest is its inventory rather than a rival to

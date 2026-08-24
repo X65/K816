@@ -360,6 +360,63 @@ fn a_placement_directive_wraps_the_section_it_opens() {
             .find(|text| !text.is_empty());
         assert_eq!(first, Some("align $08"), "`{section}` opens with its align");
     }
+
+    // The segment a placed section leaves is the one that was in force, not
+    // the unit's default: a `segment` before it is lexical state, and
+    // restoring `CODE` would move every section after it.
+    let custom = dump(
+        "segment CUSTOM\nfunc at @a8 @i8 {\n  address $2040\n  a = 1\n  return\n}\n\
+         func after @a8 @i8 {\n  a = 2\n  return\n}\n",
+    );
+    let segments: Vec<&str> = custom
+        .lines()
+        .filter_map(|line| line.split_once(';'))
+        .map(|(text, _)| text.trim())
+        .filter(|text| text.starts_with("segment"))
+        .collect();
+    assert_eq!(
+        segments,
+        vec![
+            "segment CUSTOM",
+            "segment K816_AT_2040__AT",
+            "segment CUSTOM"
+        ]
+    );
+}
+
+/// Decision 17's rule asks for the *base symbol's* address size, and which
+/// symbol that is depends on scope: an `inline` alias shadows a unit-level
+/// name of the same spelling, and stands for whatever the use site bound it
+/// to.
+///
+/// Both halves are wrong bytes rather than a diagnostic, because
+/// `known_address` has no answer for arithmetic, so the range check that
+/// catches a bare `dp $0400` never sees the offset form.
+#[test]
+fn an_offset_takes_its_address_size_from_the_symbol_in_scope() {
+    // The alias shadows a direct-page global of the same name and is bound
+    // to an absolute variable. The store must be absolute.
+    let shadowed = dump(
+        "var dp target = $80\nvar abs other = $0400\n\
+         inline store_to @a8 (a, target) -> a {\n  target+1 = a\n}\n\
+         func place @a8 @i8 {\n  store_to a, #other -> a\n  return\n}\n",
+    );
+    assert!(
+        shadowed.contains("sta abs (other + $01)"),
+        "the alias, not the global it shadows, decides the encoding:\n{shadowed}"
+    );
+
+    // And with nothing shadowing it, the alias still has to be followed:
+    // bound to a direct-page variable, the store narrows.
+    let narrowed = dump(
+        "var dp cursor = $10\n\
+         inline store_to @a8 (a, slot) -> a {\n  slot+1 = a\n}\n\
+         func place @a8 @i8 {\n  store_to a, #cursor -> a\n  return\n}\n",
+    );
+    assert!(
+        narrowed.contains("sta dp (cursor + $01)"),
+        "an alias bound to a direct-page variable narrows the offset too:\n{narrowed}"
+    );
 }
 
 #[test]

@@ -129,7 +129,10 @@ pub fn lower_unit(
     let mut direct_page: Vec<(&Reservation, Span)> = Vec::new();
     // Unit-level operations and functions interleave in source order,
     // because a `segment` selection is lexical state: which segment a
-    // function lands in is decided by what precedes it in the file.
+    // function lands in is decided by what precedes it in the file. Tracked
+    // here for the same reason: a section placed by `address` has to go back
+    // to the segment that was in force, not to the unit's default.
+    let mut segment = SegmentName::new(resolve::OUTER_SEGMENT);
     for (index, item) in file.items.iter().enumerate() {
         // An allocated variable is a label and a `.res`, in the segment the
         // items before it selected. A pinned one has no entry here: it is an
@@ -145,9 +148,10 @@ pub fn lower_unit(
             continue;
         }
         if let ItemKind::Segment(name) = &item.kind {
+            segment = SegmentName::new(&name.text);
             program.push_op(KOp::new(
                 KOpKind::Segment {
-                    name: SegmentName::new(&name.text),
+                    name: segment.clone(),
                     addressing: None,
                 },
                 item.span,
@@ -220,7 +224,7 @@ pub fn lower_unit(
             lowering.implicit_return(func.body.span);
         }
         if placement.restores_segment {
-            lowering.restore_segment(func.body.span);
+            lowering.restore_segment(&segment, func.body.span);
         }
         lowering.relax_branches();
         lowering.finish_nocross();
@@ -2121,11 +2125,15 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Restores the unit's default segment after a placed section.
-    fn restore_segment(&mut self, span: Span) {
+    /// Restores the segment that was in force before a placed section.
+    ///
+    /// The unit's default is only right when nothing selected another one: a
+    /// `segment CUSTOM` before the placed section is lexical state, and
+    /// restoring `CODE` would move every section after it.
+    fn restore_segment(&mut self, segment: &SegmentName, span: Span) {
         self.push(
             KOpKind::Segment {
-                name: SegmentName::new(resolve::OUTER_SEGMENT),
+                name: segment.clone(),
                 addressing: None,
             },
             span,

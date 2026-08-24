@@ -421,9 +421,15 @@ const FAMILY: &[Case] = &[
         caret: "&.",
     },
     // A placement directive that is not the section's first statement is the
-    // same complaint a misplaced `segment` gets.
+    // same complaint a misplaced `segment` gets — and an `inline` is not a
+    // section at all, so its body cannot carry one anywhere.
     Case {
         source: "func f @a8 @i8 {\n    nop\n    align 16\n}\n",
+        code: DiagnosticCode::SEGMENT_PLACEMENT,
+        caret: "align 16",
+    },
+    Case {
+        source: "inline f @a8 @i8 {\n    align 16\n    nop\n}\n",
         code: DiagnosticCode::SEGMENT_PLACEMENT,
         caret: "align 16",
     },

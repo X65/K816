@@ -254,25 +254,19 @@ fn base_name(expr: &Expr) -> Option<&Name> {
 /// One side of the `+` must be rooted in a name and the other must not, so
 /// that nothing here has to choose between two symbols. `-` takes its base
 /// from the left only: `4 - slot` is not an offset from `slot`.
-fn offset_base_name(expr: &Expr) -> Option<&Name> {
-    if let Some(name) = base_name(expr) {
-        return Some(name);
-    }
+fn offset_base(expr: &Expr) -> Option<&Expr> {
     let ExprKind::Binary(binary) = &expr.kind else {
         return None;
     };
+    let rooted = |side: &Expr| base_name(side).is_some() || offset_base(side).is_some();
     match binary.op {
-        crate::ast::BinaryOp::Add => {
-            match (
-                offset_base_name(&binary.left),
-                offset_base_name(&binary.right),
-            ) {
-                (Some(name), None) | (None, Some(name)) => Some(name),
-                _ => None,
-            }
-        }
+        crate::ast::BinaryOp::Add => match (rooted(&binary.left), rooted(&binary.right)) {
+            (true, false) => Some(&binary.left),
+            (false, true) => Some(&binary.right),
+            _ => None,
+        },
         crate::ast::BinaryOp::Sub => {
-            offset_base_name(&binary.left).filter(|_| offset_base_name(&binary.right).is_none())
+            (rooted(&binary.left) && !rooted(&binary.right)).then_some(&*binary.left)
         }
         _ => None,
     }
@@ -1112,6 +1106,19 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The symbol a plain name denotes here, in scope and without reporting.
+    ///
+    /// The same order [`Self::resolve`] uses — the enclosing section's scope
+    /// first, so an `inline` alias is found before a unit-level name it
+    /// shadows — but silent, and with no `referenced` entry: a probe must
+    /// not report a name the real fold is about to report, nor make a symbol
+    /// look used because something asked how wide it is.
+    fn scoped_symbol(&self, name: &str) -> Option<SymbolId> {
+        self.function
+            .and_then(|owner| self.symbols.lookup_local(owner, name))
+            .or_else(|| self.symbols.lookup(name))
+    }
+
     /// Resolves a plain name, reporting it when nothing declares it.
     ///
     /// The enclosing section's own scope is tried first, because an `inline`
@@ -1743,14 +1750,30 @@ impl<'a> Resolver<'a> {
     /// variable, any expression over one — is placed by ld65, so K816 cannot
     /// prove page-zero fit and must not narrow.
     fn preferred_size(&mut self, value: &Expr) -> AddressSize {
+        // An offset from a name rides along: `slot+1` is one byte past
+        // `slot`, so it is in the same page and takes the same encoding
+        // (decision 17). Asked of the *base*, recursively, so that the base
+        // gets the whole of this answer — the scoped lookup below, and the
+        // fold that substitutes an `inline` alias.
+        if let Some(base) = offset_base(value) {
+            return self.preferred_size(base);
+        }
         // Through a subscript and a typed view too: `COMP[2]` and `x:byte`
         // are the declaration's storage seen from a use site, so the
         // encoding is the declaration's as much as a bare name's is.
-        // An offset from a name rides along: `slot+1` is one byte past
-        // `slot`, so it is in the same page and takes the same encoding
-        // (decision 17).
-        if let Some(name) = offset_base_name(value)
-            && let Some(id) = self.symbols.lookup(&name.text)
+        //
+        // The lookup is *scoped*, and an alias is skipped rather than
+        // answered here: an alias's own `address_size` is the declaration's
+        // shape (absolute, so the body classifies once), while the encoding
+        // a use site needs is the one its binding has. Both belong to the
+        // fold below, which substitutes it. Resolving unscoped instead would
+        // let a unit-level name of the same spelling answer for the alias
+        // that shadows it, and for an offset expression nothing downstream
+        // catches that — `known_address` has no answer for arithmetic, so
+        // `check_fits` never sees it and the wrong encoding is emitted.
+        if let Some(name) = base_name(value)
+            && let Some(id) = self.scoped_symbol(&name.text)
+            && !matches!(self.symbols.kind(id), SymbolKind::Alias { .. })
             && let Some(size) = self.symbols.kind(id).address_size()
         {
             return size;

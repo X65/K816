@@ -1351,7 +1351,12 @@ impl Analysis {
                 continue;
             };
             self.current_function = Some(function.symbol);
-            self.check_block_at(WidthScope::Function(function.symbol), &func.body, true);
+            // An `inline` is not a section: it has no address, and its body
+            // is copied into each use site, so there is nothing for a
+            // placement directive to place. Every other section kind — the
+            // three the original's `Align` slot sits in — takes one.
+            let placeable = func.kind != FunctionKind::Inline;
+            self.check_block_at(WidthScope::Function(function.symbol), &func.body, placeable);
             self.current_function = None;
         }
     }
@@ -1439,8 +1444,13 @@ impl Analysis {
                 StatementKind::Align(_) | StatementKind::Address(_)
             ) && !(is_section_body && index == 0)
             {
+                let in_inline = matches!(
+                    self.current_function
+                        .map(|owner| self.model.symbols.kind(owner)),
+                    Some(SymbolKind::Inline)
+                );
                 self.diagnostics
-                    .push(placement_not_at_section_head(statement));
+                    .push(placement_not_at_section_head(statement, in_inline));
             }
             let widths = self.widths_at(scope, statement);
             self.check_statement(statement, widths);
@@ -2555,11 +2565,24 @@ fn first_non_offset(expr: &Expr) -> Option<Span> {
 /// It is the same complaint `segment` gets in a data block — placement is a
 /// property of where the section's bytes land, and there is no answer to give
 /// once bytes are already placed before it.
-fn placement_not_at_section_head(statement: &Statement) -> Diagnostic {
+fn placement_not_at_section_head(statement: &Statement, in_inline: bool) -> Diagnostic {
     let keyword = match statement.kind {
         StatementKind::Align(_) => "align",
         _ => "address",
     };
+    if in_inline {
+        return Diagnostic::error(
+            DiagnosticCode::SEGMENT_PLACEMENT,
+            format!("an `inline` cannot carry an `{keyword}` directive"),
+            Label::new(statement.span, "an `inline` has no address to place"),
+        )
+        .with_note(
+            "an `inline` body is copied into each use site rather than \
+             placed, so there is no section here for a directive to move",
+        )
+        .with_help("make it a `func`, or place the section the body expands into")
+        .with_docs("doc/syntax-reference.md#placement-directives");
+    }
     Diagnostic::error(
         DiagnosticCode::SEGMENT_PLACEMENT,
         format!("an `{keyword}` directive must be the first statement of its code section"),

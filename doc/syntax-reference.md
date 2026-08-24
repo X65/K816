@@ -930,6 +930,14 @@ the compiler reports `K816-E0111` naming the rule. Data blocks are the
 exception — a directive may sit between entries there, and applies from that
 point on.
 
+An `inline` may not carry one at all. It has no address of its own and its
+body is copied into each use site, so there is no section for a directive to
+move; place the section the body expands into instead.
+
+An `address` on a code section puts it in a segment of its own and restores
+whatever segment was in force afterwards, so the placement is that section's
+and not every section's after it.
+
 ### Raw Bytes and Strings
 
 ```k65

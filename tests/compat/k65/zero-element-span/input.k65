@@ -1,0 +1,21 @@
+// Oracle question: does `var X[0]` declare anything?
+//
+// `BracketNumber -> [ EvalCode ]` (compiler.inc:330) is the *evaluator*, not
+// a numeric terminal, so the bracket holds whatever `doeval` folds it to -
+// and nothing in the original checks the result.  Zero is a value like any
+// other there.
+//
+// K816 refuses a count below one (`K816-E0141`), a rule sub-plan E wrote for
+// the `* count` allocation form and which the raw span shares.  Whether that
+// is a narrowing, and of what, is what this fixture pins.
+//
+// `next` is what answers: it is the first allocated name after the bracket,
+// so where it lands says how many bytes `[0]` took.
+
+var z0[0]
+var next
+
+main {
+  a = next
+  return
+}

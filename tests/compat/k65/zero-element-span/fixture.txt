@@ -1,0 +1,28 @@
+row       var-declaration
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0141
+
+**`var X[0]` compiles in the original and reserves nothing; K816 refuses it.**
+
+The golden is `A5 00` - `next`, the name after the bracket, at `$00`.  So
+`z0[0]` took no bytes and the allocator carried straight on.  Nothing in the
+original checks the count: `BracketNumber -> [ EvalCode ]`
+(`compiler.inc:330`) is the *evaluator*, so the bracket is whatever `doeval`
+folds, and zero is a value like any other there.
+
+K816 reports `K816-E0141`.  This is a **narrowing**, recorded rather than
+reversed, and the reason is that the rule is not the raw span's own: sub-plan
+E wrote "an element count must be at least 1" for the `* count` allocation
+form, where a zero count is a declaration that allocates nothing under a name
+something is about to index.  The raw span shares the code and the complaint.
+
+Reversing it would buy a construct no attested source writes - a name declared
+to hold nothing - at the cost of weakening a check that catches a real mistake
+in the form beside it.  If a legacy source ever turns up that writes `[0]`,
+this fixture is where the argument gets re-opened, with the golden already
+here.
+
+The other half of the same measurement is in `array-declarations` beside this:
+what a *non-zero* bracket counts, which is bytes.

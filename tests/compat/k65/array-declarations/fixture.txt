@@ -1,0 +1,36 @@
+row       var-declaration
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**The bracket in `var X[N]` counts bytes, and an addressed bracket
+declaration moves the allocator past itself.**
+
+Read the golden by where the names land.  `lead` is pinned at `$80`, so the
+original's allocator places what follows it consecutively:
+
+    A5 80    lda lead            $80
+    B5 81    lda span,X          $81   <- the bracket starts here
+    95 81    sta span,X
+    A5 85    lda trail           $85   <- so `span[4]` took $81..$84
+    B5 90    lda placed,X        $90   <- its own address
+    A5 93    lda after_placed    $93   <- so `placed[3]` took $90..$92
+
+Four bytes for `[4]` and three for `[3]`: **one unit is one byte**, which no
+document of either compiler says.  And the allocator followed `placed[3] =
+0x90` rather than carrying on from `$85`, so an addressed declaration moves
+the allocation point.
+
+K816 reserves the same sizes - `.res $04` and one byte each for `trail` and
+`after_placed` - which is the `compatible` half of this row, and the two
+pinned variables encode identically (`A5 80`, `B5 90`).
+
+What differs is placement, and it is not this compiler's to decide: K816 has
+no allocator.  An unaddressed variable is a `.res` in a segment and ld65
+chooses the address, so `span`, `trail` and `after_placed` are absolute here
+where the original put them in zero page, and `after_placed` does not follow
+`placed`.  That is `backend-different` by construction, and the same reason
+`doc/syntax-reference.md` gives for excluding allocated variables from
+auto-shrink: at compile time their address is not known, and guessing one is
+the miscompilation the rule exists to prevent.  A source that needs the
+original's placement writes the address, as `lead` and `placed` do.

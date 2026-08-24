@@ -1,0 +1,26 @@
+row       k816-zero-store-target
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0127
+
+**A number cannot be a store target, and the original does not say so - it
+aborts.**
+
+`Arg -> Number` is `arg(AM_IMM, $1)` (`compiler.inc:269`): a bare number in
+operand position is an *immediate*, not an address.  So `0x10 = 0` reaches
+`opmovseq` with an immediate on the left, and the compiler dies inside its own
+error path - `oracle.err` records exit 134 with **no diagnostic at all**, the
+heap corruption its C++ unwind leaves behind.
+
+That settles what decision 25 left as an assumption.  K816 refuses the same
+shape with `K816-E0127`, on the documented rule that a zero-store target must
+be a name, and the refusal is not a narrowing of anything: the original has no
+program here to be compatible with.  The row stays `K816-extension` because
+the construct being classified is the *whole* zero-store family - `NAME = 0`
+lowering to `STZ` - and the 6502 the original targets has no `STZ` at all.
+
+`var slot = 0x10` is in the source and unused on purpose: it is the name the
+help asks for, sitting at the address the refused line wrote as a number, so
+the fixture also shows that the refusal is about the spelling and not about
+the address.

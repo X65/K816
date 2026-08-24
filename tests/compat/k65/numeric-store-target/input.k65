@@ -1,0 +1,18 @@
+// Oracle question: can a *number* be a store target?
+//
+// `Arg -> Number` is `arg(AM_IMM, $1)` in the original grammar
+// (compiler.inc:269) - a bare number in operand position is an **immediate**,
+// not an address - and an assignment is `MovSeq -> Arg = Arg`
+// (compiler.inc:190).  So `0x10 = 0` parses, with an immediate on the left,
+// and what the compiler does with that is what this fixture asks.
+//
+// K816 refuses the same shape with `K816-E0127`, on the documented rule that
+// the zero-store target must be a name (`postmortem.md` §E.3.3, decision 25).
+// Whether that refusal is a narrowing or agreement is the question.
+
+var slot = 0x10
+
+main {
+  0x10 = 0
+  return
+}

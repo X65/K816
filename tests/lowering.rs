@@ -419,6 +419,43 @@ fn an_offset_takes_its_address_size_from_the_symbol_in_scope() {
     );
 }
 
+/// An immediate argument at a call site is an expression like any other, and
+/// an evaluator bracket is one of the things it may be.
+///
+/// This is the failure mode a diagnostic cannot catch: an argument the
+/// evaluator never ran folds to nothing, expansion has nothing to bind the
+/// alias to, and the body is emitted with the alias *name* in it. K816 exits
+/// zero and ca65 rejects an undefined symbol — so the assertion is on the
+/// substituted operand, not on the absence of complaints.
+#[test]
+fn an_immediate_argument_may_be_an_evaluator_bracket() {
+    let bracket = dump(
+        "inline scale @a8 (a, #factor) -> a {\n  lda #factor\n}\n\
+         func place @a8 @i8 {\n  scale a, #[2 + 2] -> a\n  return\n}\n",
+    );
+    assert!(
+        bracket.contains("lda #$04"),
+        "the bracket has to be evaluated before the alias can be bound:\n{bracket}"
+    );
+    assert!(
+        !bracket.contains("#factor"),
+        "an unbound alias reaches ca65 as an undefined symbol:\n{bracket}"
+    );
+
+    // The two spellings that already worked, so a future change cannot fix
+    // one of the three by breaking the others.
+    for argument in ["#4", "#SIZE"] {
+        let program = dump(&format!(
+            "const SIZE = 4\ninline scale @a8 (a, #factor) -> a {{\n  lda #factor\n}}\n\
+             func place @a8 @i8 {{\n  scale a, {argument} -> a\n  return\n}}\n",
+        ));
+        assert!(
+            program.contains("lda #$04"),
+            "`{argument}` should substitute:\n{program}"
+        );
+    }
+}
+
 #[test]
 fn a_native_only_function_lowers_without_any_hla_statement() {
     let program = lower_program(

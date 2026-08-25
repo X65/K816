@@ -1272,7 +1272,7 @@ data FourFiveSix {
 }
 ```
 
-Top-level evaluator blocks execute in source order. A name assigned in one block is available to later code — as an evaluator value *and* as a compiler constant K65 syntax can read — but assigning that same name again in a different block is rejected (`K816-E0149`). Within one block a name may be assigned as often as it likes, which is what makes a counted loop expressible:
+Top-level evaluator blocks execute in source order, and so does every other bracket: a `const` group's entries are a sequence, so `const A = 3, B = [A + 1]` reads `A`. A name assigned in one block is available to later code — as an evaluator value *and* as a compiler constant K65 syntax can read — but assigning that same name again in a different block is rejected (`K816-E0149`). Within one block a name may be assigned as often as it likes, which is what makes a counted loop expressible:
 
 ```k65
 [ n = 0  while n < 5 { n = n + 1 } ]
@@ -1307,9 +1307,13 @@ evalfunc dbl(q) [ q * 2 ]
 evalfunc lerp(a, b, t) { a + (b - a) * t }
 ```
 
-A function is identified by its **name and argument count** together, so `f(a)` and `f(a, b)` are two functions; redeclaring either, or shadowing a library function at the same count, is an error. A call must appear below the definition, as everything else in source order must.
+A function is identified by its **name and argument count** together, so `f(a)` and `f(a, b)` are two functions; redeclaring either, or shadowing a library function at the same count, is an error. Every name in the library is protected, including `index` and `size`, which are not implemented yet.
 
-Recursion works, and is bounded by a call-depth limit (`K816-E0147`). The original's `evalfunc` has no frame — its parameters are slots allocated once — so a recursive one there returns a different function's answer or ends the build; no working K65 program contains one.
+A body's **calls are resolved where the body is written**, so a function it uses must be declared above it, and the error lands on the definition rather than on a call site. Its **names** are not: those resolve when the function runs.
+
+A parameter is visible inside the function that declares it and nowhere else. A callee does not see its caller's parameters — there is no scope chain — but global evaluator names and `const`s are visible everywhere.
+
+Recursion works, and is bounded by a call-depth limit (`K816-E0147`) separate from the step budget. The original's `evalfunc` has no frame — its parameters are slots allocated once — so a recursive one there returns a different function's answer or ends the build; no working K65 program contains one.
 
 ### Operators
 
@@ -1338,6 +1342,7 @@ Four notes on what these compute, each of which differs from what the table alon
 - **`%` is a non-negative modulo** — `fmod(fmod(a, b) + b, b)` — so `(0 - 7) % 3` is `2`, not `-1`.
 - **`/` is float division.** `[7 / 2]` is `3.5`, which becomes `4` at an integer boundary.
 - **`&&` and `\|\|` do not short-circuit.** Both operands are evaluated, and so are all three arms of `?:`.
+- **`x op= e` reads `x` before it evaluates `e`.** It expands to `x op e` in that order, so `[X = 1, X += (X = 5), X]` is `6`.
 - **The bitwise operators and the shifts truncate their operands toward zero**, which is *not* the rounding an integer boundary does: `[(0 - 2.7) \| 0]` is `-2` while `[0 - 2.7]` in a data entry is `-3`.
 
 `\|\|` is a K816 extension: the original spells both logical operators `&&`, so a source containing `\|\|` does not compile there.

@@ -878,6 +878,52 @@ impl Analysis {
                 .with_secondary(Label::new(first, "first declared here"))
                 .with_docs("doc/syntax-reference.md#functions"),
             );
+            return;
+        }
+        self.check_eval_body(&function.body);
+    }
+
+    /// Checks an `evalfunc` body where it is *written*, not where it runs.
+    ///
+    /// Two things are decided at a body's definition rather than at its call
+    /// sites, and both follow from the original compiling the body on the
+    /// spot (`Eval_Precompile`):
+    ///
+    /// - a call resolves against the functions declared **so far**, so a
+    ///   function used above its definition does not resolve there and does
+    ///   not resolve here;
+    /// - a reserved function inside it is reserved whether or not any call
+    ///   ever reaches it.
+    ///
+    /// Both used to be missed for the same reason: an `evalfunc` body is the
+    /// one evaluator tree nothing evaluates where it stands, so a check that
+    /// only ran during evaluation never saw it. `evalfunc hidden() [ rnd() ]`
+    /// compiled clean and emitted no byte.
+    fn check_eval_body(&mut self, body: &crate::ast::EvalExpr) {
+        self.report_reserved_in_eval(body);
+        let mut calls = Vec::new();
+        eval::calls_in(body, &mut calls);
+        for (name, arity) in calls {
+            if self.model.eval.functions().resolves(&name.text, arity) {
+                continue;
+            }
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::UNDECLARED_SYMBOL,
+                    format!(
+                        "no evaluator function `{}` takes {arity} argument{} here",
+                        name.text,
+                        if arity == 1 { "" } else { "s" }
+                    ),
+                    Label::new(name.span, "not declared above this body"),
+                )
+                .with_note(
+                    "an `evalfunc` body resolves its calls where it is written, so a \
+                     function it uses has to be declared above it — and the argument \
+                     count is part of what it names",
+                )
+                .with_docs("doc/syntax-reference.md#evalfunc"),
+            );
         }
     }
 
@@ -2374,6 +2420,19 @@ impl Analysis {
         // is broken, and guessing a successor would invent a value.
         let mut next = Some(0u32);
         for entry in &declaration.entries {
+            // Per entry, and before this entry's own value folds: a group is
+            // shorthand for consecutive declarations, so `const A = 3, B =
+            // [A + 1]` has to see `A` — which it cannot if every bracket in
+            // the item ran before the item was processed.
+            if let Some(expression) = &entry.value {
+                let mut sites = Vec::new();
+                eval::sites_of_expr(expression, &mut sites);
+                for site in sites {
+                    if let eval::Site::Bracket(body) = site {
+                        self.run_bracket(body);
+                    }
+                }
+            }
             let value = match &entry.value {
                 Some(expression) => self.constant(expression, "`const` values"),
                 None if standalone => {

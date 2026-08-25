@@ -1569,7 +1569,21 @@ impl AstBuilder<'_> {
                     || text.starts_with("0B");
                 match parse_number(text) {
                     Some(value) => EvalExprKind::Number { value, exact },
-                    None => EvalExprKind::Error,
+                    // The same complaint the K65 expression layer makes about
+                    // the same literal. An `Error` node with nothing said is
+                    // how `data d { [4294967296] }` used to compile to an
+                    // empty block and exit zero.
+                    None => {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticCode::NUMBER_RANGE,
+                                format!("numeric literal `{text}` is out of range"),
+                                Label::new(span, "does not fit in 32 bits"),
+                            )
+                            .with_help("K816 numeric literals must fit in 32 bits"),
+                        );
+                        EvalExprKind::Error
+                    }
                 }
             }
             "float" => EvalExprKind::Float(self.text(node).to_owned()),

@@ -287,16 +287,34 @@ impl Functions {
     fn lookup(&self, name: &str, arity: usize) -> Option<&UserFunction> {
         self.defined.get(&(name.to_owned(), arity))
     }
+
+    /// True when this name and count resolve to something callable.
+    pub fn resolves(&self, name: &str, arity: usize) -> bool {
+        Self::is_builtin(name, arity) || self.lookup(name, arity).is_some()
+    }
 }
 
 /// The argument counts the library answers to for `name`.
+///
+/// **Every** name in the original's opcode table (`compiler_evops.inl`), not
+/// only the ones K816 evaluates. A user function that takes a library name
+/// and count is refused there — "already predefined in the system" — and a
+/// table that listed only the implemented half would let
+/// `evalfunc index(sec, pos)` quietly replace a form G6 is going to provide.
 fn builtin_arities(name: &str) -> &'static [usize] {
     match name {
-        "floor" | "ceil" | "round" | "frac" | "sin" | "cos" | "sqrt" | "acos" | "asin" | "abs" => {
-            &[1]
-        }
-        "max" | "min" | "pow" => &[2],
+        "floor" | "ceil" | "round" | "frac" | "sin" | "cos" | "sqrt" | "acos" | "asin" | "size"
+        | "print" | "error" => &[1],
+        "max" | "min" | "pow" | "addbyte" => &[2],
         "clamp" => &[3],
+        // Two arities each, both in the original's table.
+        "color" => &[1, 3],
+        "index" => &[2, 3],
+        "rnd" => &[0],
+        // K816's own, and shadowing it is refused for the same reason: a
+        // program that redefines it means something different under
+        // `--strict-k65`, where it does not exist at all.
+        "abs" => &[1],
         _ => &[],
     }
 }
@@ -588,10 +606,13 @@ impl<'a> Interpreter<'a> {
     // -- names ------------------------------------------------------------
 
     fn read(&mut self, name: &Name) -> Result<Value, Error> {
-        for frame in self.frames.iter().rev() {
-            if let Some(value) = frame.get(&name.text) {
-                return Ok(value.clone());
-            }
+        // The innermost frame only. Walking outwards would make a caller's
+        // parameters visible to a callee that never declared them — dynamic
+        // scope, which neither compiler has: the original gives each
+        // function's parameters slots of its own, so a name it did not
+        // declare resolves against the globals or not at all.
+        if let Some(value) = self.frames.last().and_then(|frame| frame.get(&name.text)) {
+            return Ok(value.clone());
         }
         if let Some(value) = self.env.get(&name.text) {
             return Ok(value.clone());
@@ -619,11 +640,14 @@ impl<'a> Interpreter<'a> {
 
     /// Writes `value` to `name`, enforcing who owns the name.
     fn assign(&mut self, span: Span, name: &Name, value: Value) -> Result<Value, Error> {
-        for frame in self.frames.iter_mut().rev() {
-            if let Some(slot) = frame.get_mut(&name.text) {
-                *slot = value.clone();
-                return Ok(value);
-            }
+        // The innermost frame only; see `read`.
+        if let Some(slot) = self
+            .frames
+            .last_mut()
+            .and_then(|frame| frame.get_mut(&name.text))
+        {
+            *slot = value.clone();
+            return Ok(value);
         }
         if let Some(binding) = self.env.values.get_mut(&name.text) {
             // Write-once outside the block that introduced the name.
@@ -814,13 +838,16 @@ impl<'a> Interpreter<'a> {
         value: &EvalExpr,
     ) -> Result<Value, Error> {
         let name = self.target(target)?.clone();
-        let value = self.run(value)?;
         let value = match operator {
-            "=" => value,
-            // `x op= e` is `x op e` assigned back, which is exactly how the
-            // original expands it (`compiler.inc:376-385`).
+            "=" => self.run(value)?,
+            // `x op= e` is `x op e` assigned back, and the *order* is part of
+            // that: the original emits `@?x`, the right-hand side, and then
+            // the operator (`compiler.inc:376-385`), so `x` is read before
+            // `e` runs. It matters whenever `e` assigns to `x` itself —
+            // `[ X = 1, X += (X = 5), X ]` is 6 there and was 10 here.
             _ => {
                 let current = self.read(&name)?;
+                let value = self.run(value)?;
                 let operator = operator.strip_suffix('=').unwrap_or(operator);
                 self.binary(span, operator, current, value)?
             }
@@ -995,6 +1022,96 @@ pub enum Site<'a> {
     Loop { span: Span, body: &'a EvalExpr },
 }
 
+/// Every function call inside `expr`, as `(name, argument count)`.
+///
+/// The original resolves a call when it *compiles* the body — `Eval_Precompile`
+/// turns a call into an opcode index there and then — so a function used above
+/// its definition does not resolve, and the complaint lands on the definition
+/// that used it rather than on the call site that ran. K816 reports the same
+/// thing in the same place, which is what this is for.
+pub fn calls_in(expr: &EvalExpr, out: &mut Vec<(Name, usize)>) {
+    match &expr.kind {
+        EvalExprKind::Call { name, arguments } => {
+            out.push((name.clone(), arguments.len()));
+            for argument in arguments {
+                calls_in(argument, out);
+            }
+        }
+        // `x.f` is `f(x)` and `x.f(a)` is `f(x, a)`, so the count includes
+        // the base — the same arithmetic the interpreter does.
+        EvalExprKind::Member { base, field } => {
+            out.push((field.clone(), 1));
+            calls_in(base, out);
+        }
+        EvalExprKind::MethodCall {
+            base,
+            method,
+            arguments,
+        } => {
+            out.push((method.clone(), arguments.len() + 1));
+            calls_in(base, out);
+            for argument in arguments {
+                calls_in(argument, out);
+            }
+        }
+        EvalExprKind::ReservedCall(call) => {
+            for argument in &call.arguments {
+                calls_in(argument, out);
+            }
+        }
+        EvalExprKind::Unary { operand, .. } => calls_in(operand, out),
+        EvalExprKind::Binary { left, right, .. } => {
+            calls_in(left, out);
+            calls_in(right, out);
+        }
+        EvalExprKind::Ternary {
+            condition,
+            consequence,
+            alternative,
+        } => {
+            calls_in(condition, out);
+            calls_in(consequence, out);
+            calls_in(alternative, out);
+        }
+        EvalExprKind::Assignment { target, value, .. } => {
+            calls_in(target, out);
+            calls_in(value, out);
+        }
+        EvalExprKind::Subscript { base, indices } => {
+            calls_in(base, out);
+            for index in indices {
+                calls_in(index, out);
+            }
+        }
+        EvalExprKind::List(items) | EvalExprKind::Block(items) => {
+            for item in items {
+                calls_in(item, out);
+            }
+        }
+        EvalExprKind::If {
+            condition,
+            consequence,
+            alternative,
+        } => {
+            calls_in(condition, out);
+            calls_in(consequence, out);
+            if let Some(alternative) = alternative {
+                calls_in(alternative, out);
+            }
+        }
+        EvalExprKind::While { condition, body } => {
+            calls_in(condition, out);
+            calls_in(body, out);
+        }
+        EvalExprKind::Number { .. }
+        | EvalExprKind::Float(_)
+        | EvalExprKind::String(_)
+        | EvalExprKind::Symbol(_)
+        | EvalExprKind::Pi
+        | EvalExprKind::Error => {}
+    }
+}
+
 /// True when the parser had to recover somewhere inside this expression.
 ///
 /// A recovered tree is not the program: `[( unbalanced]` reaches the builder
@@ -1054,13 +1171,12 @@ pub fn sites_of_item<'a>(item: &'a crate::ast::Item, out: &mut Vec<Site<'a>>) {
             }
             sites_of_fields(&var.fields, out);
         }
-        ItemKind::Const(declaration) => {
-            for entry in &declaration.entries {
-                if let Some(value) = &entry.value {
-                    sites_of_expr(value, out);
-                }
-            }
-        }
+        // A `const` group is *not* walked here. Its entries are a sequence
+        // of declarations, and a later one may read an earlier one — `const
+        // A = 3, B = [A + 1]` — so its brackets have to run interleaved with
+        // its declarations rather than all of them first. `declare_const_group`
+        // does that, one entry at a time.
+        ItemKind::Const(_) => {}
         ItemKind::Data(block) => sites_of_data(block, out),
         ItemKind::Func(func) => sites_of_block(&func.body, out),
         // A `#if` condition is an evaluator expression and is deliberately
@@ -1175,6 +1291,19 @@ fn sites_of_statement<'a>(statement: &'a crate::ast::Statement, out: &mut Vec<Si
             StatementKind::ConditionalJump(jump) => {
                 sites_of_statement(&jump.jump, out);
             }
+            // A call site's immediate arguments are ordinary expressions,
+            // and an `inline` substitutes them into its body — so a bracket
+            // that is never evaluated here does not merely lose its value,
+            // it leaves the alias unbound and the expansion emits the alias
+            // *name*. `scale a, #[2 + 2]` used to reach ca65 as
+            // `lda #factor`, with K816 exiting zero.
+            StatementKind::BareCall(call) => {
+                for argument in call.arguments.iter().flatten() {
+                    if let crate::ast::CallArgument::Immediate(expr) = argument {
+                        sites_of_expr(expr, out);
+                    }
+                }
+            }
             StatementKind::Goto(goto) => sites_of_expr(&goto.target, out),
             StatementKind::Data(block) => sites_of_data(block, out),
             StatementKind::Align(align) => {
@@ -1241,7 +1370,7 @@ fn hla_expressions(hla: &crate::ast::HlaStatement) -> Vec<&Expr> {
 /// A bracket's interior is the evaluator's own language, so the walk stops at
 /// one: a bracket inside a bracket is the evaluator's business, not this
 /// pass's.
-fn sites_of_expr<'a>(expr: &'a Expr, out: &mut Vec<Site<'a>>) {
+pub fn sites_of_expr<'a>(expr: &'a Expr, out: &mut Vec<Site<'a>>) {
     match &expr.kind {
         ExprKind::Eval(body) => out.push(Site::Bracket(body)),
         ExprKind::Unary(unary) => sites_of_expr(&unary.operand, out),
@@ -1557,6 +1686,130 @@ mod tests {
         let (_, spliced) = evaluate("data d {\n  [ print(\"n=\" + 8) ]\n  0\n}\n");
         assert_eq!(spliced, vec!["K816-N0145"]);
         assert_eq!(codes("error(\"no display\")"), vec!["K816-E0146"]);
+    }
+
+    #[test]
+    fn a_compound_assignment_reads_its_target_before_it_runs_the_value() {
+        // Measured: the original emits `@?x`, then the right-hand side, then
+        // the operator, so `x` is read first. Evaluating the value first
+        // makes this 10.
+        assert_eq!(number("X = 1, X += (X = 5), X"), 6.0);
+        assert_eq!(number("Y = 8, Y -= (Y = 2), Y"), 6.0);
+        // The plain form has nothing to order, and is here so a future
+        // rewrite cannot "fix" one by breaking the other.
+        assert_eq!(number("Z = 1, Z = Z + (Z = 5), Z"), 6.0);
+    }
+
+    #[test]
+    fn a_frame_is_a_frame_and_not_a_scope_chain() {
+        // A caller's parameter is not in scope in a callee that never
+        // declared it. Walking outwards made this 9.
+        assert_eq!(
+            evaluate(
+                "evalfunc inner() [ secret ]\nevalfunc outer(secret) [ inner() ]\n\
+                 data d {\n  [ outer(9) ]\n}\n"
+            )
+            .1,
+            vec!["K816-E0101"]
+        );
+        // A global is still visible from inside a function, which is the
+        // half that has to keep working.
+        assert_eq!(
+            evaluate("[ SHARED = 7 ]\nevalfunc get() [ SHARED ]\ndata d {\n  [ get() ]\n}\n").1,
+            Vec::<String>::new()
+        );
+        // And a parameter shadows a global of the same name for the call.
+        assert_eq!(number("(3).max(5)"), 5.0);
+    }
+
+    #[test]
+    fn an_evalfunc_body_is_checked_where_it_is_written() {
+        // A call resolves against the functions declared *so far*, because
+        // the original compiles a body on the spot.
+        assert_eq!(
+            evaluate("evalfunc first(q) [ later(q) ]\nevalfunc later(q) [ q * 2 ]\n").1,
+            vec!["K816-E0101"]
+        );
+        // Declared the other way round, it is fine.
+        assert_eq!(
+            evaluate(
+                "evalfunc later(q) [ q * 2 ]\nevalfunc first(q) [ later(q) ]\n\
+                 data d {\n  [ first(4) ]\n}\n"
+            )
+            .1,
+            Vec::<String>::new()
+        );
+        // A self-call resolves: the entry exists before its body is checked,
+        // which is what makes recursion work.
+        assert_eq!(
+            evaluate(
+                "evalfunc fact(k) [ if k <= 1 1 else fact(k - 1) * k ]\n\
+                 data d {\n  [ fact(5) ]\n}\n"
+            )
+            .1,
+            Vec::<String>::new()
+        );
+        // A reserved function inside a body is reserved whether or not a
+        // call ever reaches it: nothing evaluates a body where it stands, so
+        // this is the only place the report can happen.
+        assert_eq!(
+            evaluate("evalfunc hidden() [ rnd() ]\ndata d {\n  [ hidden() ]\n}\n").1,
+            vec!["K816-K65-0002"]
+        );
+    }
+
+    #[test]
+    fn the_whole_library_is_protected_from_shadowing() {
+        // Including the names K816 does not evaluate: a user function that
+        // took `index` would quietly replace the form G6 is going to
+        // provide. The original refuses all of them.
+        for (name, parameters) in [
+            ("index", "sec, pos"),
+            ("size", "sec"),
+            ("rnd", ""),
+            ("color", "x"),
+            ("addbyte", "sec, b"),
+            ("floor", "x"),
+            ("clamp", "x, lo, hi"),
+        ] {
+            let source = format!("evalfunc {name}({parameters}) [ 42 ]\n");
+            assert_eq!(
+                evaluate(&source).1,
+                vec!["K816-E0102"],
+                "`{name}` should be the library's"
+            );
+        }
+        // A library name at a count the library does not use is free, which
+        // is what "the count is part of the identity" means.
+        assert_eq!(
+            evaluate("evalfunc floor(a, b) [ a + b ]\n").1,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn an_out_of_range_literal_says_so_instead_of_vanishing() {
+        let mut map = SourceMap::new();
+        let id = map.add_file("eval.k65", "data d {\n  [ 4294967296 ]\n}\n");
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(
+            parsed
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<Vec<_>>(),
+            vec!["K816-E0003"],
+            "the same complaint the K65 expression layer makes"
+        );
+    }
+
+    #[test]
+    fn a_const_group_reads_the_entries_above_it() {
+        // A group is shorthand for consecutive declarations, so its brackets
+        // run interleaved with its declarations rather than all of them
+        // first.
+        let (_, codes) = evaluate("const A1 = 3, B1 = [ A1 + 1 ]\ndata d {\n  B1\n}\n");
+        assert_eq!(codes, Vec::<String>::new());
     }
 
     #[test]

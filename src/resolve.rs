@@ -610,6 +610,13 @@ pub struct Resolved {
 /// Resolves names, folds expressions, and classifies operands.
 pub struct Resolver<'a> {
     symbols: &'a SymbolTable,
+    /// What the evaluator answered, keyed by where it was asked.
+    ///
+    /// Not an evaluator: analysis runs every bracket once, in source order,
+    /// because evaluation has side effects — assignments, `print`, the step
+    /// budget — and lowering re-resolves data blocks analysis already
+    /// resolved. A resolver looks the answer up.
+    eval: &'a eval::Outcome,
     /// The function whose scope `.name` labels resolve in.
     function: Option<SymbolId>,
     /// The widths the model tracks *here*, which size the width-dependent
@@ -627,9 +634,10 @@ pub struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(symbols: &'a SymbolTable) -> Self {
+    pub fn new(symbols: &'a SymbolTable, eval: &'a eval::Outcome) -> Self {
         Self {
             symbols,
+            eval,
             function: None,
             widths: ModeState::unknown(),
             diagnostics: Vec::new(),
@@ -739,13 +747,38 @@ impl<'a> Resolver<'a> {
                 self.address_of(&access, expr.span)
             }
             ExprKind::Metadata(query) => self.metadata(query, expr.span),
-            ExprKind::Eval(_) => {
-                self.report(compat::unimplemented(
-                    expr.span,
-                    "compile-time evaluator brackets",
-                    compat::Owner::Compatibility,
-                ));
-                None
+            // An evaluator bracket was run by analysis, in source order.
+            // What is left here is the integer boundary: round the value the
+            // measured way, and then let this context's own width and range
+            // check apply to it exactly as it applies to a literal.
+            ExprKind::Eval(body) => {
+                let value = self.eval.value(body.span)?;
+                let Some(number) = value.number() else {
+                    // A string is a value *inside* an evaluation and never
+                    // the value *of* one — which is what the original does
+                    // too, where `Eval_Exec` refuses to turn one into a
+                    // number.
+                    self.report(eval_diagnostic(eval::Error::NotANumber {
+                        span: expr.span,
+                        found: value.describe(),
+                        needed: "an integer context",
+                    })?);
+                    return None;
+                };
+                // Wrapped, not refused, and deliberately: `const NEG = 0 - 1`
+                // is `$FFFFFFFF` here and reports where it is *used*, so a
+                // bracket that evaluates to -1 has to reach the same check by
+                // the same route. Decision 4's rule is that the context's own
+                // width check applies to the rounded value exactly as it
+                // applies to a literal, and that check is downstream of this.
+                let rounded = eval::to_integer(number);
+                match k65_number(rounded) {
+                    Some(value) => Some(KExpr::number(value)),
+                    None => {
+                        self.report(eval_out_of_range(rounded, expr.span));
+                        None
+                    }
+                }
             }
             // A syntax diagnostic was already reported for this node.
             ExprKind::Error => None,
@@ -1357,6 +1390,14 @@ impl<'a> Resolver<'a> {
             // 15), so they read on the value side exactly as a `const` does.
             // A `.field` or `[i]` step is the opposite: those name a place.
             ExprKind::Metadata(_) => true,
+            // An evaluator bracket is a *number*, in the original's grammar
+            // as well as in fact: `Number -> RawNumber | [ EvalCode ]`
+            // (`compiler.inc:327-328`) and `Arg -> Number` is `AM_IMM`
+            // (`compiler.inc:270`). Measured, because reading it as an
+            // address instead is silent and wrong: the oracle compiles
+            // `a = [ FLAG_B ]` to `lda #$0C`, not to a load from `$0C`
+            // (`tests/compat/k65/eval-sees-consts/`).
+            ExprKind::Eval(_) => true,
             ExprKind::Unary(unary) => match unary.op {
                 UnaryOp::LowByte | UnaryOp::HighByte | UnaryOp::Address16 | UnaryOp::Address24 => {
                     true
@@ -1625,7 +1666,7 @@ impl<'a> Resolver<'a> {
     fn declared_width(&self, value: &Expr) -> Option<(DataWidth, Span)> {
         // A quiet probe: the operand was folded for real before this check
         // runs, and every diagnostic the path deserves was reported there.
-        let mut probe = Resolver::new(self.symbols)
+        let mut probe = Resolver::new(self.symbols, self.eval)
             .in_function(self.function)
             .with_widths(self.widths)
             .with_aliases(self.aliases.clone());
@@ -1780,7 +1821,7 @@ impl<'a> Resolver<'a> {
         }
         // Folding here must stay quiet: any diagnostic the expression
         // deserves is reported when it is folded for real.
-        let mut probe = Resolver::new(self.symbols)
+        let mut probe = Resolver::new(self.symbols, self.eval)
             .in_function(self.function)
             .with_widths(self.widths)
             .with_aliases(self.aliases.clone());
@@ -2334,51 +2375,171 @@ impl Charset {
     }
 }
 
-/// What the deterministic subset could not fold, as a diagnostic.
+/// What an evaluation could not answer, as a diagnostic.
 ///
-/// Every arm names an owner rather than calling the form invalid, because
-/// none of them is: they are evaluator syntax K65 has and K816 has not
-/// finished. The one exception is arithmetic with no answer, which no
-/// sub-plan will make work.
-fn unsupported_eval(unsupported: eval::Unsupported) -> Option<Diagnostic> {
-    let diagnostic = match unsupported {
-        eval::Unsupported::Numeric { span, what } => compat::unimplemented(
-            span,
-            // `unimplemented` reads its argument as a plural noun phrase, so
-            // the phrase is plural: "floating-point literals", not "the
-            // floating-point literal `1.5`".
-            &format!("{what} in a `for … eval` body"),
-            compat::Owner::Compatibility,
-        )
-        .with_note(
-            "generated data folds to integers here; the floating-point model — whether \
-             a value rounds, truncates, or is refused — belongs with the evaluator",
-        ),
-        eval::Unsupported::Form { span, what } => compat::unimplemented(
-            span,
-            &format!("{what} in a `for … eval` body"),
-            compat::Owner::Compatibility,
-        ),
-        eval::Unsupported::Name { span, name } => Diagnostic::error(
+/// Every arm states a fact about the program rather than calling the form
+/// invalid, because the grammar accepted all of it: what stops an evaluation
+/// is a question with no answer, a name nothing gives a value, a rule K816
+/// chose, or a construct another task owns.
+pub fn eval_diagnostic(error: eval::Error) -> Option<Diagnostic> {
+    let diagnostic = match error {
+        eval::Error::Name { span, name } => Diagnostic::error(
             DiagnosticCode::UNDECLARED_SYMBOL,
-            format!("`{name}` is not a `const` or the loop variable"),
+            format!("`{name}` has no compile-time value"),
             Label::new(span, "nothing here gives this a value"),
         )
         .with_note(
-            "a `for … eval` body sees the loop variable and the unit's `const` values; \
-             a label or a variable has no compile-time value to fold",
+            "an evaluator expression sees the unit's `const` values, the names earlier \
+             evaluator brackets assigned, and the library's functions",
         )
-        .with_docs("doc/syntax-reference.md#for--eval"),
-        eval::Unsupported::Undefined { span, what } => Diagnostic::error(
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::NotAValue { span, name, what } => Diagnostic::error(
+            DiagnosticCode::EVAL_NOT_A_NUMBER,
+            format!("`{name}` is {what}, which the evaluator cannot read"),
+            Label::new(span, "this has no compile-time value"),
+        )
+        .with_note(
+            "a variable's address is the linker's and a code section has no value; only a \
+             `const`, an evaluator name, and a data section resolve here",
+        )
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::NotAssignable { span, name, what } => Diagnostic::error(
+            DiagnosticCode::EVAL_REASSIGNED,
+            format!("`{name}` is {what} and the evaluator cannot assign to it"),
+            Label::new(span, "this name is already the compiler's"),
+        )
+        .with_help("give the evaluator variable a name of its own")
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::Reassigned { span, name, .. } => Diagnostic::error(
+            DiagnosticCode::EVAL_REASSIGNED,
+            format!("`{name}` was assigned in an earlier evaluator block"),
+            Label::new(span, "a second block cannot reassign it"),
+        )
+        .with_note(
+            "an evaluator name may be assigned as often as its own block likes, and not \
+             again afterwards, so that what a name means does not depend on how far down \
+             the file a reader has got",
+        )
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::Undefined { span, what } => Diagnostic::error(
             DiagnosticCode::NOT_CONSTANT,
             format!("this expression asks for {what}"),
             Label::new(span, "there is no value for this"),
         )
-        .with_docs("doc/syntax-reference.md#for--eval"),
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::NotANumber {
+            span,
+            found,
+            needed,
+        } => Diagnostic::error(
+            DiagnosticCode::EVAL_NOT_A_NUMBER,
+            format!("{needed} needs a number, and this is {found}"),
+            Label::new(span, "no number here"),
+        )
+        .with_note(
+            "a string is a value inside an evaluation — `+`, `==` and `<` work on one — and \
+             never a value of one",
+        )
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::Refused { span, name } => compat::k65_refused_eval_function(span, name),
+        eval::Error::Deferred { span, what } => {
+            compat::unimplemented(span, what, compat::Owner::Compatibility).with_note(
+                "what a bracket indexes is the assembled bytes of a data section, which K816 \
+                 does not have until lowering",
+            )
+        }
+        eval::Error::Raised { span, message } => Diagnostic::error(
+            DiagnosticCode::EVAL_ERROR,
+            message,
+            Label::new(span, "this `error` call ran"),
+        )
+        .with_note("the message is the evaluator's, not the compiler's")
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::TooDeep { span } => Diagnostic::error(
+            DiagnosticCode::EVAL_BUDGET,
+            format!(
+                "this `evalfunc` call nested more than {} deep",
+                eval::MAX_CALL_DEPTH
+            ),
+            Label::new(span, "the call that went one too far"),
+        )
+        .with_note(
+            "an `evalfunc` that calls itself with no base case has no other way to stop, \
+             and the depth is bounded separately from the step budget because a runaway \
+             recursion exhausts the interpreter's stack long before it exhausts the steps",
+        )
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::Budget { span } => Diagnostic::error(
+            DiagnosticCode::EVAL_BUDGET,
+            format!(
+                "this evaluation did not finish within {} steps",
+                eval::STEP_BUDGET
+            ),
+            Label::new(span, "still running when the budget ran out"),
+        )
+        .with_note(
+            "a `while` whose condition never goes false, or an `evalfunc` that calls itself \
+             with no base case, has no other way to stop",
+        )
+        .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
         // Already said once; saying it again is noise, not information.
-        eval::Unsupported::Reported => return None,
+        eval::Error::Reported => return None,
     };
     Some(diagnostic)
+}
+
+/// A bracket whose rounded value is outside what any K65 context can hold.
+///
+/// The context's own check is the one that normally fires — a byte entry
+/// reports `E0109`, an immediate `E0103` — and it fires on the rounded
+/// value, exactly as it does on a literal. This one is the outer edge: a
+/// value that is not a K65 number at all, so no context's check can be
+/// reached to state it better.
+/// The 32-bit K65 number `value` wraps to, or `None` when it is not one.
+///
+/// The original narrows through a C++ `int` (`compiler_src.cpp:392`), so the
+/// boundary that matters is 32 bits and a negative value is the bit pattern
+/// K65 arithmetic already produces for it — `0 - 1` is `$FFFFFFFF` in a
+/// `const` too. Past 32 bits in either direction there is no bit pattern to
+/// take, and the original's behaviour is undefined rather than a wrap, so
+/// K816 says so instead of inventing one.
+fn k65_number(value: i64) -> Option<u32> {
+    u32::try_from(value)
+        .ok()
+        .or_else(|| i32::try_from(value).ok().map(|value| value as u32))
+}
+
+fn eval_out_of_range(value: i64, span: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::NUMBER_RANGE,
+        format!("this evaluates to {value}, which is not a K65 number"),
+        Label::new(span, "outside $80000000 … $FFFFFFFF"),
+    )
+    .with_note(
+        "an evaluator value is rounded to the nearest integer at every integer boundary \
+         and then taken as a 32-bit number, after which the context's own width check \
+         applies to it exactly as it applies to a literal",
+    )
+    .with_docs("doc/syntax-reference.md#compile-time-evaluator")
+}
+
+/// The note a `print(msg)` leaves behind.
+///
+/// The title is the message itself, because that is what the author wrote it
+/// to say. What the diagnostic adds is where it came from: a reader who has
+/// not seen the source needs to know this line is the program's own voice and
+/// not the compiler's.
+pub fn eval_note(note: eval::Note) -> Diagnostic {
+    Diagnostic::note(
+        DiagnosticCode::EVAL_PRINT,
+        note.message,
+        Label::new(note.span, "printed by this `print` call"),
+    )
+    .with_note(
+        "the text is the evaluator's, not the compiler's: `print` reports what an \
+         evaluation computed and says nothing about whether the program is correct",
+    )
+    .with_docs("doc/syntax-reference.md#functions")
 }
 
 /// A character the `charset` in force has no slot for.
@@ -2807,9 +2968,11 @@ impl Resolver<'_> {
     ///
     /// The range is inclusive at both ends and may run backwards, which the
     /// document shows and which a table of decreasing values needs. Both
-    /// bounds are ordinary K65 expressions; the *body* is evaluator syntax,
-    /// and what folds there is decision 18's deterministic subset and nothing
-    /// wider.
+    /// bounds are ordinary K65 expressions, which is why this body is the one
+    /// evaluation analysis does *not* run: its bounds are not known until a
+    /// resolver folds them. What analysis records instead is the environment
+    /// the body would have seen, and the loop variable is a frame over that,
+    /// so nothing the body assigns escapes the loop.
     fn for_eval(
         &mut self,
         variable: &Name,
@@ -2829,47 +2992,65 @@ impl Resolver<'_> {
             ));
             return None;
         };
+        let environment = self.eval.loop_environment(span)?;
 
         let mut bytes = Vec::new();
         let mut index = i64::from(from);
         let last = i64::from(to);
         let step = if last >= index { 1 } else { -1 };
         loop {
-            let bindings = eval::Bindings {
-                variable: (&variable.text, index),
-                symbols: self.symbols,
-            };
-            match eval::fold(body, &bindings) {
-                Ok(value) => match u8::try_from(value) {
-                    Ok(byte) => bytes.push(KExpr::number(u32::from(byte))),
-                    Err(_) => {
-                        // Reported once, at the first iteration that leaves
-                        // the byte: 256 copies of the same news is not more
-                        // information.
-                        self.report(
-                            Diagnostic::error(
-                                DiagnosticCode::ADDRESS_RANGE,
-                                format!(
-                                    "`{}` = {index} makes this expression {value}, which is \
-                                     not a byte",
-                                    variable.text
-                                ),
-                                Label::new(body.span, "each generated value is one byte"),
-                            )
-                            .with_note(
-                                "K816 does not round or mask an evaluator value: a table of \
-                                 bytes has to produce bytes",
-                            )
-                            .with_help("mask or clamp in the expression — `& 255`, `?< 255`")
-                            .with_docs("doc/syntax-reference.md#for--eval"),
-                        );
-                        return None;
-                    }
-                },
-                Err(unsupported) => {
-                    if let Some(diagnostic) = unsupported_eval(unsupported) {
+            let mut scratch = environment.clone();
+            let mut interpreter = eval::Interpreter::new(
+                &mut scratch,
+                self.eval.functions(),
+                self.symbols,
+                eval::LOOP_BLOCK,
+            )
+            .with_local(&variable.text, eval::Value::Number(index as f64));
+            let value = interpreter.evaluate(body);
+            for note in interpreter.take_notes() {
+                self.report(eval_note(note));
+            }
+            let value = match value {
+                Ok(value) => value,
+                Err(error) => {
+                    if let Some(diagnostic) = eval_diagnostic(error) {
                         self.report(diagnostic);
                     }
+                    return None;
+                }
+            };
+            let Some(number) = value.number() else {
+                self.report(eval_diagnostic(eval::Error::NotANumber {
+                    span: body.span,
+                    found: "not a number",
+                    needed: "a generated byte",
+                })?);
+                return None;
+            };
+            match u8::try_from(eval::to_integer(number)) {
+                Ok(byte) => bytes.push(KExpr::number(u32::from(byte))),
+                Err(_) => {
+                    // Reported once, at the first iteration that leaves the
+                    // byte: 256 copies of the same news is not more
+                    // information.
+                    self.report(
+                        Diagnostic::error(
+                            DiagnosticCode::ADDRESS_RANGE,
+                            format!(
+                                "`{}` = {index} makes this expression {}, which is not a byte",
+                                variable.text,
+                                eval::to_integer(number)
+                            ),
+                            Label::new(body.span, "each generated value is one byte"),
+                        )
+                        .with_note(
+                            "the value is rounded to an integer and then has to fit: K816 \
+                             keeps the range check the original does not",
+                        )
+                        .with_help("mask or clamp in the expression — `& 255`, `?< 255`")
+                        .with_docs("doc/syntax-reference.md#for--eval"),
+                    );
                     return None;
                 }
             }

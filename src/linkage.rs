@@ -188,6 +188,7 @@ impl Linkage {
                     crate::abi::entry_state(info.entry, info.contract),
                     &width::Context {
                         symbols: &model.symbols,
+                        eval: &model.eval,
                         function: Some(info.symbol),
                         callees: &callees,
                         externally_reachable: &BTreeSet::new(),

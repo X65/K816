@@ -1,0 +1,23 @@
+// The three brackets of `k65/eval-sees-consts` that do not read a section.
+//
+// The oracle fixture stops at `index(tab, 2)`, which is G6's, so it can only
+// compare diagnostics.  These three are its other claims - a `const` read by
+// the evaluator, two consts folded, and a bracket in operand position - and
+// here they are bytes.
+//
+// The operand case is the one that matters most: `a = [ FLAG_B ]` is an
+// **immediate** in the golden (`A9 0C`), because `Arg -> Number` is `AM_IMM`
+// and `Number -> [ EvalCode ]`.  K816 read it as an address until G4.
+
+const FLAG_A = 0x30
+const FLAG_B = 0x0C
+
+data answers {
+  [ FLAG_A ]                // a const alone
+  [ FLAG_A | FLAG_B ]       // two consts folded
+}
+
+func main @a8 @i8 {
+  a = answers
+  a = [ FLAG_B ]            // a bracket in operand position
+}

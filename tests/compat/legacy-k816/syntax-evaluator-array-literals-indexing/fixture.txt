@@ -5,10 +5,8 @@ units     input.k65
 expect    input.k65 K816-E0001
 expect    input.k65 K816-E0001
 expect    input.k65 K816-E0001
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
 
 `arr = [10, 20, 30]` followed by `arr[1]`.
 
@@ -19,12 +17,19 @@ literal: `Number -> [ EvalCode ]` and `EvalCode`'s comma is the *pop* operator
 fixture as truth would have enshrined a construct K65 never had, which is what
 decision 2 is for.
 
-Today, after G1: three `K816-E0001` and four `K816-E0201`.  Before G1 it was
-one and three.  The construct that fails is the same one - `[` cannot open a
-value inside an evaluator expression, because there is no array literal to
-open - but a bracket now holds a *statement list*, so recovery from the stray
-`[` ends the enclosing block at the literal's `]` and the two entries after it
-are re-parented at the file root instead of being swallowed by one error node.
-More diagnostics over the same defect, all of them pointing at source the
-original also refuses.  `arr[1]` and `index(arr, 2)` themselves still parse -
-`tree-sitter-k65/test/corpus/expressions.txt`, "Evaluator indexing".
+Today, after G4: three `K816-E0001` and two `K816-E0101`.  The construct that
+fails is the same one - `[` cannot open a value inside an evaluator expression,
+because there is no array literal to open - and the two `K816-E0101` are `A`
+and `B` read in `main`.  They follow from the first three: a bracket the parser
+had to recover inside is not evaluated at all, so the block that would have
+assigned those names never ran.
+
+Before G4 the last four were `K816-E0201`, one per unevaluated bracket; before
+G1 the whole file was one `K816-E0001` and three `K816-E0201`, because a
+bracket held a single expression rather than a statement list and recovery from
+the stray `[` swallowed the two entries after it into one error node.
+
+`arr[1]` and `index(arr, 2)` themselves still parse -
+`tree-sitter-k65/test/corpus/expressions.txt`, "Evaluator indexing" - and each
+would be `K816-E0201` in a file that reached them, because what a bracket
+indexes is a section's assembled bytes and those are G6's.

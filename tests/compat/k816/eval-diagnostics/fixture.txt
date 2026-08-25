@@ -1,0 +1,44 @@
+row       evelem-call
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-N0145
+expect    input.k65 K816-N0145
+expect    input.k65 K816-E0146
+expect    input.k65 K816-E0147
+expect    input.k65 K816-E0148
+expect    input.k65 K816-E0149
+expect    input.k65 K816-E0149
+
+**One case per evaluator diagnostic, in the order the codes were registered.**
+
+`print` and `error` are *implemented*, which is decision 6: the two functions
+existed to say something at compile time, and saying it costs two codes.  The
+other four of the six reserved functions keep `K816-K65-0002`, and the split is
+what makes this fixture worth having - it is the only place both halves of that
+decision are visible at once.
+
+  - `K816-N0145` twice, and neither is a complaint.  The severity is a *note*
+    because nothing about the program is wrong, and the code's letter says so
+    before anyone looks it up.  The second one also pins the number
+    formatting: `"slot count is " + (4 + 4)` is `slot count is 8.000000` in
+    both compilers, because a number splices into a string as `%lf`
+    (`compiler_eval.cpp:31`).  Matching that is free and a table generator
+    that prints its own progress should print the same progress.
+  - `K816-E0146` is `error(msg)`, carrying the message the source wrote.  The
+    original does the same, at the same line, and stops the build.
+  - `K816-E0147` is the step budget, which is what bounds a `while` that never
+    goes false.  The original has no bound and hangs.
+  - `K816-E0148` is a string at an integer boundary.  Strings are values
+    *inside* an evaluation - `+`, `==` and `<` work on them - and never values
+    *of* one, which is what the original does too: `Eval_Exec` calls
+    `ToNumber` on the result and refuses.
+  - `K816-E0149` twice, for the two halves of one rule.  The first is
+    `RUNAWAY`, assigned in a data block and again in a top-level block.  The
+    second is `notes`, which is a *data section*: a name the compiler already
+    owns is not the evaluator's to write, and the original agrees - it says
+    "Can't assign value to const" for the `const` case.
+
+The reassignment half of that last rule is K816's own and is not free; the
+argument for it, and the measurement of what the original does instead, are in
+`tests/compat/k65/eval-reassignment/`.

@@ -1,0 +1,39 @@
+// The evaluator spellings K816 has and the original does not, in one file.
+//
+// Each is here because it is documented in this repository's own reference
+// and refusing it would buy nothing, and each is a `K816-extension` row that
+// `--strict-k65` has to reject.  Every one of them was measured against the
+// original first (`plans/postmortem.md` §G.4):
+//
+//   - `abs(x)` ends the build there: it is not in the opcode table
+//     (`tests/compat/k65/eval-refusals/`).
+//   - `||` is not a token there at all - `EvLogOr` and `EvLogAnd` are both
+//     spelled `&&` (`compiler.inc:390,393`).
+//   - the prefix `++` and `--` *abort* the compiler there.  Their grammar
+//     actions read `$1` where they mean `$2` (`compiler.inc:441-442`), so
+//     both read and write an evaluator variable literally named `++`, which
+//     nothing ever assigned.  The suffix forms one line below are correct and
+//     work, which is why this is a defect rather than a design.
+//   - a recursive `evalfunc` calls evaluator function *zero* there, because
+//     `Eval_AddFunction` inserts the map entry before compiling the body.  It
+//     returns another function's answer or dies on a stack underrun; no
+//     working K65 program can contain one.
+//   - `0b1010` inside a bracket is **zero** there, because the evaluator's
+//     `ParseInt` handles `0x` and not `0b` (`convert_parse.cpp:36`).  The
+//     same literal outside a bracket is 10, in both compilers.
+
+evalfunc fact(k) [ if k <= 1 1 else fact(k - 1) * k ]
+
+data extensions {
+  [ abs(0 - 5) ]                // 5
+  [ 0 || 4 ]                    // 1
+  [ 0 || 0 ]                    // 0
+  [ PP = 2, ++PP ]              // 3    - prefix: the new value
+  [ QQ = 2, --QQ ]              // 1
+  [ fact(5) ]                   // 120  - real recursion, bounded by the budget
+  [ 0b1010 ]                    // 10
+}
+
+func main @a8 @i8 {
+  a = extensions
+}

@@ -1,0 +1,20 @@
+// The eleven entries of `k65/eval-integer-boundary` that stay inside a byte,
+// and nothing else.
+//
+// The oracle fixture cannot check bytes: eleven of its twenty-two entries are
+// out of range, which the original wraps and K816 refuses, so it stops at the
+// diagnostics.  These eleven are the half where the two compilers must agree
+// exactly, and the golden beside it is where they do.
+
+data boundary {
+  [ 255 ]                              // in range
+  [ 2.4 ] [ 2.5 ] [ 2.6 ]              // half up, not half to even
+  [ 0.5 ] [ 1.5 ] [ 2.5 ] [ 3.5 ]      // .5 four times, all upward
+  [ 7 / 2 ]                            // 3.5 arrived at by division
+  [ 16777217 - 16777216 ]              // two decimal literals: one `float`
+  [ 0x1000001 - 0x1000000 ]            // the same two in hex: exact
+}
+
+func main @a8 @i8 {
+  a = boundary
+}

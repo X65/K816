@@ -1,0 +1,34 @@
+row       number-eval-bracket
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**The half of `k65/eval-integer-boundary` where the two compilers must agree
+exactly, checked at the bytes.**
+
+    FF 02 03 03 01 02 03 04 04 00 01
+
+The oracle fixture cannot make this claim itself: eleven of its twenty-two
+entries are out of range, the original wraps them silently and K816 refuses
+them, so it stops at the diagnostics and eleven agreements go unchecked.
+These are those eleven, and each byte here is the byte at the same position in
+`k65/eval-integer-boundary/oracle.hex`.
+
+Read in order they are the whole numeric model:
+
+  - **The rounding is `floor(v + 0.5)`** - half *up*, not away from zero and
+    not to even.  `2.5`, `1.5` and `3.5` all round upward, and so does `7 / 2`,
+    which is float division that happens to land on a half.
+  - **The arithmetic is `f64` and both ends are `f32`.**  The tenth byte is
+    zero because `16777217` and `16777216` are the *same literal*: a decimal
+    literal goes through `ParseFloat` and is a `float`
+    (`compiler_eval.cpp:172`).  The eleventh is one because `0x1000001` and
+    `0x1000000` do not: a literal beginning `0x` or `0b` goes through
+    `ParseInt` and is exact.
+  - So `EvalExprKind::Number` carries whether its spelling was exact.  Nothing
+    downstream of the decoded value could have told, which is why the flag is
+    in the AST and not derived later.
+
+What is *not* copied is the wrapping, and that is decision 4's one deliberate
+difference: K816 keeps its range check, so a bracket that produces 300 in a
+byte entry is `K816-E0109`, exactly as the literal `300` is.

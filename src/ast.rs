@@ -54,6 +54,8 @@ pub enum ItemKind {
     Data(DataBlock),
     /// A top-level `[ NAME = expr, ... ]` evaluator block.
     EvalBlock(Expr),
+    /// `evalfunc NAME(a, b) [ ... ]` — a user-defined evaluator function.
+    EvalFunc(EvalFunction),
     /// `#if` / `#elif` / `#else` / `#endif` / `#error` / `#warn`.
     Preprocessor(PreprocessorDirective),
     /// `binary NAME = "file"`.
@@ -862,7 +864,26 @@ pub struct EvalExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EvalExprKind {
-    Number(u32),
+    /// An integer literal, already decoded, with the one thing about its
+    /// spelling the evaluator's arithmetic can see.
+    ///
+    /// The original parses a bracket's literals two different ways: one
+    /// beginning `0x` or `0b` goes through `ParseInt` and is exact, and every
+    /// other one goes through `ParseFloat` and is a **`float`**
+    /// (`compiler_eval.cpp:168-172`). So `16777217` and `16777216` are the
+    /// same number there and `0x1000001` and `0x1000000` are not — a
+    /// distinction no decoded value can carry, which is why the flag is here
+    /// rather than derived later.
+    Number {
+        value: u32,
+        /// `false` for a decimal literal, which narrows to `f32` as the
+        /// original's does. K816's `$`/`%` spellings are exact, like the
+        /// `0x`/`0b` they stand for.
+        exact: bool,
+    },
+    /// `pi` — the original's one built-in constant, and a keyword rather
+    /// than a name, so nothing can shadow it.
+    Pi,
     /// A floating-point literal, as written.
     Float(String),
     /// A string literal, quotes stripped and escapes decoded.
@@ -893,19 +914,63 @@ pub enum EvalExprKind {
         target: Box<EvalExpr>,
         value: Box<EvalExpr>,
     },
+    /// `sec[i]` and `sec[row, col]` — a byte of the section `base` names.
+    /// One index or two; the grammar accepts no more.
     Subscript {
         base: Box<EvalExpr>,
-        index: Box<EvalExpr>,
+        indices: Vec<EvalExpr>,
     },
+    /// `x.f` — sugar for `f(x)`, which is all it has ever been
+    /// (`compiler.inc:448`). Kept as its own node so a diagnostic can point
+    /// at the spelling the author wrote.
     Member {
         base: Box<EvalExpr>,
         field: Name,
     },
+    /// `x.f(a)` — sugar for `f(x, a)` (`compiler.inc:449`).
+    MethodCall {
+        base: Box<EvalExpr>,
+        method: Name,
+        arguments: Vec<EvalExpr>,
+    },
     /// `a, b, c` — the expression list, whose value is the last item.
     List(Vec<EvalExpr>),
+    /// A run of statements: the interior of `[ ... ]` with more than one, and
+    /// every `{ ... }`. Its value is the last statement's, because the
+    /// original's `EvalCode -> EvalCode EvalInstr` pops the previous one
+    /// (`compiler.inc:360`).
+    Block(Vec<EvalExpr>),
+    /// `if C S` and `if C S else S`. Without an `else`, an untaken `if`
+    /// evaluates to zero — the original pushes `#0` before the test and pops
+    /// it only on the taken path (`compiler.inc:365-366`).
+    If {
+        condition: Box<EvalExpr>,
+        consequence: Box<EvalExpr>,
+        alternative: Option<Box<EvalExpr>>,
+    },
+    /// `while C S`. Its value is the last iteration's, or zero if the body
+    /// never ran, for the same reason (`compiler.inc:367`).
+    While {
+        condition: Box<EvalExpr>,
+        body: Box<EvalExpr>,
+    },
     /// A call to one of the reserved evaluator functions.
     ReservedCall(ReservedCall),
     Error,
+}
+
+/// `evalfunc NAME(a, b) [ ... ]` or `evalfunc NAME(a, b) { ... }`.
+///
+/// The original allocates the parameters as static slots once, at definition
+/// time, rather than as a frame — which is why a function that calls itself
+/// there reaches evaluator function zero instead of recursing
+/// (`plans/postmortem.md` §G.2.3). K816 gives each call its own frame, so
+/// recursion works and is bounded by the step budget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalFunction {
+    pub name: Name,
+    pub parameters: Vec<Name>,
+    pub body: EvalExpr,
 }
 
 /// `data NAME { ... }` or `data { ... }`.

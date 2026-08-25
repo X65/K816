@@ -3,9 +3,6 @@ config    atarixl.cfg
 compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
 
 **The original's evaluator sees `const` names, and sees a data label as a
 section.**  `[FLAG_A]` is `$30`, `[FLAG_A | FLAG_B]` is `$3C`, and
@@ -21,3 +18,15 @@ This settles two things decision 4 left open.  K816 letting a bracket read a
 `const` is **compatibility, not an extension** - the row is `compatible` - and
 the legacy K816's dual parse, which existed because *its* evaluator could not
 see `const`, has nothing left to rescue and is not reproduced.
+
+Since G4 three of the four brackets compile and the fourth is the one
+`K816-E0201`: `index(tab, 2)` reads a section's assembled bytes, which K816
+does not have where an evaluation runs, so it is G6's.  The three that compile
+give the golden's `30 3C` and `A9 0C` -
+`tests/compat/k816/eval-sees-consts-compiled/` checks that at the bytes,
+because a fixture that stops at a diagnostic proves only that the rest parsed.
+
+The fourth bracket is also what pins the *operand* reading.  `a = [ FLAG_B ]`
+is `A9 0C` in the golden - an **immediate**, because `Arg -> Number` is
+`arg(AM_IMM, ...)` (`compiler.inc:270`) and `Number -> [ EvalCode ]`.  K816 read
+it as an address until G4 measured this line.

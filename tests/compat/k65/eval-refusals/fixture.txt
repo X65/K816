@@ -1,8 +1,7 @@
 row       evelem-call
 config    atarixl.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
 
 `abs` is not in the original's evaluator library, and the golden is the
 refusal.
@@ -11,6 +10,11 @@ refusal.
 implements. The original's opcode table does not contain it, so a source that
 calls it does not compile — which makes `abs` in K816 a `K816-extension` row
 rather than compatibility, and G10's strict mode has to reject it.
+
+This is the one fixture under `k65/` whose two compilers disagree about
+whether the source is a program at all: `oracle.err` is a crash and
+`expected.hex` is `05`. Both are committed, because the row's whole claim is
+that the difference exists and runs in K816's favour.
 
 The refusal is a *silent* one, and `oracle.err` records that too: the original
 prints "Unknown evaluator function" through its own `Error`, and then dies

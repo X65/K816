@@ -291,9 +291,9 @@ fn corpus_cases_produce_the_expected_trees() {
 /// and both should be noticed here rather than in a user's build.
 const CORPUS: &[(&str, &[&str], &[&str])] = &[
     ("examples/fullstack/main.k816", &[], &[]),
-    // The one construct left, and it is sub-plan G's: an evaluator bracket
-    // in operand position (`a = [$FF]`).
-    ("examples/hello_uart.k65", &[], &["K816-E0201"]),
+    // Clean since G4: its one remaining construct was an evaluator bracket
+    // in operand position (`a = [$FF]`), and the evaluator landed.
+    ("examples/hello_uart.k65", &[], &[]),
     (
         "examples/k65/atari-xl/dli-example/main.k65",
         &["examples/k65/atari-xl/include/defs.k65"],
@@ -426,7 +426,8 @@ const OPTIMIZER_EFFECT: &[(&str, &[&str], &str)] = &[
     (
         "examples/hello_uart.k65",
         &[],
-        "does not compile: K816-E0201, an evaluator bracket in operand position",
+        "nothing: every instruction in it is reached and its one bracket is an \
+         immediate the optimizer has no reason to touch",
     ),
     (
         "examples/k65/atari-xl/dli-example/main.k65",

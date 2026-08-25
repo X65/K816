@@ -500,6 +500,11 @@ pub fn observation_fixpoint(seeds: &[WidthNeeds], adjacency: &[Vec<usize>]) -> V
 /// What the solver needs to know beyond the body it is walking.
 pub struct Context<'a> {
     pub symbols: &'a SymbolTable,
+    /// The evaluator's answers, so that an operand written as a bracket
+    /// classifies here exactly as it does in analysis. Without it a bracket
+    /// would fold to nothing in this walk and the statement would look
+    /// rejected.
+    pub eval: &'a crate::eval::Outcome,
     /// The function whose scope `.name` labels resolve in.
     pub function: Option<SymbolId>,
     /// The contract of each callee K816 can see. A callee absent from it is
@@ -525,12 +530,14 @@ pub fn analyze_function(
 ) -> (WidthAnalysis, Vec<Diagnostic>) {
     let Context {
         symbols,
+        eval,
         function,
         callees,
         externally_reachable,
     } = *context;
     let mut flattener = Flattener {
         symbols,
+        eval,
         function,
         externally_reachable,
         nodes: Vec::new(),
@@ -549,6 +556,7 @@ pub fn analyze_function(
 
 struct Flattener<'a> {
     symbols: &'a SymbolTable,
+    eval: &'a crate::eval::Outcome,
     function: Option<SymbolId>,
     externally_reachable: &'a BTreeSet<SymbolId>,
     nodes: Vec<Node>,
@@ -1003,7 +1011,7 @@ impl Flattener<'_> {
         let span = statement.span;
         // As in `native` below: this run's diagnostics are dropped, because
         // the analysis walk reports them for real.
-        let mut resolver = Resolver::new(self.symbols).in_function(self.function);
+        let mut resolver = Resolver::new(self.symbols, self.eval).in_function(self.function);
         let Some(steps) = crate::hla::statement(&mut resolver, hla, span) else {
             // Already rejected, so it will never be emitted; claiming it
             // destroys the widths would only add noise to a program that has
@@ -1041,7 +1049,7 @@ impl Flattener<'_> {
         // re-deriving the mode keeps one answer about which mode an operand
         // selects. This run's diagnostics are dropped: the analysis walk
         // reports them for real.
-        let mut resolver = Resolver::new(self.symbols).in_function(self.function);
+        let mut resolver = Resolver::new(self.symbols, self.eval).in_function(self.function);
         let classified = resolver.classify(native);
         let Some(classified) = classified else {
             // The instruction is already rejected, so it will never be

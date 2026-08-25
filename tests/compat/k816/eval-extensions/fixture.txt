@@ -1,0 +1,36 @@
+row       evexpr-operators
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Seven evaluator spellings K816 has and the original does not.**
+
+    05 01 00 03 01 78 0A
+
+Each is documented in this repository's own reference, each was measured
+against the original before being called an extension, and each is a
+`K816-extension` row that `--strict-k65` has to reject.  Five of the seven are
+extensions only because something in the original is *broken*, which is worth
+separating from the two that are design:
+
+  - `abs(0 - 5)` is 5.  Design: the function is simply not in the original's
+    table, and calling it ends the build (`k65/eval-refusals`).
+  - `0 || 4` and `0 || 0`.  Design: `||` is not a token there, because
+    `EvLogOr` and `EvLogAnd` are both spelled `&&` (`compiler.inc:390,393`).
+  - `++PP` and `--QQ`.  **Broken**: the grammar actions for the prefix forms
+    read `$1` where they mean `$2` (`compiler.inc:441-442`), so both read and
+    write an evaluator variable literally named `++`, and the compiler aborts.
+    The suffix forms one line below in the same file are written correctly and
+    work, which is what makes this a slip rather than a decision - and it is
+    why `k65/eval-operator-table` covers `SS++` and not `++SS`.
+  - `fact(5)` is 120.  **Broken**: `Eval_AddFunction` inserts the map entry
+    before compiling the body, so a self-call resolves to an entry whose
+    `user_id` is not yet assigned - evaluator function *zero*.  It returns
+    another function's answer or dies on a stack underrun, so no working K65
+    program can contain a recursive `evalfunc` and K816 implementing one
+    properly costs no compatibility.  The step budget is what bounds it.
+  - `0b1010` is 10.  **Broken**: inside a bracket the original's `ParseInt`
+    handles `0x` and not `0b` (`convert_parse.cpp:36`), so it reads the
+    leading `0`, stops at the `b`, and the literal is **zero**.  The same
+    literal outside a bracket is 10 in both compilers, which means one source
+    can spell the same number two ways and get two answers.

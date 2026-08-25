@@ -1,0 +1,29 @@
+row       topelem-eval-block
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0149
+expect    input.k65 K816-E0149
+expect    input.k65 K816-E0149
+
+**The original allows it; K816 refuses it, on purpose and at a price.**
+
+`doc/syntax-reference.md` says "assigning that same name again in a different
+top-level evaluator block is rejected", and until this fixture nobody had asked
+the original whether that was true of it.  It is not.  The golden is
+`02 0F 03`: `NN` was reassigned, `ACC` was compounded with `+=`, and `CTR` was
+counted up by a `while` in the block after the one that set it to zero.  All
+three compile there.
+
+So the rule is K816's, not K65's, and `topelem-eval-block` is
+`intentionally-changed` rather than `compatible`.  It is kept because a name
+whose meaning depends on how far down the file a reader has got is a name that
+cannot be read locally, and an evaluator name is a *compiler constant* the K65
+layer below it can use - which is exactly the thing that should not change
+underneath a reader.  Inside one bracket a name may be assigned as often as it
+likes, which is what makes the loop above expressible at all.
+
+The cost is the third case and it is real: `[ CTR = 0 ]` followed by
+`[ while CTR < 3 { … } ]` is the natural way to write a counted loop, and K816
+needs the two brackets joined into one.  `tests/compat/k65/eval-statements/`
+is the same shape, and stops for the same reason.

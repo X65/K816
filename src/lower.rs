@@ -161,7 +161,7 @@ pub fn lower_unit(
         }
         if let ItemKind::Data(data) = &item.kind {
             let site = resolve::data_site(&mut anonymous, unit, data, None);
-            let mut resolver = Resolver::new(&model.symbols);
+            let mut resolver = Resolver::new(&model.symbols, &model.eval);
             let walked = resolver.data_block(data, item.span, &site);
             let ops = fill_code_subblocks(
                 walked,
@@ -1385,7 +1385,7 @@ impl<'a> Lowering<'a> {
                 // Analysis already classified this instruction and reported
                 // anything wrong with it, so a second answer here would be a
                 // compiler bug rather than user error.
-                let mut resolver = Resolver::new(&self.model.symbols)
+                let mut resolver = Resolver::new(&self.model.symbols, &self.model.eval)
                     .in_function(self.function)
                     .with_widths(self.widths_at(statement))
                     .with_aliases(self.aliases.clone());
@@ -1402,7 +1402,7 @@ impl<'a> Lowering<'a> {
                 }
             }
             StatementKind::Hla(hla) => {
-                let mut resolver = Resolver::new(&self.model.symbols)
+                let mut resolver = Resolver::new(&self.model.symbols, &self.model.eval)
                     .in_function(self.function)
                     .with_widths(self.widths_at(statement))
                     .with_aliases(self.aliases.clone());
@@ -1562,7 +1562,7 @@ impl<'a> Lowering<'a> {
             StatementKind::Data(data) => {
                 let site =
                     resolve::data_site(self.anonymous, &self.unit, data, Some(&self.function_name));
-                let mut resolver = Resolver::new(&self.model.symbols)
+                let mut resolver = Resolver::new(&self.model.symbols, &self.model.eval)
                     .in_function(self.function)
                     .with_widths(self.widths_at(statement))
                     .with_aliases(self.aliases.clone());
@@ -1662,7 +1662,7 @@ impl<'a> Lowering<'a> {
         statement: &crate::ast::Statement,
         goto: &crate::ast::GotoStatement,
     ) -> Option<Jump> {
-        let mut resolver = Resolver::new(&self.model.symbols)
+        let mut resolver = Resolver::new(&self.model.symbols, &self.model.eval)
             .in_function(self.function)
             .with_widths(self.widths_at(statement))
             .with_aliases(self.aliases.clone());
@@ -1848,7 +1848,7 @@ impl<'a> Lowering<'a> {
             return self.skipped(statement.span, "an `inline` that expands into itself");
         }
         let mut aliases = BTreeMap::new();
-        let mut resolver = Resolver::new(&self.model.symbols)
+        let mut resolver = Resolver::new(&self.model.symbols, &self.model.eval)
             .in_function(self.function)
             .with_widths(self.widths_at(statement))
             .with_aliases(self.aliases.clone());
@@ -2099,7 +2099,8 @@ impl<'a> Lowering<'a> {
         let Some(statement) = body.statements.first() else {
             return Placement::default();
         };
-        let mut resolver = Resolver::new(&self.model.symbols).in_function(self.function);
+        let mut resolver =
+            Resolver::new(&self.model.symbols, &self.model.eval).in_function(self.function);
         let (ops, restores_segment) = match &statement.kind {
             StatementKind::Align(align) => (resolver.align_ops(align, statement.span), false),
             StatementKind::Address(address) => (

@@ -1,0 +1,97 @@
+// Oracle question: what does each operator in `doc/syntax-reference.md`'s
+// table actually compute?
+//
+// The table is a list of spellings and precedences and says almost nothing
+// about semantics, so every entry below carries a value worked out by hand
+// and the golden is the arbiter.  Three of them were wrong in a document or
+// in the plan before this fixture:
+//
+//   - `%` is a *non-negative* modulo, `fmod(fmod(a,b)+b,b)`, so `(0-7) % 3`
+//     is 2 and not -1.
+//   - a bitwise operand is converted by `EvalAny::ToInt`, which is not the
+//     integer boundary rule: it truncates toward zero.
+//   - `&&` does not short-circuit; the stack machine pops two values that
+//     were both computed.
+//
+// Two spellings are deliberately absent because the original does not have
+// them, and they are in `tests/compat/k816/eval-extensions/` instead: `||`,
+// which is not a token there, and the prefix `++`/`--`, whose grammar action
+// reads `$1` where it means `$2` and which therefore abort the compiler.
+
+data ops {
+  [ 1 + 2 * 3 ]                 // 7   - precedence
+  [ (1 + 2) * 3 ]               // 9
+  [ 7 - 2 ]                     // 5
+  [ 7 / 2 ]                     // 4   - float division, then rounded
+  [ 7 % 3 ]                     // 1
+  [ (0 - 7) % 3 & 255 ]         // 2   - non-negative modulo
+  [ 1 << 4 ]                    // 16
+  [ 64 >> 2 ]                   // 16
+  [ 12 & 10 ]                   // 8
+  [ 12 | 3 ]                    // 15
+  [ 12 ^ 10 ]                   // 6
+  [ ~5 & 255 ]                  // 250
+  [ (0 - 2.7) & 255 ]           // 254 - truncation toward zero
+  [ !0 ]                        // 1
+  [ !3 ]                        // 0
+  [ 3 < 5 ]                     // 1
+  [ 3 <= 3 ]                    // 1
+  [ 3 > 5 ]                     // 0
+  [ 3 >= 5 ]                    // 0
+  [ 3 == 3 ]                    // 1
+  [ 3 != 3 ]                    // 0
+  [ 3 ?> 5 ]                    // 5   - the greater
+  [ 3 ?< 5 ]                    // 3   - the smaller
+  [ 2 && 5 ]                    // 1
+  [ 3 && 0 ]                    // 0
+  [ 5 ? 11 : 22 ]               // 11
+  [ 0 ? 11 : 22 ]               // 22
+  [ 1, 2, 3 ]                   // 3   - the list's value is its last item
+}
+
+// One bracket, because a name may be assigned as often as its own block
+// likes and not again afterwards - which is the rule `k65/eval-reassignment`
+// measures the original *not* having.  Each entry below is the value of the
+// assignment that precedes it, so the run reads as a transcript.
+// One bracket, one byte: the value of a run of statements is the last one's,
+// because the original separates them with the pop operator.
+data assignments {
+  [
+    QQ = 4,                     // an assignment's value is what it set
+    QQ += 3, QQ                 // 7
+  ]
+}
+
+data compounds {
+  [
+    RR = 7,
+    RR -= 2, RR,                // 5
+    RR *= 3, RR,                // 15
+    RR /= 5, RR,                // 3
+    RR %= 2, RR,                // 1
+    RR <<= 4, RR,               // 16
+    RR >>= 2, RR,               // 4
+    RR &= 6, RR,                // 4
+    RR |= 3, RR,                // 7
+    RR ^= 5, RR                 // 2
+  ]
+}
+
+// Only the suffix forms: the prefix ones abort the original.
+data steps {
+  [
+    SS = 2,
+    SS++,                       // the old value, and SS is 3
+    SS++,                       // 3, and SS is 4
+    SS--,                       // 4, and SS is 3
+    SS                          // 3
+  ]
+}
+
+main {
+  a = ops
+  a = assignments
+  a = compounds
+  a = steps
+  return
+}

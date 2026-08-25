@@ -39,6 +39,7 @@ use crate::abi;
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
 use crate::effects::ControlEffect;
+use crate::eval;
 use crate::isa::RegisterWidth;
 use crate::layout;
 use crate::linkage::Linkage;
@@ -70,6 +71,15 @@ enum WidthScope {
 #[derive(Debug, Default)]
 pub struct SemanticModel {
     pub symbols: SymbolTable,
+    /// What the compile-time evaluator answered, keyed by where it was asked.
+    ///
+    /// Analysis runs every bracket exactly once, in source order, and every
+    /// stage after it looks the answer up. That is not an optimization: an
+    /// evaluation assigns names, can `print`, and spends a step budget, and
+    /// lowering re-resolves data blocks analysis has already resolved — so a
+    /// second run would be a second `print` and, where a bracket assigns, a
+    /// different answer.
+    pub eval: eval::Outcome,
     pub functions: Vec<FunctionInfo>,
     /// Every unit-level symbol the unit actually referred to, which is what
     /// separates an `.import` this unit needs from one it merely could have.
@@ -320,6 +330,8 @@ fn analyze(
         workspace_recursive: BTreeSet::new(),
         direct_page: layout::DirectPage::default(),
         direct_page_reported: false,
+        eval_env: eval::Environment::default(),
+        eval_block: 0,
     };
     analysis.declare_placed_symbols(file);
     // Module defaults are file-wide, so they are known before any function's
@@ -387,6 +399,11 @@ struct Analysis {
     /// True once the pool has overflowed and said so, so the declarations
     /// after it do not each repeat the news.
     direct_page_reported: bool,
+    /// The evaluator variables assigned so far, in source order.
+    eval_env: eval::Environment,
+    /// Which bracket is being evaluated, so a name assigned in one block and
+    /// again in another is caught.
+    eval_block: eval::BlockId,
 }
 
 impl Analysis {
@@ -432,6 +449,7 @@ impl Analysis {
                 | ItemKind::Const(_)
                 | ItemKind::Segment(_)
                 | ItemKind::EvalBlock(_)
+                | ItemKind::EvalFunc(_)
                 | ItemKind::Preprocessor(_)
                 | ItemKind::Binary(_)
                 | ItemKind::Reserved(_)
@@ -650,6 +668,13 @@ impl Analysis {
     /// records what the rest of analysis needs about each item.
     fn declare_items(&mut self, file: &AstFile) {
         for (item_index, item) in file.items.iter().enumerate() {
+            // Every evaluator bracket this item contains runs here, before
+            // the item itself is processed, because the two directions of
+            // the one namespace meet at exactly this point: a bracket reads
+            // the `const` values declared above it, and the names a bracket
+            // assigns are declared as constants the K65 layer below it can
+            // read. `plans/06-compatibility.md` decision 4.
+            self.run_evaluator(item);
             match &item.kind {
                 ItemKind::Var(var) => self.declare_var(item_index, item.span, var),
                 ItemKind::Const(declaration) => self.declare_const_group(declaration),
@@ -662,14 +687,14 @@ impl Analysis {
                     self.report_reserved_in_data(data);
                     self.check_data_code(item_index, data);
                 }
-                ItemKind::EvalBlock(expression) => {
-                    self.diagnostics.push(compat::unimplemented(
-                        item.span,
-                        "top-level evaluator blocks",
-                        compat::Owner::Compatibility,
-                    ));
-                    self.report_reserved_in_expr(expression);
-                }
+                // The bracket already ran, above. What is left is the
+                // reserved-function report, which is structural: `rnd()` in
+                // a branch this evaluation did not take is still `rnd()`.
+                ItemKind::EvalBlock(expression) => self.report_reserved_in_expr(expression),
+                // Declared by `run_evaluator`, in source order, because the
+                // original resolves a call at the point it is written: a call
+                // above the definition does not compile there.
+                ItemKind::EvalFunc(_) => {}
                 ItemKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
                     item.span,
                     "preprocessor directives",
@@ -728,6 +753,131 @@ impl Analysis {
                 }
                 ItemKind::Error => {}
             }
+        }
+    }
+
+    /// Runs every evaluator invocation this item contains, in source order.
+    ///
+    /// The pass is here rather than in `resolve.rs` because evaluation has
+    /// effects: it assigns names, it can `print`, and it spends a step
+    /// budget. Running a bracket where its value happens to be *needed* would
+    /// run some of them twice — lowering re-resolves every data block — and
+    /// would run them in an order the source does not have. So each bracket
+    /// runs once, here, and everything downstream reads
+    /// [`SemanticModel::eval`].
+    fn run_evaluator(&mut self, item: &crate::ast::Item) {
+        if let ItemKind::EvalFunc(function) = &item.kind {
+            self.declare_eval_function(function);
+            return;
+        }
+        let mut sites = Vec::new();
+        eval::sites_of_item(item, &mut sites);
+        for site in sites {
+            match site {
+                eval::Site::Bracket(body) => self.run_bracket(body),
+                // A loop body's bounds are K65 expressions and are not known
+                // until a resolver folds them, so what is recorded is the
+                // environment it would have seen.
+                eval::Site::Loop { span, body: _ } => {
+                    let environment = self.eval_env.clone();
+                    self.model.eval.record_loop(span, environment);
+                }
+            }
+        }
+    }
+
+    /// Evaluates one bracket and records what it produced.
+    fn run_bracket(&mut self, body: &crate::ast::EvalExpr) {
+        if eval::is_recovered(body) {
+            return;
+        }
+        self.eval_block += 1;
+        let mut environment = std::mem::take(&mut self.eval_env);
+        let mut interpreter = eval::Interpreter::new(
+            &mut environment,
+            self.model.eval.functions(),
+            &self.model.symbols,
+            self.eval_block,
+        );
+        let value = interpreter.evaluate(body);
+        let notes = interpreter.take_notes();
+        let fresh = environment.take_new_names();
+        self.eval_env = environment;
+
+        for note in notes {
+            self.diagnostics.push(crate::resolve::eval_note(note));
+        }
+        // A name the evaluator assigned is a compiler constant from here
+        // down, which is what makes `[ FOUR = 4 ]` above a data block that
+        // writes `FOUR` mean anything. The value crosses at the integer
+        // boundary and wraps into the `const` representation exactly as
+        // `const NEG = 0 - 1` already does.
+        for (name, assigned) in fresh {
+            let Some(number) = assigned.number() else {
+                continue;
+            };
+            let value = eval::to_integer(number) as u32;
+            self.declare(&name, SymbolKind::Const { value }, body.span);
+        }
+        match value {
+            Ok(value) => self.model.eval.record(body.span, value),
+            Err(error) => {
+                if let Some(diagnostic) = crate::resolve::eval_diagnostic(error) {
+                    self.diagnostics.push(diagnostic);
+                }
+            }
+        }
+    }
+
+    /// Declares one `evalfunc`, refusing a name and arity already taken.
+    fn declare_eval_function(&mut self, function: &crate::ast::EvalFunction) {
+        let arity = function.parameters.len();
+        if eval::Functions::is_builtin(&function.name.text, arity) {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::DUPLICATE_SYMBOL,
+                    format!(
+                        "the evaluator library already has `{}` with {arity} argument{}",
+                        function.name.text,
+                        if arity == 1 { "" } else { "s" }
+                    ),
+                    Label::new(function.name.span, "this name is the library's"),
+                )
+                .with_note(
+                    "the argument count is part of an evaluator function's identity, so a                      library name is free at every other count",
+                )
+                .with_docs("doc/syntax-reference.md#functions"),
+            );
+            return;
+        }
+        let declared = eval::UserFunction {
+            parameters: function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.text.clone())
+                .collect(),
+            body: function.body.clone(),
+            declaration: function.name.span,
+        };
+        if let Err(first) = self
+            .model
+            .eval
+            .functions_mut()
+            .declare(&function.name.text, declared)
+        {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::DUPLICATE_SYMBOL,
+                    format!(
+                        "`{}` already names an `evalfunc` with {arity} argument{}",
+                        function.name.text,
+                        if arity == 1 { "" } else { "s" }
+                    ),
+                    Label::new(function.name.span, "declared again here"),
+                )
+                .with_secondary(Label::new(first, "first declared here"))
+                .with_docs("doc/syntax-reference.md#functions"),
+            );
         }
     }
 
@@ -1090,6 +1240,7 @@ impl Analysis {
                 abi::entry_state(info.entry, info.contract),
                 &width::Context {
                     symbols: &self.model.symbols,
+                    eval: &self.model.eval,
                     function: Some(info.symbol),
                     callees: &fallback,
                     externally_reachable: &self.model.externally_reachable,
@@ -1179,6 +1330,7 @@ impl Analysis {
                     abi::entry_state(info.entry, info.contract),
                     &width::Context {
                         symbols: &self.model.symbols,
+                        eval: &self.model.eval,
                         function: Some(info.symbol),
                         callees: &callees,
                         externally_reachable: &self.model.externally_reachable,
@@ -1514,6 +1666,7 @@ impl Analysis {
                 ModeState::unknown(),
                 &width::Context {
                     symbols: &self.model.symbols,
+                    eval: &self.model.eval,
                     // No function, so no scope for `.name` labels — which
                     // `resolve.rs` reports where one is written.
                     function: None,
@@ -1778,18 +1931,46 @@ impl Analysis {
 
     /// `[ 1 + size(section) ]` is arithmetic around a reserved call and
     /// `[ max(size(a), 1) ]` nests one, so the whole evaluator tree is walked.
+    ///
+    /// The report is *structural*, not something the interpreter produces
+    /// when it reaches one: `rnd()` in the arm of a ternary this evaluation
+    /// did not take is still `rnd()`, and a program is no more portable for
+    /// having hidden it behind a condition.
     fn report_reserved_in_eval(&mut self, expr: &EvalExpr) {
         match &expr.kind {
             EvalExprKind::ReservedCall(call) => {
-                let diagnostic = compat::k65_reserved(
-                    DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
-                    call.keyword_span,
-                    eval_call_text(call.name),
-                );
-                self.diagnostics.push(diagnostic);
+                // `print` and `error` are implemented (decision 6), so they
+                // are not reported here; the interpreter carries their
+                // messages instead.
+                if !matches!(call.name, EvalCallName::Print | EvalCallName::Error) {
+                    self.diagnostics.push(reserved_eval_call(call));
+                }
                 for argument in &call.arguments {
                     self.report_reserved_in_eval(argument);
                 }
+            }
+            EvalExprKind::MethodCall {
+                base, arguments, ..
+            } => {
+                self.report_reserved_in_eval(base);
+                for argument in arguments {
+                    self.report_reserved_in_eval(argument);
+                }
+            }
+            EvalExprKind::If {
+                condition,
+                consequence,
+                alternative,
+            } => {
+                self.report_reserved_in_eval(condition);
+                self.report_reserved_in_eval(consequence);
+                if let Some(alternative) = alternative {
+                    self.report_reserved_in_eval(alternative);
+                }
+            }
+            EvalExprKind::While { condition, body } => {
+                self.report_reserved_in_eval(condition);
+                self.report_reserved_in_eval(body);
             }
             EvalExprKind::Call { arguments, .. } => {
                 for argument in arguments {
@@ -1814,20 +1995,23 @@ impl Analysis {
                 self.report_reserved_in_eval(target);
                 self.report_reserved_in_eval(value);
             }
-            EvalExprKind::Subscript { base, index } => {
+            EvalExprKind::Subscript { base, indices } => {
                 self.report_reserved_in_eval(base);
-                self.report_reserved_in_eval(index);
+                for index in indices {
+                    self.report_reserved_in_eval(index);
+                }
             }
             EvalExprKind::Member { base, .. } => self.report_reserved_in_eval(base),
-            EvalExprKind::List(items) => {
+            EvalExprKind::List(items) | EvalExprKind::Block(items) => {
                 for item in items {
                     self.report_reserved_in_eval(item);
                 }
             }
-            EvalExprKind::Number(_)
+            EvalExprKind::Number { .. }
             | EvalExprKind::Float(_)
             | EvalExprKind::String(_)
             | EvalExprKind::Symbol(_)
+            | EvalExprKind::Pi
             | EvalExprKind::Error => {}
         }
     }
@@ -1867,7 +2051,7 @@ impl Analysis {
     /// A resolver over this unit's symbols, scoped to the function being
     /// checked. Analysis owns the diagnostics it produces.
     fn resolver(&self) -> Resolver<'_> {
-        Resolver::new(&self.model.symbols).in_function(self.current_function)
+        Resolver::new(&self.model.symbols, &self.model.eval).in_function(self.current_function)
     }
 
     /// Records what a resolver run found into the model this analysis owns.
@@ -2673,6 +2857,11 @@ fn illegal_opcode_text(opcode: IllegalOpcode) -> (&'static str, &'static str, &'
 }
 
 /// The source spelling of a reserved evaluator function.
+/// One of the four evaluator functions K816 refuses, at its call site.
+fn reserved_eval_call(call: &crate::ast::ReservedCall) -> Diagnostic {
+    compat::k65_refused_eval_function(call.keyword_span, eval_call_text(call.name))
+}
+
 fn eval_call_text(name: EvalCallName) -> &'static str {
     match name {
         EvalCallName::Size => "size",

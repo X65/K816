@@ -1,0 +1,31 @@
+// Oracle question: does the original refuse a name assigned in one top-level
+// evaluator block and again in a different one?
+//
+// `doc/syntax-reference.md` says it does - "assigning that same name again in
+// a different top-level evaluator block is rejected" - and
+// `plans/06-compatibility.md` lists a diagnostic for it.  Neither is a
+// measurement, and the rule is not free: the shape below is how a counted
+// loop is written.
+//
+// Three readings at once: a plain reassignment, a compound one, and the
+// initialise-then-loop shape the evaluator's own `while` needs.
+
+[ NN = 1 ]
+[ NN = 2 ]
+
+[ ACC = 10 ]
+[ ACC += 5 ]
+
+[ CTR = 0 ]
+[ while CTR < 3 { CTR = CTR + 1 } ]
+
+data answers {
+  [ NN ]
+  [ ACC ]
+  [ CTR ]
+}
+
+main {
+  a = answers
+  return
+}

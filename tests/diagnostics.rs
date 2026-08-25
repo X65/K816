@@ -365,10 +365,38 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::ADDRESS_RANGE,
         caret: "i - 9",
     },
+    // What is left of E0201 in the evaluator after G4: the forms that need a
+    // data section's assembled bytes, which is G6's machinery.
     Case {
-        source: "data d {\n    for i=0..3 eval [ sin(i) ]\n}\n",
+        source: "data tab {\n    1 2 3\n}\ndata d {\n    [ index(tab, 1) ]\n}\n",
         code: DiagnosticCode::NOT_YET_IMPLEMENTED,
-        caret: "sin(i)",
+        caret: "index(tab, 1)",
+    },
+    // The evaluator family G4 introduces.
+    Case {
+        source: "data d {\n    [ print(\"ready\") ]\n}\n",
+        code: DiagnosticCode::EVAL_PRINT,
+        caret: "print(\"ready\")",
+    },
+    Case {
+        source: "data d {\n    [ error(\"no configuration\") ]\n}\n",
+        code: DiagnosticCode::EVAL_ERROR,
+        caret: "error(\"no configuration\")",
+    },
+    Case {
+        source: "data d {\n    [ SPIN = 0 while 1 { SPIN = SPIN + 1 } ]\n}\n",
+        code: DiagnosticCode::EVAL_BUDGET,
+        caret: "[ SPIN = 0 while 1 { SPIN = SPIN + 1 } ]",
+    },
+    Case {
+        source: "data d {\n    [ \"text\" ]\n}\n",
+        code: DiagnosticCode::EVAL_NOT_A_NUMBER,
+        caret: "[ \"text\" ]",
+    },
+    Case {
+        source: "[ LIMIT = 1 ]\n[ LIMIT = 2 ]\n",
+        code: DiagnosticCode::EVAL_REASSIGNED,
+        caret: "LIMIT = 2",
     },
     Case {
         source: "data d {\n    for i=0..3 eval [ missing ]\n}\n",
@@ -695,10 +723,16 @@ fn only_the_compile_through_conditions_are_warnings() {
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
     ];
+    // `print(msg)` is the one diagnostic the *source* asked for. Nothing
+    // about the program is wrong, so it is neither an error nor a warning,
+    // and its code says which before anyone looks it up.
+    const NOTES: &[DiagnosticCode] = &[DiagnosticCode::EVAL_PRINT];
     for case in FAMILY {
         let (_, diagnostic) = diagnostic_for(case.source, case.code);
         let expected = if WARNINGS.contains(&case.code) {
             Severity::Warning
+        } else if NOTES.contains(&case.code) {
+            Severity::Note
         } else {
             Severity::Error
         };

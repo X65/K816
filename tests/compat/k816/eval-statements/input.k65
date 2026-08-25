@@ -1,0 +1,25 @@
+// `k65/eval-statements` with its two top-level blocks joined into one.
+//
+// The oracle source assigns `n` in one block and again in the next, which the
+// original allows and K816 does not (`k65/eval-reassignment`).  Joining the
+// brackets is the whole difference; the six answers below are the golden's,
+// byte for byte: `05 64 2A 07 08 0C`.
+
+[ n = 0 while n < 5 { n = n + 1 } ]
+[ if n == 5 m = 100 else m = 200 ]
+
+evalfunc dbl(q) [ q * 2 ]
+evalfunc add(p, q) [ p + q ]
+
+data answers {
+  [ n ]                     // the `while` counted to five
+  [ m ]                     // the `if` took its then-branch
+  [ dbl(21) ]
+  [ add(3, 4) ]
+  [ add(add(1, 2), 5) ]     // a call as an argument
+  [ dbl(dbl(3)) ]           // and nested one deep
+}
+
+func main @a8 @i8 {
+  a = answers
+}

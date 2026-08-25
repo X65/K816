@@ -1,0 +1,25 @@
+row       evelem-values
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A bracket in operand position is an immediate, and a bracket reads a
+`const`.**
+
+    30 3C           the two data entries
+    A9 0C           `a = [ FLAG_B ]`
+
+`k65/eval-sees-consts` measures both against the original and cannot check
+either at the bytes, because its fourth bracket is `index(tab, 2)` - a read of
+a section's assembled bytes, which is G6's - and the file stops there.  These
+are its other three claims, and each byte is the byte at the same position in
+its `oracle.hex`.
+
+The third is the one that was wrong.  `Arg -> Number` is `arg(AM_IMM, ...)`
+(`compiler.inc:270`) and `Number -> RawNumber | [ EvalCode ]`, so a bracket in
+operand position is an **immediate** - `A9 0C`, not a load from address `$0C`.
+K816 read it as an address until G4, because `denotes_value` listed a literal,
+a `const` and a metadata query and had no arm for a bracket.  A literal and a
+`const` in the same position had always been immediates, so the defect was
+invisible to every fixture that did not write a bracket there, and the golden
+beside it had been in the tree since G0 without anyone comparing that byte.

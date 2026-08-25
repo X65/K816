@@ -112,6 +112,47 @@ pub fn k65_reserved(code: DiagnosticCode, span: Span, construct: &str) -> Diagno
     .with_docs("doc/k65-compat.md")
 }
 
+/// One of the four evaluator functions K816 does not run.
+///
+/// A *refusal*, not a reservation: nothing later brings `rnd` back, and the
+/// help names what to do instead where there is something to name. `print`
+/// and `error` left this family in G4 — they are implemented — so the code's
+/// four remaining producers are the ones that mutate a section, read one, or
+/// are not deterministic (`plans/06-compatibility.md` decision 6).
+pub fn k65_refused_eval_function(span: Span, name: &str) -> Diagnostic {
+    let diagnostic = Diagnostic::error(
+        DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
+        format!("K65's evaluator function `{name}` is not in K816"),
+        Label::new(span, "this call cannot be compiled"),
+    );
+    match name {
+        // Cheap to implement and refused anyway: a seeded generator would
+        // give a program bytes the original never produced twice, and an
+        // unseeded one would give it different bytes every build.
+        "rnd" => diagnostic
+            .with_note(
+                "a compiler that generates a different table on each build is a compiler \
+                 whose output cannot be compared with itself",
+            )
+            .with_help("generate the table outside the build and include it with `binary`"),
+        // `size` is a question, not a mutation — but the answer is a data
+        // section's assembled length, which K816 does not have where an
+        // evaluation runs. `:sizeof` answers the question a variable can ask.
+        "size" => diagnostic
+            .with_note(
+                "the answer is the assembled length of a data section, which is not known \
+                 where an evaluation runs",
+            )
+            .with_help("`NAME:sizeof` answers this for a variable or a field"),
+        // Section mutation is outside what the compiler does at all.
+        _ => diagnostic.with_note(
+            "K816 does not let a compile-time evaluation change a section's contents \
+             (`doc/design.md` §1)",
+        ),
+    }
+    .with_docs("doc/syntax-reference.md#functions")
+}
+
 /// `bank NAME` is removed, and `segment NAME` is what replaced it.
 ///
 /// A *removal* rather than a reservation, so the wording says so: nothing

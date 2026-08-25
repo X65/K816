@@ -1,0 +1,44 @@
+row       evexpr-operators
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Thirty-two operators, and the two compilers differ in one byte.**
+
+Every entry carries a value worked out by hand and the golden is the arbiter.
+Laid side by side, the data bytes are:
+
+    oracle   07 09 05 04 01 02 10 10 08 0F 06 FB FE 01 00 01 01 00 00
+    K816     07 09 05 04 01 02 10 10 08 0F 06 FA FE 01 00 01 01 00 00
+                                           ^^
+    oracle   01 00 05 03 01 00 0B 16 03 | 07 | 02 | 03
+    K816     01 00 05 03 01 00 0B 16 03 | 07 | 02 | 03
+
+The one difference is `~5 & 255`: 251 there, 250 here.  It is the same defect
+twice over, and it is worth spelling out because it is the reason a bitwise
+operand needed a conversion of its own.
+
+`EvalAny::ToInt` is `int(floor(x) + .5f)` (`eval.h:28`).  For a non-negative
+value that is `floor(x)`; for a negative one, `floor(x) + 0.5` crosses back
+toward zero and the truncation lands one *too high*.  So `(0 - 2) | 0` is -1
+there, `(0 - 1) << 4` is 0, and here `~5` is -6 but the `&` that follows
+re-converts it and gets -5.  K816 truncates toward zero throughout, which
+agrees with the original everywhere the original agrees with itself: the
+thirteenth byte, `(0 - 2.7) & 255`, is `FE` in both.
+
+Three readings the documents did not have, all of them in the bytes above:
+
+  - **`%` is a non-negative modulo.**  `fmod(fmod(a,b)+b,b)`, so `(0-7) % 3`
+    is 2 and not -1 - the sixth byte.
+  - **`&&` does not short-circuit.**  The stack machine's `LOGBINARY` pops two
+    values that were both computed, so an operand with an effect has it either
+    way.
+  - **A run of statements is one value.**  `assignments`, `compounds` and
+    `steps` are one bracket each and one byte each, because the original
+    separates statements with the *pop* operator: everything before the last
+    is evaluated and discarded.
+
+Two spellings are deliberately absent and live in
+`tests/compat/k816/eval-extensions/` instead, because the original does not
+have them: `||`, which is not a token there at all, and the prefix `++`/`--`,
+which abort the compiler.

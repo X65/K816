@@ -135,6 +135,21 @@ fn dump_ast(file: &AstFile) -> String {
                     item.span.end
                 ));
             }
+            ItemKind::EvalFunc(function) => {
+                let parameters: Vec<&str> = function
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.text.as_str())
+                    .collect();
+                out.push_str(&format!(
+                    "evalfunc {}({}) {} @{}..{}\n",
+                    function.name.text,
+                    parameters.join(" "),
+                    dump_eval(&function.body.kind),
+                    item.span.start,
+                    item.span.end
+                ));
+            }
             ItemKind::Preprocessor(directive) => {
                 out.push_str(&format!(
                     "preprocessor {:?} @{}..{}\n",
@@ -572,7 +587,7 @@ fn dump_expr(kind: &ExprKind) -> String {
 /// Renders an evaluator expression in the same prefix form.
 fn dump_eval(kind: &EvalExprKind) -> String {
     match kind {
-        EvalExprKind::Number(value) => format!("{value}"),
+        EvalExprKind::Number { value, .. } => format!("{value}"),
         EvalExprKind::Float(text) => text.clone(),
         EvalExprKind::String(text) => format!("{text:?}"),
         EvalExprKind::Symbol(name) => name.text.clone(),
@@ -619,16 +634,57 @@ fn dump_eval(kind: &EvalExprKind) -> String {
             dump_eval(&target.kind),
             dump_eval(&value.kind)
         ),
-        EvalExprKind::Subscript { base, index } => {
-            format!("({}[{}])", dump_eval(&base.kind), dump_eval(&index.kind))
+        EvalExprKind::Subscript { base, indices } => {
+            let indices: Vec<String> = indices.iter().map(|i| dump_eval(&i.kind)).collect();
+            format!("({}[{}])", dump_eval(&base.kind), indices.join(" "))
         }
         EvalExprKind::Member { base, field } => {
-            format!("({}{})", dump_eval(&base.kind), field.text)
+            format!("({}.{})", dump_eval(&base.kind), field.text)
+        }
+        EvalExprKind::MethodCall {
+            base,
+            method,
+            arguments,
+        } => {
+            let arguments: Vec<String> = arguments.iter().map(|a| dump_eval(&a.kind)).collect();
+            format!(
+                "({}.{}({}))",
+                dump_eval(&base.kind),
+                method.text,
+                arguments.join(" ")
+            )
         }
         EvalExprKind::List(items) => {
             let items: Vec<String> = items.iter().map(|i| dump_eval(&i.kind)).collect();
             format!("(, {})", items.join(" "))
         }
+        EvalExprKind::Block(statements) => {
+            let statements: Vec<String> = statements.iter().map(|s| dump_eval(&s.kind)).collect();
+            format!("(do {})", statements.join(" "))
+        }
+        EvalExprKind::If {
+            condition,
+            consequence,
+            alternative,
+        } => match alternative {
+            Some(alternative) => format!(
+                "(if {} {} {})",
+                dump_eval(&condition.kind),
+                dump_eval(&consequence.kind),
+                dump_eval(&alternative.kind)
+            ),
+            None => format!(
+                "(if {} {})",
+                dump_eval(&condition.kind),
+                dump_eval(&consequence.kind)
+            ),
+        },
+        EvalExprKind::While { condition, body } => format!(
+            "(while {} {})",
+            dump_eval(&condition.kind),
+            dump_eval(&body.kind)
+        ),
+        EvalExprKind::Pi => "pi".to_owned(),
         EvalExprKind::ReservedCall(call) => {
             let arguments: Vec<String> =
                 call.arguments.iter().map(|a| dump_eval(&a.kind)).collect();

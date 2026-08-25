@@ -2,30 +2,28 @@ row       number-eval-bracket
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
+expect    input.k65 K816-E0109
 
-**Round half up, then wrap silently.**  The golden reads, byte for byte:
+**Round half up, then wrap silently - and K816 does not wrap.**
+
+Of the twenty-two entries, K816 compiles eleven to the golden's own bytes and
+refuses the other eleven with `K816-E0109`, the same code the literal `300`
+gets in a byte entry.  That split *is* decision 4: the rounding is copied
+exactly and the wrapping is not, because K816 keeps the range check the
+original does not have.  `tests/compat/k816/eval-rounding/` is the eleven it
+compiles, checked at the bytes.
+
+The golden reads, byte for byte:
 
     FF  [255]                       in range
     2C  [300]                       past $FF - wrapped, no diagnostic
@@ -67,3 +65,11 @@ So the rule G4 implements at every boundary is one function:
 and then the context's own width and range check, unchanged.  Decision 4's
 "values are `f64`" is right about the arithmetic and wrong about the ends, and
 G4 corrects it.
+
+G4 also had to split the literals to reproduce the sixteenth byte, and the
+split is measured rather than read: `0x1000001 - 0x1000000` is **1** in the
+original and `16777217 - 16777216` is **0**, because a literal beginning `0x`
+or `0b` goes through `ParseInt` and every other one goes through `ParseFloat`
+(`compiler_eval.cpp:168-172`).  `EvalExprKind::Number` therefore carries
+whether its spelling was exact; nothing downstream of the decoded value could
+have told.

@@ -20,7 +20,9 @@ K65 uses C-style comments:
 - Binary: `0b101010` or `%101010`
 - Character literals: `'A'`, `'\n'`, `'\0'`
 
-Within evaluator expressions, floating-point literals are also supported (e.g. `[1.5 + .5]`). Values that flow back into K65 integer contexts must resolve exactly to an integer and still pass the target width/range check; they are not rounded or masked automatically.
+Within evaluator expressions, floating-point literals are also supported (e.g. `[1.5 + .5]`). A value that flows back into a K65 integer context is **rounded to the nearest integer, half up** — `2.5` becomes `3` and `-2.5` becomes `-2` — and the target's own width and range check then applies to the result, exactly as it applies to a literal. Nothing is masked: a bracket that produces `300` in a byte entry is refused (`K816-E0109`), just as the literal `300` is.
+
+The arithmetic in between is double precision and both *ends* are single, which is visible in two places. A decimal literal is a `float`, so `[16777217 - 16777216]` is `0`; a `0x` or `0b` literal is not, so `[0x1000001 - 0x1000000]` is `1`. See "Compile-time Evaluator" below.
 
 ## Variable Declaration
 
@@ -350,7 +352,7 @@ K65 also supports symbolic subscript arrays with named `.field` entries inside `
 
 ## Constant Declaration
 
-The best way of defining constants is using the evaluator. Evaluator-defined constants are processed in source order and can be mutated within a single evaluator block (`=`, `+=`, `++`, and similar operators). Reassigning the same constant name in a later top-level evaluator block is an error. Evaluator constants can be floating-point values, but K65 instruction operands, variable addresses, data widths, and other integer contexts require an exact integer value that fits the selected encoding width. The compiler does not round evaluator values or mask them to one byte automatically.
+The best way of defining constants is using the evaluator. Evaluator-defined constants are processed in source order and can be mutated within a single evaluator block (`=`, `+=`, `++`, and similar operators). Reassigning the same constant name in a later evaluator block is an error (`K816-E0149`), and so is assigning to a name the compiler already owns — a `const`, a `var`, a label. Evaluator constants can be floating-point values; where one reaches an integer context — an instruction operand, a variable address, a data entry — it is rounded to the nearest integer, half up, and must then fit the encoding width the context selected.
 
 ```k65
 [                       // square brace starts evaluator expression
@@ -438,9 +440,11 @@ data SOME {
 
 ### Evaluator-bracket forms
 
-`[ expr ]` first tries the compile-time evaluator (which handles float math, `sin`/`cos`/`clamp`, evaluator-block-local assignments). If that fails (most commonly because the expression references user-declared k65 consts that the evaluator can't see), the bracketed text is re-parsed as a K65 expression and resolved through the const table. So `[FLAG_A | FLAG_B]` works on user consts because the K65 expression layer handles it after the evaluator declines.
+`[ expr ]` is the compile-time evaluator, and only that. There is **one** parse: the interior is the evaluator's own language ("Compile-time Evaluator" below), never the K65 expression layer.
 
-The evaluator side additionally supports `/`, `%`, comparison operators, ternary, and assignment-locals — these are not part of the K65 expression layer and only work on numeric/evaluator-local operands. `[1 / 2]` works; `[CONST_A / CONST_B]` does not (and produces a "could not evaluate eval-bracket expression" diagnostic).
+`[FLAG_A | FLAG_B]` works on user constants because the evaluator *sees* them — `const` names, the names earlier brackets assigned, and evaluator variables all live in one namespace it reads — and not because a second parser rescues the bracket after the first declines. So `[CONST_A / CONST_B]` works too, and so does every other operator the evaluator has on any operand it can resolve.
+
+Earlier versions of this compiler described a fallback: the bracketed text re-parsed as a K65 expression when evaluation failed. It existed because *that* evaluator could not read a `const`. The original K65 evaluator can, so there is nothing left for a fallback to rescue and K816 does not have one.
 
 ### `&&` gotcha
 
@@ -1175,11 +1179,11 @@ data table {
 }
 ```
 
-The range is inclusive at both ends, so `0..4` is five values and `7..7` is one. Each value the body folds to emits **one byte**, and it has to be one: K816 does not round an evaluator value or mask it to a byte, so a body that leaves the range says so (`K816-E0109`) rather than emitting a byte nobody wrote. Mask or clamp in the expression — `& 255`, `?< 255`.
+The range is inclusive at both ends, so `0..4` is five values and `7..7` is one. Each value the body folds to is rounded to the nearest integer and emits **one byte**, and it has to fit one: a body that leaves the range says so (`K816-E0109`) rather than emitting a byte nobody wrote. Mask or clamp in the expression — `& 255`, `?< 255`.
 
-What a body may use is the loop variable, the unit's `const` values, and integer arithmetic: the operators of the evaluator's own grammar, including `?<` and `?>` for the smaller and greater of two values, the comparisons, and the ternary. A name that is neither the loop variable nor a `const` has no compile-time value to fold (`K816-E0101`).
+The body is the whole evaluator language, not a subset of it: floating point, the function library, `pi`, statements, and calls to an `evalfunc` all work, which is what the `sin` examples above depend on. What it sees is the loop variable, every `const`, and every name an earlier evaluator bracket assigned; a name none of those gives a value is `K816-E0101`.
 
-Floating point and the evaluator's function library — `sin`, `pi`, and the rest — are **not** in this subset: they report as not-yet-implemented and name the sub-plan that owns the evaluator. The reason is not that they are unpredictable, since `sin` is not; it is that a float has to become a byte somehow, and the two references disagree about how. The original K65 rounds to nearest and masks with `$FF`; this document says an integer context needs an exact integer and that no automatic rounding happens. Picking between those is the evaluator's decision to make, not one to make in passing while emitting data.
+The loop variable is scoped to the loop, and so is anything the body assigns — the body runs against the environment as it stood where the `for` was written, and does not change it. That is one deliberate difference from the original, where a `for … eval` body's assignments outlive the loop; it exists because the bounds are ordinary K65 expressions and are not known where every other bracket is evaluated.
 
 ### `image`
 
@@ -1268,7 +1272,44 @@ data FourFiveSix {
 }
 ```
 
-Top-level evaluator blocks execute in source order. A name assigned in one block is available to later code, but assigning that same name again in a different top-level evaluator block is rejected.
+Top-level evaluator blocks execute in source order. A name assigned in one block is available to later code — as an evaluator value *and* as a compiler constant K65 syntax can read — but assigning that same name again in a different block is rejected (`K816-E0149`). Within one block a name may be assigned as often as it likes, which is what makes a counted loop expressible:
+
+```k65
+[ n = 0  while n < 5 { n = n + 1 } ]
+```
+
+The original K65 compiler allows the reassignment; K816 does not, so a program written as two blocks needs them joined as above. The rule exists so that what a name means does not depend on how far down the file the reader has got, which matters more here than elsewhere because an evaluator name is also a constant the rest of the language reads.
+
+Assigning to a name the compiler already owns — a `const`, a `var`, a label — is the same error.
+
+### Statements
+
+A bracket holds a *run* of statements, not a single expression, and its value is the last one's. Statements are juxtaposed or separated by `;`.
+
+```k65
+[ FLAGS = 0  if WIDE FLAGS = FLAGS | 1  if TALL FLAGS = FLAGS | 2 ]
+```
+
+| Form | Value |
+| :--- | :--- |
+| `expr` | the expression's |
+| `{ … }` | the last statement's |
+| `if C S` | `S`'s when `C` is true, and **0** when it is not |
+| `if C S else S2` | the taken branch's |
+| `while C S` | the last iteration's, and **0** if the body never ran |
+
+An evaluation is bounded by a step budget; a `while` whose condition never goes false is `K816-E0147` rather than a compiler that does not return.
+
+### `evalfunc`
+
+```k65
+evalfunc dbl(q) [ q * 2 ]
+evalfunc lerp(a, b, t) { a + (b - a) * t }
+```
+
+A function is identified by its **name and argument count** together, so `f(a)` and `f(a, b)` are two functions; redeclaring either, or shadowing a library function at the same count, is an error. A call must appear below the definition, as everything else in source order must.
+
+Recursion works, and is bounded by a call-depth limit (`K816-E0147`). The original's `evalfunc` has no frame — its parameters are slots allocated once — so a recursive one there returns a different function's answer or ends the build; no working K65 program contains one.
 
 ### Operators
 
@@ -1292,6 +1333,15 @@ Prec|Assoc|Operators|Description
 16|R-L|`=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `^=` `\|=`|assignment operators
 18|L-R|`,`|expression list (returns value of last)
 
+Four notes on what these compute, each of which differs from what the table alone suggests:
+
+- **`%` is a non-negative modulo** — `fmod(fmod(a, b) + b, b)` — so `(0 - 7) % 3` is `2`, not `-1`.
+- **`/` is float division.** `[7 / 2]` is `3.5`, which becomes `4` at an integer boundary.
+- **`&&` and `\|\|` do not short-circuit.** Both operands are evaluated, and so are all three arms of `?:`.
+- **The bitwise operators and the shifts truncate their operands toward zero**, which is *not* the rounding an integer boundary does: `[(0 - 2.7) \| 0]` is `-2` while `[0 - 2.7]` in a data entry is `-3`.
+
+`\|\|` is a K816 extension: the original spells both logical operators `&&`, so a source containing `\|\|` does not compile there.
+
 ### Functions
 
 Function|Description
@@ -1310,14 +1360,27 @@ Function|Description
 `min(a, b)`|Minimum
 `max(a, b)`|Maximum
 `clamp(x, min, max)`|Clamp x to range
-`index(tab, x)`|1-dimensional indexing helper for evaluator array literals
-`size(sec)`|Deferred compatibility function; currently rejected in deterministic evaluation
-`addbyte(sec, b)`|Deferred compatibility function; currently rejected because section mutation is not supported
-`color(r, g, b)`|Deferred compatibility function; currently rejected because palette conversion is not supported
-`color(x)`|Deferred compatibility function; currently rejected because palette conversion is not supported
-`rnd()`|Deferred compatibility function; currently rejected because randomness is disabled
-`print(msg)`|Deferred compatibility function; currently rejected because compile-time side effects are not supported
-`error(msg)`|Deferred compatibility function; currently rejected because compile-time side effects are not supported
+`index(sec, x)`|A byte of a data section — see below
+`index(sec, x, y)`|A cell of a two-dimensional section — see below
+`print(msg)`|Reports `msg` as a compile-time note (`K816-N0145`)
+`error(msg)`|Reports `msg` as a compile-time error (`K816-E0146`)
+`size(sec)`|Not implemented — see below
+`addbyte(sec, b)`|Refused: K816 does not let an evaluation change a section's contents
+`color(r, g, b)`|Refused: palette conversion is not the compiler's
+`color(x)`|Refused: palette conversion is not the compiler's
+`rnd()`|Refused: a build whose output differs from itself cannot be compared with itself. Generate the table outside the build and include it with `binary`
+
+`pi` is a value rather than a function, and it is the literal `3.141593` — six decimals, matching the original — not the machine constant. A table generated from a more accurate one has different bytes.
+
+A number splices into a string with `+`, formatted as `%lf`, so `print("n=" + 8)` says `n=8.000000`. Strings support `+`, `==`, `!=`, `<`, `<=`, `>` and `>=`; a string that reaches an integer context is `K816-E0148`, because a string is a value *inside* an evaluation and never the value *of* one.
+
+`abs` is a K816 extension: the original's library does not have it, and calling it there ends the build.
+
+**`index` and `size` are not implemented yet** (`K816-E0201` and `K816-K65-0002`). What they read is the *assembled bytes* of a data section — `sec[i]` is exactly `index(sec, i)`, and out of range is zero — which K816 does not have where an evaluation runs. For a variable or a field, `NAME:sizeof` answers the size question today.
+
+### Member access and method calls
+
+`x.f` is `f(x)` and `x.f(a)` is `f(x, a)`. That is the whole feature: there is no method table and no object model, and the dot must follow the value with no space between, so a call on a literal needs parentheses — `(2.75).frac()`.
 
 ## Assignment Chaining
 

@@ -1,0 +1,10 @@
+# What K816 compiles this fixture to today, assembled with ca65 and
+# linked with `../../atarixl.cfg`.  Sixteen bytes per line, load address
+# in the left column.
+#
+# The original refuses this source outright - `oracle.err` is the crash -
+# so there is no golden to compare against and this file is K816's answer
+# alone: `abs(0 - 5)` is 5.  `fixture.txt` says why the two differ.
+
+origin 2000
+2000  05 AD 00 20 60

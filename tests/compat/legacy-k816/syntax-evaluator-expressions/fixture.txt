@@ -1,18 +1,23 @@
 row       evexpr-operators
 config    legacy-stub.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
 
 The evaluator's operator set, in four brackets.
 
-Four `K816-E0201`.  The operator table lands in G4; what it contains is
-`compiler.inc:371-449` and what each operator *does* is
+Since G4 it compiles, and the bytes are the answers.  Reading the three
+immediates: `A` is 2, `B` is 1 and `J` is 2.  They pin the prefix and suffix
+step operators against each other - `I = ++A + B--` leaves `A` incremented and
+`B` decremented, and takes the *new* value of one and the *old* value of the
+other - and they pin that an assignment's value is the value assigned, since
+every name here is read after the block that set it.
+
+The operator table is `compiler.inc:371-449` and what each operator *does* is
 `src/compiler_eval.cpp`'s `Eval_RunVM`, including the two places the plan's
 reading was wrong: `%` is a non-negative modulo (`fmod(fmod(a,b)+b,b)`), and
 there is no `||` operator at all - the original's grammar spells both logical
 operators `&&` (`compiler.inc:390,393`), so a source containing `||` does not
-compile.
+compile there.  K816 keeps `||` as the extension this repository's own
+reference documents.
+
+Before G4: four `K816-E0201`, one per bracket.

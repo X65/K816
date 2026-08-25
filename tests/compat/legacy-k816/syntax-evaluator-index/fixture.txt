@@ -3,12 +3,22 @@ config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
+expect    input.k65 K816-E0101
+expect    input.k65 K816-E0101
 
 `index` and the `[ ]` indexing operator.
 
-Four `K816-E0201`.  The oracle answer that matters for G4 is in
-`tests/compat/k65/eval-forms/`: what is indexed is a **section** - a data
-label - not an array value, and `tab[i]` is exactly `index(tab, i)`.
+The oracle answer that matters is in `tests/compat/k65/eval-forms/`: what is
+indexed is a **section** - a data label - not an array value, and `tab[i]` is
+exactly `index(tab, i)`.  Reading a section's bytes means having assembled the
+section, which K816 does not do until lowering, so G4 names the form and G6
+implements it: one `K816-E0201`, at `arr[1]`.
+
+The two `K816-E0101` are `B` and `C` in `main`, and they show how far the
+refusal reaches.  `A` is assigned before the deferral and survives - `a=[A]`
+compiles - while `B` and `C` are the two the aborted block never got to
+assign.  An evaluation stops at its first unanswerable question and keeps
+everything it had already decided, which is the same shape the original has
+and the reason `A` is in this fixture at all.
+
+Before G4: four `K816-E0201`, one per bracket.

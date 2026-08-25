@@ -1,0 +1,32 @@
+row       evelem-call
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Eighteen library answers, and the two compilers agree on all eighteen.**
+
+    0E 5D 00 01 07 00 0C 20 02 03 03 4B 03 05 05 01   the sixteen functions
+    05 4B                                             the two method calls
+
+The library is `compiler.inc:465-471` and `src/gen/compiler_evops.inl`, and
+the argument count is part of a function's identity there: `color` exists with
+one argument and with three, and a user `evalfunc` may take a library name at
+any count the library does not use.
+
+Two entries are here for a reason beyond coverage:
+
+  - **`pi` is the literal `3.141593`** and not the machine constant
+    (`compiler.inc:438`).  The first two bytes pin it to six decimals -
+    `pi * 100 - 300` is 14 and `pi * 1000000 - 3141500` is 93 - because a
+    table generated with a different constant is a table with different bytes,
+    and `sin(x/212*pi*2)` in the reference's own example generates 214 of them.
+  - **A method call is spelling.**  `(3).max(5)` is `max(3, 5)` and
+    `(2.75).frac()` is `frac(2.75)` (`compiler.inc:448-449`), which is why the
+    last two bytes repeat two of the first sixteen.  There is no method table
+    and no object model; the dot binds with no space before it, the same rule
+    `field_access` uses in the K65 layer, so a call on a literal needs
+    parentheses.
+
+`abs` is **not** here, because it is not in the original's table: `abs(x)` ends
+the build there (`tests/compat/k65/eval-refusals/`).  K816 has it, as a
+`K816-extension` row, in `tests/compat/k816/eval-extensions/`.

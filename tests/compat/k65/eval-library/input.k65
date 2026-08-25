@@ -1,0 +1,43 @@
+// The evaluator's function library, one entry per function, against a value
+// computed by hand.
+//
+// `pi` is the literal `3.141593` and not the machine constant
+// (`compiler.inc:438`), which the first two entries pin: a table generated
+// with a different constant is a table with different bytes.
+//
+// `abs` is **not** in the original's library - it ends the build there
+// (`k65/eval-refusals`) - and is here because decision 5 lists it.  It is a
+// `K816-extension` row, and `--strict-k65` has to reject it.
+
+data library {
+  [ pi * 100 - 300 ]            // 14   - 3.141593, six decimals
+  [ pi * 1000000 - 3141500 ]    // 93   - and not 3.14159265...
+  [ sin(0) ]                    // 0
+  [ cos(0) ]                    // 1
+  [ asin(1) * 100 - 150 ]       // 7    - pi/2 is 1.5707963
+  [ acos(1) ]                   // 0
+  [ sqrt(144) ]                 // 12
+  [ pow(2, 5) ]                 // 32
+  [ floor(2.7) ]                // 2
+  [ ceil(2.1) ]                 // 3
+  [ round(2.5) ]                // 3    - half up, like every boundary
+  [ frac(2.75) * 100 ]          // 75
+  [ min(3, 5) ]                 // 3
+  [ max(3, 5) ]                 // 5
+  [ clamp(9, 1, 5) ]            // 5
+  [ clamp(0, 1, 5) ]            // 1
+}
+
+// The dot binds to the value before it with no space between, which is the
+// same rule `field_access` uses in the K65 layer - so a method call on a
+// literal needs parentheses around it.
+data sugar {
+  [ (3).max(5) ]                // 5    - `x.f(a)` is `f(x, a)`
+  [ (2.75).frac() * 100 ]       // 75   - and `x.f()` is `f(x)`
+}
+
+main {
+  a = library
+  a = sugar
+  return
+}

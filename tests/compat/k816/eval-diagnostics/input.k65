@@ -1,0 +1,30 @@
+// One evaluator diagnostic per construct that produces one, in the order the
+// codes were registered.
+//
+// `print` is the only note the compiler emits on request rather than on
+// judgement, so it is first: nothing about this program is wrong.
+
+data notes {
+  [ print("tables generated") ]
+  [ print("slot count is " + (4 + 4)) ]
+  0
+}
+
+data refusals {
+  [ error("this configuration has no display") ]
+  [ SPIN = 0 while 1 { SPIN = SPIN + 1 } ]
+  [ "a string cannot reach a byte" ]
+  [ RUNAWAY = 1 ]
+}
+
+[ RUNAWAY = 2 ]
+
+data owned {
+  [ notes = 3 ]
+}
+
+func main @a8 @i8 {
+  a = notes
+  a = refusals
+  a = owned
+}

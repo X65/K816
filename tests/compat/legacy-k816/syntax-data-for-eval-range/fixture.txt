@@ -1,12 +1,15 @@
 row       data-for-eval
 config    legacy-stub.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0101
 
-A `for ... eval` range whose bounds come from a top-level `[ FACTOR = 3 ]`
-block the body reads.
+A `for ... eval` range whose body reads a name a top-level `[ FACTOR = 3 ]`
+block assigned.
 
-Top-level evaluator blocks and the environment they share with brackets are
-G4's; today the block is `K816-E0201` and `FACTOR` is `K816-E0101`.
+Since G4 it compiles, and the claim is the bytes rather than the absence of
+diagnostics: `ramp_up` is `00 03 06 09 0C` and `ramp_down` is `04 03 02 01 00`.
+Between them they pin four things - that a top-level block runs, that the name
+it assigns reaches a bracket further down the file, that an inclusive range is
+five values and not four, and that a reversed range counts down.
+
+Before G4 the block was `K816-E0201` and `FACTOR` was `K816-E0101`.

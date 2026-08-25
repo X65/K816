@@ -3,7 +3,6 @@ config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0002
-expect    input.k65 K816-E0201
 
 An evaluator bracket the legacy compiler could not parse, which it then
 re-parsed as a K65 const expression - the "dual parse" of
@@ -14,3 +13,10 @@ that, and the fallback existed because the legacy evaluator could not see
 `const` names.  The original's evaluator *can* -
 `tests/compat/k65/eval-sees-consts/` measures it - so the workaround has
 nothing left to rescue.
+
+Since G4 the file reports the missing `)` and nothing else.  It used to report
+a second diagnostic as well, first `K816-E0201` for the unevaluated bracket and
+then - once the evaluator ran - `K816-E0101` for `unbalanced`, a name recovery
+had invented the shape of.  A bracket the parser had to recover inside is not
+the program anyone wrote, so it is not evaluated at all: one complaint about
+one problem.

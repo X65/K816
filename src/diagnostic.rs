@@ -223,6 +223,34 @@ impl DiagnosticCode {
     /// so that `compatible` is a claim rather than a hope
     /// (`plans/06-compatibility.md` decision 15).
     pub const ALIGN_UNREACHABLE: Self = Self("K816-E0144");
+    /// `print(msg)` in a live evaluation, carrying the evaluated message.
+    ///
+    /// A note rather than a warning: the original writes the text to the
+    /// build log and nothing about the program is wrong, so nothing should
+    /// look wrong (`plans/06-compatibility.md` decision 6). `N` is a third
+    /// letter beside `E` and `W`, and it is here because the severity is part
+    /// of what a code means: a reader who sees `K816-N0145` in a build log
+    /// should not have to look it up to know the build was fine.
+    pub const EVAL_PRINT: Self = Self("K816-N0145");
+    /// `error(msg)` in a live evaluation, carrying the evaluated message.
+    pub const EVAL_ERROR: Self = Self("K816-E0146");
+    /// An evaluation visited more nodes than [`crate::eval::STEP_BUDGET`]
+    /// allows — a `while` that does not terminate, or `evalfunc` recursion
+    /// with no base case.
+    pub const EVAL_BUDGET: Self = Self("K816-E0147");
+    /// An evaluator value that is not a number where one is needed: a string
+    /// or a data section at an integer boundary, or as an operand of
+    /// arithmetic that has no meaning for it.
+    pub const EVAL_NOT_A_NUMBER: Self = Self("K816-E0148");
+    /// An evaluator name assigned in one bracket and again in another, or
+    /// assigned when the compiler already owns the name.
+    ///
+    /// `doc/syntax-reference.md` "Compile-time Evaluator" makes an evaluator
+    /// name write-once outside the block that introduced it. The original
+    /// does not: `[N = 1] [N = 2]` compiles there and `N` is 2
+    /// (`tests/compat/k65/eval-reassignment/`). The refusal is therefore a
+    /// deliberate K816 rule, not a compatibility one.
+    pub const EVAL_REASSIGNED: Self = Self("K816-E0149");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -379,6 +407,15 @@ impl Diagnostic {
         Self::new(code, Severity::Warning, title, primary)
     }
 
+    /// A note the compiler was *asked* to emit, rather than one it decided to.
+    ///
+    /// `print(msg)` is the only producer: nothing about the program is wrong,
+    /// so nothing should look wrong, but the message still has to reach the
+    /// user with a span and a code so a fixture can name it.
+    pub fn note(code: DiagnosticCode, title: impl Into<String>, primary: Label) -> Self {
+        Self::new(code, Severity::Note, title, primary)
+    }
+
     pub fn with_secondary(mut self, label: Label) -> Self {
         self.secondary.push(label);
         self
@@ -467,6 +504,11 @@ mod tests {
         DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::ALIGN_UNREACHABLE,
+        DiagnosticCode::EVAL_PRINT,
+        DiagnosticCode::EVAL_ERROR,
+        DiagnosticCode::EVAL_BUDGET,
+        DiagnosticCode::EVAL_NOT_A_NUMBER,
+        DiagnosticCode::EVAL_REASSIGNED,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

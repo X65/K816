@@ -2,24 +2,25 @@ row       evalinstr-statements
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
+expect    input.k65 K816-E0149
 
-Since G1 every diagnostic here is a deferral: thirteen `K816-E0201`, one per
-construct the grammar now names.  Before G1 there were nineteen, eight of them
-`K816-E0001` where `if`, `else`, `while`, a block, and `evalfunc` had no rule
-to parse into.
+Since G4: one `K816-E0149`, and it is not about the statements.
+
+`[ n = 0 ]` and `[ while n < 5 { n = n + 1 } ]` assign `n` in two *different*
+top-level evaluator blocks, which `doc/syntax-reference.md` rejects and the
+original allows - `[ N = 1 ] [ N = 2 ]` compiles there and `N` is 2
+(`tests/compat/k65/eval-reassignment/`).  So this file stops at its second
+line, and the row is `intentionally-changed` with a cost worth stating: the
+initialise-then-loop shape is the natural way to write a counted loop, and
+K816 needs it written as one bracket.
+
+Everything the fixture is *about* works, and
+`tests/compat/k816/eval-statements/` is the same six answers with the two
+brackets joined: `05 64 2A 07 08 0C`, checked at the bytes.
+
+Before G4 there were thirteen `K816-E0201`, one per construct the grammar
+named; before G1 there were nineteen, eight of them `K816-E0001` where `if`,
+`else`, `while`, a block and `evalfunc` had no rule to parse into.
 
 **`if`/`else`, `while`, blocks and `evalfunc` all work, and recursion does
 not.**  The golden is `05 64 2A 07 08 0C`: the `while` counted to five, the

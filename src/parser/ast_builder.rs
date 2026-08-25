@@ -32,16 +32,16 @@ use crate::ast::{
     BranchConditionKind, CallArgument, CallContract, CallStatement, ComparisonKind,
     ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry, ContractOutputs,
     ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue, EvalCallName, EvalExpr,
-    EvalExprKind, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function, FunctionKind,
-    GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind,
-    HlaShift, HlaStack, HlaStatement, HlaStep, IllegalOpcode, IndexRegister, IndexRegisterKind,
-    IndirectOperand, Item, ItemKind, LabelScope, LabelStatement, LongIndirectOperand,
-    LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name, NativeInstruction,
-    NativeOperand, PreprocessorDirective, PreprocessorKind, Register, RegisterKind, ReservedCall,
-    ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind,
-    StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth,
-    TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
-    WidthAnnotationKind, WidthBlock,
+    EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function,
+    FunctionKind, GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand,
+    HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IllegalOpcode, IndexRegister,
+    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
+    LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name,
+    NativeInstruction, NativeOperand, PreprocessorDirective, PreprocessorKind, Register,
+    RegisterKind, ReservedCall, ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp,
+    Statement, StatementKind, StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr,
+    TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
+    WidthAnnotation, WidthAnnotationKind, WidthBlock,
 };
 use crate::compat::{self, Owner};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -81,6 +81,7 @@ fn assign_statement_ids(file: &mut AstFile) {
             | ItemKind::Const(_)
             | ItemKind::Segment(_)
             | ItemKind::EvalBlock(_)
+            | ItemKind::EvalFunc(_)
             | ItemKind::Preprocessor(_)
             | ItemKind::Binary(_)
             | ItemKind::Reserved(_)
@@ -281,7 +282,28 @@ impl AstBuilder<'_> {
                         span: self.span(child),
                     });
                 }
-                "evalfunc_declaration" => self.deferred(child, "`evalfunc` definitions"),
+                "evalfunc_declaration" => {
+                    let mut parameters = Vec::new();
+                    let mut cursor = child.walk();
+                    for parameter in child.children_by_field_name("parameter", &mut cursor) {
+                        parameters.push(self.name(Some(parameter), child));
+                    }
+                    let body = child.child_by_field_name("body");
+                    items.push(Item {
+                        kind: ItemKind::EvalFunc(EvalFunction {
+                            name: self.name(child.child_by_field_name("name"), child),
+                            parameters,
+                            body: match body {
+                                Some(body) => self.eval_bracket(body),
+                                None => EvalExpr {
+                                    kind: EvalExprKind::Error,
+                                    span: self.span(child),
+                                },
+                            },
+                        }),
+                        span: self.span(child),
+                    });
+                }
                 "line_comment" | "block_comment" => {}
                 "ERROR" => items.push(Item {
                     kind: ItemKind::Error,
@@ -1533,13 +1555,26 @@ impl AstBuilder<'_> {
                 .unwrap_or_default()
         };
         let kind = match node.kind() {
-            "number" => match parse_number(self.text(node)) {
-                Some(value) => EvalExprKind::Number(value),
-                None => EvalExprKind::Error,
-            },
+            "number" => {
+                let text = self.text(node);
+                // Exactly the original's test: `0x` or `0b` takes the integer
+                // path, everything else takes the float one
+                // (`compiler_eval.cpp:168`). K816's `$` and `%` are the same
+                // two radices under different spellings, so they take the
+                // same path.
+                let exact = text.starts_with(['$', '%'])
+                    || text.starts_with("0x")
+                    || text.starts_with("0X")
+                    || text.starts_with("0b")
+                    || text.starts_with("0B");
+                match parse_number(text) {
+                    Some(value) => EvalExprKind::Number { value, exact },
+                    None => EvalExprKind::Error,
+                }
+            }
             "float" => EvalExprKind::Float(self.text(node).to_owned()),
             "char_literal" => match parse_char_literal(self.text(node)) {
-                Some(value) => EvalExprKind::Number(value),
+                Some(value) => EvalExprKind::Number { value, exact: true },
                 None => EvalExprKind::Error,
             },
             "string" => EvalExprKind::String(decode_string(self.text(node))),
@@ -1593,20 +1628,20 @@ impl AstBuilder<'_> {
             },
             "eval_subscript" => {
                 let mut cursor = node.walk();
-                let indices = node.children_by_field_name("index", &mut cursor).count();
-                if indices > 1 {
-                    self.deferred(node, "two-dimensional evaluator indexing");
-                    EvalExprKind::Error
-                } else {
-                    EvalExprKind::Subscript {
-                        base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
-                        index: Box::new(self.eval_expr(node.child_by_field_name("index"), node)),
-                    }
+                let index_nodes: Vec<Node<'_>> =
+                    node.children_by_field_name("index", &mut cursor).collect();
+                let indices = index_nodes
+                    .into_iter()
+                    .map(|index| self.eval_expr(Some(index), node))
+                    .collect();
+                EvalExprKind::Subscript {
+                    base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
+                    indices,
                 }
             }
             "eval_member" => EvalExprKind::Member {
                 base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
-                field: self.name(node.child_by_field_name("field"), node),
+                field: self.eval_method_name(node.child_by_field_name("field"), node),
             },
             "reserved_eval_call" => {
                 let mut arguments = Vec::new();
@@ -1629,18 +1664,35 @@ impl AstBuilder<'_> {
                 }
                 EvalExprKind::List(items)
             }
-            "eval_if" | "eval_while" | "eval_statement_block" => {
-                self.deferred(node, "evaluator statements");
-                EvalExprKind::Error
-            }
+            "eval_if" => EvalExprKind::If {
+                condition: Box::new(self.eval_expr(node.child_by_field_name("condition"), node)),
+                consequence: Box::new(
+                    self.eval_expr(node.child_by_field_name("consequence"), node),
+                ),
+                alternative: node
+                    .child_by_field_name("alternative")
+                    .map(|alternative| Box::new(self.eval_expr(Some(alternative), node))),
+            },
+            "eval_while" => EvalExprKind::While {
+                condition: Box::new(self.eval_expr(node.child_by_field_name("condition"), node)),
+                body: Box::new(self.eval_expr(node.child_by_field_name("body"), node)),
+            },
+            // A block is a statement run, and so is a bracket with more than
+            // one statement in it; both are built by the same helper.
+            "eval_statement_block" => return self.eval_bracket(node),
             "eval_method_call" => {
-                self.deferred(node, "evaluator method calls");
-                EvalExprKind::Error
+                let mut arguments = Vec::new();
+                let mut cursor = node.walk();
+                for argument in node.children_by_field_name("argument", &mut cursor) {
+                    arguments.push(self.eval_expr(Some(argument), node));
+                }
+                EvalExprKind::MethodCall {
+                    base: Box::new(self.eval_expr(node.child_by_field_name("base"), node)),
+                    method: self.eval_method_name(node.child_by_field_name("method"), node),
+                    arguments,
+                }
             }
-            "eval_pi" => {
-                self.deferred(node, "the evaluator constant `pi`");
-                EvalExprKind::Error
-            }
+            "eval_pi" => EvalExprKind::Pi,
             _ => {
                 self.unexpected(node, "an evaluator expression");
                 EvalExprKind::Error
@@ -1649,13 +1701,36 @@ impl AstBuilder<'_> {
         EvalExpr { kind, span }
     }
 
-    /// The interior of `[ ... ]`: a run of evaluator statements, whose value
-    /// is the last one's.
+    /// The name in `x.f` and `x.f(a)`, without its dot.
     ///
-    /// A single expression is the shape every bracket had before G1 and is
-    /// built as before. A run of two or more is the original's statement
-    /// sequencing, and sub-plan G4 is what interprets it.
+    /// Both spellings are sugar for a call — `f(x)` and `f(x, a)` — so what
+    /// the AST holds is the function's name. Everywhere else in K65 a `.name`
+    /// selects a field and keeps its dot; here it never does.
+    fn eval_method_name(&mut self, node: Option<Node<'_>>, parent: Node<'_>) -> Name {
+        let mut name = self.name(node, parent);
+        if let Some(rest) = name.text.strip_prefix('.') {
+            name.text = rest.to_owned();
+        }
+        name
+    }
+
+    /// The interior of `[ ... ]` or `{ ... }`: a run of evaluator statements,
+    /// whose value is the last one's.
+    ///
+    /// A single statement is not wrapped, because a one-statement run *is*
+    /// that statement — and because every bracket written before G1 has that
+    /// shape, so unwrapping keeps their trees identical.
     fn eval_bracket(&mut self, node: Node<'_>) -> EvalExpr {
+        // A bracket the parser had to recover inside is not the program the
+        // author wrote, and evaluating the tree recovery invented would
+        // report names nobody typed on top of the syntax error that is the
+        // real news. One complaint about one problem.
+        if node.has_error() {
+            return EvalExpr {
+                kind: EvalExprKind::Error,
+                span: self.span(node),
+            };
+        }
         let mut cursor = node.walk();
         let statements: Vec<Node<'_>> = node
             .named_children(&mut cursor)
@@ -1663,13 +1738,15 @@ impl AstBuilder<'_> {
             .collect();
         match statements.len() {
             1 => self.eval_expr(Some(statements[0]), node),
-            _ => {
-                self.deferred(node, "evaluator statement sequences");
-                EvalExpr {
-                    kind: EvalExprKind::Error,
-                    span: self.span(node),
-                }
-            }
+            _ => EvalExpr {
+                kind: EvalExprKind::Block(
+                    statements
+                        .into_iter()
+                        .map(|statement| self.eval_expr(Some(statement), node))
+                        .collect(),
+                ),
+                span: self.span(node),
+            },
         }
     }
 

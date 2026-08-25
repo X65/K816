@@ -12,17 +12,20 @@ expect    main.k65 K816-E0201
 expect    main.k65 K816-K65-0003
 expect    main.k65 K816-K65-0001
 expect    main.k65 K816-E0201
-expect    main.k65 K816-E0201
-expect    main.k65 K816-E0201
-expect    main.k65 K816-E0201
-expect    main.k65 K816-E0101
-expect    main.k65 K816-E0201
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
-expect    main.k65 K816-E0201
+expect    main.k65 K816-E0101
 
-Since G2: eighteen diagnostics, and **no `K816-E0001`** - which is the task's
-done criterion.  Three things went with G1's twenty-one.
+Since G4: thirteen diagnostics, down from eighteen, and still **no
+`K816-E0001`** - which was G2's done criterion and stays true.
+
+The five that went are the evaluator's: three brackets in three positions -
+operand, data entry and `for` bound - and the `for … eval` entry behind them.
+What is left of `K816-E0201` in this file is two constructs, both G6's: the
+`evaluator [ ]` transform, and the `index` call that reads the bytes a section
+generates.
+
+Three things went with G1's twenty-one at G2.
 
   - The one syntax error was this fixture's own bug, not a compatibility gap.
     It wrote the image scan word as `8 > 8 v`; every attested source writes

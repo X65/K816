@@ -1,0 +1,33 @@
+row       evalinstr-statements
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**`if`/`else`, `while`, blocks and `evalfunc`, at the bytes.**
+
+    05 64 2A 07 08 0C
+
+The same six answers as `k65/eval-statements/oracle.hex`, byte for byte: the
+`while` counted to five, the `if` took its then-branch, `dbl(21)` is 42,
+`add(3, 4)` is 7, `add(add(1, 2), 5)` is 8, and `dbl(dbl(3))` is 12.
+
+It is a separate fixture for one reason, and the reason is a K816 rule rather
+than a K65 construct: the oracle source writes `[ n = 0 ]` and
+`[ while n < 5 { n = n + 1 } ]` as two top-level blocks, which the original
+allows and K816 refuses (`k65/eval-reassignment`).  Joining them into one
+bracket is the whole difference between the two files.
+
+Two things the statements had to get right, both from the original's own
+expansion (`compiler.inc:365-367`):
+
+  - **An `if` with no `else` that does not fire is zero**, because the
+    expansion pushes `#0` before the test and pops it only on the taken path.
+  - **A `while` is the last iteration's value, or zero if the body never ran**,
+    for the same reason.
+
+`evalfunc` is where K816 stops copying.  The original allocates a function's
+parameters as static slots once, at definition time, so a call that is still
+running when another begins would overwrite them - nesting works only because
+an inner call finishes before the outer one stores.  K816 gives each call a
+frame, which costs nothing and makes recursion work; the original's recursion
+is broken rather than bounded, so there is no compatibility to lose.

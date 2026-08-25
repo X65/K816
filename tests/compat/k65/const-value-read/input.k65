@@ -1,0 +1,25 @@
+// Oracle question: what is the *value* of a `const` with none?
+//
+// The declaration is accepted (`const-without-value` beside this one).  This
+// fixture reads it, which is where the two compilers part.
+//
+// K816 reads `const FIRST, SECOND = 7` as an enum-like group - FIRST is 0,
+// SECOND is 7 - which is a K816 shorthand `doc/syntax-reference.md` documents.
+// Whether that shorthand takes a meaning away from a legacy source depends
+// entirely on what the original does here.
+
+// The two slots are here so that both values survive into the bytes: read
+// into the accumulator and dropped, or stored over, the loads would be dead
+// and K816's optimizer would remove them - and a golden that does not contain
+// the answer is not evidence.
+
+var first_slot  = 0x80
+var second_slot = 0x81
+
+const FIRST, SECOND = 7
+
+main {
+  first_slot = a = FIRST
+  second_slot = a = SECOND
+  return
+}

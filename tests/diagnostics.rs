@@ -281,8 +281,12 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::SYMBOL_KIND_MISMATCH,
         caret: ".b",
     },
+    // A declaration's raw span is deliberately absent: `var buf[0]` is a K65
+    // declaration the original accepts, so K816 accepts it too
+    // (`tests/compat/k65/zero-element-span`). The two forms below have no K65
+    // spelling and keep the rule.
     Case {
-        source: "var buf[0]\n",
+        source: "var vec[ .a :byte [0] ]\n",
         code: DiagnosticCode::ELEMENT_COUNT_RANGE,
         caret: "0",
     },

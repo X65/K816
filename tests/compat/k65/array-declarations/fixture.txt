@@ -13,6 +13,8 @@ original's allocator places what follows it consecutively:
     B5 81    lda span,X          $81   <- the bracket starts here
     95 81    sta span,X
     A5 85    lda trail           $85   <- so `span[4]` took $81..$84
+    B5 86    lda sized,X         $86   <- `sized[SIZE]`, SIZE a const
+    A5 8A    lda after_sized     $8A   <- so it took $86..$89: four again
     B5 90    lda placed,X        $90   <- its own address
     A5 93    lda after_placed    $93   <- so `placed[3]` took $90..$92
 
@@ -21,9 +23,16 @@ document of either compiler says.  And the allocator followed `placed[3] =
 0x90` rather than carrying on from `$85`, so an addressed declaration moves
 the allocation point.
 
-K816 reserves the same sizes - `.res $04` and one byte each for `trail` and
-`after_placed` - which is the `compatible` half of this row, and the two
-pinned variables encode identically (`A5 80`, `B5 90`).
+`sized[SIZE]` answers the third question.  `BracketNumber -> [ EvalCode ]`
+(`compiler.inc:330`) is the *evaluator*, not a numeric terminal, so the bracket
+holds an expression and a `const` name resolves inside it against the
+compiler's one symbol table.  Four bytes, the same as the literal.  K816 reads
+the bracket as a subscript rather than as an evaluator expression and reaches
+the same answer for this case; the general one is `number-eval-bracket`, G4's.
+
+K816 reserves the same sizes - `.res $04` twice and one byte each for `trail`,
+`after_sized` and `after_placed` - which is the `compatible` half of this row,
+and the two pinned variables encode identically (`A5 80`, `B5 90`).
 
 What differs is placement, and it is not this compiler's to decide: K816 has
 no allocator.  An unaddressed variable is a `.res` in a segment and ld65

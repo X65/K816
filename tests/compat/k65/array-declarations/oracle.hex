@@ -10,7 +10,7 @@
 # compiler  version 0.2.1, build Feb  9 2026 02:31:38
 # revision  920a4e40e853c4cb563302f3c88d81ba4687c4ed
 # command   cd $K65_HOME/workdir && ../out/k65.exe @<this-directory>/array-declarations.k65proj
-# input     input.k65        adler32 B1CC4BE8  996 bytes
+# input     input.k65        adler32 86DFC8BE  1371 bytes
 # input     oracle.conf      adler32 BDCD1422  66 bytes
 # project
 #     -system AtariXL
@@ -29,5 +29,5 @@
 # Sixteen bytes per line, load address in the left column.
 
 origin 2000
-2000  4C 03 20 A2 00 A5 80 B5 81 95 81 A5 85 B5 90 A5
-2010  93 60
+2000  4C 03 20 A2 00 A5 80 B5 81 95 81 A5 85 B5 86 A5
+2010  8A B5 90 A5 93 60

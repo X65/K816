@@ -1928,7 +1928,12 @@ impl Analysis {
             .count
             .as_ref()
             .and_then(|expr| self.constant(expr, "allocation counts"));
-        let extent = self.checked_count(extent, var.size.as_ref());
+        // The raw span is deliberately *not* checked for zero. `var X[0]`
+        // is a K65 declaration — the original accepts it, reserves nothing,
+        // and carries the allocator on (`tests/compat/k65/zero-element-span`)
+        // — so refusing it would be a narrowing decision 0 does not allow
+        // where compatibility is this cheap. The forms below have no K65
+        // spelling and keep the rule.
         let count = self.checked_count(count, var.count.as_ref());
         let declared = var.width.map(|width| layout::data_width(width.kind));
         // On a declaration with fields the `:byte` suffix is the *default
@@ -2157,6 +2162,11 @@ impl Analysis {
     /// written. The declaration carries on without the multiplier, for the
     /// same reason a count that did not fold does — one bad number should not
     /// turn every use of the name into an undeclared-symbol error too.
+    ///
+    /// Asked of the `* count` allocation form and of a field's `[N]`, and
+    /// **not** of a declaration's raw span: `var X[0]` is a K65 declaration
+    /// and the original accepts it, where neither of these two has a K65
+    /// spelling to be compatible with (`postmortem.md` §G.3.2).
     fn checked_count(&mut self, count: Option<u32>, expr: Option<&Expr>) -> Option<u32> {
         match (count, expr) {
             (Some(0), Some(expr)) => {
@@ -2902,7 +2912,8 @@ fn duplicate_field(field: &ast::FieldDeclaration, previous: Span) -> Diagnostic 
     .with_docs("doc/symbolic-subscripts.md#field-item-grammar")
 }
 
-/// `var buf[0]`, `var t * 0`, or the field count `.str[0]`.
+/// `var t * 0`, or the field count `.str[0]`. Not a declaration's raw span:
+/// `var buf[0]` is K65 and is accepted.
 fn zero_element_count(span: Span) -> Diagnostic {
     Diagnostic::error(
         DiagnosticCode::ELEMENT_COUNT_RANGE,

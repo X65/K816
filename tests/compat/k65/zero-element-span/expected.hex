@@ -1,0 +1,14 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# This is K816's own output.  `oracle.hex` beside it is the original
+# compiler's, and `fixture.txt` says where the two differ and why.
+#
+# The one leading zero is `next`.  `z0[0]` is a `.res $00` before it and
+# takes no byte, which is what the original does too - the addresses
+# differ only because ld65 places an allocated variable and the original's
+# own allocator did.
+
+origin 2000
+2000  00 AD 00 20 60

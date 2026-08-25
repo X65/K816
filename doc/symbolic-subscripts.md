@@ -138,7 +138,8 @@ The implementation reports hard errors for:
 | --- | --- |
 | A non-constant base in the Fixed form (`var foo[...] = expr`) | `K816-E0108` |
 | A field name declared twice in one list | `K816-E0102` |
-| An element count of zero, on a field or on a declaration | `K816-E0141` |
+| An element count of zero, on a field (`.str[0]`) or on an allocation count (`* 0`) | `K816-E0141` |
+| An element count of zero on a declaration's raw span (`var buf[0]`) | accepted; it reserves nothing, as K65 does |
 | A field the layout does not declare, with a nearest-name suggestion | `K816-E0101` |
 | A `.field` selected from something that has no fields — a plain variable, a scalar field, an imported name | `K816-E0115` |
 | A repeat or field index that does not fold | `K816-E0134` |

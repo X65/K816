@@ -188,11 +188,15 @@ impl DiagnosticCode {
     /// what this code refuses is loading it into a register
     /// (`doc/syntax-reference.md`, "Two orthogonal axes").
     pub const DATA_WIDTH_MISMATCH: Self = Self("K816-E0140");
-    /// A declaration's element count is not a positive number. Both brackets
-    /// and the allocation count are affected: `var buf[0]`, `var t * 0`, and
-    /// the field count `.str[0]` all describe storage that has no elements,
-    /// and every access to one is out of range the moment it is written
+    /// An element count is not a positive number: `var t * 0` and the field
+    /// count `.str[0]` describe storage that has no elements, and every
+    /// access to one is out of range the moment it is written
     /// (`doc/symbolic-subscripts.md`, "Diagnostics").
+    ///
+    /// A declaration's *raw span* is deliberately not in that list. `var
+    /// buf[0]` is a K65 declaration and the original accepts it, reserving
+    /// nothing, so K816 does too — the two forms above have no K65 spelling
+    /// to be compatible with (`postmortem.md` §G.3.2).
     pub const ELEMENT_COUNT_RANGE: Self = Self("K816-E0141");
     /// A string character has no slot in the `charset` in force. A charset is
     /// an index table, so a character it does not list has no byte to emit —

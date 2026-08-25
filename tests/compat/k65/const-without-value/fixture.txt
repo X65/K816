@@ -1,0 +1,31 @@
+row       topelem-const
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0108
+
+**The original accepts a `const` with no value; K816 refuses a standalone
+one at the declaration.**
+
+The golden is `A9 07` and nothing else: the original declared `LONE` and
+`FIRST`, emitted no byte for either, and compiled.  `Const -> Ident`
+(`compiler.inc:47`) hands the compiler an empty value string and nothing
+checks it there.
+
+K816 reports `K816-E0108` on `const LONE`, at the declaration.  Inside a
+comma-separated group it does not: the group form is K816's enum-like
+auto-increment (`doc/syntax-reference.md`, "Constant Declaration"), so `FIRST`
+takes 0 and the declaration is accepted.  `const-value-read` beside this is
+where that 0 becomes visible.
+
+So this row is **not** `compatible`, which is what it claimed before G3 was
+reviewed.  Two differences, and they point in opposite directions:
+
+  - a standalone valueless `const` is a program the original accepts and K816
+    rejects, and
+  - a grouped one silently means zero in K816 where the original leaves it
+    without a value.
+
+Both are recorded on the row rather than fixed here, and the argument for not
+fixing them is in `const-value-read`: reading a valueless constant kills the
+original outright, so no *working* K65 program can tell the difference.

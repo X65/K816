@@ -12,10 +12,19 @@
 // It also asks whether an addressed bracket declaration takes the allocator
 // with it - `placed[3] = 0x90` names its own address, and where
 // `after_placed` lands says whether the allocator followed.
+//
+// And the third question is what the bracket *holds*.  `BracketNumber ->
+// [ EvalCode ]` (compiler.inc:330) is the evaluator, not a numeric terminal,
+// so a name should reach it: `sized[SIZE]` is here to prove that it does,
+// and that the count it yields is the same one a literal would.
+
+const SIZE = 4
 
 var lead = 0x80
 var span[4]
 var trail
+var sized[SIZE]
+var after_sized
 var placed[3] = 0x90
 var after_placed
 
@@ -25,6 +34,8 @@ main {
   a = span,x
   span,x = a
   a = trail
+  a = sized,x
+  a = after_sized
   a = placed,x
   a = after_placed
   return

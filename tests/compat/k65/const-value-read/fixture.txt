@@ -1,0 +1,29 @@
+row       k816-const-auto-increment
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Reading a valueless `const` kills the original compiler; K816 gives it
+zero.**
+
+`oracle.err` records exit 134 with no diagnostic - the same heap corruption
+`numeric-store-target` finds, and for a related reason: the original stores a
+constant's value as a *string*, and `Const -> Ident` (`compiler.inc:47`) leaves
+that string empty.  Declaring one is fine (`const-without-value` beside this);
+reading one is not.
+
+K816 reads `const FIRST, SECOND = 7` as an enum-like group, which
+`doc/syntax-reference.md` documents: an entry without a value continues the
+previous one, and a group that starts without one starts at zero.  So FIRST is
+0, and the bytes say so out loud - `64 80` is `stz first_slot`, the zero-store
+rewrite, which only fires because the value really is zero.
+
+**What this settles.**  The group shorthand takes no meaning away from a
+legacy source, because there is no legacy source to take it from: a K65
+program that reads a valueless constant does not compile, it aborts.  That is
+why the row is `K816-extension` rather than `intentionally-changed` - there is
+nothing here the original does that K816 does differently, only something the
+original cannot do at all.
+
+The standalone refusal is the other half and is a different judgment; it is on
+`topelem-const`, with `const-without-value` as its evidence.

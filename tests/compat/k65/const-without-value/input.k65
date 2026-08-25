@@ -1,0 +1,20 @@
+// Oracle question: what does a `const` with no value mean?
+//
+// `Const -> Ident % ST var($1,"",true,0)` (compiler.inc:47) declares it with
+// an empty value string, and no document of either compiler says what that
+// string becomes.  This fixture asks only whether the *declaration* is
+// accepted; `const-value-read` beside it asks what reading one does.
+//
+// Nothing here reads LONE or FIRST, on purpose: that is the whole difference
+// between the two fixtures.
+//
+// Register names are terminals in the original (`Arg -> A | X | Y | S`), so a
+// constant may not be called `A` - which is why these are spelled out.
+
+const LONE
+const FIRST, SECOND = 7
+
+main {
+  a = SECOND
+  return
+}

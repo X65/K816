@@ -6,10 +6,13 @@
 # compiler's, and `fixture.txt` says where the two differ and why.
 #
 # The two pinned variables encode exactly as the original's do - `A5 80`
-# for `lead` and `B5 90` for `placed,x` - and the three allocated ones do
-# not, because ld65 places them rather than a built-in allocator.  The six
-# leading zeros are their reservation: `span[4]`, `trail`, `after_placed`.
+# for `lead` and `B5 90` for `placed,x` - and the five allocated ones do
+# not, because ld65 places them rather than a built-in allocator.  The
+# eleven leading zeros are their reservation: `span[4]`, `trail`,
+# `sized[SIZE]`, `after_sized`, `after_placed`.  `sized` is four of them,
+# which is the const-named bracket answering the same as a literal one.
 
 origin 2000
-2000  00 00 00 00 00 00 A2 00 A5 80 BD 00 20 9D 00 20
-2010  AD 04 20 B5 90 AD 05 20 60
+2000  00 00 00 00 00 00 00 00 00 00 00 A2 00 A5 80 BD
+2010  00 20 9D 00 20 AD 04 20 BD 05 20 AD 09 20 B5 90
+2020  AD 0A 20 60

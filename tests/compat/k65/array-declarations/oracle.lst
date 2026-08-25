@@ -15,6 +15,10 @@ main
     STA     span,X
 ;    a = trail
     LDA     trail
+;    a = sized,x
+    LDA     sized,X
+;    a = after_sized
+    LDA     after_sized
 ;    a = placed,x
     LDA     placed,X
 ;    a = after_placed

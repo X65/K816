@@ -678,10 +678,7 @@ export default grammar({
       choice(
         seq(
           field('directive', alias(token(choice('#if', '#elif')), $.directive_name)),
-          // The condition is an *evaluator* expression, not a K65 one: the
-          // original evaluates `#if` through the same interpreter, which is
-          // where `!`, `&&`, `||`, and the ternary live.
-          field('condition', $._eval_expression),
+          field('condition', $._pp_condition),
         ),
         field('directive', alias(token(choice('#else', '#endif')), $.directive_name)),
         seq(
@@ -689,6 +686,34 @@ export default grammar({
           field('message', $.string),
         ),
       ),
+
+    // A directive is confined to the line it starts on, so its condition is
+    // the original's narrow `PPIfNumber` — `Number | AllIdent | ! PPIfNumber`
+    // with `Number -> RawNumber | [ EvalCode ]` (`compiler.inc:23-25,328`) —
+    // and not a full evaluator expression.
+    //
+    // The difference is not stylistic. K65 is newline-insensitive and
+    // `EvElem [ … ]` is a postfix index, so a full expression here reads the
+    // *next* line as a subscript: `#if 0` above a top-level `[ SIDE = 7 ]`
+    // parsed as `0[SIDE = 7]` and reported an index into a data section.
+    // Nothing in this grammar has a postfix, so the question cannot arise.
+    // Anything richer than a name goes in brackets — `#if [A && B]` — which
+    // is what the original requires as well.
+    _pp_condition: $ =>
+      choice(
+        $.number,
+        // `#if 0.4` is a lexical error in the original, which reads a
+        // condition with `getnum` and rejects the `.`. K816 accepts it and
+        // rounds, because the boundary rule it already has answers the
+        // question and refusing would be a rule of its own.
+        $.float,
+        $.identifier,
+        $.eval_bracket,
+        alias($.pp_negation, $.eval_unary),
+      ),
+
+    pp_negation: $ =>
+      prec.right(seq(field('operator', '!'), field('operand', $._pp_condition))),
 
     // `binary "file"` and `binary NAME = "file"` get real nodes: the mapping
     // to ca65's `.incbin` is deferred, not reinterpreted.

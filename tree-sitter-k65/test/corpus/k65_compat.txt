@@ -117,9 +117,10 @@ A preprocessor condition is an evaluator expression
 ================================================================================
 
 #if !DEBUG
-#elif LEVEL > 1 && !QUIET
+#elif [ LEVEL > 1 && !QUIET ]
 #else
 #endif
+[ TAIL = 1 ]
 
 --------------------------------------------------------------------------------
 
@@ -130,16 +131,22 @@ A preprocessor condition is an evaluator expression
       operand: (identifier)))
   (preprocessor_directive
     directive: (directive_name)
-    condition: (eval_binary
-      left: (eval_binary
-        left: (identifier)
-        right: (number))
-      right: (eval_unary
-        operand: (identifier))))
+    condition: (eval_bracket
+      (eval_binary
+        left: (eval_binary
+          left: (identifier)
+          right: (number))
+        right: (eval_unary
+          operand: (identifier)))))
   (preprocessor_directive
     directive: (directive_name))
   (preprocessor_directive
-    directive: (directive_name)))
+    directive: (directive_name))
+  (eval_block
+    expression: (eval_bracket
+      (eval_assignment
+        target: (identifier)
+        value: (number)))))
 
 ================================================================================
 Evaluator statements

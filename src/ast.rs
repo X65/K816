@@ -1054,7 +1054,14 @@ pub struct AlignDirective {
 pub struct PreprocessorDirective {
     pub kind: PreprocessorKind,
     /// The `#if` / `#elif` condition, when the directive takes one.
-    pub condition: Option<Expr>,
+    ///
+    /// An evaluator expression rather than a K65 one: the original evaluates
+    /// a condition through the same interpreter a bracket goes through
+    /// (`compiler.inc:23-25`, `PPIfNumber`), which is where `!`, `&&`, `||`
+    /// and the ternary come from, and it reads the same namespace — an
+    /// evaluator variable and a `const` alike (`plans/06-compatibility.md`
+    /// decision 9).
+    pub condition: Option<EvalExpr>,
     /// The `#error` / `#warn` message, when the directive takes one.
     pub message: Option<String>,
     pub keyword_span: Span,

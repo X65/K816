@@ -2,8 +2,7 @@ row       ppifnumber-condition
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
+expect    input.k65 K816-E0101
 
 `#if UNDEFINED` is an error in the original, and the golden is the refusal:
 
@@ -15,6 +14,12 @@ so an undeclared condition does not quietly take the false side, which is what
 a C programmer would expect it to do. Decision 9 rules the same for K816, and
 this is the measurement behind it.
 
-Unlike `eval-refusals` beside it, this refusal is clean: exit 1, with the
-compiler's own diagnostic, because the preprocessor's evaluation happens
-outside the path that aborts.
+Since G5 K816 says the same thing, in one diagnostic instead of the two
+`K816-E0201` deferrals that stood here before: `K816-E0101`, the code an
+evaluator bracket already used for a name nothing gives a value. The two
+compilers agree that the region is never compiled either way — the difference
+would only be whether the build stops, and both stop.
+
+Unlike `eval-refusals` beside it, this refusal is clean in the original: exit
+1, with the compiler's own diagnostic, because the preprocessor's evaluation
+happens outside the path that aborts.

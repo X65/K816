@@ -251,6 +251,24 @@ impl DiagnosticCode {
     /// (`tests/compat/k65/eval-reassignment/`). The refusal is therefore a
     /// deliberate K816 rule, not a compatibility one.
     pub const EVAL_REASSIGNED: Self = Self("K816-E0149");
+    /// `#error "message"` in a live preprocessor region, carrying the message.
+    pub const PREPROCESSOR_ERROR: Self = Self("K816-E0150");
+    /// `#warn "message"` in a live preprocessor region, carrying the message.
+    pub const PREPROCESSOR_WARNING: Self = Self("K816-W0151");
+    /// A preprocessor directive that does not pair with another one: an
+    /// `#if` the enclosing block ends without closing, an `#endif`, `#else`
+    /// or `#elif` with no `#if` above it, or a second `#else` in one chain.
+    ///
+    /// One code for all four shapes because they are one mistake seen from
+    /// four sides, and each report carries both spans — the directive that
+    /// cannot pair and the one it should have paired with, or the brace that
+    /// ended the region first (`plans/06-compatibility.md` decision 9).
+    ///
+    /// The original has no diagnostic here at all: its grammar pairs the
+    /// directives as a production, so three of these four shapes are a bare
+    /// "syntax error" and the fourth — a region crossing a block boundary —
+    /// aborts the compiler (`tests/compat/k816/preprocessor-unbalanced/`).
+    pub const PREPROCESSOR_UNBALANCED: Self = Self("K816-E0152");
     /// The parser recognizes a construct the compiler cannot compile yet.
     ///
     /// The `K816-E02xx` range covers "recognized, not implemented": the
@@ -509,6 +527,9 @@ mod tests {
         DiagnosticCode::EVAL_BUDGET,
         DiagnosticCode::EVAL_NOT_A_NUMBER,
         DiagnosticCode::EVAL_REASSIGNED,
+        DiagnosticCode::PREPROCESSOR_ERROR,
+        DiagnosticCode::PREPROCESSOR_WARNING,
+        DiagnosticCode::PREPROCESSOR_UNBALANCED,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

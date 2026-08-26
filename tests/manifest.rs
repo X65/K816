@@ -655,8 +655,11 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Preprocessor directives",
-        source: "#if FOO\nvar A = 1\n#elif BAR\n#else\n#endif\n#error \"x\"\n#warn \"y\"\n",
-        expect: Expect::Deferred,
+        // `#error` and `#warn` sit in the branch this chain does not take:
+        // both are diagnostics by definition, and a live one would make the
+        // row's own snippet fail to compile.
+        source: "const FOO = 1, BAR = 0\n#if FOO\nvar A = 1\n#elif BAR\n#else\n                 #error \"x\"\n#warn \"y\"\n#endif\n",
+        expect: Expect::Compiles,
         case: "Preprocessor directives at the top level",
     },
     Row {
@@ -716,8 +719,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Evaluator preprocessor conditions",
-        source: "#if !DEBUG\n#endif\n",
-        expect: Expect::Deferred,
+        source: "const DEBUG = 0\n#if !DEBUG\nvar TRACE = 1\n#endif\n",
+        expect: Expect::Compiles,
         case: "A preprocessor condition is an evaluator expression",
     },
     Row {

@@ -1,0 +1,11 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# There is no `oracle.hex` beside this one: the original does not compile
+# this source at all.  `oracle.err` is its answer - exit 1, with
+# "Undeclared eval variable" for a name inside a region it was skipping -
+# and `fixture.txt` says what that settles.
+
+origin 2000
+2000  60

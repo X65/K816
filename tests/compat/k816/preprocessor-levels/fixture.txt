@@ -1,0 +1,33 @@
+row       ppif-directives
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Regions nest at three levels, and `#elif` works at every one of them.**
+
+The original gives all three levels the same productions and then aborts on
+an `#elif` at the two inner ones (`k65/preprocessor-elif-inner-levels`), so
+there is no oracle to compare against here: this is K816's own claim, and the
+bytes are the assertion.
+
+Each chain picks a branch nothing else could produce:
+
+  - the top-level chain falls through `#if [FEATURE == 0]` to
+    `#elif [TIER == 2]`, so `MARK` is `$E1`;
+  - the data block's first chain falls through two dead branches to
+    `#elif FEATURE`, so the first byte is `$12`;
+  - the `#else` of a negated condition gives `$21`;
+  - a region nested inside a live region gives `$31`;
+  - the statement-level chain falls through two dead branches to `#else`,
+    so `$F2` reaches `port`;
+  - and the last region is inside a `nocross { }` block, which is a statement
+    list of its own and therefore its own level, so `$41` reaches `slot`.
+
+Every branch *stores* what it chose. A branch that only loaded a register
+would be dropped as a dead store before it reached the bytes, and the fixture
+would then pass whatever the preprocessor did.
+
+The conditions deliberately read both namespaces a condition can read — a
+`const` and a name a bracket assigned — and use the bracket form for anything
+richer than a name, because that is the whole condition grammar
+(`compiler.inc:23-25`, and `preprocess.rs` on why K816 does not widen it).

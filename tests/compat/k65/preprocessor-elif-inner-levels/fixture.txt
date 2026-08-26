@@ -1,0 +1,24 @@
+row       ppif-directives
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**`#elif` below the top level aborts the original. K816 supports it at all
+three levels.**
+
+`oracle.err` is `exit 134` and "(no diagnostic before the abort)" — a
+`free(): invalid pointer` and a SIGABRT, not a refusal. The grammar says the
+construct is legal: `compiler.inc` gives every one of the three region levels
+a `PPElIf` alternative beside its `PPElse` (`:7-10`, `:98-101`, `:142-145`).
+The generated parser does not agree with the grammar it was generated from,
+and only for the two inner levels — a top-level `#elif` decides correctly,
+which `preprocessor-condition-reads` measures.
+
+K816 has one implementation for all three levels because it has one
+implementation full stop: `preprocess.rs` runs the same region stack over an
+item list, a statement list and a data-entry list. There is no cheaper way to
+be *less* compatible here, and decision 0 allows the superset.
+
+`expected.hex` is K816 compiling this source to the byte the `#elif` selects.
+Nothing is compared against `oracle.err`, which is the point: this is a row
+where the original produces no program at all.

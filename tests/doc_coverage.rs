@@ -912,7 +912,7 @@ fn every_documented_spelling_selects_the_instruction_it_claims() {
             continue;
         }
         let (parsed, model) = compiled.expect("a successful attempt carries its output");
-        let (program, _) = k816::lower::lower(&parsed.file, &model);
+        let (program, _) = k816::lower::lower(model.program(&parsed.file), &model);
         let emitted: Vec<String> = program
             .functions()
             .flat_map(|function| function.ops.iter())

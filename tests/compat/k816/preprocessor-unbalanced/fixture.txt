@@ -1,0 +1,34 @@
+row       ppif-directives
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0152
+expect    input.k65 K816-E0152
+expect    input.k65 K816-E0152
+expect    input.k65 K816-E0152
+expect    input.k65 K816-E0152
+expect    input.k65 K816-E0152
+
+**Every way a region can fail to pair, reported rather than parsed around.**
+
+The original has no diagnostic for any of these. Its regions are a *grammar*
+production — `TopElem -> PPIf TopList TopListPPElse PPEndif` — so three of
+the four shapes are a bare "syntax error" with a line number and nothing
+else, and the fourth, a region crossing a `}`, aborts the compiler outright
+(`free(): invalid pointer`, exit 134). K816 reports each one with both spans:
+the directive that cannot pair, and the directive or brace it should have
+paired with.
+
+Six diagnostics for four shapes, because two of them are one mistake seen
+from two sides:
+
+  - the leading `#endif`, and the `#else` after it, each with no `#if` above;
+  - the second `#else` of one chain, and the `#elif` that follows it;
+  - the `#if` inside `main`, reported at the `}` that ended its level;
+  - and that region's `#endif`, which arrives at the top level where no
+    frame is open.
+
+The last pair is what "a region is structural" means in practice: liveness is
+decided per element list, and an element list stops at its closing brace.
+Reporting both sides is deliberate — the author moved one of the two, and
+only they know which.

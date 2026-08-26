@@ -1,21 +1,23 @@
 row       instr-preprocessor
 config    legacy-stub.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
 
 Preprocessor regions at statement and data-entry level, with `#if !0` among
 the conditions.
 
-Seven diagnostics, one deferral per directive.  Before G1 there were eight:
-the extra one was a `K816-E0001` on `!0`, because B's grammar made the
-condition a K65 `_expression` and K65 has no prefix `!`.  G1 makes the
-condition an *evaluator* expression, which is where `!` lives - decision 9,
-and what the original does through `PPIfNumber` and `Number -> [ EvalCode ]`
-(`compiler.inc:23-25,328`).  What the condition then *means* is G5's.
+Compiles since G5: `a=1` from the statement-level region, `3 4` from the
+data-entry one.
+
+The original *aborts* on this file — `#elif` at any level but the top is a
+`free(): invalid pointer` and a SIGABRT there, because its grammar gives
+`PPElIf` a production under `TopList` and none under `Sequence` or `DataList`
+even though `#if`/`#else`/`#endif` have all three (`compiler.inc:98-101`,
+`:142-145`).  K816 supports the directive uniformly at all three levels,
+which is a strict superset and costs nothing; `k816/preprocessor-levels`
+covers it and the `ppif-directives` row records the divergence.
+
+Seven `K816-E0201` stood here before G5, one per directive.  Before G1 there
+were eight: the extra one was a `K816-E0001` on `!0`, because B's grammar made
+the condition a K65 `_expression` and K65 has no prefix `!`.  G1 makes the
+condition an *evaluator* expression, which is where `!` lives.

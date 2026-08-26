@@ -58,7 +58,7 @@ fn lower_ops(text: &str) -> Vec<(KOpKind, Origin)> {
         Vec::<&Diagnostic>::new(),
         "unexpected semantic errors"
     );
-    let (program, diagnostics) = lower(&parse.file, &model);
+    let (program, diagnostics) = lower(model.program(&parse.file), &model);
     assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
     program
         .functions()
@@ -237,7 +237,7 @@ fn paired_fixture(name: &str, text: &str, expected_pairs: usize) {
     assert_eq!(parse.diagnostics, vec![], "the fixture must parse");
     let (model, diagnostics) = analyze_file(&parse.file);
     assert_eq!(diagnostics, vec![], "the fixture must analyze cleanly");
-    let (program, diagnostics) = lower(&parse.file, &model);
+    let (program, diagnostics) = lower(model.program(&parse.file), &model);
     assert_eq!(diagnostics, vec![], "the fixture must lower cleanly");
 
     // Two halves of a pair name their branch targets differently — the HLA
@@ -426,7 +426,7 @@ fn a_nocross_run_the_split_grew_names_the_split() {
             vec![],
             "analysis has nothing to say about size"
         );
-        lower(&parse.file, &model)
+        lower(model.program(&parse.file), &model)
             .1
             .iter()
             .map(|diagnostic| diagnostic.code.as_str())

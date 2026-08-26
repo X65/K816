@@ -81,7 +81,7 @@ fn lower_unit(
     assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
     let (model, diagnostics) = analyze_file(&parse.file);
     assert_eq!(diagnostics, vec![], "unexpected semantic diagnostics");
-    let (program, diagnostics) = lower(&parse.file, &model);
+    let (program, diagnostics) = lower(model.program(&parse.file), &model);
     assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
     (id, model, program)
 }
@@ -199,7 +199,7 @@ fn every_lowered_op_retains_a_source_span() {
     let id = map.add_file("test.k816", HLA_SLICE);
     let parse = parse_source(map.file(id), None);
     let (model, _) = analyze_file(&parse.file);
-    let (program, _) = lower(&parse.file, &model);
+    let (program, _) = lower(model.program(&parse.file), &model);
 
     for op in &first_function(&program).ops {
         assert_eq!(op.span.file, id);
@@ -246,7 +246,7 @@ fn dump(text: &str) -> String {
     let errors: Vec<&k816::diagnostic::Diagnostic> =
         diagnostics.iter().filter(|d| d.is_error()).collect();
     assert!(errors.is_empty(), "unexpected semantic errors: {errors:?}");
-    let (program, diagnostics) = lower(&parse.file, &model);
+    let (program, diagnostics) = lower(model.program(&parse.file), &model);
     assert_eq!(diagnostics, vec![], "unexpected lowering diagnostics");
     program.dump(&model.symbols, &map)
 }

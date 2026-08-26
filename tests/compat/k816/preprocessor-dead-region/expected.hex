@@ -1,0 +1,10 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# An invented fixture: the original refuses this source rather than
+# compiling it, and `k65/preprocessor-dead-conditions` is the measurement.
+# `fixture.txt` says what the one byte proves.
+
+origin 2000
+2000  5A AD 00 20 60

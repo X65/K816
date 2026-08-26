@@ -1,0 +1,11 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# `oracle.hex` beside this is the original's answer to the same source.  The
+# suite does not compare the two - it compares this against K816 - but here
+# the five decided bytes are identical, and `fixture.txt` says why that is
+# the claim.
+
+origin 2000
+2000  11 33 55 88 AA AD 00 20 60

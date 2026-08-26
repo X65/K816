@@ -1,0 +1,26 @@
+row       topelem-pperror
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0150
+expect    input.k65 K816-W0151
+expect    input.k65 K816-W0151
+expect    input.k65 K816-W0151
+
+**`#error` is an error, `#warn` is a warning, both carry their message as the
+diagnostic's title, and a dead region silences both.**
+
+Four diagnostics from six directives. The two inside `#if 0` say nothing,
+which is the rule `k65/preprocessor-dead-effects` measures on the original —
+`PPError` opens with the `ST` guard, so a message in a region that is not
+taken never reaches the log.
+
+The two below the top level are a K816 extension, and a load-bearing one:
+`compiler.inc` has `TopElem -> PPError` and no counterpart under `Sequence`
+or `DataList`, and the original does not refuse them — it aborts. Supporting
+the directive wherever the grammar already parses one costs nothing, because
+`preprocess.rs` walks the three levels with the same code.
+
+The message becomes the diagnostic's *title* rather than a note, so a build
+log reads `no target system selected` and not `preprocessor error: "no target
+system selected"`. That is what the directive is for.

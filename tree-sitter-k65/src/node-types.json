@@ -3471,6 +3471,10 @@
             "named": true
           },
           {
+            "type": "eval_bracket",
+            "named": true
+          },
+          {
             "type": "eval_call",
             "named": true
           },
@@ -5334,47 +5338,7 @@
         "required": false,
         "types": [
           {
-            "type": "char_literal",
-            "named": true
-          },
-          {
-            "type": "eval_assignment",
-            "named": true
-          },
-          {
-            "type": "eval_binary",
-            "named": true
-          },
-          {
-            "type": "eval_call",
-            "named": true
-          },
-          {
-            "type": "eval_list",
-            "named": true
-          },
-          {
-            "type": "eval_member",
-            "named": true
-          },
-          {
-            "type": "eval_method_call",
-            "named": true
-          },
-          {
-            "type": "eval_parenthesized",
-            "named": true
-          },
-          {
-            "type": "eval_pi",
-            "named": true
-          },
-          {
-            "type": "eval_subscript",
-            "named": true
-          },
-          {
-            "type": "eval_ternary",
+            "type": "eval_bracket",
             "named": true
           },
           {
@@ -5391,14 +5355,6 @@
           },
           {
             "type": "number",
-            "named": true
-          },
-          {
-            "type": "reserved_eval_call",
-            "named": true
-          },
-          {
-            "type": "string",
             "named": true
           }
         ]

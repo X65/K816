@@ -71,7 +71,7 @@ pub(super) fn build(root: Node<'_>, source: &SourceFile) -> (AstFile, Vec<Diagno
 /// construction order is not source order. One pre-order walk here gives the
 /// stable key analysis and lowering both look up
 /// (`plans/03-width-and-contracts.md` contract 8).
-fn assign_statement_ids(file: &mut AstFile) {
+pub(crate) fn assign_statement_ids(file: &mut AstFile) {
     let mut next = 0u32;
     for item in &mut file.items {
         match &mut item.kind {
@@ -1593,6 +1593,10 @@ impl AstBuilder<'_> {
             },
             "string" => EvalExprKind::String(decode_string(self.text(node))),
             "identifier" => EvalExprKind::Symbol(self.name(Some(node), node)),
+            // Only a `#if` condition reaches this: `PPIfNumber -> Number` and
+            // `Number -> [ EvalCode ]`, so `#if [A && B]` is a bracket in a
+            // slot the rest of the evaluator grammar has no bracket in.
+            "eval_bracket" => return self.eval_bracket(node),
             "eval_parenthesized" => {
                 return EvalExpr {
                     kind: self.eval_expr(node.named_child(0), node).kind,
@@ -1789,16 +1793,9 @@ impl AstBuilder<'_> {
             kind,
             // The condition is an evaluator expression — `#if C` is `#if [C]`
             // — which is where `!`, `&&`, `||`, and the ternary come from.
-            // It is carried as an `Expr` wrapping an `EvalExpr`, the same
-            // shape a bracket produces, until sub-plan G5 gives the
-            // directive a condition type of its own.
-            condition: node.child_by_field_name("condition").map(|condition| {
-                let span = self.span(condition);
-                Expr {
-                    kind: ExprKind::Eval(Box::new(self.eval_expr(Some(condition), node))),
-                    span,
-                }
-            }),
+            condition: node
+                .child_by_field_name("condition")
+                .map(|condition| self.eval_expr(Some(condition), node)),
             message: node
                 .child_by_field_name("message")
                 .map(|message| decode_string(self.text(message))),

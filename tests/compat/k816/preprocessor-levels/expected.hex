@@ -1,0 +1,11 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# An invented fixture: there is no oracle beside it because the original
+# aborts on an `#elif` at either of the two inner levels.  `fixture.txt`
+# names the branch each byte proves ran.
+
+origin 2000
+2000  12 21 31 A9 E1 8D 02 04 A9 F2 8D 00 04 A2 41 8E
+2010  01 04 AD 00 20 60

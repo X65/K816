@@ -1,0 +1,19 @@
+row       instr-preprocessor
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-W0151
+
+**A directive in an `inline` body is decided once, at the definition.**
+
+Three expansions, one `K816-W0151`. That is decision 9's rule, and with the
+preprocessor as a pass that runs before analysis it is not a rule anyone has
+to enforce — expansion happens in lowering, long after the region is gone.
+The diagnostic count is the assertion: a preprocessor that ran per expansion
+would say it three times.
+
+The bytes say the other half. `y++` is the branch `#if FAST` took, so the
+three expansions are three `INY`, and nothing anywhere is an `INX`. The
+original cannot be asked: `#warn` below the top level aborts it
+(`k816/preprocessor-messages`), and `inline` bodies are `Sequence`, which is
+one of the two levels its `#elif` handling also aborts on.

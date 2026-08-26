@@ -1719,7 +1719,7 @@
               "name": "condition",
               "content": {
                 "type": "SYMBOL",
-                "name": "_eval_expression"
+                "name": "_pp_condition"
               }
             }
           ]
@@ -1788,6 +1788,61 @@
           ]
         }
       ]
+    },
+    "_pp_condition": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "number"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "float"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "eval_bracket"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "pp_negation"
+          },
+          "named": true,
+          "value": "eval_unary"
+        }
+      ]
+    },
+    "pp_negation": {
+      "type": "PREC_RIGHT",
+      "value": 0,
+      "content": {
+        "type": "SEQ",
+        "members": [
+          {
+            "type": "FIELD",
+            "name": "operator",
+            "content": {
+              "type": "STRING",
+              "value": "!"
+            }
+          },
+          {
+            "type": "FIELD",
+            "name": "operand",
+            "content": {
+              "type": "SYMBOL",
+              "name": "_pp_condition"
+            }
+          }
+        ]
+      }
     },
     "binary_entry": {
       "type": "SEQ",

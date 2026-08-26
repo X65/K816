@@ -55,7 +55,7 @@ fn optimized(text: &str) -> (SemanticModel, KProgram, OptimizationLog) {
         "{:?}",
         diagnostics
     );
-    let (mut program, diagnostics) = k816::lower::lower(&parse.file, &model);
+    let (mut program, diagnostics) = k816::lower::lower(model.program(&parse.file), &model);
     assert!(
         !diagnostics.iter().any(|d| d.is_error()),
         "{:?}",
@@ -89,7 +89,8 @@ fn optimized_workspace(units: &[(&str, &str)]) -> (SemanticModel, KProgram, Opti
         "{:?}",
         diagnostics
     );
-    let (mut program, diagnostics) = k816::lower::lower_unit(&parse.file, &model, units[0].0);
+    let (mut program, diagnostics) =
+        k816::lower::lower_unit(model.program(&parse.file), &model, units[0].0);
     assert!(
         !diagnostics.iter().any(|d| d.is_error()),
         "{:?}",

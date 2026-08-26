@@ -1,0 +1,36 @@
+row       ppifnumber-condition
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**What a `#if` condition reads, and how a fractional one decides.**
+
+`oracle.hex` beside this is `11 33 55 88 AA`, and each byte answers one
+question:
+
+  - `11` — a `#if` condition sees a compiler `const`.
+  - `33` — it sees a name an evaluator bracket assigned above it.
+  - `55`, `88` — `#if [0.6]` is true and `#if [0.4]` is false, because
+    `doeval` has already applied the integer boundary rule before `pp_if`
+    tests `num($2)!=0`.
+  - `AA` — the `#elif` chain is C's: the first true branch wins and the rest
+    are skipped.
+
+The first two are why `preprocess.rs` cannot be a pass that runs after the
+symbol table is built *or* one that ignores it. Liveness has to be decided
+before a single symbol is declared — a `func` in a region that is not taken
+must not exist — and yet the condition reads two namespaces that only exist
+while `semantic::declare_items` walks the file. K816 breaks the circle by
+giving the pass a compile-time environment of its own and running each
+bracket twice: once silently, here, and once for real in analysis, which is
+the run that reports (`postmortem.md` §G.6.1).
+
+K816 compiles this source and produces the same five bytes, which is what
+`expected.hex` asserts. The two goldens are not compared to each other — the
+suite never asserts byte equality between compilers — but here they agree
+byte for byte, and that agreement is the compatibility claim.
+
+The bracket has to sit *above* the `const` rather than below it, and that is
+a K816 defect rather than a fact about the preprocessor: `const FEATURE = 1`
+followed by a line starting with `[` reads the block as a subscript of the
+initializer. The `newline-subscript` row carries it.

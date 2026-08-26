@@ -1,0 +1,26 @@
+row       pp-dead-conditions
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A condition is evaluated only when it can decide something.**
+
+Three undeclared names and one refusing bracket sit in this file, and none of
+them is reported, because none of them is in a region that could be compiled:
+two are nested inside `#if 0`, and one is the condition of an `#elif` whose
+chain already took its branch. The single byte `$5A` is the whole assertion —
+it is `MARK` from the branch that *was* taken, so the file compiled, and it
+compiled without a word about the four things inside the regions that were
+not.
+
+The original disagrees on both counts, and the disagreement is measured:
+`k65/preprocessor-dead-conditions` is its refusal on the nested condition, and
+`k65/preprocessor-condition-reads` shows a top-level `#elif` chain deciding
+correctly while still evaluating what it does not need. `PPIf` and
+`PPIfNumber` are the only rules in `compiler.inc` with no `ST` guard, so a
+condition there runs unconditionally.
+
+K816 takes C's rule instead. The cost is that a typo inside `#if 0` waits
+until someone turns the region on; the gain is that `#if 0` is usable for
+what everybody uses it for, which is the reason the divergence was chosen
+rather than inherited.

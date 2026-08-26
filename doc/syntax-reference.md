@@ -3635,19 +3635,75 @@ inx * 3                 // repeat any implied-mode instruction N times
 ## Preprocessor Directives
 
 ```k65
-#if EXPR
-  // conditional code
-#elif EXPR
-  // alternative
+#if COND
+  // compiled when COND is true
+#elif COND
+  // the first true branch wins; the rest are skipped
 #else
-  // fallback
+  // compiled when no branch above was taken
 #endif
 
-#error "message"        // emit error and stop compilation
-#warn "message"         // emit warning
+#error "message"        // an error carrying that message
+#warn "message"         // a warning carrying that message
 ```
 
-Preprocessor directives work at top-level, inside code sections, and inside data blocks.
+There is no text preprocessor. Directives are ordinary syntax, they are decided by a pass over the parsed program, and nothing that follows that pass — name resolution, the width model, lowering — ever sees one. What a directive can do is therefore exactly *select* which parts of the program exist; it cannot paste text, define a macro, or include a file.
+
+### Where a region may sit
+
+A region opens with `#if` and closes with `#endif` in the same element list. There are three such lists, and a region is confined to one of them:
+
+* the file's top-level items,
+* the statements of one block — a section body, and equally the body of a `nocross`, a conditional, a loop, or an `@a16 { }`,
+* the entries of one data block.
+
+```k65
+func main @a8 @i8 {
+  #if 1
+  return
+}
+#endif                  // K816-E0152, twice: the `#if` is never closed and
+                        // the `#endif` has no `#if` above it
+```
+
+`K816-E0152` also covers an `#endif`, `#else` or `#elif` with no `#if` above it, and a second `#else` in one chain. Each report carries both spans — the directive that cannot pair, and the one it should have paired with.
+
+Nesting is unlimited, and a region inside a region that is not taken is not compiled whatever its own condition says.
+
+### Conditions
+
+A condition is a number, a name, `!` applied to either, or an evaluator bracket:
+
+```k65
+#if 1                   // a literal
+#if DEBUG               // a name
+#if !DEBUG              // negated
+#if [ LEVEL > 1 && !QUIET ]   // anything richer goes in brackets
+```
+
+The bracket form is not a stylistic choice. A directive is confined to the line it starts on, and a full evaluator expression is not — `#if 0` above a line beginning with `[` would read the block below as an index into the condition.
+
+A name resolves against the two namespaces an evaluator bracket reads: the unit's `const` values, and the names earlier brackets assigned. A name nothing declares is `K816-E0101`, not a silent zero.
+
+```k65
+[ TIER = 2 ]
+const FEATURE = 1
+
+#if FEATURE             // a `const`
+#if TIER                // a name a bracket assigned
+```
+
+The condition is true when its value, taken through the [integer boundary rule](#compile-time-evaluator), is not zero. So `#if [0.6]` is true and `#if [0.4]` is false.
+
+### What a region that is not taken does
+
+Nothing. Its declarations do not exist, its statements are not emitted, its `#error` and `#warn` say nothing, and an evaluator bracket inside it does not run — so a name it would have assigned stays unassigned.
+
+Its *conditions* are not evaluated either, and neither is the condition of an `#elif` whose chain has already taken a branch. `#if 0` therefore comments out whatever is inside it, including a directive naming something that does not exist. This is the one place K816 departs from the original K65 compiler on purpose; `doc/k65-compat-manifest.md` row `pp-dead-conditions` records the departure and the measurement behind it.
+
+### `inline` bodies
+
+A directive inside an `inline` body is decided once, where the body is written, because expansion happens after analysis. Every expansion gets the branch that was chosen there, and an `#error` or `#warn` in the body speaks once.
 
 ## Additional Syntax Notes
 

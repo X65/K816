@@ -2381,6 +2381,19 @@ impl Charset {
 /// invalid, because the grammar accepted all of it: what stops an evaluation
 /// is a question with no answer, a name nothing gives a value, a rule K816
 /// chose, or a construct another task owns.
+/// A preprocessor directive that survived into a stage that cannot see one.
+///
+/// Not a user error: `preprocess::apply` deletes every directive, so this is
+/// a caller that handed a later stage the parsed tree rather than the one
+/// analysis walked (`SemanticModel::program`).
+fn unpreprocessed(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::INTERNAL,
+        "internal: a preprocessor directive reached the resolver",
+        Label::new(span, "the preprocessor should have removed this"),
+    )
+}
+
 pub fn eval_diagnostic(error: eval::Error) -> Option<Diagnostic> {
     let diagnostic = match error {
         eval::Error::Name { span, name } => Diagnostic::error(
@@ -2806,11 +2819,11 @@ impl Resolver<'_> {
                     nocross: *nocross,
                     span: entry.span,
                 }),
-                DataEntryKind::Preprocessor(_) => self.report(compat::unimplemented(
-                    entry.span,
-                    "preprocessor directives",
-                    compat::Owner::Compatibility,
-                )),
+                // `preprocess::apply` removes every directive before a
+                // symbol is declared, so one reaching a resolver means a
+                // caller walked the *parsed* tree instead of
+                // `SemanticModel::program`.
+                DataEntryKind::Preprocessor(_) => self.report(unpreprocessed(entry.span)),
                 DataEntryKind::Binary(_) => self.report(compat::unimplemented(
                     entry.span,
                     "`binary` inclusions",
@@ -3128,11 +3141,11 @@ impl Resolver<'_> {
                 DataEntryKind::Code { .. } => {
                     self.report(definition_inside_repeat(entry, "a `code` subblock"));
                 }
-                DataEntryKind::Preprocessor(_) => self.report(compat::unimplemented(
-                    entry.span,
-                    "preprocessor directives",
-                    compat::Owner::Compatibility,
-                )),
+                // `preprocess::apply` removes every directive before a
+                // symbol is declared, so one reaching a resolver means a
+                // caller walked the *parsed* tree instead of
+                // `SemanticModel::program`.
+                DataEntryKind::Preprocessor(_) => self.report(unpreprocessed(entry.span)),
                 DataEntryKind::Binary(_) => self.report(compat::unimplemented(
                     entry.span,
                     "`binary` inclusions",

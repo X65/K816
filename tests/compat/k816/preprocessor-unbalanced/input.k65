@@ -1,0 +1,29 @@
+// The four shapes a region can fail to pair in, one after another, so that
+// each is reported once and none of them stops the file from parsing.
+
+// 1. `#endif` with nothing above it.
+#endif
+
+// 2. `#else` with nothing above it.
+#else
+
+// 3. A second `#else` in one chain, and an `#elif` after an `#else`.
+#if 1
+const A = 1
+#else
+const B = 2
+#else
+const C = 3
+#elif 1
+const D = 4
+#endif
+
+// 4. A region that crosses a block boundary: opened inside the function,
+//    closed outside it.  The `#if` is reported where the body ends and the
+//    `#endif` is reported as having nothing above it, because the two levels
+//    are separate stacks and neither can see the other's.
+func main @a8 @i8 {
+  #if 1
+  return
+}
+#endif

@@ -71,6 +71,15 @@ enum WidthScope {
 #[derive(Debug, Default)]
 pub struct SemanticModel {
     pub symbols: SymbolTable,
+    /// The program the preprocessor left, when it removed anything.
+    ///
+    /// `None` for a file with no directive in it, which is the common case
+    /// and where the parsed file *is* the program. Everything after analysis
+    /// — lowering above all — must walk the same tree analysis did, because
+    /// a `var`'s storage and a function's facts are keyed by position in it;
+    /// [`SemanticModel::program`] is how a caller gets it without having to
+    /// remember which case it is in.
+    pub preprocessed: Option<AstFile>,
     /// What the compile-time evaluator answered, keyed by where it was asked.
     ///
     /// Analysis runs every bracket exactly once, in source order, and every
@@ -317,9 +326,20 @@ fn analyze(
     unit_name: &str,
     linkage: Option<&Linkage>,
 ) -> (SemanticModel, Vec<Diagnostic>) {
+    // The preprocessor runs first and nothing below it ever sees a
+    // directive. It has to run before a single symbol is declared: a `func`
+    // inside a region that is not taken must not exist, or the ordinary
+    // `#if / func f / #else / func f / #endif` is a duplicate definition
+    // (`plans/06-compatibility.md` decision 9, `preprocess.rs`).
+    let (program, preprocessor_diagnostics) = crate::preprocess::apply(file);
+    let preprocessed = match program {
+        std::borrow::Cow::Borrowed(_) => None,
+        std::borrow::Cow::Owned(program) => Some(program),
+    };
+    let file = preprocessed.as_ref().unwrap_or(file);
     let mut analysis = Analysis {
         model: SemanticModel::default(),
-        diagnostics: Vec::new(),
+        diagnostics: preprocessor_diagnostics,
         current_function: None,
         loops: 0,
         unit: unit_name.to_owned(),
@@ -364,6 +384,7 @@ fn analyze(
     // one.
     analysis.check_inline_recursion();
     analysis.check_functions(file);
+    analysis.model.preprocessed = preprocessed;
     (analysis.model, analysis.diagnostics)
 }
 
@@ -404,6 +425,34 @@ struct Analysis {
     /// Which bracket is being evaluated, so a name assigned in one block and
     /// again in another is caught.
     eval_block: eval::BlockId,
+}
+
+/// A preprocessor directive that survived `preprocess::apply`.
+///
+/// Not a user error: every directive is deleted before analysis begins, so
+/// one arriving here means a caller walked the parsed tree instead of
+/// [`SemanticModel::program`].
+fn unpreprocessed(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::INTERNAL,
+        "internal: a preprocessor directive reached semantic analysis",
+        Label::new(span, "the preprocessor should have removed this"),
+    )
+}
+
+impl SemanticModel {
+    /// The program this model describes: the parsed file, or what the
+    /// preprocessor left of it.
+    ///
+    /// Every stage after analysis walks it through this call rather than
+    /// reaching for the parse result, because a `var`'s storage
+    /// ([`SemanticModel::var_storage`]) and a function's facts are keyed by
+    /// position in the tree analysis walked. Handing lowering the *parsed*
+    /// tree of a file that uses the preprocessor would shift every one of
+    /// those keys by the number of items a dead region removed.
+    pub fn program<'a>(&'a self, parsed: &'a AstFile) -> &'a AstFile {
+        self.preprocessed.as_ref().unwrap_or(parsed)
+    }
 }
 
 impl Analysis {
@@ -695,11 +744,10 @@ impl Analysis {
                 // original resolves a call at the point it is written: a call
                 // above the definition does not compile there.
                 ItemKind::EvalFunc(_) => {}
-                ItemKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "preprocessor directives",
-                    compat::Owner::Compatibility,
-                )),
+                // `preprocess::apply` ran before this pass and removed every
+                // directive, live region and dead alike. One arriving here
+                // is a compiler bug, not a source the user has to fix.
+                ItemKind::Preprocessor(_) => self.diagnostics.push(unpreprocessed(item.span)),
                 ItemKind::Binary(_) => self.diagnostics.push(compat::unimplemented(
                     item.span,
                     "`binary` inclusions",
@@ -1846,11 +1894,9 @@ impl Analysis {
                 self.absorb(resolved);
                 self.report_reserved_in_data(data);
             }
-            StatementKind::Preprocessor(_) => self.diagnostics.push(compat::unimplemented(
-                statement.span,
-                "preprocessor directives",
-                compat::Owner::Compatibility,
-            )),
+            StatementKind::Preprocessor(_) => {
+                self.diagnostics.push(unpreprocessed(statement.span));
+            }
             StatementKind::Call(call) => {
                 self.check_call_target(&call.target);
                 self.check_call_convention(&call.target, call.is_far);

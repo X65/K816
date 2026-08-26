@@ -403,6 +403,21 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::UNDECLARED_SYMBOL,
         caret: "missing",
     },
+    Case {
+        source: "#error \"no target system selected\"\n",
+        code: DiagnosticCode::PREPROCESSOR_ERROR,
+        caret: "#error \"no target system selected\"",
+    },
+    Case {
+        source: "#warn \"the slow path is compiled in\"\n",
+        code: DiagnosticCode::PREPROCESSOR_WARNING,
+        caret: "#warn \"the slow path is compiled in\"",
+    },
+    Case {
+        source: "#if 1\nvar SPEED = 1\n",
+        code: DiagnosticCode::PREPROCESSOR_UNBALANCED,
+        caret: "#if",
+    },
     // The entry point's widths are the environment's, so an annotation on
     // `main` is a claim about them rather than a request of them.
     Case {
@@ -722,6 +737,7 @@ fn only_the_compile_through_conditions_are_warnings() {
         DiagnosticCode::ADDRESS_NEEDS_CONFIG,
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
+        DiagnosticCode::PREPROCESSOR_WARNING,
     ];
     // `print(msg)` is the one diagnostic the *source* asked for. Nothing
     // about the program is wrong, so it is neither an error nor a warning,

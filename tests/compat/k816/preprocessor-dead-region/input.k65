@@ -1,0 +1,43 @@
+// `#if 0` comments out what is inside it, whatever that is.
+//
+// This is where K816 parts company with the original, deliberately.  The
+// original evaluates a `#if` condition whatever the region around it decided
+// (`k65/preprocessor-dead-conditions`) and evaluates an `#elif` condition
+// even after its chain has taken a branch, so neither of the regions below
+// would compile there.  K816 evaluates a condition only when it can decide
+// something.
+
+const LIVE = 1
+
+// A nested condition naming something that does not exist, and an evaluator
+// bracket that would refuse if it ran.
+#if 0
+  #if NOTHING_DECLARES_THIS
+  const UNREACHED = 1
+  #endif
+  [ 1 + "a string" ]
+  #error "not compiled"
+#endif
+
+// An `#elif` after a branch that was taken: its condition is not evaluated
+// either, so an undeclared name there is not an error.
+#if LIVE
+const MARK = 0x5A
+#elif ALSO_NOT_DECLARED
+const MARK = 0x5B
+#endif
+
+// The same rule one level down.
+data probe {
+  #if 0
+    #if STILL_NOT_DECLARED
+    0x01
+    #endif
+  #endif
+  MARK
+}
+
+func main @a8 @i8 {
+  a = probe
+  return
+}

@@ -44,6 +44,7 @@ pub mod lsp;
 pub mod op;
 pub mod optimize;
 pub mod parser;
+pub mod preprocess;
 pub mod resolve;
 pub mod semantic;
 pub mod source;
@@ -136,7 +137,8 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         };
     }
 
-    let (mut program, lower_diagnostics) = lower::lower_unit(&parse.file, &model, source.name());
+    let (mut program, lower_diagnostics) =
+        lower::lower_unit(model.program(&parse.file), &model, source.name());
     diagnostics.extend(lower_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return CompileResult {
@@ -206,7 +208,8 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
         };
     }
 
-    let (mut program, lower_diagnostics) = lower::lower_unit(&parse.file, &model, source.name());
+    let (mut program, lower_diagnostics) =
+        lower::lower_unit(model.program(&parse.file), &model, source.name());
     diagnostics.extend(lower_diagnostics);
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {

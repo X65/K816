@@ -1,0 +1,23 @@
+// Oracle question: is a `#if` condition inside a region that is *not taken*
+// still evaluated?
+//
+// Every semantic action in `compiler.inc` opens with the `ST` macro, which is
+// `if(!parser_enabled.get_and()) { opend(); break; }` - the guard that makes a
+// dead region compile to nothing.  `PPIf` and `PPIfNumber` are the only rules
+// in the file with no `ST` (`compiler.inc:15,23-25`), so the answer looks like
+// it should be "yes, they run anyway".
+//
+// If it is yes, the `#if` below reports an undeclared name even though nothing
+// in this file will ever compile it, and `#if 0` is not the "comment this out"
+// tool a C programmer reaches for.  K816 rules the other way, deliberately:
+// see `pp-dead-conditions` in the manifest.
+
+#if 0
+  #if NOT_DECLARED_ANYWHERE
+  const UNREACHED = 1
+  #endif
+#endif
+
+main {
+  return
+}

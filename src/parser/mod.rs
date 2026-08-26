@@ -30,6 +30,7 @@ mod ast_builder;
 mod cst;
 mod diagnostics;
 
+pub(crate) use ast_builder::assign_statement_ids;
 pub use cst::{SourceEdit, SyntaxTree};
 
 use crate::ast::AstFile;

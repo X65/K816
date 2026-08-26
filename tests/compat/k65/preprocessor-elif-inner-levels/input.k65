@@ -1,0 +1,28 @@
+// Oracle question: does `#elif` work at the two levels below the top?
+//
+// `compiler.inc` gives `#if`/`#else`/`#endif` productions at all three levels
+// where regions nest - `TopList` (:7-10), `DataList` (:98-101) and `Sequence`
+// (:142-145) - and each level's `PPElse` alternative has a `PPElIf` sibling.
+// So the grammar says yes.
+//
+// It is not yes.  The generated parser aborts on this file: `free(): invalid
+// pointer`, SIGABRT, exit 134, with no diagnostic at all.  A top-level
+// `#elif` is fine - `preprocessor-condition-reads` uses one - so the defect is
+// in the two inner levels only.
+//
+// K816 supports `#elif` uniformly at all three, which is a strict superset of
+// what the original *accepts* and is what makes the imported fixture
+// `legacy-k816/syntax-preprocessor-sequence-and-data` compile at all.
+
+data answers {
+  #if 0
+  0x21
+  #elif 1
+  0x11
+  #endif
+}
+
+main {
+  a = answers
+  return
+}

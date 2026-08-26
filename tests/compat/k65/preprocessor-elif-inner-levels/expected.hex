@@ -1,0 +1,10 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# There is no `oracle.hex` beside this one: the original aborts on this
+# source rather than compiling it.  `oracle.err` is its answer - exit 134,
+# no diagnostic - and `fixture.txt` says what that settles.
+
+origin 2000
+2000  11 AD 00 20 60

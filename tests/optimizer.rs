@@ -61,7 +61,7 @@ fn lowered_as(name: &str, text: &str) -> (SourceMap, FileId, SemanticModel, KPro
     // Errors only: several fixtures earn a width or damage *warning* on
     // purpose, and the warning is usually the claim the fixture is making.
     assert_eq!(errors(&diagnostics), Vec::<String>::new());
-    let (program, diagnostics) = lower(&parse.file, &model);
+    let (program, diagnostics) = lower(model.program(&parse.file), &model);
     assert_eq!(errors(&diagnostics), Vec::<String>::new());
     (map, id, model, program)
 }

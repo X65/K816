@@ -1,0 +1,83 @@
+// The three levels a preprocessor region nests at, each with a full
+// `#if` / `#elif` / `#else` / `#endif` chain, and each choosing a branch a
+// byte can tell apart.
+
+// The bracket precedes the `const` because a `[` opening the line after a
+// `const` initializer is read as a subscript of it - the `newline-subscript`
+// row, a K816 defect unrelated to the preprocessor.
+[ TIER = 2 ]
+const FEATURE = 1
+
+// ---- top level: an `#elif` chain over whole items --------------------------
+
+#if [ FEATURE == 0 ]
+const MARK = 0xE0
+#elif [ TIER == 2 ]
+const MARK = 0xE1
+#else
+const MARK = 0xE2
+#endif
+
+// ---- data-entry level ------------------------------------------------------
+
+data table {
+  #if 0
+  0x10
+  #elif [ TIER > 5 ]
+  0x11
+  #elif FEATURE
+  0x12
+  #else
+  0x13
+  #endif
+
+  #if !FEATURE
+  0x20
+  #else
+  0x21
+  #endif
+
+  // A region nested inside another, and one whose whole chain falls through
+  // to `#else`.
+  #if FEATURE
+    #if 0
+    0x30
+    #else
+    0x31
+    #endif
+  #endif
+}
+
+// ---- statement level, including a region inside a nested block -------------
+
+var port = $0400
+var slot = $0401
+var mark = $0402
+
+func main @a8 @i8 {
+  // Every branch stores what it chose, so the optimizer cannot drop the
+  // choice as a dead load and the bytes still say which one ran.
+  a = #MARK
+  mark = a
+
+  #if 0
+  a = #0xF0
+  #elif 0
+  a = #0xF1
+  #else
+  a = #0xF2
+  #endif
+  port = a
+
+  nocross {
+    #if FEATURE
+    x = #0x41
+    #else
+    x = #0x42
+    #endif
+    slot = x
+  }
+
+  a = table
+  return
+}

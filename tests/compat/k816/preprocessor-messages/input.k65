@@ -1,0 +1,29 @@
+// `#error` and `#warn` — what they say, and where they are allowed to say it.
+
+[ TARGET = 0 ]
+
+// Live at the top level: one error, one warning.
+#if [ TARGET == 0 ]
+#error "no target system selected"
+#warn "the slow path is compiled in"
+#endif
+
+// Inside a region that is not taken: silent, both of them.
+#if 0
+#error "this branch is not compiled"
+#warn "and neither is this"
+#endif
+
+func main @a8 @i8 {
+  // The statement level.  The original has no production for `#error` below
+  // the top level at all - `TopElem -> PPError` and nothing else - and
+  // aborts on this line rather than refusing it.
+  #warn "reached the statement level"
+  return
+}
+
+data d {
+  // And the data-entry level, for the same reason.
+  #warn "reached the data-entry level"
+  1 2
+}

@@ -1,0 +1,24 @@
+// Oracle question: what does a region that is *not taken* leave behind?
+//
+// Two things could survive it, and both matter to K816's design.  An
+// evaluator bracket assigns a name the rest of the file can read - if a dead
+// one ran, `#if 0` would still change the program.  And `#error` is a
+// diagnostic - if a dead one fired, `#if 0` could not guard a message.
+//
+// `TopElem -> [ EvalCode ]` and `PPError -> #error String` both open with the
+// `ST` guard (`compiler.inc:12,20,31`), so the expected answer is "nothing
+// survives", and the golden is a refusal that proves it: the only diagnostic
+// is `SIDE` being undeclared *below* the region, which can only happen if the
+// bracket that would have assigned it did not run.  "boom" appearing instead
+// would have meant the opposite.
+
+#if 0
+[ SIDE = 7 ]
+#error "boom"
+#endif
+
+[ OUT = SIDE ]
+
+main {
+  return
+}

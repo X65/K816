@@ -1,0 +1,25 @@
+row       pp-dead-conditions
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**The original evaluates a `#if` condition inside a region it is skipping.
+K816 does not, deliberately.**
+
+`oracle.err` is the measurement: `#if NOT_DECLARED_ANYWHERE` nested inside
+`#if 0` reports "Undeclared eval variable" and the build stops, even though
+nothing between the directives could ever be compiled. `PPIf` and
+`PPIfNumber` are the only rules in `compiler.inc` whose semantic action does
+not open with the `ST` guard (`:15,23-25`), so a condition runs whatever the
+enclosing region decided.
+
+K816 takes the rule every C programmer already has: `#if 0` comments out what
+is inside it, whatever that is, and the same goes for an `#elif` whose chain
+has already taken a branch. Compiling this file is therefore a *divergence*,
+which is why the comparison is `bytes` rather than the refusal — `expected.hex`
+is what K816 produces where the original produces nothing.
+
+The cost of the choice is that a typo inside `#if 0` is not reported until
+someone turns the region on, which is exactly the trade C makes. The gain is
+that `#if 0` is usable for what everyone uses it for. `k816/preprocessor-dead-
+region` is the fixture that asserts the K816 side at the bytes.

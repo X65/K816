@@ -1,0 +1,22 @@
+row       ppif-directives
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0101
+
+**A region that is not taken leaves nothing behind — not an assignment, not
+a message — and K816 agrees.**
+
+`oracle.err` is one line: `Undeclared eval variable 'SIDE'` at the `[ OUT =
+SIDE ]` *below* the region. Two facts fall out of that one line. The bracket
+inside `#if 0` did not run, or `SIDE` would have a value; and the `#error`
+inside it did not fire, or "boom" would be the diagnostic instead. Both rules
+come from the `ST` guard that opens every ordinary semantic action in
+`compiler.inc` — the guard `PPIf` and `PPIfNumber` conspicuously lack, which
+is what `preprocessor-dead-conditions` beside this one measures.
+
+K816 reports the same thing at the same place, in its own code:
+`K816-E0101`, the code an evaluator bracket already uses for a name nothing
+gives a value. This is the fixture that keeps the two compilers together on
+what a dead region *is*; `preprocessor-dead-conditions` is where they part
+company on what a dead region's own directives do.

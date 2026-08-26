@@ -605,7 +605,7 @@ fn one_source_shape_picks_the_narrowest_encoding_that_holds_the_address() {
             diagnostics.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "`{source}`: {errors:?}");
 
-        let (program, lowered) = k816::lower::lower(&parse.file, &model);
+        let (program, lowered) = k816::lower::lower(model.program(&parse.file), &model);
         assert_eq!(lowered, vec![], "`{source}`");
         let modes: Vec<AddressingMode> = program
             .functions()
@@ -630,7 +630,7 @@ fn a_label_never_auto_shrinks_to_the_direct_page() {
     let parse = parse_source(map.file(id), None);
     let (model, diagnostics) = analyze_file(&parse.file);
     assert_eq!(diagnostics, vec![]);
-    let (program, _) = k816::lower::lower(&parse.file, &model);
+    let (program, _) = k816::lower::lower(model.program(&parse.file), &model);
     let modes: Vec<AddressingMode> = program
         .functions()
         .flat_map(|function| function.ops.iter())
@@ -704,7 +704,7 @@ fn the_address_of_operators_produce_an_immediate_without_a_hash() {
     let parse = parse_source(map.file(id), None);
     let (model, diagnostics) = analyze_file(&parse.file);
     assert_eq!(diagnostics, vec![], "{diagnostics:?}");
-    let (program, _) = k816::lower::lower(&parse.file, &model);
+    let (program, _) = k816::lower::lower(model.program(&parse.file), &model);
     let modes: Vec<AddressingMode> = program
         .functions()
         .flat_map(|function| function.ops.iter())
@@ -744,7 +744,7 @@ fn jmp_through_brackets_resolves_to_the_long_jump() {
     let parse = parse_source(map.file(id), None);
     let (model, diagnostics) = analyze_file(&parse.file);
     assert_eq!(diagnostics, vec![], "{diagnostics:?}");
-    let (program, _) = k816::lower::lower(&parse.file, &model);
+    let (program, _) = k816::lower::lower(model.program(&parse.file), &model);
     let found = program
         .functions()
         .flat_map(|function| function.ops.iter())

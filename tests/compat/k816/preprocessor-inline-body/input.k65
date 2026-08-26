@@ -1,0 +1,21 @@
+// A directive inside an `inline` body is decided once, where the body is
+// written, because expansion happens after analysis and the preprocessor runs
+// before it.
+
+[ FAST = 1 ]
+
+inline bump @a8 @i8 {
+  #if FAST
+  y++
+  #else
+  x++
+  #endif
+  #warn "decided once, at the definition"
+}
+
+func main @a8 @i8 {
+  bump
+  bump
+  bump
+  return
+}

@@ -1,15 +1,20 @@
 row       topelem-preprocessor
 config    legacy-stub.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
 
 `#if` / `#else` / `#endif` around top-level elements.
 
-Four `K816-E0201`.  The legacy compiler never evaluated a directive - it warned
-and skipped the line, parsing the body either way - so it is not an oracle for
-anything here; the original is (`compiler.inc:7-25`, `pp_if` and friends in
+Compiles since G5, and the `#if 1` branch is the one that survives: the
+program declares `enabled` and nothing else, and `a=enabled` reads it.  The
+`#elif 1` below it is *not* evaluated even though its condition is true,
+because the chain has already taken a branch — the rule C has, and the one
+place K816 parts company with the original, which evaluates every condition
+in a chain whether or not it can decide anything (`preprocessor-dead-region`
+measures that, and the `pp-dead-conditions` manifest row records the change).
+
+Four `K816-E0201` stood here before G5, one per directive.  The legacy
+compiler never evaluated a directive at all — it warned and skipped the line,
+parsing the body either way — so it is not an oracle for anything here; the
+original is (`compiler.inc:7-25`, `pp_if` and friends in
 `compiler_src.cpp:999`), and G5 implements what it does.

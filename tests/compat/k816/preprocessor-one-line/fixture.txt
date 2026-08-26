@@ -1,0 +1,32 @@
+row       ppifnumber-condition
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+expect    input.k65 K816-E0001
+
+**A directive ends at the end of its line, and a bracket inside one may
+still wrap.**
+
+Three refusals, one per split directive, and nothing for the fourth region:
+the bracket that opens on the `#if` line and closes two lines later is fine,
+because a `]` says where it ends and no later line can be absorbed into it.
+
+This is stricter than the original, which accepts all four —
+`#if` above a bare `1` compiles there and takes the branch. The rule is
+K816's, and it is what pays for the narrowed condition grammar: K65 is
+newline-insensitive, so a condition that may run past its line is a condition
+that can swallow the line below. That is exactly what `#if 0` above a
+top-level `[ SIDE = 7 ]` did before G5 — it parsed as `0[SIDE = 7]`, an index
+into a data section (`postmortem.md` §G.6.4).
+
+Narrowing the grammar removed the *postfix*, which is where the absorption
+came from, but not the newline: whitespace is a Tree-sitter `extra` and a
+newline is whitespace, so the grammar cannot state the rule and the builder
+states it instead. The same gap still reaches `const` and `var`, which is the
+`newline-subscript` row.
+
+`K816-E0001` rather than a code of its own: the source really is malformed
+K816 rather than legacy syntax being refused, and the message and its two
+spans carry the specifics.

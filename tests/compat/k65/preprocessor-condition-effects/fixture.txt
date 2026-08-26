@@ -1,0 +1,30 @@
+row       ppif-directives
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A bracket above a directive runs before it, and what a live condition
+assigns outlives the directive.**
+
+Two questions about order, answered by `oracle.hex` in five bytes:
+
+  - `01 42` — the `[ FLAG = 1 ]` entry emitted its value and assigned `FLAG`,
+    and the `#if FLAG` three lines below it then took the true branch. Had
+    the directive been decided first, `FLAG` would have had no value and the
+    byte would be `24`.
+  - `A9 03` — `#if [ MODE = 3 ]` assigned `MODE`, and `a = [ MODE ]` below
+    the `#endif` reads it. The condition goes through the same `doeval` as
+    any other bracket, against the same variable table.
+
+Both were wrong in K816 when G5 first landed, and both for the same reason:
+the pass rewrote a whole item — descending into it, deciding every directive
+inside — and only then ran the item's brackets. Liveness and evaluation are
+one source-order walk or they are neither. `postmortem.md` §G.6.7.
+
+The second one costs the design something. A condition is evaluated by
+`preprocess.rs` and by nothing else, since the directive is deleted before
+analysis begins — so unlike a bracket it has no second run to declare what it
+assigned or to report what it printed, and the pass has to carry both across.
+That is `preprocess::Effect`, and §G.6.8.
+
+`expected.hex` is K816 producing the same five bytes.

@@ -1,0 +1,24 @@
+row       topelem-preprocessor
+config    atarixl.cfg
+compare   bytes
+units     defs.k65 main.k65
+
+**A directive in one unit must not shift what another unit reads about it.**
+
+`narrow` ends in 8-bit mode, so `a = #1` in its caller is `A9 01` — one
+operand byte. If the cross-unit solver cannot find `narrow`'s body it assumes
+the widths were preserved and emits `A9 01 00`, a 16-bit immediate, and every
+byte after it moves. The compiler exits zero either way, which is the whole
+reason this fixture commits bytes rather than diagnostics.
+
+What made it findable: `FunctionInfo::item_index` is a position in the tree
+*analysis* walked, and analysis walks what the preprocessor left. The one
+`#if` above `narrow` shifts every index in `defs.k65` by one, so a stage
+reaching for `parse.file` instead of `SemanticModel::program` reads the wrong
+item — or none. `postmortem.md` §G.6.9.
+
+The region is `#if 1`, which selects nothing: this fixture is not about the
+preprocessor deciding anything. It is about a live region being *invisible*,
+which is what `a_live_region_around_a_whole_unit_changes_nothing` asserts over
+the whole corpus and what this fixture pins for the one dependency no corpus
+source happened to have.

@@ -1789,20 +1789,85 @@ impl AstBuilder<'_> {
             Some("#error") => PreprocessorKind::Error,
             _ => PreprocessorKind::Warn,
         };
+        let row = node.start_position().row;
+        let condition = node.child_by_field_name("condition");
+        let message = node.child_by_field_name("message");
+        // A directive is confined to the line it starts on. The grammar
+        // cannot say so — whitespace is an `extra` and a newline is
+        // whitespace — so it is said here, over the tree the grammar built.
+        // `#if` above a bare `1`, and `#if !` above a bare `0`, would
+        // otherwise reach down and take it.
+        let split = condition
+            .and_then(|condition| self.first_row_below(condition, row))
+            .or_else(|| message.filter(|message| message.start_position().row != row));
+        if let Some(split) = split {
+            self.split_directive(node, split);
+            return PreprocessorDirective {
+                kind,
+                condition: None,
+                message: None,
+                keyword_span: directive
+                    .map(|directive| self.span(directive))
+                    .unwrap_or_else(|| self.span(node)),
+            };
+        }
         PreprocessorDirective {
             kind,
             // The condition is an evaluator expression — `#if C` is `#if [C]`
             // — which is where `!`, `&&`, `||`, and the ternary come from.
-            condition: node
-                .child_by_field_name("condition")
-                .map(|condition| self.eval_expr(Some(condition), node)),
-            message: node
-                .child_by_field_name("message")
-                .map(|message| decode_string(self.text(message))),
+            condition: condition.map(|condition| self.eval_expr(Some(condition), node)),
+            message: message.map(|message| decode_string(self.text(message))),
             keyword_span: directive
                 .map(|directive| self.span(directive))
                 .unwrap_or_else(|| self.span(node)),
         }
+    }
+
+    /// The first part of a condition that does not begin on `row`.
+    ///
+    /// The walk follows the `!` chain down to the atom it negates and stops
+    /// there: what is *inside* an evaluator bracket may wrap freely, because
+    /// the `]` says where it ends and nothing on a later line can be absorbed
+    /// into it by accident. Everything above that bracket is a token the
+    /// directive claims, and a token the directive claims has to be on the
+    /// directive's line.
+    fn first_row_below<'t>(&self, node: Node<'t>, row: usize) -> Option<Node<'t>> {
+        let mut node = node;
+        loop {
+            if node.start_position().row != row {
+                return Some(node);
+            }
+            if node.kind() != "eval_unary" {
+                return None;
+            }
+            node = node.child_by_field_name("operand")?;
+        }
+    }
+
+    fn split_directive(&mut self, node: Node<'_>, split: Node<'_>) {
+        if self.recovered {
+            return;
+        }
+        let keyword = node
+            .child_by_field_name("directive")
+            .map(|directive| self.span(directive))
+            .unwrap_or_else(|| self.span(node));
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::SYNTAX_ERROR,
+                "a preprocessor directive ends at the end of its line",
+                Label::new(
+                    self.span(split),
+                    "this is on the next line, so it is not part of the directive",
+                ),
+            )
+            .with_secondary(Label::new(keyword, "the directive starts here"))
+            .with_help(
+                "write the whole directive on one line; anything longer than a name goes in \
+                 an evaluator bracket, `#if [ A && B ]`, whose contents may wrap",
+            )
+            .with_docs("doc/syntax-reference.md#preprocessor-directives"),
+        );
     }
 
     /// The `keyword` field of a reserved construct, or the whole node when

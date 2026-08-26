@@ -1,0 +1,9 @@
+// The callee lives inside a live region, so the item indices of this unit's
+// *parsed* tree and of the one analysis walked differ by one.
+
+#if 1
+func narrow @a16 @i16 {
+  sep #$30
+  return
+}
+#endif

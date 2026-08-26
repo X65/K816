@@ -115,20 +115,38 @@ use crate::symbol::{SymbolKind, SymbolTable};
 ///
 /// A file with no directive anywhere is returned untouched and unevaluated,
 /// so the cost of the pass is paid only by sources that use it.
-pub fn apply(file: &AstFile) -> (Cow<'_, AstFile>, Vec<Diagnostic>) {
+pub fn apply(file: &AstFile) -> Applied<'_> {
     if !file.items.iter().any(item_has_directive) {
-        return (Cow::Borrowed(file), Vec::new());
+        return Applied {
+            program: Cow::Borrowed(file),
+            diagnostics: Vec::new(),
+            effects: Vec::new(),
+        };
     }
     let mut pass = Preprocess::default();
     let items = pass.items(&file.items, end_of(&file.items));
-    let mut file = AstFile { items };
+    let mut program = AstFile { items };
     // The statement identities the builder assigned are keyed by source
     // order over the *parsed* file. Removing statements would leave them
     // sparse, and every stage after this one keys per-statement facts by
     // them, so the surviving statements are renumbered over the program that
     // actually exists.
-    crate::parser::assign_statement_ids(&mut file);
-    (Cow::Owned(file), pass.diagnostics)
+    crate::parser::assign_statement_ids(&mut program);
+    Applied {
+        program: Cow::Owned(program),
+        diagnostics: pass.diagnostics,
+        effects: pass.effects,
+    }
+}
+
+/// What [`apply`] leaves for the rest of the compiler.
+pub struct Applied<'a> {
+    /// The program that remains. Borrowed, and identical to what was passed
+    /// in, when the file holds no directive at all.
+    pub program: Cow<'a, AstFile>,
+    pub diagnostics: Vec<Diagnostic>,
+    /// The names live `#if` conditions assigned, in source order.
+    pub effects: Vec<Effect>,
 }
 
 /// A zero-width span just past the last item, for a top-level `#if` that the
@@ -269,6 +287,23 @@ struct Preprocess {
     /// namespace a condition reads. Built here rather than borrowed because
     /// the real one does not exist until liveness is already decided.
     symbols: SymbolTable,
+    /// Where in the surviving item list a condition's effects belong, so
+    /// that a name one assigns becomes visible to analysis at the point the
+    /// source assigns it rather than at the top of the file.
+    ///
+    /// Exact for a top-level condition. For one nested inside an item it
+    /// names that item, which is earlier than the truth by at most one item —
+    /// and reading such a name *above* the directive that assigns it aborts
+    /// the original outright, so there is no compatible program the
+    /// difference can reach.
+    anchor: usize,
+    /// What live conditions assigned, for analysis to install. See
+    /// [`Preprocess::condition`].
+    effects: Vec<Effect>,
+    /// What the evaluation that just finished produced, for its caller to
+    /// keep or drop. See [`Preprocess::evaluate`].
+    notes: Vec<eval::Note>,
+    assigned: Vec<(String, eval::Value)>,
     /// What each bracket this pass evaluated produced, keyed by its span.
     ///
     /// It exists because folding a `const` needs a [`Resolver`] and a
@@ -287,6 +322,9 @@ impl Preprocess {
         let mut stack = Vec::new();
         let mut kept = Vec::new();
         for item in items {
+            // Where a name assigned by a condition inside this item becomes
+            // visible to analysis. See `Preprocess::anchor`.
+            self.anchor = kept.len();
             if let ItemKind::Preprocessor(directive) = &item.kind {
                 self.directive(&mut stack, directive, item.span);
                 continue;
@@ -294,18 +332,76 @@ impl Preprocess {
             if !live(&stack) {
                 continue;
             }
-            // Rewritten first, then observed: a bracket inside a region this
-            // item's *own* directives do not take must not run, and after
-            // the rewrite it is no longer there to run.
-            let item = Item {
-                kind: self.item_kind(&item.kind, item.span),
-                span: item.span,
-            };
-            self.observe(&item);
-            kept.push(item);
+            kept.push(self.item(item));
         }
+        self.anchor = kept.len();
         self.close(stack, end);
         kept
+    }
+
+    /// Walks one live item: declares what it declares, evaluates what it
+    /// evaluates, and rewrites the levels nested inside it — **in source
+    /// order**, which is the whole contract.
+    ///
+    /// Nothing here may run out of order with the levels below it. A data
+    /// block's `[ FLAG = 1 ]` has to run before the `#if FLAG` three lines
+    /// under it, and the two live at different depths of this walk, so the
+    /// walk is one walk: an element's own brackets run as the element is
+    /// reached, and a nested element list is entered at the point it appears.
+    fn item(&mut self, item: &Item) -> Item {
+        let span = item.span;
+        let kind = match &item.kind {
+            ItemKind::Func(func) => {
+                self.declare_section(&func.name, func.kind, func.is_far);
+                let mut func = func.clone();
+                func.body = self.block(&func.body);
+                ItemKind::Func(func)
+            }
+            ItemKind::Data(data) => ItemKind::Data(self.data(data, closing(span))),
+            // A `const` group is a sequence of declarations and a later entry
+            // may read an earlier one, so each entry's brackets run
+            // immediately before that entry folds — the order
+            // `semantic::declare_const_group` keeps for the same reason.
+            ItemKind::Const(declaration) => {
+                self.consts(declaration);
+                item.kind.clone()
+            }
+            ItemKind::EvalFunc(function) => {
+                let _ = self.functions.declare(
+                    &function.name.text,
+                    eval::UserFunction {
+                        parameters: function
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.text.clone())
+                            .collect(),
+                        body: function.body.clone(),
+                        declaration: function.name.span,
+                    },
+                );
+                item.kind.clone()
+            }
+            // A `var` has no compile-time value, and declaring it is what
+            // makes the pass say so in the same words analysis would: without
+            // the name in the table a condition reading it is "undeclared",
+            // which is both wrong and less useful than "a variable".
+            ItemKind::Var(var) => {
+                self.declare_var(&var.name);
+                self.brackets_of_item(item);
+                item.kind.clone()
+            }
+            ItemKind::Segment(_)
+            | ItemKind::EvalBlock(_)
+            | ItemKind::Preprocessor(_)
+            | ItemKind::Binary(_)
+            | ItemKind::Reserved(_)
+            | ItemKind::ModuleWidth(_)
+            | ItemKind::Error => {
+                self.brackets_of_item(item);
+                item.kind.clone()
+            }
+        };
+        Item { kind, span }
     }
 
     fn block(&mut self, block: &Block) -> Block {
@@ -319,9 +415,9 @@ impl Preprocess {
             if !live(&stack) {
                 continue;
             }
-            let mut statement = statement.clone();
-            statement.kind = self.statement_kind(&statement.kind, statement.span);
-            kept.push(statement);
+            let mut kept_statement = statement.clone();
+            kept_statement.kind = self.statement_kind(statement);
+            kept.push(kept_statement);
         }
         self.close(stack, Some(Span::empty_at(block.span.file, block.span.end)));
         Block {
@@ -331,6 +427,13 @@ impl Preprocess {
     }
 
     fn data(&mut self, data: &DataBlock, end: Option<Span>) -> DataBlock {
+        // The block's own name first, so a bracket inside it may read the
+        // section it is in. Labels are declared as the walk reaches them,
+        // which is what keeps one inside a region that is not taken from
+        // existing.
+        if let Some(name) = &data.name {
+            self.declare_data_label(name);
+        }
         let mut stack = Vec::new();
         let mut kept = Vec::new();
         for entry in &data.entries {
@@ -346,24 +449,46 @@ impl Preprocess {
                     nocross: *nocross,
                     body: self.block(body),
                 },
-                DataEntryKind::Repeat { count, body } => DataEntryKind::Repeat {
-                    count: count.clone(),
-                    body: self.data(body, Some(Span::empty_at(entry.span.file, entry.span.end))),
-                },
-                // Exhaustive for the reason `item_kind`'s tail gives.
+                DataEntryKind::Repeat { count, body } => {
+                    // The count is the entry's own expression and is written
+                    // before the block, so it runs before the block — an arm
+                    // that descends without running what sits above the
+                    // descent drops those brackets from the environment every
+                    // directive below is decided against.
+                    let mut sites = Vec::new();
+                    eval::sites_of_expr(count, &mut sites);
+                    self.run(sites);
+                    DataEntryKind::Repeat {
+                        count: count.clone(),
+                        body: self
+                            .data(body, Some(Span::empty_at(entry.span.file, entry.span.end))),
+                    }
+                }
+                // Exhaustive on purpose. A construct added later that carries
+                // an element list has to be listed above or this match stops
+                // compiling; a `_` arm would clone it past the filter and
+                // leave a directive inside it alive, which is the failure
+                // `no_directive_survives_anywhere_in_the_tree` exists to catch
+                // and cannot catch for a shape nobody wrote a case for.
+                DataEntryKind::Label(name) => {
+                    self.declare_data_label(name);
+                    entry.kind.clone()
+                }
                 DataEntryKind::Segment(_)
                 | DataEntryKind::Align(_)
                 | DataEntryKind::Address(_)
                 | DataEntryKind::Nocross
                 | DataEntryKind::Charset(_)
-                | DataEntryKind::Label(_)
                 | DataEntryKind::Typed { .. }
                 | DataEntryKind::Value(_)
                 | DataEntryKind::ForEval { .. }
                 | DataEntryKind::Preprocessor(_)
                 | DataEntryKind::Binary(_)
                 | DataEntryKind::Reserved(_)
-                | DataEntryKind::Error => entry.kind.clone(),
+                | DataEntryKind::Error => {
+                    self.brackets_of_entry(entry);
+                    entry.kind.clone()
+                }
             };
             kept.push(DataEntry {
                 kind,
@@ -378,38 +503,11 @@ impl Preprocess {
         }
     }
 
-    /// Rewrites the levels nested inside one item, leaving the item itself
-    /// alone.
-    fn item_kind(&mut self, kind: &ItemKind, span: Span) -> ItemKind {
-        match kind {
-            ItemKind::Func(func) => {
-                let mut func = func.clone();
-                func.body = self.block(&func.body);
-                ItemKind::Func(func)
-            }
-            ItemKind::Data(data) => ItemKind::Data(self.data(data, closing(span))),
-            // Exhaustive on purpose. A construct added later that carries an
-            // element list has to be listed above or this match stops
-            // compiling; a `_` arm would clone it past the filter and leave
-            // a directive inside it alive, which is the failure
-            // `no_directive_survives_anywhere_in_the_tree` exists to catch
-            // and cannot catch for a shape nobody wrote a case for.
-            ItemKind::Var(_)
-            | ItemKind::Const(_)
-            | ItemKind::Segment(_)
-            | ItemKind::EvalBlock(_)
-            | ItemKind::EvalFunc(_)
-            | ItemKind::Preprocessor(_)
-            | ItemKind::Binary(_)
-            | ItemKind::Reserved(_)
-            | ItemKind::ModuleWidth(_)
-            | ItemKind::Error => kind.clone(),
-        }
-    }
-
-    /// Rewrites the levels nested inside one statement.
-    fn statement_kind(&mut self, kind: &StatementKind, span: Span) -> StatementKind {
-        match kind {
+    /// Walks one live statement, in source order, for the reason
+    /// [`Preprocess::item`] gives.
+    fn statement_kind(&mut self, statement: &Statement) -> StatementKind {
+        let span = statement.span;
+        match &statement.kind {
             StatementKind::WidthBlock(width) => {
                 let mut width = width.clone();
                 width.body = self.block(&width.body);
@@ -432,12 +530,13 @@ impl Preprocess {
             }
             StatementKind::ConditionalJump(jump) => {
                 let mut jump = jump.clone();
-                let inner = jump.jump.span;
-                jump.jump.kind = self.statement_kind(&jump.jump.kind, inner);
+                jump.jump.kind = self.statement_kind(&jump.jump.clone());
                 StatementKind::ConditionalJump(jump)
             }
             StatementKind::Data(data) => StatementKind::Data(self.data(data, closing(span))),
-            // Exhaustive for the reason `item_kind`'s tail gives.
+            // Exhaustive for the reason `data`'s tail gives. Every arm below
+            // carries no element list of its own, so walking its sites here
+            // cannot reach past this statement.
             StatementKind::Label(_)
             | StatementKind::Native(_)
             | StatementKind::Hla(_)
@@ -452,7 +551,10 @@ impl Preprocess {
             | StatementKind::Align(_)
             | StatementKind::Address(_)
             | StatementKind::Reserved(_)
-            | StatementKind::Error => kind.clone(),
+            | StatementKind::Error => {
+                self.brackets_of_statement(statement);
+                statement.kind.clone()
+            }
         }
     }
 
@@ -536,7 +638,11 @@ impl Preprocess {
                 if !live(stack) {
                     return;
                 }
-                let message = directive.message.clone().unwrap_or_default();
+                // The parser rejected the message — it was on the next line,
+                // or recovery lost it — and that complaint already stands.
+                let Some(message) = directive.message.clone() else {
+                    return;
+                };
                 let warn = directive.kind == PreprocessorKind::Warn;
                 let (code, title) = if warn {
                     (DiagnosticCode::PREPROCESSOR_WARNING, "`#warn`")
@@ -598,6 +704,63 @@ impl Preprocess {
     }
 
     // -----------------------------------------------------------------
+    // The namespace a condition reads
+    // -----------------------------------------------------------------
+
+    /// Declares a code section, which has an address and no value: the pass
+    /// has to know the name exists in order to say which kind it is.
+    fn declare_section(
+        &mut self,
+        name: &crate::ast::Name,
+        kind: crate::ast::FunctionKind,
+        far: bool,
+    ) {
+        if name.provenance == Provenance::Synthetic {
+            return;
+        }
+        let kind = match kind {
+            crate::ast::FunctionKind::Inline => SymbolKind::Inline,
+            _ => SymbolKind::function(far),
+        };
+        let _ = self.symbols.declare(&name.text, kind, name.span);
+    }
+
+    /// Likewise a `var`: its address is the linker's, so it has no
+    /// compile-time value, and saying *that* is better than "undeclared".
+    fn declare_var(&mut self, name: &crate::ast::Name) {
+        if name.provenance == Provenance::Synthetic {
+            return;
+        }
+        let _ = self.symbols.declare(
+            &name.text,
+            SymbolKind::Var {
+                address: None,
+                size: crate::symbol::AddressSize::Absolute,
+                width: None,
+                layout: None,
+                element: 1,
+                repeat: None,
+            },
+            name.span,
+        );
+    }
+
+    /// A data label is the section it names, which is what makes
+    /// `index(tab, 2)` mean anything at all.
+    fn declare_data_label(&mut self, name: &crate::ast::Name) {
+        if name.provenance == Provenance::Synthetic {
+            return;
+        }
+        let _ = self.symbols.declare(
+            &name.text,
+            SymbolKind::DataLabel {
+                size: crate::symbol::AddressSize::Absolute,
+            },
+            name.span,
+        );
+    }
+
+    // -----------------------------------------------------------------
     // Evaluation
     // -----------------------------------------------------------------
 
@@ -609,6 +772,13 @@ impl Preprocess {
     /// `#if [0.6]` is true (`tests/compat/k65/preprocessor-condition-reads/`).
     /// A condition that cannot be evaluated reports and its branch is not
     /// taken.
+    ///
+    /// Unlike a bracket, this evaluation is the **only** one: the directive
+    /// is gone before analysis begins, so nothing re-runs it. That is why it
+    /// keeps what [`Self::evaluate`] discards — the `print` notes it made and
+    /// the names it assigned, which [`apply`] hands back for analysis to
+    /// install. `#if [ FLAG = 1 ]` assigning a name the code below reads is
+    /// measured on the original (`k65/preprocessor-condition-effects`).
     fn condition(&mut self, condition: Option<&EvalExpr>, span: Span) -> bool {
         let Some(condition) = condition else {
             // The parser recovered: a syntax error already stands, and
@@ -619,7 +789,22 @@ impl Preprocess {
         if eval::is_recovered(condition) {
             return false;
         }
-        match self.evaluate(condition) {
+        let value = self.evaluate(condition);
+        // A condition's effects are its own, and nothing will produce them a
+        // second time.
+        for note in std::mem::take(&mut self.notes) {
+            self.diagnostics.push(crate::resolve::eval_note(note));
+        }
+        let anchor = self.anchor;
+        let assigned = std::mem::take(&mut self.assigned);
+        self.effects
+            .extend(assigned.into_iter().map(|(name, value)| Effect {
+                anchor,
+                name,
+                value,
+                span,
+            }));
+        match value {
             Ok(value) => match value.number() {
                 Some(number) => eval::to_integer(number) != 0,
                 None => {
@@ -648,18 +833,25 @@ impl Preprocess {
 
     /// Runs one evaluator expression against this pass's environment.
     ///
-    /// The `print` notes are dropped: the bracket that produced them runs
-    /// again in `semantic.rs`, and that run is the one that speaks. A
-    /// condition has no second run, so [`Self::condition`] reports its own
-    /// errors; a bracket's errors are dropped for the same reason its notes
-    /// are.
+    /// The `print` notes it made and the names it assigned are left in
+    /// [`Preprocess::notes`] and [`Preprocess::assigned`] for the caller,
+    /// which is where a bracket and a condition part company. A bracket's are
+    /// dropped, because `semantic.rs` runs the same bracket again and that
+    /// run is the one that speaks; a condition has no second run, so
+    /// [`Self::condition`] keeps both. Either way they belong to the
+    /// evaluation that just finished, so they are cleared here rather than
+    /// marked and sliced.
     fn evaluate(&mut self, body: &EvalExpr) -> Result<eval::Value, eval::Error> {
+        self.notes.clear();
+        self.assigned.clear();
         self.block += 1;
         let mut env = std::mem::take(&mut self.env);
-        let value = eval::Interpreter::new(&mut env, &self.functions, &self.symbols, self.block)
-            .evaluate(body);
-        // A name a bracket assigned is a compiler constant from there down,
-        // and a condition below it may read it by either route.
+        let mut interpreter =
+            eval::Interpreter::new(&mut env, &self.functions, &self.symbols, self.block);
+        let value = interpreter.evaluate(body);
+        self.notes.extend(interpreter.take_notes());
+        // A name an evaluation assigned is a compiler constant from there
+        // down, and a condition below it may read it by either route.
         for (name, assigned) in env.take_new_names() {
             if let Some(number) = assigned.number() {
                 let _ = self.symbols.declare(
@@ -670,6 +862,7 @@ impl Preprocess {
                     body.span,
                 );
             }
+            self.assigned.push((name, assigned));
         }
         self.env = env;
         if let Ok(value) = &value {
@@ -685,78 +878,34 @@ impl Preprocess {
     /// Diagnostics are not produced here. Everything this touches is walked
     /// again by `semantic.rs`, which reports; a second voice would say
     /// everything twice.
-    fn observe(&mut self, item: &Item) {
-        match &item.kind {
-            ItemKind::EvalFunc(function) => {
-                let _ = self.functions.declare(
-                    &function.name.text,
-                    eval::UserFunction {
-                        parameters: function
-                            .parameters
-                            .iter()
-                            .map(|parameter| parameter.text.clone())
-                            .collect(),
-                        body: function.body.clone(),
-                        declaration: function.name.span,
-                    },
-                );
-            }
-            // A `const` group is a sequence of declarations and a later
-            // entry may read an earlier one, so each entry's brackets run
-            // immediately before that entry folds — the order
-            // `semantic::declare_const_group` keeps for the same reason.
-            ItemKind::Const(declaration) => self.consts(declaration),
-            ItemKind::Data(data) => {
-                self.labels(data);
-                self.brackets(item);
-            }
-            // A `var` has no compile-time value, and declaring it is what
-            // makes the pass say so in the same words analysis would: without
-            // the name in the table a condition reading it is "undeclared",
-            // which is both wrong and less useful than "a variable".
-            ItemKind::Var(var) => {
-                if var.name.provenance != Provenance::Synthetic {
-                    let _ = self.symbols.declare(
-                        &var.name.text,
-                        SymbolKind::Var {
-                            address: None,
-                            size: crate::symbol::AddressSize::Absolute,
-                            width: None,
-                            layout: None,
-                            element: 1,
-                            repeat: None,
-                        },
-                        var.name.span,
-                    );
-                }
-                self.brackets(item);
-            }
-            // Likewise a code section: it has an address and no value, and
-            // the pass has to know the name exists in order to say so.
-            ItemKind::Func(func) => {
-                if func.name.provenance != Provenance::Synthetic {
-                    let kind = match func.kind {
-                        crate::ast::FunctionKind::Inline => SymbolKind::Inline,
-                        _ => SymbolKind::function(func.is_far),
-                    };
-                    let _ = self.symbols.declare(&func.name.text, kind, func.name.span);
-                }
-                self.brackets(item);
-            }
-            ItemKind::Segment(_)
-            | ItemKind::EvalBlock(_)
-            | ItemKind::Preprocessor(_)
-            | ItemKind::Binary(_)
-            | ItemKind::Reserved(_)
-            | ItemKind::ModuleWidth(_)
-            | ItemKind::Error => self.brackets(item),
-        }
-    }
-
-    fn brackets(&mut self, item: &Item) {
+    /// Every bracket one item holds, run in the order it is written.
+    ///
+    /// Only for an item with no element list nested in it: for the two that
+    /// have one, the walk enters the level itself so that a directive in it
+    /// meets the environment the elements above it left.
+    fn brackets_of_item(&mut self, item: &Item) {
         let mut sites = Vec::new();
         eval::sites_of_item(item, &mut sites);
+        self.run(sites);
+    }
+
+    fn brackets_of_statement(&mut self, statement: &Statement) {
+        let mut sites = Vec::new();
+        eval::sites_of_statement(statement, &mut sites);
+        self.run(sites);
+    }
+
+    fn brackets_of_entry(&mut self, entry: &DataEntry) {
+        let mut sites = Vec::new();
+        eval::sites_of_data_entry(entry, &mut sites);
+        self.run(sites);
+    }
+
+    fn run(&mut self, sites: Vec<eval::Site<'_>>) {
         for site in sites {
+            // A `for … eval` body is not run here for the reason analysis
+            // does not run it either: its bounds are K65 expressions nobody
+            // has folded yet.
             if let eval::Site::Bracket(body) = site
                 && !eval::is_recovered(body)
             {
@@ -805,32 +954,23 @@ impl Preprocess {
             }
         }
     }
+}
 
-    /// Declares a data block's labels, which is all a condition can do with
-    /// one: `getevalvar` reads a label as the *section* it names, so the
-    /// value exists to make `index(tab, 2)` mean something rather than to be
-    /// a number.
-    fn labels(&mut self, data: &DataBlock) {
-        let mut declare = |name: &crate::ast::Name| {
-            if name.provenance != Provenance::Synthetic {
-                let _ = self.symbols.declare(
-                    &name.text,
-                    SymbolKind::DataLabel {
-                        size: crate::symbol::AddressSize::Absolute,
-                    },
-                    name.span,
-                );
-            }
-        };
-        if let Some(name) = &data.name {
-            declare(name);
-        }
-        for entry in &data.entries {
-            if let DataEntryKind::Label(name) = &entry.kind {
-                declare(name);
-            }
-        }
-    }
+/// A name a live `#if` condition assigned, and where analysis should install
+/// it.
+///
+/// The preprocessor evaluates a condition and then deletes the directive, so
+/// this is the only record that the assignment happened. `semantic.rs`
+/// declares the name as a compiler constant and binds it in the evaluator
+/// environment before it processes the item at `anchor`.
+#[derive(Clone, Debug)]
+pub struct Effect {
+    pub anchor: usize,
+    pub name: String,
+    pub value: eval::Value,
+    /// The directive whose condition assigned it, for the constant's
+    /// declaration site.
+    pub span: Span,
 }
 
 /// The zero-width point at which a construct's span ends — the `}` an
@@ -856,12 +996,13 @@ mod tests {
         let id = map.add_file("pp.k65", source);
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "`{source}` did not parse");
-        let (program, diagnostics) = apply(&parsed.file);
-        let codes = diagnostics
+        let applied = apply(&parsed.file);
+        let codes = applied
+            .diagnostics
             .iter()
             .map(|diagnostic| diagnostic.code.as_str().to_owned())
             .collect();
-        (program.into_owned(), codes)
+        (applied.program.into_owned(), codes)
     }
 
     /// The names the surviving top-level `const` and `func` items declare, in
@@ -894,9 +1035,10 @@ mod tests {
         let mut map = SourceMap::new();
         let id = map.add_file("pp.k65", "[ N = 1 ]\nfunc main @a8 @i8 { return }\n");
         let parsed = parse_source(map.file(id), None);
-        let (program, diagnostics) = apply(&parsed.file);
-        assert!(matches!(program, Cow::Borrowed(_)));
-        assert!(diagnostics.is_empty());
+        let applied = apply(&parsed.file);
+        assert!(matches!(applied.program, Cow::Borrowed(_)));
+        assert!(applied.diagnostics.is_empty());
+        assert!(applied.effects.is_empty());
     }
 
     #[test]
@@ -976,6 +1118,66 @@ mod tests {
         // The branch is not taken, so recovery does not compile a region
         // whose condition nobody could evaluate.
         assert_eq!(survivors(&file), Vec::<String>::new());
+    }
+
+    /// A bracket above a directive runs before it, at every level.
+    ///
+    /// Liveness and evaluation are one source-order walk or they are wrong.
+    /// They were two: the pass used to rewrite a whole item — descending into
+    /// its statements and entries, deciding every directive in them — and
+    /// only then run the item's brackets, so a `[ FLAG = 1 ]` three lines
+    /// above a `#if FLAG` in the same data block had not happened yet.
+    /// Measured on the original in `k65/preprocessor-condition-effects`.
+    #[test]
+    fn a_bracket_above_a_directive_runs_before_it() {
+        // Top level.
+        let (file, codes) = run("[ FLAG = 1 ]\n#if FLAG\nconst TAKEN = 1\n#endif\n");
+        assert_eq!(codes, Vec::<String>::new());
+        assert_eq!(survivors(&file), ["TAKEN"]);
+
+        // Data-entry level, where the bracket is an entry of the same block.
+        let (file, codes) =
+            run("data tab {\n  [ FLAG = 1 ]\n  #if FLAG\n  7\n  #else\n  8\n  #endif\n}\n");
+        assert_eq!(codes, Vec::<String>::new());
+        assert_eq!(surviving_data_values(&file), 2, "the bracket and the `7`");
+
+        // And one level further in, where the bracket is in an outer block
+        // and the directive in a `repeat` nested inside it.
+        let (file, codes) = run(
+            "data tab {\n  [ FLAG = 1 ]\n  repeat 2 {\n    #if FLAG\n    7\n    #endif\n  }\n}\n",
+        );
+        assert_eq!(codes, Vec::<String>::new());
+        assert_eq!(surviving_data_values(&file), 2);
+    }
+
+    /// What a live condition does survives it, because nothing runs it again.
+    ///
+    /// The directive is deleted before analysis begins, so a name the
+    /// condition assigned has to be carried across as an [`Effect`] — and a
+    /// `print` it made has to be reported here, since there is no second run
+    /// to report it.
+    #[test]
+    fn a_live_condition_keeps_what_it_assigned_and_what_it_printed() {
+        let mut map = SourceMap::new();
+        let id = map.add_file(
+            "pp.k65",
+            "#if [ FLAG = 1 print(\"deciding\") 1 ]\nconst TAKEN = 1\n#endif\n",
+        );
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![]);
+        let applied = apply(&parsed.file);
+        let codes: Vec<&str> = applied
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        assert_eq!(codes, ["K816-N0145"], "the `print` speaks exactly once");
+        let names: Vec<&str> = applied
+            .effects
+            .iter()
+            .map(|effect| effect.name.as_str())
+            .collect();
+        assert_eq!(names, ["FLAG"]);
     }
 
     #[test]
@@ -1185,6 +1387,89 @@ mod tests {
                 _ => 0,
             })
             .sum()
+    }
+
+    /// The pass evaluates every bracket the program that survives it holds.
+    ///
+    /// The walk is now split across `item`, `statement_kind` and `data` —
+    /// each arm either descends into a nested element list or runs the
+    /// element's own sites — and an arm that does neither drops the brackets
+    /// it holds silently. Analysis would still evaluate them, so nothing
+    /// visible breaks; what breaks is the *environment* a directive below
+    /// them is decided against, which is the whole reason the pass runs an
+    /// evaluator at all.
+    ///
+    /// Checked against `eval::sites_of_item`, which is the same exhaustive
+    /// walk analysis uses, so the two cannot drift apart in silence.
+    #[test]
+    fn every_bracket_of_the_surviving_program_was_evaluated() {
+        let source = "#if 1\n\
+                      [ TOP = 1 ]\n\
+                      const SIZE = [ 2 ]\n\
+                      var slot[ [1 + 1] ]\n\
+                      data tab {\n\
+                      \x20 [ IN_DATA = 3 ]\n\
+                      \x20 repeat [ 1 + 1 ] {\n\
+                      \x20   [ IN_REPEAT = 4 ]\n\
+                      \x20 }\n\
+                      \x20 code {\n\
+                      \x20   a = #[ 5 ]\n\
+                      \x20 }\n\
+                      }\n\
+                      func main @a8 @i8 {\n\
+                      \x20 a = #[ 6 ]\n\
+                      \x20 nocross {\n\
+                      \x20   a = #[ 7 ]\n\
+                      \x20 }\n\
+                      \x20 return\n\
+                      }\n\
+                      #endif\n";
+        let mut map = SourceMap::new();
+        let id = map.add_file("pp.k65", source);
+        let parsed = parse_source(map.file(id), None);
+        assert_eq!(parsed.diagnostics, vec![], "the probe did not parse");
+
+        let mut pass = Preprocess::default();
+        let items = pass.items(&parsed.file.items, end_of(&parsed.file.items));
+        let mut missed = Vec::new();
+        for item in &items {
+            let mut sites = Vec::new();
+            eval::sites_of_item(item, &mut sites);
+            for site in sites {
+                if let eval::Site::Bracket(body) = site
+                    && pass.outcome.value(body.span).is_none()
+                {
+                    missed.push(body.span);
+                }
+            }
+        }
+        assert!(
+            missed.is_empty(),
+            "brackets the pass never evaluated: {missed:?}"
+        );
+        // And the probe is only worth something if it has brackets in it.
+        // Eight, not nine: `sites_of_item` deliberately skips a `const`
+        // group, whose brackets `Preprocess::consts` interleaves with its
+        // declarations instead — which the environment check below covers.
+        let total: usize = items
+            .iter()
+            .map(|item| {
+                let mut sites = Vec::new();
+                eval::sites_of_item(item, &mut sites);
+                sites.len()
+            })
+            .sum();
+        assert_eq!(
+            total, 8,
+            "the probe no longer covers what it was written for"
+        );
+        for name in ["TOP", "IN_DATA", "IN_REPEAT"] {
+            assert!(pass.env.get(name).is_some(), "`{name}` was never assigned");
+        }
+        assert!(
+            pass.symbols.lookup("SIZE").is_some(),
+            "a `const` group's bracket did not fold"
+        );
     }
 
     /// Statement identities key every per-statement fact analysis and lowering

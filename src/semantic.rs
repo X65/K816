@@ -331,15 +331,16 @@ fn analyze(
     // inside a region that is not taken must not exist, or the ordinary
     // `#if / func f / #else / func f / #endif` is a duplicate definition
     // (`plans/06-compatibility.md` decision 9, `preprocess.rs`).
-    let (program, preprocessor_diagnostics) = crate::preprocess::apply(file);
-    let preprocessed = match program {
+    let applied = crate::preprocess::apply(file);
+    let preprocessed = match applied.program {
         std::borrow::Cow::Borrowed(_) => None,
         std::borrow::Cow::Owned(program) => Some(program),
     };
     let file = preprocessed.as_ref().unwrap_or(file);
+    let effects = applied.effects;
     let mut analysis = Analysis {
         model: SemanticModel::default(),
-        diagnostics: preprocessor_diagnostics,
+        diagnostics: applied.diagnostics,
         current_function: None,
         loops: 0,
         unit: unit_name.to_owned(),
@@ -352,6 +353,7 @@ fn analyze(
         direct_page_reported: false,
         eval_env: eval::Environment::default(),
         eval_block: 0,
+        eval_effects: effects,
     };
     analysis.declare_placed_symbols(file);
     // Module defaults are file-wide, so they are known before any function's
@@ -425,6 +427,13 @@ struct Analysis {
     /// Which bracket is being evaluated, so a name assigned in one block and
     /// again in another is caught.
     eval_block: eval::BlockId,
+    /// What the preprocessor's live `#if` conditions assigned, waiting to be
+    /// installed at the item each one is anchored to.
+    ///
+    /// A condition is evaluated by `preprocess.rs` and by nothing else — the
+    /// directive is deleted before this pass begins — so its assignments have
+    /// to be carried here rather than re-derived (`postmortem.md` §G.6.8).
+    eval_effects: Vec<crate::preprocess::Effect>,
 }
 
 /// A preprocessor directive that survived `preprocess::apply`.
@@ -716,7 +725,12 @@ impl Analysis {
     /// Second pass: declares the symbols whose value has to be folded, and
     /// records what the rest of analysis needs about each item.
     fn declare_items(&mut self, file: &AstFile) {
+        // A condition after the last surviving item is anchored past the end,
+        // so the drain runs once more when the walk is over.
+        let last = file.items.len();
         for (item_index, item) in file.items.iter().enumerate() {
+            self.install_eval_effects(item_index);
+
             // Every evaluator bracket this item contains runs here, before
             // the item itself is processed, because the two directions of
             // the one namespace meet at exactly this point: a bracket reads
@@ -802,6 +816,7 @@ impl Analysis {
                 ItemKind::Error => {}
             }
         }
+        self.install_eval_effects(last);
     }
 
     /// Runs every evaluator invocation this item contains, in source order.
@@ -830,6 +845,31 @@ impl Analysis {
                     let environment = self.eval_env.clone();
                     self.model.eval.record_loop(span, environment);
                 }
+            }
+        }
+    }
+
+    /// Installs what a live `#if` condition assigned, at the item the
+    /// preprocessor anchored it to.
+    ///
+    /// The name becomes a compiler constant, exactly as one a bracket
+    /// assigned does, and it is bound in the evaluator environment so a
+    /// bracket below can read it by either route. Each gets a block of its
+    /// own, so a bracket further down that assigns the same name is
+    /// `EVAL_REASSIGNED` — the rule that applies between any two blocks.
+    fn install_eval_effects(&mut self, item_index: usize) {
+        while self
+            .eval_effects
+            .first()
+            .is_some_and(|effect| effect.anchor <= item_index)
+        {
+            let effect = self.eval_effects.remove(0);
+            self.eval_block += 1;
+            self.eval_env
+                .bind(&effect.name, effect.value.clone(), self.eval_block);
+            if let Some(number) = effect.value.number() {
+                let value = eval::to_integer(number) as u32;
+                self.declare(&effect.name, SymbolKind::Const { value }, effect.span);
             }
         }
     }

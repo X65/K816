@@ -1,0 +1,25 @@
+// A directive ends where its line does.
+
+// The condition on the next line.  The original accepts this and reads the
+// `1` as the condition; K816 refuses it.
+#if
+1
+const A = 1
+#endif
+
+// The `!` on the directive's line and its operand below.
+#if !
+0
+const B = 2
+#endif
+
+// And a message.
+#error
+"a message on its own line"
+
+// What the rule leaves alone: a bracket may wrap, because the `]` says where
+// it ends and nothing on a later line can be taken into it by accident.
+#if [ 1 &&
+      1 ]
+const C = 3
+#endif

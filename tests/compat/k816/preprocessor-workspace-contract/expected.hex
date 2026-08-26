@@ -1,0 +1,10 @@
+# What K816 compiles this fixture to, assembled with ca65 and linked with
+# `../../atarixl.cfg`.  Sixteen bytes per line, load address in the left
+# column; the zero fill past the last byte is trimmed.
+#
+# An invented fixture, and the byte that matters is the `A9 01` with no
+# third byte after it: `narrow` returns in 8-bit mode, so the immediate is
+# one byte wide.  `fixture.txt` says what makes that easy to lose.
+
+origin 2000
+2000  E2 30 60 20 00 20 A9 01 60 C2 20 20 03 20 60

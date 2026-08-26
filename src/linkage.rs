@@ -177,7 +177,13 @@ impl Linkage {
                 let (unit, function) = sites[node];
                 let (_, parse, model) = &units[unit];
                 let info = &model.functions[function];
-                let Some(body) = function_body(&parse.file, info.item_index) else {
+                // `info.item_index` indexes the program *analysis* walked,
+                // which is what the preprocessor left — not what the parser
+                // produced. A single top-level directive shifts every index,
+                // and the shift is silent: the lookup misses, the callee gets
+                // no exit contract, and its caller emits bytes for widths the
+                // callee did not leave behind (`postmortem.md` §G.6.9).
+                let Some(body) = function_body(model.program(&parse.file), info.item_index) else {
                     continue;
                 };
                 // The solver needs its callees keyed by *this unit's* symbol

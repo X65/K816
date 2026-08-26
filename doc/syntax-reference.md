@@ -3670,6 +3670,14 @@ func main @a8 @i8 {
 
 Nesting is unlimited, and a region inside a region that is not taken is not compiled whatever its own condition says.
 
+A directive ends where its line does. `#if` on one line and its condition on the next is `K816-E0001`, and so is `#error` above its message. Only the inside of an evaluator bracket may wrap, because the `]` says where it ends:
+
+```k65
+#if [ LEVEL > 1 &&
+      !QUIET ]          // fine: the bracket opens on the directive's line
+#endif
+```
+
 ### Conditions
 
 A condition is a number, a name, `!` applied to either, or an evaluator bracket:
@@ -3683,6 +3691,15 @@ A condition is a number, a name, `!` applied to either, or an evaluator bracket:
 
 The bracket form is not a stylistic choice. A directive is confined to the line it starts on, and a full evaluator expression is not — `#if 0` above a line beginning with `[` would read the block below as an index into the condition.
 
+A condition may assign, and what it assigns outlives the directive:
+
+```k65
+#if [ TARGET = 3 ]
+  // ...
+#endif
+a = #[TARGET]           // TARGET is 3 here
+```
+
 A name resolves against the two namespaces an evaluator bracket reads: the unit's `const` values, and the names earlier brackets assigned. A name nothing declares is `K816-E0101`, not a silent zero.
 
 ```k65
@@ -3694,6 +3711,19 @@ const FEATURE = 1
 ```
 
 The condition is true when its value, taken through the [integer boundary rule](#compile-time-evaluator), is not zero. So `#if [0.6]` is true and `#if [0.4]` is false.
+
+### Order
+
+A directive is decided where it is written, against everything above it. An evaluator bracket earlier in the same block has already run:
+
+```k65
+data table {
+  [ FLAG = 1 ]
+  #if FLAG              // true: the bracket above ran first
+  $42
+  #endif
+}
+```
 
 ### What a region that is not taken does
 

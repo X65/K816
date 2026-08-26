@@ -43,7 +43,11 @@ fn analyze(text: &str) -> (AstFile, SemanticModel, Vec<Diagnostic>) {
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
     let (model, diagnostics) = analyze_file(&parse.file);
-    (parse.file, model, diagnostics)
+    // The program analysis walked, not the one the parser produced: a source
+    // with a preprocessor region in it is a different tree, and every
+    // per-statement fact below is keyed by position in the walked one.
+    let file = model.program(&parse.file).clone();
+    (file, model, diagnostics)
 }
 
 /// The statement identities of one function's body, in source order,

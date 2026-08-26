@@ -234,6 +234,19 @@ impl Environment {
         self.values.get(name).map(|binding| &binding.value)
     }
 
+    /// Binds `name` as if `block` had assigned it, without marking it fresh.
+    ///
+    /// The one caller is `semantic.rs` installing what a live `#if` condition
+    /// assigned. A condition is evaluated by `preprocess.rs` and by nothing
+    /// else — the directive is gone before analysis begins — so its
+    /// assignments have to be carried across rather than re-derived, and they
+    /// are not "new" here because the pass that made them has already
+    /// declared them (`postmortem.md` §G.6.8).
+    pub fn bind(&mut self, name: &str, value: Value, block: BlockId) {
+        self.values
+            .insert(name.to_owned(), Binding { value, block });
+    }
+
     /// The names assigned since this was last called, and their values.
     pub fn take_new_names(&mut self) -> Vec<(String, Value)> {
         std::mem::take(&mut self.fresh)
@@ -1207,8 +1220,20 @@ fn sites_of_fields<'a>(fields: &'a [crate::ast::FieldDeclaration], out: &mut Vec
 }
 
 fn sites_of_data<'a>(block: &'a crate::ast::DataBlock, out: &mut Vec<Site<'a>>) {
-    use crate::ast::{DataEntryKind, DataValue};
     for entry in &block.entries {
+        sites_of_data_entry(entry, out);
+    }
+}
+
+/// The evaluation sites of one data entry, including any nested inside it.
+///
+/// Public because `preprocess.rs` walks a data block entry by entry rather
+/// than block by block: a directive between two entries has to be decided
+/// with the environment the entries *above* it left, so the two walks are one
+/// walk (`postmortem.md` §G.6.7).
+pub fn sites_of_data_entry<'a>(entry: &'a crate::ast::DataEntry, out: &mut Vec<Site<'a>>) {
+    use crate::ast::{DataEntryKind, DataValue};
+    {
         match &entry.kind {
             DataEntryKind::Align(align) => {
                 sites_of_expr(&align.boundary, out);
@@ -1260,7 +1285,10 @@ fn sites_of_block<'a>(block: &'a crate::ast::Block, out: &mut Vec<Site<'a>>) {
     }
 }
 
-fn sites_of_statement<'a>(statement: &'a crate::ast::Statement, out: &mut Vec<Site<'a>>) {
+/// The evaluation sites of one statement, including any nested inside it.
+///
+/// Public for the reason [`sites_of_data_entry`] is.
+pub fn sites_of_statement<'a>(statement: &'a crate::ast::Statement, out: &mut Vec<Site<'a>>) {
     use crate::ast::StatementKind;
     {
         match &statement.kind {

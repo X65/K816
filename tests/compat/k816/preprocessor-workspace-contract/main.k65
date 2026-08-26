@@ -1,0 +1,14 @@
+// `narrow` leaves the machine in 8-bit mode, so the immediate below is one
+// byte.  The width solver only knows that if it can find `narrow`'s body,
+// which it looks up by the item index the *other* unit's analysis recorded.
+
+func work @a16 @i16 {
+  narrow
+  a = #1
+  return
+}
+
+func main @a8 @i8 {
+  work
+  return
+}

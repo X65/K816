@@ -77,6 +77,7 @@ fn compat_dir() -> PathBuf {
 /// The file is `key value` lines up to the first blank line, then prose. The
 /// prose is for a reader and is deliberately not parsed: what a fixture
 /// *proves* is an argument, and an argument does not belong in an assertion.
+#[derive(Clone)]
 struct Fixture {
     name: String,
     dir: PathBuf,
@@ -156,16 +157,32 @@ fn fixtures() -> Vec<Fixture> {
 /// of them lets the rest rot unnoticed, which is exactly what happened to this
 /// harness's first version.
 fn compile(fixture: &Fixture) -> (Vec<(String, String)>, Vec<String>) {
+    compile_texts(fixture, &sources_of(fixture))
+}
+
+/// Every unit's source, in the fixture's order.
+fn sources_of(fixture: &Fixture) -> Vec<String> {
+    fixture
+        .units
+        .iter()
+        .map(|unit| {
+            std::fs::read_to_string(fixture.dir.join(unit))
+                .unwrap_or_else(|e| panic!("{}: cannot read {unit}: {e}", fixture.name))
+        })
+        .collect()
+}
+
+/// [`compile`], over sources supplied rather than read — which is what lets a
+/// test compile a *modified* fixture and compare the two.
+fn compile_texts(fixture: &Fixture, sources: &[String]) -> (Vec<(String, String)>, Vec<String>) {
     let mut codes = Vec::new();
     let mut assemblies = Vec::new();
     for unit in &fixture.units {
         let mut map = SourceMap::new();
         let mut entry = None;
-        for other in &fixture.units {
+        for (other, text) in fixture.units.iter().zip(sources) {
             let path = fixture.dir.join(other);
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("{}: cannot read {other}: {e}", fixture.name));
-            let id = map.add_file(path.to_string_lossy(), text);
+            let id = map.add_file(path.to_string_lossy(), text.clone());
             if other == unit {
                 entry = Some(id);
             }
@@ -316,6 +333,78 @@ fn every_fixture_behaves_as_its_header_says() {
             }
             other => panic!("{}: unknown `compare {other}`", fixture.name),
         }
+    }
+}
+
+/// Wrapping a whole unit in `#if 1` … `#endif` changes nothing.
+///
+/// The claim `preprocess.rs` makes is that a directive selects parts of the
+/// program and does nothing else. That claim is checkable over the whole
+/// corpus rather than over examples of it, and checking it that way is what
+/// finds the failure examples do not: every index the compiler keys a fact by
+/// — a `var`'s storage, a function's `item_index`, a statement's id — is a
+/// position in the tree *analysis* walked, and a directive shifts them all.
+/// A stage that reaches for the parsed tree instead reads someone else's
+/// entry and says nothing (`postmortem.md` §G.6.9).
+///
+/// Both sides are compared: the diagnostics, and — where the fixture commits
+/// bytes — the linked image. Only the bytes could have caught the workspace
+/// bug, which emitted a wrong-width immediate while exiting zero.
+///
+/// Fixtures whose own expectations include `K816-E0152` are skipped: they are
+/// the ones about *unbalanced* regions, and wrapping an unbalanced file pairs
+/// its stray directive with the wrapper.
+#[test]
+fn a_live_region_around_a_whole_unit_changes_nothing() {
+    for fixture in fixtures() {
+        if fixture.expect.iter().any(|(_, code)| code == "K816-E0152") {
+            continue;
+        }
+        let plain = sources_of(&fixture);
+        let wrapped: Vec<String> = plain
+            .iter()
+            .map(|text| {
+                format!(
+                    "#if 1
+{text}
+#endif
+"
+                )
+            })
+            .collect();
+        let (plain_codes, plain_assemblies) = compile_texts(&fixture, &plain);
+        let (wrapped_codes, wrapped_assemblies) = compile_texts(&fixture, &wrapped);
+        assert_eq!(
+            plain_codes, wrapped_codes,
+            "{}: wrapping the unit in `#if 1` changed the diagnostics",
+            fixture.name
+        );
+        if fixture.compare != "bytes" {
+            continue;
+        }
+        assert_eq!(
+            plain_assemblies.len(),
+            wrapped_assemblies.len(),
+            "{}: wrapping the unit in `#if 1` changed which units emitted",
+            fixture.name
+        );
+        // Both sides get a stem of their own. The scratch directory is
+        // shared with `every_fixture_behaves_as_its_header_says`, which runs
+        // on another thread and assembles the same fixtures under the same
+        // names; two writers on one `.o` is a corrupt read, not a failure
+        // anyone would read as one.
+        let mut plain_fixture = fixture.clone();
+        plain_fixture.name = format!("{}-live-plain", fixture.name);
+        let mut wrapped_fixture = fixture.clone();
+        wrapped_fixture.name = format!("{}-live-wrapped", fixture.name);
+        let plain_bytes = assemble_and_link(&plain_fixture, &plain_assemblies);
+        let wrapped_bytes = assemble_and_link(&wrapped_fixture, &wrapped_assemblies);
+        assert_eq!(
+            format_hex(0, &plain_bytes),
+            format_hex(0, &wrapped_bytes),
+            "{}: wrapping the unit in `#if 1` changed the linked bytes",
+            fixture.name
+        );
     }
 }
 

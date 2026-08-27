@@ -2674,6 +2674,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "hla_stack_flag"
+        },
+        {
+          "type": "SYMBOL",
           "name": "hla_nop"
         },
         {
@@ -3889,6 +3893,78 @@
           }
         }
       ]
+    },
+    "hla_stack_flag": {
+      "type": "TOKEN",
+      "content": {
+        "type": "CHOICE",
+        "members": [
+          {
+            "type": "STRING",
+            "value": "z??"
+          },
+          {
+            "type": "STRING",
+            "value": "z!!"
+          },
+          {
+            "type": "STRING",
+            "value": "Z??"
+          },
+          {
+            "type": "STRING",
+            "value": "Z!!"
+          },
+          {
+            "type": "STRING",
+            "value": "n??"
+          },
+          {
+            "type": "STRING",
+            "value": "n!!"
+          },
+          {
+            "type": "STRING",
+            "value": "N??"
+          },
+          {
+            "type": "STRING",
+            "value": "N!!"
+          },
+          {
+            "type": "STRING",
+            "value": "v??"
+          },
+          {
+            "type": "STRING",
+            "value": "v!!"
+          },
+          {
+            "type": "STRING",
+            "value": "V??"
+          },
+          {
+            "type": "STRING",
+            "value": "V!!"
+          },
+          {
+            "type": "STRING",
+            "value": "i??"
+          },
+          {
+            "type": "STRING",
+            "value": "i!!"
+          },
+          {
+            "type": "STRING",
+            "value": "I??"
+          },
+          {
+            "type": "STRING",
+            "value": "I!!"
+          }
+        ]
+      }
     },
     "hla_nop": {
       "type": "SEQ",

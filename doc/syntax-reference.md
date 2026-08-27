@@ -1659,7 +1659,9 @@ Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed va
 - `PC` program counter (16 bit; CPU architectural register, not an HLA assignment target)
 - `DBR` data bank register (CPU architectural register, manipulated with native mnemonics such as `phb`/`plb`)
 - `PBR` program bank register (CPU architectural register, manipulated through long control flow and `phk`)
-- `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p`, `flag`, or an individual flag name)
+- `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p` or `flag` — **not** as an individual flag name, see below)
+
+**A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!` and `i??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses the five with `K816-K65-0005` and names `p??` / `p!!`, which is those two instructions without the suggestion that one flag moves on its own. `b` and `d` are the exception and keep K816's meaning — they name the data-bank and direct-page registers the 65816 has and the 6502 did not, so `b!!` is `PHB` here and `PHP` in the original.
 
 In K65 HLA syntax, single-letter register names `A`, `B`, `C`, `D`, `S`, `X`, and `Y` are native symbols used by the supported assignment, transfer, and stack shorthand parsers. Not every CPU register is a general-purpose assignment target; unsupported HLA assignments are rejected and must be written with the dedicated native mnemonic. The `b~a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
 

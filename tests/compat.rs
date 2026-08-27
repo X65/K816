@@ -615,6 +615,10 @@ fn every_oracle_golden_is_bound_to_its_inputs_and_its_compiler() {
 struct Row {
     id: String,
     lines: Vec<usize>,
+    /// The `Construct` cell: the grammar rule the row classifies, from which
+    /// `every_rows_fixture_contains_the_construct_it_claims` derives what the
+    /// fixture has to contain.
+    construct: String,
     status: String,
     fixture: String,
 }
@@ -651,14 +655,15 @@ fn manifest_rows() -> (Vec<Row>, String) {
         let id = cells[0].trim_matches('`').to_string();
         // The grammar table is `id | lines | construct | status | fixture |
         // reason`; the extension table drops the line column.
-        let (lines, status, fixture) = if cells.len() == 6 {
-            (parse_lines(&id, &cells[1]), &cells[3], &cells[4])
+        let (lines, construct, status, fixture) = if cells.len() == 6 {
+            (parse_lines(&id, &cells[1]), &cells[2], &cells[3], &cells[4])
         } else {
-            (Vec::new(), &cells[2], &cells[3])
+            (Vec::new(), &cells[1], &cells[2], &cells[3])
         };
         rows.push(Row {
             id,
             lines,
+            construct: construct.to_string(),
             status: status.to_string(),
             fixture: fixture.to_string(),
         });
@@ -779,6 +784,198 @@ fn the_manifest_and_the_corpus_agree() {
             fixture.row
         );
     }
+}
+
+/// A row's fixture contains the construct the row is about.
+///
+/// The gate this file was missing, and what it costs to be missing it: twice
+/// now a row has read `compatible` for a *K65 spelling* while citing a fixture
+/// that contained only K816's — `binary Ident` in G6 and `far goto` in G7,
+/// both valid K65 forms, both reaching a wrong meaning rather than a refusal,
+/// and both found by review because the suite was agreeing with itself.
+///
+/// The witness is derived from the row's own `Construct` cell rather than
+/// declared separately, so it cannot drift from what the row claims. In this
+/// grammar a non-terminal is capitalised and a terminal is not, so a run of
+/// adjacent lowercase tokens on the right of a `->` is a phrase the source
+/// must contain literally — `far goto` for `Instr -> far goto Arg`. Runs are
+/// per alternative and every one of them must appear: a row covering
+/// `return` and `return_i` is answerable only by a fixture with both.
+///
+/// **Punctuation is deliberately not a witness.** `Arg -> ( VarArg , X )` is
+/// checkable in principle and useless in practice: a fixture contains commas
+/// and parentheses for a hundred reasons, so the check would pass on
+/// everything. Only what a reader would call a keyword is asked for. That
+/// leaves rules whose terminals are all punctuation unchecked, and the
+/// `Lines` tiling above is what keeps *those* rows honest.
+#[test]
+fn every_rows_fixture_contains_the_construct_it_claims() {
+    let (rows, _) = manifest_rows();
+    let mut missing: Vec<String> = Vec::new();
+    let mut checked = 0;
+    for row in &rows {
+        // The extension table has no grammar rule to derive a witness from.
+        if row.lines.is_empty() || row.fixture == "—" || row.fixture == "-" {
+            continue;
+        }
+        let phrases = witnesses(&row.construct);
+        if phrases.is_empty() {
+            continue;
+        }
+        let source = fixture_source(&row.fixture);
+        if source.is_empty() {
+            continue;
+        }
+        checked += 1;
+        for phrase in phrases {
+            if !contains_phrase(&source, &phrase) {
+                missing.push(format!(
+                    "  `{}` claims `{}` and its fixture `{}` does not contain it",
+                    row.id,
+                    phrase.join(" "),
+                    row.fixture
+                ));
+            }
+        }
+    }
+    assert!(checked > 0, "no row had a checkable witness");
+    assert!(
+        missing.is_empty(),
+        "a row's fixture does not exercise what the row claims:\n{}\n\n\
+         Either point the row at a fixture that contains the construct, or write \
+         the case. A row citing a fixture that exercises the half which already \
+         worked is how `binary Ident` and `far goto` both shipped.",
+        missing.join("\n")
+    );
+}
+
+/// The keyword phrases a `Construct` cell promises.
+///
+/// Only rule-shaped backtick spans are read — a cell may also carry prose,
+/// and prose is full of lowercase words that are not terminals.
+fn witnesses(construct: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for span in construct.split('`').skip(1).step_by(2) {
+        let Some((_, rhs)) = span.split_once("->") else {
+            continue;
+        };
+        for alternative in rhs.split('|') {
+            let mut run: Vec<String> = Vec::new();
+            for token in alternative.replace("<empty>", " ").split_whitespace() {
+                // A terminal: begins with a lowercase letter and carries no
+                // capital, which is what tells `far` from `Arg`.
+                if token.starts_with(|c: char| c.is_ascii_lowercase())
+                    && !token.contains(|c: char| c.is_ascii_uppercase())
+                {
+                    run.push(token.to_string());
+                } else if !run.is_empty() {
+                    out.push(std::mem::take(&mut run));
+                }
+            }
+            if !run.is_empty() {
+                out.push(run);
+            }
+        }
+    }
+    out
+}
+
+/// Every source of a fixture, with comments removed.
+///
+/// Comments are stripped because a fixture's prose routinely *names* the
+/// construct it is about — `golden/unit-a.k816` says "a call into the sibling
+/// unit" beside a `jsr`. Matching that would make the gate agree with a
+/// fixture's description of itself instead of its code.
+fn fixture_source(fixture: &str) -> String {
+    let mut paths = Vec::new();
+    match fixture.strip_prefix("golden/") {
+        Some(rest) => paths.push(root().join("tests/golden").join(rest)),
+        None => {
+            let dir = compat_dir().join(fixture);
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                return String::new();
+            };
+            let mut found: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    matches!(
+                        path.extension().and_then(|e| e.to_str()),
+                        Some("k65") | Some("k816")
+                    )
+                })
+                .collect();
+            found.sort();
+            paths.extend(found);
+        }
+    }
+    let mut text = String::new();
+    for path in paths {
+        let Ok(body) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        text.push_str(&strip_comments(&body));
+        text.push('\n');
+    }
+    text
+}
+
+fn strip_comments(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let bytes: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    let mut block = 0usize;
+    while i < bytes.len() {
+        if block > 0 {
+            if bytes[i] == '*' && bytes.get(i + 1) == Some(&'/') {
+                block -= 1;
+                i += 2;
+                continue;
+            }
+            if bytes[i] == '\n' {
+                out.push('\n');
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'*') {
+            block += 1;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'/') {
+            while i < bytes.len() && bytes[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Whether `source` contains `phrase` as consecutive whitespace-separated
+/// tokens.
+///
+/// The boundary rule is the source's own. Every token but the last must match
+/// exactly — the phrase's spacing is what `far goto` means — and the last may
+/// carry trailing punctuation, so `return_i}` counts and `return_ix` does not.
+fn contains_phrase(source: &str, phrase: &[String]) -> bool {
+    let tokens: Vec<&str> = source.split_whitespace().collect();
+    let ends_cleanly = |token: &str, want: &str| match token.strip_prefix(want) {
+        Some(rest) => !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'),
+        None => false,
+    };
+    tokens.windows(phrase.len()).any(|window| {
+        window.iter().enumerate().all(|(i, token)| {
+            if i + 1 == phrase.len() {
+                ends_cleanly(token, &phrase[i])
+            } else {
+                *token == phrase[i]
+            }
+        })
+    })
 }
 
 /// Every status is one of the six the manifest defines.

@@ -10,7 +10,7 @@
 # compiler  version 0.2.1, build Feb  9 2026 02:31:38
 # revision  920a4e40e853c4cb563302f3c88d81ba4687c4ed
 # command   cd $K65_HOME/workdir && ../out/k65.exe @<this-directory>/nop-and-wait.k65proj
-# input     input.k65        adler32 A3CABC80  608 bytes
+# input     input.k65        adler32 3B4FB978  1358 bytes
 # input     oracle.conf      adler32 BDCD1422  66 bytes
 # project
 #     -system AtariXL
@@ -29,5 +29,5 @@
 # Sixteen bytes per line, load address in the left column.
 
 origin 2000
-2000  4C 03 20 EA 04 80 EA EA EA EA 04 80 B8 68 48 28
-2010  08 60
+2000  4C 03 20 EA 04 80 EA EA EA EA 04 80 B8 38 18 F8
+2010  D8 78 58 68 48 28 08 28 08 60

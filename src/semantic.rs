@@ -3170,6 +3170,13 @@ fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
             let (form, illegal, native) = illegal_opcode_text(opcode);
             compat::k65_illegal_opcode(reserved.keyword_span, form, illegal, native)
         }
+        ReservedKind::StackFlag => {
+            let letter = reserved
+                .name
+                .as_ref()
+                .map_or("z", |name| name.text.as_str());
+            compat::k65_flag_stack_form(reserved.keyword_span, letter)
+        }
     }
 }
 

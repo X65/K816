@@ -105,6 +105,33 @@ pub fn k65_refused_eval_function(span: Span, name: &str) -> Diagnostic {
     .with_docs("doc/syntax-reference.md#functions")
 }
 
+/// A flag letter's stack shorthand: `z??`, `c!!`, `n??`, `v!!`, `i??`.
+///
+/// A *refusal*, and the help is the whole point of having one. In the
+/// original the letter is decoration — `compiler.inc:167-180` gives all seven
+/// letters the same two actions, `PLP` and `PHP` — so an author who wrote
+/// `c??` was pushing the entire status register and very likely believed
+/// otherwise. `p??`/`p!!` is that instruction said plainly, and it is what
+/// the help names.
+///
+/// `b` and `d` are not refused: they name the data-bank and direct-page
+/// registers on the 65816, which the 6502 did not have, so `b!!` is `PHB`
+/// here and `PHP` there. That is a K65 spelling with a K816 meaning, and it
+/// is written down as one (`doc/k65-compat-manifest.md`, `instr-stack-flags`)
+/// rather than left for someone to find in the bytes.
+pub fn k65_flag_stack_form(span: Span, letter: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::K65_FLAG_STACK_FORM,
+        format!("K65's `{letter}??` and `{letter}!!` push and pull *every* flag"),
+        Label::new(span, "this letter names no register the stack can move"),
+    )
+    .with_note(
+        "in the original the letter is decoration: all seven of `z c n v b i d` assemble          to plain `PLP`/`PHP`, so nothing about this spelling moves one flag on its own",
+    )
+    .with_help("write `p??` / `p!!`, which is the same two instructions and says so")
+    .with_docs("doc/k65-compat.md")
+}
+
 /// `bank NAME` is removed, and `segment NAME` is what replaced it.
 ///
 /// A *removal* rather than a reservation, so the wording says so: nothing

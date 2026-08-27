@@ -1178,6 +1178,14 @@ pub enum ReservedKind {
     Bank,
     /// One of the five HLA forms that spell an undocumented 6502 opcode.
     IllegalOpcode(IllegalOpcode),
+    /// `z??`, `c!!`, `n??`, `v!!`, `i??` — a flag letter's stack shorthand.
+    ///
+    /// In the original the letter is decoration and every one of them is
+    /// plain `PLP`/`PHP`. K816 does not give them that meaning: `p??`/`p!!`
+    /// say it without pretending to move one flag. `b` and `d` are absent on
+    /// purpose — they name the 65816's data-bank and direct-page registers
+    /// here, which is `instr-stack-flags`'s `intentionally-changed` half.
+    StackFlag,
 }
 
 /// The five K65 HLA forms whose bytes are illegal 6502 opcodes.

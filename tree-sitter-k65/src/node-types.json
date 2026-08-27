@@ -856,6 +856,10 @@
           "named": true
         },
         {
+          "type": "hla_stack_flag",
+          "named": true
+        },
+        {
           "type": "hla_step",
           "named": true
         },
@@ -6673,6 +6677,10 @@
   {
     "type": "goto",
     "named": false
+  },
+  {
+    "type": "hla_stack_flag",
+    "named": true
   },
   {
     "type": "identifier",

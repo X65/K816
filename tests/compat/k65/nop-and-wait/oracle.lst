@@ -15,6 +15,13 @@ main
 ;  //
 ;  // `o-` rides along because `Flag -> o` is the original's spelling of the
 ;  // overflow flag and ours is `v` (decision 14).
+;  //
+;  // The rest of the flag and stack forms ride along for a duller reason: this
+;  // is the fixture the `flag-tokens`, `instr-flag-set`, `instr-stack-flags` and
+;  // `instr-return` rows answer to, and a row whose fixture does not contain its
+;  // construct is how `binary Ident` and `far goto` both shipped.  `o+` is
+;  // deliberately absent - the 65816 has no `SEV`, the original assembles `SEv`
+;  // and dies without a diagnostic, and `instr-flag-set` records that.
 ;  
 ;  main {
 ;    *
@@ -29,12 +36,25 @@ main
 ;    o-
     NOP     $80
     CLv
+;    c+ c-
+    SEc
+;    d+ d-
+    CLc
+    SEd
+    CLd
+;    i+ i-
+    SEi
+    CLi
 ;    a ??
     PLA
 ;    a !!
     PHA
 ;    z??
 ;    z!!
+    PLP
+;    c??
+    PHP
+;    c!!
     PLP
 ;    return
     PHP

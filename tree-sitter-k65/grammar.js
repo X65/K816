@@ -920,6 +920,7 @@ export default grammar({
         $.hla_step,
         $.hla_flag,
         $.hla_stack,
+        $.hla_stack_flag,
         $.hla_nop,
         $.hla_break,
         $.width_block,
@@ -1145,6 +1146,41 @@ export default grammar({
     // a!! (PHA), a?? (PLA), p!! (PHP), b!! (PHB), d?? (PLD), ...
     hla_stack: $ =>
       seq(field('register', $.register), field('operator', choice('!!', '??'))),
+
+    // `z??`, `n!!`, `v??`, `i!!` — the K65 spellings where the letter names a
+    // *flag*. In the original every one of the seven letters is plain
+    // `PLP`/`PHP`: the letter is decoration and all fourteen spellings mean
+    // the same two instructions (`compiler.inc:167-180`, and the oracle
+    // golden's `28 08`). K816 does not give them that meaning, so they are
+    // recognized here as a named node and refused with a `K816-K65-####`
+    // diagnostic rather than reaching `expected a statement`, which is
+    // decision 0's second clause.
+    //
+    // Four letters, not seven. `b` and `d` are in `register` and keep K816's
+    // meaning — `PLB`/`PLD`, the data-bank and direct-page registers the
+    // 65816 has and the 6502 did not — so those two spellings are an
+    // `intentionally-changed` row rather than a refusal. `c` is in `register`
+    // too, and the builder turns its stack form into the same refusal, which
+    // is where the register token's own comment says such choices belong.
+    //
+    // `i` and `v` are deliberately absent from `register` (`postmortem.md`
+    // §G.1.16); they arrive here as their own literals, which no other rule
+    // competes for because `??` and `!!` are single tokens.
+    // One token, letter and operator together, and that is the whole trick.
+    // Listing `i` and `v` as literals of their own would put them back in the
+    // lexer's reach for every rule that wants an identifier — which is
+    // exactly how `i+ d-` came to parse as the arithmetic `i + d`
+    // (`postmortem.md` §G.1.16). `i??` as a single token cannot change how a
+    // bare `i` lexes anywhere else.
+    hla_stack_flag: _ =>
+      token(
+        choice(
+          'z??', 'z!!', 'Z??', 'Z!!',
+          'n??', 'n!!', 'N??', 'N!!',
+          'v??', 'v!!', 'V??', 'V!!',
+          'i??', 'i!!', 'I??', 'I!!',
+        ),
+      ),
 
     // `*` is one NOP, `* N` is N of them.
     hla_nop: $ => seq('*', optional(field('count', $._atom))),

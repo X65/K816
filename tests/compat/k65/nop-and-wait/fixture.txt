@@ -2,7 +2,31 @@ row       instr-nop-wait
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
-expect    input.k65 K816-E0001
+expect    input.k65 K816-K65-0005
+expect    input.k65 K816-K65-0005
+expect    input.k65 K816-K65-0005
+expect    input.k65 K816-K65-0005
+
+**No `K816-E0001` here any more, and that is the point of the four new
+lines.**  Until the manifest audit this fixture expected one, the prose
+attributed it to `* N`, and it was actually on `z??` - a *valid K65 spelling*
+reaching a generic parse error, which is exactly what decision 0 forbids and
+what the `instr-stack-flags` row read `compatible` over.
+
+**Every flag letter's `??`/`!!` is plain `PLP`/`PHP` in the original**: the
+letter is decoration, all fourteen spellings mean the same two instructions
+(`compiler.inc:167-180`), and this fixture's own golden shows `28 08`.  K816
+refuses five of the seven by name - `z c n v i` - because `p??`/`p!!` says
+that instruction without pretending to move one flag, and the help names it.
+
+`b` and `d` are the other two and they are *not* refused: they name the
+65816's data-bank and direct-page registers, so `b!!` is `PHB` here and `PHP`
+there.  That is a K65 spelling with a K816 meaning, which the manifest records
+as `instr-stack-flags`'s `intentionally-changed` half rather than leaving it
+in the bytes to be found.
+
+`o+` stays out of this source: the 65816 has no `SEV`, the original assembles
+`SEv` and dies without a diagnostic, and `instr-flag-set` records that.
 
 **`* N` waits N *cycles*, and it spends an odd one on an illegal opcode.**  The
 golden is

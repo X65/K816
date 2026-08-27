@@ -53,6 +53,13 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::INVALID_ENCODING,
         caret: "dp",
     },
+    // A flag letter's stack shorthand: `PLP`/`PHP` in the original, refused
+    // by name here so that a valid K65 line is not a parse error.
+    Case {
+        source: "main @a8 @i8 {\n    z??\n}\n",
+        code: DiagnosticCode::K65_FLAG_STACK_FORM,
+        caret: "z??",
+    },
     Case {
         source: "func f @a8 {\n    return\n}\nvar X = f + 1\n",
         code: DiagnosticCode::NOT_CONSTANT,

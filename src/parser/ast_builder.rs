@@ -691,6 +691,7 @@ impl AstBuilder<'_> {
                 )),
                 "bare_call" => statements.push(self.bare_call(child)),
                 "hla_illegal" => statements.push(self.hla_illegal(child)),
+                "hla_stack_flag" => statements.push(self.hla_stack_flag(child)),
                 // A code section may open with a placement directive, as
                 // the original's `Align` slot allows. The grammar takes one
                 // anywhere in a body so that one further down is refused
@@ -1275,6 +1276,16 @@ impl AstBuilder<'_> {
         let Some((operator, op_span)) = self.operator(node, "a stack statement") else {
             return Statement::new(StatementKind::Error, span);
         };
+        // `c??` and `c!!` are the K65 flag shorthand, not a register move:
+        // the 65816 has no instruction that pushes the carry, and the
+        // original meant `PLP`/`PHP` by them like every other letter. They
+        // arrive here rather than in `hla_stack_flag` because `c` is in the
+        // register token, and the register token's own rule is that the
+        // builder decides which meaning a statement asked for.
+        let register = node.child_by_field_name("register");
+        if register.is_some_and(|register| self.text(register).eq_ignore_ascii_case("c")) {
+            return Statement::new(StatementKind::Reserved(self.stack_flag(node)), span);
+        }
         Statement::new(
             StatementKind::Hla(HlaStatement::Stack(HlaStack {
                 register: self.register(node.child_by_field_name("register"), node),
@@ -1926,6 +1937,46 @@ impl AstBuilder<'_> {
         };
         let reserved = self.reserved_at(node, ReservedKind::IllegalOpcode(opcode), operator);
         Statement::new(StatementKind::Reserved(reserved), self.span(node))
+    }
+
+    /// A flag letter's stack shorthand — `z??`, `n!!`, `v??`, `i!!`, and the
+    /// `c` forms the grammar routes through `hla_stack`.
+    ///
+    /// Recognized so that a valid K65 line is refused by name rather than
+    /// reaching `expected a statement`, which is what decision 0 forbids.
+    fn hla_stack_flag(&mut self, node: Node<'_>) -> Statement {
+        Statement::new(
+            StatementKind::Reserved(self.stack_flag(node)),
+            self.span(node),
+        )
+    }
+
+    /// The reserved construct a flag letter's stack shorthand becomes.
+    ///
+    /// The caret covers the whole form, `z??` rather than `z`: the letter on
+    /// its own is not the mistake, and neither is the operator — what has no
+    /// meaning here is the pair. The letter is carried as the `name` so the
+    /// message reads the source's own word back, and it is the first
+    /// character of the form whichever rule matched, because `hla_stack_flag`
+    /// is one token and the `hla_stack` node a `c??` arrives on is exactly
+    /// the two.
+    fn stack_flag(&mut self, node: Node<'_>) -> ReservedConstruct {
+        let span = self.span(node);
+        let text = self
+            .text(node)
+            .chars()
+            .next()
+            .map(String::from)
+            .unwrap_or_default();
+        ReservedConstruct {
+            kind: ReservedKind::StackFlag,
+            keyword_span: span,
+            name: Some(crate::ast::Name {
+                text,
+                span,
+                provenance: Provenance::Source,
+            }),
+        }
     }
 
     fn data_block(&mut self, node: Node<'_>) -> DataBlock {

@@ -348,6 +348,15 @@ impl DiagnosticCode {
     /// *different*, documented 65816 instruction — two of them `STP` and
     /// `XCE`. The help says which, and stops there.
     pub const K65_UNSUPPORTED_ILLEGAL_OPCODE: Self = Self("K816-K65-0004");
+    /// A flag letter's stack shorthand — `z??`, `c!!`, `n??`, `v!!`, `i??`.
+    ///
+    /// In the original the letter is decoration: every one of the seven
+    /// letters is plain `PLP`/`PHP`, all fourteen spellings meaning the same
+    /// two instructions. K816 does not carry that, and `b`/`d` are excluded
+    /// because they name the 65816's data-bank and direct-page registers
+    /// here — which is a K65 spelling given another meaning, recorded as
+    /// `instr-stack-flags`'s `intentionally-changed` half rather than hidden.
+    pub const K65_FLAG_STACK_FORM: Self = Self("K816-K65-0005");
 
     pub fn as_str(self) -> &'static str {
         self.0

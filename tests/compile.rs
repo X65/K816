@@ -3018,3 +3018,166 @@ fn a_code_subblock_inside_a_nocross_group_gets_its_own_widths() {
         "each subblock takes the width it declares, in source order:\n{assembly}"
     );
 }
+
+/// A refused evaluator function inside a section transform is reported.
+///
+/// The interpreter answers a reserved call with "already reported", so the
+/// transform keeps the byte it was handed and the section emits untransformed
+/// — which makes a missed *structural* report a wrong image rather than a
+/// missing message.
+#[test]
+fn a_refused_function_inside_a_transform_is_reported() {
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "transform-rnd.k816",
+        "data d {\n\
+         \x20 evaluator [ rnd() ]\n\
+         \x20 for i = 0 .. 2 eval [ i ]\n\
+         }\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(
+        codes,
+        ["K816-K65-0002"],
+        "the refusal has to arrive, or the section emits untransformed"
+    );
+}
+
+/// A section's bytes begin at its own label, not at the top of what the block
+/// emitted.
+///
+/// `align 16 + 4` lowers to `.align 16` and a `.res 4`, and the label follows
+/// both — the block's name labels the first emitted byte, not the padding
+/// that puts it where the source asked. Counting the filler answered about
+/// four bytes the label does not cover. The original cannot make the mistake:
+/// an alignment is section metadata there and never a code symbol.
+#[test]
+fn a_sections_bytes_start_at_its_label() {
+    let assembly = compile_fixture(
+        "aligned-section.k816",
+        "data t {\n\
+         \x20 align 16 + 4\n\
+         \x20 7\n\
+         }\n\
+         data probe {\n\
+         \x20 [ size(t) ]\n\
+         \x20 [ index(t, 0) ]\n\
+         \x20 [ index(t, 4) ]\n\
+         }\n",
+    );
+    let answers: Vec<String> = assembly
+        .lines()
+        .filter(|line| line.contains("[ size(t) ]") || line.contains("[ index(t,"))
+        .map(|line| {
+            line.split(';')
+                .next()
+                .unwrap_or(line)
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        answers,
+        ["$01", "$07", "$00"],
+        "the filler precedes the label and is not the section's:\n{assembly}"
+    );
+
+    // Placement *after* the label is refused rather than guessed: `.align`
+    // emits padding only ld65 sizes.
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "aligned-mid.k816",
+        "data t {\n  1\n  align 4\n  2\n}\ndata probe {\n  [ size(t) ]\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_str() == "K816-E0154"),
+        "a mid-section alignment leaves no compile-time bytes"
+    );
+}
+
+/// `binary NAME` names a file called exactly `NAME`.
+///
+/// `BinLoad -> binary Ident` passes the identifier's own text to
+/// `loadbinary` with nothing appended — unlike the `image Ident` rule beside
+/// it, which appends `.bmp`.
+#[test]
+fn a_binary_entry_takes_a_bare_identifier() {
+    let assembly = compile_fixture(
+        "tests/assets/bare-binary.k816",
+        "data blob {\n  binary table\n}\n",
+    );
+    assert!(
+        assembly.contains(".incbin  \"table\""),
+        "the identifier's text is the path:\n{assembly}"
+    );
+}
+
+/// A data section outlives the unit that wrote it.
+///
+/// `Eval_Index_1D` resolves through the compiler's global section list, so a
+/// project is one namespace for section *bytes* as well as for section names
+/// — measured (`tests/compat/k65/section-reads-across-units/`). K816 reported
+/// the name as undeclared instead, because foreign names are declared after
+/// the unit's own and evaluation happens long before that.
+///
+/// What must not change with the fix: a foreign symbol's *address* still does
+/// not cross, and a local declaration still wins its name.
+#[test]
+fn a_section_can_be_read_from_another_unit() {
+    let mut map = SourceMap::new();
+    map.add_file("shared-defs.k816", "data shared { 10 20 30 }\n");
+    let reader = map.add_file(
+        "shared-reader.k816",
+        "data probe {\n  [ index(shared, 1) ]\n  [ size(shared) ]\n}\n",
+    );
+    let linkage = k816::linkage::Linkage::resolve(&map);
+    let result = compile_to_ca65(&map, reader, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "a foreign section reads");
+    let assembly = result.assembly.expect("compiles");
+    assert!(
+        assembly.contains(".byte    $14") && assembly.contains(".byte    $03"),
+        "the answers are the other unit's bytes:\n{assembly}"
+    );
+    // The bytes crossed; the linkage is what carried them.
+    assert!(
+        linkage.sections().any(|(name, _)| name == "shared"),
+        "the workspace keeps what each unit assembled"
+    );
+
+    // A section its own unit could not decide crosses as undecided, so the
+    // read says which of the five refusals it is rather than "not declared".
+    let mut map = SourceMap::new();
+    map.add_file(
+        "opaque-defs.k816",
+        "data lbl { 1 }\ndata opaque { &&lbl }\n",
+    );
+    let reader = map.add_file(
+        "opaque-reader.k816",
+        "data probe {\n  [ index(opaque, 0) ]\n}\n",
+    );
+    let result = compile_to_ca65(&map, reader, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(codes, ["K816-E0154"]);
+    assert!(
+        result.diagnostics[0]
+            .title
+            .contains("only the linker knows"),
+        "{:?}",
+        result.diagnostics[0].title
+    );
+}

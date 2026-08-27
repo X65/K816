@@ -1259,6 +1259,16 @@ data table {
 }
 ```
 
+The file may also be named with a bare identifier, and then the identifier's
+own text *is* the path — nothing is appended, so `binary table` includes a
+file called exactly `table`:
+
+```k65
+data blob {
+  binary table
+}
+```
+
 The bytes are section bytes like any others: they follow the entries above
 them, the section's [`evaluator [ ]`](#section-transforms) transform reaches them,
 and [`index` and `size`](#reading-a-sections-bytes) read them.
@@ -1327,26 +1337,33 @@ data reads {
 }
 ```
 
-The bytes are the ones the section *assembled to*, after its
-[`evaluator [ ]`](#section-transforms) transform and with a `?` counting as one zero
-byte. An index outside the section answers zero with no diagnostic, and the
-index takes the same truncating conversion a bitwise operand takes — so
-`index(ramp, 1.7)` is `ramp[1]`, not `ramp[2]`.
+The bytes are the ones the section *assembled to*, starting at its own label:
+after its [`evaluator [ ]`](#section-transforms) transform, with a `?`
+counting as one zero byte, and *without* any padding a leading `align` put in
+front of the label. An index outside the section answers zero with no
+diagnostic, and the index takes the same truncating conversion a bitwise
+operand takes — so `index(ramp, 1.7)` is `ramp[1]`, not `ramp[2]`.
 
-A section can be read from the line after it closes. Five shapes have no
-answer, and `K816-E0154` says which:
+A section can be read from the line after it closes, **and from another unit
+of the workspace**: a project is one namespace for section bytes as well as
+for section names. What does not cross a unit boundary is an *address* — that
+is the linker's, and no evaluation can fold one.
+
+Five shapes have no answer, and `K816-E0154` says which:
 
 | what was named | why there is no answer |
 | --- | --- |
 | a number or a string | `index` and `size` take the name a `data` block declares |
 | a `func` / `inline` / `main` | an instruction's bytes are decided by width analysis, the optimizer and ca65, all of which run after every evaluation |
 | a section written below the read | a section's bytes are known from the line after it closes |
-| a section holding an address | the value is the linker's, so the section has no compile-time bytes |
+| a section holding an address, or an `align` after its label | the value is the linker's, so the section has no compile-time bytes |
 | a label written inside a section | only the name on a `data` block names a section |
 
-The two-dimensional `index(sec, x, y)` parses and always reports
-`K816-E0155`: its width and height came from a top-level `image`, which is
-[removed](#image). Index the row arithmetically instead — `sec[y * WIDTH + x]`.
+The two-dimensional `index(sec, x, y)` parses, and on a section it always
+reports `K816-E0155`: its width and height came from a top-level `image`,
+which is [removed](#image). Index the row arithmetically instead —
+`sec[y * WIDTH + x]`. If the base is not a section at all, that is the
+complaint you get instead, from the table above.
 
 ### Top-Level `image` and `binary`
 

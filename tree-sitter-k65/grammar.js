@@ -726,7 +726,14 @@ export default grammar({
 
     // `binary "file"` and `binary NAME = "file"` get real nodes: the mapping
     // to ca65's `.incbin` is deferred, not reinterpreted.
-    binary_entry: $ => seq('binary', field('file', $.string)),
+    //
+    // Inside a data block the file may also be written as a bare identifier —
+    // `BinLoad -> binary Ident` (`compiler.inc:71`), which passes the
+    // identifier's own text to `loadbinary` with no extension appended, so
+    // `binary table` includes a file named exactly `table`. Measured, because
+    // the neighbouring `ImgLoad -> image Ident` *does* append `.bmp` and the
+    // two rules look alike.
+    binary_entry: $ => seq('binary', field('file', choice($.string, $.identifier))),
 
     binary_declaration: $ =>
       seq(

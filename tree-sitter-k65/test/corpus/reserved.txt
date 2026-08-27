@@ -99,6 +99,7 @@ binary Blob = "payload.bin"
 data table {
   address 0x2000
   binary "table.bin"
+  binary raw
 }
 
 --------------------------------------------------------------------------------
@@ -113,7 +114,9 @@ data table {
       (address_directive
         address: (number))
       (binary_entry
-        file: (string)))))
+        file: (string))
+      (binary_entry
+        file: (identifier)))))
 
 ================================================================================
 Reserved image forms are named nodes, never parse errors

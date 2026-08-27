@@ -1,0 +1,16 @@
+// Oracle question: does a section survive the unit that wrote it?
+//
+// `index` and `size` take a section, and a section is a compiler-global
+// object in the original - `state.GetSection(value_i)` reaches every section
+// the project has compiled so far, not just this unit's.  If that is right, a
+// read here answers from `defs.k65`'s bytes.
+
+data answers {
+  [ index(shared, 1) ]
+  [ size(shared) ]
+}
+
+main {
+  a = answers
+  return
+}

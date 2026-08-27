@@ -1,0 +1,38 @@
+row       evelem-index
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A section's bytes start at its label.**  The oracle's five answers are
+`01 07 00 03 00`: `size(padded)` is 1, `index(padded, 0)` is `$07`,
+`index(padded, 4)` is 0, `size(gaps)` is 3, and `index(gaps, 1)` is 0.
+
+The fixture exists because K816 can make a mistake the original cannot.
+`align 16 + 4` is section *metadata* there — `setalign` (`compiler_src.cpp:877`)
+never becomes a code symbol, so `BuildRawTable` never sees it — while K816
+lowers it to `.align 16` and a `.res 4`, which is real emitted content that
+precedes the block's label.  A walk that counted every reservation answered
+`size(padded) == 5`, `index(padded, 0) == 0` and `index(padded, 4) == 7`:
+four bytes of filler in front of the byte the label actually covers.  Found by
+review after G6, `postmortem.md` §G.8.2.
+
+So the rule is positional rather than a list of exclusions: **collect from the
+`KOpKind::Label` of the section's own name**, because that is where the block
+puts its label — after every leading placement directive, since the name
+labels the first emitted byte and not the padding that positions it.
+
+`gaps` is the control.  A `?` *after* the label is a byte of the raw table and
+it is zero (`AST_IGNORED_BYTE`, `asm.cpp:623`), so `size` counts it and
+`index` reads it — a rule that skipped reservations by kind rather than by
+position would have broken this line while fixing the other.
+
+Placement *after* the label is refused rather than guessed: an `.align` there
+emits padding only ld65 sizes, and a segment switch relocates what follows, so
+the section reports `K816-E0154` instead of answering from bytes that will
+move.  The original has no such entry to compare against.
+
+The images differ before the answers, and both differences are the linker's:
+K816 emits the four filler bytes `00 00 00 00` where the original leaves ld65
+a gap it never wrote, and the original opens with a `JMP main` stub K816 does
+not emit.  The five answered bytes — `01 07 00 03 00` — agree exactly, which
+is the claim.

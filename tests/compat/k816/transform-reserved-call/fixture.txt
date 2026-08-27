@@ -1,0 +1,23 @@
+row       data-evaluator-entry
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-K65-0002
+
+**A refusal inside a transform is a wrong image, not a missing message.**
+`evaluator [ rnd() ]` compiled clean before this was found by review after G6,
+and emitted `00 01 02` — the bytes the loop generated, with the transform
+silently skipped.
+
+The mechanism is worth stating because it will recur.  Analysis reports the
+four refused evaluator functions **structurally**, by walking
+`reserved_eval_call` nodes, and the interpreter answers one with
+`Error::Reported` — "someone else already said this" — so nothing complains at
+the point the call runs.  `transform_byte` treats a failed transform as "keep
+the byte", which is right for a diagnostic that was reported and wrong when it
+was not.  The walk's `Evaluator` arm had been left in the no-op list, under a
+comment that said its body must be inspected.  `postmortem.md` §G.8.1.
+
+The fixture is invented rather than measured: `rnd()` is refused by decision
+(decision 6), so what the original emits for it is not evidence about anything
+K816 decides.  What it pins is that the refusal *arrives*.

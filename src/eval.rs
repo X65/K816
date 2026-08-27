@@ -53,7 +53,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, Name, ReservedCall};
 use crate::source::Span;
-use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
+use crate::symbol::{SymbolKind, SymbolTable};
 
 /// How many expression nodes one evaluation may visit.
 ///
@@ -129,7 +129,10 @@ pub const DEFERRED_BLOCK: BlockId = BlockId::MAX;
 pub enum Value {
     Number(f64),
     Str(String),
-    Section(SymbolId),
+    /// A section, by *name*. Not a [`SymbolId`], because a section another
+    /// unit defines has none in this unit's table and is as readable as one
+    /// of its own.
+    Section(String),
 }
 
 impl Value {
@@ -156,11 +159,11 @@ impl Value {
     /// The formatting is the original's and is observable: it is what `+`
     /// splices and what `print` and `error` carry, so `print(3)` says
     /// `3.000000` in both compilers.
-    fn as_text(&self, symbols: &SymbolTable) -> String {
+    fn as_text(&self) -> String {
         match self {
             Self::Number(value) => format!("{value:.6}"),
             Self::Str(text) => text.clone(),
-            Self::Section(id) => symbols.name(*id).to_owned(),
+            Self::Section(name) => name.clone(),
         }
     }
 
@@ -209,7 +212,22 @@ pub fn to_integer(value: f64) -> i64 {
 /// are not all decided at compile time.
 #[derive(Clone, Debug, Default)]
 pub struct SectionTable {
-    entries: BTreeMap<SymbolId, SectionBytes>,
+    /// This unit's sections, recorded as analysis resolves them, keyed by
+    /// name rather than by [`SymbolId`] because the foreign half below has
+    /// no id to key by and one lookup should answer both.
+    local: BTreeMap<String, SectionBytes>,
+    /// What *other* units of the workspace assembled, seeded before this unit
+    /// is walked — including the ones they could not decide, so that a read
+    /// of one gets the same five sentences a local read gets.
+    ///
+    /// Consulted only for a name this unit does not declare, so a local
+    /// declaration still wins its name — the rule `declare_imports` keeps by
+    /// running last. The original retains every section across a project's
+    /// units and answers `index` about any of them (measured), and a foreign
+    /// section's *bytes* are not its address: the address is ld65's and could
+    /// never fold, but the bytes are as much a compile-time fact here as
+    /// they are in the unit that wrote them.
+    foreign: BTreeMap<String, SectionBytes>,
     /// True for the preprocessor's table, which is empty and always will be.
     ///
     /// `preprocess.rs` decides which regions are live *before* a single
@@ -237,19 +255,30 @@ impl SectionTable {
     /// The table the preprocessor runs against: empty, and honest about it.
     pub fn before_analysis() -> Self {
         Self {
-            entries: BTreeMap::new(),
             before_analysis: true,
+            ..Self::default()
         }
     }
 
-    /// Records what a section assembled to.
-    pub fn record(&mut self, section: SymbolId, bytes: SectionBytes) {
-        self.entries.insert(section, bytes);
+    /// Records what a section of *this* unit assembled to.
+    pub fn record(&mut self, section: &str, bytes: SectionBytes) {
+        self.local.insert(section.to_owned(), bytes);
     }
 
-    /// The bytes of `section`, if it has been assembled and they are known.
-    pub fn get(&self, section: SymbolId) -> Option<&SectionBytes> {
-        self.entries.get(&section)
+    /// Records what a section another unit assembled to, decided or not.
+    pub fn record_foreign(&mut self, section: &str, bytes: SectionBytes) {
+        self.foreign.insert(section.to_owned(), bytes);
+    }
+
+    /// The bytes of a section of this unit, if it has been assembled.
+    pub fn get(&self, section: &str) -> Option<&SectionBytes> {
+        self.local.get(section)
+    }
+
+    /// What another unit's section assembled to, if a unit of this workspace
+    /// defines one by that name.
+    pub fn foreign(&self, section: &str) -> Option<&SectionBytes> {
+        self.foreign.get(section)
     }
 }
 
@@ -732,6 +761,15 @@ impl<'a> Interpreter<'a> {
             return Ok(value.clone());
         }
         let Some(id) = self.symbols.lookup(&name.text) else {
+            // A name this unit does not declare, that another unit defines as
+            // a data section. Only *after* the local table has been asked, so
+            // a local declaration still wins its name — and only as a
+            // section, because a foreign symbol's address is ld65's and could
+            // never fold, while its bytes are a compile-time fact wherever
+            // they were written.
+            if self.sections.foreign(&name.text).is_some() {
+                return Ok(Value::Section(name.text.clone()));
+            }
             return Err(Error::Name {
                 span: name.span,
                 name: name.text.clone(),
@@ -750,7 +788,7 @@ impl<'a> Interpreter<'a> {
             // refuses a code one by name — its bytes are width analysis's,
             // the optimizer's and ca65's, decided long after this runs.
             SymbolKind::DataLabel { .. } | SymbolKind::Function { .. } | SymbolKind::Inline => {
-                Ok(Value::Section(id))
+                Ok(Value::Section(name.text.clone()))
             }
             other => Err(Error::NotAValue {
                 span: name.span,
@@ -867,11 +905,9 @@ impl<'a> Interpreter<'a> {
             // one, both become text and the answer is the concatenation.
             "+" => match (&left, &right) {
                 (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
-                (Value::Str(_), _) | (_, Value::Str(_)) => Ok(Value::Str(format!(
-                    "{}{}",
-                    left.as_text(self.symbols),
-                    right.as_text(self.symbols)
-                ))),
+                (Value::Str(_), _) | (_, Value::Str(_)) => {
+                    Ok(Value::Str(format!("{}{}", left.as_text(), right.as_text())))
+                }
                 _ => Err(self.not_a_number(span, &left, &right, "addition")),
             },
             "-" | "*" | "/" | "%" | "?>" | "?<" => {
@@ -1004,26 +1040,41 @@ impl<'a> Interpreter<'a> {
     /// bytes, and everything else is one of the five refusals
     /// [`SectionUnavailable`] names.
     fn bytes_of(&self, span: Span, value: &Value) -> Result<&'a [u8], Error> {
-        let Value::Section(id) = value else {
+        let Value::Section(name) = value else {
             return Err(Error::NoSectionBytes {
                 span,
                 name: value.describe().to_owned(),
                 why: SectionUnavailable::NotASection,
             });
         };
-        let why = match self.sections.get(*id) {
+        // A name this unit does not declare is one another unit does, since
+        // that is the only way a section value was made for it.
+        let Some(id) = self.symbols.lookup(name) else {
+            let why = match self.sections.foreign(name) {
+                Some(SectionBytes::Known(bytes)) => return Ok(bytes),
+                Some(SectionBytes::Unresolved) => SectionUnavailable::Unresolved,
+                Some(SectionBytes::InsideASection) => SectionUnavailable::InsideASection,
+                None => SectionUnavailable::NotYetAssembled,
+            };
+            return Err(Error::NoSectionBytes {
+                span,
+                name: name.clone(),
+                why,
+            });
+        };
+        let why = match self.sections.get(name) {
             Some(SectionBytes::Known(bytes)) => return Ok(bytes),
             Some(SectionBytes::Unresolved) => SectionUnavailable::Unresolved,
             Some(SectionBytes::InsideASection) => SectionUnavailable::InsideASection,
             None if self.sections.before_analysis => SectionUnavailable::BeforeAnalysis,
-            None => match self.symbols.kind(*id) {
+            None => match self.symbols.kind(id) {
                 SymbolKind::DataLabel { .. } => SectionUnavailable::NotYetAssembled,
                 _ => SectionUnavailable::CodeSection,
             },
         };
         Err(Error::NoSectionBytes {
             span,
-            name: self.symbols.name(*id).to_owned(),
+            name: name.clone(),
             why,
         })
     }
@@ -1044,7 +1095,7 @@ impl<'a> Interpreter<'a> {
             return Err(Error::NoDimensions {
                 span,
                 name: match base {
-                    Value::Section(id) => self.symbols.name(*id).to_owned(),
+                    Value::Section(name) => name.clone(),
                     other => other.describe().to_owned(),
                 },
             });
@@ -1166,7 +1217,7 @@ impl<'a> Interpreter<'a> {
         let message = || {
             arguments
                 .iter()
-                .map(|argument| argument.as_text(self.symbols))
+                .map(Value::as_text)
                 .collect::<Vec<_>>()
                 .join(" ")
         };
@@ -1653,8 +1704,15 @@ impl Outcome {
         &self.sections
     }
 
-    pub fn record_section(&mut self, section: SymbolId, bytes: SectionBytes) {
+    pub fn record_section(&mut self, section: &str, bytes: SectionBytes) {
         self.sections.record(section, bytes);
+    }
+
+    /// Seeds what another unit of the workspace defines, before this unit is
+    /// walked — a foreign section has to be readable from the first bracket,
+    /// and `declare_imports` runs after every bracket has already run.
+    pub fn record_foreign_section(&mut self, section: &str, bytes: SectionBytes) {
+        self.sections.record_foreign(section, bytes);
     }
 
     pub fn functions(&self) -> &Functions {

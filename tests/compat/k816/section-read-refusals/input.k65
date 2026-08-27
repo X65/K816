@@ -28,6 +28,9 @@ data refusals {
   [ index(linked, 0) ]      // a byte only the linker knows
   [ index(inside, 0) ]      // a label inside a section
   [ index(above, 0, 0) ]    // two dimensions, which nothing sets
+  [ index(3, 0, 0) ]        // and a two-dimensional read of a non-section,
+                            // which is a type error before it is a
+                            // dimension one - the original's own order
 }
 
 data later { 9 }

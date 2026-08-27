@@ -1,0 +1,28 @@
+row       data-binary
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**`binary NAME` opens a file named exactly `NAME`.**  The oracle's golden is
+`AA BB CC` for the section and `03 BB` for the two reads.
+
+`BinLoad -> binary Ident` (`compiler.inc:71`) passes the identifier's own text
+to `loadbinary` with nothing appended.  The rule directly above it looks the
+same and is not: `ImgLoad -> image Ident` calls `img.Load(($2 + ".bmp"))` and
+*does* append an extension.  So the data file here is named `table`, with no
+suffix, and that is what the source writes.
+
+K816 accepted only the quoted spelling until this was found by review after
+G6: `data blob { binary table }` came out as `K816-E0001` plus an undeclared
+`table` — a valid K65 form reaching a generic parse error, which is the one
+shape decision 0 rules out.  The grammar takes `choice($.string, $.identifier)`
+now, and the identifier's text *is* the path, so `.incbin "table"` reaches
+ca65.  `postmortem.md` §G.8.3.
+
+The path is emitted exactly as written for the same reason a quoted one is:
+ca65 resolves it against its own search list, which `--bin-include-dir`
+extends.  K816's own existence check resolves it against the directory of the
+source that wrote the line, so the file lives beside `input.k65`.
+
+The oracle image opens with a `JMP main` stub K816 does not emit; every byte
+after it agrees.

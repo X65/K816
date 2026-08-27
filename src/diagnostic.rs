@@ -296,6 +296,12 @@ impl DiagnosticCode {
     /// with `image` removed (decision 7) no K816 section has them. The
     /// wording is the original's own complaint, so a ported source reads the
     /// same sentence it read there.
+    ///
+    /// It is what a two-dimensional read of a *section* reports. A read whose
+    /// base is not a section at all is [`Self::SECTION_NOT_READABLE`] first,
+    /// which is the order `Eval_Index_2D` uses too — `ToSection` before the
+    /// dimension check — and the more useful of the two, since naming a
+    /// number as a section without dimensions helps nobody.
     pub const SECTION_NO_DIMENSIONS: Self = Self("K816-E0155");
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays

@@ -1,0 +1,37 @@
+row       evelem-index
+config    atarixl.cfg
+compare   bytes
+units     defs.k65 main.k65
+
+**A section outlives the unit that wrote it.**  The oracle answers `14 03` —
+`index(shared, 1)` is 20 and `size(shared)` is 3, read from a section
+`defs.k65` declared and `main.k65` never sees the source of.
+
+`Eval_Index_1D` resolves through `state.GetSection`, which reaches every
+section the project has compiled so far rather than the current unit's.  So a
+project is one namespace for section *bytes* as well as for section names.
+
+K816 reported `K816-E0101` here until this was found by review after G6.  The
+cause was an ordering rule that is right for everything else: foreign names
+are declared **after** the unit's own, so a local declaration always wins its
+name — and evaluation happens during `declare_items`, long before that.
+
+The fix keeps the rule and adds what it was hiding.  `Linkage` already
+analyzes every unit alone in its first pass, so it now keeps what each one's
+sections assembled to; `analyze_unit` seeds those *bytes* before the walk, and
+a name resolves against them only after the local symbol table has said no.
+A local `data` of the same name therefore still wins — and in a real workspace
+cannot even arise, since two units defining one name is `K816-E0102`.
+
+What does **not** cross is an address: a foreign symbol's is ld65's and could
+never fold, which is exactly why `declare_imports` runs last.  A section's
+bytes are a different kind of thing — a compile-time fact wherever they were
+written.  `postmortem.md` §G.8.4.
+
+A section whose own unit could not decide its bytes crosses as *undecided*
+rather than not at all, so reading one says "holds a byte only the linker
+knows" instead of "not declared".
+
+The oracle image opens with a `JMP main` stub K816 does not emit, and drops
+`shared` because nothing references it; ld65 keeps a section that is in the
+link.

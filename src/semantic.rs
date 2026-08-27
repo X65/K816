@@ -359,6 +359,20 @@ fn analyze(
     // Module defaults are file-wide, so they are known before any function's
     // contract is folded.
     analysis.defaults = analysis.module_defaults(file);
+    // What the other units of the workspace assembled, before this unit's
+    // brackets run — because they run inside `declare_items`, and the import
+    // pass below is far too late for them. A foreign *symbol* still arrives
+    // there and still loses to a local declaration; what is seeded here is
+    // only the bytes, which a local `data` of the same name shadows anyway
+    // (a section value resolves through the symbol table first).
+    if let Some(linkage) = linkage {
+        for (name, bytes) in linkage.sections() {
+            analysis
+                .model
+                .eval
+                .record_foreign_section(name, bytes.clone());
+        }
+    }
     analysis.declare_items(file);
     analysis.place_direct_page();
     // Foreign names are declared *after* the unit's own, so a local
@@ -2014,9 +2028,14 @@ impl Analysis {
                     });
                 }
                 // The transform's body is a bracket, and a reserved call
-                // inside it is as reserved as one anywhere else.
-                DataEntryKind::Evaluator(_)
-                | DataEntryKind::Segment(_)
+                // inside it is as reserved as one anywhere else — and it has
+                // to be reported *structurally*, because the interpreter
+                // answers a reserved call with `Error::Reported` and the
+                // transform then keeps the byte it was handed. Without this
+                // arm `evaluator [ rnd() ]` compiled clean and emitted
+                // untransformed bytes.
+                DataEntryKind::Evaluator(body) => self.report_reserved_in_eval(body),
+                DataEntryKind::Segment(_)
                 | DataEntryKind::Nocross
                 | DataEntryKind::Charset(_)
                 | DataEntryKind::Label(_)
@@ -2214,7 +2233,6 @@ impl Analysis {
         let site = self.data_site(data, None);
         let mut resolver = self.resolver();
         let walked = resolver.data_block(data, span, &site);
-        let bytes = section_bytes(&walked);
         let resolved = resolver.finish();
         self.absorb(resolved);
         let Some(name) = &data.name else {
@@ -2223,17 +2241,16 @@ impl Analysis {
         let Some(section) = self.model.symbols.lookup(&name.text) else {
             return;
         };
-        self.model.eval.record_section(section, bytes);
+        let bytes = section_bytes(&walked, section);
+        self.model.eval.record_section(&name.text, bytes);
         // A label written inside the section names a place, not a section.
         // Recording it says which mistake a read of it is, instead of
         // leaving it to look like a section written further down.
         for label in inner_labels(data) {
-            if let Some(id) = self.model.symbols.lookup(&label)
-                && id != section
-            {
+            if label != name.text {
                 self.model
                     .eval
-                    .record_section(id, eval::SectionBytes::InsideASection);
+                    .record_section(&label, eval::SectionBytes::InsideASection);
             }
         }
     }
@@ -3028,13 +3045,43 @@ fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
 /// value is not a constant makes the whole section unreadable rather than
 /// partially readable. A `code { }` subblock does the same, because its bytes
 /// are an instruction stream three passes away from being decided.
-fn section_bytes(walked: &crate::resolve::DataOps<'_>) -> eval::SectionBytes {
+fn section_bytes(walked: &crate::resolve::DataOps<'_>, section: SymbolId) -> eval::SectionBytes {
     use crate::op::{DataOp, KOpKind};
     if !walked.code.is_empty() {
         return eval::SectionBytes::Unresolved;
     }
+    // From the section's own label, not from the top of what the block
+    // emitted. A leading placement directive comes *before* the label —
+    // `align 16 + 4` lowers to `.align 16` and a `.res 4`, and the label
+    // follows both, because the block's name labels the first emitted byte
+    // and not the padding that puts it where the source asked. Counting the
+    // filler made `data t { align 16 + 4  7 }` answer `size(t) == 5` and
+    // `index(t, 0) == 0`; the original answers 1 and 7, measured, because an
+    // alignment is section metadata there and never a code symbol.
+    let Some(start) = walked
+        .ops
+        .iter()
+        .position(|op| matches!(op.kind, KOpKind::Label(id) if id == section))
+    else {
+        return eval::SectionBytes::Unresolved;
+    };
     let mut bytes = Vec::new();
-    for op in &walked.ops {
+    for op in &walked.ops[start + 1..] {
+        // Placement *after* the label moves the bytes that follow it, and
+        // neither this pass nor the original can say where to. `.align`
+        // emits padding only ld65 sizes; a segment switch relocates the
+        // rest. The one exception is the restore a block-local `segment`
+        // leaves at the very end, which emits nothing and follows every byte.
+        match &op.kind {
+            KOpKind::Align(_) => return eval::SectionBytes::Unresolved,
+            KOpKind::Segment { name, .. }
+                if name.as_str() != crate::resolve::OUTER_SEGMENT
+                    || op.origin != crate::op::Origin::CompilerGenerated =>
+            {
+                return eval::SectionBytes::Unresolved;
+            }
+            _ => {}
+        }
         let KOpKind::Data(data) = &op.kind else {
             continue;
         };

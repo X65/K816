@@ -1,0 +1,17 @@
+// A refused evaluator function inside a section transform.
+//
+// The transform's body is a bracket like any other, so a reserved call in it
+// is as reserved as one anywhere else.  It has to be reported *structurally*,
+// by the walk analysis does over reserved calls, because the interpreter
+// answers such a call with "already reported" and the transform then keeps
+// the byte it was handed - which means a missed report is not a missed
+// message but a silently untransformed section.
+
+data filtered {
+  evaluator [ rnd() ]
+  for i = 0 .. 2 eval [ i ]
+}
+
+func main @a8 @i8 {
+  a = filtered
+}

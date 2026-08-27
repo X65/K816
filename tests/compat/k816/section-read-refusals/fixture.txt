@@ -8,6 +8,7 @@ expect    input.k65 K816-E0154
 expect    input.k65 K816-E0154
 expect    input.k65 K816-E0154
 expect    input.k65 K816-E0155
+expect    input.k65 K816-E0154
 
 **One question refused for five reasons, and a sixth that can never be
 answered.**  `K816-E0154` says which of the five it is; `K816-E0155` is the
@@ -46,3 +47,12 @@ set them is a top-level `image` (`makeimagesection`, `compiler_src.cpp:821`).
 the form cannot succeed.  The message is the original's own — "section `above`
 does not specify 2D dimensions" — so a ported source reads the sentence it
 read there, and the help names the arithmetic that replaces it.
+
+**On a value that is not a section, the type error comes first**, which is why
+the last line is `K816-E0154` and not `K816-E0155`.  That is the original's
+order too — `Eval_Index_2D` calls `ToSection` before it looks at dimensions —
+and it is the more useful of the two: telling an author that a *number* does
+not specify 2D dimensions would name the wrong problem.  G6's manifest row
+said the two-dimensional form is `K816-E0155` "always", which overstated it;
+the row and `doc/syntax-reference.md` now say "on a section", and this line is
+what holds them to it.  `postmortem.md` §G.8.5.

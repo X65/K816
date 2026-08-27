@@ -1955,10 +1955,18 @@ impl AstBuilder<'_> {
             .collect()
     }
 
-    /// The `file` field of a `binary` line, with the span of the string and
-    /// the path resolved against this source's own directory.
+    /// The `file` field of a `binary` line, with the span of the name and the
+    /// path resolved against this source's own directory.
+    ///
+    /// A data entry may write the file as a bare identifier, and then the
+    /// name *is* the path — `loadbinary` gets the identifier's own text with
+    /// no extension appended (`compiler.inc:71`), measured, unlike the
+    /// `image Ident` beside it which appends `.bmp`.
     fn binary_inclusion(&mut self, node: Node<'_>) -> BinaryInclusion {
         let (path, span) = match node.child_by_field_name("file") {
+            Some(file) if file.kind() == "identifier" => {
+                (self.text(file).to_owned(), self.span(file))
+            }
             Some(file) => (decode_string(self.text(file)), self.span(file)),
             None => (String::new(), self.span(node)),
         };

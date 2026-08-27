@@ -239,9 +239,17 @@ for dir in "$@"; do
     # directory of the *source* that wrote it, which is the difference
     # `topelem-binary` records as `backend-different`.
     proj=$dir/$name.k65proj
-    for asset in "$dir"/*.bin "$dir"/*.bmp; do
+    # Every input that is not a source and not this script's own output: a
+    # `binary`'s data file, an `image`'s bitmap. Matched by exclusion rather
+    # than by extension, because `BinLoad -> binary Ident` opens the
+    # identifier's own text and a fixture's data file may have no extension
+    # at all (`k65/binary-identifier`).
+    for asset in "$dir"/*; do
         [ -f "$asset" ] || continue
         asset_name=${asset##*/}
+        is_generated "$asset_name" && continue
+        case " $units " in *" $asset_name "*) continue ;; esac
+        [ "$asset_name" = oracle.conf ] && continue
         if [ -e "$WORKDIR/$asset_name" ]; then
             echo "oracle.sh: $WORKDIR/$asset_name is in the way of $name" >&2
             exit 1

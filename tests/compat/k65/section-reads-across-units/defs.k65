@@ -1,0 +1,4 @@
+// The unit that defines the section.  Compiled first, as the project file
+// lists it first, which is the order the original resolves names in.
+
+data shared { 10 20 30 }

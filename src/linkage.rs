@@ -65,6 +65,21 @@ pub struct Definition {
 #[derive(Debug, Default)]
 pub struct Linkage {
     definitions: BTreeMap<String, Definition>,
+    /// The assembled bytes of every data section the workspace defines, by
+    /// name, from the pass that analyzed each unit alone.
+    ///
+    /// The original keeps every section of a project alive and answers
+    /// `index` and `size` about any of them, measured — a section's bytes are
+    /// a compile-time fact wherever they were written, unlike its address.
+    /// A section whose own unit could not decide its bytes is here too, as
+    /// `Unresolved`, so that a read of one gets the sentence that says so
+    /// rather than "not declared".
+    ///
+    /// Taken from the first pass, so a section that itself reads a foreign
+    /// section does not resolve and does not appear. That is a chain the
+    /// original has too — it compiles a project's units in order — and it
+    /// fails as a refusal rather than as a wrong byte.
+    sections: BTreeMap<String, crate::eval::SectionBytes>,
     /// Foreign names each unit refers to, keyed by the referring unit.
     references: BTreeMap<FileId, BTreeSet<String>>,
     /// Functions the workspace call graph put in a cycle, which have no exit
@@ -228,6 +243,12 @@ impl Linkage {
 
     fn collect_definitions(&mut self, file: FileId, model: &semantic::SemanticModel) {
         for (_, symbol) in model.symbols.iter() {
+            if let Some(bytes) = model.eval.sections().get(&symbol.name)
+                && symbol.is_unit_level()
+                && !symbol.imported
+            {
+                self.sections.insert(symbol.name.clone(), bytes.clone());
+            }
             if symbol.imported || !symbol.is_unit_level() || !is_exportable(symbol.kind) {
                 continue;
             }
@@ -292,6 +313,14 @@ impl Linkage {
     }
 
     /// Every definition in the workspace, in name order.
+    /// The data sections the workspace defines, by name, with what each
+    /// assembled to.
+    pub fn sections(&self) -> impl Iterator<Item = (&str, &crate::eval::SectionBytes)> {
+        self.sections
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes))
+    }
+
     pub fn definitions(&self) -> impl Iterator<Item = (&str, &Definition)> {
         self.definitions
             .iter()

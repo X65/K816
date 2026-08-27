@@ -1,0 +1,25 @@
+// Oracle question: `BinLoad -> binary Ident` — what file does a bare
+// identifier name?
+//
+// The question is worth asking because the rule directly above it in the
+// grammar looks the same and behaves differently: `ImgLoad -> image Ident`
+// calls `img.Load(($2 + ".bmp").c_str())` (compiler.inc:64) and *appends* an
+// extension, while `BinLoad -> binary Ident` calls `loadbinary(($2).c_str())`
+// (compiler.inc:71) and does not.  So `binary table` opens a file named
+// exactly `table`, with no extension, and the fixture's data file is named
+// that way on purpose.
+
+data blob {
+  binary table
+}
+
+data answers {
+  [ size(blob) ]
+  [ index(blob, 1) ]
+}
+
+main {
+  a = blob
+  a = answers
+  return
+}

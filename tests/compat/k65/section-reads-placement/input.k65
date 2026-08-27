@@ -1,0 +1,34 @@
+// Oracle question: what does a section's *placement* contribute to the bytes
+// `index` and `size` read?
+//
+// The question exists because K816 lowers `align N + M` to `.align N`
+// followed by a `.res M`, and that reservation is real emitted content - so a
+// walk that counts every reservation counts the filler too, and answers about
+// a byte the section label does not even cover.  The original cannot make
+// that mistake: `setalign` sets section metadata (`compiler_src.cpp:877`) and
+// never becomes a code symbol, so `BuildRawTable` never sees it.
+//
+// A `?` after the label is the control: it *is* a byte of the raw table, and
+// a zero, so a rule that skipped reservations wholesale would be wrong too.
+
+data padded {
+  align 16 + 4
+  7
+}
+
+data gaps {
+  5 ? 6
+}
+
+data answers {
+  [ size(padded) ]
+  [ index(padded, 0) ]
+  [ index(padded, 4) ]
+  [ size(gaps) ]
+  [ index(gaps, 1) ]
+}
+
+main {
+  a = answers
+  return
+}

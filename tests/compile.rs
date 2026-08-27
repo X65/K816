@@ -3333,3 +3333,168 @@ fn a_far_goto_takes_the_k65_word_order() {
         );
     }
 }
+
+/// A borrowed copy is not a second node in the workspace graph.
+///
+/// `classify_exits` keys the call graph, the observation fixpoint and the
+/// contract table by *name*, on the stated premise that a name is unique
+/// across the workspace because two units defining one is already an error.
+/// Copying an `inline` body broke that premise: the section is a function of
+/// every model that expands it, so a second node overwrote the first
+/// according to traversal order — and the winner decided what an unrelated
+/// unit's function advertised as its exit.
+///
+/// The failure is a miscompile, not a diagnostic: `main` believed `wrapper`
+/// left the accumulator 16-bit, sized its immediate to three bytes, and
+/// `wrapper` emitted no `rep` at all. The sibling that caused it does not
+/// call `wrapper` and is not even linked with it.
+#[test]
+fn a_borrowed_copy_is_not_a_workspace_node() {
+    let sources = |sibling: bool| {
+        let mut map = SourceMap::new();
+        map.add_file(
+            "graph-defs.k816",
+            "inline shared @a8 @i8 {\n    a = 0\n}\nfunc wrapper @a8 @i8 {\n    shared\n}\n",
+        );
+        if sibling {
+            map.add_file(
+                "graph-sibling.k816",
+                "@a16\n@i16\nfunc sibling {\n    shared\n}\n",
+            );
+        }
+        let caller = map.add_file(
+            "graph-main.k816",
+            "@a8\n@i8\nmain {\n    call wrapper\n    a = 1\n}\n",
+        );
+        let result = compile_to_ca65(&map, caller, &Options { optimize: false });
+        assert_eq!(result.diagnostics, vec![], "sibling={sibling}");
+        result.assembly.expect("compiles")
+    };
+    let alone = sources(false);
+    let with_sibling = sources(true);
+    assert!(
+        alone.contains("lda     #$01"),
+        "the accumulator is 8-bit here:\n{alone}"
+    );
+    // A unit that merely borrows the same body, and calls nothing in this
+    // one, cannot change a byte of it.
+    assert_eq!(
+        alone, with_sibling,
+        "a borrowing sibling changed an unrelated unit's output"
+    );
+}
+
+/// A borrowed section's contract is finished when it arrives.
+///
+/// The module defaults that apply to a body are its *own* unit's; they are
+/// folded into the copy where it is taken. An axis the declaration leaves
+/// unspecified is unspecified at home too, and merging the *borrowing* unit's
+/// defaults into it gives the body a width nobody wrote — and its caller a
+/// bridge nobody asked for, which is left in force after the body ends.
+#[test]
+fn a_borrowed_body_does_not_take_the_borrowers_defaults() {
+    let mut map = SourceMap::new();
+    map.add_file("plain-defs.k816", "inline borrowed {\n    nop\n}\n");
+    let user = map.add_file(
+        "plain-user.k816",
+        "@a16\n@i16\nfunc user @a8 @i8 {\n    borrowed\n}\n",
+    );
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![]);
+    let assembly = result.assembly.expect("compiles");
+    assert!(
+        !assembly.contains("rep") && !assembly.contains("sep"),
+        "a body that states no width asks for no bridge:\n{assembly}"
+    );
+    // The same source compiled in one unit is the answer to compare against:
+    // borrowing may not change what a body means.
+    let mut map = SourceMap::new();
+    let together = map.add_file(
+        "plain-together.k816",
+        "inline borrowed {\n    nop\n}\nfunc user @a8 @i8 {\n    borrowed\n}\n",
+    );
+    let result = compile_to_ca65(&map, together, &Options { optimize: false });
+    let local = result.assembly.expect("compiles");
+    let body = |text: &str| {
+        text.lines()
+            .filter(|line| line.trim_start().starts_with("nop"))
+            .count()
+    };
+    assert_eq!(body(&assembly), body(&local), "{assembly}\n---\n{local}");
+}
+
+/// A borrowed body reads its own unit's compile-time values.
+///
+/// Its brackets were written where its `const`s are, and the body arrives
+/// having never been evaluated. `declare_imports` cannot help: it runs *after*
+/// `declare_items`, which is where brackets run. So the workspace's `const`
+/// values are seeded beside its section bytes, consulted only after this
+/// unit's symbol table has said no — the rule that keeps a local declaration
+/// winning its name.
+///
+/// A name a top-level evaluator block or a `#if` condition assigned is a
+/// `const` symbol by the time it is a definition, so both spellings answer.
+#[test]
+fn a_borrowed_body_reads_its_own_units_constants() {
+    for (defs, expected) in [
+        (
+            "const VALUE = 7\ninline borrowed {\n    a = [ VALUE ]\n}\n",
+            "lda     #$07",
+        ),
+        (
+            "[ VALUE = 3 * 4 ]\ninline borrowed {\n    a = [ VALUE ]\n}\n",
+            "lda     #$0C",
+        ),
+        (
+            "#if [ VALUE = 7 ]\n#endif\ninline borrowed {\n    a = [ VALUE ]\n}\n",
+            "lda     #$07",
+        ),
+    ] {
+        let mut map = SourceMap::new();
+        map.add_file("const-defs.k816", format!("@a8\n@i8\n{defs}"));
+        let user = map.add_file("const-user.k816", "@a8\n@i8\nmain {\n    borrowed\n}\n");
+        let result = compile_to_ca65(&map, user, &Options { optimize: false });
+        assert_eq!(result.diagnostics, vec![], "{defs}");
+        assert!(
+            result.assembly.expect("compiles").contains(expected),
+            "{defs} should fold to {expected}"
+        );
+    }
+}
+
+/// A body the parser had to recover inside is never expanded.
+///
+/// Recovery produces a *shorter* body, not a broken one, so copying it would
+/// put the compiler's guess in the borrower's object and say nothing: the
+/// `inline` below expanded as no instructions at all and the unit emitted a
+/// clean object. The parse diagnostics belong to the defining unit, so the
+/// borrower gets the same line it gets for a body that does not compile.
+#[test]
+fn a_body_the_parser_recovered_inside_is_not_expanded() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "broken-defs.k816",
+        "@a8\n@i8\ninline broken {\n    =\n}\ninline sound {\n    nop\n}\n",
+    );
+    let user = map.add_file("broken-user.k816", "@a8\n@i8\nmain {\n    broken\n}\n");
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(codes, ["K816-E0156"]);
+    assert!(result.assembly.is_none(), "nothing is emitted");
+
+    // Its neighbour in the same file parses, so it is borrowed as usual: one
+    // unparsable section does not condemn the file it is in.
+    let mut map = SourceMap::new();
+    map.add_file(
+        "broken-defs.k816",
+        "@a8\n@i8\ninline broken {\n    =\n}\ninline sound {\n    nop\n}\n",
+    );
+    let user = map.add_file("sound-user.k816", "@a8\n@i8\nmain {\n    sound\n}\n");
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![]);
+    assert!(result.assembly.expect("compiles").contains("nop"));
+}

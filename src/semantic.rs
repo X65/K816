@@ -353,15 +353,21 @@ fn analyze(
     // silenced complaint belongs to, below: two sections from one file are two
     // answers, and a mistake in one is no reason to refuse the other.
     let mut borrowed_sections: Vec<(String, Span, Span)> = Vec::new();
+    // Sections this unit expands whose declaration cannot be copied at all,
+    // which is a parse the owner had to recover inside. They are reported
+    // below with the same line a body that does not compile gets, because
+    // that is the same news: the section is here and cannot be expanded.
+    let mut unusable: Vec<(String, Span)> = Vec::new();
     if let Some(linkage) = linkage {
         let borrowed = linkage.inline_expansions(preprocessed.as_ref().unwrap_or(file));
-        if !borrowed.is_empty() {
-            borrowed_sections.extend(borrowed.iter().filter_map(|item| match &item.kind {
+        unusable = borrowed.unusable;
+        if !borrowed.items.is_empty() {
+            borrowed_sections.extend(borrowed.items.iter().filter_map(|item| match &item.kind {
                 ItemKind::Func(func) => Some((func.name.text.clone(), func.name.span, item.span)),
                 _ => None,
             }));
             let mut program = preprocessed.take().unwrap_or_else(|| file.clone());
-            program.items.extend(borrowed);
+            program.items.extend(borrowed.items);
             preprocessed = Some(program);
         }
     }
@@ -375,6 +381,10 @@ fn analyze(
         unit: unit_name.to_owned(),
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
+        borrowed_from: borrowed_sections
+            .iter()
+            .map(|(_, _, extent)| extent.file)
+            .collect(),
         observation: Vec::new(),
         workspace_contracts: BTreeMap::new(),
         workspace_recursive: BTreeSet::new(),
@@ -400,6 +410,20 @@ fn analyze(
                 .model
                 .eval
                 .record_foreign_section(name, bytes.clone());
+        }
+        // And the workspace's `const` values, for the same reason and with
+        // the same rule: a `const` folds, so its value is a compile-time fact
+        // wherever it was written, and the symbol table is asked first so a
+        // local declaration still wins the name. A *borrowed* `inline` body
+        // needs this — its brackets read its own unit's `const`s, and
+        // `declare_imports` runs after the brackets have already run.
+        for (name, definition) in linkage.definitions() {
+            if let SymbolKind::Const { value } = definition.kind {
+                analysis
+                    .model
+                    .eval
+                    .record_foreign_const(name, f64::from(value));
+            }
         }
     }
     analysis.declare_items(file);
@@ -468,6 +492,15 @@ fn analyze(
             }
         }
     }
+    if let Some(linkage) = linkage {
+        for (name, declaration) in &unusable {
+            analysis.diagnostics.push(borrowed_inline_unusable(
+                name,
+                *declaration,
+                linkage.unit_of(declaration.file),
+            ));
+        }
+    }
     analysis.model.preprocessed = preprocessed;
     (analysis.model, analysis.diagnostics)
 }
@@ -487,6 +520,15 @@ struct Analysis {
     /// The module's default widths, merged into every function that does not
     /// declare the axis itself.
     defaults: WidthContract,
+    /// The files this unit borrowed an `inline` body from.
+    ///
+    /// A borrowed section's contract is finished when it arrives: the module
+    /// defaults that apply to it are its *own* unit's, folded into the copy
+    /// there, and an axis its declaration leaves unspecified is unspecified
+    /// at home too. Merging this unit's defaults into it would give a body a
+    /// width nobody wrote and its caller a bridge nobody asked for
+    /// (`postmortem.md` §G.10.2).
+    borrowed_from: BTreeSet<crate::source::FileId>,
     /// Every function's contract as the workspace classified it, translated
     /// into this unit's symbol ids.
     ///
@@ -879,7 +921,11 @@ impl Analysis {
                     }
                     let declared = width::fold_annotations(&func.width, &mut self.diagnostics);
                     self.check_contract(func, symbol);
-                    let contract = width::merge_defaults(self.defaults, declared);
+                    let contract = if self.borrowed_from.contains(&func.name.span.file) {
+                        declared
+                    } else {
+                        width::merge_defaults(self.defaults, declared)
+                    };
                     let entry = entry_kind(func);
                     if let Some(entry) = entry {
                         self.check_entry_abi(func, entry, contract);

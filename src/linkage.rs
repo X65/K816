@@ -51,6 +51,29 @@ use crate::source::{FileId, Provenance, SourceMap, Span};
 use crate::symbol::{LabelScope, SymbolId, SymbolKind};
 use crate::width;
 
+/// An `inline` declaration kept for the units that expand it.
+///
+/// `usable` is false when the parser had to recover inside the body. The
+/// declaration is still kept, because a borrower needs its name and span to
+/// say what is wrong; what it must not do is expand a body the parser guessed
+/// at. The recovered AST is a *shorter* body, not a broken one, so copying it
+/// would emit silently truncated code (`postmortem.md` §G.10.4).
+#[derive(Debug)]
+struct BorrowedInline {
+    item: Item,
+    usable: bool,
+}
+
+/// What `inline_expansions` found for one program.
+#[derive(Debug, Default)]
+pub struct BorrowedInlines {
+    /// Declarations to append to the borrowing unit's program.
+    pub items: Vec<Item>,
+    /// Sections it expands that cannot be copied, by name and declaration
+    /// span, for the one line that says so.
+    pub unusable: Vec<(String, Span)>,
+}
+
 /// One unit-level definition, and the unit that owns it.
 #[derive(Clone, Debug)]
 pub struct Definition {
@@ -98,7 +121,7 @@ pub struct Linkage {
     /// inside the body is decided where the body is written and every unit
     /// that expands it gets the branch that unit chose
     /// (`doc/syntax-reference.md`, "`inline` bodies").
-    inlines: BTreeMap<String, Item>,
+    inlines: BTreeMap<String, BorrowedInline>,
     /// Foreign names each unit refers to, keyed by the referring unit.
     references: BTreeMap<FileId, BTreeSet<String>>,
     /// Every complaint a unit makes about its *own* source, as a code and a
@@ -142,7 +165,7 @@ impl Linkage {
             // copied out of a unit that had already copied bodies in would
             // carry someone else's, and this pass is the one where no unit
             // has.
-            linkage.collect_inlines(model.program(&parse.file));
+            linkage.collect_inlines(model.program(&parse.file), &parse.diagnostics);
         }
         for source in map.files() {
             let parse = parser::parse_source(source, None);
@@ -183,15 +206,39 @@ impl Linkage {
             })
             .collect();
 
-        // Nodes are functions, named globally: a name is what crosses a unit
-        // boundary, and it is unique across the workspace because two units
-        // defining one exported name is already an error.
+        // Nodes are functions, named globally, and **one node per name**: the
+        // graph, the observation fixpoint and the contract table are all keyed
+        // by name, so a second node for one name overwrites the first
+        // according to traversal order.
+        //
+        // Two units defining one exported name is already an error, so the
+        // only way a name repeats is a *borrowed* `inline` — its declaration
+        // is copied into every unit that expands it, and each copy is a
+        // function of that unit's model. The copies are skipped here and every
+        // edge to the name lands on the defining unit's node, which is the one
+        // whose contract is the section's own. Without this a sibling that
+        // borrows a body can decide what a *different* unit's function
+        // advertises as its exit (`postmortem.md` §G.10.1).
         let mut names: Vec<String> = Vec::new();
         let mut sites: Vec<(usize, usize)> = Vec::new();
         let mut index_of: BTreeMap<String, usize> = BTreeMap::new();
-        for (unit, (_, _, model)) in units.iter().enumerate() {
+        for (unit, (file, _, model)) in units.iter().enumerate() {
             for (function, info) in model.functions.iter().enumerate() {
                 let name = model.symbols.name(info.symbol).to_owned();
+                if self
+                    .definitions
+                    .get(&name)
+                    .is_some_and(|definition| definition.file != *file)
+                {
+                    continue;
+                }
+                // The premise stated above, checked rather than trusted: an
+                // overwrite here is silent, and what it costs is a contract
+                // decided by traversal order.
+                debug_assert!(
+                    !index_of.contains_key(&name),
+                    "two workspace nodes named `{name}`"
+                );
                 index_of.insert(name.clone(), names.len());
                 sites.push((unit, function));
                 names.push(name);
@@ -329,7 +376,7 @@ impl Linkage {
     /// the file-top `@a8` above it — which does not travel with the body.
     /// Writing it onto the copy is what keeps one `inline` one contract
     /// however many units expand it.
-    fn collect_inlines(&mut self, program: &AstFile) {
+    fn collect_inlines(&mut self, program: &AstFile, parse_diagnostics: &[Diagnostic]) {
         let defaults = module_defaults(program);
         for item in &program.items {
             let ItemKind::Func(func) = &item.kind else {
@@ -369,7 +416,18 @@ impl Linkage {
                     span: function.name.span,
                 });
             }
-            self.inlines.insert(func.name.text.clone(), copy);
+            // A body the parser had to recover inside is kept but not
+            // copied: what the recovery produced is a shorter body, and
+            // expanding it would put the compiler's guess in the borrower's
+            // object with nothing said.
+            let usable = !parse_diagnostics.iter().any(|diagnostic| {
+                let at = diagnostic.primary.span;
+                at.file == item.span.file && item.span.contains(at.start)
+            });
+            self.inlines.insert(
+                func.name.text.clone(),
+                BorrowedInline { item: copy, usable },
+            );
         }
     }
 
@@ -383,7 +441,7 @@ impl Linkage {
     /// the defining unit from importing its own body back — and neither is a
     /// name no unit declares as an `inline`, which stays an ordinary call for
     /// the symbol table to resolve or complain about.
-    pub fn inline_expansions(&self, program: &AstFile) -> Vec<Item> {
+    pub fn inline_expansions(&self, program: &AstFile) -> BorrowedInlines {
         // "Already declares" is asked of the definitions table rather than of
         // the items, so it covers every kind a name can be: a unit with a
         // `data hop` that calls `hop` must not also be handed a foreign
@@ -401,7 +459,7 @@ impl Linkage {
                     .is_some_and(|definition| definition.file == file)
             })
         };
-        let mut copied: Vec<Item> = Vec::new();
+        let mut found = BorrowedInlines::default();
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         let mut pending: std::collections::VecDeque<String> =
             called_names(&program.items).into_iter().collect();
@@ -409,16 +467,23 @@ impl Linkage {
             if defined_here(&name) {
                 continue;
             }
-            let Some((name, item)) = self.inlines.get_key_value(&name) else {
+            let Some((name, borrowed)) = self.inlines.get_key_value(&name) else {
                 continue;
             };
             if !seen.insert(name.as_str()) {
                 continue;
             }
-            pending.extend(called_names(std::slice::from_ref(item)));
-            copied.push(item.clone());
+            let ItemKind::Func(func) = &borrowed.item.kind else {
+                continue;
+            };
+            if !borrowed.usable {
+                found.unusable.push((name.clone(), func.name.span));
+                continue;
+            }
+            pending.extend(called_names(std::slice::from_ref(&borrowed.item)));
+            found.items.push(borrowed.item.clone());
         }
-        copied
+        found
     }
 
     /// Records what `file` complains about in its own text.

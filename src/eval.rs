@@ -228,6 +228,19 @@ pub struct SectionTable {
     /// never fold, but the bytes are as much a compile-time fact here as
     /// they are in the unit that wrote them.
     foreign: BTreeMap<String, SectionBytes>,
+    /// The `const` values other units of the workspace declare.
+    ///
+    /// Same rule as `foreign` above and the same reason: a `const` folds, so
+    /// its value is a compile-time fact wherever it was written, and the
+    /// original resolves one across a whole project. Consulted only for a
+    /// name this unit's symbol table does not have, so a local declaration
+    /// still wins.
+    ///
+    /// It is what makes a *borrowed* `inline` body work: the body arrives
+    /// from another unit and its brackets read that unit's `const`s, which
+    /// `declare_imports` cannot help with because it runs after the brackets
+    /// (`postmortem.md` §G.10.3).
+    foreign_consts: BTreeMap<String, f64>,
     /// True for the preprocessor's table, which is empty and always will be.
     ///
     /// `preprocess.rs` decides which regions are live *before* a single
@@ -263,6 +276,16 @@ impl SectionTable {
     /// Records what a section of *this* unit assembled to.
     pub fn record(&mut self, section: &str, bytes: SectionBytes) {
         self.local.insert(section.to_owned(), bytes);
+    }
+
+    /// Records a `const` value another unit declares.
+    pub fn record_foreign_const(&mut self, name: &str, value: f64) {
+        self.foreign_consts.insert(name.to_owned(), value);
+    }
+
+    /// The value another unit's `const` folds to, if this is one.
+    pub fn foreign_const(&self, name: &str) -> Option<f64> {
+        self.foreign_consts.get(name).copied()
     }
 
     /// Records what a section another unit assembled to, decided or not.
@@ -767,6 +790,12 @@ impl<'a> Interpreter<'a> {
             // section, because a foreign symbol's address is ld65's and could
             // never fold, while its bytes are a compile-time fact wherever
             // they were written.
+            // A `const` another unit declares folds to its value, the way a
+            // local one does; the symbol table was asked first, so a local
+            // declaration still wins the name.
+            if let Some(value) = self.sections.foreign_const(&name.text) {
+                return Ok(Value::Number(value));
+            }
             if self.sections.foreign(&name.text).is_some() {
                 return Ok(Value::Section(name.text.clone()));
             }
@@ -1713,6 +1742,10 @@ impl Outcome {
     /// and `declare_imports` runs after every bracket has already run.
     pub fn record_foreign_section(&mut self, section: &str, bytes: SectionBytes) {
         self.sections.record_foreign(section, bytes);
+    }
+
+    pub fn record_foreign_const(&mut self, name: &str, value: f64) {
+        self.sections.record_foreign_const(name, value);
     }
 
     pub fn functions(&self) -> &Functions {

@@ -1,0 +1,48 @@
+row       evelem-index
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0154
+expect    input.k65 K816-E0154
+expect    input.k65 K816-E0154
+expect    input.k65 K816-E0154
+expect    input.k65 K816-E0154
+expect    input.k65 K816-E0155
+
+**One question refused for five reasons, and a sixth that can never be
+answered.**  `K816-E0154` says which of the five it is; `K816-E0155` is the
+two-dimensional form.
+
+The original aborts on all of them but one — `EvalAny::Error` runs without a
+context and dies in the allocator — so there are no oracle goldens to import
+here and the fixture is invented, which is what `tests/compat/k816/` is for.
+The one exception is the *code* section: `index(helper, 0)` answers `$A9`
+there, the `LDA` opcode, because `BuildRawTable` accepts `AST_OPCODE_BYTE`
+(`asm.cpp:618`).  K816 refuses it, by decision: an instruction's bytes are
+chosen by width analysis, rewritten by the optimizer and encoded by ca65, all
+of which run after every evaluation, and answering with a guess that a later
+pass moves is worse than not answering.  No attested source indexes a code
+section.
+
+Each of the five carries a different sentence, because each is a different
+mistake:
+
+  - `index(3, 0)` — the value is not a section, and the help says `index` and
+    `size` take the name a `data` block declares;
+  - `index(helper, 0)` — a code section, with the three stages named;
+  - `index(later, 0)` — written below the read, and a section's bytes are
+    known from the line after it closes, which is where the original could
+    answer too;
+  - `index(linked, 0)` — `&&above` is an address, so the section has no
+    compile-time bytes at all; the original refuses this one as well, with
+    "can't be converted to raw bytes yet";
+  - `index(inside, 0)` — a label inside a section does not name one, and only
+    the block's own name does.
+
+**The 2-D form is a permanent refusal with a compatible sentence.**
+`Eval_Index_2D` needs `img_width`/`img_height`, and the only thing that ever
+set them is a top-level `image` (`makeimagesection`, `compiler_src.cpp:821`).
+`image` is removed by decision 7, so no K816 section carries dimensions and
+the form cannot succeed.  The message is the original's own — "section `above`
+does not specify 2D dimensions" — so a ported source reads the sentence it
+read there, and the help names the arithmetic that replaces it.

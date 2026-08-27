@@ -1,0 +1,42 @@
+// Oracle questions about the section transform that `eval-forms` does not
+// ask.  That fixture measured *which* entries `evaluator [ code ]` reaches;
+// this one measures the rest of the rule.
+//
+//   - it is positional: the entries written above it are already emitted,
+//     and a second `evaluator` replaces the first rather than composing with
+//     it (compiler_src.cpp installs one program per section);
+//   - the answer is masked to eight bits by truncation - `int(v) & 0xFF` -
+//     where every other integer boundary in the evaluator rounds;
+//   - every byte of a `binary` goes through it, which is what forces K816 to
+//     read the file instead of leaving the inclusion to the assembler;
+//   - `index` and `size` read the section *after* the transform.
+
+data filtered {
+  for i = 1 .. 2 eval [ i ]     // above the transform: untouched
+  evaluator [ x * 100 ]
+  for i = 1 .. 3 eval [ i ]     // 100, 200, and 300 masked to 0x2C
+  evaluator [ x + 1 ]           // replaces the first, does not compose
+  for i = 1 .. 2 eval [ i ]
+  evaluator [ 0 - x ]           // a negative answer masks the same way
+  for i = 1 .. 2 eval [ i ]
+  evaluator [ x + 0.6 ]         // and a fractional one truncates
+  for i = 1 .. 2 eval [ i ]
+}
+
+data included {
+  evaluator [ x + 0x10 ]
+  binary "table.bin"
+}
+
+data answers {
+  [ index(filtered, 2) ]        // the transformed byte, not the raw one
+  [ size(filtered) ]
+  [ index(included, 0) ]
+}
+
+main {
+  a = filtered
+  a = included
+  a = answers
+  return
+}

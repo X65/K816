@@ -1,0 +1,37 @@
+// The five ways a section read has no answer, and the one that can never
+// have one.  Every shape here aborts the original except the code-section
+// read, which it answers with an instruction byte.
+//
+// The K816 reason is the same in every case and it is not a schedule: the
+// bytes are not decided where an evaluation runs.  A code section's are
+// chosen by width analysis, rewritten by the optimizer and encoded by ca65;
+// a section below the read has not been walked; a label inside a section
+// names a place rather than a section; and a link-time value is ld65's.
+
+data above { 1 2 3 }
+
+data holder {
+  inside:
+  4 5
+}
+
+data linked { &&above }
+
+func helper @a8 @i8 {
+  a = 5
+}
+
+data refusals {
+  [ index(3, 0) ]           // not a section at all
+  [ index(helper, 0) ]      // a code section
+  [ index(later, 0) ]       // written below this
+  [ index(linked, 0) ]      // a byte only the linker knows
+  [ index(inside, 0) ]      // a label inside a section
+  [ index(above, 0, 0) ]    // two dimensions, which nothing sets
+}
+
+data later { 9 }
+
+func main @a8 @i8 {
+  a = refusals
+}

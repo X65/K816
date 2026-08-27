@@ -988,6 +988,44 @@ pub struct DataEntry {
     pub span: Span,
 }
 
+/// The entries a run emits, with every `nocross { … }` group spliced in where
+/// it stands, and where each group began.
+///
+/// A group is a brace around ordinary entries: it moves no byte and it is not
+/// itself one, so *every* walk that asks "what does this section emit, in what
+/// order" has to see through it. That is more walks than it sounds — the
+/// resolver's, the one that numbers `code { }` subblocks, the width solver's,
+/// and the one that declares labels — and each of them keys something by
+/// position, so a walk that stopped at the brace would key it by a different
+/// position than the walk beside it. One function, so they cannot disagree.
+///
+/// Each `groups` entry is `(index in the flattened list where the group's own
+/// entries begin, the group entry itself)`, which is what a caller needs to
+/// put the group's page-fit guard after the right one. Groups nest, and an
+/// inner group is listed after the outer one it sits in.
+pub fn flatten_data_entries<'a>(
+    entries: &'a [DataEntry],
+    flat: &mut Vec<&'a DataEntry>,
+    groups: &mut Vec<(usize, &'a DataEntry)>,
+) {
+    for entry in entries {
+        match &entry.kind {
+            DataEntryKind::NocrossGroup(inner) => {
+                groups.push((flat.len(), entry));
+                flatten_data_entries(inner, flat, groups);
+            }
+            _ => flat.push(entry),
+        }
+    }
+}
+
+/// [`flatten_data_entries`] for a caller that does not need the groups.
+pub fn flat_data_entries(entries: &[DataEntry]) -> Vec<&DataEntry> {
+    let mut flat = Vec::with_capacity(entries.len());
+    flatten_data_entries(entries, &mut flat, &mut Vec::new());
+    flat
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DataEntryKind {
     /// `segment NAME`, legal only as the first entry.
@@ -1016,6 +1054,15 @@ pub enum DataEntryKind {
         nocross: bool,
         body: Block,
     },
+    /// `nocross { ... }` around a group of entries — the same page-fit
+    /// request a bare [`DataEntryKind::Nocross`] makes, bounded by the braces
+    /// instead of by the end of the statically-sizeable run.
+    NocrossGroup(Vec<DataEntry>),
+    /// `evaluator [ ... ]` — a per-byte transform over the bytes the rest of
+    /// the section *generates*, with `x` bound to each byte. Installed where
+    /// it is written and replaced by a later one; literal entries are not
+    /// touched (`plans/06-compatibility.md` decision 5).
+    Evaluator(EvalExpr),
     /// `repeat N { ... }`
     Repeat {
         count: Expr,
@@ -1030,8 +1077,8 @@ pub enum DataEntryKind {
     },
     /// A preprocessor directive inside a data block.
     Preprocessor(PreprocessorDirective),
-    /// `binary "file"`
-    Binary(String),
+    /// `binary "file"` — the file's bytes, in place.
+    Binary(BinaryInclusion),
     /// An `image` entry — recognized, reserved, never reinterpreted.
     Reserved(ReservedConstruct),
     Error,
@@ -1080,7 +1127,28 @@ pub enum PreprocessorKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinaryDeclaration {
     pub name: Name,
-    pub file: String,
+    pub file: BinaryInclusion,
+}
+
+/// The file a `binary` names, and the span of the string that named it.
+///
+/// The span is the diagnostic's, not the entry's: a missing file is a
+/// complaint about the path, and pointing at the whole line would make the
+/// author look for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryInclusion {
+    /// The path exactly as the source wrote it. It is what `.incbin` gets:
+    /// ca65 resolves it against its own search list, and rewriting it here
+    /// would break a build that passes `--bin-include-dir`
+    /// (`plans/06-compatibility.md` decision 8).
+    pub path: String,
+    /// The same path joined to the directory of the source that wrote it,
+    /// which is where K816 checks the file exists. Recorded by the parser
+    /// because that is the only stage that knows which file the line came
+    /// from; a source with no directory of its own resolves against the
+    /// working directory, which is what joining onto an empty prefix does.
+    pub resolved: std::path::PathBuf,
+    pub span: Span,
 }
 
 /// A construct that belongs to the original K65 language, is recognized as
@@ -1137,7 +1205,6 @@ pub enum IllegalOpcode {
 /// deterministic evaluation cannot keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvalCallName {
-    Size,
     AddByte,
     Color,
     Rnd,

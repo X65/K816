@@ -269,6 +269,16 @@ fn assemble_and_link(fixture: &Fixture, assemblies: &[String]) -> Vec<u8> {
         run_ok(
             Command::new(tool("CA65", "ca65"))
                 .arg(&asm)
+                // K816 emits a `binary`'s path exactly as the source wrote
+                // it, and checked it against the source's own directory;
+                // ca65 resolves the same name against its search list, and
+                // the fixture's directory is what has to be on it. Passing
+                // it is the driver's job in a real build
+                // (`plans/06-compatibility.md` decision 8) and this
+                // harness's here — the assembly goes to a scratch directory,
+                // so without this every `binary` fixture would fail in the
+                // assembler rather than in the compiler.
+                .args(["--bin-include-dir".as_ref(), fixture.dir.as_os_str()])
                 .args(["-o".as_ref(), obj.as_os_str()]),
             "ca65 (build it with `make -C ../.. ca65` first)",
         );

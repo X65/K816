@@ -571,3 +571,32 @@ data d {
         body: (block
           (native_instruction
             mnemonic: (mnemonic)))))))
+
+================================================================================
+A nocross group around part of a section
+================================================================================
+
+data D {
+  1
+  nocross { 2 3 }
+  nocross
+  4
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (data_block
+    name: (identifier)
+    body: (data_body
+      (data_value
+        value: (number))
+      (nocross_data_group
+        body: (data_body
+          (data_value
+            value: (number))
+          (data_value
+            value: (number))))
+      (nocross_directive)
+      (data_value
+        value: (number)))))

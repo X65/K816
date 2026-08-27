@@ -935,8 +935,10 @@ impl Flattener<'_> {
             StatementKind::Data(data) => {
                 self.push(id, span, Transfer::Identity, Control::fall_through());
                 // Statements nested in a `code` entry are numbered, so they
-                // are flattened too rather than silently left stateless.
-                for entry in &data.entries {
+                // are flattened too rather than silently left stateless —
+                // including one inside a `nocross { … }` group, which is a
+                // brace around ordinary entries and not an entry itself.
+                for entry in crate::ast::flat_data_entries(&data.entries) {
                     if let DataEntryKind::Code { body, .. } = &entry.kind {
                         self.block(body);
                     }

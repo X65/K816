@@ -349,14 +349,17 @@ fn every_corpus_program_compiles_or_names_what_is_left() {
     }
 }
 
-/// Nothing in the corpus is waiting on sub-plan E any more.
+/// Nothing in the corpus is waiting on anyone.
 ///
-/// The criterion as the plan wrote it was "no `K816-E0201`", which cannot be
-/// met while the evaluator is sub-plan G's — so the checkable form is that no
-/// deferral names *E*. `compat::unimplemented` puts the owning sub-plan in a
-/// note, which is what makes this a question the test can ask.
+/// Sub-plan E's gate was "no deferral names *E*", because the evaluator was
+/// still sub-plan G's and `K816-E0201` could not go. G6 was the last task a
+/// deferral could name, so the code is retired and the gate is the one the
+/// plan wrote in the first place: **no `K816-E02xx` anywhere in the corpus**.
+/// It reads as a range rather than a constant on purpose — the range stays
+/// reserved for "recognized and not compiled", and a future one has to fail
+/// here.
 #[test]
-fn no_corpus_program_waits_on_sub_plan_e() {
+fn no_corpus_program_waits_on_a_sub_plan() {
     for (path, units, _) in CORPUS {
         let mut map = SourceMap::new();
         let file = map.add_file(*path, read(path));
@@ -365,15 +368,9 @@ fn no_corpus_program_waits_on_sub_plan_e() {
         }
         let result = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false });
         for diagnostic in &result.diagnostics {
-            if diagnostic.code != k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED {
-                continue;
-            }
             assert!(
-                !diagnostic
-                    .notes
-                    .iter()
-                    .any(|note| note.contains("sub-plan E ")),
-                "{path} still waits on sub-plan E: {diagnostic:?}"
+                !diagnostic.code.as_str().starts_with("K816-E02"),
+                "{path} still waits on a sub-plan: {diagnostic:?}"
             );
         }
     }

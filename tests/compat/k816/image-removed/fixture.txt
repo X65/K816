@@ -1,0 +1,29 @@
+row       topelem-image
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-K65-0001
+expect    input.k65 K816-K65-0001
+expect    input.k65 K816-K65-0001
+
+**Three spellings, one code, and the wording is a removal.**  Two top-level
+forms — by identifier and by string — and the block form.  All of them keep
+`K816-K65-0001`, because they are one construct seen from three sides.
+
+Three reports, not six, and the reason is in the grammar rather than in this
+task: an `image` entry's arguments are a *loose run* that ends where the next
+data entry begins, and `tiles`, `colormode` and `imgwave` are identifiers, so
+they are swallowed as arguments of the `image` above them.  Refusing the
+whole run once is the right shape — the modifiers have no meaning without the
+reader — and it is what `data-image-tiles` records.
+
+Until G6 the message read "K65 `image` construct is not implemented yet",
+which promised something.  Nothing brings an image reader back: reading a
+bitmap and scanning it into tiles is an asset pipeline, and `doc/design.md` §1
+says K816 does not own one.  So the title says "is not a K816 construct", the
+note says why, and the help names what to do instead — convert the image
+outside the build and include the bytes with `binary`.  No adapter tool ships
+with the compiler.
+
+`binary` is the replacement the help names, and it works: `k65/binary-inclusion`
+is the same shape with the bitmap already converted.

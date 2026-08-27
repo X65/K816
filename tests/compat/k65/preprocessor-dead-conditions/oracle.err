@@ -24,10 +24,12 @@
 # the fixture is evidence for, and a build that started succeeding would
 # be as much of a change as different bytes.
 #
-# Only the compiler's own `Line N:` diagnostics are kept.  It aborts
-# rather than exiting on most of these — the C++ evaluator's error path
-# unwinds through a bad free — and the allocator's message on the way
-# out is the C library's, not the compiler's.
+# Only the compiler's own `Line N:` and `Linker:` diagnostics are
+# kept.  It aborts rather than exiting on most of these — the C++
+# evaluator's error path unwinds through a bad free — and the
+# allocator's message on the way out is the C library's, not the
+# compiler's.  A `Linker:` line is kept because a refusal that happens
+# at link time is still a refusal, and `binary-top-level` is one.
 
 exit 1
 Line 17: Line 17: Undeclared eval variable 'NOT_DECLARED_ANYWHERE'

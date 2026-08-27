@@ -47,28 +47,18 @@ enum Expect {
     /// Parses *and compiles*: the group's semantics have landed, so a
     /// snippet in that syntax reaches emitted assembly with no errors.
     Compiles,
-    /// Parses, and defers to a sub-plan that is not E — every remaining one
-    /// is the evaluator, the preprocessor, or `binary` inclusion.
-    ///
-    /// This replaced a plain "parses" once sub-plan E finished: a row that
-    /// only parsed used to mean "nobody has done this yet", which was true
-    /// of most of the language and said nothing about who would. Naming the
-    /// owner makes the row a claim that can go stale — when G lands, these
-    /// fail and someone flips them.
-    Deferred,
     /// Parses, and reports itself as reserved legacy syntax.
     Reserved,
-    /// Parses, and answers `NOT_YET_IMPLEMENTED` from the AST builder — the
-    /// grammar names the construct and no task has given it a meaning.
+    /// Parses, and reports the named error — the construct *has* a meaning
+    /// and this snippet cannot be given it.
     ///
-    /// This is sub-plan G1's state and only G1's: G1 is one grammar
-    /// regeneration with no semantics attached, so every construct it teaches
-    /// the parser is announced rather than silently dropped. Each row here
-    /// becomes `Compiles` or `Reserved` as its task lands — G2 for the
-    /// refusals and the declaration forms, G4 for the evaluator, G5 for the
-    /// preprocessor, G6 for `evaluator [ ]` — and G10 is where none may be
-    /// left.
-    Parses,
+    /// This is what is left of the two "not yet" states the table used to
+    /// carry. `Deferred` named the sub-plan that would implement a construct
+    /// and `Parses` named a construct G1 had taught the grammar and nothing
+    /// had given a meaning to; G6 was the last task either could name, so
+    /// both went with `compat::unimplemented`. A row here is a permanent
+    /// answer rather than a schedule, and the code is part of the claim.
+    Refuses(&'static str),
 }
 
 /// One manifest §2 row: the group, a snippet in that syntax, what the snippet
@@ -613,8 +603,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`binary` in data blocks",
-        source: "data D {\n  binary \"t.bin\"\n}\n",
-        expect: Expect::Deferred,
+        source: "data D {\n  binary \"table.bin\"\n}\n",
+        expect: Expect::Compiles,
         case: "Binary inclusion",
     },
     Row {
@@ -738,7 +728,10 @@ const AUDIT: &[Row] = &[
     Row {
         group: "Two-dimensional evaluator indexing",
         source: "data grid {\n  1 2 3 4\n}\ndata d {\n  [ grid[2, 3] ]\n}\n",
-        expect: Expect::Deferred,
+        // Parsed, implemented, and unsatisfiable: a width and a height come
+        // only from a top-level `image`, and `image` is removed (decision 7).
+        // The sentence is the original's own complaint.
+        expect: Expect::Refuses("K816-E0155"),
         case: "Evaluator indexing",
     },
     Row {
@@ -755,8 +748,8 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`evaluator [ ]` data entries",
-        source: "data d {\n  evaluator [ x * 2 ]\n}\n",
-        expect: Expect::Parses,
+        source: "data d {\n  evaluator [ x * 2 ]\n  for i=0..3 eval [ i ]\n}\n",
+        expect: Expect::Compiles,
         case: "An evaluator data entry",
     },
     Row {
@@ -811,18 +804,12 @@ fn every_manifest_syntax_group_parses() {
     let mut failures = Vec::new();
     for row in AUDIT {
         let mut map = SourceMap::new();
-        let id = map.add_file("audit.k65", row.source);
+        // Under `tests/assets/` so that a `binary` row resolves its path the
+        // way the compiler does: against the directory of the source that
+        // wrote the line.
+        let id = map.add_file("tests/assets/audit.k65", row.source);
         let parsed = parse_source(map.file(id), None);
-        // A `Parses` row's construct is announced by the AST builder, so its
-        // deferral rides in with the syntax diagnostics and is not one.
-        let syntax: Vec<&k816::diagnostic::Diagnostic> = parsed
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                row.expect != Expect::Parses
-                    || diagnostic.code != k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED
-            })
-            .collect();
+        let syntax: Vec<&k816::diagnostic::Diagnostic> = parsed.diagnostics.iter().collect();
         if !syntax.is_empty() {
             failures.push(format!(
                 "  {}\n    syntax diagnostics: {:?}\n    source: {:?}",
@@ -835,28 +822,16 @@ fn every_manifest_syntax_group_parses() {
             ));
             continue;
         }
-        if row.expect == Expect::Parses {
-            // Announced, and by G: a row that has gone quiet is a construct
-            // that landed without anyone flipping the row, and one that names
-            // a different owner is a mis-filed arm.
-            let mine: Vec<&k816::diagnostic::Diagnostic> = parsed
-                .diagnostics
+        if let Expect::Refuses(code) = row.expect {
+            let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            if !diagnostics
                 .iter()
-                .filter(|diagnostic| {
-                    diagnostic.code == k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED
-                        && diagnostic
-                            .notes
-                            .iter()
-                            .any(|note| note.contains("sub-plan G "))
-                })
-                .collect();
-            if mine.is_empty() {
+                .any(|diagnostic| diagnostic.code.as_str() == code)
+            {
                 failures.push(format!(
-                    "  {}\n    expected the builder to defer to sub-plan G, got {:?} — \
-                     if the construct landed, flip the row\n    source: {:?}",
+                    "  {}\n    expected {code}, got {:?}\n    source: {:?}",
                     row.group,
-                    parsed
-                        .diagnostics
+                    diagnostics
                         .iter()
                         .map(|diagnostic| diagnostic.code.as_str())
                         .collect::<Vec<_>>(),
@@ -879,37 +854,6 @@ fn every_manifest_syntax_group_parses() {
                 failures.push(format!(
                     "  {}\n    expected it to compile, got {errors:?}\n    source: {:?}",
                     row.group, row.source
-                ));
-            }
-            continue;
-        }
-        if row.expect == Expect::Deferred {
-            // Parsed, and handed to a named owner. The note
-            // `compat::unimplemented` writes is what carries the name.
-            let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
-            let deferred: Vec<&k816::diagnostic::Diagnostic> = diagnostics
-                .iter()
-                .filter(|diagnostic| {
-                    diagnostic.code == k816::diagnostic::DiagnosticCode::NOT_YET_IMPLEMENTED
-                })
-                .collect();
-            if deferred.is_empty() {
-                failures.push(format!(
-                    "  {}\n    expected a deferral, got none — if it compiles now, \
-                     flip the row to `Compiles`\n    source: {:?}",
-                    row.group, row.source
-                ));
-                continue;
-            }
-            if let Some(mine) = deferred.iter().find(|diagnostic| {
-                diagnostic
-                    .notes
-                    .iter()
-                    .any(|note| note.contains("sub-plan E "))
-            }) {
-                failures.push(format!(
-                    "  {}\n    deferred to sub-plan E, which has finished: {mine:?}",
-                    row.group
                 ));
             }
             continue;

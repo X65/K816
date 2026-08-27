@@ -123,7 +123,10 @@ pub fn apply(file: &AstFile) -> Applied<'_> {
             effects: Vec::new(),
         };
     }
-    let mut pass = Preprocess::default();
+    let mut pass = Preprocess {
+        sections: eval::SectionTable::before_analysis(),
+        ..Preprocess::default()
+    };
     let items = pass.items(&file.items, end_of(&file.items));
     let mut program = AstFile { items };
     // The statement identities the builder assigned are keyed by source
@@ -225,7 +228,15 @@ fn data_has_directive(data: &DataBlock) -> bool {
         DataEntryKind::Preprocessor(_) => true,
         DataEntryKind::Code { body, .. } => block_has_directive(body),
         DataEntryKind::Repeat { body, .. } => data_has_directive(body),
-        DataEntryKind::Segment(_)
+        DataEntryKind::NocrossGroup(entries) => entries.iter().any(|entry| {
+            data_has_directive(&DataBlock {
+                name: None,
+                nocross: false,
+                entries: vec![entry.clone()],
+            })
+        }),
+        DataEntryKind::Evaluator(_)
+        | DataEntryKind::Segment(_)
         | DataEntryKind::Align(_)
         | DataEntryKind::Address(_)
         | DataEntryKind::Nocross
@@ -287,6 +298,11 @@ struct Preprocess {
     /// namespace a condition reads. Built here rather than borrowed because
     /// the real one does not exist until liveness is already decided.
     symbols: SymbolTable,
+    /// Empty, permanently, and it says so: a section's bytes are the product
+    /// of resolving it, and this pass runs before any section is resolved —
+    /// because a `data` block inside a region that is not taken must not be.
+    /// A condition that reads one is refused here rather than answered wrong.
+    sections: eval::SectionTable,
     /// Where in the surviving item list a condition's effects belong, so
     /// that a name one assigns becomes visible to analysis at the point the
     /// source assigns it rather than at the top of the file.
@@ -434,9 +450,20 @@ impl Preprocess {
         if let Some(name) = &data.name {
             self.declare_data_label(name);
         }
+        DataBlock {
+            name: data.name.clone(),
+            nocross: data.nocross,
+            entries: self.data_entries(&data.entries, end),
+        }
+    }
+
+    /// One run of data entries — a section's body, or a `nocross { … }`
+    /// group's — with its own directive stack, because a region opened inside
+    /// a group has to close inside it.
+    fn data_entries(&mut self, entries: &[DataEntry], end: Option<Span>) -> Vec<DataEntry> {
         let mut stack = Vec::new();
         let mut kept = Vec::new();
-        for entry in &data.entries {
+        for entry in entries {
             if let DataEntryKind::Preprocessor(directive) = &entry.kind {
                 self.directive(&mut stack, directive, entry.span);
                 continue;
@@ -474,9 +501,19 @@ impl Preprocess {
                     self.declare_data_label(name);
                     entry.kind.clone()
                 }
+                // The group's entries are the section's, one brace deeper:
+                // a directive inside it pairs inside it, and a bracket inside
+                // it runs where it stands.
+                DataEntryKind::NocrossGroup(entries) => {
+                    DataEntryKind::NocrossGroup(self.data_entries(
+                        entries,
+                        Some(Span::empty_at(entry.span.file, entry.span.end)),
+                    ))
+                }
                 DataEntryKind::Segment(_)
                 | DataEntryKind::Align(_)
                 | DataEntryKind::Address(_)
+                | DataEntryKind::Evaluator(_)
                 | DataEntryKind::Nocross
                 | DataEntryKind::Charset(_)
                 | DataEntryKind::Typed { .. }
@@ -496,11 +533,7 @@ impl Preprocess {
             });
         }
         self.close(stack, end);
-        DataBlock {
-            name: data.name.clone(),
-            nocross: data.nocross,
-            entries: kept,
-        }
+        kept
     }
 
     /// Walks one live statement, in source order, for the reason
@@ -846,8 +879,16 @@ impl Preprocess {
         self.assigned.clear();
         self.block += 1;
         let mut env = std::mem::take(&mut self.env);
-        let mut interpreter =
-            eval::Interpreter::new(&mut env, &self.functions, &self.symbols, self.block);
+        // No section has been resolved where this pass runs, so a condition
+        // that reads one — `#if [ size(t) ]` — reports rather than guessing;
+        // analysis says the same thing again where it can be believed.
+        let mut interpreter = eval::Interpreter::new(
+            &mut env,
+            &self.functions,
+            &self.symbols,
+            &self.sections,
+            self.block,
+        );
         let value = interpreter.evaluate(body);
         self.notes.extend(interpreter.take_notes());
         // A name an evaluation assigned is a compiler constant from there
@@ -1429,7 +1470,10 @@ mod tests {
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics, vec![], "the probe did not parse");
 
-        let mut pass = Preprocess::default();
+        let mut pass = Preprocess {
+            sections: eval::SectionTable::before_analysis(),
+            ..Preprocess::default()
+        };
         let items = pass.items(&parsed.file.items, end_of(&parsed.file.items));
         let mut missed = Vec::new();
         for item in &items {

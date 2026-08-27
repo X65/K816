@@ -1,0 +1,20 @@
+// `image` is removed, in every spelling, and the message says so.
+//
+// A refusal is the whole behaviour, so this fixture is invented rather than
+// measured: what the original's bitmap reader emitted is not evidence for
+// anything K816 has to decide (`doc/design.md` §1 excludes an asset
+// pipeline), and the argument is the boundary rather than the bytes.
+
+image SpriteSheet = "sheet.bmp"
+image "RawSheet" = "raw.bmp"
+
+data gfx {
+  image sprites 0 0 8> 16v
+  tiles 8 0 4
+  colormode 1
+  imgwave 1 2 "3" 4
+}
+
+func main @a8 @i8 {
+  a = gfx
+}

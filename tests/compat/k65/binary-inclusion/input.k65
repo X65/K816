@@ -1,0 +1,36 @@
+// Oracle question: what does `binary` put in a section, and can an evaluation
+// read it back?
+//
+// `BinLoad` calls `loadbinary` and `pullbinary` (compiler.inc:70-72), which
+// pushes each byte through `datavalue` - so the bytes are section bytes like
+// any others, `index` and `size` see them, and the section's transform gets
+// them too (`evaluator-transform` measures that half).
+//
+// Where the *file* is looked for was measured rather than assumed: the
+// original opens the name as written, against the process's working
+// directory.  K816 resolves it against the directory of the source that wrote
+// the line and emits `.incbin` with the name untouched, which is the
+// `backend-different` half of decision 8.
+
+data blob {
+  binary "table.bin"
+}
+
+data around {
+  0xFF
+  binary "table.bin"
+  0xFE
+}
+
+data answers {
+  [ size(blob) ]
+  [ index(blob, 3) ]
+  [ size(around) ]
+}
+
+main {
+  a = blob
+  a = around
+  a = answers
+  return
+}

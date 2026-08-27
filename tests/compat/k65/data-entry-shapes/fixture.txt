@@ -1,0 +1,25 @@
+row       data-repeat
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+Three entries whose rows had no golden of their own: `repeat`, a `code { }`
+subblock, and a string.  All three are `compatible`, and this is the
+measurement that says so — `data-code-block` and `data-string` answer here
+too.
+
+`plain` is `01 02 01 02 01 02` for the `repeat`, `38` for the subblock, and
+`03 01 02` for `"CAB"` through `charset " ABC"` — a character's byte is its
+position in the mapping string.  The subblock is `c+` rather than a load
+because a data section carries no register-width context, and an immediate
+would need one.
+
+`mapped` is the same string material under a section transform: `41 42 41 42
+43`, which is `"AB" "AB" "C"` with `x + 0x40` applied to every character.  It
+pins two things at once.  A string character is a **generated** byte, so the
+transform reaches it where a literal entry beside it would be untouched
+(`k65/eval-forms`); and a `repeat` carries both the charset *and* the
+transform into every copy, which is what makes the two `41 42` pairs identical.
+
+The oracle image opens with a `JMP main` stub K816 does not emit; every byte
+after it agrees.

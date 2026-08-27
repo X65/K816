@@ -16,15 +16,23 @@ I would establish these rules before implementing the new parser:
 For example:
 
 ```text
-error[K816-K65-0041]: K65 `...` construct is not implemented yet
+error[K816-K65-0001]: K65 `image` is not a K816 construct
   --> example.k65:18:5
    |
-18 |     ...
-   |     ^ this syntax belongs to the original K65 language
+18 |     image sprites 0 0 8> 16v
+   |     ^^^^^ K816 has no image reader
 
-note: the syntax is reserved for K65 compatibility
-help: use `...` temporarily, or follow implementation status at <docs URL>
+note: reading a bitmap and scanning it into tiles is an asset pipeline, which
+      K816 does not own (`doc/design.md` §1)
+help: convert the image outside the build and include the bytes with `binary`
 ```
+
+The wording is a *removal* rather than a reservation, and that is the shape
+every one of these has now: each names the reason it will not change and what
+to write instead. There is no "not implemented yet" diagnostic left in the
+compiler — `K816-E0201` was retired with its last producer in sub-plan G's
+task G6 — because a construct the grammar knows and the compiler does not is
+a bug rather than a schedule.
 
 The compatibility work should have its own manifest. It has one:
 [`k65-compat-manifest.md`](k65-compat-manifest.md), a row per rule of

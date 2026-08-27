@@ -2,7 +2,6 @@ row       data-evaluator-entry
 config    legacy-stub.cfg
 compare   diagnostics
 units     input.k65
-expect    input.k65 K816-E0201
 expect    input.k65 K816-E0101
 
 `charset` and an `evaluator [ ]` entry in one data block.
@@ -16,12 +15,24 @@ pulled from a `binary` or an image tile - is passed through it as `x`.  Literal
 data entries are not touched.  It is a per-byte transform over generated
 bytes, which is cheap, so decision 5's refusal is lifted and G6 implements it.
 
-Today, after G4: one `K816-E0201` for the `evaluator [ ]` entry, and one
-`K816-E0101` for `SCALE`.  The second is a *consequence* of the first and moves
-with it: the evaluator runs every bracket in source order, and the one bracket
-in this file it does not run is the deferred entry - so the name that entry
-assigns is never assigned, and the `[SCALE]` below it reads a name nothing
-gave a value.  G6 closes both with one change.
+Since G6 the transform runs, and the `K816-E0101` for `SCALE` stays - it is
+K816's one deliberate divergence on this construct rather than a leftover.
+
+`evaluator [ SCALE = 2 ]` is a transform whose *value* is the assignment, so
+every byte the section generates becomes 2 in the original, and `SCALE` is
+readable below it because the transform runs in the global evaluator
+environment.  K816 runs it against the environment recorded at its own line,
+in a copy per byte, so nothing escapes and `[SCALE]` reads a name nothing gave
+a value.
+
+The reason is structural and it already had a precedent: a transform runs
+during *resolution*, and resolution runs twice - once for analysis, once for
+lowering - so an assignment that escaped would happen twice or would depend on
+which walk ran.  `for … eval` carries the same deviation for the same reason,
+and G6 made the two one mechanism.  `data-evaluator-entry` is the row.
+
+Nothing attested assigns from a transform, and a transform that does replaces
+every byte with one value anyway, which is not a thing a program wants.
 
 Before G1 there were three diagnostics, the extra one a `K816-E0101` for the
 undeclared name `evaluator` - the grammar had no rule for the entry, so the

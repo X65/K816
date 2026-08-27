@@ -1,0 +1,14 @@
+// A `binary` whose file is not beside the source that named it.
+//
+// ca65 would report the missing file with no span, and the original aborts in
+// the allocator with no diagnostic at all.  K816 checks at compile time,
+// against the directory of the source that wrote the line, so the author gets
+// the line and the path.
+
+data blob {
+  binary "not-here.bin"
+}
+
+func main @a8 @i8 {
+  a = blob
+}

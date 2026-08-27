@@ -1,0 +1,24 @@
+// Two data entries no fixture had measured: `?`, a byte with no stated value,
+// and `&&label`, an address as two bytes.
+//
+//   - `Data -> ?` is `opsimp(".undef")` (compiler.inc:74).  The original
+//     leaves the byte to its linker, which fills zero; K816 emits an explicit
+//     `.res 1`, and the image agrees.
+//   - `Data -> && VarArg` is `oparith(".byte", argto(AM_OFS_LO, $2))` then
+//     `AM_OFS_HI` (compiler.inc:63) - low byte first.  K816 lowers it to
+//     `.word .loword(sym)`, which is the same two bytes in the same order.
+
+data target { 0x77 }
+
+data shape {
+  1
+  ?
+  2
+  &&target
+  3
+}
+
+main {
+  a = shape
+  return
+}

@@ -28,22 +28,22 @@
 
 use crate::ast::{
     AddressEncoding, AddressOperand, AlignDirective, ArithmeticOp, AstFile, BareCall,
-    BinaryDeclaration, BinaryExpr, BinaryOp, Block, BlockMoveOperand, BranchCondition,
-    BranchConditionKind, CallArgument, CallContract, CallStatement, ComparisonKind,
-    ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry, ContractOutputs,
-    ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue, EvalCallName, EvalExpr,
-    EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess, FieldDeclaration, FlagKind, Function,
-    FunctionKind, GotoStatement, HlaArithmetic, HlaAssignment, HlaExchange, HlaFlag, HlaOperand,
-    HlaOperandKind, HlaShift, HlaStack, HlaStatement, HlaStep, IllegalOpcode, IndexRegister,
-    IndexRegisterKind, IndirectOperand, Item, ItemKind, LabelScope, LabelStatement,
-    LongIndirectOperand, LoopCondition, LoopStatement, MetadataQuery, MetadataQueryKind, Name,
-    NativeInstruction, NativeOperand, PreprocessorDirective, PreprocessorKind, Register,
-    RegisterKind, ReservedCall, ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp,
-    Statement, StatementKind, StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr,
-    TestableFlag, TypeWidth, TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration,
-    WidthAnnotation, WidthAnnotationKind, WidthBlock,
+    BinaryDeclaration, BinaryExpr, BinaryInclusion, BinaryOp, Block, BlockMoveOperand,
+    BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement,
+    ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
+    ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue,
+    EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess,
+    FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
+    HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
+    HlaStatement, HlaStep, IllegalOpcode, IndexRegister, IndexRegisterKind, IndirectOperand, Item,
+    ItemKind, LabelScope, LabelStatement, LongIndirectOperand, LoopCondition, LoopStatement,
+    MetadataQuery, MetadataQueryKind, Name, NativeInstruction, NativeOperand,
+    PreprocessorDirective, PreprocessorKind, Register, RegisterKind, ReservedCall,
+    ReservedConstruct, ReservedKind, ReturnKind, ShiftOp, StackOp, Statement, StatementKind,
+    StepOp, StmtId, StorageClass, StorageClassKind, SubscriptExpr, TestableFlag, TypeWidth,
+    TypeWidthKind, TypedViewExpr, UnaryExpr, UnaryOp, VarDeclaration, WidthAnnotation,
+    WidthAnnotationKind, WidthBlock,
 };
-use crate::compat::{self, Owner};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::{Provenance, SourceFile, Span};
 
@@ -141,7 +141,15 @@ fn number_data(data: &mut DataBlock, next: &mut u32) {
         match &mut entry.kind {
             DataEntryKind::Code { body, .. } => number_block(body, next),
             DataEntryKind::Repeat { body, .. } => number_data(body, next),
-            DataEntryKind::Label(_)
+            DataEntryKind::NocrossGroup(entries) => {
+                for entry in entries {
+                    if let DataEntryKind::Code { body, .. } = &mut entry.kind {
+                        number_block(body, next);
+                    }
+                }
+            }
+            DataEntryKind::Evaluator(_)
+            | DataEntryKind::Label(_)
             | DataEntryKind::Value(_)
             | DataEntryKind::Typed { .. }
             | DataEntryKind::Align(_)
@@ -197,22 +205,6 @@ impl AstBuilder<'_> {
     /// diagnostic is the one the author needs, and it has already been
     /// collected. A builder bug in a file that parses cleanly still reports,
     /// which is the case this code was written for.
-    /// Records that `feature` is a construct sub-plan G1 taught the grammar
-    /// and no later task has given a meaning to yet.
-    ///
-    /// It is a *diagnostic*, not silence: G1 is one regeneration with no
-    /// semantics attached, and a construct that parsed and then compiled to
-    /// nothing would be a miscompilation for as long as the window lasted.
-    /// Each arm goes as its task lands — G2 for the refusals, G4 for the
-    /// evaluator, G6 for `evaluator [ ]`.
-    fn deferred(&mut self, node: Node<'_>, feature: &str) {
-        self.diagnostics.push(compat::unimplemented(
-            self.span(node),
-            feature,
-            Owner::Compatibility,
-        ));
-    }
-
     fn unexpected(&mut self, node: Node<'_>, context: &str) {
         if self.recovered {
             return;
@@ -255,10 +247,7 @@ impl AstBuilder<'_> {
                 "binary_declaration" => items.push(Item {
                     kind: ItemKind::Binary(BinaryDeclaration {
                         name: self.name(child.child_by_field_name("name"), child),
-                        file: child
-                            .child_by_field_name("file")
-                            .map(|file| decode_string(self.text(file)))
-                            .unwrap_or_default(),
+                        file: self.binary_inclusion(child),
                     }),
                     span: self.span(child),
                 }),
@@ -1770,7 +1759,6 @@ impl AstBuilder<'_> {
 
     fn eval_call_name(&mut self, node: Option<Node<'_>>) -> EvalCallName {
         match node.map(|node| self.text(node)) {
-            Some("size") => EvalCallName::Size,
             Some("addbyte") => EvalCallName::AddByte,
             Some("color") => EvalCallName::Color,
             Some("rnd") => EvalCallName::Rnd,
@@ -1944,20 +1932,44 @@ impl AstBuilder<'_> {
         let name = node
             .child_by_field_name("name")
             .map(|name| self.name(Some(name), node));
-        let mut entries = Vec::new();
-        if let Some(body) = node.child_by_field_name("body") {
-            let mut cursor = body.walk();
-            for child in body.named_children(&mut cursor) {
-                if matches!(child.kind(), "line_comment" | "block_comment") {
-                    continue;
-                }
-                entries.push(self.data_entry(child));
-            }
-        }
+        let entries = node
+            .child_by_field_name("body")
+            .map(|body| self.data_entries(body))
+            .unwrap_or_default();
         DataBlock {
             name,
             nocross: node.child_by_field_name("nocross").is_some(),
             entries,
+        }
+    }
+
+    /// The entries of a `data_body`, which is both a section's body and a
+    /// `nocross { ... }` group's.
+    fn data_entries(&mut self, body: Node<'_>) -> Vec<DataEntry> {
+        let mut cursor = body.walk();
+        let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+        children
+            .into_iter()
+            .filter(|child| !matches!(child.kind(), "line_comment" | "block_comment"))
+            .map(|child| self.data_entry(child))
+            .collect()
+    }
+
+    /// The `file` field of a `binary` line, with the span of the string and
+    /// the path resolved against this source's own directory.
+    fn binary_inclusion(&mut self, node: Node<'_>) -> BinaryInclusion {
+        let (path, span) = match node.child_by_field_name("file") {
+            Some(file) => (decode_string(self.text(file)), self.span(file)),
+            None => (String::new(), self.span(node)),
+        };
+        let resolved = std::path::Path::new(self.source.name())
+            .parent()
+            .unwrap_or(std::path::Path::new(""))
+            .join(&path);
+        BinaryInclusion {
+            path,
+            resolved,
+            span,
         }
     }
 
@@ -2008,18 +2020,19 @@ impl AstBuilder<'_> {
             "preprocessor_directive" => {
                 DataEntryKind::Preprocessor(self.preprocessor_directive(node))
             }
-            "binary_entry" => DataEntryKind::Binary(
-                node.child_by_field_name("file")
-                    .map(|file| decode_string(self.text(file)))
+            "binary_entry" => DataEntryKind::Binary(self.binary_inclusion(node)),
+            "nocross_data_group" => DataEntryKind::NocrossGroup(
+                node.child_by_field_name("body")
+                    .map(|body| self.data_entries(body))
                     .unwrap_or_default(),
             ),
             "reserved_image_block" => {
                 DataEntryKind::Reserved(self.reserved(node, ReservedKind::ImageBlock))
             }
-            "evaluator_entry" => {
-                self.deferred(node, "`evaluator [ ]` data entries");
-                DataEntryKind::Error
-            }
+            "evaluator_entry" => match node.child_by_field_name("body") {
+                Some(body) => DataEntryKind::Evaluator(self.eval_bracket(body)),
+                None => DataEntryKind::Error,
+            },
             "for_eval" => DataEntryKind::ForEval {
                 variable: self.name(node.child_by_field_name("variable"), node),
                 from: self.expr(node.child_by_field_name("from"), node),

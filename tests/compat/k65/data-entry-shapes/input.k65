@@ -1,0 +1,31 @@
+// Three data entries whose rows said "the fixture is G6's": `repeat`, a
+// `code { }` subblock, and a string.  All three are `compatible` and none had
+// a golden of its own.
+//
+// The string is here with a `charset` and under a section transform, because
+// that is the one interaction the three have: a character is a *generated*
+// byte, so the transform reaches it, and the `repeat` around it has to carry
+// the mapping into every copy.
+//
+// The subblock is `c+` - SEC - rather than a load, because a data section has
+// no register-width context and an immediate there would need one.
+
+data plain {
+  repeat 3 { 1 2 }
+  code { c+ }
+  charset " ABC"
+  "CAB"
+}
+
+data mapped {
+  charset " ABC"
+  evaluator [ x + 0x40 ]
+  repeat 2 { "AB" }
+  "C"
+}
+
+main {
+  a = plain
+  a = mapped
+  return
+}

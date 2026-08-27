@@ -2557,11 +2557,11 @@ fn a_nested_reserved_construct_reports_its_own_k65_code() {
     // only when it is the whole item.
     for (source, expected) in [
         (
-            "data d {\n  [ 1 + size(section) ]\n}\n",
+            "data d {\n  [ 1 + color(0x101010) ]\n}\n",
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         ),
         (
-            "data d {\n  [ max(size(a), 1) ]\n}\n",
+            "data d {\n  [ max(color(0x101010), 1) ]\n}\n",
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         ),
         (

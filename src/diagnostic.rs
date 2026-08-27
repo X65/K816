@@ -269,13 +269,39 @@ impl DiagnosticCode {
     /// "syntax error" and the fourth — a region crossing a block boundary —
     /// aborts the compiler (`tests/compat/k816/preprocessor-unbalanced/`).
     pub const PREPROCESSOR_UNBALANCED: Self = Self("K816-E0152");
-    /// The parser recognizes a construct the compiler cannot compile yet.
+    /// A `binary` inclusion naming a file that is not there.
     ///
-    /// The `K816-E02xx` range covers "recognized, not implemented": the
-    /// grammar and AST know the form, but the owning sub-plan has not landed
-    /// its semantics. Distinct from [`Self::SYNTAX_ERROR`] (malformed source)
-    /// and from the K65 compatibility family below (legacy-only syntax).
-    pub const NOT_YET_IMPLEMENTED: Self = Self("K816-E0201");
+    /// ca65 resolves an `.incbin` path against its own search list and
+    /// reports a missing file without a span; K816 checks at compile time,
+    /// relative to the directory of the source that wrote the line, so the
+    /// author gets the line rather than an assembler message
+    /// (`plans/06-compatibility.md` decision 8). The original aborts here
+    /// with no diagnostic at all.
+    pub const BINARY_NOT_FOUND: Self = Self("K816-E0153");
+    /// An evaluator read of a section's bytes — `index(sec, i)`, `sec[i]`,
+    /// `sec.index(i)`, `size(sec)` — that K816 cannot answer.
+    ///
+    /// Four shapes, one code, because they are one question refused for four
+    /// reasons: the value is not a section at all; it names a *code* section,
+    /// whose bytes width analysis, the optimizer and ca65 decide long after
+    /// an evaluation runs; it names a section written *below* the read; or
+    /// the section holds a byte only the linker knows. The original answers
+    /// the second and aborts on the other three
+    /// (`plans/06-compatibility.md` decision 5).
+    pub const SECTION_NOT_READABLE: Self = Self("K816-E0154");
+    /// The two-dimensional `index(sec, x, y)` on a section with no width and
+    /// height.
+    ///
+    /// The original sets those from a top-level `image` and nothing else, so
+    /// with `image` removed (decision 7) no K816 section has them. The
+    /// wording is the original's own complaint, so a ported source reads the
+    /// same sentence it read there.
+    pub const SECTION_NO_DIMENSIONS: Self = Self("K816-E0155");
+    // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
+    // with the last construct that produced it. The range `K816-E02xx` stays
+    // reserved for the same meaning: nothing else may take the number, and a
+    // construct the grammar knows and the compiler does not is now a bug
+    // rather than a schedule.
     /// The compiler met a CST shape it does not recognize (a K816 bug).
     pub const INTERNAL: Self = Self("K816-E0900");
 
@@ -519,7 +545,6 @@ mod tests {
         DiagnosticCode::ELEMENT_COUNT_RANGE,
         DiagnosticCode::CHARSET_UNMAPPED,
         DiagnosticCode::ENTRY_ABI_MISMATCH,
-        DiagnosticCode::NOT_YET_IMPLEMENTED,
         DiagnosticCode::INTERNAL,
         DiagnosticCode::ALIGN_UNREACHABLE,
         DiagnosticCode::EVAL_PRINT,
@@ -530,6 +555,9 @@ mod tests {
         DiagnosticCode::PREPROCESSOR_ERROR,
         DiagnosticCode::PREPROCESSOR_WARNING,
         DiagnosticCode::PREPROCESSOR_UNBALANCED,
+        DiagnosticCode::BINARY_NOT_FOUND,
+        DiagnosticCode::SECTION_NOT_READABLE,
+        DiagnosticCode::SECTION_NO_DIMENSIONS,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

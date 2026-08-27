@@ -4,11 +4,17 @@ compare   diagnostics
 units     input.k65
 expect    input.k65 K816-K65-0001
 expect    input.k65 K816-K65-0001
-expect    input.k65 K816-E0201
 
 `image` with `tiles` and `colormode` inside a data block, and `binary` beside
 it.
 
-`image` is refused (`K816-K65-0001`, twice) and `binary` is deferred
-(`K816-E0201`) today.  Decision 7 makes the first a permanent refusal with a
-help that names external conversion, and G6 turns the second into `.incbin`.
+`image` is refused (`K816-K65-0001`, twice) and `binary` compiles: since G6 it
+is an `.incbin`, and `table.bin` sits beside this source because that is where
+K816 looks - the directory of the file that wrote the line.
+
+The two refusals are the two `image` entries.  `tiles`, `colormode` and
+`imgwave` report *with* the `image` above them rather than separately: an
+entry's arguments are a loose run that ends where the next data entry begins,
+and all three are identifiers, so they are swallowed as arguments.  That is
+the right shape - none of them means anything without the reader - and it is
+what `data-image-tiles` records.

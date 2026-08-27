@@ -2,7 +2,7 @@
 /*                                                                           */
 /*                                 compat.rs                                 */
 /*                                                                           */
-/*        Not-yet-implemented and reserved-K65 diagnostic constructors       */
+/*        Diagnostics for K65 constructs K816 removes or refuses             */
 /*                                                                           */
 /*                                                                           */
 /* Copyright (c) 2026 Tomasz Sterna (smokku)                                 */
@@ -20,105 +20,57 @@
 /*                                                                           */
 /*****************************************************************************/
 
-//! Diagnostics for syntax the parser understands but the compiler does not
-//! compile: constructs whose semantics are still to be implemented, and the
-//! reserved legacy-K65 namespace.
+//! Diagnostics for K65 syntax K816 recognizes and does not compile.
 //!
 //! The grammar recognizes the whole K65/K816 surface (sub-plan B), which is
-//! deliberately wider than what `semantic.rs` and `lower.rs` can handle. Every
-//! statement, item, and data-entry match in those modules is exhaustive and
-//! non-panicking: arms with no semantics yet call [`unimplemented`] here, and
-//! reserved legacy forms call [`k65_reserved`]. Each arm is replaced by real
-//! behavior as its owning sub-plan lands, with the compiler pointing at any
-//! that were missed.
+//! deliberately wider than what K816 *means*: `image` is removed, `bank` is
+//! removed, three evaluator functions are refused, and five HLA forms spell
+//! undocumented 6502 opcodes. Every one of them is a specific named node with
+//! a diagnostic of its own, which is decision 0's second clause — a K65 form
+//! K816 does not implement never comes out as a generic parse error.
+//!
+//! There is no longer a "not implemented yet" constructor here. It existed
+//! while the sub-plans were landing and its last producer went in G6; a
+//! construct that parses and has no meaning is now a compiler bug, not a
+//! schedule.
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::Span;
 
-/// The sub-plan that owns a construct's semantics, per `plans/README.md` and
-/// the Owner column of `plans/feature-manifest.md` §2.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Owner {
-    /// C — the native translator.
-    NativeTranslator,
-    /// D — register widths and call contracts.
-    WidthAndContracts,
-    /// E — HLA and declaration lowering.
-    HlaLowering,
-    /// G — compatibility migration.
-    Compatibility,
-}
-
-// There is deliberately no `Optimizer` arm. This enum names the sub-plan that
-// will *implement a construct*, and sub-plan F implements none: it rewrites
-// operations the other sub-plans already lower, so no "not yet compiled"
-// diagnostic could ever name it. An owner with nothing to own is a dead arm
-// that invites a wrong attribution later (`postmortem.md` §C.7). If some later
-// sub-plan needs one, it comes back with a call site attached.
-
-impl Owner {
-    /// The plan letter, e.g. `"C"`.
-    pub fn letter(self) -> &'static str {
-        match self {
-            Self::NativeTranslator => "C",
-            Self::WidthAndContracts => "D",
-            Self::HlaLowering => "E",
-            Self::Compatibility => "G",
-        }
-    }
-
-    /// A human-readable name for the owning work, e.g. `"native translator"`.
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::NativeTranslator => "native translator",
-            Self::WidthAndContracts => "width and contract analysis",
-            Self::HlaLowering => "HLA and declaration lowering",
-            Self::Compatibility => "compatibility migration",
-        }
-    }
-}
-
-/// `feature` is recognized by the parser but has no semantics yet; `owner`
-/// names the sub-plan that will implement it.
+/// `image`, in every one of its spellings, is removed.
 ///
-/// `feature` reads as a noun phrase in the message, e.g. `"`data` blocks"`.
-pub fn unimplemented(span: Span, feature: &str, owner: Owner) -> Diagnostic {
-    Diagnostic::error(
-        DiagnosticCode::NOT_YET_IMPLEMENTED,
-        format!("{feature} are recognized but not compiled yet"),
-        Label::new(span, "K816 cannot compile this construct yet"),
-    )
-    .with_note(format!(
-        "implemented by sub-plan {} ({})",
-        owner.letter(),
-        owner.title()
-    ))
-    .with_help("follow implementation status in plans/README.md")
-}
-
-/// `construct` belongs to the original K65 language, is recognized as a
-/// specific named node, and is intentionally not reinterpreted by K816.
+/// A *removal*, not a reservation: an asset pipeline is outside what the
+/// compiler does (`doc/design.md` §1), no BMP decoder is cheap by any
+/// reading of decision 0, and nothing later in the plan brings the construct
+/// back. So the wording says so, and the help names the replacement — convert
+/// the bitmap outside the build and include the result with `binary`
+/// (`plans/06-compatibility.md` decision 7). No adapter tool ships with the
+/// compiler.
 ///
-/// `code` must come from the `K816-K65-####` family so the compatibility
-/// corpus can match on it; see `doc/k65-compat.md`.
-pub fn k65_reserved(code: DiagnosticCode, span: Span, construct: &str) -> Diagnostic {
+/// `form` is the spelling the source used, so a source that wrote `tiles` or
+/// `imgwave` reads its own word back.
+pub fn k65_removed_image(span: Span, form: &str) -> Diagnostic {
     Diagnostic::error(
-        code,
-        format!("K65 `{construct}` construct is not implemented yet"),
-        Label::new(span, "this syntax belongs to the original K65 language"),
+        DiagnosticCode::K65_RESERVED_IMAGE,
+        format!("K65 `{form}` is not a K816 construct"),
+        Label::new(span, "K816 has no image reader"),
     )
-    .with_note("the syntax is reserved for K65 compatibility")
-    .with_help("follow implementation status in plans/README.md")
+    .with_note(
+        "reading a bitmap and scanning it into tiles is an asset pipeline, which K816 \
+         does not own (`doc/design.md` §1)",
+    )
+    .with_help("convert the image outside the build and include the bytes with `binary`")
     .with_docs("doc/k65-compat.md")
 }
 
-/// One of the four evaluator functions K816 does not run.
+/// One of the three evaluator functions K816 does not run.
 ///
 /// A *refusal*, not a reservation: nothing later brings `rnd` back, and the
-/// help names what to do instead where there is something to name. `print`
-/// and `error` left this family in G4 — they are implemented — so the code's
-/// four remaining producers are the ones that mutate a section, read one, or
-/// are not deterministic (`plans/06-compatibility.md` decision 6).
+/// help names what to do instead. `print` and `error` left this family in G4
+/// and `size` in G6 — all three are implemented — so what is left is
+/// `addbyte`, which mutates a section; `rnd`, which is not deterministic; and
+/// `color`, which is an asset pipeline's (`plans/06-compatibility.md`
+/// decision 6).
 pub fn k65_refused_eval_function(span: Span, name: &str) -> Diagnostic {
     let diagnostic = Diagnostic::error(
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
@@ -135,15 +87,15 @@ pub fn k65_refused_eval_function(span: Span, name: &str) -> Diagnostic {
                  whose output cannot be compared with itself",
             )
             .with_help("generate the table outside the build and include it with `binary`"),
-        // `size` is a question, not a mutation — but the answer is a data
-        // section's assembled length, which K816 does not have where an
-        // evaluation runs. `:sizeof` answers the question a variable can ask.
-        "size" => diagnostic
+        // Palette conversion is an asset pipeline's, like `image` — and it
+        // was answering with the section-mutation note until G6 trimmed this
+        // function to three names and the wrong sentence became visible.
+        "color" => diagnostic
             .with_note(
-                "the answer is the assembled length of a data section, which is not known \
-                 where an evaluation runs",
+                "picking a palette index for a colour is an asset pipeline's job, and K816 \
+                 does not own one (`doc/design.md` §1)",
             )
-            .with_help("`NAME:sizeof` answers this for a variable or a field"),
+            .with_help("convert the palette outside the build and include it with `binary`"),
         // Section mutation is outside what the compiler does at all.
         _ => diagnostic.with_note(
             "K816 does not let a compile-time evaluation change a section's contents \
@@ -202,7 +154,7 @@ pub fn k65_illegal_opcode(span: Span, form: &str, illegal: &str, native: &str) -
 
 #[cfg(test)]
 mod tests {
-    use super::{Owner, k65_illegal_opcode, k65_removed_bank, k65_reserved, unimplemented};
+    use super::{k65_illegal_opcode, k65_removed_bank, k65_removed_image};
     use crate::diagnostic::DiagnosticCode;
     use crate::source::{FileId, SourceMap, Span};
 
@@ -213,12 +165,19 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_names_its_owner() {
-        let diagnostic = unimplemented(span(), "`data` blocks", Owner::NativeTranslator);
-        assert_eq!(diagnostic.code, DiagnosticCode::NOT_YET_IMPLEMENTED);
-        assert_eq!(
-            diagnostic.notes,
-            ["implemented by sub-plan C (native translator)"]
+    fn image_is_removed_rather_than_pending() {
+        let diagnostic = k65_removed_image(span(), "tiles");
+        assert_eq!(diagnostic.code, DiagnosticCode::K65_RESERVED_IMAGE);
+        // The source's own word, so an author who wrote `tiles` reads
+        // `tiles` back rather than a keyword they did not type.
+        assert!(diagnostic.title.contains("`tiles`"));
+        // Nothing here may read as a promise: there is no image reader
+        // coming, and the help names what to do instead.
+        assert!(!diagnostic.title.contains("yet"));
+        assert!(
+            diagnostic
+                .help
+                .is_some_and(|help| help.contains("`binary`"))
         );
     }
 
@@ -254,9 +213,17 @@ mod tests {
     }
 
     #[test]
-    fn reserved_uses_the_k65_family() {
-        let diagnostic = k65_reserved(DiagnosticCode::K65_RESERVED_IMAGE, span(), "image");
-        assert!(diagnostic.code.as_str().starts_with("K816-K65-"));
-        assert!(diagnostic.title.contains("`image`"));
+    fn every_refusal_uses_the_k65_family() {
+        for diagnostic in [
+            k65_removed_image(span(), "image"),
+            k65_removed_bank(span(), "core"),
+            k65_illegal_opcode(span(), "a &. n", "ANC", "`PHD`"),
+        ] {
+            assert!(
+                diagnostic.code.as_str().starts_with("K816-K65-"),
+                "{} is not a compatibility code",
+                diagnostic.code.as_str()
+            );
+        }
     }
 }

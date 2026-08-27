@@ -1511,6 +1511,10 @@
           "named": true
         },
         {
+          "type": "nocross_data_group",
+          "named": true
+        },
+        {
           "type": "nocross_directive",
           "named": true
         },
@@ -5217,6 +5221,22 @@
         "types": [
           {
             "type": "block",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "nocross_data_group",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "data_body",
             "named": true
           }
         ]

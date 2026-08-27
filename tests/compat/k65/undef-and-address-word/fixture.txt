@@ -1,0 +1,29 @@
+row       data-undef
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+Two data entries that had no fixture, both `compatible`, both measured here.
+
+**`?` is one byte with no stated value, and the value is zero.**
+`Data -> ?` is `opsimp(".undef")` (`compiler.inc:74`) — the original writes a
+placeholder its linker fills with zero, and the golden's `00` is that fill.
+K816 emits an explicit `.res 1`, which is the same byte in the same place and
+takes the affordance at the source level rather than on the wire.  It is also
+a byte of the raw table, so `size` counts it and `index` reads a zero
+(`k65/section-reads`).
+
+**`&&label` is the address, low byte first.**  `Data -> && VarArg` emits
+`AM_OFS_LO` then `AM_OFS_HI` (`compiler.inc:63`), which the listing shows as
+`.byte #<(target)` then `.byte #>(target)`.  K816 lowers it to
+`.word .loword(sym)` — one directive, the same two bytes, the same order.
+
+The addresses themselves differ, and that is the linker's: the original opens
+the image with a `JMP main` stub, so `target` sits two bytes further along
+there (`03 20` against K816's `00 20`).  What this fixture pins is the *shape*
+— one byte, then a low/high pair — and the surrounding literals are what make
+a swapped pair visible.
+
+This row is also the reason a section holding `&&label` cannot be read by
+`index`: the value is ld65's, so the section has no compile-time bytes, and
+`k816/section-read-refusals` is where that is stated.

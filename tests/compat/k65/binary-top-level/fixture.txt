@@ -1,0 +1,25 @@
+row       topelem-binary
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A top-level `binary NAME = "file"` builds a section nothing can name.**  The
+original reads the file and pushes its bytes into a section — `init_section`,
+`loadbinary`, `pullbinary`, `makesection($2,"binary")` (`compiler.inc:56`) —
+and then `a = Blob` reaches the linker as `Unknown label 'Blob'`.  Every part
+of the declaration runs except the part that makes it useful.
+
+The oracle golden is that refusal, and it is why the row is `legacy-defective`
+rather than `compatible`: there is no behaviour here to reproduce.
+
+**K816 compiles the declaration as the section it describes.**  `Blob` is a
+data label like a `data Blob { binary "payload.bin" }` block's, the bytes are
+an `.incbin`, and `size`/`index` read them.  One synthesized block, built by
+`resolve::binary_block` and used by declaration, analysis and lowering alike,
+so the three cannot disagree about what the form is.  The spelling is *not*
+rewritten in the parser: `--strict-k65` classifies what the source wrote, and
+a desugared tree has nothing left to classify.
+
+The golden is the file's four bytes followed by the load of the label the
+original could not resolve.  What matters is what is *absent*: no
+`K816-E0101` for `Blob`, and no refusal — which is the whole difference.

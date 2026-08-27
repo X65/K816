@@ -1,0 +1,27 @@
+row       ppifnumber-condition
+config    legacy-stub.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0154
+
+**The circle G5 broke leaves one edge, and this is it.**  A condition is an
+evaluator expression, so `[ size(above) ]` is a legal thing to write; but
+liveness is decided before any section is resolved, and it has to be — a
+`data` block inside a region that is not taken must not be declared, and
+resolving one to answer a condition would resolve exactly the blocks the
+condition might remove.
+
+So the read is refused, and the refusal names *that* reason.  The section here
+is deliberately written **above** the directive: the same code with the
+generic "written below this" sentence would send the author looking for a
+problem that is not there, and a message that sends someone the wrong way
+costs more than no message.
+
+`K816-E0154` is the same code the five ordinary shapes use
+(`k816/section-read-refusals`), because it is the same question — "what are
+this section's bytes?" — and the sentence is what distinguishes the six.
+
+The original has nothing to compare here: `PPIf` is one of two rules in its
+grammar without the `ST` guard, so a condition is evaluated wherever it
+appears, and `size` inside one aborts the compiler like `size` anywhere else
+it cannot answer.

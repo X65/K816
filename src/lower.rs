@@ -159,7 +159,17 @@ pub fn lower_unit(
             ));
             continue;
         }
-        if let ItemKind::Data(data) = &item.kind {
+        // A top-level `binary NAME = "file"` is the section it describes, so
+        // it lowers as the one-entry block `resolve::binary_block` builds.
+        let synthesized = match &item.kind {
+            ItemKind::Binary(declaration) => Some(resolve::binary_block(declaration, item.span)),
+            _ => None,
+        };
+        let data = match &item.kind {
+            ItemKind::Data(data) => Some(data),
+            _ => synthesized.as_ref(),
+        };
+        if let Some(data) = data {
             let site = resolve::data_site(&mut anonymous, unit, data, None);
             let mut resolver = Resolver::new(&model.symbols, &model.eval);
             let walked = resolver.data_block(data, item.span, &site);
@@ -372,6 +382,8 @@ fn data_length(data: &crate::op::DataOp) -> u32 {
         // A reservation whose size did not fold is not emittable, so the
         // only honest estimate is that it may be anything.
         DataOp::Reserve(bytes) => bytes.value().map_or(u32::MAX, |value| value.get()),
+        // Measured when the file was checked; ca65 emits exactly that many.
+        DataOp::IncBin { length, .. } => *length,
     }
 }
 

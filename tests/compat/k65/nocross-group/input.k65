@@ -1,0 +1,26 @@
+// Oracle question: what does `nocross { ... }` around a group of data entries
+// do, and does it move a byte?
+//
+// `Data -> NoCross { DataList }` (compiler.inc:73) is the third spelling of
+// the page-fit request, and the only one K816's grammar did not have.  `NoCross`
+// disallows page crossing and the closing brace allows it again, so the group
+// is a bounded run rather than "everything after the keyword".  Nothing about
+// it is a byte: this golden is what the section emits, and the guard is a
+// placement restriction the linker honours.
+//
+// A *bare* `nocross` entry is deliberately absent.  It is not in the original
+// grammar at all - `NoCross` appears only before a brace and on a section
+// header - and writing one here aborts the compiler.  K816's bare form is its
+// own, which is what `data-nocross-flag` says.
+
+data guarded {
+  1 2
+  nocross { 3 4 5 }
+  6
+  nocross { 7 8 }
+}
+
+main {
+  a = guarded
+  return
+}

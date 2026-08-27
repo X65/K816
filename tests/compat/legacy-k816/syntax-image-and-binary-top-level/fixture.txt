@@ -4,8 +4,6 @@ compare   diagnostics
 units     input.k65
 expect    input.k65 K816-K65-0001
 expect    input.k65 K816-K65-0001
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0101
 expect    input.k65 K816-E0101
 expect    input.k65 K816-E0101
 
@@ -13,8 +11,14 @@ expect    input.k65 K816-E0101
 
 Two readings collide here and the original wins (decision 2).  The **legacy
 K816** compiled these into labels with no bytes behind them - its
-`expected.lst` is three `lda $00` - which is a `legacy-defective` row.  The
-**original** builds a whole section from the file's bytes.  K816 refuses
-`image` (decision 7) and will `.incbin` `binary` (G6), so the three
-`K816-E0101` rows here - the names the labels would have declared - go with the
-`binary` work.
+`expected.lst` is three `lda $00`.  The **original** builds a whole section
+from the file's bytes for `binary`, and then cannot resolve the label, which
+`k65/binary-top-level` measures.
+
+Since G6, `Blob` resolves: K816 compiles the declaration as the section it
+describes, `payload.bin` sits beside this source, and the load reads real
+bytes.  The two `K816-E0101` that remain are `SpriteSheet` and `RawSprite` -
+the names the two `image` declarations would have declared, and `image` is
+removed (decision 7).  Refusing a declaration means the name it would have
+introduced is not there, and a source porting off `image` has to convert the
+bitmap and name the result, which is what the help says.

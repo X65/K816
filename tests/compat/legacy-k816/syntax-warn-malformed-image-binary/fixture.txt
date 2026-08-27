@@ -6,6 +6,12 @@ expect    input.k65 K816-E0001
 
 A malformed `image`/`binary` line: the legacy compiler warned and carried on.
 
-K816 reports `K816-E0001`, which is the one shape decision 0 rules out - a K65
-form reaching a generic parse error.  G1 gives the malformed forms named nodes
-so that G6 can refuse them by name.
+K816 reports `K816-E0001`, and G6 measured whether that is a gap.  It is not:
+a bare `image` is a **syntax error in the original too**, so K816 answering the
+same way is agreement rather than the shape decision 0 rules out - that clause
+is about valid K65 forms, and this is not one.  The legacy K816 warning and
+carrying on is the outlier, and it is the reading nobody wants back: a
+malformed asset line that compiles is a program missing an asset.
+
+A well-formed `image` is a different matter and reports by name
+(`K816-K65-0001`, `k816/image-removed`).

@@ -227,7 +227,9 @@ export default grammar({
     [$._eval_argument, $._eval_expression],
     // `nocross` guards the following run and `nocross code { }` wraps a
     // subblock — two readings of the same keyword, separated by what comes
-    // after it.
+    // after it. `nocross { ... }` around data entries needs no entry here:
+    // the brace cannot start a data entry, so one token of lookahead
+    // separates the group from the bare directive.
     [$.nocross_directive, $.code_subblock],
     // The loose `image` argument run ends where the next entry begins.
     [$.reserved_image_block],
@@ -505,6 +507,7 @@ export default grammar({
         $.align_directive,
         $.address_directive,
         $.nocross_directive,
+        $.nocross_data_group,
         $.charset_directive,
         $.data_label,
         $.typed_entry,
@@ -521,6 +524,12 @@ export default grammar({
     // `evaluator [ ... ]` installs a per-byte transform over the bytes the
     // rest of the section generates; `x` is the byte.
     evaluator_entry: $ => seq('evaluator', field('body', $.eval_bracket)),
+
+    // `nocross { ... }` around a group of data entries: the same page-fit
+    // request as a bare `nocross`, bounded by the braces rather than by the
+    // end of the statically-sizeable run (`compiler.inc:73`). The body is a
+    // `data_body` because the group takes exactly the entries a section does.
+    nocross_data_group: $ => seq('nocross', field('body', $.data_body)),
 
     // `align N` is a boundary; `align N + M` is a boundary *and* an offset —
     // the section starts at an address congruent to M modulo N
@@ -1454,9 +1463,14 @@ export default grammar({
 
     eval_parenthesized: $ => seq('(', $._eval_expression, ')'),
 
-    // The six evaluator functions that mutate sections, print, or randomize.
+    // The evaluator functions that mutate sections, print, or randomize.
     // They are reserved rather than rejected: the parser names them so the
     // compiler can say which construct it will not run.
+    //
+    // `size` was among them until G6 implemented it. It is an ordinary call
+    // now, which is what keeps `size(t)` and `t.size` one complaint when the
+    // section it names cannot be read: a method call is desugared in the
+    // interpreter, and only the parenthesised spelling was ever a node here.
     reserved_eval_call: $ =>
       prec(
         EVAL_PREC.suffix,
@@ -1464,7 +1478,7 @@ export default grammar({
           field(
             'name',
             alias(
-              choice('size', 'addbyte', 'color', 'rnd', 'print', 'error'),
+              choice('addbyte', 'color', 'rnd', 'print', 'error'),
               $.reserved_function,
             ),
           ),

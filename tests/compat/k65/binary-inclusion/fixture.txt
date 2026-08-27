@@ -1,0 +1,32 @@
+row       data-binary
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+`binary "file"` inside a data section, and what an evaluation sees of it.
+
+The oracle's golden is `0A 0B 0C 0D 0E` for `blob`, `FF 0A 0B 0C 0D 0E FE` for
+`around`, and `05 0D 07` for the reads — `size(blob)` is 5, `index(blob, 3)`
+is `$0D`, and `size(around)` is 7.  `pullbinary` pushes each byte through
+`datavalue` (`compiler_src.cpp:992`), so an included byte is a section byte
+like any other: the raw table has it, `index` and `size` see it, and the
+section's transform gets it (`k65/evaluator-transform`).
+
+**K816 emits `.incbin "file"` and reads the file only when it has to.**  The
+path reaches ca65 exactly as the source wrote it, because ca65 resolves it
+against its own search list and rewriting it would break a build that passes
+`--bin-include-dir` — which is the driver's job, and this harness's for the
+fixtures.  The bytes are read at compile time in the two places that need
+them: a section with an `evaluator [ ]` transform, and a section an evaluation
+indexes.  This fixture has both, so both paths are on the golden.
+
+**Where the file is looked for differs, and it was measured.**  The original
+opens the name as written, against the process's *working* directory —
+staging a fixture's `.bin` into `workdir/` is what makes `oracle.sh` able to
+run this at all.  K816 resolves it against the directory of the source that
+wrote the line, so the file sits beside the source that names it and a missing
+one is `K816-E0153` with a span rather than an abort with nothing.  That is
+the `backend-different` half of decision 8.
+
+The oracle image opens with a `JMP main` stub K816 does not emit; every byte
+after it agrees.

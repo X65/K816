@@ -330,12 +330,12 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::ABSTRACT_HAS_NO_STORAGE,
         caret: "POINT",
     },
-    // A code that was registered and reachable with nothing exercising it,
-    // found by the audit below rather than by anyone meeting it.
+    // A `binary` whose file is not where K816 looked. The caret is the path
+    // rather than the line: the complaint is about the string.
     Case {
         source: "data blk {\n    binary \"tiles.bin\"\n}\n",
-        code: DiagnosticCode::NOT_YET_IMPLEMENTED,
-        caret: "binary \"tiles.bin\"",
+        code: DiagnosticCode::BINARY_NOT_FOUND,
+        caret: "\"tiles.bin\"",
     },
     // The data-block family: a character the charset cannot emit, a value
     // too wide for its entry, and the two things a `repeat` body may not
@@ -365,12 +365,16 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::ADDRESS_RANGE,
         caret: "i - 9",
     },
-    // What is left of E0201 in the evaluator after G4: the forms that need a
-    // data section's assembled bytes, which is G6's machinery.
+    // A section read with no answer, and the one that can never have one.
     Case {
-        source: "data tab {\n    1 2 3\n}\ndata d {\n    [ index(tab, 1) ]\n}\n",
-        code: DiagnosticCode::NOT_YET_IMPLEMENTED,
-        caret: "index(tab, 1)",
+        source: "data d {\n    [ index(below, 1) ]\n}\ndata below {\n    1\n}\n",
+        code: DiagnosticCode::SECTION_NOT_READABLE,
+        caret: "index(below, 1)",
+    },
+    Case {
+        source: "data tab {\n    1 2 3\n}\ndata d {\n    [ index(tab, 1, 0) ]\n}\n",
+        code: DiagnosticCode::SECTION_NO_DIMENSIONS,
+        caret: "index(tab, 1, 0)",
     },
     // The evaluator family G4 introduces.
     Case {

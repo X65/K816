@@ -8,22 +8,22 @@ expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
 expect    defs.k65 K816-E0104
 expect    defs.k65 K816-E0101
-expect    main.k65 K816-E0201
 expect    main.k65 K816-K65-0003
 expect    main.k65 K816-K65-0001
-expect    main.k65 K816-E0201
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
 
-Since G4: thirteen diagnostics, down from eighteen, and still **no
+Since G6: eleven diagnostics, down from thirteen, and still **no
 `K816-E0001`** - which was G2's done criterion and stays true.
 
-The five that went are the evaluator's: three brackets in three positions -
-operand, data entry and `for` bound - and the `for … eval` entry behind them.
-What is left of `K816-E0201` in this file is two constructs, both G6's: the
-`evaluator [ ]` transform, and the `index` call that reads the bytes a section
-generates.
+There is no `K816-E0201` left anywhere in this file, and there is none left in
+the compiler: G6 retired the code with its last producer.  The two that went
+here are the `evaluator [ ]` transform, which now runs over the bytes the
+`for … eval` beneath it generates, and the `index` call that reads them back.
+Each turned into a byte rather than a complaint; the third `K816-E0101` that
+replaced them is a TIA register name the `index` argument mentions, which is
+the same environment gap as the others below.
 
 Three things went with G1's twenty-one at G2.
 
@@ -82,6 +82,7 @@ Three things it taught while being written, none of them in any document:
     `oracle.sh` prints the compiler's log when a build it expected to succeed
     fails.
 
-What remains falls at G4 (the brackets and `for … eval`) and G6 (`image`,
-which stays refused, and the `evaluator [ ]` transform, which lands). Both
-units are compiled as entries, so both report.
+What remains is not the language: `bank` and `image` are refused by decision,
+and the rest is the A2600 environment - register names the original's system
+script declares and K816 has no equivalent of. Both units are compiled as
+entries, so both report.

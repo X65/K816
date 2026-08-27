@@ -1,0 +1,29 @@
+// Oracle questions about `index` and `size` that `eval-forms` does not ask:
+// how the *index* is converted, what an out-of-range read answers, and what
+// an unspecified byte contributes to a section's raw table.
+//
+// The conversion is the question that matters.  Every other numeric boundary
+// in the evaluator rounds half up, so `index(t, 1.7)` would be `t[2]` if it
+// took that rule; `Eval_Index_1D` calls `EvalAny::ToInt` instead
+// (compiler_eval.cpp:349, eval.h:28), which is `int(floor(x) + .5f)` and
+// lands on `t[1]`.  A negative index goes the same way, and there the
+// original's conversion is one too high - `-1` becomes 0 - so the golden
+// records what a defect answers rather than what a rule says.
+
+data t { 11 22 33 }
+
+data gaps { 5 ? 6 }
+
+data answers {
+  [ index(t, 1.7) ]         // ToInt, not the boundary rule: t[1]
+  [ index(t, 2.9) ]         // still floor: t[2]
+  [ index(t, 5) ]           // out of range, and no diagnostic
+  [ index(t, 0 - 1) ]       // ToInt lands one too high, so t[0]
+  [ size(gaps) ]            // `?` is a byte of the raw table
+  [ index(gaps, 1) ]        // and the byte is zero
+}
+
+main {
+  a = answers
+  return
+}

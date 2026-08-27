@@ -1,0 +1,18 @@
+// A preprocessor condition cannot read a section's bytes, and the reason is
+// not that the section is in the wrong place.
+//
+// `preprocess.rs` decides which regions are live before a single section is
+// resolved, because a `data` block inside a region that is not taken must not
+// be declared, let alone assembled.  So the answer does not exist yet no
+// matter where the section is written, and the message says that rather than
+// "move it above the read" — advice the author has already taken.
+
+data above { 1 2 3 }
+
+#if [ size(above) ]
+const TAKEN = 1
+#endif
+
+func main @a8 @i8 {
+  a = 0
+}

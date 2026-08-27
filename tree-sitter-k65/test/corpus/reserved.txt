@@ -195,15 +195,15 @@ data stars {
         value: (eval_bracket
           (eval_binary
             left: (number)
-            right: (reserved_eval_call
-              name: (reserved_function)
+            right: (eval_call
+              name: (identifier)
               argument: (identifier)))))
       (data_value
         value: (eval_bracket
           (eval_call
             name: (identifier)
-            argument: (reserved_eval_call
-              name: (reserved_function)
+            argument: (eval_call
+              name: (identifier)
               argument: (identifier))
             argument: (number))))
       (data_value

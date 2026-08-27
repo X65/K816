@@ -1,28 +1,27 @@
 row       data-evaluator-entry
 config    atarixl.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0201
-expect    input.k65 K816-K65-0002
 
-Since G4: six `K816-E0201` and one `K816-K65-0002`.  Three of the deferrals are
-the `evaluator [ ]` entries and three are the section reads - `index(source, 2)`,
-`source[1]` and `source.index(3)` - all of them G6's, and all of them for one
-reason: each needs a section's assembled bytes.  The refusal is `source.size`,
-which is `size(source)` and one of decision 6's four.
+Since G6 the whole file compiles, and the golden is what the oracle answered:
+`1E 14 28 04` for the four spellings, `01 02 03` against `01 03 05 07` for the
+transform, `43 41 42` for the string, `01 00 01` for the comparisons.  Every
+one of those bytes matches the original's.
 
-That last one is why a method call is desugared in the *interpreter* rather
-than reported by the walk analysis does over reserved calls: `size(x)` is a
-`reserved_eval_call` node and `x.size` is not, so the second spelling came out
-as an undeclared name until G4 made the two spellings one complaint.
+Two differences in the *image*, both the linker's: the original opens with a
+`JMP main` stub K816 does not emit, and it drops `source` because nothing
+references it, where ld65 keeps a section that is in the link.  So K816's
+image carries `0A 14 1E 28` where the original's carries the stub.
 
-The string comparisons compile.  What is left here is sections, not spelling.
+`source.size` is why a method call is desugared in the *interpreter* rather
+than reported by the walk analysis does over reserved calls: `size(x)` was a
+`reserved_eval_call` node and `x.size` was not, so the second spelling came
+out as an undeclared name until G4 made the two spellings one complaint.  G6
+finished the job by taking `size` out of the reserved family in the grammar
+too, which is what lets both spellings reach one implementation.
 
+Before G6 there were six `K816-E0201` and one `K816-K65-0002`: three
+`evaluator [ ]` entries, three section reads, and the refusal.
 Before G4 there were eleven `K816-E0201`, one per construct the grammar named
 and no task had given a meaning.  Before G1 there were fourteen, three of them
 `K816-E0101` for undeclared names plus one `K816-E0001` - the shape of a file

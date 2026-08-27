@@ -210,6 +210,8 @@ provenance() {
     echo "#"
 }
 
+STAGED=""
+
 for dir in "$@"; do
     dir=$(cd "$dir" && pwd)
     conf=$dir/oracle.conf
@@ -225,9 +227,30 @@ for dir in "$@"; do
     name=$(basename "$dir")
     out=$(mktemp -d)
     # The project file goes into the fixture directory and names its units
-    # relatively, because the original resolves both a unit path and an
-    # `image`/`binary` file name against the project file's directory.
+    # relatively, because the original resolves a unit path against the
+    # project file's directory.
+    #
+    # A `binary`'s file is different, and it was measured rather than assumed:
+    # `loadbinary` opens the name as written, so it resolves against the
+    # *working* directory — which has to be `workdir/` for `system_*.nut`.  A
+    # fixture's data files are therefore staged there for the run and taken
+    # away after, and a build left half-way through cannot leave one behind,
+    # because the cleanup is a trap.  K816 resolves the same name against the
+    # directory of the *source* that wrote it, which is the difference
+    # `topelem-binary` records as `backend-different`.
     proj=$dir/$name.k65proj
+    for asset in "$dir"/*.bin "$dir"/*.bmp; do
+        [ -f "$asset" ] || continue
+        asset_name=${asset##*/}
+        if [ -e "$WORKDIR/$asset_name" ]; then
+            echo "oracle.sh: $WORKDIR/$asset_name is in the way of $name" >&2
+            exit 1
+        fi
+        cp "$asset" "$WORKDIR/$asset_name"
+        STAGED="$STAGED $WORKDIR/$asset_name"
+        # shellcheck disable=SC2064
+        trap "rm -f$STAGED" EXIT INT TERM
+    done
 
     {
         echo "-system $system"
@@ -255,13 +278,15 @@ for dir in "$@"; do
             echo "# the fixture is evidence for, and a build that started succeeding would"
             echo "# be as much of a change as different bytes."
             echo "#"
-            echo "# Only the compiler's own \`Line N:\` diagnostics are kept.  It aborts"
-            echo "# rather than exiting on most of these — the C++ evaluator's error path"
-            echo "# unwinds through a bad free — and the allocator's message on the way"
-            echo "# out is the C library's, not the compiler's."
+            echo "# Only the compiler's own \`Line N:\` and \`Linker:\` diagnostics are"
+            echo "# kept.  It aborts rather than exiting on most of these — the C++"
+            echo "# evaluator's error path unwinds through a bad free — and the"
+            echo "# allocator's message on the way out is the C library's, not the"
+            echo "# compiler's.  A \`Linker:\` line is kept because a refusal that happens"
+            echo "# at link time is still a refusal, and \`binary-top-level\` is one."
             echo
             echo "exit $status"
-            grep '^Line ' "$out/log" || echo "(no diagnostic before the abort)"
+            grep -E '^(Line |Linker:)' "$out/log" || echo "(no diagnostic before the abort)"
         } > "$dir/oracle.err"
         rm -f "$dir/oracle.hex" "$dir/oracle.lst"
         rm -rf "$out" "$proj"

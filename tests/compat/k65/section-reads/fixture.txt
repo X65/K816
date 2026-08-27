@@ -1,0 +1,37 @@
+row       evelem-index
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A section index takes the bitwise conversion, not the boundary rule, and an
+out-of-range read is zero.**  The oracle's six answers are `16 21 00 0B 03 00`:
+`index(t, 1.7)` is 22, `index(t, 2.9)` is 33, `index(t, 5)` is 0,
+`index(t, 0 - 1)` is 11, `size(gaps)` is 3, and `index(gaps, 1)` is 0.
+
+`Eval_Index_1D` (`compiler_eval.cpp:349`) converts with `EvalAny::ToInt`, which
+is `int(floor(x) + .5f)` (`eval.h:28`).  For a non-negative value that is
+`floor`, so `1.7` is index 1 and `2.9` is index 2 — where the evaluator's
+*boundary* rule, half up through single precision, would have given 2 and 3.
+Two conversions, two rules, and this fixture is what keeps them apart.
+
+**K816 differs in one byte of six, and it is the byte where the original
+disagrees with itself.**  `floor(-1) + 0.5` is `-0.5`, which `int()` truncates
+to 0, so the original reads `t[0]` for an index of `-1`.  K816 truncates toward
+zero throughout (`eval::to_bits`), so `-1` stays `-1`, falls outside the table,
+and answers 0 like every other out-of-range read.  That is the same
+`legacy-defective` reading `evexpr-operators` records for a bitwise operand,
+from the same function, and the two goldens sit side by side rather than the
+difference being hidden in prose:
+
+    oracle    16 21 00 0B 03 00
+    K816      16 21 00 00 03 00
+                       ^^ ToInt lands one too high on an exact negative
+
+`?` is a byte of the raw table and it is zero — `AST_IGNORED_BYTE` pushes a
+zero in `BuildRawTable` (`asm.cpp:623`) — so `size` counts it and `index`
+reads it.  K816 lowers `?` to an explicit `.res 1`, which is the same byte and
+the same length.
+
+Two differences from the oracle *image*, both the linker's: the original opens
+with a `JMP main` stub K816 does not emit, and drops `t` and `gaps` because
+nothing references them.  Neither is a byte either compiler generated.

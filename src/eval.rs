@@ -107,11 +107,12 @@ pub type BlockId = u32;
 /// The block a `for … eval` body counts as when it runs.
 ///
 /// Every ordinary bracket gets a number from the pass that walks the file, in
-/// source order. A loop body runs later and out of that sequence, so it is
-/// given a number no bracket has: an assignment in one writes to the scratch
-/// copy of the environment the loop runs against, which is discarded, and it
-/// can never be the block that owns a name.
-pub const LOOP_BLOCK: BlockId = BlockId::MAX;
+/// source order. A body that runs later — a `for … eval` iteration, a
+/// section's `evaluator [ ]` transform applied to one byte — runs out of that
+/// sequence, so it is given a number no bracket has: an assignment in one
+/// writes to the scratch copy of the environment it runs against, which is
+/// discarded, and it can never be the block that owns a name.
+pub const DEFERRED_BLOCK: BlockId = BlockId::MAX;
 
 // ---------------------------------------------------------------------------
 // Values
@@ -168,7 +169,7 @@ impl Value {
         match self {
             Self::Number(_) => "a number",
             Self::Str(_) => "a string",
-            Self::Section(_) => "a data section",
+            Self::Section(_) => "a section",
         }
     }
 }
@@ -190,6 +191,91 @@ pub fn to_integer(value: f64) -> i64 {
     f64::from(narrowed).floor() as i64
 }
 
+// ---------------------------------------------------------------------------
+// Section bytes
+// ---------------------------------------------------------------------------
+
+/// The assembled bytes of the data sections declared so far.
+///
+/// `index(sec, i)`, `sec[i]`, `sec.index(i)` and `size(sec)` read a section's
+/// *raw table* — what the original's `AsmSection::BuildRawTable` builds
+/// (`asm.cpp:599`) — so K816 needs the same thing where an evaluation runs.
+/// Analysis fills this in as it walks: a data section's bytes are recorded
+/// the moment the section is resolved, which is exactly the point after which
+/// the original could answer about it too.
+///
+/// A section that is *not* here has one of three shapes, and the read says
+/// which: it is written below the read, it is a code section, or its bytes
+/// are not all decided at compile time.
+#[derive(Clone, Debug, Default)]
+pub struct SectionTable {
+    entries: BTreeMap<SymbolId, SectionBytes>,
+    /// True for the preprocessor's table, which is empty and always will be.
+    ///
+    /// `preprocess.rs` decides which regions are live *before* a single
+    /// section is resolved — a `data` block in a region that is not taken
+    /// must not be — so a condition that reads one cannot be answered there
+    /// at all. Without this flag every such read would come out as "written
+    /// below this", which is the one thing it is not.
+    before_analysis: bool,
+}
+
+/// What a section's bytes are, or why they are not available.
+#[derive(Clone, Debug)]
+pub enum SectionBytes {
+    /// Every byte is known here.
+    Known(Vec<u8>),
+    /// The section exists and was resolved, and a byte of it is not a
+    /// constant — a label's address, or anything else only the linker knows.
+    Unresolved,
+    /// The name is a label *inside* a section rather than a section's own.
+    /// The original aborts on one; K816 says which mistake it is.
+    InsideASection,
+}
+
+impl SectionTable {
+    /// The table the preprocessor runs against: empty, and honest about it.
+    pub fn before_analysis() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            before_analysis: true,
+        }
+    }
+
+    /// Records what a section assembled to.
+    pub fn record(&mut self, section: SymbolId, bytes: SectionBytes) {
+        self.entries.insert(section, bytes);
+    }
+
+    /// The bytes of `section`, if it has been assembled and they are known.
+    pub fn get(&self, section: SymbolId) -> Option<&SectionBytes> {
+        self.entries.get(&section)
+    }
+}
+
+/// Why a section read has no answer.
+///
+/// The four are one question refused for four reasons, and the wording of
+/// each is the diagnostic's; `resolve.rs` turns them into
+/// [`DiagnosticCode::SECTION_NOT_READABLE`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionUnavailable {
+    /// The value is not a section at all.
+    NotASection,
+    /// A `func`, `naked`, `inline` or `main` — bytes width analysis, the
+    /// optimizer and ca65 decide, long after an evaluation runs.
+    CodeSection,
+    /// A data section written below the read.
+    NotYetAssembled,
+    /// A byte of the section is a link-time value.
+    Unresolved,
+    /// A label written inside a section, which does not name one.
+    InsideASection,
+    /// The read is in a preprocessor condition, which is decided before any
+    /// section has been assembled. Nothing about *this* section is wrong.
+    BeforeAnalysis,
+}
+
 /// The integer a *bitwise* operand becomes, which is not [`to_integer`].
 ///
 /// The original's `EvalAny::ToInt` is `int(floor(x) + .5f)` (`eval.h:28`),
@@ -201,6 +287,16 @@ pub fn to_integer(value: f64) -> i64 {
 /// The manifest carries that as `legacy-defective`.
 fn to_bits(value: f64) -> i64 {
     value.trunc() as i64
+}
+
+/// The byte a section's `evaluator [ ]` transform answers with.
+///
+/// `int(v) & 0xFF` (`compiler_src.cpp:466`) — a *truncation* where every
+/// other integer boundary in the evaluator rounds, which is why this is
+/// [`to_bits`] and not [`to_integer`]. `0 - 1` through a transform is `0xFF`
+/// and `x + 0.6` over `1` is `1`, both measured.
+pub fn to_byte(value: f64) -> u8 {
+    (to_bits(value) & 0xFF) as u8
 }
 
 // ---------------------------------------------------------------------------
@@ -380,9 +476,16 @@ pub enum Error {
         found: &'static str,
         needed: &'static str,
     },
-    /// A form K816 recognises and another task implements. `what` is a plural
-    /// noun phrase; `owner` names the task in the diagnostic's note.
-    Deferred { span: Span, what: &'static str },
+    /// A section read — `index`, a subscript, `size` — with no answer.
+    /// `name` is the section or the value the read named.
+    NoSectionBytes {
+        span: Span,
+        name: String,
+        why: SectionUnavailable,
+    },
+    /// The two-dimensional `index(sec, x, y)`, which needs a width and a
+    /// height no K816 section carries (`image` is removed, decision 7).
+    NoDimensions { span: Span, name: String },
     /// `error("…")` reached in a live evaluation.
     Raised { span: Span, message: String },
     /// The step budget ran out.
@@ -408,6 +511,7 @@ pub struct Interpreter<'a> {
     env: &'a mut Environment,
     functions: &'a Functions,
     symbols: &'a SymbolTable,
+    sections: &'a SectionTable,
     block: BlockId,
     /// Call frames, innermost last. A frame is an `evalfunc`'s parameters or
     /// a `for … eval` loop variable, and it shadows the environment for reads
@@ -422,12 +526,14 @@ impl<'a> Interpreter<'a> {
         env: &'a mut Environment,
         functions: &'a Functions,
         symbols: &'a SymbolTable,
+        sections: &'a SectionTable,
         block: BlockId,
     ) -> Self {
         Self {
             env,
             functions,
             symbols,
+            sections,
             block,
             frames: Vec::new(),
             steps: STEP_BUDGET,
@@ -575,22 +681,17 @@ impl<'a> Interpreter<'a> {
                 values.extend(self.arguments(arguments)?);
                 self.call(expr.span, method, values)
             }
+            // `tab[i]` is exactly `index(tab, i)` and `tab[i, j]` exactly
+            // `index(tab, i, j)` — the operator and the function are one
+            // opcode in the original (`compiler_eval.cpp:527-535`), so they
+            // are one implementation here.
             EvalExprKind::Subscript { base, indices } => {
-                // The base and the indices are evaluated first so that an
-                // error in one of them is the answer, rather than the
-                // deferral hiding it.
-                self.run(base)?;
+                let base = self.run(base)?;
+                let mut values = Vec::with_capacity(indices.len());
                 for index in indices {
-                    self.run(index)?;
+                    values.push(self.run(index)?);
                 }
-                Err(Error::Deferred {
-                    span: expr.span,
-                    what: if indices.len() > 1 {
-                        "two-dimensional reads of a data section's bytes"
-                    } else {
-                        "reads of a data section's bytes"
-                    },
-                })
+                self.index(expr.span, &base, &values)
             }
             EvalExprKind::ReservedCall(call) => self.reserved(expr.span, call),
             // A syntax error was already reported for this node.
@@ -642,7 +743,15 @@ impl<'a> Interpreter<'a> {
             // `index(tab, 2)` mean anything at all. Nothing in G4 consumes
             // one, so in practice this value exists to produce a better
             // diagnostic than "undeclared" at the place it cannot be used.
-            SymbolKind::DataLabel { .. } => Ok(Value::Section(id)),
+            // A data label is the section it names, and so is a code
+            // section's: the original's `find_var` gives both `VT_RESERVED`
+            // and `ToSection` accepts either, which is why `index(helper, 0)`
+            // is the `LDA` opcode there. K816 reads a data section and
+            // refuses a code one by name — its bytes are width analysis's,
+            // the optimizer's and ca65's, decided long after this runs.
+            SymbolKind::DataLabel { .. } | SymbolKind::Function { .. } | SymbolKind::Inline => {
+                Ok(Value::Section(id))
+            }
             other => Err(Error::NotAValue {
                 span: name.span,
                 name: name.text.clone(),
@@ -886,6 +995,68 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    // -- section reads ----------------------------------------------------
+
+    /// The raw bytes of the section `value` names, or why there are none.
+    ///
+    /// The original's `AsmSection::BuildRawTable` (`asm.cpp:599`), asked at
+    /// the point the read is written: a section assembled above the read has
+    /// bytes, and everything else is one of the five refusals
+    /// [`SectionUnavailable`] names.
+    fn bytes_of(&self, span: Span, value: &Value) -> Result<&'a [u8], Error> {
+        let Value::Section(id) = value else {
+            return Err(Error::NoSectionBytes {
+                span,
+                name: value.describe().to_owned(),
+                why: SectionUnavailable::NotASection,
+            });
+        };
+        let why = match self.sections.get(*id) {
+            Some(SectionBytes::Known(bytes)) => return Ok(bytes),
+            Some(SectionBytes::Unresolved) => SectionUnavailable::Unresolved,
+            Some(SectionBytes::InsideASection) => SectionUnavailable::InsideASection,
+            None if self.sections.before_analysis => SectionUnavailable::BeforeAnalysis,
+            None => match self.symbols.kind(*id) {
+                SymbolKind::DataLabel { .. } => SectionUnavailable::NotYetAssembled,
+                _ => SectionUnavailable::CodeSection,
+            },
+        };
+        Err(Error::NoSectionBytes {
+            span,
+            name: self.symbols.name(*id).to_owned(),
+            why,
+        })
+    }
+
+    /// `index(sec, i)` and `index(sec, x, y)`, which is also `sec[i]` and
+    /// `sec[x, y]`.
+    ///
+    /// Out of range is zero with no diagnostic, which is the original's
+    /// answer (`compiler_eval.cpp:352-355`). The index takes the *bitwise*
+    /// conversion rather than the boundary rule — measured: `index(t, 1.7)`
+    /// is `t[1]` there, not `t[2]`.
+    fn index(&mut self, span: Span, base: &Value, indices: &[Value]) -> Result<Value, Error> {
+        // The table is built before the indices are looked at, as it is in
+        // the original: a section with no bytes is the complaint even when
+        // the index is nonsense too.
+        let bytes = self.bytes_of(span, base)?;
+        if indices.len() > 1 {
+            return Err(Error::NoDimensions {
+                span,
+                name: match base {
+                    Value::Section(id) => self.symbols.name(*id).to_owned(),
+                    other => other.describe().to_owned(),
+                },
+            });
+        }
+        let at = to_bits(self.number(span, &indices[0], "a section index")?);
+        let byte = usize::try_from(at)
+            .ok()
+            .and_then(|at| bytes.get(at).copied())
+            .unwrap_or(0);
+        Ok(Value::Number(f64::from(byte)))
+    }
+
     // -- calls ------------------------------------------------------------
 
     fn call(&mut self, span: Span, name: &Name, arguments: Vec<Value>) -> Result<Value, Error> {
@@ -911,19 +1082,21 @@ impl<'a> Interpreter<'a> {
             self.frames.pop();
             return value;
         }
-        // A section function reads bytes K816 does not have before lowering,
-        // so it is named here and owned by G6 rather than mis-answered.
-        if name.text == "index" {
-            return Err(Error::Deferred {
-                span,
-                what: "reads of a data section's bytes",
-            });
+        // The two section reads, in every spelling: `index(t, i)` and
+        // `t.index(i)` arrive here as the same call, and so do `size(t)` and
+        // `t.size`.
+        if name.text == "index" && (arguments.len() == 2 || arguments.len() == 3) {
+            return self.index(span, &arguments[0], &arguments[1..]);
         }
-        // The four refused functions, reached through `x.f` — which is
+        if name.text == "size" && arguments.len() == 1 {
+            let bytes = self.bytes_of(span, &arguments[0])?;
+            return Ok(Value::Number(bytes.len() as f64));
+        }
+        // The three refused functions, reached through `x.f` — which is
         // `f(x)`, and is not the node analysis walks for the call spelling.
         // Reporting them here rather than as an unknown name is what keeps
-        // `source.size` and `size(source)` the same complaint.
-        if let Some(refused) = ["size", "addbyte", "color", "rnd"]
+        // `source.rnd` and `rnd(source)` the same complaint.
+        if let Some(refused) = ["addbyte", "color", "rnd"]
             .into_iter()
             .find(|refused| *refused == name.text)
         {
@@ -1028,11 +1201,13 @@ pub enum Site<'a> {
     /// `[ … ]` — evaluated where it stands, for its value and its
     /// assignments.
     Bracket(&'a EvalExpr),
-    /// A `for … eval` body, whose bounds are ordinary K65 expressions and are
-    /// therefore not known during this pass. What is recorded here is the
-    /// environment; the body itself runs once per iteration, later, against
-    /// that recording.
-    Loop { span: Span, body: &'a EvalExpr },
+    /// A body this pass cannot run: a `for … eval` body, whose bounds are
+    /// ordinary K65 expressions and are not known here, and a section's
+    /// `evaluator [ ]` transform, whose `x` is a byte the section has not
+    /// generated yet. What is recorded is the *environment*; the body itself
+    /// runs later — once per iteration, or once per byte — against that
+    /// recording, in a scratch copy whose assignments do not escape.
+    Deferred { span: Span, body: &'a EvalExpr },
 }
 
 /// Every function call inside `expr`, as `(name, argument count)`.
@@ -1259,12 +1434,26 @@ pub fn sites_of_data_entry<'a>(entry: &'a crate::ast::DataEntry, out: &mut Vec<S
                 sites_of_expr(from, out);
                 sites_of_expr(to, out);
                 if let crate::ast::ExprKind::Eval(body) = &body.kind {
-                    out.push(Site::Loop {
+                    out.push(Site::Deferred {
                         span: entry.span,
                         body,
                     });
                 }
             }
+            // A `nocross` group is a page-fit request around ordinary
+            // entries, so its entries are sites like any others.
+            DataEntryKind::NocrossGroup(entries) => {
+                for entry in entries {
+                    sites_of_data_entry(entry, out);
+                }
+            }
+            // The transform's `x` is a byte the section has not generated
+            // yet, so the body cannot run here — only the environment it
+            // will run against is recorded.
+            DataEntryKind::Evaluator(body) => out.push(Site::Deferred {
+                span: entry.span,
+                body,
+            }),
             // Not run here; see `sites_of_item`.
             DataEntryKind::Preprocessor(_) => {}
             DataEntryKind::Segment(_)
@@ -1434,6 +1623,11 @@ pub struct Outcome {
     values: HashMap<Span, Value>,
     loops: HashMap<Span, Environment>,
     functions: Functions,
+    /// The bytes of every data section resolved so far. It lives here rather
+    /// than beside the symbol table because it is the same kind of thing as
+    /// `values`: what analysis answered, at the point it could answer, for a
+    /// later stage to look up rather than re-derive.
+    sections: SectionTable,
 }
 
 impl Outcome {
@@ -1445,13 +1639,22 @@ impl Outcome {
         self.values.insert(span, value);
     }
 
-    /// The environment a `for … eval` body runs against, one per iteration.
-    pub fn loop_environment(&self, span: Span) -> Option<&Environment> {
+    /// The environment a deferred body runs against — one per `for … eval`
+    /// iteration, one per byte a section's transform sees.
+    pub fn deferred_environment(&self, span: Span) -> Option<&Environment> {
         self.loops.get(&span)
     }
 
-    pub fn record_loop(&mut self, span: Span, environment: Environment) {
+    pub fn record_deferred(&mut self, span: Span, environment: Environment) {
         self.loops.insert(span, environment);
+    }
+
+    pub fn sections(&self) -> &SectionTable {
+        &self.sections
+    }
+
+    pub fn record_section(&mut self, section: SymbolId, bytes: SectionBytes) {
+        self.sections.record(section, bytes);
     }
 
     pub fn functions(&self) -> &Functions {
@@ -1662,18 +1865,100 @@ mod tests {
         assert_eq!(number("(\"ab\" == \"ab\")"), 1.0);
         assert_eq!(number("(\"ab\" < \"b\")"), 1.0);
         assert_eq!(codes("\"ab\""), vec!["K816-E0148"]);
-        // A section read is G6's, and says so rather than guessing.
-        assert_eq!(
-            evaluate("data t {\n  1 2\n}\ndata d {\n  [ index(t, 1) ]\n}\n").1,
-            vec!["K816-E0201"]
-        );
-        // The four refused functions, in both spellings.
+        // The three refused functions, in both spellings.
         assert_eq!(codes("rnd()"), vec!["K816-K65-0002"]);
         assert_eq!(
-            evaluate("data t {\n  1 2\n}\ndata d {\n  [ t.size ]\n}\n").1,
+            evaluate("data t {\n  1 2\n}\ndata d {\n  [ t.color ]\n}\n").1,
             vec!["K816-K65-0002"],
-            "`x.size` is `size(x)`, and gets the same complaint"
+            "`x.color` is `color(x)`, and gets the same complaint"
         );
+    }
+
+    /// The bytes a section read answers with, and the five refusals.
+    #[test]
+    fn a_section_read_answers_from_the_bytes_written_above_it() {
+        let read = |source: &str| evaluate(source);
+
+        // The oracle's own numbers (`tests/compat/k65/eval-forms`):
+        // `index(source, 2)` is 30, `source[1]` is 20, `source.index(3)` is
+        // 40 and `source.size` is 4.
+        let (values, codes) = read(
+            "data source {\n  10 20 30 40\n}\n\
+             data d {\n  [ index(source, 2) ]\n  [ source[1] ]\n  \
+             [ source.index(3) ]\n  [ source.size ]\n}\n",
+        );
+        assert_eq!(codes, Vec::<String>::new());
+        assert_eq!(
+            values,
+            vec![
+                Value::Number(30.0),
+                Value::Number(20.0),
+                Value::Number(40.0),
+                Value::Number(4.0),
+            ]
+        );
+
+        // Out of range is zero with no diagnostic, and the index takes the
+        // *bitwise* conversion rather than the boundary rule: `index(t, 1.7)`
+        // is `t[1]`, measured, not `t[2]`.
+        let (values, codes) = read(
+            "data t {\n  11 22 33\n}\n\
+             data d {\n  [ index(t, 5) ]\n  [ index(t, 0 - 1) ]\n  [ index(t, 1.7) ]\n}\n",
+        );
+        assert_eq!(codes, Vec::<String>::new());
+        assert_eq!(
+            values,
+            vec![Value::Number(0.0), Value::Number(0.0), Value::Number(22.0)]
+        );
+
+        // `?` is a zero in the raw table and counts toward the length, which
+        // is what `AST_IGNORED_BYTE` did.
+        let (values, _) =
+            read("data t {\n  5 ? 6\n}\ndata d {\n  [ size(t) ]\n  [ index(t, 1) ]\n}\n");
+        assert_eq!(values, vec![Value::Number(3.0), Value::Number(0.0)]);
+
+        // The five refusals, each naming its own reason.
+        for (source, why) in [
+            ("data d {\n  [ index(3, 0) ]\n}\n", "and this is a number"),
+            (
+                "func f {\n  a = 1\n}\ndata d {\n  [ index(f, 0) ]\n}\n",
+                "is a code section",
+            ),
+            (
+                "data d {\n  [ index(below, 0) ]\n}\ndata below {\n  1\n}\n",
+                "is written below this",
+            ),
+            (
+                "data t {\n  &&t\n}\ndata d {\n  [ index(t, 0) ]\n}\n",
+                "only the linker knows",
+            ),
+            (
+                "data t {\n  inner:\n  1\n}\ndata d {\n  [ index(inner, 0) ]\n}\n",
+                "is a label inside a section",
+            ),
+        ] {
+            let (_, codes) = read(source);
+            assert!(
+                codes.contains(&"K816-E0154".to_owned()),
+                "`{source}` reported {codes:?}"
+            );
+            let (_, diagnostics) = crate::semantic::analyze_file(&{
+                let mut map = SourceMap::new();
+                let id = map.add_file("eval.k65", source);
+                parse_source(map.file(id), None).file
+            });
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.title.contains(why)),
+                "`{source}` did not say `{why}`"
+            );
+        }
+
+        // Two dimensions have no source at all once `image` is removed, and
+        // the sentence is the original's own.
+        let (_, codes) = read("data t {\n  1 2\n}\ndata d {\n  [ index(t, 0, 0) ]\n}\n");
+        assert_eq!(codes, vec!["K816-E0155"]);
     }
 
     #[test]

@@ -1162,6 +1162,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "nocross_data_group"
+        },
+        {
+          "type": "SYMBOL",
           "name": "charset_directive"
         },
         {
@@ -1219,6 +1223,23 @@
           "content": {
             "type": "SYMBOL",
             "name": "eval_bracket"
+          }
+        }
+      ]
+    },
+    "nocross_data_group": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "nocross"
+        },
+        {
+          "type": "FIELD",
+          "name": "body",
+          "content": {
+            "type": "SYMBOL",
+            "name": "data_body"
           }
         }
       ]
@@ -5188,10 +5209,6 @@
               "content": {
                 "type": "CHOICE",
                 "members": [
-                  {
-                    "type": "STRING",
-                    "value": "size"
-                  },
                   {
                     "type": "STRING",
                     "value": "addbyte"

@@ -100,16 +100,17 @@ statement: $ => choice(
 )
 ```
 
-An unimplemented K65 construct must produce a valid, named CST node:
+A K65 construct K816 does not compile must produce a valid, named CST node:
 
 ```text
-(unsupported_k65_statement ...)
+(reserved_image_block ...)
 ```
 
-It must not become an anonymous `ERROR` node. This lets the semantic frontend emit:
+It must not become an anonymous `ERROR` node. This lets the semantic frontend
+name the construct rather than the character it choked on:
 
 ```text
-error[K816-K65-0041]: this original K65 construct is not implemented yet
+error[K816-K65-0001]: K65 `image` is not a K816 construct
 ```
 
 `ERROR` and `MISSING` Tree-sitter nodes should be reserved for genuinely malformed source.

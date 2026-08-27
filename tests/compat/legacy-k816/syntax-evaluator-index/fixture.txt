@@ -1,24 +1,25 @@
 row       evelem-index
 config    legacy-stub.cfg
-compare   diagnostics
+compare   bytes
 units     input.k65
-expect    input.k65 K816-E0201
-expect    input.k65 K816-E0101
-expect    input.k65 K816-E0101
 
 `index` and the `[ ]` indexing operator.
 
 The oracle answer that matters is in `tests/compat/k65/eval-forms/`: what is
 indexed is a **section** - a data label - not an array value, and `tab[i]` is
-exactly `index(tab, i)`.  Reading a section's bytes means having assembled the
-section, which K816 does not do until lowering, so G4 names the form and G6
-implements it: one `K816-E0201`, at `arr[1]`.
+exactly `index(tab, i)`.  G6 implements it, and the whole file compiles.
 
-The two `K816-E0101` are `B` and `C` in `main`, and they show how far the
-refusal reaches.  `A` is assigned before the deferral and survives - `a=[A]`
-compiles - while `B` and `C` are the two the aborted block never got to
-assign.  An evaluation stops at its first unanswerable question and keeps
-everything it had already decided, which is the same shape the original has
-and the reason `A` is in this fixture at all.
+The golden is what the reads answered.  `arr` is `0A 14 1E`; `A` is
+`(1 ?< 2) ?> 3`, which is 3, so `a=[A]` is `A9 03`; `B` is `arr[1]`, so
+`x=[B]` is `A2 14`; `C` is `arr[2]`, so `y=[C]` is `A0 1E`.  A read is an
+immediate in operand position, which is `number`'s row.
 
-Before G4: four `K816-E0201`, one per bracket.
+The file is also where the *reach* of a refusal used to show.  Until G6 the
+first read stopped the block, `A` survived because it was assigned above it,
+and `B` and `C` came out `K816-E0101` - an evaluation stops at its first
+unanswerable question and keeps everything it had already decided.  That shape
+is still the original's and still K816's; there is simply nothing unanswerable
+in this file any more.
+
+Before G4: four `K816-E0201`, one per bracket.  After G4: one, at `arr[1]`,
+with the two `K816-E0101` behind it.

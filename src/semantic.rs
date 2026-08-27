@@ -503,13 +503,17 @@ impl Analysis {
                     }
                 }
                 ItemKind::Data(data) => self.declare_data_labels(data),
+                // A top-level `binary` is the section it describes, so its
+                // name is a data label like any other block's.
+                ItemKind::Binary(declaration) => {
+                    self.declare_data_labels(&crate::resolve::binary_block(declaration, item.span));
+                }
                 ItemKind::Var(_)
                 | ItemKind::Const(_)
                 | ItemKind::Segment(_)
                 | ItemKind::EvalBlock(_)
                 | ItemKind::EvalFunc(_)
                 | ItemKind::Preprocessor(_)
-                | ItemKind::Binary(_)
                 | ItemKind::Reserved(_)
                 | ItemKind::ModuleWidth(_)
                 | ItemKind::Error => {}
@@ -705,7 +709,9 @@ impl Analysis {
                 name.span,
             );
         }
-        for entry in &data.entries {
+        // Through a `nocross { … }` group: a label inside one is a label of
+        // the section, at a brace's remove.
+        for entry in crate::ast::flat_data_entries(&data.entries) {
             match &entry.kind {
                 DataEntryKind::Label(name) if name.provenance != Provenance::Synthetic => {
                     self.declare(
@@ -742,13 +748,15 @@ impl Analysis {
                 ItemKind::Var(var) => self.declare_var(item_index, item.span, var),
                 ItemKind::Const(declaration) => self.declare_const_group(declaration),
                 ItemKind::Data(data) => {
-                    let site = self.data_site(data, None);
-                    let mut resolver = self.resolver();
-                    resolver.data_block(data, item.span, &site);
-                    let resolved = resolver.finish();
-                    self.absorb(resolved);
+                    self.resolve_section(data, item.span);
                     self.report_reserved_in_data(data);
                     self.check_data_code(item_index, data);
+                }
+                // The section a top-level `binary` describes, resolved where
+                // it stands so that a read below it has bytes.
+                ItemKind::Binary(declaration) => {
+                    let block = crate::resolve::binary_block(declaration, item.span);
+                    self.resolve_section(&block, item.span);
                 }
                 // The bracket already ran, above. What is left is the
                 // reserved-function report, which is structural: `rnd()` in
@@ -762,11 +770,6 @@ impl Analysis {
                 // directive, live region and dead alike. One arriving here
                 // is a compiler bug, not a source the user has to fix.
                 ItemKind::Preprocessor(_) => self.diagnostics.push(unpreprocessed(item.span)),
-                ItemKind::Binary(_) => self.diagnostics.push(compat::unimplemented(
-                    item.span,
-                    "`binary` inclusions",
-                    compat::Owner::Compatibility,
-                )),
                 // Reserved legacy syntax reports itself through the
                 // `K816-K65-####` family, not as unimplemented K816 work.
                 ItemKind::Reserved(reserved) => {
@@ -841,9 +844,9 @@ impl Analysis {
                 // A loop body's bounds are K65 expressions and are not known
                 // until a resolver folds them, so what is recorded is the
                 // environment it would have seen.
-                eval::Site::Loop { span, body: _ } => {
+                eval::Site::Deferred { span, body: _ } => {
                     let environment = self.eval_env.clone();
-                    self.model.eval.record_loop(span, environment);
+                    self.model.eval.record_deferred(span, environment);
                 }
             }
         }
@@ -885,6 +888,7 @@ impl Analysis {
             &mut environment,
             self.model.eval.functions(),
             &self.model.symbols,
+            self.model.eval.sections(),
             self.eval_block,
         );
         let value = interpreter.evaluate(body);
@@ -1762,7 +1766,7 @@ impl Analysis {
                 // code of the enclosing function: the solver flattened it
                 // into the same graph, so it is checked in the same scope.
                 StatementKind::Data(data) => {
-                    for entry in &data.entries {
+                    for entry in crate::ast::flat_data_entries(&data.entries) {
                         if let DataEntryKind::Code { body, .. } = &entry.kind {
                             self.check_block(scope, body);
                         }
@@ -1785,9 +1789,13 @@ impl Analysis {
     /// of the enclosing function, flattened into its graph by the solver and
     /// checked in its scope.
     fn check_data_code(&mut self, item: usize, data: &DataBlock) {
-        for (ordinal, entry) in data
-            .entries
-            .iter()
+        // The *flattened* order, because that is the order the resolver
+        // pushes subblocks into `DataOps::code` and the ordinal is an index
+        // into that list. A walk that stopped at a `nocross { … }` group's
+        // brace would skip the subblock inside it — leaving its statements
+        // unanalysed — and hand every later subblock someone else's widths.
+        for (ordinal, entry) in crate::ast::flat_data_entries(&data.entries)
+            .into_iter()
             .filter(|entry| matches!(entry.kind, DataEntryKind::Code { .. }))
             .enumerate()
         {
@@ -1998,7 +2006,17 @@ impl Analysis {
                         }
                     }
                 }
-                DataEntryKind::Segment(_)
+                DataEntryKind::NocrossGroup(entries) => {
+                    self.report_reserved_in_data(&DataBlock {
+                        name: None,
+                        nocross: false,
+                        entries: entries.clone(),
+                    });
+                }
+                // The transform's body is a bracket, and a reserved call
+                // inside it is as reserved as one anywhere else.
+                DataEntryKind::Evaluator(_)
+                | DataEntryKind::Segment(_)
                 | DataEntryKind::Nocross
                 | DataEntryKind::Charset(_)
                 | DataEntryKind::Label(_)
@@ -2178,6 +2196,46 @@ impl Analysis {
     fn data_site(&mut self, data: &DataBlock, function: Option<&str>) -> DataSite {
         let unit = self.unit.clone();
         data_site(&mut self.anonymous_blocks, &unit, data, function)
+    }
+
+    /// Resolves one top-level data section and records what it assembled to.
+    ///
+    /// The recording is what makes `index(sec, i)` and `size(sec)` answerable
+    /// at all, and *where* it happens is the whole rule: analysis walks items
+    /// in source order, so a section is in the table from the line after it
+    /// closes and not before — which is exactly the point after which the
+    /// original could answer about it too.
+    ///
+    /// A section nested in a function is deliberately not recorded: the
+    /// original's `index` takes a name a `data` block declares, and one
+    /// inside a `func` is not reachable from the top level where evaluation
+    /// runs.
+    fn resolve_section(&mut self, data: &DataBlock, span: Span) {
+        let site = self.data_site(data, None);
+        let mut resolver = self.resolver();
+        let walked = resolver.data_block(data, span, &site);
+        let bytes = section_bytes(&walked);
+        let resolved = resolver.finish();
+        self.absorb(resolved);
+        let Some(name) = &data.name else {
+            return;
+        };
+        let Some(section) = self.model.symbols.lookup(&name.text) else {
+            return;
+        };
+        self.model.eval.record_section(section, bytes);
+        // A label written inside the section names a place, not a section.
+        // Recording it says which mistake a read of it is, instead of
+        // leaving it to look like a section written further down.
+        for label in inner_labels(data) {
+            if let Some(id) = self.model.symbols.lookup(&label)
+                && id != section
+            {
+                self.model
+                    .eval
+                    .record_section(id, eval::SectionBytes::InsideASection);
+            }
+        }
     }
 
     /// A resolver over this unit's symbols, scoped to the function being
@@ -2937,28 +2995,107 @@ fn placement_not_at_section_head(statement: &Statement, in_inline: bool) -> Diag
 
 /// The `K816-K65-####` diagnostic for a reserved legacy construct.
 fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
-    let (code, construct) = match reserved.kind {
+    // Nothing here reads as "reserved, coming later" any more: every K65
+    // construct K816 recognises and does not compile is refused for a reason
+    // that will not change. `image` is removed and names its replacement,
+    // `bank` is removed and names `segment`, an illegal opcode is outside the
+    // instruction sets K816 assembles (`doc/design.md` §1), and the three
+    // remaining evaluator functions mutate a section or are not
+    // deterministic.
+    match reserved.kind {
         ReservedKind::ImageBlock | ReservedKind::ImageTopLevel => {
-            (DiagnosticCode::K65_RESERVED_IMAGE, "image")
+            compat::k65_removed_image(reserved.keyword_span, "image")
         }
-        ReservedKind::EvalCall(name) => (
-            DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
-            eval_call_text(name),
-        ),
-        // The two G2 refusals do not read as "reserved, coming later", so
-        // they do not share the reserved wording: `bank` is removed and has
-        // a replacement, and an illegal opcode is outside the instruction
-        // sets K816 assembles at all (`doc/design.md` §1).
+        ReservedKind::EvalCall(name) => {
+            compat::k65_refused_eval_function(reserved.keyword_span, eval_call_text(name))
+        }
         ReservedKind::Bank => {
             let name = reserved.name.as_ref().map_or("NAME", |name| &name.text);
-            return compat::k65_removed_bank(reserved.keyword_span, name);
+            compat::k65_removed_bank(reserved.keyword_span, name)
         }
         ReservedKind::IllegalOpcode(opcode) => {
             let (form, illegal, native) = illegal_opcode_text(opcode);
-            return compat::k65_illegal_opcode(reserved.keyword_span, form, illegal, native);
+            compat::k65_illegal_opcode(reserved.keyword_span, form, illegal, native)
         }
-    };
-    compat::k65_reserved(code, reserved.keyword_span, construct)
+    }
+}
+
+/// The raw bytes a resolved section assembles to, or why it has none.
+///
+/// The original's `AsmSection::BuildRawTable` (`asm.cpp:599`), rule for rule:
+/// labels contribute nothing, a reserved byte contributes a zero — which is
+/// what `?` produced there through `AST_IGNORED_BYTE` — and anything whose
+/// value is not a constant makes the whole section unreadable rather than
+/// partially readable. A `code { }` subblock does the same, because its bytes
+/// are an instruction stream three passes away from being decided.
+fn section_bytes(walked: &crate::resolve::DataOps<'_>) -> eval::SectionBytes {
+    use crate::op::{DataOp, KOpKind};
+    if !walked.code.is_empty() {
+        return eval::SectionBytes::Unresolved;
+    }
+    let mut bytes = Vec::new();
+    for op in &walked.ops {
+        let KOpKind::Data(data) = &op.kind else {
+            continue;
+        };
+        let wide = |bytes: &mut Vec<u8>, values: &[crate::value::KExpr], width: u32| {
+            for value in values {
+                let Some(known) = value.value() else {
+                    return false;
+                };
+                let known = known.get();
+                for shift in 0..width {
+                    bytes.push((known >> (8 * shift)) as u8);
+                }
+            }
+            true
+        };
+        let kept = match data {
+            DataOp::Byte(values) => wide(&mut bytes, values, 1),
+            DataOp::Word(values) => wide(&mut bytes, values, 2),
+            DataOp::Far(values) => wide(&mut bytes, values, 3),
+            DataOp::Reserve(count) => match count.value() {
+                Some(count) => {
+                    bytes.resize(bytes.len() + count.get() as usize, 0);
+                    true
+                }
+                None => false,
+            },
+            // Read only because something is asking: a `binary` nobody
+            // indexes stays an `.incbin` the assembler resolves.
+            DataOp::IncBin {
+                resolved, length, ..
+            } => match std::fs::read(resolved) {
+                Ok(contents) if contents.len() as u32 == *length => {
+                    bytes.extend_from_slice(&contents);
+                    true
+                }
+                _ => false,
+            },
+        };
+        if !kept {
+            return eval::SectionBytes::Unresolved;
+        }
+    }
+    eval::SectionBytes::Known(bytes)
+}
+
+/// The names of the labels written *inside* a data block.
+fn inner_labels(data: &DataBlock) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_inner_labels(&data.entries, &mut names);
+    names
+}
+
+fn collect_inner_labels(entries: &[crate::ast::DataEntry], names: &mut Vec<String>) {
+    for entry in entries {
+        match &entry.kind {
+            DataEntryKind::Label(name) => names.push(name.text.clone()),
+            DataEntryKind::NocrossGroup(inner) => collect_inner_labels(inner, names),
+            DataEntryKind::Repeat { body, .. } => collect_inner_labels(&body.entries, names),
+            _ => {}
+        }
+    }
 }
 
 /// What an illegal-opcode HLA form is spelled, what 6502 opcode it means, and
@@ -3009,7 +3146,6 @@ fn reserved_eval_call(call: &crate::ast::ReservedCall) -> Diagnostic {
 
 fn eval_call_text(name: EvalCallName) -> &'static str {
     match name {
-        EvalCallName::Size => "size",
         EvalCallName::AddByte => "addbyte",
         EvalCallName::Color => "color",
         EvalCallName::Rnd => "rnd",

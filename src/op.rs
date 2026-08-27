@@ -286,6 +286,20 @@ pub enum DataOp {
     Far(Vec<KExpr>),
     /// `.res N` — N reserved bytes, the `?` placeholder's expansion.
     Reserve(KExpr),
+    /// `.incbin "file"` — a `binary` inclusion, which ca65 reads at assembly
+    /// time.
+    ///
+    /// `path` is what the source wrote and what ca65 gets. `resolved` is
+    /// where K816 found the file, against the including source's directory,
+    /// so a later stage that needs the bytes — a section read — does not
+    /// have to re-derive it. `length` is what K816 measured there, so every
+    /// stage that sizes an operation stream still has an answer
+    /// (`plans/06-compatibility.md` decision 8).
+    IncBin {
+        path: String,
+        resolved: std::path::PathBuf,
+        length: u32,
+    },
 }
 
 /// A strongly typed instruction: validated mnemonic, chosen hardware mode,
@@ -831,6 +845,9 @@ fn dump_data(data: &DataOp, symbols: &crate::symbol::SymbolTable) -> String {
         DataOp::Word(values) => ("word", values),
         DataOp::Far(values) => ("far", values),
         DataOp::Reserve(count) => return format!("res {}", dump_expr(count, symbols)),
+        DataOp::IncBin { path, length, .. } => {
+            return format!("incbin {path:?} ({length} bytes)");
+        }
     };
     let rendered: Vec<String> = values
         .iter()

@@ -1,0 +1,20 @@
+// Oracle question: what is a top-level `binary NAME = "file"`?
+//
+// The grammar says a section: `init_section($2); loadbinary(...);
+// pullbinary(); makesection($2,"binary")` (compiler.inc:56).  Every part of
+// that runs - the file is read and its bytes are pushed into the section -
+// and then the *label* is not there: referring to `Blob` reaches the linker
+// as "Unknown label".  So the declaration builds a section nothing can name,
+// which is a defect rather than a design, and the row is `legacy-defective`.
+//
+// K816 compiles the declaration as the section it describes: `Blob` is a data
+// label like a `data Blob { binary "payload.bin" }` block's, the bytes are an
+// `.incbin`, and `size`/`index` read them.  This fixture is the measurement
+// that says K816 is fixing something rather than changing it.
+
+binary Blob = "payload.bin"
+
+main {
+  a = Blob
+  return
+}

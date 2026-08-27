@@ -1,0 +1,30 @@
+row       data-nocross-block
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+`nocross { ... }` around a group of data entries — the third spelling of the
+page-fit request, and the one K816's grammar did not have until G6.
+
+`Data -> NoCross { DataList }` (`compiler.inc:73`): `NoCross` disallows page
+crossing and the closing brace allows it again, so the group is a *bounded*
+run rather than "everything after the keyword", which is what the bare
+directive guards.  The golden is `01 02 03 04 05 06 07 08` — nothing about the
+construct is a byte, and that is the claim: a placement restriction that moved
+a byte would be a bug in either compiler.
+
+K816 splices a group's entries into the section where they stand and puts the
+group's own guard after the last entry of its run, by the same rule the bare
+directive uses: the leading stretch of statically-sizeable entries.  The
+braces say which entries are candidates; they do not make an unsizeable one
+into a candidate.
+
+A *bare* `nocross` entry is deliberately not in this file.  `NoCross` appears
+in the original's grammar only before a brace and on a section header, so a
+bare one inside a data block aborts the compiler — it is K816's own spelling,
+which is what `data-nocross-flag` says, and mixing the two here would have
+made the fixture about that instead.
+
+G6 is the third and last grammar regeneration of sub-plan G, and this row is
+why: the rule is one line, and leaving it open would have carried a `K65`
+construct past the task that owns data blocks.

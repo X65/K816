@@ -425,6 +425,17 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
                 DataOp::Reserve(count) => {
                     format!("        .res     {}", format_expr(count, names))
                 }
+                // The path as the source wrote it: ca65 resolves it against
+                // its own search list, which is what `--bin-include-dir`
+                // extends. K816 checked a different resolution — against the
+                // including source's directory — and says so with a span
+                // rather than leaving it to the assembler.
+                DataOp::IncBin { path, .. } => {
+                    format!(
+                        "        .incbin  \"{}\"",
+                        path.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
+                }
             };
             out.push_str(&annotated(&text, &annotation(map, op)));
         }

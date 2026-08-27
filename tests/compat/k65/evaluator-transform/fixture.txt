@@ -1,0 +1,40 @@
+row       data-evaluator-entry
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**The section transform is positional, replaced rather than composed, masked
+by truncation, and it reaches a `binary`.**  Four things `eval-forms` did not
+ask, in one golden:
+
+    01 02              written above the transform: untouched
+    64 C8 2C           `x * 100` over 1, 2, 3 — and 300 masked to $2C
+    02 03              a second `evaluator` replaces the first
+    FF FE              `0 - x` masks a negative the same way
+    01 02              `x + 0.6` truncates rather than rounding
+    11 12 13 14        every byte of the `binary`
+    64 0B 11           index(filtered, 2), size(filtered), index(included, 0)
+
+The masking is `int(v) & 0xFF` (`compiler_src.cpp:466`), and the `int` is
+`EvalAny::ToInt` — so `x + 0.6` over 1 is 1, where the evaluator's boundary
+rule would have made it 2, and `0 - 1` is `$FF`.  **The two conversions are
+not the same function.**  `k65/eval-integer-boundary` pins the rounding one;
+this pins the truncating one; `postmortem.md` §G.2.2 is where G0 warned that
+merging them would miscompile.
+
+Replacement rather than composition follows from where the program lives: the
+transform is precompiled into the *section*, and a second `evaluator` entry
+overwrites it.  So does the positional rule — the bytes above the entry are
+already emitted, and nothing goes back for them.
+
+`index` and `size` read the section **after** the transform: `index(filtered,
+2)` is `$64`, the transformed byte, not the 1 the loop generated.  That is
+what settles where K816 has to apply it — in the walk that produces a
+section's bytes, not at emission — because analysis records those bytes for
+the read to find.
+
+Reaching a `binary` is the reason K816 reads an included file at all.
+Decision 8 maps the construct to `.incbin` and rejected emitting `.byte`
+lines; a transform K816 does not apply would be a wrong image, so the file is
+read exactly where its bytes are needed — a section with a transform, or a
+section something indexes — and `.incbin` covers everything else.

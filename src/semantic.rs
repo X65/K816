@@ -332,10 +332,39 @@ fn analyze(
     // `#if / func f / #else / func f / #endif` is a duplicate definition
     // (`plans/06-compatibility.md` decision 9, `preprocess.rs`).
     let applied = crate::preprocess::apply(file);
-    let preprocessed = match applied.program {
+    let mut preprocessed = match applied.program {
         std::borrow::Cow::Borrowed(_) => None,
         std::borrow::Cow::Owned(program) => Some(program),
     };
+    // An `inline` another unit defines and this one expands joins this
+    // program, here, before a symbol exists. It is the one section kind ld65
+    // cannot resolve — it has no address — so what crosses the boundary is
+    // the body, and copying it in is what makes every stage below this line
+    // see an ordinary local `inline`: one declaration pass, one width
+    // analysis, one expansion in lowering, and the imports the body needs
+    // derived from this unit like any other (`postmortem.md` §G.9.4).
+    //
+    // After the preprocessor and before `declare_placed_symbols`: a body
+    // inside a region this unit did not take must not arrive, and a body that
+    // does arrive must be declared with the rest.
+    //
+    // What is kept is each borrowed section's name, its declaration span, and
+    // its whole extent. The extent is what decides *which* borrowed section a
+    // silenced complaint belongs to, below: two sections from one file are two
+    // answers, and a mistake in one is no reason to refuse the other.
+    let mut borrowed_sections: Vec<(String, Span, Span)> = Vec::new();
+    if let Some(linkage) = linkage {
+        let borrowed = linkage.inline_expansions(preprocessed.as_ref().unwrap_or(file));
+        if !borrowed.is_empty() {
+            borrowed_sections.extend(borrowed.iter().filter_map(|item| match &item.kind {
+                ItemKind::Func(func) => Some((func.name.text.clone(), func.name.span, item.span)),
+                _ => None,
+            }));
+            let mut program = preprocessed.take().unwrap_or_else(|| file.clone());
+            program.items.extend(borrowed);
+            preprocessed = Some(program);
+        }
+    }
     let file = preprocessed.as_ref().unwrap_or(file);
     let effects = applied.effects;
     let mut analysis = Analysis {
@@ -400,6 +429,45 @@ fn analyze(
     // one.
     analysis.check_inline_recursion();
     analysis.check_functions(file);
+    // A borrowed body's own mistakes belong to the unit that wrote it, and
+    // that unit is in this workspace and reports them itself. What stays is
+    // what *borrowing* revealed: a name the defining unit resolves and this
+    // one cannot is the case this filter must not swallow, and it does not,
+    // because the owner never made that complaint.
+    if let Some(linkage) = linkage
+        && !borrowed_sections.is_empty()
+    {
+        let mut silenced: Vec<Span> = Vec::new();
+        analysis.diagnostics.retain(|diagnostic| {
+            let at = diagnostic.primary.span;
+            let inside = borrowed_sections
+                .iter()
+                .any(|(_, _, extent)| extent.file == at.file && extent.contains(at.start));
+            if !inside || !linkage.reported_by_owner(diagnostic) {
+                return true;
+            }
+            if diagnostic.severity == crate::diagnostic::Severity::Error {
+                silenced.push(at);
+            }
+            false
+        });
+        // Dropping an *error* without putting one back would leave this unit
+        // emitting an expansion of a body nothing checked, and lowering would
+        // meet the hole as `K816-E0900`. One line per borrowed section that
+        // does not compile says where the real complaints are.
+        for (name, declaration, extent) in &borrowed_sections {
+            if silenced
+                .iter()
+                .any(|at| at.file == extent.file && extent.contains(at.start))
+            {
+                analysis.diagnostics.push(borrowed_inline_unusable(
+                    name,
+                    *declaration,
+                    linkage.unit_of(extent.file),
+                ));
+            }
+        }
+    }
     analysis.model.preprocessed = preprocessed;
     (analysis.model, analysis.diagnostics)
 }
@@ -3265,6 +3333,29 @@ fn hla_expressions(hla: &HlaStatement) -> Vec<(&Expr, bool)> {
 }
 
 /// An `inline`'s own label, used where only a name would do.
+/// An `inline` this unit expands, whose own unit does not compile it.
+///
+/// The complaints themselves stay where they belong. This one exists so that
+/// dropping them does not leave the unit quietly emitting an expansion of a
+/// body nothing checked — which is what lowering would meet as a hole.
+fn borrowed_inline_unusable(name: &str, declaration: Span, unit: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::BORROWED_INLINE_UNUSABLE,
+        format!("`{name}` cannot be expanded here: its own unit does not compile it"),
+        Label::new(
+            declaration,
+            "this body is expanded into the unit being compiled",
+        ),
+    )
+    .with_note(format!(
+        "the errors in the body are reported against `{unit}`, which is where the body is \
+         written; repeating them in every unit that expands the section would say one thing \
+         many times"
+    ))
+    .with_help(format!("compile `{unit}` and fix what it reports"))
+    .with_docs("doc/syntax-reference.md#inline")
+}
+
 fn inline_label_as_a_value(name: &crate::ast::Name) -> Diagnostic {
     Diagnostic::error(
         DiagnosticCode::SYMBOL_KIND_MISMATCH,

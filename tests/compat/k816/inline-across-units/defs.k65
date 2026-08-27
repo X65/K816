@@ -1,0 +1,23 @@
+// An `inline` is the one section kind that does not link, so what crosses a
+// unit boundary is the body.  Part one: the definitions.
+//
+// The file-top widths are this unit's, and `main.k65` states the other ones
+// on purpose.  A body is classified once, against its own section's contract,
+// and in its own unit that contract includes the `@a8` above it - so `#$01`
+// below has to stay one byte however the borrowing unit is annotated.
+
+@a8
+@i8
+
+var counter = 0x40
+
+inline sub (a, #b) -> a {
+  c+
+  a - #b
+}
+
+inline twice (a) -> a {
+  sub a, #1 -> a
+  sub a, #1 -> a
+  counter ++
+}

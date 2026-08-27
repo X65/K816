@@ -39,10 +39,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::ast::{
+    AstFile, Block, DataEntry, DataEntryKind, Item, ItemKind, Statement, StatementKind,
+    WidthAnnotation, WidthAnnotationKind,
+};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
+use crate::isa::RegisterWidth;
 use crate::parser;
 use crate::semantic;
-use crate::source::{FileId, SourceMap, Span};
+use crate::source::{FileId, Provenance, SourceMap, Span};
 use crate::symbol::{LabelScope, SymbolId, SymbolKind};
 use crate::width;
 
@@ -80,8 +85,37 @@ pub struct Linkage {
     /// original has too — it compiles a project's units in order — and it
     /// fails as a refusal rather than as a wrong byte.
     sections: BTreeMap<String, crate::eval::SectionBytes>,
+    /// The declaration of every `inline` the workspace defines, by name.
+    ///
+    /// An `inline` is the one section kind that does not link: it has no
+    /// address, so ld65 cannot resolve a use site in another unit the way it
+    /// resolves a `jsr`. What crosses the boundary is therefore the *body*,
+    /// copied into the using unit's program before a symbol is declared, so
+    /// that everything downstream sees an ordinary local `inline`
+    /// (`plans/06-compatibility.md` decision 24, `postmortem.md` §G.9.4).
+    ///
+    /// Taken from the defining unit's preprocessed program, so a directive
+    /// inside the body is decided where the body is written and every unit
+    /// that expands it gets the branch that unit chose
+    /// (`doc/syntax-reference.md`, "`inline` bodies").
+    inlines: BTreeMap<String, Item>,
     /// Foreign names each unit refers to, keyed by the referring unit.
     references: BTreeMap<FileId, BTreeSet<String>>,
+    /// Every complaint a unit makes about its *own* source, as a code and a
+    /// position.
+    ///
+    /// A borrowed `inline` body is analyzed once in every unit that expands
+    /// it, and a mistake inside the body is therefore found again in each of
+    /// them. Sub-plan E's decision 12 keeps an `inline`'s analysis at its
+    /// declaration so that the diagnostic count does not multiply with the
+    /// *call* count; this is the same rule against the *unit* count. The
+    /// defining unit reports what its own body says; a borrowing unit reports
+    /// only what borrowing revealed — a name that resolves there and not here
+    /// is exactly the case that has to survive.
+    owned: BTreeSet<(FileId, &'static str, u32)>,
+    /// What each unit is called, so a diagnostic about a borrowed body can
+    /// name the source to go and read.
+    units: BTreeMap<FileId, String>,
     /// Functions the workspace call graph put in a cycle, which have no exit
     /// contract to compute and are pinned to the language rule.
     recursive: BTreeSet<String>,
@@ -102,12 +136,19 @@ impl Linkage {
         for source in map.files() {
             let parse = parser::parse_source(source, None);
             let (model, _) = semantic::analyze_named(&parse.file, source.name());
+            linkage.units.insert(source.id(), source.name().to_owned());
             linkage.collect_definitions(source.id(), &model);
+            // From the *first* pass, which analyzes each unit alone: a body
+            // copied out of a unit that had already copied bodies in would
+            // carry someone else's, and this pass is the one where no unit
+            // has.
+            linkage.collect_inlines(model.program(&parse.file));
         }
         for source in map.files() {
             let parse = parser::parse_source(source, None);
-            let (model, _) = semantic::analyze_unit(&parse.file, source.name(), &linkage);
+            let (model, diagnostics) = semantic::analyze_unit(&parse.file, source.name(), &linkage);
             linkage.collect_references(source.id(), &model);
+            linkage.collect_owned_diagnostics(source.id(), &diagnostics);
         }
         linkage.classify_exits(map);
         linkage
@@ -279,6 +320,140 @@ impl Linkage {
         }
     }
 
+    /// Keeps the declaration of every `inline` this unit defines.
+    ///
+    /// The module's default widths are folded into the copy for any axis the
+    /// `inline` does not state itself. An `inline`'s body is classified once,
+    /// against the section's own contract (`doc/syntax-reference.md`, "Why
+    /// aliases are inline-only"), and in its own unit that contract includes
+    /// the file-top `@a8` above it — which does not travel with the body.
+    /// Writing it onto the copy is what keeps one `inline` one contract
+    /// however many units expand it.
+    fn collect_inlines(&mut self, program: &AstFile) {
+        let defaults = module_defaults(program);
+        for item in &program.items {
+            let ItemKind::Func(func) = &item.kind else {
+                continue;
+            };
+            if func.kind != crate::ast::FunctionKind::Inline
+                || func.name.provenance == Provenance::Synthetic
+            {
+                continue;
+            }
+            let mut copy = item.clone();
+            let ItemKind::Func(function) = &mut copy.kind else {
+                unreachable!("the item was matched as a function above")
+            };
+            // Discarded: a conflict between two annotations on one section is
+            // reported where the section is written, and reporting it again
+            // in every unit that expands the section would multiply one
+            // mistake by the call graph.
+            let mut ignored = Vec::new();
+            let stated = width::fold_annotations(&function.width, &mut ignored);
+            for (axis, default) in [(0, defaults.a), (1, defaults.i)] {
+                let Some(width) = default else { continue };
+                if (axis == 0 && stated.a.is_some()) || (axis == 1 && stated.i.is_some()) {
+                    continue;
+                }
+                function.width.push(WidthAnnotation {
+                    kind: match (axis, width) {
+                        (0, RegisterWidth::W8) => WidthAnnotationKind::A8,
+                        (0, _) => WidthAnnotationKind::A16,
+                        (_, RegisterWidth::W8) => WidthAnnotationKind::I8,
+                        (_, _) => WidthAnnotationKind::I16,
+                    },
+                    // The section's own name: the annotation was never
+                    // written, and a span pointing at the file-top `@a8` of
+                    // another unit would send a reader somewhere that does
+                    // not explain what they are reading.
+                    span: function.name.span,
+                });
+            }
+            self.inlines.insert(func.name.text.clone(), copy);
+        }
+    }
+
+    /// The `inline` declarations `program` expands but does not contain.
+    ///
+    /// Returned in the order they are reached, and transitively: a body that
+    /// is copied in may itself expand an `inline` from a third unit, and the
+    /// copy is worth nothing without it.
+    ///
+    /// A name `program` already declares is never copied — that is what keeps
+    /// the defining unit from importing its own body back — and neither is a
+    /// name no unit declares as an `inline`, which stays an ordinary call for
+    /// the symbol table to resolve or complain about.
+    pub fn inline_expansions(&self, program: &AstFile) -> Vec<Item> {
+        // "Already declares" is asked of the definitions table rather than of
+        // the items, so it covers every kind a name can be: a unit with a
+        // `data hop` that calls `hop` must not also be handed a foreign
+        // `inline hop` to declare, which would add a duplicate of its own
+        // making to a workspace error it already has.
+        //
+        // Nothing has been copied in at this point, so every item is this
+        // unit's and the first one names the file. A program with no items
+        // calls nothing, so the `None` arm has no work to skip.
+        let this = program.items.first().map(|item| item.span.file);
+        let defined_here = |name: &str| {
+            this.is_some_and(|file| {
+                self.definitions
+                    .get(name)
+                    .is_some_and(|definition| definition.file == file)
+            })
+        };
+        let mut copied: Vec<Item> = Vec::new();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut pending: std::collections::VecDeque<String> =
+            called_names(&program.items).into_iter().collect();
+        while let Some(name) = pending.pop_front() {
+            if defined_here(&name) {
+                continue;
+            }
+            let Some((name, item)) = self.inlines.get_key_value(&name) else {
+                continue;
+            };
+            if !seen.insert(name.as_str()) {
+                continue;
+            }
+            pending.extend(called_names(std::slice::from_ref(item)));
+            copied.push(item.clone());
+        }
+        copied
+    }
+
+    /// Records what `file` complains about in its own text.
+    fn collect_owned_diagnostics(&mut self, file: FileId, diagnostics: &[Diagnostic]) {
+        for diagnostic in diagnostics {
+            if diagnostic.primary.span.file == file {
+                self.owned
+                    .insert((file, diagnostic.code.0, diagnostic.primary.span.start));
+            }
+        }
+    }
+
+    /// The name of the unit `file` is, for a message that has to say where
+    /// to look.
+    ///
+    /// Recorded rather than derived: `analyze` has the unit's name but not the
+    /// `SourceMap`, and the one thing it needs about another unit is what to
+    /// call it.
+    pub fn unit_of(&self, file: FileId) -> &str {
+        self.units.get(&file).map_or("another unit", String::as_str)
+    }
+
+    /// Whether the unit that owns `diagnostic`'s primary span reports it too.
+    ///
+    /// Keyed by code and position rather than by the rendered text: the two
+    /// runs analyze the same body against the same contract, so a complaint
+    /// that is the same complaint lands on the same byte with the same code.
+    pub fn reported_by_owner(&self, diagnostic: &Diagnostic) -> bool {
+        self.owned.contains(&(
+            diagnostic.primary.span.file,
+            diagnostic.code.0,
+            diagnostic.primary.span.start,
+        ))
+    }
+
     fn collect_references(&mut self, file: FileId, model: &semantic::SemanticModel) {
         // A `const` folds into its value wherever it is read, so reading a
         // foreign one links nothing and asks nothing of the defining unit.
@@ -341,10 +516,122 @@ impl Linkage {
     }
 }
 
+/// The module's default widths, folded from the annotations above the first
+/// section.
+///
+/// A syntactic reading of the same rule `semantic.rs` applies, because this
+/// runs before any analysis of the unit that is about to borrow a body. An
+/// annotation written *below* a section is an error there and is ignored
+/// here; the copy takes what the defining unit's sections actually got.
+fn module_defaults(program: &AstFile) -> crate::op::WidthContract {
+    let mut annotations = Vec::new();
+    for item in &program.items {
+        match &item.kind {
+            ItemKind::Func(_) => break,
+            ItemKind::ModuleWidth(annotation) => annotations.push(annotation.clone()),
+            _ => {}
+        }
+    }
+    width::fold_annotations(&annotations, &mut Vec::new())
+}
+
+/// Every name written as a call anywhere in `items`, at any depth.
+///
+/// A *syntactic* walk, and it has to be: it decides which foreign bodies join
+/// this unit's program, and that has to be settled before a symbol is
+/// declared. The two call shapes are `call NAME` and the bare name; a `goto`
+/// or an operand naming an `inline` is an error rather than an expansion
+/// (`K816-E0115`), so neither is a reason to copy a body in.
+fn called_names(items: &[Item]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for item in items {
+        match &item.kind {
+            ItemKind::Func(func) => called_in_block(&func.body, &mut names),
+            ItemKind::Data(data) => called_in_data(&data.entries, &mut names),
+            ItemKind::Var(_)
+            | ItemKind::Const(_)
+            | ItemKind::Segment(_)
+            | ItemKind::EvalBlock(_)
+            | ItemKind::EvalFunc(_)
+            | ItemKind::Preprocessor(_)
+            | ItemKind::Binary(_)
+            | ItemKind::Reserved(_)
+            | ItemKind::ModuleWidth(_)
+            | ItemKind::Error => {}
+        }
+    }
+    names
+}
+
+fn called_in_block(block: &Block, names: &mut BTreeSet<String>) {
+    for statement in &block.statements {
+        called_in_statement(statement, names);
+    }
+}
+
+fn called_in_statement(statement: &Statement, names: &mut BTreeSet<String>) {
+    match &statement.kind {
+        StatementKind::Call(call) => {
+            names.insert(call.target.text.clone());
+        }
+        StatementKind::BareCall(call) => {
+            names.insert(call.target.text.clone());
+        }
+        StatementKind::WidthBlock(block) => called_in_block(&block.body, names),
+        StatementKind::Conditional(conditional) => {
+            called_in_block(&conditional.body, names);
+            if let Some(otherwise) = &conditional.otherwise {
+                called_in_block(otherwise, names);
+            }
+        }
+        StatementKind::ConditionalJump(jump) => called_in_statement(&jump.jump, names),
+        StatementKind::Loop(loop_statement) => called_in_block(&loop_statement.body, names),
+        StatementKind::Nocross(block) => called_in_block(block, names),
+        StatementKind::Data(data) => called_in_data(&data.entries, names),
+        StatementKind::Label(_)
+        | StatementKind::Native(_)
+        | StatementKind::Hla(_)
+        | StatementKind::ModeSet(_)
+        | StatementKind::Goto(_)
+        | StatementKind::Break
+        | StatementKind::Repeat
+        | StatementKind::Align(_)
+        | StatementKind::Address(_)
+        | StatementKind::Reserved(_)
+        | StatementKind::Preprocessor(_)
+        | StatementKind::Return(_)
+        | StatementKind::Error => {}
+    }
+}
+
+fn called_in_data(entries: &[DataEntry], names: &mut BTreeSet<String>) {
+    for entry in crate::ast::flat_data_entries(entries) {
+        match &entry.kind {
+            DataEntryKind::Code { body, .. } => called_in_block(body, names),
+            DataEntryKind::Repeat { body, .. } => called_in_data(&body.entries, names),
+            DataEntryKind::NocrossGroup(_)
+            | DataEntryKind::Segment(_)
+            | DataEntryKind::Align(_)
+            | DataEntryKind::Address(_)
+            | DataEntryKind::Nocross
+            | DataEntryKind::Charset(_)
+            | DataEntryKind::Label(_)
+            | DataEntryKind::Typed { .. }
+            | DataEntryKind::Value(_)
+            | DataEntryKind::Evaluator(_)
+            | DataEntryKind::ForEval { .. }
+            | DataEntryKind::Preprocessor(_)
+            | DataEntryKind::Binary(_)
+            | DataEntryKind::Reserved(_)
+            | DataEntryKind::Error => {}
+        }
+    }
+}
+
 /// The body of the code section at `item_index`.
-fn function_body(file: &crate::ast::AstFile, item_index: usize) -> Option<&crate::ast::Block> {
+fn function_body(file: &AstFile, item_index: usize) -> Option<&crate::ast::Block> {
     match &file.items.get(item_index)?.kind {
-        crate::ast::ItemKind::Func(func) => Some(&func.body),
+        ItemKind::Func(func) => Some(&func.body),
         _ => None,
     }
 }

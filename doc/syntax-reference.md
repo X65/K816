@@ -587,9 +587,15 @@ inline inc_y {
 }
 ```
 
-An `inline` has no address. Nothing is emitted where it is declared, nothing is exported, and a reference to its name anywhere but a use site is an error (`K816-E0115`) — there is no one place for such a reference to mean. For the same reason `far` may not be written on a use site: the body runs in whatever bank the use site is in, so there is no transfer for the prefix to lengthen.
+An `inline` has no address. Nothing is emitted where it is declared, nothing is exported, and a reference to its name anywhere but a use site is an error (`K816-E0115`) — there is no one place for such a reference to mean. For the same reason `far` may not be written on a use site: expansion is not a transfer, so there is nothing for the prefix to lengthen. (In the original the prefix meant a bank switch, and writing it on an `inline` is refused there too.)
 
 An `inline` that expands into itself, directly or through a cycle, is `K816-E0132`. A copy has no base case the way a call does. Recursion through a non-`inline` callee is ordinary recursion and is fine.
+
+**An `inline` is the one section kind that does not link, so it crosses a unit boundary by being copied.** Every other kind crosses as a *name*: `jsr helper` resolves because `helper` has an address for the linker to fill in. An `inline` has none, so a use site in another unit has nothing to link and nothing to expand. K816 therefore copies the declaration into the program of the unit that expands it, after the preprocessor and before any symbol is declared, and everything below that point treats it as an ordinary local `inline`. Three consequences worth knowing:
+
+- **The body keeps its own unit's widths.** A body is classified once, against its section's own contract, and in its own unit that contract includes the file-top `@a8` above it. Expanding it into an `@a16` unit does not resize its immediates.
+- **The names the body reads become the expanding unit's imports**, because that is where the operations land. A field layout is the exception and says so (`K816-E0115`): offsets belong to the unit that computed them, so `slot.hi` in a borrowed body needs the layout declared in the expanding unit too.
+- **The body's own mistakes are reported once, by the unit that wrote it.** Repeating them in every unit that expands the section would say one thing many times. What the expanding unit reports instead is `K816-E0156`, naming the section and the unit to go and read; it is an error rather than a note, because otherwise the unit would emit an expansion of a body nothing checked. A complaint that only *this* unit can make — the layout case above — is reported here in full.
 
 Labels inside an expanded body do not keep their names — a second expansion would define them again — so each expansion gets targets of its own. That is also why a `goto` may not name a label of another section (`K816-E0129`): from outside there is nothing to name.
 
@@ -768,6 +774,8 @@ func dispatch @a8 @i8 {
 
 The direct form's length follows the target the same way every other address operand does: a `goto` naming a `far func` is a `JML` whether or not `far` is written, and writing `far` forces the long form for a target that would otherwise be near.
 
+**`far goto label` and `goto far label` are the same jump.** The first is the original K65 word order (`Instr -> far goto Arg`) and the second is K816's; both lower to `JML`, and both accept a unit-level label, a local `.name`, or a parenthesized indirect target.
+
 A `goto` may not name a label of *another* function (`K816-E0129`). Arriving in the middle of a function means arriving with register widths that function's contract never promised, which is not a shape the width model can describe — call the function instead.
 
 ## Data Blocks
@@ -856,8 +864,11 @@ data MyData3 {
 
 `nocross` (or the wrapper form `nocross data { ... }`) guards the leading
 run of statically-sizeable data entries, so the whole run lands inside one
-256-byte page. A run larger than a page is rejected at compile time; where
-it lands is checked at link time. Enforcement covers data runs
+256-byte page. A run larger than a page is rejected at compile time — it can never fit
+however it is placed — and where it lands is checked by ld65, as an assertion
+the emitted assembly carries. K816 does not pad before the run to make it
+fit: the original's linker did that, and placement belongs to the linker, which
+here is ld65 and its configuration. Enforcement covers data runs
 (`byte`/`word`/`far` values, strings, `for … eval`); it stops at a `code`,
 `address`, `align`, or `charset` entry, and `nocross` around a
 `code { ... }` subblock stays advisory (instruction sizes are not known

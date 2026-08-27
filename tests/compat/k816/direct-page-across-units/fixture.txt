@@ -1,0 +1,36 @@
+row       k816-direct-page-pool
+config    atarixl.cfg
+compare   bytes
+units     pool_a.k65 pool_b.k65
+
+**Decision 24's first judgment, measured: the frontend stays as it is.**  The
+question sub-plan E left open (`plans/04-hla-and-lowering.md`, "Out of scope")
+was whether the direct-page pool should be a linker-level resource rather than
+a frontend one, "against the corpus, once decision 13 has told us how much
+`dp` real programs ask for".
+
+**What the corpus asks for is nothing.**  No K65 source in any corpus we hold
+uses `dp` at all - the pool is K816's, not K65's - and in the legacy K816's
+316 fixtures the largest ask outside a deliberate overflow test is a handful
+of pointers.  There is no program whose real claim comes near a page.
+
+**The cross-unit half is already a linker resource, and ld65 already catches
+it with the same arithmetic.**  The one cross-unit overflow case in the legacy
+corpus is `link-dp-overflow-err`: 200 bytes in one unit, 100 in another, each
+fitting alone.  The legacy K816 was its own linker and reported "100 bytes
+requested, 56 bytes free out of 256" against the declaration.  K816 compiles
+one unit at a time and hands the claims to ld65 as `ZEROPAGE` reservations,
+which answers `Segment 'ZEROPAGE' overflows memory area 'ZP' by 44 bytes` -
+the same 44 bytes, named as a segment rather than as a variable.
+
+So the split is not an accident of where the code sits.  What a *unit* asks
+for is a fact the frontend knows, and `K816-E0133` reports it there; what a
+*link group* asks for is not - `--unit` is a name-visibility list, and nothing
+requires it to be the set of objects ld65 is given.  A frontend check over the
+workspace would miss overflows it cannot see and could refuse programs that
+are never linked together.  Moving the check would trade a right answer for a
+guess.
+
+This fixture is the positive half: two units, two claims, one page, and
+one-byte operands on both sides of the boundary.  The row is
+`K816-extension`, because the pool is not in the original's grammar at all.

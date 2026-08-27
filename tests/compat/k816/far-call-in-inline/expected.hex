@@ -1,0 +1,21 @@
+# K816's own linked bytes, compared by tests/compat.rs.
+#
+# 2000  A9 01        LDA #$01        target
+# 2002  6B           RTL             a far section returns long
+# 2003  22 00 20 00  JSL $002000     first: the expansion
+# 2007  1A           INC A
+# 2008  60           RTS
+# 2009  22 00 20 00  JSL $002000     main: the second expansion
+# 200D  1A           INC A
+# 200E  22 00 20 00  JSL $002000     main: the third
+# 2012  1A           INC A
+# 2013  20 03 20     JSR $2003       call first
+# 2016  60           RTS
+#
+# Three expansions, one encoding.  The original generates a trampoline per
+# (from-bank, to-bank) pair and picks the pair once, where the `inline` is
+# declared; there is no pair here to pick.
+
+origin 2000
+2000  A9 01 6B 22 00 20 00 1A 60 22 00 20 00 1A 22 00
+2010  20 00 1A 20 03 20 60

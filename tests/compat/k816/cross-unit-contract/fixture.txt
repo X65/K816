@@ -1,0 +1,34 @@
+row       k816-cross-unit-contract
+config    atarixl.cfg
+compare   bytes
+units     callee.k65 main.k65
+
+**Decision 24's third judgment, measured: no residual link-time guard.**
+`plans/feature-manifest.md` §3 left open whether K816 should add one - contract-
+mangled symbol names, or a `.assert` - on top of the frontend checks, because
+"unresolved externals fall under the documented `Unknown => Preserve` rule".
+
+**That premise is false for K816 as built, and that is the answer.**  There
+are no unresolved externals.  A name no analyzed unit declares is
+`K816-E0101`, not an import: `linkage.rs` says so in as many words - "the
+frontend does not invent an import to make an unresolved name someone else's
+problem".  So every call K816 emits was checked against a declaration it could
+see, and there is no class of call left for a link-time guard to cover.  This
+fixture is the three shapes crossing a boundary and being checked: the
+near/far pairing both ways (`K816-E0138` is what a wrong one gets, and
+`k65/far-call-in-inline` has one), and an entry contract the caller has to
+reach, which is the `REP #$20` before `JSR $2006`.
+
+**What a guard would still catch is a stale object**, and that is a build-
+dependency problem rather than a compiler one.  If `callee.k65` changes its
+contract and `main.o` is not rebuilt, the link joins two objects that never
+agreed.  Mangling the exported name would turn that into an unresolved symbol
+- and would also make every name in the map file, the debugger and the `.dbg`
+database unreadable, and break contract 8's rule that linkage is *derived*
+from the symbol, not encoded into it.  The dependency is already expressible:
+`--unit` names exactly the sources this compilation read, so a build system
+that passes it and does not rebuild on it has an incomplete graph, and no
+amount of symbol mangling makes an incomplete graph correct.
+
+So the frontend stays as it is, which is decision 24's default, and this is
+the fixture that would have changed it.

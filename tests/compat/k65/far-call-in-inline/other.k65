@@ -1,0 +1,7 @@
+// Part two, and the whole point of the fixture: this unit is compiled into
+// bank `extra`, and it expands the same `hop`.
+
+func second {
+  hop
+  return
+}

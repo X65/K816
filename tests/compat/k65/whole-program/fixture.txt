@@ -13,9 +13,25 @@ expect    main.k65 K816-K65-0001
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
 expect    main.k65 K816-E0101
+expect    main.k65 K816-E0156
+expect    main.k65 K816-E0156
+expect    main.k65 K816-E0156
 
-Since G6: eleven diagnostics, down from thirteen, and still **no
-`K816-E0001`** - which was G2's done criterion and stays true.
+Since G7: fourteen diagnostics, and still **no `K816-E0001`** - which was G2's
+done criterion and stays true.
+
+The three `K816-E0156` are new and they are the honest half of a gap G7 closed.
+`main.k65` calls `wsync`, `blank` and `unblank`, which `defs.k65` declares, and
+an `inline` is the one section kind that does not link - so G7 copies the body
+into the unit that expands it.  All three bodies name TIA registers nothing
+declares, so `defs.k65` does not compile them, and `main.k65` says so once per
+section rather than repeating that unit's `K816-E0101`s.  Before G7 the three
+calls passed analysis in silence and would have reached lowering with no body
+at all; the code that answered that was `K816-E0900`.
+
+Same cause as the `K816-E0101` below, then, and the same non-gap: an
+environment the original's system script provides and K816 has no equivalent
+of.  Give `defs.k65` a `var WSYNC = 0x02` and its neighbours and all six go.
 
 There is no `K816-E0201` left anywhere in this file, and there is none left in
 the compiler: G6 retired the code with its last producer.  The two that went

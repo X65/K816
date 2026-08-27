@@ -1,0 +1,39 @@
+row       k816-nocross-shape
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Decision 24's second judgment, measured: the mapping stands.**  Sub-plan C
+mapped `nocross` onto a compile-time size check plus a link-time assertion and
+declined to recreate the legacy linker's automatic pre-padding
+(`plans/feature-manifest.md` §3 left the final shape "confirmed in G against
+the corpus").  This is that confirmation.
+
+**What the original's guard actually is.**  Not a check at all: each byte of a
+guarded run marks the section start offsets that would put it at $xx00 as
+forbidden (`sqlinker.cpp:356`), and the linker then places the section at an
+offset none of them forbid - padding before it as needed.  A run larger than a
+page forbids all 256 offsets and cannot be placed.  So the guarantee is
+*placement*, and it belongs to a linker K816 does not have.
+
+**What the corpus asks of it.**  Every `nocross` in every K65 source we hold -
+`examples/k65/atari-xl/dli-example/main.k65` and the A2600 tutorial - is the
+section-level flag, written as the first entry of a data block, guarding the
+whole section.  Nothing uses a mid-section guard, and nothing depends on the
+pre-padding: a section that is placed by `align` is already where it needs to
+be.  The two compilers agree on every shape the corpus contains.
+
+**So the split stays where C put it.**  The size check is the frontend's,
+because a run larger than a page can never fit however it is placed
+(`golden/nocross-oversized.k816`, `K816-E0130`).  The placement half is a ca65
+assertion ld65 evaluates, and this fixture is it holding at the tightest
+position: the run ends on the last byte of a page, and one more byte of filler
+fails the link with "nocross run crosses a page boundary".
+
+**One thing did change, and it is smaller than it looks.**  The assertion was
+emitted with ca65's `error` action, which asks the *assembler* to try as well;
+ca65 writes every assertion to the object file either way, so the guard has
+always fired at link time, but a source where ca65 cannot fold the expression
+collects a "Cannot evaluate this source code assertion" warning about a check
+that was never the assembler's.  It is `lderror` now, which says whose the
+check is.

@@ -1,0 +1,16 @@
+# K816's own linked bytes, compared by tests/compat.rs.
+#
+# 2000  A9 0A     LDA #$0A       main's own statement
+# 2002  38        SEC            \  the borrowed `sub`, expanded through the
+# 2003  E9 01     SBC #$01       /  borrowed `twice`
+# 2005  38        SEC            \  and again
+# 2006  E9 01     SBC #$01       /
+# 2008  E6 40     INC $40        the borrowed body's read of `counter`
+# 200A  60        RTS
+#
+# `E9 01`, not `E9 01 00`: the body is sized by the `@a8` of the unit that
+# *wrote* it, not the `@a16` of the unit that expands it.  `E6 40` is an
+# import this unit derived because the operation landed here.
+
+origin 2000
+2000  A9 0A 38 E9 01 38 E9 01 E6 40 60

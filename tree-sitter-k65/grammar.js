@@ -837,10 +837,21 @@ export default grammar({
     // label is as ordinary a target as a global one — the documentation's
     // own local-label example is `!= goto .loop` — so both name forms are
     // listed here rather than only the unit-level one.
+    //
+    // `far goto NAME` is the original's own order (`Instr -> far goto Arg`,
+    // `compiler.inc:156`) and means the same jump, so it is an alias rather
+    // than a second construct. Without the arm the two words reach
+    // `call_statement`'s keyword-less `far NAME` reading — `goto` lexes as an
+    // identifier where a rule asks for one — and a valid K65 line becomes a
+    // call to an undeclared `goto` followed by a near call to the target.
+    // That is the wrong meaning rather than a refusal, which is what
+    // decision 0 forbids; the alias costs one `choice`.
     goto_statement: $ =>
       seq(
-        'goto',
-        optional(field('far', alias('far', $.far_marker))),
+        choice(
+          seq('goto', optional(field('far', alias('far', $.far_marker)))),
+          seq(field('far', alias('far', $.far_marker)), 'goto'),
+        ),
         choice(
           field('target', $.identifier),
           field('target', $.local_identifier),

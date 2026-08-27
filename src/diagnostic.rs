@@ -303,6 +303,18 @@ impl DiagnosticCode {
     /// dimension check — and the more useful of the two, since naming a
     /// number as a section without dimensions helps nobody.
     pub const SECTION_NO_DIMENSIONS: Self = Self("K816-E0155");
+    /// An `inline` borrowed from another unit does not compile there, so it
+    /// cannot be expanded here either.
+    ///
+    /// The body's own complaints are the defining unit's to make — it is in
+    /// this workspace and it makes them — and repeating them once per unit
+    /// that expands the section would multiply one mistake by the call graph,
+    /// which is sub-plan E's decision 12 against the unit count. What is left
+    /// here is one line saying where to look, and it is an *error* because
+    /// without it this unit would emit an expansion of a body nothing
+    /// checked.
+    pub const BORROWED_INLINE_UNUSABLE: Self = Self("K816-E0156");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a

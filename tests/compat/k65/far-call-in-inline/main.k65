@@ -1,0 +1,12 @@
+// Part three, in bank `core` again.  Both far calls here are well formed, and
+// the one to `second` is the control: a far call written *outside* an inline
+// gets a trampoline named for the bank it is written in, which is right.
+//
+// Every reference points backwards.  A far call to a section the original has
+// not read yet aborts it without a diagnostic, inline or not, which is a
+// separate defect and not this fixture's.
+
+main {
+  hop
+  far second
+}

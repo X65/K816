@@ -1,0 +1,39 @@
+row       k65-local-labels-across-far
+config    a2600.cfg
+compare   bytes
+units     input.k65
+
+**The second of the two `doc/k65/known-bugs.md` items that touch K816, and it
+does not reproduce.**  The sentence is "Local labels can't be accessed across
+certain language constructs (like far calls).  Local labels before and after
+such construct appear to be in different local namespaces."  At the revision
+`oracle.lock` pins, both directions resolve - `oracle.lst`:
+
+    main
+    __local0_top
+        DEX
+        JMP     __farjmp_core___local0_rest
+    __local0_rest
+        BNE     __local0_top
+
+One namespace, one `local_index`, and the far jump between them changes
+nothing.  The same holds for a far *call*, measured the same way.
+
+**Where the original's local namespace really does split is a section
+boundary**, and nowhere else: `Ident -> . IdentText` mangles the name to
+`__local<N>_`, and `N` is incremented by `makesection` (`compiler_src.cpp:818`)
+- that is, at the end of every section, not at any construct inside one.  So
+the bug as written cannot happen for a construct that does not end a section,
+and neither `far` form does.  It is recorded as not reproducible rather than
+as fixed: nothing in K816 closed it, and a source that once tripped it would
+have to say which construct did.
+
+**K816's answer is the same shape by a different route.**  A `.name` is a ca65
+cheap-local scoped to the enclosing function, so `@top` and `@rest` are one
+scope whatever stands between them, and `far goto` is a `jml` rather than a
+trampoline into a generated stub section.  `BNE $F000` reaches back across the
+long jump; the bytes are `expected.hex`.
+
+The `jml` to the very next instruction is not folded away.  A jump to the
+label after it is pass 9 of the optimizer, which is G8's, and this fixture
+would notice if that changed.

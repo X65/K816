@@ -48,6 +48,9 @@
 #                             #          AtariXL16Cart
 #     lowaddr  0x2000         # -lowAddr, AtariXL only
 #     bank     main           # the bank every unit is compiled into
+#     bankof   other.k65 extra # ... and the exception, for one unit
+#                              #     (the original's banks come from the
+#                              #      project file, not from the source)
 #     units    defs.k65 input.k65
 #     expect   failure        # optional: the original is *supposed* to reject
 #                             #           this source, and the refusal is the
@@ -264,7 +267,14 @@ for dir in "$@"; do
         echo "-system $system"
         [ -n "$lowaddr" ] && echo "-lowAddr $lowaddr"
         echo
-        for unit in $units; do echo "$unit   $bank"; done
+        for unit in $units; do
+            # `bankof UNIT NAME` overrides the default for one unit, which is
+            # what a fixture about bank switching needs: the original assigns
+            # a bank per *unit* in the project file, and nothing in the source
+            # says which.
+            unit_bank=$(awk -v u="$unit" '$1=="bankof" && $2==u {print $3}' "$conf")
+            echo "$unit   ${unit_bank:-$bank}"
+        done
         echo
         echo "-o $out/$name.bin"
         echo

@@ -1,0 +1,34 @@
+// K816's answer to the first `doc/k65/known-bugs.md` item, which
+// `k65/far-call-in-inline` measures in the original.
+//
+// There the far call inside an `inline` is a bank trampoline named for the
+// bank the *declaration* sits in, generated once and copied into every
+// expansion - so an expansion in another bank returns with the wrong bank
+// selected.
+//
+// Here there is no trampoline and no bank.  `far` is the 65816's 24-bit
+// addressing, `jsl` reaches `target` from anywhere, and `rtl` returns.  Two
+// expansions, in two functions, so a per-site decision would show as
+// different bytes.
+
+@a8
+@i8
+
+far func target {
+  a = 1
+}
+
+inline hop {
+  call far target
+  a ++
+}
+
+func first {
+  hop
+}
+
+main {
+  hop
+  hop
+  call first
+}

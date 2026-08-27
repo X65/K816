@@ -1,0 +1,12 @@
+# K816's own linked bytes for this fixture, compared by tests/compat.rs.
+#
+# CA           DEX
+# 5C 05 F0 00  JML $00F005      <- `far goto .rest`, a 24-bit jump
+# D0 F9        BNE $F000        <- `z-? goto .top`, back across it
+# 60           RTS
+#
+# Both local labels resolve from the other side of the long jump, which is
+# what the fixture is evidence for.
+
+origin F000
+F000  CA 5C 05 F0 00 D0 F9 60

@@ -1,0 +1,21 @@
+// Oracle question: does a local label reach across a far construct?
+//
+// `doc/k65/known-bugs.md`: "Local labels can't be accessed across certain
+// language constructs (like far calls).  Local labels before and after such
+// construct appear to be in different local namespaces."
+//
+// Both directions are here.  `.rest` is named before it is defined and the
+// far jump is what stands between them; `.top` is named after the far jump
+// and defined before it.  A split namespace would make one of the two
+// unresolvable.
+//
+// Nothing here has an immediate, so the source needs no width annotation and
+// stays K65 rather than K816.
+
+main {
+.top:
+  x--
+  far goto .rest
+.rest:
+  z-? goto .top
+}

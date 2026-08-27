@@ -3181,3 +3181,155 @@ fn a_section_can_be_read_from_another_unit() {
         result.diagnostics[0].title
     );
 }
+
+/// G7, decision 24: an `inline` another unit declares is expanded here.
+///
+/// An `inline` is the one section kind that does not link — it has no address
+/// for ld65 to resolve — so what crosses the boundary is the *body*, copied
+/// into the program of the unit that expands it before a symbol is declared.
+/// Both predecessors do this: the original compiles a project's units into one
+/// state, and the legacy K816 merged the declaration into the using unit's
+/// model. K816 accepted the use and then had no body to expand, which reached
+/// `K816-E0900` from ordinary source.
+///
+/// What the copy has to carry with it, and each half is a separate way to get
+/// this wrong: the aliases the body declares, bound per use site; the
+/// transitive closure, because a borrowed body may expand a third unit's
+/// section; and the names the body reads, which become this unit's imports.
+#[test]
+fn an_inline_crosses_a_unit_boundary_with_its_body() {
+    // The defining unit's file-top widths, and the borrowing unit's are the
+    // other ones on purpose: an `inline` body is classified once, against the
+    // section's own contract, and in its own unit that contract includes the
+    // `@a8` above it. Take the borrowing unit's instead and `#$01` becomes
+    // `#$0001`.
+    let mut map = SourceMap::new();
+    map.add_file(
+        "bump-defs.k816",
+        "@a8\n@i8\nvar counter = $40\n\
+         inline sub (a, #b) -> a {\n    c+\n    a - #b\n}\n\
+         inline twice (a) -> a {\n    sub a, #1 -> a\n    sub a, #1 -> a\n    counter ++\n}\n",
+    );
+    let user = map.add_file(
+        "bump-user.k816",
+        "@a16\n@i16\nfunc main @a8 @i8 {\n    a = 10\n    twice a -> a\n}\n",
+    );
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![], "a foreign inline expands");
+    let assembly = result.assembly.expect("compiles");
+    // Two expansions of `sub`, reached only through `twice`: the closure is
+    // transitive or this is one `sbc`.
+    assert_eq!(
+        assembly.matches("sbc     #$01").count(),
+        2,
+        "the alias is bound at each expansion:\n{assembly}"
+    );
+    // The body's own reads are this unit's imports now, because this is where
+    // its operations landed.
+    assert!(
+        assembly.contains(".importzp counter"),
+        "a borrowed body's names are imported by the unit that expands it:\n{assembly}"
+    );
+    // Nothing is called: an `inline` has no address, and none was invented.
+    assert!(
+        !assembly.contains("jsr") && !assembly.contains("import twice"),
+        "the section is expanded, not linked:\n{assembly}"
+    );
+    // The debug line names the file the operation was written in, which is
+    // the other unit. A `.dbg line` naming this unit and counting lines in
+    // another would point ld65's database at whatever is on that line here.
+    assert!(
+        assembly.contains(".dbg    file, \"bump-defs.k816\", 0, 0")
+            && assembly.contains(".dbg    line, \"bump-defs.k816\""),
+        "a borrowed operation keeps its own source:\n{assembly}"
+    );
+}
+
+/// A borrowed body's own mistakes are its own unit's to report.
+///
+/// Sub-plan E's decision 12 keeps an `inline`'s analysis at its declaration so
+/// that the diagnostic count does not multiply with the *call* count. Copying
+/// the body into every unit that expands it reopens exactly that, against the
+/// *unit* count — so a complaint the defining unit already makes is dropped
+/// here, and one line takes its place saying where to look.
+///
+/// The line has to be an error: without it this unit would emit an expansion
+/// of a body nothing checked. And the filter has to be per section, and by
+/// what the owner actually reports — a name that resolves in the defining unit
+/// and not here is the case it must not swallow.
+#[test]
+fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
+    let mut map = SourceMap::new();
+    map.add_file(
+        "twin-defs.k816",
+        "inline good @a8 @i8 {\n    a ++\n}\n\
+         inline bad @a8 @i8 {\n    a = MISSING_NAME\n}\n",
+    );
+    let user = map.add_file(
+        "twin-user.k816",
+        "func main @a8 @i8 {\n    good\n    bad\n}\n",
+    );
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    // One line, not the body's own `K816-E0101`, and not one for `good`.
+    assert_eq!(codes, ["K816-E0156"]);
+    assert!(
+        result.diagnostics[0].title.contains("`bad`")
+            && result.diagnostics[0]
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("twin-defs.k816")),
+        "the line names the section and the unit to read: {:?}",
+        result.diagnostics[0]
+    );
+
+    // A layout does not cross a unit boundary, so `slot.hi` resolves where the
+    // body is written and not where it is expanded. The owner makes no such
+    // complaint, so this one survives with its own message rather than being
+    // collapsed into the line above.
+    let mut map = SourceMap::new();
+    map.add_file(
+        "layout-defs.k816",
+        "var slot[ .lo:byte .hi:byte ]\ninline peek @a8 @i8 {\n    a = slot.hi\n}\n",
+    );
+    let user = map.add_file("layout-user.k816", "func main @a8 @i8 {\n    peek\n}\n");
+    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert_eq!(codes, ["K816-E0115"], "what borrowing revealed stays");
+}
+
+/// G7, and the original's own spelling: `far goto NAME` is `goto far NAME`.
+///
+/// `Instr -> far goto Arg` (`compiler.inc:156`). Without the alias the two
+/// words reach the keyword-less `far NAME` call reading — `goto` lexes as an
+/// identifier where a rule asks for one — and a valid K65 line becomes a call
+/// to an undeclared `goto` followed by a near call to the target. Decision 0
+/// forbids exactly that: a K65 form K816 does not accept is refused by name,
+/// never given a different meaning.
+#[test]
+fn a_far_goto_takes_the_k65_word_order() {
+    for source in [
+        "far func banked @a8 @i8 {\n    a = 1\n}\nfunc jumps @a8 @i8 {\n    far goto banked\n}\n",
+        "far func banked @a8 @i8 {\n    a = 1\n}\nfunc jumps @a8 @i8 {\n    goto far banked\n}\n",
+    ] {
+        let mut map = SourceMap::new();
+        let file = map.add_file("far-goto.k816", source);
+        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        assert_eq!(result.diagnostics, vec![], "{source}");
+        assert!(
+            result
+                .assembly
+                .expect("compiles")
+                .contains("jml     f:banked"),
+            "both spellings are the same long jump: {source}"
+        );
+    }
+}

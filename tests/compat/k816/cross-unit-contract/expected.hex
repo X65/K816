@@ -1,0 +1,22 @@
+# K816's own linked bytes, compared by tests/compat.rs.
+#
+# 2000  A9 01        LDA #$01      far_one
+# 2002  6B           RTL           a far section returns long
+# 2003  A9 02        LDA #$02      near_one
+# 2005  60           RTS
+# 2006  A9 34 12     LDA #$1234    wide, assembled @a16
+# 2009  60           RTS
+# 200A  22 00 20 00  JSL $002000   call far far_one   - long call, long return
+# 200E  20 03 20     JSR $2003     call near_one      - short call, short return
+# 2011  C2 20        REP #$20      the bridge to wide's entry contract
+# 2013  20 06 20     JSR $2006     call wide
+# 2016  60           RTS
+#
+# Lowering emits `rep #$20` *and* `rep #$10` for that bridge; the optimizer
+# drops the index half because nothing in `wide` observes the index width.
+# That is F's business (`optimizer-dead-register-write`), not this row's, and
+# it is here so a change to it is noticed.
+
+origin 2000
+2000  A9 01 6B A9 02 60 A9 34 12 60 22 00 20 00 20 03
+2010  20 C2 20 20 06 20 60

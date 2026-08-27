@@ -208,6 +208,23 @@ pub fn emit(
     out.push_str(".setcpu \"65816\"\n");
     out.push_str(".debuginfo on\n");
     out.push_str(&format!(".dbg    file, \"{}\", 0, 0\n", source.name()));
+    // Every *other* source this object's operations came from, which is an
+    // `inline` another unit defines and this one expands. Its operations keep
+    // the spans of the file that wrote them, and a `.dbg line` naming a file
+    // ca65 was never told about is a debug entry ld65 cannot place.
+    let mut borrowed: Vec<FileId> = program
+        .ops()
+        .map(|op| op.span.file)
+        .filter(|&id| id != file)
+        .collect();
+    borrowed.sort_unstable();
+    borrowed.dedup();
+    for id in borrowed {
+        out.push_str(&format!(
+            ".dbg    file, \"{}\", 0, 0\n",
+            map.file(id).name()
+        ));
+    }
 
     // A pinned variable and an exported constant are both equates: no bytes,
     // just a name ca65 and ld65 can resolve.
@@ -279,11 +296,7 @@ pub fn emit(
     ));
 
     let names = Names::new(&model.symbols, program);
-    let unit = Unit {
-        map,
-        file_name: source.name(),
-        names: &names,
-    };
+    let unit = Unit { map, names: &names };
     for item in &program.items {
         match item {
             KProgramItem::Op(op) => emit_unit_op(&unit, op, &mut out),
@@ -342,8 +355,22 @@ fn emit_ops(unit: &Unit<'_>, ops: &[KOp], out: &mut String) {
 /// chosen for each symbol.
 struct Unit<'a> {
     map: &'a SourceMap,
-    file_name: &'a str,
     names: &'a Names<'a>,
+}
+
+/// The `.dbg line` an operation carries, naming the file its span is in.
+///
+/// The span's own file rather than the unit's: an `inline` another unit
+/// defines is expanded into this object, and its operations keep the spans of
+/// the source that wrote them. A debug line that named this unit and counted
+/// lines in another would point ld65's database — and a debugger — at
+/// whatever happens to be on that line here.
+fn dbg_line(map: &SourceMap, span: crate::source::Span) -> String {
+    let line = map.line_col(span.file, span.start).line + 1;
+    format!(
+        "        .dbg    line, \"{}\", {line}\n",
+        map.file(span.file).name()
+    )
 }
 
 /// Emits a non-instruction operation: a label or one of the directives.
@@ -352,7 +379,7 @@ struct Unit<'a> {
 /// data blocks, alignment — belongs to tasks C7 and C8; this is only their
 /// ca65 spelling, so both tasks extend the callers rather than the printer.
 fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
-    let (map, file_name, names) = (unit.map, unit.file_name, unit.names);
+    let (map, names) = (unit.map, unit.names);
     match &op.kind {
         KOpKind::Instruction(_) => unreachable!("instructions are emitted with their width state"),
         // A mode assumption is a claim about the assembler's tracked widths,
@@ -393,11 +420,20 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
         // *for* rides on the branch that names it, so the annotation here
         // says only that something lands.
         KOpKind::Anchor(_) => out.push_str(&annotated(":", "k816: a branch lands here")),
-        // ld65 evaluates this after placement, which is the only moment
-        // the answer exists.
+        // `lderror`, not `error`: ld65 evaluates this after placement, which
+        // is the only moment the answer exists.
+        //
+        // Both actions reach ld65 — `WriteAssertions` writes every assertion
+        // to the object file — so this is not a fix for a guard that did not
+        // fire, and decision 24's second judgment measured that it always
+        // did. What `error` adds is an *assembly*-time attempt as well, and
+        // when ca65 cannot fold the expression it says so
+        // ("Cannot evaluate this source code assertion") about a check that
+        // was never the assembler's. `lderror` states whose the check is
+        // (`postmortem.md` §G.9.2).
         KOpKind::NocrossGuard { length } => out.push_str(&annotated(
             &format!(
-                "        .assert  .hibyte(* - 1) = .hibyte(* - {length}), error, \
+                "        .assert  .hibyte(* - 1) = .hibyte(* - {length}), lderror, \
                  \"nocross run crosses a page boundary\""
             ),
             &annotation(map, op),
@@ -409,8 +445,7 @@ fn emit_unit_op(unit: &Unit<'_>, op: &KOp, out: &mut String) {
         KOpKind::Data(data) => {
             // Data carries the same debug annotation as an instruction, so
             // ld65's database records it as K816-owned too.
-            let line = map.line_col(op.span.file, op.span.start).line + 1;
-            out.push_str(&format!("        .dbg    line, \"{file_name}\", {line}\n"));
+            out.push_str(&dbg_line(map, op.span));
             let list = |values: &[KExpr]| {
                 values
                     .iter()
@@ -661,10 +696,9 @@ fn emit_instruction(
     widths: &mut WidthState,
     out: &mut String,
 ) {
-    let (map, file_name, names) = (unit.map, unit.file_name, unit.names);
+    let (map, names) = (unit.map, unit.names);
     // Debug annotation: ld65 records this op as owned by the K816 source.
-    let line = map.line_col(op.span.file, op.span.start).line + 1;
-    out.push_str(&format!("        .dbg    line, \"{file_name}\", {line}\n"));
+    out.push_str(&dbg_line(map, op.span));
 
     let operand = instruction
         .operand

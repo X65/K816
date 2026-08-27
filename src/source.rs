@@ -69,6 +69,13 @@ impl Span {
         self.start == self.end
     }
 
+    /// Whether `offset` falls inside this span. The file is the caller's to
+    /// check: two spans of different files never overlap however their
+    /// offsets compare.
+    pub fn contains(self, offset: u32) -> bool {
+        (self.start..self.end).contains(&offset)
+    }
+
     /// The smallest span covering both `self` and `other` (same file).
     pub fn join(self, other: Span) -> Span {
         debug_assert_eq!(self.file, other.file);

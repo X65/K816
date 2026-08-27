@@ -672,6 +672,15 @@ impl KProgram {
         self.items.push(KProgramItem::Function(function));
     }
 
+    /// Every operation in the program, in emission order.
+    pub fn ops(&self) -> impl Iterator<Item = &KOp> {
+        self.items.iter().flat_map(|item| match item {
+            KProgramItem::Function(function) => function.ops.as_slice().iter(),
+            KProgramItem::Op(op) => std::slice::from_ref(op).iter(),
+            KProgramItem::Data(ops) => ops.as_slice().iter(),
+        })
+    }
+
     /// Adds one top-level data block's operations, as a run.
     ///
     /// A run rather than one operation at a time because a `code { }`

@@ -1,0 +1,13 @@
+// Part two, and the entry.  `scratch_a` is the other unit's and reaches this
+// one as an `.importzp`, so the direct-page encodings are chosen against the
+// address size rather than against a guess.
+
+@a8
+@i8
+
+var dp scratch_b[2]
+
+main {
+  a = scratch_a
+  scratch_b = a
+}

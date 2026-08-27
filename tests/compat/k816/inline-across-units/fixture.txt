@@ -1,0 +1,46 @@
+row       k816-inline-across-units
+config    atarixl.cfg
+compare   bytes
+units     defs.k65 main.k65
+
+**An `inline` another unit declares is expanded here, and G7 is where that
+started working.**  Every other section kind crosses a unit boundary as a
+*name*: ld65 resolves `jsr helper` because `helper` has an address.  An
+`inline` has none - nothing is emitted where it is declared and nothing is
+exported - so a use site in another unit has no address to link and no body to
+expand.  K816 accepted the use and then had neither, which reached
+`K816-E0900` from ordinary source.
+
+Both predecessors expand it: the original compiles a project's units into one
+state, so a section is a section wherever it was written, and the legacy K816
+merged the declaration into the using unit's model before lowering.  Decision
+0 asks for compatibility where it is cheap, and this one is not free but it is
+bounded: the body is copied into the borrowing unit's program after the
+preprocessor and before a symbol is declared, so every stage below that line
+sees an ordinary local `inline`.
+
+**What the copy has to carry, and each is a way to get it wrong.**
+
+  - *The transitive closure.*  `main.k65` names only `twice`; `twice` expands
+    `sub`.  Borrow one and not the other and the bytes hold one `SBC`.
+  - *The defining unit's widths.*  A body is classified once against its own
+    section's contract, and in `defs.k65` that contract includes the file-top
+    `@a8`.  `main.k65` says `@a16` on purpose: take the borrowing unit's
+    defaults and `E9 01` becomes `E9 01 00`.
+  - *The names the body reads.*  `counter` is `defs.k65`'s, and the `INC $40`
+    is in *this* object, so this unit derives the import.  The linked bytes
+    are what prove it resolved.
+  - *The aliases.*  `#b` is bound per expansion, as it is for a local
+    `inline`; both `SBC`s take the argument the use site passed.
+
+**And what the copy must not carry: the body's own complaints.**  Sub-plan E's
+decision 12 keeps an `inline`'s analysis at its declaration so the diagnostic
+count does not multiply with the *call* count.  Copying the body into every
+borrowing unit reopens exactly that against the *unit* count, so a complaint
+the defining unit already makes is dropped here and one `K816-E0156` takes its
+place, naming the section and the unit to go and read.  It has to be an error:
+without it this unit would emit an expansion of a body nothing checked.  The
+filter is per section and by what the owner actually reports - a name that
+resolves in the defining unit and not here, which a field layout is, survives
+with its own message.  `k65/whole-program` is where the summary line is
+exercised, and `tests/compile.rs` holds both halves.

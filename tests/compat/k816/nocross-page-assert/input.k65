@@ -1,0 +1,32 @@
+// Decision 24's second judgment: the final shape of `nocross`.
+//
+// The original's guard is a *placement* constraint on its linker.  Each byte
+// of a guarded run forbids the section start offsets that would put it at
+// $xx00 (`sqlinker.cpp:356`), and the linker then pads before the section
+// until it finds an offset none of them forbid.  K816 does not have a linker,
+// so the guarantee is split: the size check is the frontend's - a run larger
+// than a page can never fit, `golden/nocross-oversized.k816` - and the
+// placement half is a ca65 assertion comparing the page byte of the run's
+// first and last address, which ld65 evaluates after placement.
+//
+// This fixture is that assertion being evaluated and satisfied at the
+// tightest position there is.  248 bytes of filler after a page alignment put
+// the guarded run at $xxF8..$xxFF: it ends on the last byte of the page, so
+// an assertion off by one at the top fails the link.  The link is the test.
+
+data table {
+  align 256
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+  nocross { 1 2 3 4 5 6 7 8 }
+}
+
+main {
+  a = table
+}

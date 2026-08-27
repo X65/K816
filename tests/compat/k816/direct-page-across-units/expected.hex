@@ -1,0 +1,13 @@
+# K816's own linked bytes, compared by tests/compat.rs.
+#
+# 2000  A5 80  LDA $80   scratch_a, allocated in pool_a.k65
+# 2002  85 83  STA $83   scratch_b, allocated in pool_b.k65
+# 2004  60     RTS
+#
+# One-byte operands both times: the symbols reach ca65 with a zeropage address
+# size (`.exportzp` / `.importzp`), and ld65 gave the two units' claims
+# adjacent offsets in the one `ZEROPAGE` segment.  `atarixl.cfg` starts `ZP`
+# at $80, which is why the first slot is $80 and not $00.
+
+origin 2000
+2000  A5 80 85 83 60

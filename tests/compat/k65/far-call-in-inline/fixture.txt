@@ -1,0 +1,57 @@
+row       k65-far-call-in-inline
+config    a2600.cfg
+compare   diagnostics
+units     defs.k65 other.k65 main.k65
+expect    defs.k65 K816-E0104
+expect    defs.k65 K816-E0138
+expect    other.k65 K816-E0156
+expect    main.k65 K816-E0138
+expect    main.k65 K816-E0156
+
+**The first of the two `doc/k65/known-bugs.md` items that touch K816, and the
+measurement is what the sentence looks like.**  `oracle.lst` holds it:
+
+    ; section second                 <- bank `extra`
+    second
+        ; inlined hop
+    __I1hop
+        JSR     __far_core_core__helper
+
+`second` runs in bank `extra` and its expansion of `hop` jumps to a trampoline
+named `core` -> `core`, whose epilogue is `BIT __banksel_core`.  So `second`
+returns to its caller with the *wrong* bank selected.  The control is four
+lines further down: `far second`, written directly in `main`, gets
+`__far_core_extra__second` with a `BIT __banksel_core` epilogue - correct,
+because there the calling section really is in `core`.
+
+**The mechanism is one line of the system script.**  `link_invoke_far_call`
+(`workdir/system_a2600.nut`) names its stub from `sec_get_bank(as_code, 0)`,
+and `as_code` is the section the call is *written* in.  For an `inline` that
+is the inline itself, decided once when its body is read, and every expansion
+copies the same `JSR`.  A2600 is the only shipped system that implements the
+hook at all; the others inherit `system.nut`'s "System does not support far
+calls".
+
+**In K816 the construct the bug lives in does not exist.**  There are no banks
+- `bank` is removed, decision 10 - and `far` is the 65816's 24-bit addressing,
+so there is no trampoline to name and nothing about a call site's bank to get
+wrong.  `k816/far-call-in-inline` is the positive case: the same shape with
+`far func`, expanded twice, `jsl` both times.
+
+**What K816 says about *this* source, and why each line is right.**  The
+original's `far` is a bank switch applied to an ordinary `func`; K816's is a
+`jsl`, which only pairs with a section that returns `rtl`.  So `far helper`
+where `helper` is a near `func` is `K816-E0138` - the near/far pairing check
+sub-plan E landed - in `defs.k65` and again in `main.k65` for `far second`.
+`K816-E0104` is the uncoloured `a = 1`: this source names no widths, and the
+A2600 environment that would supply them is the original's system script's.
+
+The two `K816-E0156` are G7's own machinery answering: `hop` is an `inline`,
+which does not link, so the body is copied into each unit that expands it -
+and `defs.k65` does not compile it, so `other.k65` and `main.k65` say that
+once each instead of repeating `defs.k65`'s complaints.
+
+**Every reference in the three units points backwards, deliberately.**  A far
+call naming a section the original has not read yet aborts the compiler with
+no diagnostic - inline or not, one bank or two, measured - which is a
+different defect from this one and does not belong in this golden.

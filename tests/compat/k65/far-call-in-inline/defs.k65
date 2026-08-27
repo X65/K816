@@ -1,0 +1,15 @@
+// A far call written inside an `inline`, and a second unit in a second bank
+// that expands the same body.  Part one: the section and the inline.
+//
+// `doc/k65/known-bugs.md`: "Far calls placed in inline blocks do not work
+// correctly if the inline is used in different bank that it was defined."
+// `oracle.lst` is what that sentence looks like.
+
+func helper {
+  a = 1
+  return
+}
+
+inline hop {
+  far helper
+}

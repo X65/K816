@@ -1,0 +1,21 @@
+// Decision 24's third judgment: is a residual *link-time* contract guard
+// worth adding?  Part one, the definitions this unit exports.
+//
+// `far_one` returns long and `near_one` returns short, and the two are the
+// pairing a caller can get wrong.  `wide` states widths a caller has to reach
+// before it may enter.
+
+@a8
+@i8
+
+far func far_one {
+  a = 1
+}
+
+func near_one {
+  a = 2
+}
+
+func wide @a16 @i16 {
+  a = 0x1234
+}

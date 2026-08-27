@@ -1,0 +1,28 @@
+row       k816-far-in-inline
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A far call inside an `inline` is the same call at every expansion.**
+`k65/far-call-in-inline` measures what the original does with the shape:
+`link_invoke_far_call` generates a `__far_<from>_<to>__<name>` trampoline and
+takes `<from>` from the section the call is *written* in, which for an
+`inline` is the inline itself.  The stub is decided once, when the body is
+read, and copied into every expansion - so an expansion in another bank
+returns with the wrong bank selected.  That is the
+`doc/k65/known-bugs.md` item, and `oracle.lst` beside that fixture is it.
+
+**The construct the bug lives in does not exist here.**  `bank` is removed
+(decision 10) and `far` is the 65816's 24-bit addressing, so a far call is
+`jsl` to a 24-bit address and a far section returns `rtl`.  There is no
+trampoline to name, no "from" bank to get wrong, and nothing about the
+expansion site that could change the encoding: `expected.hex` shows the same
+`JSL $002000` three times, from two different functions.
+
+**What is not free, and is not a defect.**  An un-annotated `inline` knows
+nothing about its use site, so a call inside it bridges to the callee's entry
+contract defensively; annotating the section - or, as here, the module -
+removes the bridge, because the body is classified once against its own
+contract (`doc/syntax-reference.md`, "Why aliases are inline-only").  There is
+no `sep`/`rep` in these bytes for that reason, and one appearing would mean
+the contract stopped reaching the expansion.

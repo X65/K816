@@ -1,0 +1,11 @@
+// Decision 24's first judgment: is the direct-page pool a linker resource
+// rather than a frontend one?  Part one.
+//
+// Two units, each asking the pool for part of a page.  Neither can see the
+// other's claim - K816 compiles one unit at a time - so what makes the two
+// fit together is ld65's `ZEROPAGE` segment, which the configuration sizes.
+
+@a8
+@i8
+
+var dp scratch_a[3]

@@ -1,0 +1,12 @@
+// Part two: the unit that expands them.  `twice` is borrowed, and it expands
+// `sub`, which is borrowed with it - the closure is transitive or this is one
+// `sbc`.  `counter` is read by the borrowed body and imported by this unit,
+// because this is where the operations landed.
+
+@a16
+@i16
+
+main @a8 @i8 {
+  a = 10
+  twice a -> a
+}

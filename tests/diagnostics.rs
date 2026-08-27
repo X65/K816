@@ -517,6 +517,12 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
         "K816-E0130",
         "tests/compile.rs: a_nocross_run_blames_the_split_that_grew_it",
     ),
+    // Two units, so it cannot be a one-source `Case`: the code exists to say
+    // that an `inline` borrowed from another unit does not compile there.
+    (
+        "K816-E0156",
+        "tests/compile.rs: a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it",
+    ),
     (
         "K816-K65-0001",
         "tests/parser.rs: a_nested_reserved_construct_reports_its_own_k65_code",

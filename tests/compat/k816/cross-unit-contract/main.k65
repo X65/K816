@@ -1,0 +1,12 @@
+// Part two: every cross-unit call, spelled correctly.  What the fixture is
+// evidence for is that each of them was *checked* against the declaration in
+// the other unit before these bytes existed.
+
+@a8
+@i8
+
+main {
+  call far far_one
+  call near_one
+  call wide
+}

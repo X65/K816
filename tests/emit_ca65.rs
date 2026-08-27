@@ -406,11 +406,18 @@ fn nocross_emits_a_link_time_page_assertion() {
     assert_eq!(
         emitted.last().map(String::as_str),
         Some(
-            "        .assert  .hibyte(* - 1) = .hibyte(* - 4), error, \
+            "        .assert  .hibyte(* - 1) = .hibyte(* - 4), lderror, \
              \"nocross run crosses a page boundary\""
         ),
         "the guard follows the run it guards: {emitted:?}"
     );
+    // `lderror`, not `error`: where the run lands is decided after ca65 has
+    // finished, so the check is ld65's and the action says so. Both actions
+    // reach ld65 — the guard was never inert — but `error` also asks the
+    // assembler to try, and a source it cannot fold collects a "Cannot
+    // evaluate this source code assertion" warning about someone else's
+    // check. `k816/nocross-page-assert` links a run that ends on the last
+    // byte of a page, and one byte more fails ld65.
 }
 
 /// ca65 cannot pin a relocatable block to an address, so the request becomes

@@ -1,0 +1,28 @@
+# K816's own linked bytes, compared by tests/compat.rs.
+#
+# 248 bytes of filler after `align 256`, then the eight guarded bytes: the run
+# is $20F8..$20FF and ends on the last byte of the page.  `01..08` in the last
+# row is the run; `AD 00 20 60` past the boundary is `main`.
+#
+# The link is the real test.  ld65 evaluates the `.assert` this section
+# carries, and it passes here at the tightest position that still fits.  Add
+# one byte of filler and it fails, measured (`postmortem.md` §G.9.2).
+
+origin 2000
+2000  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2020  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2030  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2040  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2050  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2060  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2070  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2080  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+2090  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+20A0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+20B0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+20C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+20D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+20E0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+20F0  00 00 00 00 00 00 00 00 01 02 03 04 05 06 07 08
+2100  AD 00 20 60

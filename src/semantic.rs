@@ -626,11 +626,14 @@ impl Analysis {
                         self.check_inline_label_values(&func.body);
                     }
                 }
-                ItemKind::Data(data) => self.declare_data_labels(data),
+                ItemKind::Data(data) => self.declare_data_labels(data, FunctionKind::Func),
                 // A top-level `binary` is the section it describes, so its
                 // name is a data label like any other block's.
                 ItemKind::Binary(declaration) => {
-                    self.declare_data_labels(&crate::resolve::binary_block(declaration, item.span));
+                    self.declare_data_labels(
+                        &crate::resolve::binary_block(declaration, item.span),
+                        FunctionKind::Func,
+                    );
                 }
                 ItemKind::Var(_)
                 | ItemKind::Const(_)
@@ -798,7 +801,7 @@ impl Analysis {
                         self.declare_labels_in(owner, otherwise, kind);
                     }
                 }
-                StatementKind::Data(data) => self.declare_data_labels(data),
+                StatementKind::Data(data) => self.declare_data_labels(data, kind),
                 StatementKind::Native(_)
                 | StatementKind::Hla(_)
                 | StatementKind::ModeSet(_)
@@ -821,10 +824,24 @@ impl Analysis {
     /// Declares a data block's own name and every label inside it. Both are
     /// unit-level: a data label is exactly how one unit hands another the
     /// address of some bytes.
-    fn declare_data_labels(&mut self, data: &DataBlock) {
+    ///
+    /// Which is why neither may be written inside an `inline`, for the reason
+    /// `declare_labels_in` refuses a global label there: the body is copied
+    /// per use site, so a unit-level name in it is exported and never
+    /// defined. That is not a diagnostic anyone gets — it is a link the
+    /// assembler completes and ld65 rejects with `Exported symbol was never
+    /// defined`, or, once two units borrow the body, two objects exporting
+    /// one name. The `data` half of the rule was documented and not
+    /// implemented (`postmortem.md` §G.11).
+    fn declare_data_labels(&mut self, data: &DataBlock, kind: FunctionKind) {
         if let Some(name) = &data.name
             && name.provenance != Provenance::Synthetic
         {
+            if kind == FunctionKind::Inline {
+                self.diagnostics
+                    .push(unit_level_name_in_inline(name, "data section"));
+                return;
+            }
             self.declare(
                 &name.text,
                 SymbolKind::DataLabel {
@@ -838,6 +855,11 @@ impl Analysis {
         for entry in crate::ast::flat_data_entries(&data.entries) {
             match &entry.kind {
                 DataEntryKind::Label(name) if name.provenance != Provenance::Synthetic => {
+                    if kind == FunctionKind::Inline {
+                        self.diagnostics
+                            .push(unit_level_name_in_inline(name, "data label"));
+                        continue;
+                    }
                     self.declare(
                         &name.text,
                         SymbolKind::DataLabel {
@@ -846,7 +868,7 @@ impl Analysis {
                         name.span,
                     );
                 }
-                DataEntryKind::Repeat { body, .. } => self.declare_data_labels(body),
+                DataEntryKind::Repeat { body, .. } => self.declare_data_labels(body, kind),
                 _ => {}
             }
         }
@@ -3419,6 +3441,37 @@ fn inline_label_as_a_value(name: &crate::ast::Name) -> Diagnostic {
     .with_help(
         "use a unit-level label outside the `inline`, or make the section a `func`, which \
          has one address",
+    )
+    .with_docs("doc/syntax-reference.md#inline")
+}
+
+/// A unit-level *name* written inside an `inline` body — a `data` section's
+/// own name, or a label inside one.
+///
+/// The same rule [`global_label_in_inline`] states for a label, and the same
+/// reason: the body is copied per use site, so the name is exported and never
+/// defined. What differs is the remedy, because a data section cannot be made
+/// local by writing a dot in front of it — a `.name` inside a data block is a
+/// label of the section, not a section — so the help names the two shapes
+/// that do work.
+fn unit_level_name_in_inline(name: &crate::ast::Name, what: &str) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::DUPLICATE_SYMBOL,
+        format!(
+            "`{}` is a unit-level {what} inside an `inline`, which has no one address",
+            name.text
+        ),
+        Label::new(name.span, "every use site would define this name again"),
+    )
+    .with_note(
+        "an `inline` body is copied into each use site, so a name the whole unit can \
+         see has no definition left to point at: the object exports it and the linker \
+         cannot resolve it",
+    )
+    .with_help(
+        "drop the name — an anonymous `data { … }` inside an `inline` is fine, and its \
+         bytes are stepped over at each use site — or move the block outside the \
+         `inline`, where it has one address",
     )
     .with_docs("doc/syntax-reference.md#inline")
 }

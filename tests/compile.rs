@@ -3498,3 +3498,132 @@ fn a_body_the_parser_recovered_inside_is_not_expanded() {
     assert_eq!(result.diagnostics, vec![]);
     assert!(result.assembly.expect("compiles").contains("nop"));
 }
+
+/// A unit-level name inside an `inline` is refused whatever declares it.
+///
+/// `declare_labels_in` has always refused a *global label* there, and says
+/// why: the body is copied per use site, so a unit-level name in it is
+/// exported and never defined. A `data` block's own name and a `label:` entry
+/// inside one are unit-level names by exactly the same argument, and the rule
+/// reached neither — sub-plan E's, not G7's, and found by probing G7's
+/// neighbourhood for the same class of defect.
+///
+/// The failure had no diagnostic at all: ca65 assembles the `.export`, and
+/// ld65 answers "Exported symbol `tbl` was never defined". Once two units
+/// borrow the body it is two objects exporting one name.
+#[test]
+fn a_unit_level_name_inside_an_inline_is_refused() {
+    for source in [
+        "inline emit {\n    data tbl {\n        7 8\n    }\n}\nfunc a1 @a8 @i8 {\n    emit\n}\nmain @a8 @i8 {\n    emit\n}\n",
+        "inline emit {\n    data {\n        spot: 7 8\n    }\n}\nmain @a8 @i8 {\n    emit\n}\n",
+    ] {
+        let mut map = SourceMap::new();
+        let file = map.add_file("named-in-inline.k816", source);
+        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        let codes: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        assert_eq!(codes, ["K816-E0102"], "{source}");
+        assert!(
+            result.diagnostics[0]
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("anonymous")),
+            "the help names what does work: {:?}",
+            result.diagnostics[0].help
+        );
+    }
+
+    // An *anonymous* block is the shape that works, and it has to keep
+    // working: nothing is named, so nothing is exported, and the bytes are
+    // stepped over at each use site.
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "anon-in-inline.k816",
+        "inline emit {\n    data {\n        7 8\n    }\n}\nmain @a8 @i8 {\n    emit\n    emit\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    assert_eq!(result.diagnostics, vec![]);
+    let assembly = result.assembly.expect("compiles");
+    assert_eq!(
+        assembly.matches(".byte").count(),
+        4,
+        "both expansions carry their own copy:\n{assembly}"
+    );
+}
+
+/// What a borrowed `inline` declaration depends on, one case each.
+///
+/// The four defects §G.10 records were all the same omission — a declaration
+/// is not self-contained — and none of them had a fixture. This is that list
+/// turned into cases, so that adding a fifth dependency means adding a row
+/// here rather than discovering it in review.
+///
+/// The `evalfunc` row is a *limit*, pinned deliberately: the evaluator's
+/// functions live in its own table rather than in the symbol table, so they
+/// do not cross. It fails as an error rather than as a byte, and it is a
+/// decision rather than an accident because this asserts it.
+#[test]
+fn a_borrowed_declaration_carries_what_it_depends_on() {
+    /// What the borrowing unit should see: a needle in its assembly, or the
+    /// diagnostics it reports instead.
+    type Expected = Result<&'static str, &'static [&'static str]>;
+    /// What the defining unit provides, the borrowed body, and the answer.
+    type Case = (&'static str, &'static str, Expected);
+    let cases: &[Case] = &[
+        // Its own module's widths, on an axis the section does not state.
+        ("@a8\n@i8\n", "a = 1", Ok("lda     #$01")),
+        // A `const` of its own unit, read through a bracket.
+        ("@a8\n@i8\nconst V = 9\n", "a = [ V ]", Ok("lda     #$09")),
+        // A name a top-level evaluator block assigned, which is a `const` by
+        // the time it is a definition.
+        ("@a8\n@i8\n[ V = 9 ]\n", "a = [ V ]", Ok("lda     #$09")),
+        // A `var` of its own unit, which becomes this unit's import.
+        (
+            "@a8\n@i8\nvar slot = $40\n",
+            "slot = a",
+            Ok("sta     z:slot"),
+        ),
+        // A data section of its own unit, read at compile time.
+        (
+            "@a8\n@i8\ndata tab {\n  4 5 6\n}\n",
+            "a = [ index(tab, 1) ]",
+            Ok("lda     #$05"),
+        ),
+        // The limit: an `evalfunc` does not cross, and says so as an error.
+        (
+            "@a8\n@i8\nevalfunc twice(n) [ n * 2 ]\n",
+            "a = [ twice(4) ]",
+            Err(&["K816-E0101"]),
+        ),
+    ];
+    for (provides, body, expected) in cases {
+        let mut map = SourceMap::new();
+        map.add_file(
+            "carry-defs.k816",
+            format!("{provides}inline borrowed {{\n    {body}\n}}\n"),
+        );
+        let user = map.add_file(
+            "carry-user.k816",
+            "@a16\n@i16\nmain @a8 @i8 {\n    borrowed\n}\n",
+        );
+        let result = compile_to_ca65(&map, user, &Options { optimize: false });
+        let codes: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        match expected {
+            Ok(needle) => {
+                assert_eq!(codes, Vec::<&str>::new(), "{body}");
+                assert!(
+                    result.assembly.expect("compiles").contains(needle),
+                    "{body} should emit {needle}"
+                );
+            }
+            Err(wanted) => assert_eq!(&codes[..], *wanted, "{body}"),
+        }
+    }
+}

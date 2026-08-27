@@ -637,7 +637,13 @@ enclosing function's unnamed targets — and two rules follow from that:
 
 - **Its labels must be local.** A unit-level label inside an `inline` would be
   a name the whole unit can see with no definition left to point at, and two
-  use sites would ask for two of it: `K816-E0102`.
+  use sites would ask for two of it: `K816-E0102`. The rule covers every
+  unit-level name the body can declare, not only a `name:` statement — a
+  `data NAME { … }` block and a `label:` entry inside a data block are the
+  same name with the same problem, and get the same code. An *anonymous*
+  `data { … }` is the shape that works: nothing is named, so nothing is
+  exported, and each expansion carries its own copy of the bytes with a jump
+  over them.
 - **They can be branched to, not taken the address of.** `bra .spot`,
   `goto .spot`, and `lda .spot` all name the label as a *target* and are
   rewritten; `lda #.spot` asks for its address as a number, and there is no

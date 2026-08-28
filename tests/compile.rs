@@ -1492,6 +1492,7 @@ fn every_data_entry_emits_the_bytes_it_describes() {
 /// produces a program that does not build.
 #[test]
 fn the_paired_hla_fixtures_assemble() {
+    use k816::diagnostic::{Diagnostic, DiagnosticCode};
     for (name, source) in [
         ("hla-chains", include_str!("golden/hla-chains.k816") as &str),
         ("hla-alu", include_str!("golden/hla-alu.k816")),
@@ -1500,7 +1501,15 @@ fn the_paired_hla_fixtures_assemble() {
         let mut map = SourceMap::new();
         let file = map.add_file(format!("{name}.k816"), source);
         let result = compile_to_ca65(&map, file, &Options { optimize: false });
-        assert_eq!(result.diagnostics, vec![], "{name} must compile");
+        // `hla-branches` exercises `>` and `<=`, which is what G8's
+        // efficiency warning is about. It is a warning, so the file still
+        // compiles; nothing else may appear.
+        let unexpected: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code != DiagnosticCode::INEFFICIENT_BRANCH)
+            .collect();
+        assert_eq!(unexpected, Vec::<&Diagnostic>::new(), "{name} must compile");
         let assembly = result.assembly.expect("compilation succeeds");
         assemble_and_link(name, &assembly, "slice");
     }
@@ -1975,6 +1984,13 @@ fn optimizer_effect_with(
 /// Every landing pad survives. The pad is what makes a branch out of a scoped
 /// block correct, and none of these removals is on that edge: `nested_exit`'s
 /// pair of restores is *folded*, not dropped.
+///
+/// **Sub-plan G, task G8** adds two more removals, and they are pass 9's:
+/// the pad's own `jmp .out` in `native_exit` and in `nested_exit` is a jump
+/// to the label immediately below it. What survives beside them is the user's
+/// `bra .out`, which pass 9 declines by origin even though the edge split has
+/// since moved its target to the pad directly underneath — the visible price
+/// of not deleting an instruction the author typed.
 #[test]
 fn the_optimized_block_exit_fixture_drops_the_enters_no_body_observes() {
     let (removed, added, bytes) = optimizer_effect(
@@ -1982,12 +1998,14 @@ fn the_optimized_block_exit_fixture_drops_the_enters_no_body_observes() {
         "block-exit.k816",
         include_str!("golden/block-exit.k816"),
     );
-    // Sorted: `native_exit`'s block enter, `generated_exit`'s back-edge
-    // restore, `nested_exit`'s two enters, and its two pad restores, which
-    // fold rather than disappear.
+    // Sorted: the two pads' jumps to the label below them, `native_exit`'s
+    // block enter, `generated_exit`'s back-edge restore, `nested_exit`'s two
+    // enters, and its two pad restores, which fold rather than disappear.
     assert_eq!(
         removed,
         vec![
+            "jmp     @out",
+            "jmp     @out",
             "rep     #$10",
             "rep     #$20",
             "rep     #$20",
@@ -2002,7 +2020,11 @@ fn the_optimized_block_exit_fixture_drops_the_enters_no_body_observes() {
         vec!["sep     #$30"],
         "the pad's restores fold into one; nothing else is put back: {added:?}"
     );
-    assert_eq!(bytes, 12 - 2, "six two-byte instructions out, one back in");
+    assert_eq!(
+        bytes,
+        12 - 2 + 6,
+        "six two-byte instructions out, one back in, and two three-byte jumps"
+    );
 }
 
 /// `width-bridging.k816`: one bridge bit goes, and it is the one no
@@ -2420,6 +2442,34 @@ fn every_shrunk_branch_is_one_ca65_accepts() {
     assert_eq!(bytes, 3 * 3 + dead_loads * 3);
 }
 
+/// `opt-tail-labels.k816`: the two G8 passes, through ca65 and ld65.
+///
+/// `tests/optimizer.rs` asserts which pass fired on which function; this
+/// asserts that the bytes agree. Four of the file's seven functions are cases
+/// that must *not* change, so the removal counts are one apiece: a fixture
+/// where every case fires cannot tell a pass that is too eager from one that
+/// is right.
+///
+/// The second `rts` is F's: `frozen_tail` ends in a `nocross` guard, and the
+/// implicit return the compiler puts *after* the guard is outside the run and
+/// unreachable. Everything inside the run survives, which is the case the
+/// file carries for both new passes at once.
+#[test]
+fn the_tail_label_fixture_loses_one_branch_and_one_return() {
+    let (removed, added, bytes) = optimizer_effect(
+        "opt-tail-labels",
+        "opt-tail-labels.k816",
+        include_str!("golden/opt-tail-labels.k816"),
+    );
+    assert_eq!(removed, vec!["beq     @next", "rts", "rts"], "{removed:?}");
+    assert_eq!(added, Vec::<String>::new());
+    assert_eq!(
+        bytes,
+        2 + 1 + 1,
+        "a relative branch, pass 10's return, and an unreachable one"
+    );
+}
+
 /// **Moved by sub-plan F, task F7.** `branch-range.k816` is E's own fixture:
 /// a body of `mem++` statements long enough that the conditional cannot reach
 /// its target. Nothing in it is dead, so nothing shrinks, and its long form is
@@ -2464,19 +2514,26 @@ const FIXTURE_EFFECTS: &[Effect] = &[
     (
         "block-exit.k816",
         &[
+            ("jmp     @out", 2),
             ("rep     #$10", 1),
             ("rep     #$20", 2),
             ("sep     #$10", 1),
             ("sep     #$20", 2),
         ],
         &[("sep     #$30", 1)],
-        "three block enters whose bodies observe nothing, a restore the loop re-enters through, and the nested pad's pair folded",
+        "three block enters whose bodies observe nothing, a restore the loop re-enters through, the nested pad's pair folded, and each pad's jump to the label immediately below it",
+    ),
+    (
+        "opt-tail-labels.k816",
+        &[("beq     @next", 1), ("rts", 2)],
+        &[],
+        "pass 9's branch to the label on the next line, pass 10's second return, and one unreachable implicit return after a `nocross` guard; the four cases beside them are the ones that must not change",
     ),
     (
         "far-calls.k816",
-        &[("rts", 3)],
+        &[("bcc     @done", 1), ("jmp     a:@direct", 1), ("rts", 3)],
         &[],
-        "three implicit returns after functions that leave by `goto` and never come back",
+        "three implicit returns after functions that leave by `goto` and never come back, and two jumps to a label the fixture writes on the very next line",
     ),
     (
         "hla-alu.k816",
@@ -2630,13 +2687,14 @@ const FIXTURE_EFFECTS: &[Effect] = &[
     (
         "width-blocks.k816",
         &[
+            ("jmp     @out", 1),
             ("rep     #$10", 2),
             ("rep     #$20", 2),
             ("sep     #$10", 1),
             ("sep     #$20", 1),
         ],
         &[("rep     #$30", 1), ("sep     #$30", 1)],
-        "two block enters whose bodies observe the axis they establish, and the documented block's pair folded on both ends",
+        "two block enters whose bodies observe the axis they establish, the documented block's pair folded on both ends, and the pad's jump to the label immediately below it",
     ),
     (
         "width-branch.k816",

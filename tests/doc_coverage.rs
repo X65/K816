@@ -971,6 +971,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge",
         ),
         (
+            "opt-tail-labels.k816",
+            "the_tail_label_fixture_loses_one_branch_and_one_return",
+        ),
+        (
             "branch-range.k816",
             "a_branch_past_a_relative_branchs_reach_still_assembles",
         ),

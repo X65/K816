@@ -36,7 +36,7 @@ use k816::lower::lower;
 use k816::op::{KOpKind, Operand, Origin};
 use k816::parser::parse_source;
 use k816::semantic::analyze_file;
-use k816::source::SourceMap;
+use k816::source::{SourceMap, Span};
 use k816::value::KExpr;
 
 /// The lowered operations of `text`'s single function, and their origins.
@@ -223,14 +223,23 @@ fn every_shorthand_matches_the_native_sequence_beside_it() {
 /// one thing a golden of emitted text would happily agree with.
 #[test]
 fn every_branch_form_matches_the_native_sequence_beside_it() {
-    paired_fixture(
+    paired_fixture_warning(
         "hla-branches.k816",
         include_str!("golden/hla-branches.k816"),
         6,
+        2,
     );
 }
 
 fn paired_fixture(name: &str, text: &str, expected_pairs: usize) {
+    paired_fixture_warning(name, text, expected_pairs, 0);
+}
+
+/// The same, for a fixture that legitimately warns: `hla-branches.k816`
+/// exercises `>` and `<=`, and G8's efficiency warning is what those two
+/// cost. The count is written down rather than the warning being filtered,
+/// so a *third* one appearing is still a failure.
+fn paired_fixture_warning(name: &str, text: &str, expected_pairs: usize, expected_warnings: usize) {
     let mut map = SourceMap::new();
     let id = map.add_file(name, text);
     let parse = parse_source(map.file(id), None);
@@ -238,7 +247,19 @@ fn paired_fixture(name: &str, text: &str, expected_pairs: usize) {
     let (model, diagnostics) = analyze_file(&parse.file);
     assert_eq!(diagnostics, vec![], "the fixture must analyze cleanly");
     let (program, diagnostics) = lower(model.program(&parse.file), &model);
-    assert_eq!(diagnostics, vec![], "the fixture must lower cleanly");
+    let warnings = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == DiagnosticCode::INEFFICIENT_BRANCH)
+        .count();
+    assert_eq!(
+        warnings, expected_warnings,
+        "the fixture's efficiency warnings"
+    );
+    let rest: Vec<_> = diagnostics
+        .into_iter()
+        .filter(|diagnostic| diagnostic.code != DiagnosticCode::INEFFICIENT_BRANCH)
+        .collect();
+    assert_eq!(rest, vec![], "the fixture must otherwise lower cleanly");
 
     // Two halves of a pair name their branch targets differently — the HLA
     // form generates anchors, the native form is written with labels — so the
@@ -367,6 +388,103 @@ fn a_shorthand_the_cpu_cannot_do_is_refused_with_its_route() {
             "`{source}` helps with {help:?}, expected to mention {expected:?}"
         );
     }
+}
+
+/// The efficiency warning names the pair the *site* emits, not the pair the
+/// written token would suggest.
+///
+/// `hla::branch` negates a condition whose form skips its body, and `>` and
+/// `<=` negate into each other, so a prefix block written `<=` emits the
+/// guarded `beq`/`bcs` pair and one written `>` emits `bcc`/`beq`. The legacy
+/// K816 warned per spelling — "`} >` expands to three branch instructions",
+/// "`} <=` to two" — and both halves are wrong for K816, which is what
+/// `plans/06-compatibility.md` decision 23 has to be read past. Each row here
+/// is one form, and the mnemonics it must name.
+///
+/// The four rows are also the claim that the *set* is right: {`>`, `<=`} is
+/// closed under negation, so no form makes either of them free.
+#[test]
+fn the_efficiency_warning_names_what_the_site_emits() {
+    for (body, expected) in [
+        (
+            "    {\n        x++\n    } >",
+            "`beq` over the branch, then `bcs`",
+        ),
+        (
+            "    {\n        x++\n    } <=",
+            "`bcc` to the target, then `beq`",
+        ),
+        (
+            "    > {\n        x++\n    }",
+            "`bcc` to the target, then `beq`",
+        ),
+        (
+            "    <= {\n        x++\n    }",
+            "`beq` over the branch, then `bcs`",
+        ),
+    ] {
+        let source = format!("func main @a8 @i8 {{\n{body}\n}}\n");
+        let reported = lowering_warnings(&source);
+        assert_eq!(reported.len(), 1, "`{source}`: {reported:?}");
+        assert_eq!(reported[0].code, DiagnosticCode::INEFFICIENT_BRANCH);
+        let note = reported[0].notes.last().expect("the expansion note");
+        assert!(
+            note.contains(expected),
+            "`{source}` says {note:?}, expected to name {expected:?}"
+        );
+    }
+
+    // And a single branch says nothing at all.
+    let single = lowering_warnings("func main @a8 @i8 {\n    {\n        x++\n    } !=\n}\n");
+    assert_eq!(single, Vec::<Diagnostic>::new());
+}
+
+/// One written condition is one warning, however many copies the compiler
+/// makes of it.
+///
+/// An `inline` is expanded per use site, so the body's `>` reaches lowering
+/// once per use. Sub-plan E's decision 12 keeps an inline's *analysis* at its
+/// declaration for exactly this reason, and the efficiency warning is decided
+/// after the copies exist — so the same rule is applied to the reports. The
+/// caret stays in the body, because unlike the diagnostics `at_use_site`
+/// moves, nothing about the argument made this one true.
+#[test]
+fn a_condition_inside_an_inline_warns_once_per_writing() {
+    let source = "\
+inline costly @a8 @i8 {
+    a?5
+    > {
+        x++
+    }
+}
+
+func main @a8 @i8 {
+    costly
+    costly
+    costly
+}
+";
+    let reported = lowering_warnings(source);
+    assert_eq!(reported.len(), 1, "{reported:?}");
+    let mut map = SourceMap::new();
+    let id = map.add_file("test.k816", source);
+    let span = reported[0].primary.span;
+    assert_eq!(
+        map.span_text(Span::new(id, span.start, span.end)),
+        ">",
+        "the caret stays on the operator in the body"
+    );
+}
+
+/// Analysis and lowering together, for the diagnostics only lowering decides.
+fn lowering_warnings(text: &str) -> Vec<Diagnostic> {
+    let mut map = SourceMap::new();
+    let id = map.add_file("test.k816", text);
+    let parse = parse_source(map.file(id), None);
+    assert_eq!(parse.diagnostics, vec![], "unexpected syntax diagnostics");
+    let (model, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(diagnostics, vec![], "unexpected analysis diagnostics");
+    lower(model.program(&parse.file), &model).1
 }
 
 /// `p??` is `PLP`, so the width model must lose the widths at it exactly as

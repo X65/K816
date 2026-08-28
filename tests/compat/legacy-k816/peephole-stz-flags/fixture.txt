@@ -12,11 +12,11 @@ Two differences from the legacy bytes, and both are worth keeping in view:
     Both are correct - the branch reads the Z the `lda #0` set, and neither
     store writes flags.
   - The `{ a = 2 }` body is empty in K816's output, because `a = 2` is dead:
-    the next statement loads A again.  What is left is `D0 00` - a branch whose
-    target is the next instruction, which is exactly the shape sub-plan G's
-    **pass 9** removes (decision 18).  This fixture is that pass's witness in
-    the imported corpus, and its bytes are expected to lose those two when G8
-    lands.
+    the next statement loads A again.  What was left was `D0 00` - a branch
+    whose target is the next instruction - and **G8's pass 9 removed it**,
+    which is why these bytes are two shorter than the ones this fixture was
+    imported with.  It is the pass's witness in the imported corpus: put the
+    pass back and `D0 00` returns.
 
 K816 also does *not* rewrite the second zero-store run to STZ where the legacy
 compiler did (`85 12 85 11` against `64 12 64 11`).  That is a missed

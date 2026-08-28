@@ -429,6 +429,14 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::PREPROCESSOR_UNBALANCED,
         caret: "#if",
     },
+    // The two branch conditions the 65816 has no single instruction for.
+    // The caret is the operator and not the block it governs, because the
+    // operator is what the author would change.
+    Case {
+        source: "func main @a8 @i8 {\n    {\n        x++\n    } >\n}\n",
+        code: DiagnosticCode::INEFFICIENT_BRANCH,
+        caret: ">",
+    },
     // The entry point's widths are the environment's, so an annotation on
     // `main` is a claim about them rather than a request of them.
     Case {
@@ -661,13 +669,32 @@ fn every_registered_code_is_exercised_or_declared_unreachable() {
     }
 }
 
-/// Analyzes `source` and returns the diagnostic carrying `code`.
+/// Analyzes `source`, lowers it if analysis was clean, and returns the
+/// diagnostic carrying `code`.
+///
+/// **Lowering is part of the walk** because some codes are only decided
+/// there: what a branch condition expands to is not known until the plan is
+/// chosen, and `K816-W0157` is that. Before G8 every such code went to
+/// [`ACCOUNTED_ELSEWHERE`], which buys the "is it exercised" gate and gives up
+/// the other four — the caret, the notes, the severity, the fixes. Running
+/// the stage costs one call and buys them back.
 fn diagnostic_for(source: &str, code: DiagnosticCode) -> (SourceMap, Diagnostic) {
     let mut map = SourceMap::new();
     let id = map.add_file("case.k816", source);
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![], "`{source}` did not parse");
-    let (_, diagnostics) = analyze_file(&parse.file);
+    let (model, diagnostics) = analyze_file(&parse.file);
+    let mut diagnostics = diagnostics;
+    // Only a clean analysis may be lowered: lowering a body analysis rejected
+    // is what `Lowering::skipped` exists to report, and its report is a
+    // different code.
+    if !diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        let (_, lowered) = k816::lower::lower(model.program(&parse.file), &model);
+        diagnostics.extend(lowered);
+    }
     let found = diagnostics
         .into_iter()
         .find(|diagnostic| diagnostic.code == code)
@@ -748,6 +775,10 @@ fn every_width_code_is_reachable() {
 /// A width block a branch left used to be on this list. Sub-plan E4 replaced
 /// that warning with a synthesized restore on the taken edge, so there is
 /// nothing left to warn about (`postmortem.md` §D.6.2).
+///
+/// The efficiency warning is the clearest member: `> ` and `<=` compile, and
+/// what they emit is right. It is a *cost*, and the author is the one who can
+/// decide whether to pay it (`plans/06-compatibility.md` decision 23).
 #[test]
 fn only_the_compile_through_conditions_are_warnings() {
     const WARNINGS: &[DiagnosticCode] = &[
@@ -755,6 +786,7 @@ fn only_the_compile_through_conditions_are_warnings() {
         DiagnosticCode::ASSUMED_EXIT,
         DiagnosticCode::UNBRIDGED_NATIVE_CALL,
         DiagnosticCode::PREPROCESSOR_WARNING,
+        DiagnosticCode::INEFFICIENT_BRANCH,
     ];
     // `print(msg)` is the one diagnostic the *source* asked for. Nothing
     // about the program is wrong, so it is neither an error nor a warning,

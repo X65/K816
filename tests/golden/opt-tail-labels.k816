@@ -1,0 +1,93 @@
+// Sub-plan G fixture, task G8: the two passes ported from the legacy
+// peephole, each with the case that fires and the cases that must not.
+//
+// Pass 9 removes a branch whose target is the next label — control gets there
+// by falling through. Pass 10 removes a return the return above it already
+// made. Both are the legacy compiler's rules 7 and 8 rebuilt on F's block
+// view, and both are *byte-removing*, which is why they run before
+// `shrink-branches` rather than after it.
+
+var mem = $10
+
+// ---------------------------------------------------------------------------
+// Pass 9
+// ---------------------------------------------------------------------------
+
+// Fires. `== goto .next` expands to `beq .next`, and `.next` is the label on
+// the following line: nothing at all stands between the branch and its
+// target, so falling through arrives where the branch was going.
+func branch_to_next @a8 @i8 {
+    a?0
+    == goto .next
+.next:
+    mem++
+}
+
+// Must not fire. The same shape with one instruction in the way: `inx` is
+// three bytes of difference between taking the branch and not.
+func branch_over_work @a8 @i8 {
+    a?0
+    == goto .after
+    x++
+.after:
+    mem++
+}
+
+// Must not fire. A hand-written branch to the next label is still a branch
+// the author typed and can see in the listing, and pass 9 declines it by
+// origin — the one visible cost of that rule.
+func native_branch_to_next @a8 @i8 {
+    bra .here
+.here:
+    mem++
+}
+
+// ---------------------------------------------------------------------------
+// Pass 10
+// ---------------------------------------------------------------------------
+
+// Fires. The second `return` cannot be reached: the first has no successors
+// and nothing between them lets an edge in.
+func returns_twice @a8 @i8 {
+    a = 1
+    return
+    return
+}
+
+// Must not fire. A label between two returns is exactly what lets an edge in,
+// whether or not this unit contains the branch that uses it.
+func returns_around_a_label @a8 @i8 {
+    a = 2
+    return
+.again:
+    return
+}
+
+// Must not fire. `rts` and `rtl` are not the same return: the second unwinds
+// a different amount of stack, and whether it is reachable is a question
+// about the caller rather than about this function.
+func mixed_returns @a8 @i8 {
+    rts
+    rtl
+}
+
+// ---------------------------------------------------------------------------
+// Both passes, inside a `nocross` run
+// ---------------------------------------------------------------------------
+
+// Must not fire, either of them. A `nocross` guard records the byte length of
+// the run it closes, and that length is decided at lowering; a pass that
+// removed a byte from inside one would leave a link-time assertion covering
+// bytes that are no longer there. So the run is frozen, and it holds both
+// passes' cases at once: a branch whose target is the label on the next line,
+// and a return the return above it already made.
+func frozen_tail @a8 @i8 {
+    nocross {
+        a?0
+        == goto .done
+.done:
+        mem++
+        return
+        return
+    }
+}

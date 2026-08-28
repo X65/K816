@@ -422,6 +422,8 @@ pub fn optimize(program: &mut Program) {
     collapse_repeated_flag_operations(program);
     rewrite_tail_calls(program);
     remove_unreachable_generated_ops(program);
+    remove_branches_to_the_next_label(program);
+    collapse_duplicate_returns(program);
 }
 ```
 
@@ -447,10 +449,10 @@ memory, which is out of reach while units compile separately.
 The sequence above is a *reading* order. **The runtime order is the one
 `implementation.md` phase 9 fixes**, which wins over this document (§2 of the
 master plan), and it runs the mode passes first so that folding sees single-bit
-masks fresh from lowering. One entry is missing from both lists: after the
-byte-removing passes, a branch the lowering stage emitted in its long form
-because it could not prove the short one reached may now reach, and putting it
-back is a ninth pass.
+masks fresh from lowering. One entry is missing from both lists: after every
+byte-removing pass — passes 9 and 10 included — a branch the lowering stage
+emitted in its long form because it could not prove the short one reached may
+now reach, and putting it back is the last pass of all.
 
 Each pass should operate on local basic blocks. The blocks need a complete
 successor relation — otherwise everything after the first `JSR` looks
@@ -458,6 +460,38 @@ unreachable — but not a framework: one shared view and one backward dataflow
 per function, built where the passes are.
 
 The current [peephole optimizer](https://github.com/X65/K816/blob/main/crates/core/src/peephole.rs) already contains valuable behavior. Port the rules and their tests, but rebuild them on one complete effect model rather than carrying over all implementation details.
+
+**What the port took and what it declined.** Its eight rules map onto this
+list as follows. `coalesce_repeated_immediate_loads`,
+`remove_dead_adjacent_register_writes`, `stz_rewrite` and
+`collapse_duplicate_flag_ops` are the load, dead-write, zero-store and flag
+passes above, rebuilt on the effect table rather than on mnemonic lists.
+`prune_unreachable_instructions` is the unreachable pass, **without its
+warnings**: it warned once per dropped instruction, and `emit-ir --after-opt
+--explain` answers the same question on demand and only when asked.
+`rewrite_tail_calls` rewrites nothing, for the reason above.
+`remove_branch_to_next_label` and `collapse_duplicate_returns` are passes 9
+and 10, and each changed shape on the way:
+
+* The branch pass restricts by the **branch's** origin rather than by its
+  target. The legacy rule removed a branch only to a label its own lowering
+  had synthesized, which in that compiler was the same set as "labels a
+  compiler-emitted branch can name". It is not the same set here — `> goto
+  done` expands to `bcs done`, naming a label the user wrote — so the
+  restriction moved to who wrote the branch. A hand-written `jmp` to the next
+  line stays, which is the rule the unreachable pass already follows.
+* It iterates. One removal exposes another: the guard of a `>` expansion is
+  separated from its landing site only by the branch the pass has just taken
+  away, and the legacy's single scan found the outer one and stopped.
+* The duplicate-return pass is **the one pass that removes a user-written
+  operation**, and its justification is structural rather than an origin
+  check: a return has no successors, so the only way to reach a second one is
+  to arrive from outside, and the only thing that lets an edge in is a label.
+  Any operation at all between the two ends the run.
+
+Both remove bytes, so both run **before** branch shrinking rather than after
+it: shrinking measures distances, and a distance taken before those bytes are
+gone is a branch left in its long form for no reason.
 
 ## 9. Diagnostics as an internal protocol
 

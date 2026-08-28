@@ -2,6 +2,7 @@ row       k816-postfix-gt
 config    legacy-stub.cfg
 compare   bytes
 units     input.k65
+expect    input.k65 K816-W0157
 
 `} >` is the other K816 extension postfix, and here the legacy wording is
 wrong for K816.
@@ -9,7 +10,12 @@ wrong for K816.
 The legacy compiler warned that `} >` "expands to three branch instructions"
 and named the expansion `BEQ skip` + `BCC skip` + `BRA target`.  K816 emits
 `E8 F0 02 B0 FB 60`: `inx`, `beq` past the loop, `bcs` back to it - **two**
-branches.  G8's warning has to say what K816 does, not what the legacy
-compiler did (decision 23 says "with the legacy compiler's wording", and this
-fixture is why that has to be read as "with the reason the legacy wording
-gave": the expansion is the reason, and K816's expansion is shorter).
+branches.  G8's warning says what K816 does, not what the legacy compiler did
+(decision 23 says "with the legacy compiler's wording", and this fixture is
+why that has to be read as "with the reason the legacy wording gave": the
+expansion is the reason, and K816's expansion is shorter).
+
+`K816-W0157` is that warning.  It is decided at lowering, where the emitted
+pair is known, rather than from the written token - which is what lets the
+note name `beq` and `bcs` here and the other pair in the `} <=` fixture
+beside this one.

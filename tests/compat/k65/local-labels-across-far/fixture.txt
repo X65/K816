@@ -31,9 +31,14 @@ have to say which construct did.
 **K816's answer is the same shape by a different route.**  A `.name` is a ca65
 cheap-local scoped to the enclosing function, so `@top` and `@rest` are one
 scope whatever stands between them, and `far goto` is a `jml` rather than a
-trampoline into a generated stub section.  `BNE $F000` reaches back across the
-long jump; the bytes are `expected.hex`.
+trampoline into a generated stub section.  `BNE` reaches back across the long
+jump, which is the claim: one namespace, whatever the construct between the
+two labels is.
 
-The `jml` to the very next instruction is not folded away.  A jump to the
-label after it is pass 9 of the optimizer, which is G8's, and this fixture
-would notice if that changed.
+**G8 removed the `jml`.**  It is a jump to the label written on the very next
+line, which is pass 9, and this fixture said it would notice.  `expected.hex`
+is `CA D0 FD 60` now, four bytes rather than eight: `DEX`, `BNE` back to it,
+`RTS`.  The name-resolution claim is untouched - `@rest` is still declared
+after the `far goto` that names it, and `@top` is still named from after it -
+and what the bytes stopped demonstrating is only that the two labels were once
+five bytes apart.

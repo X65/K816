@@ -29,7 +29,7 @@
 //! both source forms so native/HLA equivalence covers them too. Whether
 //! non-`main` entry contracts emit or assume is decided in sub-plan D.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::ast::{AstFile, FunctionKind, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
@@ -281,6 +281,17 @@ pub fn lower_unit(
         }
     }
     diagnostics.extend(report_damaged_registers(&program, model, &checked_calls));
+    // An `inline` is expanded per use site, so one written `>` becomes one
+    // warning per copy. Sub-plan E's decision 12 keeps an inline's analysis
+    // at its declaration for exactly this reason; the efficiency warning is
+    // decided at lowering, which is *after* the copies exist, so the same
+    // rule is applied to the reports instead. One condition, one warning,
+    // whatever the compiler made of it.
+    let mut reported: HashSet<Span> = HashSet::new();
+    diagnostics.retain(|diagnostic| {
+        diagnostic.code != DiagnosticCode::INEFFICIENT_BRANCH
+            || reported.insert(diagnostic.primary.span)
+    });
     (program, diagnostics)
 }
 
@@ -505,6 +516,68 @@ fn clobbered_register(call: Span, read: Span, damaged: RegisterSet) -> Diagnosti
     )
     .with_help("save the value across the call, or declare the register as an output")
     .with_docs("doc/syntax-reference.md#code-sections")
+}
+
+/// The efficiency warning, when the condition costs more than one branch.
+///
+/// Emitted from lowering rather than from analysis because this is the one
+/// place that knows the *plan*, and the plan is what the warning is about.
+/// The written token does not settle it: `hla::branch` negates a condition
+/// whose form skips its body, `>` and `<=` negate into each other, and both
+/// are multi-branch — so `> { … }` and `<= { … }` each cost two branches and
+/// each emits the *other* one's pair. A warning keyed on the spelling would
+/// name the wrong instructions half the time, which is what the legacy
+/// K816's per-spelling wording did (`plans/06-compatibility.md` decision 23).
+///
+/// That the two conditions negate into each other is also why the *set* is
+/// safe to key on: {`>`, `<=`} is closed under negation, so a site written
+/// with either pays two branches whatever sense its form gives it, and there
+/// is no form in which one of them is free.
+///
+/// The condition's own span is the primary label, so the report points at
+/// `>` and not at the block it governs.
+fn inefficient_branch(
+    condition: crate::ast::BranchCondition,
+    sense: hla::BranchSense,
+    plan: hla::BranchPlan,
+) -> Option<Diagnostic> {
+    let expansion = match plan {
+        hla::BranchPlan::Single(_) => return None,
+        hla::BranchPlan::Pair(first, second) => format!(
+            "`{}` to the target, then `{}` to the same target",
+            first.ca65(),
+            second.ca65()
+        ),
+        hla::BranchPlan::Guarded { over, take } => format!(
+            "`{}` over the branch, then `{}` to the target",
+            over.ca65(),
+            take.ca65()
+        ),
+    };
+    let emitted = match sense {
+        hla::BranchSense::Take => format!("here that is {expansion}"),
+        hla::BranchSense::Skip => format!(
+            "here the branch goes *past* the body, so it tests the complement, \
+             and that is {expansion}"
+        ),
+    };
+    Some(
+        Diagnostic::warning(
+            DiagnosticCode::INEFFICIENT_BRANCH,
+            String::from("this condition expands to two branch instructions"),
+            Label::new(condition.span, "no single 65816 branch tests this"),
+        )
+        .with_note(
+            "unsigned `>` is \"carry set *and* not equal\" and unsigned `<=` is \"carry \
+             clear *or* equal\"; the 65816 has a single branch for neither",
+        )
+        .with_note(emitted)
+        .with_help(
+            "an equality or a signed test — `==`, `!=`, `<`, `>=`, `<0`, `>=0` — is one \
+             instruction, and reordering the comparison often reaches one",
+        )
+        .with_docs("doc/syntax-reference.md#efficiency-warnings"),
+    )
 }
 
 struct Lowering<'a> {
@@ -1158,7 +1231,11 @@ impl<'a> Lowering<'a> {
                 reason,
             );
         };
-        match hla::branch(condition.kind, sense) {
+        let plan = hla::branch(condition.kind, sense);
+        if let Some(warning) = inefficient_branch(condition, sense, plan) {
+            self.diagnostics.push(warning);
+        }
+        match plan {
             hla::BranchPlan::Single(mnemonic) => branch(self, mnemonic, target.clone()),
             hla::BranchPlan::Pair(first, second) => {
                 branch(self, first, target.clone());
@@ -1919,11 +1996,21 @@ impl<'a> Lowering<'a> {
         // site: the argument it passed is what made the complaint true. So the
         // caret moves here and the place in the body becomes the secondary
         // (sub-plan E, decision 12).
-        self.diagnostics.extend(
-            diagnostics
-                .into_iter()
-                .map(|diagnostic| at_use_site(diagnostic, statement.span, &target.text)),
-        );
+        //
+        // Unless the argument had nothing to do with it. The efficiency
+        // warning is about the body's own text — the same `>` in every copy,
+        // costing the same two branches — so moving its caret to the use site
+        // would report one written condition once per use, which is the
+        // multiplication decision 12 exists to stop. It stays where it was
+        // written, and `lower_unit` keeps the first of them.
+        self.diagnostics
+            .extend(diagnostics.into_iter().map(|diagnostic| {
+                if diagnostic.code == DiagnosticCode::INEFFICIENT_BRANCH {
+                    diagnostic
+                } else {
+                    at_use_site(diagnostic, statement.span, &target.text)
+                }
+            }));
 
         let start = self.ops.len();
         // A contract-bearing call *inside* the body keeps its damage scan;

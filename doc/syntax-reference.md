@@ -3774,12 +3774,30 @@ Common polling patterns:
 
 ### Efficiency Warnings
 
-The `>` and `<=` postfix operators emit efficiency warnings:
+`>` and `<=` are the two branch conditions the 65816 has no single
+instruction for. Unsigned `>` is "carry set *and* not equal" and unsigned
+`<=` is "carry clear *or* equal", so each one costs two branch instructions
+wherever it is written, and K816 warns with `K816-W0157`:
 
 ```k65
-{ x++ } >              // forward branch with efficiency warning
-{ x++ } <=             // backward branch with efficiency warning
+{ x++ } >              // beq over the branch, then bcs back to the loop
+{ x++ } <=             // bcc back to the loop, then beq back to the loop
+> { x++ }              // bcc past the body, then beq past the body
+<= { x++ }             // beq over the branch, then bcs past the body
+> goto done            // beq over the branch, then bcs to `done`
 ```
+
+The warning is about the *expansion*, so it fires at every form and not only
+the postfix loop, and its note names the two instructions that form emits.
+Which two they are depends on the form rather than on the operator: a prefix
+block branches *past* its body, so it tests the complement, and `<=` and `>`
+are each other's complement. There is no form in which either of them is one
+instruction.
+
+Both operators are K816 extensions — the original K65 grammar has neither —
+and so is the warning. An equality or a signed test (`==`, `!=`, `<`, `>=`,
+`<0`, `>=0`) is a single branch, and reordering the comparison often reaches
+one.
 
 ## NOP and Wait Shorthand
 

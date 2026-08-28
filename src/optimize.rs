@@ -86,8 +86,20 @@ pub enum Pass {
     /// Item 7 of phase 9's list, "rewrite safe tail calls", has no variant
     /// because the safe set K816 can identify is empty; see [`optimize`].
     Unreachable,
+    /// 9 — remove a branch whose target is the next label, which control
+    /// reaches by falling through.
+    RemoveBranchToNextLabel,
+    /// 10 — remove a return that another return, immediately above it,
+    /// already made.
+    CollapseDuplicateReturns,
     /// Shrink a long-form branch E emitted conservatively, once the
     /// byte-removing passes have run and the distance is known.
+    ///
+    /// Last, because it measures distances and every pass above it removes
+    /// bytes. `plans/06-compatibility.md` §9 puts passes 9 and 10 "after F's
+    /// eight"; taken literally that would put them after this one and leave
+    /// the bytes they remove out of every distance, so they go where the
+    /// sentence means rather than where it points (§G.13.1).
     ShrinkBranches,
 }
 
@@ -102,6 +114,8 @@ impl Pass {
             Self::CollapseFlags => "collapse-flags",
             Self::ZeroStores => "zero-stores",
             Self::Unreachable => "unreachable",
+            Self::RemoveBranchToNextLabel => "remove-branch-to-next-label",
+            Self::CollapseDuplicateReturns => "collapse-duplicate-returns",
             Self::ShrinkBranches => "shrink-branches",
         }
     }
@@ -272,6 +286,8 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
         collapse_redundant_flags(&unit, &mut function.ops, &mut log);
         rewrite_zero_stores(&unit, &mut function.ops, &mut log);
         remove_unreachable(&unit, &mut function.ops, &mut log);
+        remove_branches_to_the_next_label(&unit, &mut function.ops, &mut log);
+        collapse_duplicate_returns(&unit, &mut function.ops, &mut log);
         shrink_branches(&unit, &mut function.ops, &mut log);
     }
     log
@@ -2363,6 +2379,155 @@ fn remove_unreachable(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut Optimizatio
         });
     }
     for index in unreachable.into_iter().rev() {
+        ops.remove(index);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Branches to the next label
+// ---------------------------------------------------------------------------
+
+/// True when the operation is a landing site and nothing else: it emits no
+/// bytes, and control arriving at it is control arriving at everything below
+/// it until the next operation that does.
+fn is_landing_site(op: &KOp) -> bool {
+    matches!(
+        op.kind,
+        KOpKind::Label(_) | KOpKind::Anchor(_) | KOpKind::SkipTarget
+    )
+}
+
+/// Removes a forward branch whose target control reaches by falling through.
+///
+/// The legacy peephole's seventh rule (`remove_branch_to_next_label`), ported
+/// onto the block view. Two things are deliberately not carried over.
+///
+/// **The legacy restricted the *target*** to labels its own lowering
+/// synthesized (`is_synthetic_label`), which in that compiler was the same
+/// set as "labels a compiler-emitted branch can name". It is not the same set
+/// here: `> goto done` expands to `bcs done`, naming a label the *user*
+/// wrote, and that is the case worth having. So the restriction moves to the
+/// branch's own [`Origin`]: everything the compiler generated or expanded may
+/// go, and a hand-written `jmp next` stays, because deleting an instruction
+/// the author typed and can see in the listing is what
+/// [`remove_unreachable`] already declines to do.
+///
+/// **It iterates.** One removal can expose another — the guard of a `>`
+/// expansion is separated from its landing site only by the branch this pass
+/// just took away — and a single scan would find the outer one and stop.
+fn remove_branches_to_the_next_label(
+    unit: &Unit<'_>,
+    ops: &mut Vec<KOp>,
+    log: &mut OptimizationLog,
+) {
+    loop {
+        let flow = Flow::build(ops, unit);
+        let Some(index) = (0..ops.len()).find(|index| falls_through_to_target(ops, &flow, *index))
+        else {
+            return;
+        };
+        let removed = ops.remove(index);
+        log.changes.push(Change {
+            pass: Pass::RemoveBranchToNextLabel,
+            site: Site {
+                function: unit.function,
+                index,
+            },
+            before: vec![removed],
+            after: Vec::new(),
+            witness: None,
+            justification: String::from(
+                "the target is the next label, which control reaches by falling through",
+            ),
+        });
+    }
+}
+
+/// True when the branch at `index` may be removed because falling through
+/// arrives where it was going.
+fn falls_through_to_target(ops: &[KOp], flow: &Flow, index: usize) -> bool {
+    if flow.frozen[index] || ops[index].origin == Origin::User {
+        return false;
+    }
+    let transfer = flow.transfers[index];
+    if !matches!(
+        transfer.control,
+        ControlEffect::Branch | ControlEffect::Jump
+    ) {
+        return false;
+    }
+    let Some(target) = transfer.target else {
+        return false;
+    };
+    // Forward only. A back edge to a label above is a loop, and every
+    // operation between the two is one the loop runs again.
+    target > index && ops[index + 1..target].iter().all(is_landing_site)
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate returns
+// ---------------------------------------------------------------------------
+
+/// The mnemonic when the operation is an operandless return.
+fn return_mnemonic(op: &KOp) -> Option<Mnemonic> {
+    let KOpKind::Instruction(instruction) = &op.kind else {
+        return None;
+    };
+    if instruction.operand.is_some() {
+        return None;
+    }
+    matches!(
+        instruction.mnemonic,
+        Mnemonic::Rts | Mnemonic::Rtl | Mnemonic::Rti
+    )
+    .then_some(instruction.mnemonic)
+}
+
+/// Removes a return the return above it already made.
+///
+/// The legacy peephole's eighth rule, and **the one pass that removes a
+/// user-written operation**. The justification is structural rather than an
+/// origin check: a return has no successors, so the only way to reach the
+/// second one is to arrive at it from outside, and the only thing that lets
+/// an edge in is a label. Any operation at all between the two — a label, an
+/// anchor, a mode assumption, a byte of data — ends the run, which is the
+/// legacy's rule and is what makes the argument hold without consulting the
+/// block graph at all.
+///
+/// The mnemonics must match. `rts` after `rtl` is not a duplicate: it is a
+/// second return that unwinds a different amount of stack, and reaching it is
+/// a question about the caller rather than about this function.
+fn collapse_duplicate_returns(unit: &Unit<'_>, ops: &mut Vec<KOp>, log: &mut OptimizationLog) {
+    let frozen = frozen_operations(ops);
+    let mut duplicates: Vec<usize> = Vec::new();
+    let mut above: Option<Mnemonic> = None;
+    for index in 0..ops.len() {
+        let Some(mnemonic) = return_mnemonic(&ops[index]) else {
+            above = None;
+            continue;
+        };
+        if above == Some(mnemonic) && !frozen[index] {
+            duplicates.push(index);
+            continue;
+        }
+        above = Some(mnemonic);
+    }
+    for index in &duplicates {
+        log.changes.push(Change {
+            pass: Pass::CollapseDuplicateReturns,
+            site: Site {
+                function: unit.function,
+                index: *index,
+            },
+            before: vec![ops[*index].clone()],
+            after: Vec::new(),
+            witness: Some(ops[index - 1].clone()),
+            justification: String::from(
+                "the return above it already left the function, and no label between them lets an edge in",
+            ),
+        });
+    }
+    for index in duplicates.into_iter().rev() {
         ops.remove(index);
     }
 }

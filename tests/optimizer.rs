@@ -855,6 +855,147 @@ fn only_compiler_generated_operations_are_removed_as_unreachable() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The two legacy peephole rules (sub-plan G, task G8)
+// ---------------------------------------------------------------------------
+
+const TAIL_LABELS: &str = include_str!("golden/opt-tail-labels.k816");
+
+/// Which functions in `opt-tail-labels.k816` a pass changed.
+fn changed_by(log: &OptimizationLog, model: &SemanticModel, pass: Pass) -> Vec<String> {
+    let mut names: Vec<String> = log
+        .by_pass(pass)
+        .map(|change| model.symbols.name(change.site.function).to_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Pass 9 removes a branch to the next label, and only where falling through
+/// reaches the same place.
+///
+/// Three cases, one file. `branch_to_next` has nothing at all between the
+/// branch and its target. `branch_over_work` has an `inx`, which is the
+/// difference between taking the branch and not, and it is the shape the
+/// legacy peephole's `next_label_matches` refuses the same way. And
+/// `native_branch_to_next` is the origin rule: the branch is a no-op there
+/// too, and it stays, because the author typed it.
+#[test]
+fn a_branch_to_the_next_label_goes_and_a_branch_over_work_stays() {
+    let (_, file, model, mut program) = lowered_as("opt-tail-labels.k816", TAIL_LABELS);
+    let log = run(&mut program, &model, file);
+    assert_eq!(
+        changed_by(&log, &model, Pass::RemoveBranchToNextLabel),
+        vec!["branch_to_next"]
+    );
+    assert_eq!(
+        log.by_pass(Pass::RemoveBranchToNextLabel)
+            .next()
+            .expect("one change")
+            .justification,
+        "the target is the next label, which control reaches by falling through"
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "branch_to_next"),
+        vec![Mnemonic::Cmp, Mnemonic::Inc, Mnemonic::Rts]
+    );
+    assert!(
+        mnemonics(&program, &model, "branch_over_work").contains(&Mnemonic::Beq),
+        "an instruction between the branch and its label keeps the branch"
+    );
+    assert!(
+        mnemonics(&program, &model, "native_branch_to_next").contains(&Mnemonic::Bra),
+        "a hand-written branch to the next label stays where it was written"
+    );
+    assert!(
+        mnemonics(&program, &model, "frozen_tail").contains(&Mnemonic::Beq),
+        "a `nocross` guard measured its run at lowering, so nothing inside it moves"
+    );
+}
+
+/// A removal can expose the next one, and the pass keeps going.
+///
+/// `> goto done` is two branches — a guard over the branch that takes the
+/// target, and the branch itself — and when `done` is the next label *both*
+/// are branches to it. The second is only visible once the first is gone, so
+/// a single scan would find one and stop. The whole conditional jump
+/// collapses.
+#[test]
+fn removing_one_branch_to_the_next_label_exposes_the_next() {
+    let (_, file, model, mut program) =
+        lowered("func guarded @a8 @i8 {\n    a?5\n    > goto .done\n.done:\n    x++\n}\n");
+    let log = run(&mut program, &model, file);
+    assert_eq!(log.by_pass(Pass::RemoveBranchToNextLabel).count(), 2);
+    assert_eq!(
+        mnemonics(&program, &model, "guarded"),
+        vec![Mnemonic::Cmp, Mnemonic::Inx, Mnemonic::Rts]
+    );
+}
+
+/// Pass 10 removes a return the return above it already made, and stops at
+/// anything that could let an edge in.
+///
+/// This is the one pass that removes a **user-written** operation, so its
+/// three cases are the argument for that: `returns_twice` has nothing between
+/// the two, `returns_around_a_label` has the one thing that lets control
+/// arrive, and `mixed_returns` has two returns that are not the same return.
+#[test]
+fn a_second_return_goes_unless_something_could_reach_it() {
+    let (_, file, model, mut program) = lowered_as("opt-tail-labels.k816", TAIL_LABELS);
+    let log = run(&mut program, &model, file);
+    assert_eq!(
+        changed_by(&log, &model, Pass::CollapseDuplicateReturns),
+        vec!["returns_twice"]
+    );
+    let change = log
+        .by_pass(Pass::CollapseDuplicateReturns)
+        .next()
+        .expect("one change");
+    assert_eq!(
+        change.justification,
+        "the return above it already left the function, and no label between them lets an edge in"
+    );
+    assert_eq!(
+        change.witness.as_ref().map(|op| op.kind.clone()),
+        Some(KOpKind::Instruction(k816::op::Instruction::new(
+            Mnemonic::Rts,
+            k816::isa::AddressingMode::Stack,
+            None
+        )))
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "returns_twice"),
+        vec![Mnemonic::Lda, Mnemonic::Rts]
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "returns_around_a_label"),
+        vec![Mnemonic::Lda, Mnemonic::Rts, Mnemonic::Rts],
+        "a label between two returns is what lets an edge in"
+    );
+    assert_eq!(
+        mnemonics(&program, &model, "mixed_returns"),
+        vec![Mnemonic::Rts, Mnemonic::Rtl],
+        "`rts` and `rtl` unwind different amounts of stack"
+    );
+    // Inside a `nocross` run both returns stay, for a reason that has nothing
+    // to do with either pass's own rule: the guard's byte length was measured
+    // at lowering, and removing a byte from inside the run would leave a
+    // link-time assertion covering bytes that are no longer there. What goes
+    // is the implicit return *after* the guard, which is outside the run and
+    // is F's unreachable pass.
+    assert_eq!(
+        mnemonics(&program, &model, "frozen_tail"),
+        vec![
+            Mnemonic::Cmp,
+            Mnemonic::Beq,
+            Mnemonic::Inc,
+            Mnemonic::Rts,
+            Mnemonic::Rts
+        ],
+        "the frozen run keeps both returns and its branch"
+    );
+}
+
 /// A call in the middle of a function keeps everything after it reachable.
 ///
 /// `ControlEffect::Call` is not `FallThrough`, so a block graph built from the

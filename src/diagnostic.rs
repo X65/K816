@@ -314,6 +314,19 @@ impl DiagnosticCode {
     /// without it this unit would emit an expansion of a body nothing
     /// checked.
     pub const BORROWED_INLINE_UNUSABLE: Self = Self("K816-E0156");
+    /// A branch condition the 65816 has no single instruction for: unsigned
+    /// `>` is "carry set *and* not equal", unsigned `<=` is "carry clear *or*
+    /// equal", and each costs two branch instructions wherever it is written.
+    ///
+    /// K816's warning, not the original's: `>` and `<=` are absent from
+    /// `compiler.inc`'s `BranchOp` entirely (`plans/06-compatibility.md`
+    /// decision 23), so the operators and the complaint about them are both
+    /// extensions. The legacy K816 warned per *spelling* — `} >` costs three
+    /// branches, `} <=` costs two — and both halves of that are wrong here:
+    /// K816's `>` expansion is two branches, and the two conditions negate
+    /// into each other, so which of them a site pays for depends on the form
+    /// and not on the token. The help names the pair the site actually emits.
+    pub const INEFFICIENT_BRANCH: Self = Self("K816-W0157");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays

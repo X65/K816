@@ -92,14 +92,16 @@ pub enum Pass {
     /// 10 — remove a return that another return, immediately above it,
     /// already made.
     CollapseDuplicateReturns,
-    /// Shrink a long-form branch E emitted conservatively, once the
+    /// 11 — shrink a long-form branch E emitted conservatively, once the
     /// byte-removing passes have run and the distance is known.
     ///
     /// Last, because it measures distances and every pass above it removes
-    /// bytes. `plans/06-compatibility.md` §9 puts passes 9 and 10 "after F's
-    /// eight"; taken literally that would put them after this one and leave
-    /// the bytes they remove out of every distance, so they go where the
-    /// sentence means rather than where it points (§G.13.1).
+    /// bytes — which is a constraint on the sequence rather than a position
+    /// in it: a pass added later that removes bytes goes *above* this one.
+    /// `plans/implementation.md` phase 9 numbers it 11 and says so;
+    /// `plans/06-compatibility.md` §9 had put passes 9 and 10 "after F's
+    /// eight", which taken literally is after this one (`postmortem.md`
+    /// §G.13.1).
     ShrinkBranches,
 }
 

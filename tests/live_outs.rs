@@ -459,29 +459,42 @@ fn error_codes(diagnostics: &[k816::diagnostic::Diagnostic]) -> Vec<String> {
 
 /// Counts the declarations and call sites of one preprocessed unit.
 ///
-/// The walk matches **exhaustively** on every statement and data entry, so a
-/// construct that grows a block later stops this file from compiling rather
-/// than silently going uncounted. That is the whole reason it is written out
-/// instead of matching only the three kinds it cares about.
+/// Every match here is **exhaustive** — over items, over statements, over
+/// data entries — so a construct that grows a block later stops this file
+/// from compiling rather than going silently uncounted. That is the whole
+/// reason the arms are written out instead of matching only the kinds this
+/// cares about.
 fn census_of(file: &AstFile) -> Census {
     let mut census = Census::default();
     for item in &file.items {
-        let ItemKind::Func(function) = &item.kind else {
-            if let ItemKind::Data(data) = &item.kind {
-                data_block(data, &mut census);
+        match &item.kind {
+            ItemKind::Func(function) => {
+                census.functions += 1;
+                // The same rule `declared_outputs` uses: a width-only clause
+                // declares an exit width and not a register flow, so it
+                // names no outputs and narrowing has nothing to narrow to.
+                if function
+                    .contract
+                    .as_ref()
+                    .and_then(|contract| contract.outputs.as_ref())
+                    .is_some_and(|outputs| !outputs.outputs.is_empty())
+                {
+                    census.declaring += 1;
+                }
+                block(&function.body, &mut census);
             }
-            continue;
-        };
-        census.functions += 1;
-        if function
-            .contract
-            .as_ref()
-            .and_then(|contract| contract.outputs.as_ref())
-            .is_some_and(|outputs| !outputs.outputs.is_empty())
-        {
-            census.declaring += 1;
+            ItemKind::Data(data) => data_block(data, &mut census),
+            ItemKind::Var(_)
+            | ItemKind::Const(_)
+            | ItemKind::Segment(_)
+            | ItemKind::EvalBlock(_)
+            | ItemKind::EvalFunc(_)
+            | ItemKind::Preprocessor(_)
+            | ItemKind::Binary(_)
+            | ItemKind::Reserved(_)
+            | ItemKind::ModuleWidth(_)
+            | ItemKind::Error => {}
         }
-        block(&function.body, &mut census);
     }
     census
 }
@@ -608,10 +621,11 @@ fn narrowing_the_live_out_seed_buys_only_what_the_table_lists() {
     }
     found.sort();
 
-    let expected: Vec<(String, usize, u32)> = DIFFERENCE
+    let mut expected: Vec<(String, usize, u32)> = DIFFERENCE
         .iter()
         .map(|(name, operations, bytes, _)| ((*name).to_owned(), *operations, *bytes))
         .collect();
+    expected.sort();
     assert_eq!(
         found, expected,
         "the corpus no longer buys what `DIFFERENCE` says. A new row is a \

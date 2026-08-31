@@ -211,7 +211,7 @@ pub struct FunctionInfo {
     /// What a `->` clause promises, as a set — `None` when there is no clause
     /// naming a register or a flag.
     ///
-    /// Recorded for the optimizer, which does not read it yet. F's
+    /// Recorded for the optimizer, no pass of which reads it. F's
     /// decision 12 seeds liveness with *everything* at a function exit, and
     /// named the two language rules that would let it narrow: a flag-output
     /// clause, and a rule that an unlisted output is undefined. Both exist

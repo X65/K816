@@ -13,18 +13,26 @@ expect    input.k65 K816-E0160
 expect    input.k65 K816-E0160
 expect    input.k65 K816-E0160
 expect    input.k65 K816-W0161
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
 
 **The flag itself**, which is the one row in the manifest whose construct is
 not in any source: `--strict-k65` is a switch, so its fixture is a build run
 with it rather than a program containing it.  `strict yes` in the header is
 what turns it on, and it is the only fixture in the corpus that does.
 
-Nine errors and one warning, in source order.  The nine have no K65 spelling
-at all - `segment`, `var dp`, a field list, a field width, an allocation count,
-a `$` literal, two width annotations and a call contract - and the warning is
-the one construct here that compiles in *both* languages: `* 3` is three
-`NOP`s in K816 and three **cycles** in the original, which spends an odd one
-through `NOP $80` (`instr-nop-wait`, decision 11).
+Eleven errors and one warning, in source order.  The eleven have no K65
+spelling at all - `segment`, `var dp`, a field list, a field width, an
+allocation count, a `$` literal, two width annotations, a call contract, the
+`#` of `a + #MASK` and the `,s` of `a = 3,s` - and the warning is the one construct here that compiles in *both* languages:
+`* 3` is three `NOP`s in K816 and three **cycles** in the original, which
+spends an odd one through `NOP $80` (`instr-nop-wait`, decision 11).
+
+The `#` is last because it is inside the body and the ordering is by span.  It
+is worth a line of its own: the original has no `#` anywhere outside its
+preprocessor, because `Arg -> Number` *is* the immediate there - so `a + 1`
+adds one in K65 and adds the byte at `$0001` in K816, and the marker's absence
+is as much a difference as its presence.
 
 The `* 3` opens its body rather than following the `a + #MASK`, and that is
 K65's own rule rather than a workaround: the language is newline-insensitive

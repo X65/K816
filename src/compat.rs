@@ -35,11 +35,11 @@
 //! schedule.
 
 use crate::ast::{
-    AddressOperand, AstFile, BinaryOp, Block, BranchCondition, BranchConditionKind, CallArgument,
-    ComparisonKind, ContractOutput, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr,
-    EvalExprKind, Expr, ExprKind, FieldDeclaration, Function, HlaOperand, HlaOperandKind,
-    HlaStatement, Item, ItemKind, LoopCondition, NativeOperand, Register, RegisterKind, Statement,
-    StatementKind, StorageClassKind, UnaryOp, VarDeclaration,
+    AstFile, BinaryOp, Block, BranchCondition, BranchConditionKind, CallArgument, ComparisonKind,
+    ContractOutput, DataBlock, DataEntry, DataEntryKind, DataValue, EvalExpr, EvalExprKind, Expr,
+    ExprKind, FieldDeclaration, Function, HlaOperand, HlaOperandKind, HlaStatement, Item, ItemKind,
+    LoopCondition, NativeOperand, Register, RegisterKind, Statement, StatementKind,
+    StorageClassKind, UnaryOp, VarDeclaration,
 };
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
 use crate::source::Span;
@@ -498,6 +498,9 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-typed-data-entries", K816Extension, Rejects),
     row("k816-status-register-stack", K816Extension, Rejects),
     row("k816-operand-expressions", K816Extension, Rejects),
+    row("k816-immediate-marker", K816Extension, Rejects),
+    row("k816-address-encoding", K816Extension, Rejects),
+    row("k816-stack-relative", K816Extension, Rejects),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
 ];
@@ -641,6 +644,27 @@ const REPORTED: &[Reported] = &[
         what: "an operand expression",
         instead: Some(
             "K65's operand arithmetic is `NAME + NAME` and `NAME - number` and nothing else; fold the rest in a `[ … ]` bracket",
+        ),
+    },
+    Reported {
+        id: "k816-immediate-marker",
+        what: "the `#` immediate marker",
+        instead: Some(
+            "K65 has no `#` at all: `Arg -> Number` *is* the immediate, so `a = 1` loads one and `a = ONE` loads the constant",
+        ),
+    },
+    Reported {
+        id: "k816-address-encoding",
+        what: "an address-encoding prefix",
+        instead: Some(
+            "K65 decides zero page against absolute from the value; there is no prefix to write",
+        ),
+    },
+    Reported {
+        id: "k816-stack-relative",
+        what: "stack-relative indexing",
+        instead: Some(
+            "K65 indexes with `,X` and `,Y` and nothing else; the 6502 has no stack-relative mode",
         ),
     },
     Reported {
@@ -818,10 +842,19 @@ impl StrictWalk<'_> {
         if var.is_abstract {
             self.mark("k816-abstract-var", span);
         }
-        if let Some(storage) = &var.storage
-            && storage.kind == StorageClassKind::DirectPage
-        {
-            self.mark("k816-direct-page-pool", storage.span);
+        if let Some(storage) = &var.storage {
+            match storage.kind {
+                // The pool is its own decision and its own row (G7).
+                StorageClassKind::DirectPage => {
+                    self.mark("k816-direct-page-pool", storage.span);
+                }
+                // `abs` and `far` are the same axis one step down: K65's
+                // `Var -> Ident [BracketNumber] [= Number]` has no storage
+                // class at all, and no 24-bit address to give `far`.
+                StorageClassKind::Absolute | StorageClassKind::Far => {
+                    self.mark("k816-address-encoding", storage.span);
+                }
+            }
         }
         if let Some(width) = &var.width {
             self.mark("k816-typed-view", width.span);
@@ -1040,26 +1073,69 @@ impl StrictWalk<'_> {
     fn hla_operand(&mut self, operand: &HlaOperand) {
         match &operand.kind {
             HlaOperandKind::Register(register) => self.register(register),
-            HlaOperandKind::Immediate(expr) => self.expr(expr),
-            HlaOperandKind::Memory(address) => self.address(address),
-            HlaOperandKind::Indirect(indirect) => self.expr(&indirect.value),
+            // `#` marks an immediate here and nowhere in the original, which
+            // has none: `Arg -> Number` *is* the immediate (`:269`), so `a = 1`
+            // loads one there and an address here.
+            HlaOperandKind::Immediate(expr) => {
+                self.mark("k816-immediate-marker", operand.span);
+                self.expr(expr);
+            }
+            HlaOperandKind::Memory(address) => {
+                self.encoding(address.encoding.as_ref());
+                self.index(address.index.as_ref());
+                self.expr(&address.value);
+            }
+            HlaOperandKind::Indirect(indirect) => {
+                self.encoding(indirect.encoding.as_ref());
+                self.index(indirect.inner_index.as_ref());
+                self.index(indirect.outer_index.as_ref());
+                self.expr(&indirect.value);
+            }
             HlaOperandKind::Error => {}
         }
     }
 
+    /// `,s` — stack-relative indexing.
+    ///
+    /// `Arg -> VarArg , X | VarArg , Y | ( VarArg , X ) | ( VarArg ) , Y` is
+    /// the whole of the original's indexing (`:272-276`), and the 6502 has no
+    /// stack-relative mode for a fifth to name.
+    fn index(&mut self, index: Option<&crate::ast::IndexRegister>) {
+        if let Some(index) = index
+            && index.kind == crate::ast::IndexRegisterKind::Stack
+        {
+            self.mark("k816-stack-relative", index.span);
+        }
+    }
+
+    /// A `dp` / `abs` / `far` prefix in operand position.
+    ///
+    /// K65 decides zero page against absolute from the value — its own grammar
+    /// comment says the two are not spelled differently — and it has no 24-bit
+    /// address at all, so every one of the three is K816's.
+    fn encoding(&mut self, encoding: Option<&crate::ast::AddressEncoding>) {
+        if let Some(encoding) = encoding {
+            self.mark("k816-address-encoding", encoding.span);
+        }
+    }
+
+    /// A raw mnemonic's operand, which reports nothing of its own.
+    ///
+    /// `k816-native-mnemonics` is one row for the whole native layer, operand
+    /// grammar included: the original has no mnemonic production, so it has no
+    /// operand grammar for one either, and `#` and `dp` there are part of the
+    /// form already reported rather than two more findings. What *is* walked
+    /// is what an operand can nest — a literal's spelling, and an evaluator
+    /// bracket, both of which are rows in their own right wherever they stand.
     fn native_operand(&mut self, operand: &NativeOperand) {
         match operand {
             NativeOperand::Immediate(expr) => self.expr(expr),
             NativeOperand::Register(register) => self.register(register),
-            NativeOperand::Address(address) => self.address(address),
+            NativeOperand::Address(address) => self.expr(&address.value),
             NativeOperand::Indirect(indirect) => self.expr(&indirect.value),
             NativeOperand::LongIndirect(indirect) => self.expr(&indirect.value),
             NativeOperand::BlockMove(_) => {}
         }
-    }
-
-    fn address(&mut self, address: &AddressOperand) {
-        self.expr(&address.value);
     }
 
     fn register(&mut self, register: &Register) {

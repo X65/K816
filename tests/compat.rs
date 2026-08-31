@@ -1257,6 +1257,231 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ),
     ("HlaStatement", "Nop", "instr-nop-wait"),
     ("HlaStatement", "Break", "instr-nop-wait"),
+    // ---- StorageClassKind ----------------------------------------------
+    ("StorageClassKind", "DirectPage", "k816-direct-page-pool"),
+    ("StorageClassKind", "Absolute", "k816-address-encoding"),
+    ("StorageClassKind", "Far", "k816-address-encoding"),
+    // ---- TypeWidthKind -------------------------------------------------
+    (
+        "TypeWidthKind",
+        "Byte",
+        "k816-typed-view k816-typed-data-entries",
+    ),
+    (
+        "TypeWidthKind",
+        "Word",
+        "k816-typed-view k816-typed-data-entries",
+    ),
+    (
+        "TypeWidthKind",
+        "Far",
+        "k816-typed-view k816-typed-data-entries",
+    ),
+    // ---- FunctionKind --------------------------------------------------
+    ("FunctionKind", "Func", "topelem-func"),
+    ("FunctionKind", "Naked", "topelem-naked"),
+    ("FunctionKind", "Inline", "topelem-inline"),
+    ("FunctionKind", "Main", "topelem-main"),
+    // ---- ContractParameter ---------------------------------------------
+    ("ContractParameter", "Register", "k816-call-contracts"),
+    ("ContractParameter", "ImmediateAlias", "k816-call-contracts"),
+    ("ContractParameter", "Alias", "k816-call-contracts"),
+    // ---- ContractOutput ------------------------------------------------
+    ("ContractOutput", "Register", "k816-call-contracts"),
+    ("ContractOutput", "Flag", "k816-call-contracts"),
+    // ---- WidthAnnotationKind -------------------------------------------
+    ("WidthAnnotationKind", "A8", "k816-width-annotations"),
+    ("WidthAnnotationKind", "A16", "k816-width-annotations"),
+    ("WidthAnnotationKind", "I8", "k816-width-annotations"),
+    ("WidthAnnotationKind", "I16", "k816-width-annotations"),
+    // ---- BranchConditionKind -------------------------------------------
+    ("BranchConditionKind", "Comparison", "branchop"),
+    ("BranchConditionKind", "Flag", "branchop"),
+    // ---- ComparisonKind ------------------------------------------------
+    ("ComparisonKind", "Less", "branchop"),
+    ("ComparisonKind", "GreaterEqual", "branchop"),
+    ("ComparisonKind", "Equal", "branchop"),
+    ("ComparisonKind", "NotEqual", "branchop"),
+    ("ComparisonKind", "Negative", "branchop"),
+    ("ComparisonKind", "NotNegative", "branchop"),
+    ("ComparisonKind", "OverflowSet", "branchop"),
+    ("ComparisonKind", "OverflowClear", "branchop"),
+    ("ComparisonKind", "Greater", "k816-postfix-gt"),
+    ("ComparisonKind", "LessEqual", "k816-postfix-le"),
+    // ---- TestableFlag --------------------------------------------------
+    ("TestableFlag", "Carry", "branchop"),
+    ("TestableFlag", "Negative", "branchop"),
+    ("TestableFlag", "Zero", "branchop"),
+    ("TestableFlag", "Overflow", "branchop"),
+    // ---- LoopCondition -------------------------------------------------
+    ("LoopCondition", "Branch", "instr-branch-block"),
+    ("LoopCondition", "Always", "instr-branch-block"),
+    ("LoopCondition", "Never", "instr-branch-block"),
+    // ---- CallArgument --------------------------------------------------
+    ("CallArgument", "Register", "k816-call-contracts"),
+    ("CallArgument", "Immediate", "k816-call-contracts"),
+    // ---- ReturnKind ----------------------------------------------------
+    ("ReturnKind", "Subroutine", "instr-return"),
+    ("ReturnKind", "Interrupt", "instr-return"),
+    // ---- LabelScope ----------------------------------------------------
+    ("LabelScope", "Global", "instr-label"),
+    ("LabelScope", "Local", "ident"),
+    // ---- NativeOperand -------------------------------------------------
+    ("NativeOperand", "Immediate", "k816-native-mnemonics"),
+    ("NativeOperand", "Register", "k816-native-mnemonics"),
+    ("NativeOperand", "Address", "k816-native-mnemonics"),
+    ("NativeOperand", "Indirect", "k816-native-mnemonics"),
+    ("NativeOperand", "LongIndirect", "k816-native-mnemonics"),
+    ("NativeOperand", "BlockMove", "k816-native-mnemonics"),
+    // ---- IndexRegisterKind ---------------------------------------------
+    ("IndexRegisterKind", "X", "arg-forms"),
+    ("IndexRegisterKind", "Y", "arg-forms"),
+    ("IndexRegisterKind", "Stack", "k816-stack-relative"),
+    // ---- ArithmeticOp --------------------------------------------------
+    ("ArithmeticOp", "Add", "instr-arith arithop"),
+    ("ArithmeticOp", "Subtract", "instr-arith arithop"),
+    ("ArithmeticOp", "And", "instr-arith arithop"),
+    ("ArithmeticOp", "Or", "instr-arith arithop"),
+    ("ArithmeticOp", "Xor", "instr-arith arithop"),
+    ("ArithmeticOp", "Compare", "instr-arith arithop"),
+    ("ArithmeticOp", "BitTest", "instr-arith arithop"),
+    // ---- ShiftOp -------------------------------------------------------
+    ("ShiftOp", "Left", "instr-postfix postfixop"),
+    ("ShiftOp", "Right", "instr-postfix postfixop"),
+    ("ShiftOp", "RotateLeft", "instr-postfix postfixop"),
+    ("ShiftOp", "RotateRight", "instr-postfix postfixop"),
+    // ---- StepOp --------------------------------------------------------
+    ("StepOp", "Increment", "instr-postfix postfixop"),
+    ("StepOp", "Decrement", "instr-postfix postfixop"),
+    // ---- FlagKind ------------------------------------------------------
+    (
+        "FlagKind",
+        "Carry",
+        "instr-flag-set instr-flag-clear flag-tokens",
+    ),
+    (
+        "FlagKind",
+        "Decimal",
+        "instr-flag-set instr-flag-clear flag-tokens",
+    ),
+    (
+        "FlagKind",
+        "Interrupt",
+        "instr-flag-set instr-flag-clear flag-tokens",
+    ),
+    (
+        "FlagKind",
+        "Overflow",
+        "instr-flag-set instr-flag-clear flag-tokens",
+    ),
+    // ---- StackOp -------------------------------------------------------
+    ("StackOp", "Push", "instr-stack-a instr-stack-flags"),
+    ("StackOp", "Pull", "instr-stack-a instr-stack-flags"),
+    // ---- HlaOperandKind ------------------------------------------------
+    ("HlaOperandKind", "Register", "register-tokens"),
+    ("HlaOperandKind", "Immediate", "k816-immediate-marker"),
+    ("HlaOperandKind", "Memory", "arg-forms"),
+    ("HlaOperandKind", "Indirect", "arg-forms"),
+    ("HlaOperandKind", "Error", "n/a"),
+    // ---- RegisterKind --------------------------------------------------
+    (
+        "RegisterKind",
+        "A",
+        "register-tokens k816-accumulator-one-name",
+    ),
+    ("RegisterKind", "B", "k816-accumulator-one-name"),
+    ("RegisterKind", "Dpr", "k816-register-names"),
+    ("RegisterKind", "Dbr", "k816-register-names"),
+    ("RegisterKind", "S", "register-tokens"),
+    ("RegisterKind", "X", "register-tokens"),
+    ("RegisterKind", "Y", "register-tokens"),
+    ("RegisterKind", "P", "k816-status-register-stack"),
+    // ---- UnaryOp -------------------------------------------------------
+    ("UnaryOp", "Negate", "k816-operand-expressions"),
+    ("UnaryOp", "BitNot", "k816-operand-expressions"),
+    ("UnaryOp", "LowByte", "arg-forms"),
+    ("UnaryOp", "HighByte", "arg-forms"),
+    ("UnaryOp", "Address16", "data-address-word"),
+    ("UnaryOp", "Address24", "k816-operand-expressions"),
+    // ---- EvalExprKind --------------------------------------------------
+    ("EvalExprKind", "Number", "evelem-values terminal-numbers"),
+    ("EvalExprKind", "Pi", "evelem-values"),
+    ("EvalExprKind", "Float", "evelem-values terminal-numbers"),
+    ("EvalExprKind", "String", "evelem-values terminal-string"),
+    ("EvalExprKind", "Symbol", "evelem-values allident"),
+    ("EvalExprKind", "Call", "evelem-call k816-eval-extensions"),
+    (
+        "EvalExprKind",
+        "Unary",
+        "evelem-incdec k816-eval-extensions",
+    ),
+    (
+        "EvalExprKind",
+        "Binary",
+        "evexpr-operators k816-eval-extensions",
+    ),
+    ("EvalExprKind", "Ternary", "evexpr-operators"),
+    ("EvalExprKind", "Assignment", "evexpr-operators"),
+    ("EvalExprKind", "Subscript", "evelem-index"),
+    ("EvalExprKind", "Member", "evelem-method"),
+    ("EvalExprKind", "MethodCall", "evelem-method"),
+    ("EvalExprKind", "List", "evexpr-operators"),
+    ("EvalExprKind", "Block", "evalinstr-statements"),
+    ("EvalExprKind", "If", "evalinstr-statements"),
+    ("EvalExprKind", "While", "evalinstr-statements"),
+    ("EvalExprKind", "ReservedCall", "evelem-call"),
+    ("EvalExprKind", "Error", "n/a"),
+    // ---- PreprocessorKind ----------------------------------------------
+    ("PreprocessorKind", "If", "ppif-directives"),
+    ("PreprocessorKind", "ElseIf", "ppif-directives"),
+    ("PreprocessorKind", "Else", "ppif-directives"),
+    ("PreprocessorKind", "EndIf", "ppif-directives"),
+    ("PreprocessorKind", "Error", "topelem-pperror"),
+    ("PreprocessorKind", "Warn", "topelem-pperror"),
+    // ---- ReservedKind --------------------------------------------------
+    (
+        "ReservedKind",
+        "ImageBlock",
+        "data-image-tiles data-imgwave",
+    ),
+    ("ReservedKind", "ImageTopLevel", "topelem-image"),
+    ("ReservedKind", "EvalCall", "evelem-call"),
+    ("ReservedKind", "Bank", "topelem-bank"),
+    (
+        "ReservedKind",
+        "IllegalOpcode",
+        "instr-sax instr-axs arithop-anc arithop-dcp arithop-isc",
+    ),
+    ("ReservedKind", "StackFlag", "instr-stack-flags"),
+    ("ReservedKind", "OverflowFlagSpelling", "flag-tokens"),
+    // ---- IllegalOpcode -------------------------------------------------
+    ("IllegalOpcode", "Anc", "arithop-anc"),
+    ("IllegalOpcode", "Sax", "instr-sax"),
+    ("IllegalOpcode", "Axs", "instr-axs"),
+    ("IllegalOpcode", "Dcp", "arithop-dcp"),
+    ("IllegalOpcode", "Isc", "arithop-isc"),
+    // ---- EvalCallName --------------------------------------------------
+    ("EvalCallName", "AddByte", "evelem-call"),
+    ("EvalCallName", "Color", "evelem-call"),
+    ("EvalCallName", "Rnd", "evelem-call"),
+    ("EvalCallName", "Print", "evelem-call"),
+    ("EvalCallName", "Error", "evelem-call"),
+    // ---- DataValue -----------------------------------------------------
+    ("DataValue", "Expr", "data-arg data-address-word"),
+    ("DataValue", "String", "data-string"),
+    ("DataValue", "Undefined", "data-undef"),
+    // ---- MetadataQueryKind ---------------------------------------------
+    ("MetadataQueryKind", "SizeOf", "k816-metadata-query"),
+    ("MetadataQueryKind", "OffsetOf", "k816-metadata-query"),
+    // ---- BinaryOp ------------------------------------------------------
+    ("BinaryOp", "Add", "vararg-label-offset"),
+    ("BinaryOp", "Sub", "vararg-label-offset"),
+    ("BinaryOp", "Mul", "k816-operand-expressions"),
+    ("BinaryOp", "Shl", "k816-operand-expressions"),
+    ("BinaryOp", "Shr", "k816-operand-expressions"),
+    ("BinaryOp", "BitAnd", "k816-operand-expressions"),
+    ("BinaryOp", "BitXor", "k816-operand-expressions"),
+    ("BinaryOp", "BitOr", "k816-operand-expressions"),
 ];
 
 /// Every AST variant is classified, and every classification names a real row.
@@ -1292,13 +1517,30 @@ fn every_ast_construct_answers_to_a_manifest_row() {
         }
     }
 
-    for enum_name in [
-        "ItemKind",
-        "StatementKind",
-        "DataEntryKind",
-        "ExprKind",
-        "HlaStatement",
-    ] {
+    // Every `pub enum` of the AST is in the table, not only the ones somebody
+    // thought to list: a whole enum added later is as much a construct as a
+    // variant is, and the point of reading the file is to be told rather than
+    // to remember.
+    let listed: BTreeSet<&str> = AST_VARIANTS.iter().map(|(e, _, _)| *e).collect();
+    let declared: BTreeSet<&str> = source
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub enum "))
+        .filter_map(|rest| rest.split_once(' '))
+        .map(|(name, _)| name)
+        .collect();
+    let unlisted: Vec<&&str> = declared.difference(&listed).collect();
+    assert!(
+        unlisted.is_empty(),
+        "`src/ast.rs` declares these enums and no manifest row classifies their \
+         variants: {unlisted:?}"
+    );
+    let unknown: Vec<&&str> = listed.difference(&declared).collect();
+    assert!(
+        unknown.is_empty(),
+        "these are listed here and are not enums of `src/ast.rs`: {unknown:?}"
+    );
+
+    for enum_name in listed {
         let body = source
             .split_once(&format!("pub enum {enum_name} {{"))
             .unwrap_or_else(|| panic!("src/ast.rs has no `pub enum {enum_name}`"))
@@ -1525,7 +1767,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
 
     assert_eq!(
         marked.len(),
-        23,
+        26,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()

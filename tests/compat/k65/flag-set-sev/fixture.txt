@@ -1,0 +1,27 @@
+row       instr-flag-set
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-K65-0006
+
+**`o+` asks for `SEV`, which no 65xx has, and the original dies rather than
+saying so.**  `oracle.err` is exit 134 with no diagnostic before the abort -
+the same shape `preprocessor-elif-inner-levels` records, and the same reason:
+the compiler's error path unwinds through a bad free.
+
+That is what makes `Instr -> Flag +` a `legacy-defective` row rather than a
+compatible one.  Three of the four flags the `Flag` class holds have a set
+instruction - `SEC`, `SED`, `SEI`, measured in `k65/nop-and-wait` - and the
+fourth never did.  A K65 source that writes `o+` has never had a working build
+to be compatible with.
+
+K816 answers before the question arises: `o` is not its spelling of the
+overflow flag (decision 32), so `K816-K65-0006` names `v` and stops.  Write
+`v+` instead and the answer is `K816-E0127`, "the 65816 cannot set the overflow
+flag", with the route the processor does have - arithmetic, or `a&?mem`.  Both
+are diagnostics with a sentence in them, which is the whole of what this row
+asks for.
+
+The *clear* half is a different row (`instr-flag-clear`, `compiler.inc:162`)
+and a different status: `CLC`, `CLD`, `CLI` and `CLV` all exist, and `o-` is
+`B8` in `k65/nop-and-wait`'s golden.

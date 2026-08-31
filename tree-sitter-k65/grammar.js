@@ -333,10 +333,25 @@ export default grammar({
 
     // `[32]` is a raw span, `[ .x :word ]` a symbolic field list. Which one a
     // bracket opens is decided by whether a `.field` name follows.
+    //
+    // Both spellings of the opening bracket are accepted — the plain one and
+    // the one that follows its base with no space — because a *declaration's*
+    // bracket may be written either way (`var buffer [32]`) while the postfix
+    // subscript below may not. Where a field list and a subscript are both
+    // possible — `.a[ … ]` inside a field list, say — the two readings then
+    // meet as one token and `field_declaration`'s precedence decides, which is
+    // what it did before the postfix became adjacency-sensitive.
     _span_or_fields: $ =>
-      choice(seq('[', field('size', $._expression), ']'), field('fields', $.field_list)),
+      choice(
+        seq($._open_bracket, field('size', $._expression), ']'),
+        field('fields', $.field_list),
+      ),
 
-    field_list: $ => seq('[', repeat1($.field_declaration), ']'),
+    field_list: $ => seq($._open_bracket, repeat1($.field_declaration), ']'),
+
+    _open_bracket: $ => choice('[', $._open_bracket_immediate),
+
+    _open_bracket_immediate: _ => token.immediate('['),
 
     // .name, .name :byte, .name :byte [count], .name [count], and nested
     // field lists. The declaration-level width is the default for fields that
@@ -1379,12 +1394,26 @@ export default grammar({
     // COMP[2] (a repeat element) and the equivalent field-selection spelling
     // COMP[.two]. Inside the brackets a `.name` is always a field, so it wins
     // over reading it as a local label used as an index.
+    //
+    // The `[` binds to its base with no space between, exactly as `field_name`
+    // above does, and for the same reason one level up: K65 is
+    // newline-insensitive, so a postfix that may be separated from its base
+    // reads the *next line* as its operand. `const FLAG = 0` above a top-level
+    // `[ SIDE = 7 ]` parsed as `FLAG = 0[SIDE = 7]` and reported
+    // `K816-E0001` — a program the original compiles, reaching a generic
+    // parse error, which is what decision 0 exists to prevent
+    // (`doc/k65-compat-manifest.md`, `newline-subscript`).
+    //
+    // This is the *K816* postfix — symbolic subscripts and repeat elements,
+    // which K65 has not — so the rule is K816's to make. The evaluator's
+    // `EvElem [ … ]` below is K65's own and stays newline-insensitive, because
+    // there `t` above a `[0]` is `t[0]` in the original too.
     subscript_expression: $ =>
       prec.left(
         PREC.access,
         seq(
           field('base', $._expression),
-          '[',
+          $._open_bracket_immediate,
           choice(
             field('field', prec(1, $.local_identifier)),
             field('index', $._expression),

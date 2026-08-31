@@ -1,0 +1,34 @@
+// The literal spellings K816 has and the original has not.
+//
+// `compiler.inc`'s terminals are the whole of K65's numeric alphabet:
+// `[0-9]+`, `0x…`, `0b…`, `[0-9]*[.][0-9]+` and `"[^"]*"` (`:478-497`).  There
+// is no `$`, no `%`, no character literal, and a string is `"[^"]*"` - so a
+// quote cannot appear in one and an escape is two characters, not one.
+//
+// K816 has all four, and each is a `K816-extension` row that `--strict-k65`
+// rejects.  `%` in particular is the *original's three-cycle wait* at
+// statement level (`instr-nop-wait`), which is why it is worth having a
+// fixture: the same character means two unrelated things depending on where it
+// stands, and only one of them is K65's.
+//
+// Manifest row `k816-hex-binary-char-literals`.
+
+const HIGH = $F0
+const MASK = %00001111
+
+data letters {
+  'k' '8'
+  "hi\n"
+  HIGH
+  MASK
+}
+
+var slot = $80
+
+func main @a8 @i8 {
+  a = #$0F
+  slot = a
+  x = #%0011
+  y = #'z'
+  return
+}

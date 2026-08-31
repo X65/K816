@@ -56,7 +56,17 @@ extensions, and that column existed only here.
 
 `Reserved` is not carried over, because it names the absence of a decision
 rather than a decision. The manifest spells that `open` and names the task that
-closes it, and no `open` row is allowed to survive the sub-plan.
+closes it, and no `open` row survives the sub-plan: sub-plan G's task G10
+closed the last four and `tests/compat.rs` asserts there are none.
+
+Two columns sit beside the status and are checked with it. **`Cheap`** is the
+per-rule judgment the rule above turns on — was compatibility cheap for K816 —
+written down rather than left to be inferred from prose, so that a row claiming
+to be compatible with something it never paid for is a test failure. **`Strict`**
+is what `--strict-k65` does where the row's construct appears, which the status
+alone does not decide: most of the intentional changes are constructs the
+compiler already refuses, and a warning there would repeat an error the author
+has read.
 
 ## Where the superset stops
 

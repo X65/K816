@@ -1,0 +1,41 @@
+row       instr-call
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A bare identifier at the start of a statement is a call, and the line does
+not end the statement.**  `Instr -> Arg` (`compiler.inc:154`) and
+`dofunction`: `stamp_one slot = a` is a call to the `inline` and then a store,
+which the golden shows as `85 81 85 80` - `STA one`, `STA slot`, in that order.
+`stamp_two stamp_one` on one line is two calls, `85 82 85 81`.  K816 emits
+every one of those bytes in the same order; the two images differ in one place
+and it is the linker's.
+
+This row was `open` from G0 until G10a, and the reason is worth keeping: K816
+gave the *first* identifier of a statement to its address-encoding prefix rule.
+`dp`, `abs` and `far` take the operand that follows them, and the grammar
+cannot see which spelling a prefix used - so every bare call with anything
+after it on the line reached `K816-E0001`, which is a valid K65 statement
+getting a generic parse error.  Decision 16 called it a grammar defect and G1
+fixed it in the AST builder, where the spelling *is* visible
+(`postmortem.md` §G.1.8); the row stayed open because nothing had measured the
+original's answer.  Now something has.
+
+Three shapes, and the third is the one that says what rule is *not* being
+introduced: a call alone on its line, a call with a store after it, and two
+calls on one line.  K65 is newline-insensitive and stays so - the fix narrows
+the prefix, it does not end a statement at the newline.
+
+The original inlines each expansion in place and labels it `__I<n><name>`;
+K816 has no label of its own for an expansion.  Neither emits a byte for the
+label, so the sequences agree.
+
+That one difference: the original opens with `4C 04 20`, a `JMP main` stub K816
+does not emit because ld65 places the entry, so `answers` sits at `$2000` here
+and `$2003` there and the closing `LDA` names it accordingly.  Every generated
+byte between agrees.
+
+`a = slot` opens the body rather than an immediate, deliberately.  The original
+has no `#`: `Arg -> Number` *is* the immediate (`:269`), and `a = #MARK` does
+not merely fail to parse there - it makes the compiler spin, which is worth
+knowing and is not this row's subject.

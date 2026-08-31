@@ -369,8 +369,8 @@
           "type": "SEQ",
           "members": [
             {
-              "type": "STRING",
-              "value": "["
+              "type": "SYMBOL",
+              "name": "_open_bracket"
             },
             {
               "type": "FIELD",
@@ -400,8 +400,8 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "STRING",
-          "value": "["
+          "type": "SYMBOL",
+          "name": "_open_bracket"
         },
         {
           "type": "REPEAT1",
@@ -415,6 +415,26 @@
           "value": "]"
         }
       ]
+    },
+    "_open_bracket": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "["
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_open_bracket_immediate"
+        }
+      ]
+    },
+    "_open_bracket_immediate": {
+      "type": "IMMEDIATE_TOKEN",
+      "content": {
+        "type": "STRING",
+        "value": "["
+      }
     },
     "field_declaration": {
       "type": "PREC",
@@ -4537,8 +4557,8 @@
             }
           },
           {
-            "type": "STRING",
-            "value": "["
+            "type": "SYMBOL",
+            "name": "_open_bracket_immediate"
           },
           {
             "type": "CHOICE",

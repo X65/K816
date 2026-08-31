@@ -341,3 +341,23 @@ func main {
         operand: (immediate
           value: (metadata_query
             base: (identifier)))))))
+
+================================================================================
+A bracket on the next line is not a subscript
+================================================================================
+
+const FLAG = 0
+[ SIDE = 7 ]
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (const_declaration
+    (const_entry
+      name: (identifier)
+      value: (number)))
+  (eval_block
+    expression: (eval_bracket
+      (eval_assignment
+        target: (identifier)
+        value: (number)))))

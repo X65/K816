@@ -10,7 +10,7 @@
 # compiler  version 0.2.1, build Feb  9 2026 02:31:38
 # revision  920a4e40e853c4cb563302f3c88d81ba4687c4ed
 # command   cd $K65_HOME/workdir && ../out/k65.exe @<this-directory>/preprocessor-condition-reads.k65proj
-# input     input.k65        adler32 44E1FD3E  1649 bytes
+# input     input.k65        adler32 ACC41F17  1742 bytes
 # input     oracle.conf      adler32 BDCD1422  66 bytes
 # project
 #     -system AtariXL

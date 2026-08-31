@@ -1,0 +1,26 @@
+// Oracle question: what does the original do with `o+`?
+//
+// `Instr -> Flag +` emits `string("SE") + $1` (`compiler.inc:161`) and the
+// `Flag` class renders `o` as `v` (`:259-260`), so `o+` asks for `SEV` - an
+// instruction no 65xx has.  The set family is `SEC`, `SED`, `SEI`, and that is
+// all; the overflow flag is set by arithmetic and by `a&?mem`, and cleared by
+// `CLV`.
+//
+// The original does not refuse it.  It hands `SEv` to its own assembler and
+// dies there: exit 134, no `Line N:` diagnostic, the C library's allocator
+// message on the way out.  `oracle.err` beside this file is that build.
+//
+// K816 never reaches the question, because `o` is not a K816 spelling of the
+// flag at all (decision 32) - it answers `K816-K65-0006` and names `v`.  What
+// the *65816* does with `v+` is `K816-E0127`, "the 65816 cannot set the
+// overflow flag", covered by `a_shorthand_the_cpu_cannot_do_is_refused_with_
+// its_route` in `tests/hla.rs`.
+//
+// Manifest row `instr-flag-set`, and this is the whole of its evidence: three
+// of the four flags in the set family work and are measured in
+// `k65/nop-and-wait`; the fourth is this.
+
+main {
+  o+
+  return
+}

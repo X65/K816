@@ -2,11 +2,13 @@
 // `#if` / `#elif` / `#else` / `#endif` chain, and each choosing a branch a
 // byte can tell apart.
 
-// The bracket precedes the `const` because a `[` opening the line after a
-// `const` initializer is read as a subscript of it - the `newline-subscript`
-// row, a K816 defect unrelated to the preprocessor.
-[ TIER = 2 ]
+// The `const` precedes the bracket, which is the order a K65 source would be
+// written in.  Until G10a it could not: a `[` opening the line after a `const`
+// initializer was read as a subscript of it - the `newline-subscript` row,
+// a K816 defect unrelated to the preprocessor, closed by making that postfix
+// bind to its base with no space between.
 const FEATURE = 1
+[ TIER = 2 ]
 
 // ---- top level: an `#elif` chain over whole items --------------------------
 

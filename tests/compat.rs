@@ -619,8 +619,23 @@ struct Row {
     /// `every_rows_fixture_contains_the_construct_it_claims` derives what the
     /// fixture has to contain.
     construct: String,
+    /// The `Cheap` cell — decision 0's per-rule judgment, `yes`, `no` or
+    /// `n-a`. Empty for the extension table, which has no such column: a
+    /// construct K65 does not have is not one K816 could be compatible with.
+    cheap: String,
     status: String,
+    /// The `Strict` cell — what `--strict-k65` does where this row's
+    /// construct appears: `rejects`, `warns`, or `—` for nothing.
+    strict: String,
     fixture: String,
+}
+
+/// A `Fixture` cell that names no fixture, and the two spellings mean
+/// different things: `n/a` is a row whose grammar line carries no live
+/// production, so no source could contain it; `—` is a row nobody has written
+/// a fixture for, which G10 left none of.
+fn names_no_fixture(cell: &str) -> bool {
+    matches!(cell, "n/a" | "—" | "-")
 }
 
 /// Parses `doc/k65-compat-manifest.md`.
@@ -647,24 +662,30 @@ fn manifest_rows() -> (Vec<Row>, String) {
             .split('|')
             .map(|cell| cell.trim().replace('\u{1}', "|"))
             .collect();
-        // The status table at the top of the file is two columns wide; the
-        // grammar table is six and the extension table five.
-        if cells.len() < 5 {
-            continue;
-        }
+        // The three definition tables at the top of the file are two columns
+        // wide; the grammar table is eight and the extension table six.
         let id = cells[0].trim_matches('`').to_string();
-        // The grammar table is `id | lines | construct | status | fixture |
-        // reason`; the extension table drops the line column.
-        let (lines, construct, status, fixture) = if cells.len() == 6 {
-            (parse_lines(&id, &cells[1]), &cells[2], &cells[3], &cells[4])
-        } else {
-            (Vec::new(), &cells[1], &cells[2], &cells[3])
+        let (lines, construct, cheap, status, strict, fixture) = match cells.len() {
+            // `id | lines | construct | cheap | status | strict | fixture | reason`
+            8 => (
+                parse_lines(&id, &cells[1]),
+                &cells[2],
+                cells[3].as_str(),
+                &cells[4],
+                &cells[5],
+                &cells[6],
+            ),
+            // The extension table drops the line and cheap columns.
+            6 => (Vec::new(), &cells[1], "", &cells[2], &cells[3], &cells[4]),
+            _ => continue,
         };
         rows.push(Row {
             id,
             lines,
             construct: construct.to_string(),
+            cheap: cheap.to_string(),
             status: status.to_string(),
+            strict: strict.to_string(),
             fixture: fixture.to_string(),
         });
     }
@@ -761,7 +782,16 @@ fn the_manifest_and_the_corpus_agree() {
     assert_eq!(ids.len(), rows.len(), "a row id is used twice");
 
     for row in &rows {
-        if row.fixture == "—" || row.fixture == "-" {
+        assert!(
+            row.fixture != "—" && row.fixture != "-" || row.id == "k816-strict-k65",
+            "row `{}` names no fixture. Every row names one, or `n/a` where the \
+             grammar line carries no live production for a source to contain. \
+             The single exception is `k816-strict-k65`, whose construct is the \
+             flag itself: it has no fixture until the flag exists, and G10b \
+             removes this clause with the flag",
+            row.id
+        );
+        if names_no_fixture(&row.fixture) {
             continue;
         }
         let path = match row.fixture.strip_prefix("golden/") {
@@ -815,7 +845,7 @@ fn every_rows_fixture_contains_the_construct_it_claims() {
     let mut checked = 0;
     for row in &rows {
         // The extension table has no grammar rule to derive a witness from.
-        if row.lines.is_empty() || row.fixture == "—" || row.fixture == "-" {
+        if row.lines.is_empty() || names_no_fixture(&row.fixture) {
             continue;
         }
         let phrases = witnesses(&row.construct);
@@ -978,7 +1008,13 @@ fn contains_phrase(source: &str, phrase: &[String]) -> bool {
     })
 }
 
-/// Every status is one of the six the manifest defines.
+/// Every status is one of the six the manifest defines, and none is `open`.
+///
+/// `open` stays a legal status so that a rule a later sub-plan adds has
+/// somewhere to sit before it is decided — but no row may read it now. That is
+/// sub-plan G's own criterion, and it is asserted here rather than argued in
+/// prose because "every construct is classified" is the whole claim of this
+/// file.
 #[test]
 fn every_row_carries_a_status_the_manifest_defines() {
     const STATUSES: [&str; 6] = [
@@ -996,5 +1032,97 @@ fn every_row_carries_a_status_the_manifest_defines() {
             row.id,
             row.status
         );
+        assert_ne!(
+            row.status, "open",
+            "row `{}` is still `open`. A row with no decision is what this \
+             manifest exists to have none of",
+            row.id
+        );
+    }
+}
+
+/// Every grammar rule carries decision 0's "cheap or not" judgment.
+///
+/// The judgment is the whole of decision 0 — K816 is compatible *wherever
+/// compatibility is cheap* — and until G10 it lived in whichever `Reason`
+/// cells happened to mention it, which is to say in seven of eighty-nine. A
+/// column can be checked; a phrase a reader has to find cannot.
+///
+/// Two invariants come with it. A rule that was **not** cheap cannot have come
+/// out `compatible`: if it had, the judgment is wrong and the row is claiming
+/// something it did not pay for. And `n-a` names exactly the rules with no
+/// live production — commented out, or referenced by nothing — which are the
+/// same rows whose `Fixture` reads `n/a`, because a rule no source can contain
+/// is a rule no fixture can exercise.
+#[test]
+fn every_grammar_rule_carries_its_cheap_judgment() {
+    const CHEAP: [&str; 3] = ["yes", "no", "n-a"];
+    for row in manifest_rows().0 {
+        if row.lines.is_empty() {
+            assert!(
+                row.cheap.is_empty(),
+                "row `{}` is not a grammar rule and has a `Cheap` cell",
+                row.id
+            );
+            continue;
+        }
+        assert!(
+            CHEAP.contains(&row.cheap.as_str()),
+            "row `{}` reads `{}` in the `Cheap` column, which is not one of {CHEAP:?}",
+            row.id,
+            row.cheap
+        );
+        if row.cheap == "no" {
+            assert_ne!(
+                row.status, "compatible",
+                "row `{}` says compatibility was not cheap and claims to be \
+                 compatible anyway",
+                row.id
+            );
+        }
+        assert_eq!(
+            row.cheap == "n-a",
+            row.fixture == "n/a",
+            "row `{}` reads `{}` in `Cheap` and `{}` in `Fixture`; a rule with no \
+             live production has neither, and a rule with one has both",
+            row.id,
+            row.cheap,
+            row.fixture
+        );
+    }
+}
+
+/// The `Strict` column agrees with the status it sits beside.
+///
+/// `--strict-k65` rejects extensions and warns at intentional changes
+/// (`plans/06-compatibility.md` decision 20), so a row that reports anything
+/// has to be one of those two — and a row that reports nothing has to say in
+/// its `Reason` why not. The column exists because the status alone does not
+/// decide it: most `intentionally-changed` rows are constructs K816 already
+/// refuses, where a warning would repeat an error the author has already read.
+#[test]
+fn the_strict_column_agrees_with_the_status() {
+    const STRICT: [&str; 3] = ["rejects", "warns", "—"];
+    for row in manifest_rows().0 {
+        assert!(
+            STRICT.contains(&row.strict.as_str()),
+            "row `{}` reads `{}` in the `Strict` column, which is not one of {STRICT:?}",
+            row.id,
+            row.strict
+        );
+        match row.strict.as_str() {
+            "rejects" => assert_eq!(
+                row.status, "K816-extension",
+                "row `{}` is rejected by strict mode but is not an extension",
+                row.id
+            ),
+            "warns" => assert_eq!(
+                row.status, "intentionally-changed",
+                "row `{}` is warned about by strict mode but is not an \
+                 intentional change",
+                row.id
+            ),
+            _ => {}
+        }
     }
 }

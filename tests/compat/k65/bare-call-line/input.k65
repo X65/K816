@@ -1,0 +1,44 @@
+// Oracle question: what does a bare identifier at the start of a statement do,
+// and what happens when a store follows it on the same line?
+//
+// `Instr -> Arg` (`compiler.inc:154`) makes a lone operand a statement, and
+// `dofunction` turns a section name into a call - so `wsync` on its own line
+// is a call to the `inline` of that name.  K65 being newline-insensitive, the
+// next thing on the line is simply the next statement: `wsync HMOVE = a` is a
+// call and a store, and every attested A2600 source is written that way.
+//
+// K816 gave the *first* identifier of a statement to its address-encoding
+// prefix rule - `dp`, `abs`, `far` take the operand that follows them - so any
+// bare call with something after it on the line was `K816-E0001`.  Decision
+// 16; fixed in G1's builder, where the prefix's spelling is visible and the
+// grammar's is not (`postmortem.md` §G.1.8).  The manifest row is `instr-call`
+// and this is what closes it.
+//
+// Three shapes: a call with a store after it, a call alone on its line, and
+// two calls on one line - the last because "the line ends the statement" is
+// exactly the rule that is *not* being introduced here.
+//
+// Each `inline` stores rather than setting a flag, so that the order of the
+// expansions survives the optimizer: a flag written and rewritten is a dead
+// write and pass 3 is right to drop it, which would leave this fixture
+// asserting nothing about order.
+
+const MARK = 0x5A
+
+var slot = 0x80
+var one  = 0x81
+var two  = 0x82
+
+inline stamp_one { one = a }
+inline stamp_two { two = a }
+
+data answers { MARK }
+
+main {
+  a = slot
+  stamp_one slot = a
+  stamp_one
+  stamp_two stamp_one
+  a = answers
+  return
+}

@@ -1,0 +1,23 @@
+row       topelem-empty
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**A `;` is punctuation and moves no byte, at the top level and after a
+statement alike.**  The golden is `27 AD 03 20 60` for a program with six of
+them in it, and K816's is the same five bytes.
+
+Two productions, neither with a semantic action: `TopElem -> ;`
+(`compiler.inc:29`) and `Instr -> Instr ;` (`:149`).  K65 is
+newline-insensitive, so the `;` is a thing an author may write rather than a
+separator the language needs - which is why it can also be absent everywhere
+else in this corpus.
+
+This fixture answers to two rows, `topelem-empty` and `instr-semicolon`, and
+the manifest cites it from both.  Each read "K816 already accepts one" from G0
+until G10a with nothing to say so; the `Fixture` column read `—` and
+`tests/compat.rs` skipped them.  That is the shape the fixture-witness gate was
+added for, one step earlier: a row nothing checks.
+
+One difference from the oracle image and it is the linker's - the `4C 04 20`
+`JMP main` stub K816 does not emit.

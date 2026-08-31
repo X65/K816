@@ -1,0 +1,27 @@
+row       k816-hex-binary-char-literals
+config    atarixl.cfg
+compare   bytes
+units     input.k65
+
+**Four literal spellings, none of them in the original's terminal alphabet.**
+
+    6B 38 68 69 0A F0 0F   A9 0F 85 80 A2 03 A0 7A 60
+
+`'k' '8'` are two character literals, `"hi\n"` is a string with an escape in
+it - five bytes, not six, because the escape is one - `$F0` is hex and
+`%00001111` is binary.  The last two also reach an immediate, `A9 0F` and
+`A2 03`, because a literal that only worked in a data entry would be half a
+row, and `A0 7A` is the character literal in one.
+
+`compiler.inc:478-497` is the whole of K65's numeric alphabet: `[0-9]+`,
+`0x…`, `0b…`, `[0-9]*[.][0-9]+`, and `"[^"]*"` for strings.  No `$`, no `%`, no
+character literal, and no escape - the string terminal is a negated character
+class, so a `\n` in one is a backslash followed by an `n` and a `"` cannot
+appear at all.
+
+`%` is the reason this row deserves a fixture rather than a sentence.  At the
+start of a statement it is the original's three-cycle wait (`instr-nop-wait`,
+`04 80`), and inside an expression it is K816's binary prefix.  One character,
+two unrelated meanings, told apart by position - so a source that means the
+wait and a source that means the number both parse, and `--strict-k65` has to
+reject only the second.

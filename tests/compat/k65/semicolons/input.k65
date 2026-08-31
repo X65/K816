@@ -1,0 +1,26 @@
+// Oracle question: where may a `;` appear, and does it emit anything?
+//
+// The original has two productions for it and neither has a semantic action:
+// `TopElem -> ;` (`compiler.inc:29`) and `Instr -> Instr ;` (`:149`).  So a
+// stray semicolon at the top level is a top-level element that does nothing,
+// and one after a statement is part of that statement and does nothing - K65
+// is newline-insensitive and the `;` is punctuation an author may write, not
+// a separator the language needs.
+//
+// Both rows had no fixture until G10a and both were "K816 already accepts
+// one", asserted by nobody.  Manifest rows `topelem-empty` and
+// `instr-semicolon`.
+
+;
+
+const MARK = 0x27 ;
+
+;
+
+data answers { MARK } ;
+
+main {
+  a = answers ;
+  ;
+  return ;
+}

@@ -12,13 +12,14 @@
 // already through the integer boundary rule before it decides anything: 0.6
 // is one and 0.4 is zero.
 
-// The bracket comes first because K816 cannot parse it after a `const`:
-// `const FEATURE = 1` followed by a line starting with `[` reads the block as
-// a *subscript* of the initializer, K65 being newline-insensitive.  That is a
-// K816 defect of its own, not a fact about the preprocessor, and the manifest
-// row `newline-subscript` carries it.
-[ DEBUG = 1 ]
+// The declaration comes first and the bracket after it, which is the order a
+// K65 source would be written in and the order K816 could not read until
+// G10a: a `[` opening the line below an initializer used to be parsed as a
+// *subscript* of it, K65 being newline-insensitive.  Manifest row
+// `newline-subscript`, closed with `k65/declaration-then-bracket` as its
+// witness; this fixture keeps the shape in a program that also uses it.
 const FEATURE = 1
+[ DEBUG = 1 ]
 
 data answers {
 

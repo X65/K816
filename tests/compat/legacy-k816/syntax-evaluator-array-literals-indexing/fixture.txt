@@ -4,7 +4,6 @@ compare   diagnostics
 units     input.k65
 expect    input.k65 K816-E0001
 expect    input.k65 K816-E0001
-expect    input.k65 K816-E0001
 expect    input.k65 K816-E0101
 expect    input.k65 K816-E0101
 
@@ -17,12 +16,20 @@ literal: `Number -> [ EvalCode ]` and `EvalCode`'s comma is the *pop* operator
 fixture as truth would have enshrined a construct K65 never had, which is what
 decision 2 is for.
 
-Today, after G4: three `K816-E0001` and two `K816-E0101`.  The construct that
+Today, after G10a: two `K816-E0001` and two `K816-E0101`.  The construct that
 fails is the same one - `[` cannot open a value inside an evaluator expression,
 because there is no array literal to open - and the two `K816-E0101` are `A`
-and `B` read in `main`.  They follow from the first three: a bracket the parser
+and `B` read in `main`.  They follow from the first two: a bracket the parser
 had to recover inside is not evaluated at all, so the block that would have
 assigned those names never ran.
+
+There were three `K816-E0001` between G4 and G10a, and the one that went was a
+*cascade*, not a construct.  Recovery from the stray `[` used to restart at
+`A = arr[1]` and fail again at the following line, because `arr` followed by a
+`[` on the next line was a subscript to reach for.  G10a made the K816 postfix
+`[` bind to its base with no space between (`newline-subscript`), so recovery
+now spans to the closing `]` in one error node.  The construct this fixture is
+about is unchanged; only how far the parser stumbles after it.
 
 Before G4 the last four were `K816-E0201`, one per unevaluated bracket; before
 G1 the whole file was one `K816-E0001` and three `K816-E0201`, because a

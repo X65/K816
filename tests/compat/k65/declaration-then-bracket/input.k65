@@ -1,0 +1,42 @@
+// Oracle question: does a `[ … ]` block opening the line after a declaration
+// belong to the declaration?
+//
+// K65 is newline-insensitive, so the question is a real one: `const BASE =
+// 0x10` followed by a line that opens with `[` could be one item or two.  The
+// original has no postfix to offer - `Const -> Ident = Number` ends where the
+// number does, and `Var -> Ident [BracketNumber] [= Number]` takes at most one
+// bracket and takes it before the `=` - so it reads two, and this golden is
+// that answer.
+//
+// K816 read one.  Its own symbolic subscripts give the expression layer a
+// postfix `[`, so `const BASE = 0x10` above `[ STEP = 3 ]` parsed as
+// `BASE = 0x10[STEP = 3]` and reported `K816-E0001` - a generic parse error on
+// a program the original compiles, which is the shape decision 0 exists to
+// prevent.  Manifest row `newline-subscript`; closed in G10a by making that
+// postfix bind to its base with no space between, exactly as `.field` already
+// did.
+//
+// All three declaration shapes that end in a value are asked, because the
+// reading was per-shape: an initialized `const`, an addressed `var`, and a
+// `var` whose own bracket is already spent on a span and is addressed as
+// well.
+
+const BASE = 0x10
+[ STEP = 3 ]
+
+var slot = 0x80
+[ COUNT = 4 ]
+
+var span[4] = 0x90
+[ MASK = 0x0F ]
+
+data answers {
+  [ BASE + STEP ]
+  [ COUNT ]
+  [ MASK ]
+}
+
+main {
+  a = answers
+  return
+}

@@ -86,21 +86,30 @@ use k816::{lower, parser, semantic};
 /// **Listed per unit rather than as one total** because a total moves
 /// whenever any fixture is added, and these rows move only when a fixture
 /// that *uses a contract* is. A new row is news; a shifted total is noise.
+///
+/// The byte column is [`Narrowing::bytes`]'s difference, which counts a
+/// width-dependent immediate as three bytes whether or not it is one. All
+/// three operations here *are* such immediates and all three are eight bits
+/// wide, so the nine bytes the column adds up to are six in the object file.
 const DIFFERENCE: &[(&str, usize, u32, &str)] = &[
     (
         "tests/compat/k816/contract-flag-outputs/input.k65",
         1,
         3,
-        "`silent` declares `-> a` and ends with a `cmp` that writes N, Z and \
-         C. Under the clause the compare is dead. It is also the fixture's \
-         whole point: `check` declares `-> a, c` and keeps it, so the pair \
-         measures the language rule and not an analysis heuristic",
+        "`silent` declares `-> a` and ends `cmp #$0A`, which writes N, Z and \
+         C and nothing else. Under the clause the compare is dead. The \
+         fixture's other half is why the row is a language rule and not a \
+         heuristic: `check` has the identical body, declares `-> a, c`, and \
+         keeps its compare",
     ),
     (
         "tests/compat/k816/strict-k65/input.k65",
         1,
         3,
-        "one function declaring `-> a` whose last instruction writes X",
+        "`step` declares `-> a` and adds to the accumulator before two later \
+         loads overwrite it. What kept the `adc` alive as the compiler ships \
+         is not A at all — it is the N, V, Z and C the clause does not name, \
+         which the seed says a caller may read",
     ),
     (
         "tests/golden/opt-liveout.k816",
@@ -108,8 +117,8 @@ const DIFFERENCE: &[(&str, usize, u32, &str)] = &[
         3,
         "`produce` declares `-> a` and ends `ldy #$09`. F's fixture says the \
          `ldy` survives because a caller reached through `call produce` may \
-         read Y — and the same file calls it both ways, which is why this \
-         row is the deferral's whole argument in one function",
+         read Y — and the same file calls `produce` both ways, which is why \
+         this row is the deferral's whole argument in one function",
     ),
 ];
 

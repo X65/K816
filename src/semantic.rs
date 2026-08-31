@@ -219,6 +219,10 @@ pub struct FunctionInfo {
     /// where F can find it — and narrowing on it stays F's decision, with
     /// `call foo` opting out of contract checking still to answer for.
     ///
+    /// It is read by one thing: `optimize::measure_narrowed_live_outs`, which
+    /// is a measurement and not a pass. G13 used it to price the deferral at
+    /// three instructions over the whole corpus (`postmortem.md` §G.22).
+    ///
     /// `None` for a width-only clause: `-> @a8` declares an exit *width*, not
     /// a register flow, and must not read as "everything is undefined".
     pub declared_outputs: Option<CpuState>,

@@ -490,8 +490,9 @@ fn everything_is_live_at_every_exit() {
         mnemonics(&program, &model, "produce"),
         vec![Mnemonic::Adc, Mnemonic::Ldy, Mnemonic::Rts]
     );
-    // The trailing `clc` survives: no contract syntax could have declared the
-    // carry an output, so the carry is live at every exit.
+    // The trailing `clc` survives. A clause may name the carry since sub-plan
+    // G, and `carry` does not, so the seed keeps it: everything is live at
+    // every exit whatever a clause says.
     assert_eq!(
         mnemonics(&program, &model, "carry"),
         vec![Mnemonic::Lda, Mnemonic::Sta, Mnemonic::Clc, Mnemonic::Rts]

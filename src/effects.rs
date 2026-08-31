@@ -222,10 +222,16 @@ impl CpuState {
     /// clause-bearing function is undefined
     /// (`plans/06-compatibility.md` decision 19) — which is the pair of
     /// language rules decision 12 said it would need. The seed is still
-    /// everything: `semantic.rs` records what each function declares, in
-    /// `FunctionInfo::declared_outputs`, and narrowing on it is a separate
-    /// decision with the three objections above still standing. G recorded
-    /// the fact and stopped.
+    /// everything, and the objection that is left is the first one: `call
+    /// foo` opts out of the check, so a clause is not a verified fact at the
+    /// call.
+    ///
+    /// **G13 measured what the deferral costs.** Over `examples/`, the
+    /// goldens and the imported corpus, narrowing this seed to what each
+    /// clause declares would delete three instructions and six bytes; ten of
+    /// 256 functions declare an output, and sixty of 72 call sites reach a
+    /// callee through a route that checks no clause. `tests/live_outs.rs`
+    /// re-derives both numbers and `postmortem.md` §G.22 argues them.
     pub const ALL: Self = Self {
         registers: RegisterSet::ALL,
         flags: FlagSet::ALL,

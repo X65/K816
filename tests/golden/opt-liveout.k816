@@ -12,14 +12,20 @@
 // looks. `call foo` is documented as the escape hatch that opts out of
 // contract checking, a hand-written `jsr foo` never had a contract to check,
 // and an undeclared clobber is `K816-W0123` — a warning, not a guarantee. A
-// caller may legally read a register the contract does not list. And flags
-// cannot be narrowed even in principle: the contract syntax `(a, x) -> a, y`
-// names registers and has no way to name a flag, so "the callee returns its
-// answer in the carry" is undeclarable *and* idiomatic.
+// caller may legally read a register the contract does not list.
 //
-// Narrowing the seed needs a workspace fact K816 cannot ask for today — a
-// checked call and the `call` escape hatch lower to the same `jsr` — or a
-// language rule that an unlisted output is undefined. Both are sub-plan G's.
+// Two of the three objections F wrote here are gone. A clause **can** name a
+// flag now — `-> a, c` is what `carry` below would need — and an output a
+// clause does not list is undefined (sub-plan G, decision 19). What is left
+// is the escape hatch: a checked call and `call foo` lower to the same `jsr`,
+// so nothing downstream can tell which one a callee was reached through.
+//
+// G13 measured what the surviving objection costs. Over `examples/`, the
+// goldens and the imported corpus, narrowing the seed to what each clause
+// declares would delete three instructions and six bytes — one of them the
+// `ldy` in `produce` below — while sixty of 72 call sites reach their callee
+// through a route that checks no clause at all. `tests/live_outs.rs` holds
+// the measurement and `postmortem.md` §G.22 argues it.
 //
 // `caller` earns `K816-W0123` on purpose: it reads Y after a checked call that
 // writes it. That warning is the whole argument — K816 *notices* the
@@ -36,8 +42,10 @@ func produce @a8 @i8 (a) -> a {
     ldy #$09
 }
 
-// The trailing `clc` survives. Nothing in the contract syntax could have
-// declared the carry an output, and callers set and read it as an answer.
+// The trailing `clc` survives. A clause could declare the carry now — `-> c`
+// is legal since sub-plan G — and this one does not, so the seed keeps it:
+// callers set and read the carry as an answer, and no diagnostic told them
+// not to.
 func carry @a8 @i8 {
     lda #$01
     CELL = a

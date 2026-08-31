@@ -996,13 +996,15 @@ fn liveness(
             // optimizer and one that deletes return values.
             //
             // **The seed is not what keeps a return value alive**, though
-            // decision 12 is worded as though it were. A block that ends in
-            // an `rts` reaches [`live_before`], which answers for the return
-            // itself; and a block that leaves by a jump K816 cannot resolve
-            // is opaque, which is a barrier. G13 measured both halves
-            // separately: narrowing this line alone changes nothing anywhere
-            // in the corpus, and narrowing the return changes everything the
-            // measurement found (`postmortem.md` §G.22).
+            // decision 12's heading reads as though it were — the barrier
+            // `live_before` applies to an `rts` is, which decision 12's last
+            // paragraph mentions and its argument then leaves aside. A block
+            // that ends in a return reaches that barrier; one that leaves by
+            // a jump K816 cannot resolve is opaque, which is another. G13
+            // measured the halves separately: narrowing this line alone
+            // changes nothing anywhere in the corpus, and narrowing the
+            // return produces every operation the measurement found
+            // (`postmortem.md` §G.22).
             let mut live = if block.successors.is_empty() {
                 exit
             } else {

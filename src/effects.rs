@@ -221,17 +221,19 @@ impl CpuState {
     /// A `->` clause **can** name a flag now, and an unlisted output of a
     /// clause-bearing function is undefined
     /// (`plans/06-compatibility.md` decision 19) — which is the pair of
-    /// language rules decision 12 said it would need. The seed is still
-    /// everything, and the objection that is left is the first one: `call
-    /// foo` opts out of the check, so a clause is not a verified fact at the
-    /// call.
+    /// language rules decision 12 said it would need. The second holds at
+    /// *every* call site, `call foo` included, so the escape-hatch objection
+    /// above is closed: it escapes the `K816-W0123` check, not the rule.
     ///
-    /// **G13 measured what the deferral costs.** Over `examples/`, the
-    /// goldens and the imported corpus, narrowing this seed to what each
-    /// clause declares would delete three instructions and six bytes; ten of
-    /// 256 functions declare an output, and sixty of 72 call sites reach a
-    /// callee through a route that checks no clause. `tests/live_outs.rs`
-    /// re-derives both numbers and `postmortem.md` §G.22 argues them.
+    /// The seed is still everything, for a reason decision 12 did not have.
+    /// A tail `goto` lets control **enter** a section without calling it, and
+    /// that section's `rts` then returns to the jumping function's caller,
+    /// bound by a *different* clause — so the section's own clause is not the
+    /// contract its return has to satisfy. **G13 demonstrated the miscompile
+    /// and priced the deferral**: three instructions and six bytes over the
+    /// whole corpus, with four of 244 emitted sections declaring an output at
+    /// all. `tests/live_outs.rs` re-derives it; `postmortem.md` §G.22 argues
+    /// it.
     pub const ALL: Self = Self {
         registers: RegisterSet::ALL,
         flags: FlagSet::ALL,

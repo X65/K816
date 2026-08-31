@@ -215,13 +215,19 @@ pub struct FunctionInfo {
     /// decision 12 seeds liveness with *everything* at a function exit, and
     /// named the two language rules that would let it narrow: a flag-output
     /// clause, and a rule that an unlisted output is undefined. Both exist
-    /// now (`plans/06-compatibility.md` decision 19), so the fact is recorded
-    /// where F can find it — and narrowing on it stays F's decision, with
-    /// `call foo` opting out of contract checking still to answer for.
+    /// now (`plans/06-compatibility.md` decision 19), and between them they
+    /// close every objection decision 12 raised about *call spelling*.
     ///
-    /// It is read by one thing: `optimize::measure_narrowed_live_outs`, which
-    /// is a measurement and not a pass. G13 used it to price the deferral at
-    /// three instructions over the whole corpus (`postmortem.md` §G.22).
+    /// What narrowing still has to answer for is a tail `goto`, which lets
+    /// control enter a section without calling it — see
+    /// `effects::CpuState::ALL`. It is read by one thing:
+    /// `optimize::measure_narrowed_live_outs`, a measurement and not a pass,
+    /// which G13 used to price the deferral at three instructions over the
+    /// whole corpus (`postmortem.md` §G.22).
+    ///
+    /// **`Some` for an `inline` too**, which is a trap for anyone counting:
+    /// lowering emits no function for one, so a clause here can belong to a
+    /// section that has no exit for a seed to sit at.
     ///
     /// `None` for a width-only clause: `-> @a8` declares an exit *width*, not
     /// a register flow, and must not read as "everything is undefined".

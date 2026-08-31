@@ -24,32 +24,40 @@
 //!
 //! Sub-plan F's decision 12 seeds liveness with everything at a function
 //! exit, and named three objections to narrowing it to what a `->` clause
-//! declares. G9b closed two — a clause may name a flag, and an unlisted
-//! output of a clause-bearing function is undefined — leaving one: `call
-//! NAME` opts out of contract checking, so a callee whose call sites all
-//! spell it that way has a declaration nothing verified. **A deferral
-//! standing on one objection deserves a number**, and this file is where the
-//! number is produced.
+//! declares. **G9b closed all three of the ones about call spelling.** A
+//! clause may name a flag; an output a clause does not list is undefined
+//! after the call *at every call site, `call foo` included* (decision 19, and
+//! `doc/syntax-reference.md`). The escape hatch escapes the `K816-W0123`
+//! warning, not the language rule — so a caller reading outside the clause
+//! reads undefined state, and narrowing is licensed against it.
 //!
-//! Nothing here changes the compiler. `optimize::measure_narrowed_live_outs`
-//! runs the pass sequence twice over a clone of each unit — once as it ships,
-//! once with every declaring function's exit seeded with its clause — and
-//! reports what pass 3 removed each way and what the unit weighs each way.
+//! **A deferral deserves a number and a reason that survives**, and this file
+//! produces both. Nothing here changes the compiler:
+//! `optimize::measure_narrowed_live_outs` runs the pass sequence twice over a
+//! clone of each unit — once as it ships, once with every declaring function's
+//! exit seeded with its clause — and reports what pass 3 removed each way and
+//! what the unit assembles to each way.
 //!
-//! # What is measured, and why the census sits beside it
+//! # The two answers
 //!
-//! The count alone does not say whether it is *usable*. Two more numbers do,
-//! and they are what [`the_escape_hatch_is_how_most_of_the_corpus_calls`]
-//! counts:
+//!   - **What it would buy**, in [`narrowing_the_live_out_seed_buys_only_what_the_table_lists`]:
+//!     three instructions, six bytes, in three units of the whole corpus.
+//!     [`the_escape_hatch_is_how_most_of_the_corpus_calls`] says why so
+//!     little — four of 244 emitted sections declare an output at all, so
+//!     most of the corpus cannot be narrowed by any rule.
+//!   - **What still stands in the way**, in
+//!     [`a_tail_jump_makes_a_clause_the_wrong_contract_for_a_return`]: a
+//!     function control enters by a tail `goto` returns on *its* `rts` to the
+//!     jumping function's caller, bound by a different clause. The narrowing
+//!     deletes a register that caller reads. That objection is about control
+//!     flow, not about how a call is spelled, and no language rule G landed
+//!     touches it.
 //!
-//!   - **how many call sites spell `call NAME`** — the escape hatch, which
-//!     opts out of the check that would make a clause a fact, and
-//!   - **how many functions declare a clause at all** — a corpus of
-//!     contract-less functions cannot be narrowed by any rule, and would say
-//!     the deferral costs nothing whatever the rule was.
-//!
-//! A hand-written `jsr` is counted as its own kind for the same reason: it
-//! never had a contract to check, and it is the third route into a callee.
+//! The census counts call spellings anyway, because they say what the corpus
+//! is like even where they no longer decide soundness — and because an
+//! `inline` use is not a call at all: nothing is `jsr`-ed, nothing returns,
+//! and there is no exit to narrow. Counting one would inflate every number
+//! here.
 //!
 //! # The corpus
 //!
@@ -65,11 +73,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use k816::abi::EntryEnvironment;
-use k816::ast::{AstFile, Block, DataBlock, DataEntryKind, ItemKind, Statement, StatementKind};
+use k816::ast::{
+    AstFile, Block, DataBlock, DataEntryKind, FunctionKind, ItemKind, Statement, StatementKind,
+};
 use k816::diagnostic::{Severity, has_errors};
 use k816::linkage::Linkage;
 use k816::optimize::{self, Narrowing};
 use k816::source::{FileId, SourceMap};
+use k816::symbol::{SymbolKind, SymbolTable};
 use k816::{lower, parser, semantic};
 
 // ---------------------------------------------------------------------------
@@ -87,15 +98,16 @@ use k816::{lower, parser, semantic};
 /// whenever any fixture is added, and these rows move only when a fixture
 /// that *uses a contract* is. A new row is news; a shifted total is noise.
 ///
-/// The byte column is [`Narrowing::bytes`]'s difference, which counts a
-/// width-dependent immediate as three bytes whether or not it is one. All
-/// three operations here *are* such immediates and all three are eight bits
-/// wide, so the nine bytes the column adds up to are six in the object file.
+/// The byte column is [`Narrowing::bytes`]'s difference, and it is the bytes
+/// the object file loses: `emit_ca65::emitted_bytes` sizes a width-dependent
+/// immediate at the width ca65 is told to assemble it at. All three
+/// operations here are eight-bit immediates, so each is two bytes and the
+/// column adds up to six.
 const DIFFERENCE: &[(&str, usize, u32, &str)] = &[
     (
         "tests/compat/k816/contract-flag-outputs/input.k65",
         1,
-        3,
+        2,
         "`silent` declares `-> a` and ends `cmp #$0A`, which writes N, Z and \
          C and nothing else. Under the clause the compare is dead. The \
          fixture's other half is why the row is a language rule and not a \
@@ -105,7 +117,7 @@ const DIFFERENCE: &[(&str, usize, u32, &str)] = &[
     (
         "tests/compat/k816/strict-k65/input.k65",
         1,
-        3,
+        2,
         "`step` declares `-> a` and adds to the accumulator before two later \
          loads overwrite it. What kept the `adc` alive as the compiler ships \
          is not A at all — it is the N, V, Z and C the clause does not name, \
@@ -114,7 +126,7 @@ const DIFFERENCE: &[(&str, usize, u32, &str)] = &[
     (
         "tests/golden/opt-liveout.k816",
         1,
-        3,
+        2,
         "`produce` declares `-> a` and ends `ldy #$09`. F's fixture says the \
          `ldy` survives because a caller reached through `call produce` may \
          read Y — and the same file calls `produce` both ways, which is why \
@@ -129,16 +141,28 @@ const DIFFERENCE: &[(&str, usize, u32, &str)] = &[
 /// numbers in [`DIFFERENCE`] are a floor or a ceiling.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Census {
-    /// Functions in every unit that compiles.
-    functions: usize,
+    /// Sections the compiler emits, in every unit that compiles.
+    ///
+    /// **An `inline` is not one.** It has no address and no body of its own —
+    /// `lower.rs` emits no `KFunction` for it and its operations appear once
+    /// per use site — so it has no exit for a live-out seed to sit at, and
+    /// counting its clause here would inflate the only number that says
+    /// whether narrowing has anything to work on.
+    sections: usize,
     /// Of those, the ones whose `->` clause names a register or a flag.
     declaring: usize,
+    /// `inline` sections, kept apart rather than dropped: an `inline` whose
+    /// clause declares an output is a real declaration that the rule still
+    /// cannot use, and a reader comparing this file to the source will count
+    /// them.
+    inlines: usize,
+    /// Of those, the ones with an output clause.
+    inlines_declaring: usize,
     /// `call NAME`, `call far NAME`, `far NAME` — the escape hatch, which
-    /// opts out of the check in both directions.
+    /// opts out of the *check* in both directions.
     escape_hatch: usize,
     /// `add a, x -> a, y` — a call site that restates the callee's flow, so
-    /// the two are compared. This is the only spelling that makes a clause a
-    /// verified fact at the call.
+    /// the two are compared.
     stating: usize,
     /// `foo` on its own: checked, but with nothing to check unless the callee
     /// declares a flow — in which case it is an error and the call site has
@@ -146,16 +170,22 @@ struct Census {
     bare: usize,
     /// A hand-written `jsr`/`jsl`, which never had a contract.
     native: usize,
+    /// A use of an `inline`, in any spelling. Not a call: no `jsr` is
+    /// emitted, no callee returns, and there is no exit to narrow.
+    expansions: usize,
 }
 
 /// The census, as measured. Update it and `postmortem.md` §G.22 together.
 const CENSUS: Census = Census {
-    functions: 256,
-    declaring: 10,
+    sections: 244,
+    declaring: 4,
+    inlines: 12,
+    inlines_declaring: 6,
     escape_hatch: 27,
-    stating: 12,
-    bare: 18,
+    stating: 3,
+    bare: 4,
     native: 15,
+    expansions: 23,
 };
 
 // ---------------------------------------------------------------------------
@@ -425,7 +455,7 @@ fn measure_sources(sources: &[(String, String)], entry: usize) -> Result<Measure
         return Err(error_codes(&diagnostics));
     }
     let program = model.program(&parse.file);
-    let census = census_of(program);
+    let census = census_of(program, &model.symbols);
     let (lowered, lower_diagnostics) = lower::lower_unit(program, &model, source.name());
     diagnostics.extend(lower_diagnostics);
     if has_errors(&diagnostics) {
@@ -464,26 +494,29 @@ fn error_codes(diagnostics: &[k816::diagnostic::Diagnostic]) -> Vec<String> {
 /// from compiling rather than going silently uncounted. That is the whole
 /// reason the arms are written out instead of matching only the kinds this
 /// cares about.
-fn census_of(file: &AstFile) -> Census {
+fn census_of(file: &AstFile, symbols: &SymbolTable) -> Census {
     let mut census = Census::default();
     for item in &file.items {
         match &item.kind {
             ItemKind::Func(function) => {
-                census.functions += 1;
                 // The same rule `declared_outputs` uses: a width-only clause
                 // declares an exit width and not a register flow, so it
                 // names no outputs and narrowing has nothing to narrow to.
-                if function
+                let declares = function
                     .contract
                     .as_ref()
                     .and_then(|contract| contract.outputs.as_ref())
-                    .is_some_and(|outputs| !outputs.outputs.is_empty())
-                {
-                    census.declaring += 1;
+                    .is_some_and(|outputs| !outputs.outputs.is_empty());
+                if function.kind == FunctionKind::Inline {
+                    census.inlines += 1;
+                    census.inlines_declaring += usize::from(declares);
+                } else {
+                    census.sections += 1;
+                    census.declaring += usize::from(declares);
                 }
-                block(&function.body, &mut census);
+                block(&function.body, symbols, &mut census);
             }
-            ItemKind::Data(data) => data_block(data, &mut census),
+            ItemKind::Data(data) => data_block(data, symbols, &mut census),
             ItemKind::Var(_)
             | ItemKind::Const(_)
             | ItemKind::Segment(_)
@@ -499,17 +532,33 @@ fn census_of(file: &AstFile) -> Census {
     census
 }
 
-fn block(body: &Block, census: &mut Census) {
+fn block(body: &Block, symbols: &SymbolTable, census: &mut Census) {
     for statement in &body.statements {
-        count(statement, census);
+        count(statement, symbols, census);
     }
 }
 
-fn count(statement: &Statement, census: &mut Census) {
+/// True when this call target is an `inline`, so the site expands rather than
+/// calls: no `jsr`, no callee return, and no exit to narrow.
+fn expands(symbols: &SymbolTable, target: &str) -> bool {
+    symbols
+        .lookup(target)
+        .is_some_and(|symbol| symbols.kind(symbol) == SymbolKind::Inline)
+}
+
+fn count(statement: &Statement, symbols: &SymbolTable, census: &mut Census) {
     match &statement.kind {
-        StatementKind::Call(_) => census.escape_hatch += 1,
+        StatementKind::Call(call) => {
+            if expands(symbols, &call.target.text) {
+                census.expansions += 1;
+            } else {
+                census.escape_hatch += 1;
+            }
+        }
         StatementKind::BareCall(call) => {
-            if call.arguments.is_some() || call.outputs.is_some() {
+            if expands(symbols, &call.target.text) {
+                census.expansions += 1;
+            } else if call.arguments.is_some() || call.outputs.is_some() {
                 census.stating += 1;
             } else {
                 census.bare += 1;
@@ -523,17 +572,17 @@ fn count(statement: &Statement, census: &mut Census) {
                 census.native += 1;
             }
         }
-        StatementKind::WidthBlock(scoped) => block(&scoped.body, census),
+        StatementKind::WidthBlock(scoped) => block(&scoped.body, symbols, census),
         StatementKind::Conditional(conditional) => {
-            block(&conditional.body, census);
+            block(&conditional.body, symbols, census);
             if let Some(otherwise) = &conditional.otherwise {
-                block(otherwise, census);
+                block(otherwise, symbols, census);
             }
         }
-        StatementKind::ConditionalJump(jump) => count(&jump.jump, census),
-        StatementKind::Loop(loop_statement) => block(&loop_statement.body, census),
-        StatementKind::Nocross(body) => block(body, census),
-        StatementKind::Data(data) => data_block(data, census),
+        StatementKind::ConditionalJump(jump) => count(&jump.jump, symbols, census),
+        StatementKind::Loop(loop_statement) => block(&loop_statement.body, symbols, census),
+        StatementKind::Nocross(body) => block(body, symbols, census),
+        StatementKind::Data(data) => data_block(data, symbols, census),
         StatementKind::Label(_)
         | StatementKind::Hla(_)
         | StatementKind::ModeSet(_)
@@ -549,21 +598,21 @@ fn count(statement: &Statement, census: &mut Census) {
     }
 }
 
-fn data_block(data: &DataBlock, census: &mut Census) {
+fn data_block(data: &DataBlock, symbols: &SymbolTable, census: &mut Census) {
     for entry in &data.entries {
-        data_entry(&entry.kind, census);
+        data_entry(&entry.kind, symbols, census);
     }
 }
 
-fn data_entry(kind: &DataEntryKind, census: &mut Census) {
+fn data_entry(kind: &DataEntryKind, symbols: &SymbolTable, census: &mut Census) {
     match kind {
-        DataEntryKind::Code { body, .. } => block(body, census),
+        DataEntryKind::Code { body, .. } => block(body, symbols, census),
         DataEntryKind::NocrossGroup(entries) => {
             for entry in entries {
-                data_entry(&entry.kind, census);
+                data_entry(&entry.kind, symbols, census);
             }
         }
-        DataEntryKind::Repeat { body, .. } => data_block(body, census),
+        DataEntryKind::Repeat { body, .. } => data_block(body, symbols, census),
         DataEntryKind::Segment(_)
         | DataEntryKind::Align(_)
         | DataEntryKind::Address(_)
@@ -683,8 +732,65 @@ func caller @a8 @i8 {
     assert_eq!(
         measured.narrowing.bytes - measured.narrowing.bytes_narrowed,
         2,
-        "two one-byte transfers — chosen so that the saving is exact, since \
-         `Narrowing::bytes` over-measures a width-dependent immediate"
+        "two one-byte transfers"
+    );
+}
+
+/// The objection that survives, demonstrated: a tail jump makes a clause the
+/// wrong contract for a return.
+///
+/// F's decision 12 gave `call foo` as the reason nothing may be narrowed —
+/// the escape hatch opts out of contract checking, so a caller might read a
+/// register the clause does not name. **G9b closed that**: an output a clause
+/// does not list is undefined after the call *at every call site, `call foo`
+/// included* (decision 19, and `doc/syntax-reference.md`). The escape hatch
+/// escapes the `K816-W0123` warning, not the language rule, so a caller that
+/// reads outside the clause is reading undefined state and an optimizer may
+/// break it.
+///
+/// What is not covered is a function control **enters without calling**.
+/// `jumper` declares `-> a, x` and its body is `goto target`; `target`
+/// declares `-> a`. The `rts` that ends `target` returns to `jumper`'s
+/// caller, which was compiled against `jumper`'s clause — so `target`'s
+/// clause is not the contract that return has to satisfy, and the `ldx #$09`
+/// that looks dead under `-> a` is the X `caller` reads.
+///
+/// The narrowing deletes it. That is the objection a rule would have to
+/// answer, and it has nothing to do with how anything is spelled at a call.
+#[test]
+fn a_tail_jump_makes_a_clause_the_wrong_contract_for_a_return() {
+    let source = "\
+var CELL = $0400
+
+func target @a8 @i8 (a) -> a {
+    ldx #$09
+    a + #$01
+}
+
+func jumper @a8 @i8 (a) -> a, x {
+    goto target
+}
+
+func caller @a8 @i8 {
+    a = #$01
+    jumper a -> a, x
+    CELL,x = a
+}
+";
+    let measured = measure_sources(&[("tail.k816".to_owned(), source.to_owned())], 0)
+        .expect("the case compiles");
+    assert_eq!(
+        measured.narrowing.removed, 0,
+        "as the compiler ships, the `ldx` survives and `caller` reads what it wrote"
+    );
+    assert_eq!(
+        measured.narrowing.removed_narrowed, 1,
+        "under `target`'s own clause the `ldx` is dead — and `caller` still reads X"
+    );
+    assert_eq!(
+        measured.narrowing.bytes - measured.narrowing.bytes_narrowed,
+        2,
+        "the two bytes of an eight-bit `ldx #$09`"
     );
 }
 
@@ -735,21 +841,31 @@ fn every_source_the_measurement_skips_says_why() {
     }
 }
 
-/// The census counts a call wherever one can be written.
+/// The census counts a call wherever one can be written, and counts an
+/// `inline` use as neither a section nor a call.
 ///
-/// The corpus does not exercise this: no call site in `examples/`,
+/// The corpus does not exercise the first half: no call site in `examples/`,
 /// `tests/golden/` or `tests/compat/` sits inside a conditional, a loop, a
 /// width block, a `nocross`, or a `data`/`code` subblock, so a walk that
 /// stopped at the first brace would count the same totals. **A corpus that
 /// does not use a construct is not coverage for it**, so the construct is
 /// written here instead — one call of each spelling in each place a block can
 /// nest, with the counts stated.
+///
+/// The second half is the distinction G13's first draft got wrong. `bump` is
+/// an `inline` with an output clause, and both of its uses are expansions:
+/// lowering emits no function for an `inline`, so there is no exit for a seed
+/// to sit at and no `jsr` for a caller to return from.
 #[test]
 fn the_census_follows_a_call_into_every_block_that_can_hold_one() {
     let source = "\
 var CELL = $0400
 
 func leaf @a8 @i8 {
+}
+
+inline bump @a8 @i8 (a) -> a {
+    a + #$01
 }
 
 data TOP {
@@ -787,6 +903,8 @@ func nested @a8 @i8 {
         }
     }
     leaf
+    bump a -> a
+    call bump
     jsr leaf
 }
 ";
@@ -795,8 +913,12 @@ func nested @a8 @i8 {
     assert_eq!(
         measured.census,
         Census {
-            functions: 2,
+            sections: 2,
             declaring: 0,
+            // `bump` declares `-> a` and is still not something a seed can
+            // sit at: lowering emits no function for an `inline`.
+            inlines: 1,
+            inlines_declaring: 1,
             // The top-level `data`, then the body: bare, both arms of the
             // conditional, the loop, the width block, the `nocross`, and the
             // `code` subblock.
@@ -804,6 +926,9 @@ func nested @a8 @i8 {
             stating: 0,
             bare: 1,
             native: 1,
+            // Both uses of `bump`, in either spelling: no `jsr` is emitted
+            // and nothing returns, so neither is a call site.
+            expansions: 2,
         },
     );
 }
@@ -819,6 +944,10 @@ func nested @a8 @i8 {
 fn a_call_cannot_be_written_inside_a_repeat() {
     let source = "\
 func leaf @a8 @i8 {
+}
+
+inline bump @a8 @i8 (a) -> a {
+    a + #$01
 }
 
 data TOP {
@@ -851,12 +980,15 @@ fn the_escape_hatch_is_how_most_of_the_corpus_calls() {
              disagree",
             set.name,
         );
-        total.functions += measured.census.functions;
+        total.sections += measured.census.sections;
         total.declaring += measured.census.declaring;
+        total.inlines += measured.census.inlines;
+        total.inlines_declaring += measured.census.inlines_declaring;
         total.escape_hatch += measured.census.escape_hatch;
         total.stating += measured.census.stating;
         total.bare += measured.census.bare;
         total.native += measured.census.native;
+        total.expansions += measured.census.expansions;
     }
     assert_eq!(
         total, CENSUS,

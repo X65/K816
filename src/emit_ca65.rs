@@ -517,6 +517,64 @@ enum Axis {
     I,
 }
 
+/// The bytes a lowered unit assembles to, sized the way ca65 will size it.
+///
+/// `lower::byte_length` answers the same question conservatively: it counts a
+/// width-dependent immediate as three bytes whether the register is eight or
+/// sixteen bits wide, because a `nocross` guard must never under-measure the
+/// run it closes. That over-estimate is wrong for anything that reports a
+/// *size*, and a caller that corrected it by hand would be guessing at a
+/// width.
+///
+/// So the correction is made here, driving the same [`WidthState`] that emits
+/// the `.a8`-family directives — ca65 sizes an immediate from those, so a
+/// count taken from this walk and the object file's size cannot disagree
+/// unless emission itself is wrong. Everything that is not an instruction
+/// falls through to `lower::byte_length`, which is already exact for it.
+pub fn emitted_bytes(program: &KProgram) -> u32 {
+    let mut widths = WidthState::default();
+    // The directives the walk would emit. `WidthState` writes them as it
+    // tracks, and nothing here reads them back.
+    let mut discarded = String::new();
+    let mut total: u32 = 0;
+    for op in program.ops() {
+        match &op.kind {
+            KOpKind::ModeAssumption(state) => widths.claim_widths(*state, "", &mut discarded),
+            KOpKind::Instruction(instruction) => {
+                total = total.saturating_add(instruction_bytes(instruction, &widths));
+                widths.apply(
+                    instruction.effects().width,
+                    instruction.mnemonic == Mnemonic::Xce,
+                    &mut discarded,
+                );
+            }
+            _ => total = total.saturating_add(crate::lower::byte_length(op)),
+        }
+    }
+    total
+}
+
+/// One instruction's assembled length, at the widths tracked so far.
+///
+/// The unknown case keeps the over-estimate rather than guessing: K816
+/// refuses a width-dependent immediate while the axis is unknown, so an
+/// untracked width here means the operand does not depend on one.
+fn instruction_bytes(instruction: &crate::op::Instruction, widths: &WidthState) -> u32 {
+    use crate::isa::{ImmediateWidthClass, OperandWidth};
+    let Some(spec) = instruction.spec() else {
+        return 0;
+    };
+    let narrow = match spec.operand.width {
+        OperandWidth::Immediate(ImmediateWidthClass::MDependent) => widths.a,
+        OperandWidth::Immediate(ImmediateWidthClass::XDependent) => widths.i,
+        _ => None,
+    };
+    match narrow {
+        Some(RegisterWidth::W8) => spec.encoded_length() - 1,
+        _ => spec.encoded_length(),
+    }
+}
+
 /// Tracked assembler width state, kept in sync with `.a8`-family directives
 /// so ca65 sizes width-dependent immediates exactly as the width model does.
 #[derive(Default)]
@@ -543,12 +601,28 @@ impl WidthState {
     /// have to be tested together: a change that removes the refusal must
     /// fail on this side too.
     fn claim(&mut self, state: ModeState, op: &KOp, unit: &Unit<'_>, out: &mut String) {
+        let why = reason_text(op, unit);
+        let before = out.len();
+        self.claim_widths(state, why.as_str(), out);
+        // A claim that changed no directive still has something to say when
+        // it exists *because* the model could not see a callee: the widths
+        // are unchanged because the language says such a callee must leave
+        // them alone, not because K816 worked out that it does.
+        if out.len() == before && op.reason == Some(Reason::AssumedExit) {
+            out.push_str(&annotated("", &format!("k816: {why}")));
+        }
+    }
+
+    /// [`Self::claim`] without the reason a directive is annotated with.
+    ///
+    /// Split out so that [`emitted_bytes`] can drive the same tracking the
+    /// emitter drives. Two width walks would be two answers to "how wide is
+    /// the accumulator here", and the byte count derived from one would size
+    /// immediates the other assembled differently.
+    fn claim_widths(&mut self, state: ModeState, why: &str, out: &mut String) {
         // Before the widths, because it is what the *next* instruction's
         // effect is read through.
         self.e = state.e;
-        let why = reason_text(op, unit);
-        let why = why.as_str();
-        let before = out.len();
         match state.a {
             AxisState::Known(width) => self.set_a(width, why, out),
             AxisState::Unknown => self.forget(Axis::A, state.e, out),
@@ -561,13 +635,6 @@ impl WidthState {
             AxisState::Known(width) => self.set_i(width, why, out),
             AxisState::Unknown => self.forget(Axis::I, state.e, out),
             AxisState::Bottom => {}
-        }
-        // A claim that changed no directive still has something to say when
-        // it exists *because* the model could not see a callee: the widths
-        // are unchanged because the language says such a callee must leave
-        // them alone, not because K816 worked out that it does.
-        if out.len() == before && op.reason == Some(Reason::AssumedExit) {
-            out.push_str(&annotated("", &format!("k816: {why}")));
         }
     }
 

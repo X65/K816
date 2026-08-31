@@ -27,6 +27,26 @@
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
 
+/// The lowered, unoptimized program of one source — what `emitted_bytes`
+/// measures.
+fn lowered(name: &str, text: &str) -> k816::op::KProgram {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let linkage = k816::linkage::Linkage::resolve(&map, k816::abi::EntryEnvironment::default());
+    let source = map.file(file);
+    let parse = k816::parser::parse_source(source, None);
+    let (model, diagnostics) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
+    assert_eq!(diagnostics, vec![], "unexpected diagnostics");
+    let (program, lower_diagnostics) =
+        k816::lower::lower_unit(model.program(&parse.file), &model, source.name());
+    assert_eq!(lower_diagnostics, vec![], "unexpected diagnostics");
+    program
+}
+
+fn bytes(name: &str, text: &str) -> u32 {
+    k816::emit_ca65::emitted_bytes(&lowered(name, text))
+}
+
 fn emit(name: &str, text: &str) -> String {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
@@ -762,5 +782,35 @@ fn the_explanation_names_emulation_mode_when_that_is_the_cause() {
     assert!(
         assembly.contains("because emulation mode is unknown here"),
         "{assembly}"
+    );
+}
+
+/// `emitted_bytes` sizes a width-dependent immediate at the width ca65 is
+/// told to assemble it at, and nothing else at all.
+///
+/// The claim is worth a test of its own because the obvious implementation —
+/// `lower::byte_length` over every operation — is *wrong* by exactly one byte
+/// per eight-bit immediate, and wrong in the direction that makes a saving
+/// look bigger than it is. `nocross` needs that over-estimate and a size
+/// report must not have it.
+#[test]
+fn the_byte_count_sizes_an_immediate_at_the_width_it_will_be_assembled_at() {
+    // `lda #$01` (2) + the implicit `rts` (1).
+    assert_eq!(bytes("a8.k816", "func w @a8 @i8 {\n    lda #$01\n}\n"), 3);
+    // The same instruction at sixteen bits is one byte longer.
+    assert_eq!(
+        bytes("a16.k816", "func w @a16 @i8 {\n    lda #$0001\n}\n"),
+        4
+    );
+    // An operand that depends on no width is unaffected either way.
+    assert_eq!(bytes("dp.k816", "func w @a8 @i8 {\n    lda $12\n}\n"), 3);
+    // And the width an instruction *establishes* is tracked: `lda` (2),
+    // `rep #$20` (2), `lda` (3), `rts` (1).
+    assert_eq!(
+        bytes(
+            "mid.k816",
+            "func w @a8 @i8 {\n    lda #$01\n    rep #$20\n    lda #$0002\n}\n"
+        ),
+        8
     );
 }

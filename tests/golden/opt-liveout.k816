@@ -8,35 +8,39 @@
 // fixture lands with the block view rather than with the pass that first makes
 // the need visible.
 //
-// **A declared `-> a` is not a licence to call X and Y dead**, tempting as it
-// looks. `call foo` is documented as the escape hatch that opts out of
-// contract checking, a hand-written `jsr foo` never had a contract to check,
-// and an undeclared clobber is `K816-W0123` — a warning, not a guarantee. A
-// caller may legally read a register the contract does not list.
+// **F wrote three reasons here and all three were about how a call is
+// spelled**: `call foo` opts out of contract checking, a hand-written
+// `jsr foo` never had a contract, and an undeclared clobber is `K816-W0123` —
+// a warning rather than a guarantee. Sub-plan G's decision 19 closed them.
+// A clause can name a flag now — `-> a, c` is what `carry` below would need —
+// and an output a clause does not list is undefined after the call at *every*
+// call site, `call foo` included. The escape hatch escapes the check, not the
+// rule: a caller may still write the read, and may not rely on it.
 //
-// Two of the three objections F wrote here are gone. A clause **can** name a
-// flag now — `-> a, c` is what `carry` below would need — and an output a
-// clause does not list is undefined (sub-plan G, decision 19). What is left
-// is the escape hatch: a checked call and `call foo` lower to the same `jsr`,
-// so nothing downstream can tell which one a callee was reached through.
+// What stops the narrowing is elsewhere, and G13 demonstrated it: a tail
+// `goto` lets control enter a section without calling it, and that section's
+// `rts` returns to the jumping function's caller — bound by a different
+// clause. Its own clause is then the wrong contract for its return.
 //
-// G13 measured what the surviving objection costs. Over `examples/`, the
-// goldens and the imported corpus, narrowing the seed to what each clause
-// declares would delete three instructions and six bytes — one of them the
-// `ldy` in `produce` below — while sixty of 72 call sites reach their callee
-// through a route that checks no clause at all. `tests/live_outs.rs` holds
-// the measurement and `postmortem.md` §G.22 argues it.
+// G13 also priced the deferral: three instructions and six bytes over
+// `examples/`, the goldens and the imported corpus, one of them the `ldy` in
+// `produce` below. Four of 244 emitted sections declare an output at all.
+// `tests/live_outs.rs` holds both measurements; `postmortem.md` §G.22 argues
+// them.
 //
 // `caller` earns `K816-W0123` on purpose: it reads Y after a checked call that
-// writes it. That warning is the whole argument — K816 *notices* the
-// undeclared clobber and still compiles the read, so the read is legal and Y
-// is live.
+// writes it, and calls `produce` both ways so the two spellings sit side by
+// side. Since decision 19 that warning is a warning about *undefined* state —
+// which is why the file's own `ldy` is one of the three instructions G13
+// measures, and why nothing here is deleted anyway: the seed is everything.
 
 var CELL = $0400
 
 // `produce` declares `-> a`. The final `lda` survives because it is the
-// declared output; the final `ldy` survives **too**, because a caller reached
-// through the escape hatch may read Y and the declaration does not forbid it.
+// declared output; the final `ldy` survives **too**, because the seed is
+// everything — not because reading Y after this call is defined. It is not
+// (decision 19), which is why G13 measures this `ldy` as one of the three
+// instructions a narrowing rule would delete.
 func produce @a8 @i8 (a) -> a {
     a+#$01
     ldy #$09

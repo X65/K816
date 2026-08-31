@@ -420,26 +420,27 @@ impl Context<'_> {
 /// [`Self::bytes_narrowed`] saying what the difference weighs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Narrowing {
-    /// Functions in the unit.
+    /// Functions in the unit — the ones the compiler *emits*. An `inline`
+    /// is not one: it has no address and no body of its own, so it has no
+    /// exit for a seed to sit at.
     pub functions: usize,
-    /// Functions whose `->` clause names a register or a flag, so that a
-    /// narrowing rule would have something to narrow *to*. A width-only
-    /// clause is not one of them.
+    /// Of those, the ones whose `->` clause names a register or a flag, so
+    /// that a narrowing rule would have something to narrow *to*. A
+    /// width-only clause is not one of them, and neither is an `inline`'s
+    /// clause however it reads.
     pub declaring: usize,
     /// Operations pass 3 removes as the compiler ships.
     pub removed: usize,
     /// Operations pass 3 removes when each declaring function's exit is
     /// seeded with what its clause names.
     pub removed_narrowed: usize,
-    /// Bytes the optimized unit occupies as the compiler ships.
+    /// Bytes the optimized unit assembles to as the compiler ships.
     ///
-    /// By `lower::byte_length`, which is deliberately an **over-estimate**
-    /// for a width-dependent immediate: it counts `lda #$01` as three bytes
-    /// whether or not the accumulator is eight bits wide, because a `nocross`
-    /// guard must never under-measure a run. A difference between this and
-    /// [`Self::bytes_narrowed`] is therefore an upper bound on what the
-    /// narrowing would save — the direction a measurement of a deferral's
-    /// cost should err in.
+    /// `emit_ca65::emitted_bytes`, which sizes a width-dependent immediate at
+    /// the width ca65 will be told to assemble it at — not
+    /// `lower::byte_length`, whose deliberate over-estimate would make a
+    /// saving of two bytes read as three and leave the true figure to be
+    /// worked out by hand.
     pub bytes: u32,
     /// Bytes it would occupy with the narrowed seed — every knock-on
     /// included, since the whole sequence runs both ways.
@@ -464,11 +465,19 @@ pub struct Narrowing {
 /// liveness and run first: measuring pass 3 against a stream the earlier
 /// passes never saw would count deletions the real sequence had already made.
 pub fn measure_narrowed_live_outs(program: &KProgram, context: &Context<'_>) -> Narrowing {
-    let declaring = context
+    // Over the *program*'s functions and not the model's: the model records a
+    // `FunctionInfo` for an `inline` too, and lowering emits none, so counting
+    // from the model reports clauses that no seed could ever reach.
+    let declared: BTreeSet<SymbolId> = context
         .model
         .functions
         .iter()
         .filter(|info| info.declared_outputs.is_some())
+        .map(|info| info.symbol)
+        .collect();
+    let declaring = program
+        .functions()
+        .filter(|function| declared.contains(&function.symbol))
         .count();
     let mut today = program.clone();
     let mut narrowed = program.clone();
@@ -479,18 +488,9 @@ pub fn measure_narrowed_live_outs(program: &KProgram, context: &Context<'_>) -> 
         declaring,
         removed: shipped.by_pass(Pass::RemoveOverwritten).count(),
         removed_narrowed: hypothetical.by_pass(Pass::RemoveOverwritten).count(),
-        bytes: emitted_bytes(&today),
-        bytes_narrowed: emitted_bytes(&narrowed),
+        bytes: crate::emit_ca65::emitted_bytes(&today),
+        bytes_narrowed: crate::emit_ca65::emitted_bytes(&narrowed),
     }
-}
-
-/// What a lowered unit occupies, by lowering's own measurement.
-///
-/// `lower::byte_length` is what `nocross` is checked against, so a byte count
-/// derived from it and the assembler's cannot drift apart without a test that
-/// already exists failing.
-fn emitted_bytes(program: &KProgram) -> u32 {
-    program.ops().map(crate::lower::byte_length).sum()
 }
 
 /// What one function's passes need to know about the unit around it.

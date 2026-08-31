@@ -31,8 +31,8 @@ use crate::ast::{
     BinaryDeclaration, BinaryExpr, BinaryInclusion, BinaryOp, Block, BlockMoveOperand,
     BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement,
     ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
-    ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue,
-    EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess,
+    ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind,
+    DataValue, EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess,
     FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
     HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
     HlaStatement, HlaStep, IllegalOpcode, IndexRegister, IndexRegisterKind, IndirectOperand, Item,
@@ -1271,10 +1271,7 @@ impl AstBuilder<'_> {
             // "not a flag" arm below, which would say the wrong thing: `o`
             // *is* a flag, and the complaint is about which letter spells it.
             Some("o") => {
-                return Statement::new(
-                    StatementKind::Reserved(self.overflow_spelling(span)),
-                    span,
-                );
+                return Statement::new(StatementKind::Reserved(self.overflow_spelling(span)), span);
             }
             other => {
                 self.diagnostics.push(
@@ -1538,9 +1535,9 @@ impl AstBuilder<'_> {
                 continue;
             };
             match list.field_name_for_child(index) {
-                Some("register") => outputs.push(ContractOutput::Register(
-                    self.register(Some(child), list),
-                )),
+                Some("register") => {
+                    outputs.push(ContractOutput::Register(self.register(Some(child), list)))
+                }
                 Some("flag") => outputs.push(ContractOutput::Flag(self.name(Some(child), list))),
                 _ => {}
             }
@@ -2171,7 +2168,10 @@ impl AstBuilder<'_> {
         let mut cursor = node.walk();
         for value in node.children_by_field_name("value", &mut cursor) {
             values.push(match value.kind() {
-                "string" => DataValue::String(decode_string(self.text(value))),
+                "string" => DataValue::String {
+                    text: decode_string(self.text(value)),
+                    span: self.span(value),
+                },
                 "undefined_byte" => DataValue::Undefined,
                 _ => DataValue::Expr(self.expr(Some(value), node)),
             });

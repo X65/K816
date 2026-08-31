@@ -38,3 +38,19 @@ Decision 8 maps the construct to `.incbin` and rejected emitting `.byte`
 lines; a transform K816 does not apply would be a wrong image, so the file is
 read exactly where its bytes are needed — a section with a transform, or a
 section something indexes — and `.incbin` covers everything else.
+
+**`assigning` is the shape `--strict-k65` warns about**, added after G10b's
+review found that this row was marked `warns` and its own fixture never made
+the flag say so - the only witness in the corpus was a legacy fixture the row
+does not cite.  `evaluator [ T = x, T ]` transforms every byte to itself, so
+the bytes are `07` in both compilers and the warning has something to point at.
+
+**What the assignment does afterwards is the divergence, and it cannot be
+committed as a source.**  Probed with the oracle rather than left as reasoning:
+`[ SEEN = 0 ]` above `evaluator [ SEEN = x ]`, with `[ SEEN ]` read two entries
+later, gives **7** in the original - the transform's write survives it.  K816
+refuses that source twice over, and both refusals are its own rules rather than
+this one: `EVAL_REASSIGNED` (`K816-E0149`) for a name assigned in two blocks,
+and `K816-E0101` without the priming assignment, because the transform's copy
+of the environment does not outlive the byte.  So the row states the divergence
+and this file measures the half a committed source can hold.

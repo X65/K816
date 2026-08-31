@@ -10,7 +10,7 @@
 # compiler  version 0.2.1, build Feb  9 2026 02:31:38
 # revision  920a4e40e853c4cb563302f3c88d81ba4687c4ed
 # command   cd $K65_HOME/workdir && ../out/k65.exe @<this-directory>/evaluator-transform.k65proj
-# input     input.k65        adler32 5075DDF2  1509 bytes
+# input     input.k65        adler32 B2FF9368  2069 bytes
 # input     oracle.conf      adler32 BDCD1422  66 bytes
 # input     table.bin        adler32 0018000B  4 bytes
 # project
@@ -30,5 +30,6 @@
 # Sixteen bytes per line, load address in the left column.
 
 origin 2000
-2000  4C 15 20 01 02 64 C8 2C 02 03 FF FE 01 02 11 12
-2010  13 14 64 0B 11 AD 03 20 AD 0E 20 AD 12 20 60
+2000  4C 16 20 01 02 64 C8 2C 02 03 FF FE 01 02 11 12
+2010  13 14 07 64 0B 11 AD 03 20 AD 0E 20 AD 12 20 AD
+2020  13 20 60

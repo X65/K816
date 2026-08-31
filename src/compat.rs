@@ -232,7 +232,10 @@ pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
     if !RESERVED_NAMES.contains(&lowered.as_str()) {
         return None;
     }
-    let what = if matches!(lowered.as_str(), "a" | "b" | "x" | "y" | "s" | "p" | "dpr" | "dbr") {
+    let what = if matches!(
+        lowered.as_str(),
+        "a" | "b" | "x" | "y" | "s" | "p" | "dpr" | "dbr"
+    ) {
         "a register"
     } else {
         "a flag"
@@ -247,8 +250,10 @@ pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
             "every register and flag spelling is reserved, whatever the case: a name that \
              is also a register would mean two things in the same statement",
         )
-        .with_help("pick another name; the compile-time evaluator is unaffected, so \
-                    `for i = 0..3` and `[ c = 7 ]` still work")
+        .with_help(
+            "pick another name; the compile-time evaluator is unaffected, so \
+                    `for i = 0..3` and `[ c = 7 ]` still work",
+        )
         .with_docs("doc/syntax-reference.md#registers"),
     )
 }
@@ -501,6 +506,7 @@ pub const MANIFEST: &[ManifestRow] = &[
     row("k816-immediate-marker", K816Extension, Rejects),
     row("k816-address-encoding", K816Extension, Rejects),
     row("k816-stack-relative", K816Extension, Rejects),
+    row("k816-indexed-offset", K816Extension, Rejects),
     row("optimizer-branch-to-next-label", BackendDifferent, Quiet),
     row("optimizer-duplicate-return", BackendDifferent, Quiet),
 ];
@@ -650,7 +656,7 @@ const REPORTED: &[Reported] = &[
         id: "k816-immediate-marker",
         what: "the `#` immediate marker",
         instead: Some(
-            "K65 has no `#` at all: `Arg -> Number` *is* the immediate, so `a = 1` loads one and `a = ONE` loads the constant",
+            "K65 has no `#` at all, and needs none: a literal and a `const` are immediates in both compilers, so drop the marker — before a *name* it means the address as a value, which K65 spells one byte at a time with `&<` / `&>`",
         ),
     },
     Reported {
@@ -666,6 +672,11 @@ const REPORTED: &[Reported] = &[
         instead: Some(
             "K65 indexes with `,X` and `,Y` and nothing else; the 6502 has no stack-relative mode",
         ),
+    },
+    Reported {
+        id: "k816-indexed-offset",
+        what: "the `&` indexed-offset marker",
+        instead: Some("K65 indexes a name — `NAME,x` — and has no marker for a constant offset"),
     },
     Reported {
         id: "instr-nop-wait",
@@ -703,6 +714,7 @@ pub fn classify(file: &AstFile, source: &crate::source::SourceFile) -> Vec<(&'st
     let mut walk = StrictWalk {
         text: source.text(),
         unit: source.id(),
+        evalfunc: None,
         found: Vec::new(),
     };
     walk.file(file);
@@ -754,6 +766,8 @@ fn report(id: &'static str, span: Span) -> Option<Diagnostic> {
 struct StrictWalk<'a> {
     text: &'a str,
     unit: crate::source::FileId,
+    /// The `evalfunc` whose body is being walked, for the self-call.
+    evalfunc: Option<String>,
     found: Vec<(&'static str, Span)>,
 }
 
@@ -826,7 +840,15 @@ impl StrictWalk<'_> {
             ItemKind::Segment(name) => self.mark("k816-segment", name.span),
             ItemKind::Data(block) => self.data_block(block),
             ItemKind::EvalBlock(expr) => self.expr(expr),
-            ItemKind::EvalFunc(function) => self.eval(&function.body),
+            // A self-call is one of `k816-eval-extensions`' five, and it is
+            // the only one that needs to know where it stands: the *name* is
+            // ordinary, and what makes it an extension is that it is the name
+            // of the function being defined.
+            ItemKind::EvalFunc(function) => {
+                let outer = self.evalfunc.replace(function.name.text.clone());
+                self.eval(&function.body);
+                self.evalfunc = outer;
+            }
             ItemKind::Preprocessor(directive) => {
                 if let Some(condition) = &directive.condition {
                     self.eval(condition);
@@ -1083,6 +1105,13 @@ impl StrictWalk<'_> {
             HlaOperandKind::Memory(address) => {
                 self.encoding(address.encoding.as_ref());
                 self.index(address.index.as_ref());
+                // `&expr,x` — a constant serving as a small field offset while
+                // the base sits in X or Y. `Arg -> VarArg , X` takes a
+                // `VarArg`, which is a name with at most an offset, and has no
+                // marker to write.
+                if let Some(marker) = address.offset_marker {
+                    self.mark("k816-indexed-offset", marker);
+                }
                 self.expr(&address.value);
             }
             HlaOperandKind::Indirect(indirect) => {
@@ -1173,10 +1202,10 @@ impl StrictWalk<'_> {
             DataEntryKind::Typed { values, .. } => {
                 self.mark("k816-typed-data-entries", entry.span);
                 for value in values {
-                    self.data_value(value, entry.span);
+                    self.data_value(value);
                 }
             }
-            DataEntryKind::Value(value) => self.data_value(value, entry.span),
+            DataEntryKind::Value(value) => self.data_value(value),
             DataEntryKind::Code { body, .. } => self.block(body),
             DataEntryKind::NocrossGroup(entries) => {
                 for entry in entries {
@@ -1211,10 +1240,13 @@ impl StrictWalk<'_> {
         }
     }
 
-    fn data_value(&mut self, value: &DataValue, span: Span) {
+    fn data_value(&mut self, value: &DataValue) {
         match value {
             DataValue::Expr(expr) => self.expr(expr),
-            DataValue::String(_) => self.string_literal(span),
+            // The string's own span, not the entry's: `byte "A" "B\n"` has one
+            // escape in it, and reporting the entry once per value in it said
+            // the same thing twice.
+            DataValue::String { span, .. } => self.string_literal(*span),
             DataValue::Undefined => {}
         }
     }
@@ -1239,18 +1271,18 @@ impl StrictWalk<'_> {
                 self.expr(&unary.operand);
             }
             // `VarArg -> Ident ± Ident | Ident ± Number` is the whole of K65's
-            // operand arithmetic (`compiler.inc:279-282`): one operator, both
-            // sides a leaf. Anything else — another operator, or an operand
-            // that is itself an expression — is K816's.
+            // operand arithmetic (`compiler.inc:279-282`), and it is narrower
+            // than "one operator between two leaves": the **left** side is an
+            // `Ident`, always. `base + 1` is K65's and `1 + base` is not,
+            // which is not symmetry anyone would have guessed and is why the
+            // rule is read off the production rather than paraphrased.
             ExprKind::Binary(binary) => {
-                let leaf = |expr: &Expr| {
-                    matches!(
-                        expr.kind,
-                        ExprKind::Number(_) | ExprKind::Symbol(_) | ExprKind::LocalSymbol(_)
-                    )
+                let name = |expr: &Expr| {
+                    matches!(expr.kind, ExprKind::Symbol(_) | ExprKind::LocalSymbol(_))
                 };
+                let leaf = |expr: &Expr| name(expr) || matches!(expr.kind, ExprKind::Number(_));
                 if !matches!(binary.op, BinaryOp::Add | BinaryOp::Sub)
-                    || !leaf(&binary.left)
+                    || !name(&binary.left)
                     || !leaf(&binary.right)
                 {
                     self.mark("k816-operand-expressions", binary.op_span);
@@ -1281,18 +1313,34 @@ impl StrictWalk<'_> {
 
     /// The evaluator's own language.
     ///
-    /// Five spellings K816 has and the original has not, and only three of
-    /// them are visible here: `abs`, `||`, and the *prefix* `++`/`--`. A
-    /// recursive `evalfunc` is not a spelling, and `0b1010` inside a bracket
-    /// is a K65 spelling the original's own `ParseInt` gets wrong
-    /// (`terminal-numbers`), so neither is this walk's to find.
+    /// All five of `k816-eval-extensions` are found here, and only two of them
+    /// are spellings. `abs` is absent from the original's opcode table and
+    /// `||` is not a token there. The other three are the original
+    /// *malfunctioning* at syntax it accepts: the prefix step operators abort
+    /// it, a **self-call** reaches evaluator function zero — `fact(4)` is `01`
+    /// in the golden and `$18` here — and `0b1010` reads as **zero** inside a
+    /// bracket, because the evaluator's `ParseInt` handles `0x` and not `0b`
+    /// while the same literal outside a bracket is ten in both.
+    ///
+    /// *Mutual* recursion is not among them: the original refuses a forward
+    /// reference between two `evalfunc`s outright ("Unknown evaluator function
+    /// 'odd'"), and so does K816 (`K816-E0101`). Measured, so the walk looks
+    /// for a self-call and not for a cycle.
     fn eval(&mut self, expr: &EvalExpr) {
         match &expr.kind {
-            EvalExprKind::Number { .. } => self.literal(expr.span),
+            EvalExprKind::Number { .. } => {
+                self.literal(expr.span);
+                // `0b` is a K65 spelling that means one thing outside a
+                // bracket and another inside one. `%` is K816's own and is
+                // `k816-hex-binary-char-literals` wherever it stands.
+                if self.spelling(expr.span).trim_start().starts_with("0b") {
+                    self.mark("k816-eval-extensions", expr.span);
+                }
+            }
             EvalExprKind::String(_) => self.string_literal(expr.span),
             EvalExprKind::Pi | EvalExprKind::Float(_) | EvalExprKind::Symbol(_) => {}
             EvalExprKind::Call { name, arguments } => {
-                if name.text == "abs" {
+                if name.text == "abs" || self.evalfunc.as_deref() == Some(name.text.as_str()) {
                     self.mark("k816-eval-extensions", name.span);
                 }
                 for argument in arguments {

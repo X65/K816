@@ -1289,7 +1289,11 @@ pub enum DataValue {
     /// A literal, symbol, address-byte operator, or evaluator bracket.
     Expr(Expr),
     /// A string, whose bytes go through the active `charset`.
-    String(String),
+    ///
+    /// It carries its own span because a typed entry holds several values and
+    /// a diagnostic about *this* string may not point at all of them —
+    /// `byte "A" "B\n"` has one escape in it and one thing to say about it.
+    String { text: String, span: Span },
     /// `?` — a reserved slot of the entry's width.
     Undefined,
 }

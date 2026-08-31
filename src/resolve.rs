@@ -2779,7 +2779,9 @@ fn value_size(value: &DataValue, width: u32) -> u32 {
     match value {
         DataValue::Expr(expr) => address_of_width(expr).unwrap_or(width),
         DataValue::Undefined => width,
-        DataValue::String(text) => u32::try_from(text.chars().count()).unwrap_or(u32::MAX) * width,
+        DataValue::String { text, .. } => {
+            u32::try_from(text.chars().count()).unwrap_or(u32::MAX) * width
+        }
     }
 }
 
@@ -3090,7 +3092,9 @@ impl Resolver<'_> {
                 })
             }
             DataValue::Undefined => Some(DataOp::Byte(vec![KExpr::number(0)])),
-            DataValue::String(text) => Some(DataOp::Byte(self.string_bytes(text, span, emission)?)),
+            DataValue::String { text, .. } => {
+                Some(DataOp::Byte(self.string_bytes(text, span, emission)?))
+            }
         }
     }
 
@@ -3148,7 +3152,7 @@ impl Resolver<'_> {
                 // `byte ?` is one zero byte, `word ?` two, `far ?` three:
                 // the zero a literal would have produced in that position.
                 DataValue::Undefined => folded.push(KExpr::number(0)),
-                DataValue::String(text) => {
+                DataValue::String { text, .. } => {
                     folded.extend(self.string_bytes(text, span, emission)?);
                 }
                 DataValue::Expr(expr) => {

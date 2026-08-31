@@ -17,7 +17,12 @@ filtered
 ;  //     where every other integer boundary in the evaluator rounds;
 ;  //   - every byte of a `binary` goes through it, which is what forces K816 to
 ;  //     read the file instead of leaving the inclusion to the assembler;
-;  //   - `index` and `size` read the section *after* the transform.
+;  //   - `index` and `size` read the section *after* the transform;
+;  //   - and a transform whose body *assigns* is the one shape `--strict-k65`
+;  //     warns about, which is why `assigning` is here: the bytes agree and the
+;  //     assignment does not escape.  What the assignment does *afterwards* is
+;  //     the row's one divergence and it cannot be committed as a source, for
+;  //     two reasons that both belong to K816 - see the note below.
 ;  
 ;  data filtered {
 ;    for i = 1 .. 2 eval [ i ]     // above the transform: untouched
@@ -50,6 +55,13 @@ included
     .byte   #$14
 ;  }
 ;  
+; section assigning
+assigning
+;    evaluator [ T = x, T ]        // a transform that assigns: every byte is
+;    for i = 7 .. 7 eval [ i ]     // itself, and `T` is written once per byte
+    .byte   #$07
+;  }
+;  
 ; section answers
 answers
     .byte     #$64
@@ -66,6 +78,8 @@ main
 ;    a = filtered
 ;    a = included
     LDA     included
+;    a = assigning
+    LDA     assigning
 ;    a = answers
     LDA     answers
 ;    return

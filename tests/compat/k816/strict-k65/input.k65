@@ -14,7 +14,7 @@
 // set of rows the flag reports over the *corpus* is a different gate,
 // `strict_mode_reports_exactly_the_rows_the_manifest_marks`.
 //
-// Twelve reports, and one of them is the warning: eleven constructs here have no
+// Thirteen reports, and one of them is the warning: twelve constructs here have no
 // K65 spelling at all, while `* 3` has one and means three *cycles* there and
 // three `NOP`s here (decision 11).
 //
@@ -34,5 +34,6 @@ func step @a8 @i8 (a) -> a { // E0160 ×3: two widths and a contract
   * 3                         // W0161: three cycles there, three NOPs here
   a + #MASK                   // E0160: the `#` marker, which K65 has not
   a = 3,s                     // E0160: stack-relative, which the 6502 has not
+  a = &2,x                    // E0160: the `&` indexed-offset marker
   return
 }

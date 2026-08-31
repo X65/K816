@@ -1484,6 +1484,83 @@ const AST_VARIANTS: &[(&str, &str, &str)] = &[
     ("BinaryOp", "BitOr", "k816-operand-expressions"),
 ];
 
+/// Every optional or boolean AST *field*, and the manifest row that
+/// classifies it.
+///
+/// The blind spot the variant table had, and it cost a row: `&expr,x`'s
+/// indexed-offset marker is an `Option<Span>` field of `AddressOperand`, not a
+/// variant of any enum, so nothing asked whether it was classified and it was
+/// not. A field whose type is `bool` or `Option<_>` records whether a piece of
+/// syntax was **written**, which makes it a construct in exactly the way a
+/// variant is — and a construct is what the manifest claims to have a row for.
+///
+/// Fields that always carry a value are not here: a `span`, a `kind`, a body,
+/// an entry list are the shape of a node rather than something a source
+/// chooses to write.
+const AST_FIELDS: &[(&str, &str, &str)] = &[
+    ("VarDeclaration", "is_abstract", "k816-abstract-var"),
+    (
+        "VarDeclaration",
+        "storage",
+        "k816-direct-page-pool k816-address-encoding",
+    ),
+    ("VarDeclaration", "width", "k816-typed-view"),
+    ("VarDeclaration", "size", "var-declaration"),
+    ("VarDeclaration", "count", "k816-symbolic-subscript"),
+    ("VarDeclaration", "address", "var-declaration"),
+    ("FieldDeclaration", "width", "k816-typed-view"),
+    ("FieldDeclaration", "size", "k816-symbolic-subscript"),
+    (
+        "ConstEntry",
+        "value",
+        "topelem-const k816-const-auto-increment",
+    ),
+    ("Function", "is_far", "k816-far-function"),
+    ("Function", "contract", "k816-call-contracts"),
+    ("CallContract", "inputs", "k816-call-contracts"),
+    ("CallContract", "outputs", "k816-call-contracts"),
+    ("ConditionalBlock", "otherwise", "instr-branch-block"),
+    (
+        "LoopStatement",
+        "nocross",
+        "data-nocross-flag k816-nocross-shape",
+    ),
+    ("GotoStatement", "indirect", "instr-goto"),
+    ("GotoStatement", "is_far", "instr-far-goto"),
+    ("CallStatement", "is_far", "instr-far-call"),
+    ("BareCall", "arguments", "k816-call-contracts"),
+    ("BareCall", "outputs", "k816-call-contracts"),
+    ("NativeInstruction", "operand", "k816-native-mnemonics"),
+    ("NativeInstruction", "repeat", "k816-native-mnemonics"),
+    ("AddressOperand", "encoding", "k816-address-encoding"),
+    ("AddressOperand", "offset_marker", "k816-indexed-offset"),
+    ("AddressOperand", "index", "arg-forms k816-stack-relative"),
+    ("LongIndirectOperand", "encoding", "k816-native-mnemonics"),
+    (
+        "LongIndirectOperand",
+        "outer_index",
+        "k816-native-mnemonics",
+    ),
+    ("IndirectOperand", "encoding", "k816-address-encoding"),
+    (
+        "IndirectOperand",
+        "inner_index",
+        "arg-forms k816-stack-relative",
+    ),
+    (
+        "IndirectOperand",
+        "outer_index",
+        "arg-forms k816-stack-relative",
+    ),
+    ("HlaFlag", "set", "instr-flag-set instr-flag-clear"),
+    ("DataBlock", "name", "topelem-data instr-data-block"),
+    ("DataBlock", "nocross", "data-nocross-flag"),
+    ("AlignDirective", "offset", "align-directive"),
+    ("PreprocessorDirective", "condition", "ppifnumber-condition"),
+    ("PreprocessorDirective", "message", "topelem-pperror"),
+    ("ReservedConstruct", "name", "topelem-bank"),
+];
+
 /// Every AST variant is classified, and every classification names a real row.
 ///
 /// `src/ast.rs` is read rather than trusted, the way `diagnostic.rs` is read
@@ -1540,6 +1617,36 @@ fn every_ast_construct_answers_to_a_manifest_row() {
         "these are listed here and are not enums of `src/ast.rs`: {unknown:?}"
     );
 
+    // Every optional field is classified too, and every one that exists is
+    // listed. The two directions matter for the same reason they do above:
+    // `AddressOperand::offset_marker` was a construct nothing had a row for,
+    // and no gate could see it because it is not a variant.
+    let listed_fields: BTreeSet<(&str, &str)> =
+        AST_FIELDS.iter().map(|(s, f, _)| (*s, *f)).collect();
+    assert_eq!(
+        listed_fields.len(),
+        AST_FIELDS.len(),
+        "a field is listed twice"
+    );
+    for (owner, field, classification) in AST_FIELDS {
+        for id in classification.split_whitespace() {
+            assert!(
+                ids.contains(id),
+                "`{owner}.{field}` names the row `{id}`, which the manifest does not have"
+            );
+        }
+    }
+    for (owner, field, ty) in optional_fields(&source) {
+        assert!(
+            listed_fields.contains(&(owner.as_str(), field.as_str())),
+            "`{owner}.{field}` is a `{ty}`, which records whether a piece of syntax \
+             was written, and no manifest row classifies it. Add the row, or list the \
+             field beside the variants — `AddressOperand::offset_marker` is the one \
+             that got through, because a field is not a variant and the variant table \
+             could not see it."
+        );
+    }
+
     for enum_name in listed {
         let body = source
             .split_once(&format!("pub enum {enum_name} {{"))
@@ -1577,6 +1684,39 @@ fn every_ast_construct_answers_to_a_manifest_row() {
             );
         }
     }
+}
+
+/// Every `bool` or `Option<_>` field of an AST struct, as `(struct, field,
+/// type)`.
+///
+/// Read off `src/ast.rs` rather than listed, so a field added later is found.
+fn optional_fields(source: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut owner: Option<&str> = None;
+    for line in source.lines() {
+        if let Some(rest) = line.strip_prefix("pub struct ") {
+            owner = rest
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next();
+            continue;
+        }
+        if line == "}" {
+            owner = None;
+            continue;
+        }
+        let (Some(name), Some(rest)) = (owner, line.strip_prefix("    pub ")) else {
+            continue;
+        };
+        let Some((field, ty)) = rest.split_once(": ") else {
+            continue;
+        };
+        let ty = ty.trim_end_matches(',');
+        if ty == "bool" || ty.starts_with("Option<") {
+            out.push((name.to_string(), field.to_string(), ty.to_string()));
+        }
+    }
+    assert!(!out.is_empty(), "src/ast.rs parsed to no optional fields");
+    out
 }
 
 /// Every status is one of the six the manifest defines, and none is `open`.
@@ -1746,7 +1886,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
         .map(|row| row.id.as_str())
         .collect();
 
-    let mut found: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut found: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
     for (name, sources) in strict_corpus() {
         let mut map = SourceMap::new();
         let ids: Vec<_> = sources
@@ -1760,18 +1900,49 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
             let linkage = k816::linkage::Linkage::resolve(&map);
             let (model, _) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
             for (row, _) in k816::compat::classify(model.program(&parse.file), source) {
-                found.entry(row).or_insert_with(|| name.clone());
+                found.entry(row).or_default().insert(name.clone());
             }
         }
     }
 
     assert_eq!(
         marked.len(),
-        26,
+        27,
         "the manifest marks {} rows for the flag; if that is deliberate, move the \
          number here so the count stays a statement someone made",
         marked.len()
     );
+    // A marked row is witnessed by the fixture it *names*, not merely by
+    // something somewhere. Pointing a row at a fixture that does not exercise
+    // it is how `binary Ident` and `far goto` both shipped, and the gate that
+    // caught those derives its witness from grammar-rule syntax — which the
+    // extension table does not have, because its `Construct` cells are prose.
+    // This is that check for the rows the flag reports.
+    let mut miscited: Vec<String> = Vec::new();
+    for row in &rows {
+        if row.strict == "—" || names_no_fixture(&row.fixture) {
+            continue;
+        }
+        let cited = found.get(row.id.as_str());
+        if !cited.is_some_and(|fixtures| fixtures.contains(&row.fixture)) {
+            miscited.push(format!(
+                "  `{}` is marked `{}` and names `{}`; produced by {:?}",
+                row.id,
+                row.strict,
+                row.fixture,
+                cited
+                    .map(|f| f.iter().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            ));
+        }
+    }
+
+    assert!(
+        miscited.is_empty(),
+        "a marked row names a fixture that does not produce it:\n{}",
+        miscited.join("\n")
+    );
+
     let unmarked: Vec<&&str> = found.keys().filter(|id| !marked.contains(*id)).collect();
     assert!(
         unmarked.is_empty(),

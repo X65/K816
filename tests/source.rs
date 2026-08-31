@@ -52,7 +52,7 @@ fn ascii_offsets_translate_to_exact_lines_and_columns() {
 fn multibyte_utf8_advances_columns_by_encoded_length() {
     let mut map = SourceMap::new();
     // "żółć" is 4 characters, 8 bytes; the comment starts at byte 0.
-    let id = map.add_file("uni.k816", "// żółć\nvar A = 1\n");
+    let id = map.add_file("uni.k816", "// żółć\nvar AA = 1\n");
     let file = map.file(id);
 
     assert_eq!(file.line_col(3), line_col(0, 3)); // start of `ż`
@@ -68,7 +68,7 @@ fn multibyte_utf8_advances_columns_by_encoded_length() {
 #[test]
 fn spans_stay_attached_to_their_own_file() {
     let mut map = SourceMap::new();
-    let first = map.add_file("one.k816", "var A = 1\n");
+    let first = map.add_file("one.k816", "var AA = 1\n");
     let second = map.add_file("two.k816", "func main {\n}\n");
 
     assert_ne!(first, second);

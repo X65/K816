@@ -153,7 +153,7 @@ fn a_link_time_immediate_load_matches_its_native_spelling() {
 /// longer, decided by different code.
 #[test]
 fn a_store_takes_the_encoding_the_address_earns() {
-    equivalent("var Z = $10", "    Z = a", "    sta Z");
+    equivalent("var ZZ = $10", "    ZZ = a", "    sta ZZ");
     equivalent("var SCREEN = $0400", "    SCREEN = a", "    sta SCREEN");
 }
 
@@ -162,7 +162,7 @@ fn a_store_takes_the_encoding_the_address_earns() {
 /// assertion per *shape* rather than per instruction.
 #[test]
 fn every_load_and_store_shape_matches_its_native_spelling() {
-    let declarations = "var Z = $10\nvar SCREEN = $0400\nvar PTR = $20";
+    let declarations = "var ZZ = $10\nvar SCREEN = $0400\nvar PTR = $20";
     for (hla, native) in [
         ("    a = SCREEN", "    lda SCREEN"),
         ("    a = SCREEN,x", "    lda SCREEN,x"),
@@ -180,7 +180,7 @@ fn every_load_and_store_shape_matches_its_native_spelling() {
         ("    (PTR),y = a", "    sta (PTR),y"),
         ("    SCREEN = x", "    stx SCREEN"),
         ("    SCREEN = y", "    sty SCREEN"),
-        ("    Z = a", "    sta Z"),
+        ("    ZZ = a", "    sta ZZ"),
     ] {
         equivalent(declarations, hla, native);
     }

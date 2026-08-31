@@ -1325,11 +1325,10 @@ export default grammar({
             // prefix in `var dp counter`, and a token would stop that being a
             // declaration.
             'dpr', 'DPR', 'dbr', 'DBR',
-            // The status register, whose stack shorthand spells it either
-            // way. One token for the registers keeps the lexer from having
-            // to choose between two rules over the same spelling; the
-            // builder decides which meaning the statement asked for.
-            'p', 'P', 'flag',
+            // The status register. One spelling only: `flag` was an alias
+            // for it, and an alias is a second way to say a thing that the
+            // reader then has to know are the same thing.
+            'p', 'P',
             // `c`, `d`, `i` and `v` are deliberately *not* here. They are
             // flags, and no rule but `hla_flag` has a use for them — while
             // every rule this token reaches gains them, which is what went

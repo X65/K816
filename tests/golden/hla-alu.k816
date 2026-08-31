@@ -8,7 +8,7 @@ var mem  = $10
 var mask = $11
 var abs  = $0300
 
-const N = 3
+const COUNT = 3
 
 // The ALU and compare families. A constant written without `#` is an
 // immediate on the value side of a shorthand, exactly as in a chain.
@@ -20,7 +20,7 @@ func alu @a8 @i8 {
     a^abs,x
     a?60
     x?#1
-    y?N
+    y?COUNT
     a&?mem
     return
 }
@@ -33,7 +33,7 @@ func alu_native @a8 @i8 {
     eor abs,x
     cmp #60
     cpx #1
-    cpy #N
+    cpy #COUNT
     bit mem
     rts
 }
@@ -133,7 +133,7 @@ func markers @a8 @i8 {
     b~a
     a~b
     *
-    * N
+    * COUNT
     %
     return
 }
@@ -142,7 +142,7 @@ func markers_native @a8 @i8 {
     xba
     xba
     nop
-    nop * N
+    nop * COUNT
     brk #0
     rts
 }

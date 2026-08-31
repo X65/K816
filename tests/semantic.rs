@@ -189,7 +189,7 @@ fn immediate_must_fit_the_contracted_width() {
 
 #[test]
 fn duplicate_declarations_point_at_the_first_one() {
-    let (_, diagnostics) = analyze("var A = $10\nvar A = $20\n");
+    let (_, diagnostics) = analyze("var AA = $10\nvar AA = $20\n");
     assert_eq!(diagnostics.len(), 1);
     let diagnostic = &diagnostics[0];
     assert_eq!(diagnostic.code, DiagnosticCode::DUPLICATE_SYMBOL);
@@ -265,15 +265,15 @@ const AND_BINDS_LOOSER_THAN_ADD = 1 + 2 & 2
 #[test]
 fn unary_operators_repeat_in_the_order_written() {
     // `-~FOO` is Negate(BitNot(FOO)) and `~-FOO` is BitNot(Negate(FOO)).
-    let source = "const FOO = 5\nconst A = -~FOO\nconst B = ~-FOO\n";
-    assert_eq!(const_value(source, "A"), 6);
-    assert_eq!(const_value(source, "B"), 4);
+    let source = "const FOO = 5\nconst AA = -~FOO\nconst BB = ~-FOO\n";
+    assert_eq!(const_value(source, "AA"), 6);
+    assert_eq!(const_value(source, "BB"), 4);
 }
 
 #[test]
 fn character_literals_fold_as_atoms() {
-    let source = "const A = 'A'\nconst NEXT = 'A' + 1\n";
-    assert_eq!(const_value(source, "A"), u32::from(b'A'));
+    let source = "const AA = 'A'\nconst NEXT = 'A' + 1\n";
+    assert_eq!(const_value(source, "AA"), u32::from(b'A'));
     assert_eq!(const_value(source, "NEXT"), u32::from(b'A') + 1);
 }
 
@@ -294,26 +294,26 @@ const L = &&&FAR
 #[test]
 fn const_groups_auto_increment() {
     // `doc/syntax-reference.md`, "Constant Declaration".
-    let source = "const A = 0, B, C
-const D, E, F
+    let source = "const AA = 0, BB, CC
+const DD, E, F
 const BASE = 10
-const X = BASE, Y, Z
-const M = 0, N, O = 10, P
+const XX = BASE, YY, ZZ
+const M = 0, NN, OO = 10, PP
 ";
     for (name, expected) in [
-        ("A", 0),
-        ("B", 1),
-        ("C", 2),
-        ("D", 0),
+        ("AA", 0),
+        ("BB", 1),
+        ("CC", 2),
+        ("DD", 0),
         ("E", 1),
         ("F", 2),
-        ("X", 10),
-        ("Y", 11),
-        ("Z", 12),
+        ("XX", 10),
+        ("YY", 11),
+        ("ZZ", 12),
         ("M", 0),
-        ("N", 1),
-        ("O", 10),
-        ("P", 11),
+        ("NN", 1),
+        ("OO", 10),
+        ("PP", 11),
     ] {
         assert_eq!(const_value(source, name), expected, "`{name}`");
     }
@@ -337,7 +337,7 @@ fn a_standalone_const_without_an_initializer_is_an_error() {
 #[test]
 fn a_link_time_value_is_rejected_only_where_an_absolute_one_is_required() {
     // A `var` address becomes a ca65 equate, so it has to be a number.
-    let (_, diagnostics) = analyze("func f @a8 {\n    return\n}\nvar X = f + 1\n");
+    let (_, diagnostics) = analyze("func f @a8 {\n    return\n}\nvar XX = f + 1\n");
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].code, DiagnosticCode::NOT_CONSTANT);
     assert_eq!(
@@ -375,7 +375,7 @@ fn a_const_cannot_stand_in_for_a_memory_location() {
 
 #[test]
 fn an_undeclared_name_inside_an_expression_names_itself() {
-    let (_, diagnostics) = analyze("const A = MISSING + 1\n");
+    let (_, diagnostics) = analyze("const AA = MISSING + 1\n");
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].code, DiagnosticCode::UNDECLARED_SYMBOL);
     assert_eq!(diagnostics[0].title, "`MISSING` is not declared");
@@ -384,7 +384,7 @@ fn an_undeclared_name_inside_an_expression_names_itself() {
 #[test]
 fn both_sides_of_a_binary_expression_are_diagnosed() {
     // One undeclared name must not hide another.
-    let (_, diagnostics) = analyze("const A = LEFT + RIGHT\n");
+    let (_, diagnostics) = analyze("const AA = LEFT + RIGHT\n");
     let names: Vec<&str> = diagnostics.iter().map(|d| d.title.as_str()).collect();
     assert_eq!(names, ["`LEFT` is not declared", "`RIGHT` is not declared"]);
 }
@@ -393,7 +393,7 @@ fn both_sides_of_a_binary_expression_are_diagnosed() {
 fn a_compound_expression_in_a_data_value_list_is_rejected() {
     // The grammar closes most of this; parentheses are the hole it cannot,
     // because `&<(A | B)` is a legal parse of an illegal value.
-    let (_, diagnostics) = analyze("const A = 1\nconst B = 2\ndata D {\n    byte &<(A | B)\n}\n");
+    let (_, diagnostics) = analyze("const AA = 1\nconst BB = 2\ndata DD {\n    byte &<(AA | BB)\n}\n");
     let compound: Vec<&k816::diagnostic::Diagnostic> = diagnostics
         .iter()
         .filter(|d| d.code == DiagnosticCode::COMPOUND_DATA_VALUE)
@@ -408,7 +408,7 @@ fn a_compound_expression_in_a_data_value_list_is_rejected() {
     );
 
     // Offset arithmetic under an address-byte operator stays an atom.
-    let (_, diagnostics) = analyze("var P = $80\ndata D {\n    byte &<P+1\n}\n");
+    let (_, diagnostics) = analyze("var PP = $80\ndata DD {\n    byte &<PP+1\n}\n");
     assert!(
         !diagnostics
             .iter()
@@ -996,12 +996,12 @@ abstract var DEV[ .open :word .close :word .init :word ]
 #[test]
 fn an_abstract_layout_may_not_ask_for_storage() {
     for source in [
-        "abstract var P:byte[ .x ] = $4000\n", // an address
-        "abstract var dp P[ .x :byte ]\n",     // a storage class
-        "abstract var far P[ .x :byte ]\n",
-        "abstract var P[ .x :byte ] * 4\n", // an allocation count
-        "abstract var P[16]\n",             // a raw span, and no fields
-        "abstract var P\n",                 // nothing to declare at all
+        "abstract var PP:byte[ .x ] = $4000\n", // an address
+        "abstract var dp PP[ .x :byte ]\n",     // a storage class
+        "abstract var far PP[ .x :byte ]\n",
+        "abstract var PP[ .x :byte ] * 4\n", // an allocation count
+        "abstract var PP[16]\n",             // a raw span, and no fields
+        "abstract var PP\n",                 // nothing to declare at all
     ] {
         let (model, diagnostics) = analyze(source);
         assert_eq!(diagnostics.len(), 1, "`{source}`: {diagnostics:?}");
@@ -1012,7 +1012,7 @@ fn an_abstract_layout_may_not_ask_for_storage() {
         );
         // Refused, and still declared: a use of the name should report what
         // is wrong with the use, not that the name does not exist.
-        let id = model.symbols.lookup("P").expect("declared anyway");
+        let id = model.symbols.lookup("PP").expect("declared anyway");
         assert!(matches!(
             model.symbols.symbol(id).kind,
             k816::symbol::SymbolKind::AbstractVar { .. }
@@ -1029,7 +1029,7 @@ fn an_abstract_layout_may_not_ask_for_storage() {
 
     // The layout itself is still what the author wrote, so the queries that
     // are the whole point of the declaration still answer.
-    let (model, _) = analyze("abstract var P[ .x :word .y :word ]\nvar q = P:sizeof\n");
+    let (model, _) = analyze("abstract var PP[ .x :word .y :word ]\nvar q = PP:sizeof\n");
     assert_eq!(
         model
             .symbols
@@ -1057,7 +1057,7 @@ fn a_field_takes_the_nearest_width_and_counts_elements_of_it() {
     use k816::symbol::{DataWidth, FieldShape, SymbolKind};
 
     let source = "\
-var v:word[
+var vv:word[
     .plain
     .narrow  :byte
     .wide    :far
@@ -1081,10 +1081,10 @@ var v:word[
         layout, element, ..
     } = model
         .symbols
-        .symbol(model.symbols.lookup("v").expect("declared"))
+        .symbol(model.symbols.lookup("vv").expect("declared"))
         .kind
     else {
-        panic!("`v` is a variable");
+        panic!("`vv` is a variable");
     };
     let layout = model.symbols.layout(layout.expect("a field list"));
     let field = |name: &str| layout.field(name).unwrap_or_else(|| panic!("`{name}`"));

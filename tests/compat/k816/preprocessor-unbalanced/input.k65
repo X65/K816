@@ -9,13 +9,13 @@
 
 // 3. A second `#else` in one chain, and an `#elif` after an `#else`.
 #if 1
-const A = 1
+const ONE = 1
 #else
-const B = 2
+const TWO = 2
 #else
-const C = 3
+const THREE = 3
 #elif 1
-const D = 4
+const FOUR = 4
 #endif
 
 // 4. A region that crosses a block boundary: opened inside the function,

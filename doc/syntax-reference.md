@@ -1678,9 +1678,21 @@ Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed va
 - `S` stack pointer (16 bit)
 - `PC` program counter (16 bit; CPU architectural register, not an HLA assignment target)
 - `PBR` program bank register — **no HLA name.** No instruction loads, stores, or transfers it: only `PHK` names it as a source, and there is no `PLK`. Which bank code runs in is decided by a section's `far` declaration and by the linker, not by a program writing the register, so `phk` is the whole of the surface.
-- `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p` or `flag` — **not** as an individual flag name, see below)
+- `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p` — **not** as an individual flag name, see below). One spelling: `flag` was an alias for it and is gone, because a second name for one register is a thing the reader has to know are the same thing.
 
 **A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!`, `i??`, `b!!` and `d??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses all seven with `K816-K65-0005` and names `p??` / `p!!`, which is those two instructions without the suggestion that one flag moves on its own.
+
+**Every register and flag spelling is reserved as a name.** A `var`, `const`, `func`, label or `inline` alias may not be called `a b x y s p dpr dbr c d i v n z o`, in any case — `K816-E0158`. A name that is also a register would mean two things in one statement, which is the ambiguity the convention exists to remove.
+
+The compile-time evaluator is **not** covered, and deliberately: the K65 grammar's `AllIdent` rule lets these letters be names again in an evaluator block and as a `for` variable, and `for i = 0 .. 3` is the idiomatic K65 loop. A reserved name is then an evaluator *local* — a later bracket in another item cannot read it, because the bridge is the symbol table and that is what the reservation closes.
+
+```k65
+var c = $10                     // E0158
+const n = 5                     // E0158
+data table {
+  for i = 0 .. 3 eval [ i ]     // fine, as in K65
+}
+```
 
 **`c` and `d` are flags, not registers.** They name the carry and the decimal flag, which is what the K65 grammar spells them (`Flag -> C|c|D|d|I|i|O|o`). Earlier K816 releases gave `c` to the 16-bit accumulator and `d` to the direct page; both spellings are refused now with `K816-E0158`, naming `a` and `dpr`. `b` outside `a~b` is refused the same way.
 
@@ -2514,7 +2526,7 @@ PHA  Push Accumulator on Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`p!!` / `flag!!`|||||||
+|`p!!`|||||||
 
 ```none
 PHP  Push Processor Status on Stack
@@ -2552,7 +2564,7 @@ PLA  Pull Accumulator from Stack
 
 Acc|Implied|Imm|Mem|Mem,X|Mem,Y|(Mem,X)|(Mem),Y|(Mem)
 :---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-|`p??` / `flag??`|||||||
+|`p??`|||||||
 
 ```none
 PLP  Pull Processor Status from Stack

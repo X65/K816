@@ -1586,7 +1586,7 @@ impl AstBuilder<'_> {
             "s" => RegisterKind::S,
             "x" => RegisterKind::X,
             "y" => RegisterKind::Y,
-            "p" | "flag" => RegisterKind::P,
+            "p" => RegisterKind::P,
             _ => {
                 self.unexpected(node, "a register");
                 RegisterKind::A

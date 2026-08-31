@@ -1063,7 +1063,7 @@ impl Analysis {
                 .bind(&effect.name, effect.value.clone(), self.eval_block);
             if let Some(number) = effect.value.number() {
                 let value = eval::to_integer(number) as u32;
-                self.declare(&effect.name, SymbolKind::Const { value }, effect.span);
+                self.publish_eval_name(&effect.name, value, effect.span);
             }
         }
     }
@@ -1100,7 +1100,7 @@ impl Analysis {
                 continue;
             };
             let value = eval::to_integer(number) as u32;
-            self.declare(&name, SymbolKind::Const { value }, body.span);
+            self.publish_eval_name(&name, value, body.span);
         }
         match value {
             Ok(value) => self.model.eval.record(body.span, value),
@@ -1458,6 +1458,9 @@ impl Analysis {
     }
 
     fn declare(&mut self, name: &str, kind: SymbolKind, span: Span) -> Option<SymbolId> {
+        if self.reserved(name, span) {
+            return None;
+        }
         let result = self.model.symbols.declare(name, kind, span);
         self.declared(name, span, result)
     }
@@ -1469,8 +1472,46 @@ impl Analysis {
         kind: SymbolKind,
         span: Span,
     ) -> Option<SymbolId> {
+        if self.reserved(name, span) {
+            return None;
+        }
         let result = self.model.symbols.declare_local(owner, name, kind, span);
         self.declared(name, span, result)
+    }
+
+    /// Publishes an evaluator name as a compiler constant, unless the name is
+    /// a register or flag spelling.
+    ///
+    /// The evaluator's namespace is its own and is *not* reserved — the
+    /// original's `AllIdent` rule allows these letters as evaluator and `for`
+    /// variables, and `for i = 0..3` is the idiomatic K65 loop. What is
+    /// reserved is the symbol table, so the binding happens and the
+    /// publication does not. Silently, because nothing is wrong: `[ c = 7 ]`
+    /// is a legal evaluator assignment, and the only thing it cannot also be
+    /// is a `const` named `c`.
+    ///
+    /// The boundary that follows: a reserved name is an evaluator *local*.
+    /// `[ c = 7 ]` and a later `[ c + 1 ]` in the same run see it; a bracket
+    /// in another item does not, because the symbol table is the bridge and
+    /// crossing it is the thing being refused.
+    fn publish_eval_name(&mut self, name: &str, value: u32, span: Span) {
+        if compat::reserved_name(span, name).is_some() {
+            return;
+        }
+        self.declare(name, SymbolKind::Const { value }, span);
+    }
+
+    /// Refuses a declaration that asks for a register or flag spelling.
+    ///
+    /// Both declaring paths funnel here, so a `var`, a `const`, a `func`, a
+    /// label and an `inline` alias are all covered by one rule. A local label
+    /// keeps its leading `.`, so `.c` is a different name and passes.
+    fn reserved(&mut self, name: &str, span: Span) -> bool {
+        let Some(diagnostic) = compat::reserved_name(span, name) else {
+            return false;
+        };
+        self.diagnostics.push(diagnostic);
+        true
     }
 
     /// Reports a duplicate declaration, pointing the "first declared here"

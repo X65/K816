@@ -11,9 +11,9 @@
 
 var counter = 0x40
 
-inline sub (a, #b) -> a {
+inline sub (a, #step) -> a {
   c+
-  a - #b
+  a - #step
 }
 
 inline twice (a) -> a {

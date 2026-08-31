@@ -191,6 +191,61 @@ pub fn retired_register_spelling(span: Span, spelling: &str) -> Option<Diagnosti
     )
 }
 
+/// The names a declaration may not take: every register and flag spelling.
+///
+/// K816's reserved vocabulary, which is a superset of the original's for one
+/// reason — K816 has flags the 6502 cannot set or clear (`z`, `n`) and
+/// registers the 6502 does not have (`dpr`, `dbr`). The original reserves its
+/// own the same way: `Const -> Ident` excludes the register and flag terminal
+/// classes, which is why `const A` is a syntax error there.
+///
+/// **The compile-time evaluator is not covered**, and deliberately: the
+/// original's `AllIdent -> Ident | A | X | Y | S | Flag` lets these letters be
+/// names again in an evaluator block and as a `for` variable, `for i = 0..3`
+/// is the idiomatic K65 loop, and eleven fixtures use it. The evaluator keeps
+/// its own environment, so the two namespaces never meet.
+pub const RESERVED_NAMES: &[&str] = &[
+    // Registers.
+    "a", "b", "x", "y", "s", "p", "dpr", "dbr", //
+    // Flags, `o` included: it is not a K816 spelling any more (decision 32),
+    // and letting a *variable* take the letter would be the confusion that
+    // decision over, one level down.
+    "c", "d", "i", "v", "n", "z", "o",
+];
+
+/// A declaration asking for a register or flag spelling.
+///
+/// Reserved in the symbol table rather than in the lexer, which is the whole
+/// trick: a token for these letters wins wherever an identifier is also
+/// valid, and that is how `i+ d-` came to parse as the arithmetic `i + d`
+/// (`postmortem.md` §G.1.16). The grammar keeps them as identifiers and this
+/// refuses the ones that would shadow a register or a flag.
+pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
+    let lowered = name.to_ascii_lowercase();
+    if !RESERVED_NAMES.contains(&lowered.as_str()) {
+        return None;
+    }
+    let what = if matches!(lowered.as_str(), "a" | "b" | "x" | "y" | "s" | "p" | "dpr" | "dbr") {
+        "a register"
+    } else {
+        "a flag"
+    };
+    Some(
+        Diagnostic::error(
+            DiagnosticCode::RETIRED_REGISTER_SPELLING,
+            format!("`{name}` names {what}, so a declaration cannot take it"),
+            Label::new(span, "this name is reserved"),
+        )
+        .with_note(
+            "every register and flag spelling is reserved, whatever the case: a name that \
+             is also a register would mean two things in the same statement",
+        )
+        .with_help("pick another name; the compile-time evaluator is unaffected, so \
+                    `for i = 0..3` and `[ c = 7 ]` still work")
+        .with_docs("doc/syntax-reference.md#registers"),
+    )
+}
+
 /// `bank NAME` is removed, and `segment NAME` is what replaced it.
 ///
 /// A *removal* rather than a reservation, so the wording says so: nothing

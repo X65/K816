@@ -83,7 +83,7 @@ const FAMILY: &[Case] = &[
         caret: "!!",
     },
     Case {
-        source: "func f @a8 {\n    return\n}\nvar X = f + 1\n",
+        source: "func f @a8 {\n    return\n}\nvar XX = f + 1\n",
         code: DiagnosticCode::NOT_CONSTANT,
         caret: "f + 1",
     },
@@ -113,7 +113,7 @@ const FAMILY: &[Case] = &[
         caret: "&",
     },
     Case {
-        source: "const A = 1\nconst B = 2\ndata d {\n    &<(A | B)\n}\n",
+        source: "const AA = 1\nconst BB = 2\ndata dd {\n    &<(AA | BB)\n}\n",
         code: DiagnosticCode::COMPOUND_DATA_VALUE,
         caret: "|",
     },
@@ -151,9 +151,9 @@ const FAMILY: &[Case] = &[
         caret: "MISSING",
     },
     Case {
-        source: "var A = $10\nvar A = $20\n",
+        source: "var AA = $10\nvar AA = $20\n",
         code: DiagnosticCode::DUPLICATE_SYMBOL,
-        caret: "A",
+        caret: "AA",
     },
     // The width family, sub-plan D.
     Case {
@@ -276,7 +276,7 @@ const FAMILY: &[Case] = &[
         caret: "ptr",
     },
     Case {
-        source: "var n\nvar here\n\nfunc f @a8 @i8 {\n    a = n[here]\n}\n",
+        source: "var nn\nvar here\n\nfunc f @a8 @i8 {\n    a = nn[here]\n}\n",
         code: DiagnosticCode::SUBSCRIPT_NOT_CONSTANT,
         caret: "here",
     },
@@ -370,59 +370,59 @@ const FAMILY: &[Case] = &[
     // too wide for its entry, and the two things a `repeat` body may not
     // contain because each copy would need its own answer.
     Case {
-        source: "data d {\n    charset \" ABC\"\n    \"AZ\"\n}\n",
+        source: "data dd {\n    charset \" ABC\"\n    \"AZ\"\n}\n",
         code: DiagnosticCode::CHARSET_UNMAPPED,
         caret: "\"AZ\"",
     },
     Case {
-        source: "data d {\n    byte $100\n}\n",
+        source: "data dd {\n    byte $100\n}\n",
         code: DiagnosticCode::ADDRESS_RANGE,
         caret: "$100",
     },
     Case {
-        source: "data d {\n    repeat 2 {\n        inner: 1\n    }\n}\n",
+        source: "data dd {\n    repeat 2 {\n        inner: 1\n    }\n}\n",
         code: DiagnosticCode::DUPLICATE_SYMBOL,
         caret: "inner:",
     },
     Case {
-        source: "data d {\n    repeat 2 {\n        align 4\n    }\n}\n",
+        source: "data dd {\n    repeat 2 {\n        align 4\n    }\n}\n",
         code: DiagnosticCode::SEGMENT_PLACEMENT,
         caret: "align 4",
     },
     Case {
-        source: "data d {\n    for i=0..3 eval [ i - 9 ]\n}\n",
+        source: "data dd {\n    for i=0..3 eval [ i - 9 ]\n}\n",
         code: DiagnosticCode::ADDRESS_RANGE,
         caret: "i - 9",
     },
     // A section read with no answer, and the one that can never have one.
     Case {
-        source: "data d {\n    [ index(below, 1) ]\n}\ndata below {\n    1\n}\n",
+        source: "data dd {\n    [ index(below, 1) ]\n}\ndata below {\n    1\n}\n",
         code: DiagnosticCode::SECTION_NOT_READABLE,
         caret: "index(below, 1)",
     },
     Case {
-        source: "data tab {\n    1 2 3\n}\ndata d {\n    [ index(tab, 1, 0) ]\n}\n",
+        source: "data tab {\n    1 2 3\n}\ndata dd {\n    [ index(tab, 1, 0) ]\n}\n",
         code: DiagnosticCode::SECTION_NO_DIMENSIONS,
         caret: "index(tab, 1, 0)",
     },
     // The evaluator family G4 introduces.
     Case {
-        source: "data d {\n    [ print(\"ready\") ]\n}\n",
+        source: "data dd {\n    [ print(\"ready\") ]\n}\n",
         code: DiagnosticCode::EVAL_PRINT,
         caret: "print(\"ready\")",
     },
     Case {
-        source: "data d {\n    [ error(\"no configuration\") ]\n}\n",
+        source: "data dd {\n    [ error(\"no configuration\") ]\n}\n",
         code: DiagnosticCode::EVAL_ERROR,
         caret: "error(\"no configuration\")",
     },
     Case {
-        source: "data d {\n    [ SPIN = 0 while 1 { SPIN = SPIN + 1 } ]\n}\n",
+        source: "data dd {\n    [ SPIN = 0 while 1 { SPIN = SPIN + 1 } ]\n}\n",
         code: DiagnosticCode::EVAL_BUDGET,
         caret: "[ SPIN = 0 while 1 { SPIN = SPIN + 1 } ]",
     },
     Case {
-        source: "data d {\n    [ \"text\" ]\n}\n",
+        source: "data dd {\n    [ \"text\" ]\n}\n",
         code: DiagnosticCode::EVAL_NOT_A_NUMBER,
         caret: "[ \"text\" ]",
     },
@@ -432,7 +432,7 @@ const FAMILY: &[Case] = &[
         caret: "LIMIT = 2",
     },
     Case {
-        source: "data d {\n    for i=0..3 eval [ missing ]\n}\n",
+        source: "data dd {\n    for i=0..3 eval [ missing ]\n}\n",
         code: DiagnosticCode::UNDECLARED_SYMBOL,
         caret: "missing",
     },
@@ -489,12 +489,12 @@ const FAMILY: &[Case] = &[
     // removed `bank`, and the two of the five illegal-opcode forms that
     // stand for the three shapes the grammar has.
     Case {
-        source: "data d {\n    align 3\n    1 2\n}\n",
+        source: "data dd {\n    align 3\n    1 2\n}\n",
         code: DiagnosticCode::ALIGN_UNREACHABLE,
         caret: "3",
     },
     Case {
-        source: "data d {\n    align 16 + 16\n    1 2\n}\n",
+        source: "data dd {\n    align 16 + 16\n    1 2\n}\n",
         code: DiagnosticCode::ALIGN_UNREACHABLE,
         caret: "16",
     },

@@ -706,7 +706,7 @@ fn dump_eval(kind: &EvalExprKind) -> String {
 /// Parses `var X = <expression>` and renders the expression in prefix form.
 fn parse_expr(expression: &str) -> String {
     let mut map = SourceMap::new();
-    let id = map.add_file("expr.k65", format!("var X = {expression}\n"));
+    let id = map.add_file("expr.k65", format!("var XX = {expression}\n"));
     let result = parse_source(map.file(id), None);
     assert_eq!(
         result.diagnostics,
@@ -1104,9 +1104,9 @@ fn a_literal_too_big_for_32_bits_is_refused_where_it_is_written() {
     // diagnostic: nothing later ever sees a value that does not fit, which is
     // why no analysis test can reach this code.
     for source in [
-        "var x = $1000000000\n",
-        "var x = 4294967296\n",
-        "var x = 0b100000000000000000000000000000000\n",
+        "var xx = $1000000000\n",
+        "var xx = 4294967296\n",
+        "var xx = 0b100000000000000000000000000000000\n",
         "func f @a16 {\n    lda #$FFFFFFFFF\n}\n",
     ] {
         let mut map = SourceMap::new();
@@ -1130,7 +1130,7 @@ fn a_literal_too_big_for_32_bits_is_refused_where_it_is_written() {
 
     // The boundary itself fits: 32 bits is the limit, not one less.
     let mut map = SourceMap::new();
-    let id = map.add_file("range.k65", "var x = $FFFFFFFF\n");
+    let id = map.add_file("range.k65", "var xx = $FFFFFFFF\n");
     let result = parse_source(map.file(id), None);
     assert_eq!(result.diagnostics, vec![]);
 }
@@ -1237,7 +1237,7 @@ fn evaluator_brackets_are_expression_atoms() {
 #[test]
 fn grouping_keeps_the_span_of_the_parentheses() {
     let mut map = SourceMap::new();
-    let id = map.add_file("paren.k65", "var X = (A + B)\n");
+    let id = map.add_file("paren.k65", "var XX = (A + B)\n");
     let result = parse_source(map.file(id), None);
     let ItemKind::Var(var) = &result.file.items[0].kind else {
         panic!("expected a var declaration");
@@ -1256,13 +1256,13 @@ fn a_compound_address_folds_through_the_const_table() {
     // The grouped-expression shape the previous test pins down has to reach
     // a value, not just an AST: this is that shape end to end.
     let mut map = SourceMap::new();
-    let id = map.add_file("fold.k65", "const BASE = $0400\nvar X = BASE + 3\n");
+    let id = map.add_file("fold.k65", "const BASE = $0400\nvar XX = BASE + 3\n");
     let parsed = parse_source(map.file(id), None);
     assert_eq!(parsed.diagnostics, vec![]);
 
     let (model, diagnostics) = k816::semantic::analyze_file(&parsed.file);
     assert_eq!(diagnostics, vec![]);
-    let x = model.symbols.lookup("X").expect("X is declared");
+    let x = model.symbols.lookup("XX").expect("XX is declared");
     assert_eq!(
         model.symbols.symbol(x).kind,
         k816::symbol::SymbolKind::Var {
@@ -1285,7 +1285,7 @@ var w:word = $2000
 var buffer[32] = $0100
 var simple:byte * 32
 var allocated
-const A = 0, B, C
+const AA = 0, BB, CC
 
 func draw {
     .loop:
@@ -1308,12 +1308,12 @@ var w:word = 8192 @53..71
 var buffer[32] = 256 @72..94
 var simple:byte * 32 @95..115
 var allocated @116..129
-const A = 0 B C @130..147
-func draw @149..209
-  local label .loop @165..171
-  label hello @176..182
-  hla (+ .LT 1) = a @187..196
-  return @201..207
+const AA = 0 BB CC @130..150
+func draw @152..212
+  local label .loop @168..174
+  label hello @179..185
+  hla (+ .LT 1) = a @190..199
+  return @204..210
 "
     );
 }
@@ -1333,8 +1333,8 @@ fn a_var_prefix_that_is_not_a_storage_class_is_reported() {
 #[test]
 fn semicolons_leave_no_trace_in_the_ast() {
     let mut map = SourceMap::new();
-    let dense = map.add_file("dense.k65", "var A = 0; var B = 1;;\n;\n");
-    let sparse = map.add_file("sparse.k65", "var A = 0\nvar B = 1\n");
+    let dense = map.add_file("dense.k65", "var AA = 0; var BB = 1;;\n;\n");
+    let sparse = map.add_file("sparse.k65", "var AA = 0\nvar BB = 1\n");
     let dense = parse_source(map.file(dense), None);
     let sparse = parse_source(map.file(sparse), None);
     assert_eq!(dense.diagnostics, vec![]);
@@ -1379,9 +1379,9 @@ fn every_declaration_form_compiles() {
         "var abs counter\n",
         "var far rom = $C00000\n",
         "var w:word = $2000\n",
-        "var dp p:far\n",
+        "var dp pp:far\n",
         "var buffer[32] = $100\n",
-        "var s:byte * 32\n",
+        "var ss:byte * 32\n",
         "var grid:word[4] * 8\n",
         "var vec[ .lo :byte .hi :byte ]\n",
         "var dp regs:word[ .a .b ] = $10\n",
@@ -1899,7 +1899,6 @@ fn every_shorthand_reaches_the_ast() {
     assert_eq!(parse_hla("a!!"), "a!!");
     assert_eq!(parse_hla("dpr??"), "dpr??");
     assert_eq!(parse_hla("dbr!!"), "dbr!!");
-    assert_eq!(parse_hla("flag!!"), "p!!");
     assert_eq!(parse_hla("*"), "*");
     assert_eq!(parse_hla("* 5"), "* 5");
     assert_eq!(parse_hla("%"), "%");
@@ -2484,8 +2483,8 @@ fn a_syntax_error_names_what_was_expected_there() {
     for (source, expected) in [
         ("var = 1\n", "expected a declaration or a code section"),
         ("func f { >= }\n", "expected a statement"),
-        ("data d { repeat }\n", "expected a data entry"),
-        ("var v[ .x : ]\n", "expected a `.field` entry"),
+        ("data dd { repeat }\n", "expected a data entry"),
+        ("var vv[ .x : ]\n", "expected a `.field` entry"),
     ] {
         let mut map = SourceMap::new();
         let id = map.add_file("bad.k65", source);
@@ -2591,19 +2590,19 @@ fn a_nested_reserved_construct_reports_its_own_k65_code() {
     // only when it is the whole item.
     for (source, expected) in [
         (
-            "data d {\n  [ 1 + color(0x101010) ]\n}\n",
+            "data dd {\n  [ 1 + color(0x101010) ]\n}\n",
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         ),
         (
-            "data d {\n  [ max(color(0x101010), 1) ]\n}\n",
+            "data dd {\n  [ max(color(0x101010), 1) ]\n}\n",
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         ),
         (
-            "data d {\n  for x=0..255 eval [ rnd() & 255 ]\n}\n",
+            "data dd {\n  for x=0..255 eval [ rnd() & 255 ]\n}\n",
             DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         ),
         (
-            "data d {\n  image sprites 0 0 8> 16v\n}\n",
+            "data dd {\n  image sprites 0 0 8> 16v\n}\n",
             DiagnosticCode::K65_RESERVED_IMAGE,
         ),
         ("image S = \"s.bmp\"\n", DiagnosticCode::K65_RESERVED_IMAGE),
@@ -2630,7 +2629,7 @@ fn the_nocross_data_wrapper_is_the_same_block() {
     let mut map = SourceMap::new();
     let id = map.add_file(
         "nocross.k65",
-        "nocross data D { 1 2 3 }\ndata E { 4 }\nfunc f {\n  nocross data { 5 }\n}\n",
+        "nocross data DD { 1 2 3 }\ndata E { 4 }\nfunc f {\n  nocross data { 5 }\n}\n",
     );
     let result = parse_source(map.file(id), None);
     assert_eq!(result.diagnostics, vec![]);
@@ -2660,7 +2659,7 @@ fn an_evaluator_entry_is_its_own_data_value() {
     // `&&ptr` followed by `[2+2]` is two entries — an address and an
     // evaluator-produced byte — not one address-of applied to `ptr[2+2]`.
     let mut map = SourceMap::new();
-    let id = map.add_file("data.k65", "data d {\n  &&ptr\n  [2+2]\n  &<ptr+1\n}\n");
+    let id = map.add_file("data.k65", "data dd {\n  &&ptr\n  [2+2]\n  &<ptr+1\n}\n");
     let result = parse_source(map.file(id), None);
     assert_eq!(result.diagnostics, vec![]);
     let ItemKind::Data(data) = &result.file.items[0].kind else {

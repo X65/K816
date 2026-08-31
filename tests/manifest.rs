@@ -74,7 +74,7 @@ struct Row {
 const AUDIT: &[Row] = &[
     Row {
         group: "Line and block comments",
-        source: "// note\n/* block */\nvar A = 0\n",
+        source: "// note\n/* block */\nvar AA = 0\n",
         expect: Expect::Compiles,
         case: "Comment edge cases",
     },
@@ -86,55 +86,55 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Numeric literals, binary",
-        source: "var A = %1010\nvar B = 0b1010\n",
+        source: "var AA = %1010\nvar BB = 0b1010\n",
         expect: Expect::Compiles,
         case: "Binary literal forms",
     },
     Row {
         group: "Numeric literals, hexadecimal",
-        source: "var A = $2A\nvar B = 0x2A\n",
+        source: "var AA = $2A\nvar BB = 0x2A\n",
         expect: Expect::Compiles,
         case: "Hexadecimal literal forms",
     },
     Row {
         group: "Character literals",
-        source: "var A = 'A'\nvar B = '\\n'\n",
+        source: "var AA = 'A'\nvar BB = '\\n'\n",
         expect: Expect::Compiles,
         case: "Character literal escapes",
     },
     Row {
         group: "Float literals in evaluator brackets",
-        source: "data d {\n  [ 1.5 + .5 ]\n}\n",
+        source: "data dd {\n  [ 1.5 + .5 ]\n}\n",
         expect: Expect::Compiles,
         case: "The full evaluator operator table",
     },
     Row {
         group: "Expression operators, binary",
-        source: "const B = 1\nconst C = 2\nconst D = 3\nconst E = 1\nconst F = 4\nconst G = 5\nconst H = 6\nvar A = B * C + D << E & F ^ G | H\n",
+        source: "const BB = 1\nconst CC = 2\nconst DD = 3\nconst E = 1\nconst F = 4\nconst G = 5\nconst H = 6\nvar AA = BB * CC + DD << E & F ^ G | H\n",
         expect: Expect::Compiles,
         case: "Every binary operator token",
     },
     Row {
         group: "Expression operators, unary",
-        source: "const FOO = 1\nvar A = -~FOO\n",
+        source: "const FOO = 1\nvar AA = -~FOO\n",
         expect: Expect::Compiles,
         case: "Unary operators repeat in the order written",
     },
     Row {
         group: "Compound-expression position rules",
-        source: "const FOO = 1\ndata d {\n  byte FOO 0 1\n}\n",
+        source: "const FOO = 1\ndata dd {\n  byte FOO 0 1\n}\n",
         expect: Expect::Compiles,
         case: "Raw values and address byte operators",
     },
     Row {
         group: "`&&` address-of-vs-AND parse quirk",
-        source: "const FOO = 1\nconst BAR = 2\nvar A = FOO && BAR\n",
+        source: "const FOO = 1\nconst BAR = 2\nvar AA = FOO && BAR\n",
         expect: Expect::Compiles,
         case: "Infix double ampersand is the address-of gotcha",
     },
     Row {
         group: "`const` and enum-like groups",
-        source: "const A = 0, B, C\n",
+        source: "const AA = 0, BB, CC\n",
         expect: Expect::Compiles,
         case: "Constant groups with enum-like auto-increment",
     },
@@ -158,7 +158,7 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Typed width suffixes",
-        source: "var w:word = $2000\nvar p:far = $3000\n",
+        source: "var w:word = $2000\nvar pp:far = $3000\n",
         expect: Expect::Compiles,
         case: "Typed width suffixes",
     },
@@ -194,7 +194,7 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`abstract var` layouts",
-        source: "abstract var D[\n  .open :word\n]\n",
+        source: "abstract var DD[\n  .open :word\n]\n",
         expect: Expect::Compiles,
         case: "Abstract layout declarations",
     },
@@ -507,7 +507,7 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "65816 control flow/mode/stack",
-        source: "var dp p = $14\nfunc f @a8 @i8 {\n  brl t\n  t:\n  jml t jsl t rtl pea #1 pei (p) per t cop #2 wdm #3 rep #$10 sep #$20\n}\n",
+        source: "var dp pp = $14\nfunc f @a8 @i8 {\n  brl t\n  t:\n  jml t jsl t rtl pea #1 pei (pp) per t cop #2 wdm #3 rep #$10 sep #$20\n}\n",
         expect: Expect::Compiles,
         case: "65816 control flow, mode and stack",
     },
@@ -525,85 +525,85 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Data blocks, named and anonymous",
-        source: "data D { 1 2 }\ndata { 3 4 }\n",
+        source: "data DD { 1 2 }\ndata { 3 4 }\n",
         expect: Expect::Compiles,
         case: "Named and anonymous data blocks",
     },
     Row {
         group: "`segment` placement rule in data",
-        source: "data D {\n  segment VECTORS\n  word 0\n}\n",
+        source: "data DD {\n  segment VECTORS\n  word 0\n}\n",
         expect: Expect::Compiles,
         case: "Placement directives",
     },
     Row {
         group: "Placement directives",
-        source: "data D {\n  align 16\n  address $5000\n  1\n}\n",
+        source: "data DD {\n  align 16\n  address $5000\n  1\n}\n",
         expect: Expect::Compiles,
         case: "Placement directives",
     },
     Row {
         group: "`nocross` in data blocks",
-        source: "nocross data W { 1 2 }\ndata D {\n  nocross\n  nocross 8\n  1\n}\n",
+        source: "nocross data W { 1 2 }\ndata DD {\n  nocross\n  nocross 8\n  1\n}\n",
         expect: Expect::Compiles,
         case: "The nocross data wrapper",
     },
     Row {
         group: "Raw bytes and labels in data",
-        source: "data D {\n  hello: 1 2 3\n  \"HI\" 0\n}\n",
+        source: "data DD {\n  hello: 1 2 3\n  \"HI\" 0\n}\n",
         expect: Expect::Compiles,
         case: "Raw values and address byte operators",
     },
     Row {
         group: "Address byte operators",
-        source: "var ptr = $0400\ndata D {\n  &<ptr &>ptr &&ptr &&&ptr\n  &<ptr+1\n}\n",
+        source: "var ptr = $0400\ndata DD {\n  &<ptr &>ptr &&ptr &&&ptr\n  &<ptr+1\n}\n",
         expect: Expect::Compiles,
         case: "An evaluator entry is not part of the value before it",
     },
     Row {
         group: "`?` undefined byte placeholder",
-        source: "data D {\n  byte $7F ? ?\n  ?\n}\n",
+        source: "data DD {\n  byte $7F ? ?\n  ?\n}\n",
         expect: Expect::Compiles,
         case: "Typed entries",
     },
     Row {
         group: "Typed data entries",
-        source: "const V = 1\nconst H = 2\ndata D {\n  byte 1\n  word V\n  far H\n}\n",
+        source: "const VV = 1\nconst H = 2\ndata DD {\n  byte 1\n  word VV\n  far H\n}\n",
         expect: Expect::Compiles,
         case: "Typed entries",
     },
     Row {
         group: "String data and `charset`",
-        source: "data D {\n  charset \".ABC \"\n  \"AB\" 0\n}\n",
+        source: "data DD {\n  charset \".ABC \"\n  \"AB\" 0\n}\n",
         expect: Expect::Compiles,
         case: "charset, code subblocks, and repeats",
     },
     Row {
         group: "`code { }` subblocks",
-        source: "data D {\n  code { @a8 { a=1 } }\n  nocross code { @i8 { y=3 } }\n}\n",
+        source: "data DD {\n  code { @a8 { a=1 } }\n  nocross code { @i8 { y=3 } }\n}\n",
         expect: Expect::Compiles,
         case: "charset, code subblocks, and repeats",
     },
     Row {
         group: "`repeat N { }` data repetition",
-        source: "data D {\n  repeat 3 { 4 }\n}\n",
+        source: "data DD {\n  repeat 3 { 4 }\n}\n",
         expect: Expect::Compiles,
         case: "charset, code subblocks, and repeats",
     },
     Row {
         group: "`for ... eval` generated data",
-        source: "data D {\n  for x=0..100 eval [ x * 2 ]\n}\n",
+        source: "data DD {\n  for x=0..100 eval [ x * 2 ]\n}\n",
         expect: Expect::Compiles,
         case: "Generated data from an evaluator range",
     },
     Row {
         group: "`image` in data blocks",
-        source: "data D {\n  image sprites 0 0 8> 16v tiles 8 0 31 inv\n}\n",
+        source: "data DD {\n  image sprites 0 0 8> 16v tiles 8 0 31 inv\n}\n",
         expect: Expect::Reserved,
         case: "Reserved image forms are named nodes, never parse errors",
     },
     Row {
         group: "`binary` in data blocks",
-        source: "data D {\n  binary \"table.bin\"\n}\n",
+        source: "data DD {\n  binary \"table.bin\"\n}\n",
         expect: Expect::Compiles,
         case: "Binary inclusion",
     },
@@ -627,19 +627,19 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Evaluator operator set",
-        source: "[ AA = 1, BB = 2, CC = 3 ]\ndata D {\n  [ AA ? BB : CC ]\n  [ AA && BB || CC ]\n  [ 1 / 2 % 3 ]\n  [ N = 1, N += 2 ]\n}\n",
+        source: "[ AA = 1, BB = 2, CC = 3 ]\ndata DD {\n  [ AA ? BB : CC ]\n  [ AA && BB || CC ]\n  [ 1 / 2 % 3 ]\n  [ N = 1, N += 2 ]\n}\n",
         expect: Expect::Compiles,
         case: "The full evaluator operator table",
     },
     Row {
         group: "Evaluator math functions",
-        source: "[ XX = 2 ]\ndata D {\n  [ clamp(sin(XX), 0, 1) ]\n}\n",
+        source: "[ XX = 2 ]\ndata DD {\n  [ clamp(sin(XX), 0, 1) ]\n}\n",
         expect: Expect::Compiles,
         case: "The full evaluator operator table",
     },
     Row {
         group: "Evaluator side-effect functions",
-        source: "data D {\n  [ 1 + size(section) ]\n  [ rnd() ]\n}\n",
+        source: "data DD {\n  [ 1 + size(section) ]\n  [ rnd() ]\n}\n",
         expect: Expect::Reserved,
         case: "Reserved evaluator functions",
     },
@@ -648,13 +648,13 @@ const AUDIT: &[Row] = &[
         // `#error` and `#warn` sit in the branch this chain does not take:
         // both are diagnostics by definition, and a live one would make the
         // row's own snippet fail to compile.
-        source: "const FOO = 1, BAR = 0\n#if FOO\nvar A = 1\n#elif BAR\n#else\n                 #error \"x\"\n#warn \"y\"\n#endif\n",
+        source: "const FOO = 1, BAR = 0\n#if FOO\nvar AA = 1\n#elif BAR\n#else\n                 #error \"x\"\n#warn \"y\"\n#endif\n",
         expect: Expect::Compiles,
         case: "Preprocessor directives at the top level",
     },
     Row {
         group: "Optional semicolons and empty statements",
-        source: "var A = 0; var B = 1;;\n;\n",
+        source: "var AA = 0; var BB = 1;;\n;\n",
         expect: Expect::Compiles,
         case: "Semicolons are optional separators and empty statements are ignored",
     },
@@ -688,12 +688,14 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`o`/`O` as the overflow flag",
-        // Refused, with `v` named. `var o` still rides along and still has to
-        // compile: `o` is an ordinary identifier, and refusing the *flag*
-        // spelling must not cost the *name* — a token for `o` would win in
-        // the lexer wherever an identifier is also valid, and this store
-        // would stop being one.
-        source: "var o = $0400\nfunc f @a8 @i8 {\n  o-\n  o = a\n}\n",
+        // Refused, with `v` named — and `var o` is refused too, which is the
+        // half that changed twice. It was legal while `o` was an ordinary
+        // identifier; every register and flag spelling is reserved in the
+        // symbol table now, so the letter is unavailable to a declaration as
+        // well as to the flag slot. Still not a *token*: that would take the
+        // name from every rule in the grammar, which is what `postmortem.md`
+        // §G.1.16 is about.
+        source: "func f @a8 @i8 {\n  o-\n}\n",
         expect: Expect::Refuses("K816-K65-0006"),
         case: "The overflow flag is spelled v, and o is refused",
     },
@@ -717,19 +719,19 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Evaluator statements",
-        source: "[ XX = 1 ]\ndata d {\n  [ if XX > 0 YY = 1 else YY = 2 ]\n}\n",
+        source: "[ XX = 1 ]\ndata dd {\n  [ if XX > 0 YY = 1 else YY = 2 ]\n}\n",
         expect: Expect::Compiles,
         case: "Evaluator statements",
     },
     Row {
         group: "`evalfunc` definitions",
-        source: "evalfunc twice(n) [ n * 2 ]\ndata d {\n  [ twice(3) ]\n}\n",
+        source: "evalfunc twice(n) [ n * 2 ]\ndata dd {\n  [ twice(3) ]\n}\n",
         expect: Expect::Compiles,
         case: "Evaluator functions",
     },
     Row {
         group: "Two-dimensional evaluator indexing",
-        source: "data grid {\n  1 2 3 4\n}\ndata d {\n  [ grid[2, 3] ]\n}\n",
+        source: "data grid {\n  1 2 3 4\n}\ndata dd {\n  [ grid[2, 3] ]\n}\n",
         // Parsed, implemented, and unsatisfiable: a width and a height come
         // only from a top-level `image`, and `image` is removed (decision 7).
         // The sentence is the original's own complaint.
@@ -738,19 +740,19 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Evaluator method calls",
-        source: "[ VV = 4 ]\ndata d {\n  [ VV.max(9) ]\n}\n",
+        source: "[ VV = 4 ]\ndata dd {\n  [ VV.max(9) ]\n}\n",
         expect: Expect::Compiles,
         case: "Evaluator member access and method calls",
     },
     Row {
         group: "The evaluator constant `pi`",
-        source: "data d {\n  [ pi ]\n}\n",
+        source: "data dd {\n  [ pi ]\n}\n",
         expect: Expect::Compiles,
         case: "The evaluator constant pi",
     },
     Row {
         group: "`evaluator [ ]` data entries",
-        source: "data d {\n  evaluator [ x * 2 ]\n  for i=0..3 eval [ i ]\n}\n",
+        source: "data dd {\n  evaluator [ x * 2 ]\n  for i=0..3 eval [ i ]\n}\n",
         expect: Expect::Compiles,
         case: "An evaluator data entry",
     },
@@ -916,16 +918,16 @@ fn every_manifest_syntax_group_has_a_corpus_case() {
 const COMPILES: &[(&str, &str)] = &[
     (
         "Character literals",
-        "const A = 'A'\nconst NEXT = 'A' + 1\n",
+        "const AA = 'A'\nconst NEXT = 'A' + 1\n",
     ),
     (
         "Expression operators, binary",
-        "const A = $80\nconst B = A | 1 & 3 ^ 2 + 1 * 2 << 1 >> 1\n",
+        "const AA = $80\nconst BB = AA | 1 & 3 ^ 2 + 1 * 2 << 1 >> 1\n",
     ),
-    ("Expression operators, unary", "const A = -~5\n"),
+    ("Expression operators, unary", "const AA = -~5\n"),
     (
         "`const` and enum-like auto-increment groups",
-        "const A = 0, B, C\nconst D, E\n",
+        "const AA = 0, BB, CC\nconst DD, EE\n",
     ),
     (
         "Address-encoding operand prefixes and auto-shrink",
@@ -967,24 +969,24 @@ const COMPILES: &[(&str, &str)] = &[
     ),
     (
         "`segment` placement rule inside data blocks",
-        "data d {\n    segment OTHER\n    1 2\n}\n",
+        "data dd {\n    segment OTHER\n    1 2\n}\n",
     ),
     (
         "Placement directives `align N`",
-        "data d {\n    align 16\n    1 2\n}\n",
+        "data dd {\n    align 16\n    1 2\n}\n",
     ),
     (
         "Raw byte values and labels in data blocks",
-        "data d {\n    $7F 1\n    inner:\n    2 3\n}\n",
+        "data dd {\n    $7F 1\n    inner:\n    2 3\n}\n",
     ),
     (
         "Address byte operators",
-        "var ptr = $2345\ndata d {\n    &<ptr &>ptr\n    &&ptr\n    &&&ptr\n}\n",
+        "var ptr = $2345\ndata dd {\n    &<ptr &>ptr\n    &&ptr\n    &&&ptr\n}\n",
     ),
-    ("`?` undefined byte placeholder", "data d {\n    ? ?\n}\n"),
+    ("`?` undefined byte placeholder", "data dd {\n    ? ?\n}\n"),
     (
         "Optional semicolons and empty statements",
-        "var A = $10;\nvar B = $20;\n",
+        "var AA = $10;\nvar BB = $20;\n",
     ),
     (
         "Variable+offset compile-time address arithmetic",

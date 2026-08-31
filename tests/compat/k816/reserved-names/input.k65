@@ -1,0 +1,16 @@
+// Every register and flag spelling is reserved as a name, and the
+// compile-time evaluator is not.
+
+var c = $10          // the carry flag
+const n = 5          // the negative flag
+data d { 1 2 3 }     // the decimal flag
+
+// What stays legal: the evaluator's own namespace, which is where the
+// original's `AllIdent` rule puts these letters back.
+data table {
+  for i = 0 .. 3 eval [ i ]
+}
+
+func main @a8 @i8 {
+  return
+}

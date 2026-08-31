@@ -485,7 +485,7 @@ fn a_named_blocks_address_segment_does_not_renumber() {
     let mut map = SourceMap::new();
     let file = map.add_file(
         "two.k816",
-        "data a {\n    address $5000\n    1\n}\ndata b {\n    address $5000\n    2\n}\n",
+        "data aa {\n    address $5000\n    1\n}\ndata bb {\n    address $5000\n    2\n}\n",
     );
     let both = compile_to_ca65(&map, file, &Options { optimize: false });
     let assembly = both.assembly.expect("compilation succeeds");

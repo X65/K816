@@ -160,7 +160,7 @@ fn editing_inside_a_comment() {
         source,
         vec![
             edit("leading", "LEADING"),
-            edit("trailing note", "trailing note; var X = 1"),
+            edit("trailing note", "trailing note; var XX = 1"),
             edit("// LEADING", "/* LEADING */ //"),
         ],
     );

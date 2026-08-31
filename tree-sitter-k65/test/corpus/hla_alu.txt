@@ -187,7 +187,7 @@ Stack shorthands
 ================================================================================
 
 func main {
-  a!! a?? x!! x?? y!! y?? p!! p?? flag!! b!! b?? dpr!! dpr?? dbr!! dbr??
+  a!! a?? x!! x?? y!! y?? p!! p?? b!! b?? dpr!! dpr?? dbr!! dbr??
   d!! d?? c!! c??
 }
 
@@ -197,8 +197,6 @@ func main {
   (func_declaration
     name: (identifier)
     body: (block
-      (hla_stack
-        register: (register))
       (hla_stack
         register: (register))
       (hla_stack

@@ -22,7 +22,7 @@ func main @a8 @i8 {
   return
 }
 
-data d {
+data bytes {
   // And the data-entry level, for the same reason.
   #warn "reached the data-entry level"
   1 2

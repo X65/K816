@@ -2889,7 +2889,7 @@ func caller @a8 @i8 {
 fn a_nocross_group_guards_its_own_entries() {
     let assembly = compile_fixture(
         "nocross-group.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 1\n\
          \x20 nocross { 2 3 4 }\n\
          \x20 5\n\
@@ -2924,7 +2924,7 @@ fn a_directive_inside_a_nocross_group_pairs_inside_it() {
     let mut map = SourceMap::new();
     let file = map.add_file(
         "group-directive.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 nocross {\n\
          \x20   #if 1\n\
          \x20   7\n\
@@ -2945,7 +2945,7 @@ fn a_directive_inside_a_nocross_group_pairs_inside_it() {
     let mut map = SourceMap::new();
     let file = map.add_file(
         "group-unbalanced.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 nocross {\n\
          \x20   #if 1\n\
          \x20   7\n\
@@ -2999,7 +2999,7 @@ fn a_binary_is_an_incbin_with_the_path_as_written() {
 fn a_transform_runs_per_byte_and_keeps_its_assignments() {
     let assembly = compile_fixture(
         "transform.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 evaluator [ x * 2 + 1 ]\n\
          \x20 for i = 0 .. 3 eval [ i ]\n\
          \x20 9\n\
@@ -3026,7 +3026,7 @@ fn a_transform_runs_per_byte_and_keeps_its_assignments() {
     let mut map = SourceMap::new();
     let file = map.add_file(
         "transform-scope.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 evaluator [ SIDE = 7 ]\n\
          \x20 for i = 0 .. 1 eval [ i ]\n\
          }\n\
@@ -3060,7 +3060,7 @@ fn a_transform_runs_per_byte_and_keeps_its_assignments() {
 fn a_code_subblock_inside_a_nocross_group_gets_its_own_widths() {
     let assembly = compile_fixture(
         "group-code.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 nocross { code { @a16 a = $1234 } }\n\
          \x20 code { @a8 a = $12 }\n\
          }\n",
@@ -3088,7 +3088,7 @@ fn a_refused_function_inside_a_transform_is_reported() {
     let mut map = SourceMap::new();
     let file = map.add_file(
         "transform-rnd.k816",
-        "data d {\n\
+        "data dd {\n\
          \x20 evaluator [ rnd() ]\n\
          \x20 for i = 0 .. 2 eval [ i ]\n\
          }\n",
@@ -3265,7 +3265,7 @@ fn an_inline_crosses_a_unit_boundary_with_its_body() {
     map.add_file(
         "bump-defs.k816",
         "@a8\n@i8\nvar counter = $40\n\
-         inline sub (a, #b) -> a {\n    c+\n    a - #b\n}\n\
+         inline sub (a, #step) -> a {\n    c+\n    a - #step\n}\n\
          inline twice (a) -> a {\n    sub a, #1 -> a\n    sub a, #1 -> a\n    counter ++\n}\n",
     );
     let user = map.add_file(
@@ -3634,10 +3634,10 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
         // Its own module's widths, on an axis the section does not state.
         ("@a8\n@i8\n", "a = 1", Ok("lda     #$01")),
         // A `const` of its own unit, read through a bracket.
-        ("@a8\n@i8\nconst V = 9\n", "a = [ V ]", Ok("lda     #$09")),
+        ("@a8\n@i8\nconst NINE = 9\n", "a = [ NINE ]", Ok("lda     #$09")),
         // A name a top-level evaluator block assigned, which is a `const` by
         // the time it is a definition.
-        ("@a8\n@i8\n[ V = 9 ]\n", "a = [ V ]", Ok("lda     #$09")),
+        ("@a8\n@i8\n[ NINE = 9 ]\n", "a = [ NINE ]", Ok("lda     #$09")),
         // A `var` of its own unit, which becomes this unit's import.
         (
             "@a8\n@i8\nvar slot = $40\n",

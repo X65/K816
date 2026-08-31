@@ -1827,7 +1827,7 @@ mod tests {
     /// entry checks its own range, and these cases are about what the
     /// arithmetic answered rather than about where the answer was put.
     fn number(body: &str) -> f64 {
-        let (values, codes) = evaluate(&format!("data d {{\n  [ {body} ]\n}}\n"));
+        let (values, codes) = evaluate(&format!("data block {{\n  [ {body} ]\n}}\n"));
         let unexpected: Vec<&String> = codes.iter().filter(|code| *code != "K816-E0109").collect();
         assert!(unexpected.is_empty(), "`{body}` reported {unexpected:?}");
         match values.as_slice() {
@@ -1838,7 +1838,7 @@ mod tests {
 
     /// What a single-bracket data block reports, if anything.
     fn codes(body: &str) -> Vec<String> {
-        evaluate(&format!("data d {{\n  [ {body} ]\n}}\n")).1
+        evaluate(&format!("data block {{\n  [ {body} ]\n}}\n")).1
     }
 
     #[test]
@@ -1927,7 +1927,7 @@ mod tests {
     #[test]
     fn the_evaluator_reads_the_names_the_compiler_has() {
         let (values, codes) =
-            evaluate("[ SHIFT = 2 ]\nconst FLAG = 0x30\ndata d {\n  [ FLAG ]\n  [ SHIFT ]\n}\n");
+            evaluate("[ SHIFT = 2 ]\nconst FLAG = 0x30\ndata block {\n  [ FLAG ]\n  [ SHIFT ]\n}\n");
         assert_eq!(codes, Vec::<String>::new());
         assert_eq!(
             values,
@@ -1935,7 +1935,7 @@ mod tests {
             "a `const` and a name an earlier bracket assigned both resolve"
         );
         // And a name the evaluator assigned is a compiler constant below it.
-        let (_, codes) = evaluate("[ FOUR = 4 ]\ndata d {\n  FOUR\n}\n");
+        let (_, codes) = evaluate("[ FOUR = 4 ]\ndata block {\n  FOUR\n}\n");
         assert_eq!(codes, Vec::<String>::new());
     }
 
@@ -1946,7 +1946,7 @@ mod tests {
         // A `var` is the one kind of name that does not resolve, which is
         // what the original says too.
         assert_eq!(
-            evaluate("var slot\ndata d {\n  [ slot ]\n}\n").1,
+            evaluate("var slot\ndata block {\n  [ slot ]\n}\n").1,
             vec!["K816-E0148"]
         );
         // Arithmetic with no answer.
@@ -1959,7 +1959,7 @@ mod tests {
         // The three refused functions, in both spellings.
         assert_eq!(codes("rnd()"), vec!["K816-K65-0002"]);
         assert_eq!(
-            evaluate("data t {\n  1 2\n}\ndata d {\n  [ t.color ]\n}\n").1,
+            evaluate("data t {\n  1 2\n}\ndata block {\n  [ t.color ]\n}\n").1,
             vec!["K816-K65-0002"],
             "`x.color` is `color(x)`, and gets the same complaint"
         );
@@ -1975,7 +1975,7 @@ mod tests {
         // 40 and `source.size` is 4.
         let (values, codes) = read(
             "data source {\n  10 20 30 40\n}\n\
-             data d {\n  [ index(source, 2) ]\n  [ source[1] ]\n  \
+             data block {\n  [ index(source, 2) ]\n  [ source[1] ]\n  \
              [ source.index(3) ]\n  [ source.size ]\n}\n",
         );
         assert_eq!(codes, Vec::<String>::new());
@@ -1994,7 +1994,7 @@ mod tests {
         // is `t[1]`, measured, not `t[2]`.
         let (values, codes) = read(
             "data t {\n  11 22 33\n}\n\
-             data d {\n  [ index(t, 5) ]\n  [ index(t, 0 - 1) ]\n  [ index(t, 1.7) ]\n}\n",
+             data block {\n  [ index(t, 5) ]\n  [ index(t, 0 - 1) ]\n  [ index(t, 1.7) ]\n}\n",
         );
         assert_eq!(codes, Vec::<String>::new());
         assert_eq!(
@@ -2005,26 +2005,26 @@ mod tests {
         // `?` is a zero in the raw table and counts toward the length, which
         // is what `AST_IGNORED_BYTE` did.
         let (values, _) =
-            read("data t {\n  5 ? 6\n}\ndata d {\n  [ size(t) ]\n  [ index(t, 1) ]\n}\n");
+            read("data t {\n  5 ? 6\n}\ndata block {\n  [ size(t) ]\n  [ index(t, 1) ]\n}\n");
         assert_eq!(values, vec![Value::Number(3.0), Value::Number(0.0)]);
 
         // The five refusals, each naming its own reason.
         for (source, why) in [
-            ("data d {\n  [ index(3, 0) ]\n}\n", "and this is a number"),
+            ("data block {\n  [ index(3, 0) ]\n}\n", "and this is a number"),
             (
-                "func f {\n  a = 1\n}\ndata d {\n  [ index(f, 0) ]\n}\n",
+                "func f {\n  a = 1\n}\ndata block {\n  [ index(f, 0) ]\n}\n",
                 "is a code section",
             ),
             (
-                "data d {\n  [ index(below, 0) ]\n}\ndata below {\n  1\n}\n",
+                "data block {\n  [ index(below, 0) ]\n}\ndata below {\n  1\n}\n",
                 "is written below this",
             ),
             (
-                "data t {\n  &&t\n}\ndata d {\n  [ index(t, 0) ]\n}\n",
+                "data t {\n  &&t\n}\ndata block {\n  [ index(t, 0) ]\n}\n",
                 "only the linker knows",
             ),
             (
-                "data t {\n  inner:\n  1\n}\ndata d {\n  [ index(inner, 0) ]\n}\n",
+                "data t {\n  inner:\n  1\n}\ndata block {\n  [ index(inner, 0) ]\n}\n",
                 "is a label inside a section",
             ),
         ] {
@@ -2048,7 +2048,7 @@ mod tests {
 
         // Two dimensions have no source at all once `image` is removed, and
         // the sentence is the original's own.
-        let (_, codes) = read("data t {\n  1 2\n}\ndata d {\n  [ index(t, 0, 0) ]\n}\n");
+        let (_, codes) = read("data t {\n  1 2\n}\ndata block {\n  [ index(t, 0, 0) ]\n}\n");
         assert_eq!(codes, vec!["K816-E0155"]);
     }
 
@@ -2056,13 +2056,13 @@ mod tests {
     fn the_step_budget_is_what_bounds_a_loop_and_a_recursion() {
         assert_eq!(codes("Z = 0 while 1 { Z = Z + 1 }"), vec!["K816-E0147"]);
         assert_eq!(
-            evaluate("evalfunc down(k) [ down(k) ]\ndata d {\n  [ down(1) ]\n}\n").1,
+            evaluate("evalfunc down(k) [ down(k) ]\ndata block {\n  [ down(1) ]\n}\n").1,
             vec!["K816-E0147"]
         );
         // A recursion that terminates is not bounded away: it is the
         // extension the original's broken one could never be.
         assert_eq!(
-            evaluate("evalfunc fact(k) [ if k <= 1 1 else fact(k - 1) * k ]\ndata d {\n  [ fact(5) ]\n}\n").1,
+            evaluate("evalfunc fact(k) [ if k <= 1 1 else fact(k - 1) * k ]\ndata block {\n  [ fact(5) ]\n}\n").1,
             Vec::<String>::new()
         );
     }
@@ -2072,12 +2072,12 @@ mod tests {
         assert_eq!(evaluate("[ N = 1 ]\n[ N = 2 ]\n").1, vec!["K816-E0149"]);
         // Reading it again is not assigning it.
         assert_eq!(
-            evaluate("[ N = 1 ]\ndata d {\n  [ N ]\n}\n").1,
+            evaluate("[ N = 1 ]\ndata block {\n  [ N ]\n}\n").1,
             Vec::<String>::new()
         );
         // Nor is a name the compiler already owns the evaluator's to write.
         assert_eq!(
-            evaluate("const K = 1\ndata d {\n  [ K = 2 ]\n}\n").1,
+            evaluate("const K = 1\ndata block {\n  [ K = 2 ]\n}\n").1,
             vec!["K816-E0149"]
         );
     }
@@ -2087,7 +2087,7 @@ mod tests {
         assert_eq!(codes("print(\"ready\")"), vec!["K816-N0145"]);
         // A number splices into a string as `%lf`, which is what the original
         // prints, so the two compilers say the same words.
-        let (_, spliced) = evaluate("data d {\n  [ print(\"n=\" + 8) ]\n  0\n}\n");
+        let (_, spliced) = evaluate("data block {\n  [ print(\"n=\" + 8) ]\n  0\n}\n");
         assert_eq!(spliced, vec!["K816-N0145"]);
         assert_eq!(codes("error(\"no display\")"), vec!["K816-E0146"]);
     }
@@ -2111,7 +2111,7 @@ mod tests {
         assert_eq!(
             evaluate(
                 "evalfunc inner() [ secret ]\nevalfunc outer(secret) [ inner() ]\n\
-                 data d {\n  [ outer(9) ]\n}\n"
+                 data block {\n  [ outer(9) ]\n}\n"
             )
             .1,
             vec!["K816-E0101"]
@@ -2119,7 +2119,7 @@ mod tests {
         // A global is still visible from inside a function, which is the
         // half that has to keep working.
         assert_eq!(
-            evaluate("[ SHARED = 7 ]\nevalfunc get() [ SHARED ]\ndata d {\n  [ get() ]\n}\n").1,
+            evaluate("[ SHARED = 7 ]\nevalfunc get() [ SHARED ]\ndata block {\n  [ get() ]\n}\n").1,
             Vec::<String>::new()
         );
         // And a parameter shadows a global of the same name for the call.
@@ -2138,7 +2138,7 @@ mod tests {
         assert_eq!(
             evaluate(
                 "evalfunc later(q) [ q * 2 ]\nevalfunc first(q) [ later(q) ]\n\
-                 data d {\n  [ first(4) ]\n}\n"
+                 data block {\n  [ first(4) ]\n}\n"
             )
             .1,
             Vec::<String>::new()
@@ -2148,7 +2148,7 @@ mod tests {
         assert_eq!(
             evaluate(
                 "evalfunc fact(k) [ if k <= 1 1 else fact(k - 1) * k ]\n\
-                 data d {\n  [ fact(5) ]\n}\n"
+                 data block {\n  [ fact(5) ]\n}\n"
             )
             .1,
             Vec::<String>::new()
@@ -2157,7 +2157,7 @@ mod tests {
         // call ever reaches it: nothing evaluates a body where it stands, so
         // this is the only place the report can happen.
         assert_eq!(
-            evaluate("evalfunc hidden() [ rnd() ]\ndata d {\n  [ hidden() ]\n}\n").1,
+            evaluate("evalfunc hidden() [ rnd() ]\ndata block {\n  [ hidden() ]\n}\n").1,
             vec!["K816-K65-0002"]
         );
     }
@@ -2194,7 +2194,7 @@ mod tests {
     #[test]
     fn an_out_of_range_literal_says_so_instead_of_vanishing() {
         let mut map = SourceMap::new();
-        let id = map.add_file("eval.k65", "data d {\n  [ 4294967296 ]\n}\n");
+        let id = map.add_file("eval.k65", "data block {\n  [ 4294967296 ]\n}\n");
         let parsed = parse_source(map.file(id), None);
         assert_eq!(
             parsed
@@ -2212,7 +2212,7 @@ mod tests {
         // A group is shorthand for consecutive declarations, so its brackets
         // run interleaved with its declarations rather than all of them
         // first.
-        let (_, codes) = evaluate("const A1 = 3, B1 = [ A1 + 1 ]\ndata d {\n  B1\n}\n");
+        let (_, codes) = evaluate("const A1 = 3, B1 = [ A1 + 1 ]\ndata block {\n  B1\n}\n");
         assert_eq!(codes, Vec::<String>::new());
     }
 
@@ -2222,7 +2222,7 @@ mod tests {
         // is not. Parsed rather than analysed, because `evaluate` asserts a
         // clean parse.
         let mut map = SourceMap::new();
-        let id = map.add_file("eval.k65", "data d {\n  [( unbalanced]\n}\n");
+        let id = map.add_file("eval.k65", "data block {\n  [( unbalanced]\n}\n");
         let parsed = parse_source(map.file(id), None);
         assert_eq!(parsed.diagnostics.len(), 1, "one syntax error");
         let (_, diagnostics) = crate::semantic::analyze_file(&parsed.file);

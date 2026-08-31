@@ -1,0 +1,35 @@
+row       allident
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0158
+expect    input.k65 K816-E0158
+expect    input.k65 K816-E0158
+
+**Three refusals above, and the `for i` below them is the point.**
+
+The original draws this line too, and draws it in the grammar: `AllIdent ->
+Ident | A | X | Y | S | Flag` (`compiler.inc:237-242`) is where the register
+and flag letters are allowed to be names again, and `Const -> Ident` takes the
+*narrower* class - which is why `const A` is a syntax error there.
+
+K816 draws the same line in the **symbol table** rather than the lexer, and the
+difference matters.  A token for these letters wins over an identifier wherever
+both are valid, and that is exactly how `i+ d-` came to parse as the arithmetic
+`i + d` (`postmortem.md` §G.1.16).  Reserving the *name* costs the grammar
+nothing and gets the same rule.
+
+So the evaluator keeps them.  `for i = 0 .. 3` is the idiomatic K65 loop and
+eleven fixtures use it, including transcribed originals and the imported legacy
+corpus; refusing it to be tidy would break every one of them and contradict a
+rule the original states outright.
+
+K816's reserved set is wider than the original's - `z`, `n`, `dpr` and `dbr`
+are here and not there - for the reason every difference in this file comes
+down to: the 6502 has no instruction to set or clear `Z` or `N`, and no direct
+page or data bank register to name.
+
+One consequence, and it is the boundary rather than a defect: an evaluator name
+that is a reserved spelling stays an evaluator *local*.  Publishing a name into
+the symbol table is declaring a `const` with it, which is the thing being
+refused, so `[ c = 7 ]` binds and a bracket in a later item cannot read it.

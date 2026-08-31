@@ -1249,6 +1249,90 @@ fn every_remaining_difference_from_a_document_listing_is_argued() {
     }
 }
 
+/// The reserved spellings the syntax reference lists are the ones the
+/// compiler reserves, and every one of them is refused.
+///
+/// "**Every register and flag spelling is reserved as a name.** A `var`,
+/// `const`, `func`, label or `inline` alias may not be called
+/// `a b x y s p dpr dbr c d i v n z o`, in any case — `K816-E0158`."
+///
+/// Fifteen spellings, of which the compatibility corpus exercised three. A
+/// prose list is a hand-kept list, so this reads the *enumerable* side —
+/// `compat::RESERVED_NAMES` in the source — and requires the sentence to
+/// match it, then compiles a declaration for each. Adding a spelling to the
+/// code now fails until the document says so, and the reverse
+/// (`memory/inventory-from-the-enumerable-side`).
+#[test]
+fn every_reserved_spelling_the_document_lists_is_reserved_and_refused() {
+    let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/syntax-reference.md");
+    let text = std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("read {doc:?}: {e}"));
+    let sentence = text
+        .lines()
+        .find(|line| line.starts_with("**Every register and flag spelling is reserved"))
+        .expect("the sentence that lists them");
+    // The list is the backticked run with the most words in it: the others
+    // in this sentence are single keywords and one diagnostic code.
+    let listed: Vec<&str> = sentence
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .max_by_key(|run| run.split_whitespace().count())
+        .expect("a backticked list of spellings")
+        .split_whitespace()
+        .collect();
+
+    let compat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/compat.rs");
+    let compat = std::fs::read_to_string(&compat).unwrap_or_else(|e| panic!("read compat.rs: {e}"));
+    let body = compat
+        .split_once("pub const RESERVED_NAMES: &[&str] = &[")
+        .expect("the constant")
+        .1
+        .split_once("];")
+        .expect("its end")
+        .0;
+    let reserved: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
+    assert!(reserved.len() > 10, "the constant parse found {reserved:?}");
+    assert_eq!(
+        listed, reserved,
+        "the document's list and `compat::RESERVED_NAMES` have drifted"
+    );
+
+    // And each one really is refused, in both cases the sentence promises.
+    for spelling in &reserved {
+        for name in [(*spelling).to_owned(), spelling.to_uppercase()] {
+            let source = format!("var {name} = $10\n");
+            let mut map = SourceMap::new();
+            let file = map.add_file("reserved.k816", &source);
+            let result = compile_to_ca65(&map, file, &Options::default());
+            let codes: Vec<&str> = result
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect();
+            assert!(
+                codes.contains(&"K816-E0158"),
+                "`var {name}` reported {codes:?}"
+            );
+        }
+    }
+
+    // The counter-claim in the same paragraph, which is what keeps the rule
+    // from breaking idiomatic K65: the evaluator's namespace is untouched.
+    let evaluator = "data table {\n  for i = 0 .. 3 eval [ i ]\n}\n[ c = 7 ]\n";
+    let mut map = SourceMap::new();
+    let file = map.add_file("evaluator.k816", evaluator);
+    let result = compile_to_ca65(&map, file, &Options::default());
+    let codes: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.as_str())
+        .collect();
+    assert!(
+        codes.is_empty(),
+        "the evaluator is not covered by the reservation: {codes:?}"
+    );
+}
+
 /// The two lists together account for every section of the document, so a
 /// heading that is in neither is a gap rather than an oversight.
 #[test]

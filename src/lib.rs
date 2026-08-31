@@ -64,11 +64,22 @@ use source::{FileId, SourceMap};
 pub struct Options {
     /// Run the effect-aware optimizer (`false` for `compile --no-opt`).
     pub optimize: bool,
+    /// Report every construct the original K65 language does not have
+    /// (`--strict-k65`).
+    ///
+    /// A reporting mode and nothing else: it changes no width, no lowering and
+    /// no byte. Whether a construct is an extension is
+    /// `doc/k65-compat-manifest.md`'s answer, mirrored by [`compat::MANIFEST`]
+    /// (`plans/06-compatibility.md` decision 20).
+    pub strict_k65: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { optimize: true }
+        Self {
+            optimize: true,
+            strict_k65: false,
+        }
     }
 }
 
@@ -101,17 +112,19 @@ pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<(FileId, 
 /// Each file is currently analyzed as its own unit — cross-unit symbols are
 /// sub-plan C territory.
 pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
-    let _ = options;
     // Every unit sees every other unit's definitions, which is how a name
     // one file defines resolves in another without any import syntax.
     let linkage = linkage::Linkage::resolve(map);
     let mut diagnostics = linkage.diagnostics().to_vec();
     for source in map.files() {
         let parse = parser::parse_source(source, None);
-        let (_, semantic_diagnostics) =
+        let (model, semantic_diagnostics) =
             semantic::analyze_unit(&parse.file, source.name(), &linkage);
         diagnostics.extend(parse.diagnostics);
         diagnostics.extend(semantic_diagnostics);
+        if options.strict_k65 {
+            diagnostics.extend(compat::strict_k65(model.program(&parse.file), source));
+        }
     }
     Analysis { diagnostics }
 }
@@ -130,6 +143,13 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
+    // Strict mode runs on the program the build compiles — after the
+    // preprocessor, so a construct inside a region this unit did not take is
+    // not this unit's to answer for — and its extensions are errors, so it
+    // runs before the check that stops emission.
+    if options.strict_k65 {
+        diagnostics.extend(compat::strict_k65(model.program(&parse.file), source));
+    }
     if diagnostic::has_errors(&diagnostics) {
         return CompileResult {
             assembly: None,
@@ -199,6 +219,9 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
+    if options.strict_k65 {
+        diagnostics.extend(compat::strict_k65(model.program(&parse.file), source));
+    }
     if diagnostic::has_errors(&diagnostics) {
         return IrResult {
             ir: None,

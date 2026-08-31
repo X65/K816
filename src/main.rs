@@ -89,6 +89,10 @@ fn usage(prog_name: &str) {
     eprintln!("                                       imports and exports from them");
     eprintln!("  --message-format FORMAT              diagnostic output of compile and emit-ir:");
     eprintln!("                                       human, compact, json");
+    eprintln!("  --strict-k65                         report every construct the original K65");
+    eprintln!("                                       language does not have. Extensions are");
+    eprintln!("                                       errors, and a construct that means");
+    eprintln!("                                       something else there is a warning");
     eprintln!("  -V, --version                        print the version number and exit");
 }
 
@@ -119,6 +123,7 @@ fn parse_command_line(
     let mut explain = false;
     let mut options = Options {
         optimize: !opt_flag_enables,
+        strict_k65: false,
     };
     let mut message_format = render::MessageFormat::default();
 
@@ -161,6 +166,7 @@ fn parse_command_line(
                 let text = &arg["--message-format=".len()..];
                 set_message_format(prog_name, text, &mut message_format)?;
             }
+            "--strict-k65" => options.strict_k65 = true,
             "--explain" if opt_flag == "--after-opt" => explain = true,
             flag if flag == opt_flag => options.optimize = opt_flag_enables,
             _ if arg.starts_with('-') => {

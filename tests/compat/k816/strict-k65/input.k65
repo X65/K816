@@ -1,0 +1,37 @@
+// `--strict-k65`, at one site, over the constructs a K65 author is most
+// likely to reach for by habit.
+//
+// The flag is a *reporting mode*: it changes no width, no lowering and no
+// byte, and `strict_mode_only_adds_diagnostics` checks that over the whole
+// corpus.  What it adds is one `K816-E0160` per K816 construct and one
+// `K816-W0161` per construct that compiles in both languages and means
+// something else here.
+//
+// Which constructs those are is not decided in code: it is the `Strict`
+// column of `doc/k65-compat-manifest.md`, mirrored by `compat::MANIFEST` and
+// checked against the file both ways by `the_code_mirrors_the_manifest_row_
+// for_row`.  This fixture is the row `k816-strict-k65`'s own witness — the
+// set of rows the flag reports over the *corpus* is a different gate,
+// `strict_mode_reports_exactly_the_rows_the_manifest_marks`.
+//
+// Ten reports, and one of them is the warning: nine constructs here have no
+// K65 spelling at all, while `* 3` has one and means three *cycles* there and
+// three `NOP`s here (decision 11).
+//
+// The `* 3` comes first in its body deliberately.  K65 is newline-insensitive
+// and `*` is also the multiplication operator, so `a + #MASK` above a `* 3`
+// is one immediate, `#(MASK * 3)` - in both compilers.  That is not a bug and
+// not this fixture's subject; it is why the wait is written where nothing can
+// absorb it.
+
+segment CODE                  // E0160: bank selection is ld65's here
+
+var dp cursor                 // E0160: the direct-page pool
+var slots[ .lo :byte ] * 2    // E0160 ×3: a field list, a width, a count
+const MASK = $0F              // E0160: the `$` spelling
+
+func step @a8 @i8 (a) -> a { // E0160 ×3: two widths and a contract
+  * 3                         // W0161: three cycles there, three NOPs here
+  a + #MASK
+  return
+}

@@ -30,7 +30,7 @@ use k816::{Options, compile_to_ca65};
 fn emit(name: &str, text: &str) -> String {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     assert_eq!(result.diagnostics, vec![], "unexpected diagnostics");
     result.assembly.expect("compilation succeeds")
 }
@@ -193,7 +193,7 @@ fn instructions(name: &str, text: &str) -> Vec<String> {
 fn emit_unoptimized(name: &str, text: &str) -> String {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     let errors: Vec<&k816::diagnostic::Diagnostic> = result
         .diagnostics
         .iter()
@@ -430,7 +430,7 @@ fn address_placement_becomes_a_named_segment_and_says_so() {
         "place.k816",
         "data pinned {\n    address $5000\n    1 2\n}\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
 
     assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
     let warning = &result.diagnostics[0];
@@ -460,7 +460,7 @@ fn a_named_blocks_address_segment_does_not_renumber() {
     let name_of = |text: &str| {
         let mut map = SourceMap::new();
         let file = map.add_file("stable.k816", text);
-        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
         result
             .assembly
             .expect("compilation succeeds")
@@ -487,7 +487,7 @@ fn a_named_blocks_address_segment_does_not_renumber() {
         "two.k816",
         "data aa {\n    address $5000\n    1\n}\ndata bb {\n    address $5000\n    2\n}\n",
     );
-    let both = compile_to_ca65(&map, file, &Options { optimize: false });
+    let both = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     let assembly = both.assembly.expect("compilation succeeds");
     assert!(assembly.contains("K816_AT_5000__A"), "{assembly}");
     assert!(assembly.contains("K816_AT_5000__B"), "{assembly}");
@@ -563,7 +563,7 @@ func work @a8 @i16 {
 ";
     let mut map = SourceMap::new();
     let file = map.add_file("annotated.k816", text);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     let assembly = result
         .assembly
         .expect("a W0116 warning does not stop emission");
@@ -691,7 +691,7 @@ fn an_unknown_axis_emits_an_explanation_rather_than_a_directive() {
         "unknown.k816",
         "func main @a8 {\n    plp\n    lda #$01\n}\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     let errors: Vec<&str> = result
         .diagnostics
         .iter()

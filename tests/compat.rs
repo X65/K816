@@ -85,6 +85,10 @@ struct Fixture {
     config: String,
     compare: String,
     units: Vec<String>,
+    /// `strict yes` — compile this fixture with `--strict-k65`, so its
+    /// `expect` list is what the flag says. Off by default, because every
+    /// other fixture is about the ordinary build.
+    strict: bool,
     /// `(unit, code)` in the order the compiler reports them, unit by unit.
     /// Every unit is compiled as an entry, so a fixture with siblings has an
     /// expectation per unit rather than one for whichever happens to be last.
@@ -126,6 +130,7 @@ fn fixtures() -> Vec<Fixture> {
                 config: one("config"),
                 compare: one("compare"),
                 units: one("units").split_whitespace().map(String::from).collect(),
+                strict: keys.get("strict").is_some_and(|v| v.as_slice() == ["yes"]),
                 expect: keys
                     .get("expect")
                     .map(|v| {
@@ -175,6 +180,16 @@ fn sources_of(fixture: &Fixture) -> Vec<String> {
 /// [`compile`], over sources supplied rather than read — which is what lets a
 /// test compile a *modified* fixture and compare the two.
 fn compile_texts(fixture: &Fixture, sources: &[String]) -> (Vec<(String, String)>, Vec<String>) {
+    compile_with(fixture, sources, fixture.strict)
+}
+
+/// [`compile_texts`], with the flag chosen by the caller — which is what lets
+/// `strict_mode_only_adds_diagnostics` compile one fixture both ways.
+fn compile_with(
+    fixture: &Fixture,
+    sources: &[String],
+    strict_k65: bool,
+) -> (Vec<(String, String)>, Vec<String>) {
     let mut codes = Vec::new();
     let mut assemblies = Vec::new();
     for unit in &fixture.units {
@@ -190,7 +205,10 @@ fn compile_texts(fixture: &Fixture, sources: &[String]) -> (Vec<(String, String)
         let result = compile_to_ca65(
             &map,
             entry.expect("the entry unit is one of the units"),
-            &Options { optimize: true },
+            &Options {
+                optimize: true,
+                strict_k65,
+            },
         );
         codes.extend(
             result
@@ -415,6 +433,70 @@ fn a_live_region_around_a_whole_unit_changes_nothing() {
             "{}: wrapping the unit in `#if 1` changed the linked bytes",
             fixture.name
         );
+    }
+}
+
+/// `--strict-k65` reports and changes nothing else.
+///
+/// The claim the flag rests on, and the reason it is not "a separate compiler
+/// architecture" (`doc/k65-compat.md`): it selects no lowering, no width and
+/// no byte. Every fixture is compiled both ways, and with the flag's own two
+/// codes removed the strict run has to say what the ordinary run said.
+///
+/// **With one allowance, and it is not a loophole.** `K816-E0160` is an error,
+/// and an error stops the pipeline where every error does — before lowering.
+/// So a fixture whose strict run reports an extension legitimately loses the
+/// diagnostics of the stages that never ran:
+/// `legacy-k816/syntax-postfix-gt-efficiency-warning` keeps its `K816-W0157`
+/// in an ordinary build and cannot in a strict one, because that warning is
+/// decided at lowering. What is asserted is therefore that the strict run's
+/// non-strict diagnostics are a *prefix* of the ordinary run's, per unit —
+/// nothing removed from the middle, nothing added, nothing reordered — and
+/// that the two are equal wherever strict mode reported no error at all.
+#[test]
+fn strict_mode_only_adds_diagnostics() {
+    for fixture in fixtures() {
+        // A fixture that is *about* the flag is already compiled with it.
+        if fixture.strict {
+            continue;
+        }
+        let sources = sources_of(&fixture);
+        let (ordinary, _) = compile_with(&fixture, &sources, false);
+        let (strict, _) = compile_with(&fixture, &sources, true);
+        let rejected = strict.iter().any(|(_, code)| code == "K816-E0160");
+        let by_unit = |codes: Vec<(String, String)>| -> BTreeMap<String, Vec<String>> {
+            let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for (unit, code) in codes {
+                out.entry(unit).or_default().push(code);
+            }
+            out
+        };
+        let ordinary = by_unit(ordinary);
+        let filtered = by_unit(
+            strict
+                .into_iter()
+                .filter(|(_, code)| code != "K816-E0160" && code != "K816-W0161")
+                .collect(),
+        );
+        let units: BTreeSet<&String> = ordinary.keys().chain(filtered.keys()).collect();
+        for unit in units {
+            let expected = ordinary.get(unit).cloned().unwrap_or_default();
+            let codes = filtered.get(unit).cloned().unwrap_or_default();
+            assert!(
+                expected.starts_with(codes.as_slice()),
+                "{} ({unit}): `--strict-k65` reports {codes:?}, which is not what the \
+                 ordinary build reports first: {expected:?}",
+                fixture.name
+            );
+            if !rejected {
+                assert_eq!(
+                    codes, expected,
+                    "{} ({unit}): `--strict-k65` reported no extension and still \
+                     changed what the compiler says",
+                    fixture.name
+                );
+            }
+        }
     }
 }
 
@@ -783,12 +865,9 @@ fn the_manifest_and_the_corpus_agree() {
 
     for row in &rows {
         assert!(
-            row.fixture != "—" && row.fixture != "-" || row.id == "k816-strict-k65",
+            row.fixture != "—" && row.fixture != "-",
             "row `{}` names no fixture. Every row names one, or `n/a` where the \
-             grammar line carries no live production for a source to contain. \
-             The single exception is `k816-strict-k65`, whose construct is the \
-             flag itself: it has no fixture until the flag exists, and G10b \
-             removes this clause with the flag",
+             grammar line carries no live production for a source to contain",
             row.id
         );
         if names_no_fixture(&row.fixture) {
@@ -1008,6 +1087,256 @@ fn contains_phrase(source: &str, phrase: &[String]) -> bool {
     })
 }
 
+/// Every construct the AST can hold, and the manifest row that classifies it.
+///
+/// **The audit that found four missing rows, kept so it cannot be needed
+/// twice.** The second table claims one row per K816 construct that is not in
+/// the original grammar, and until G10b it was written by walking the
+/// *decisions* G took — which finds every construct a decision was about and
+/// none of the ones nobody argued over. Raw mnemonics were the largest:
+/// `compiler.inc` has no mnemonic production at all, so the whole native layer
+/// sub-plan C landed is an extension, and no row said so. Typed data entries,
+/// `p??`, and everything richer than `NAME + NAME` in an operand went the same
+/// way.
+///
+/// Walking the AST instead asks the question from the side that has an
+/// answer: a construct the compiler can represent either has a row or is a
+/// gap. The table is checked against `src/ast.rs` itself, so a variant added
+/// later fails here until someone classifies it.
+const AST_VARIANTS: &[(&str, &str, &str)] = &[
+    // ---- ItemKind ---------------------------------------------------------
+    (
+        "ItemKind",
+        "Var",
+        "topelem-var var-declaration k816-symbolic-subscript k816-abstract-var \
+         k816-direct-page-pool k816-typed-view",
+    ),
+    (
+        "ItemKind",
+        "Const",
+        "topelem-const k816-const-auto-increment",
+    ),
+    ("ItemKind", "Segment", "k816-segment"),
+    ("ItemKind", "Data", "topelem-data"),
+    ("ItemKind", "EvalBlock", "topelem-eval-block"),
+    ("ItemKind", "EvalFunc", "topelem-evalfunc"),
+    (
+        "ItemKind",
+        "Preprocessor",
+        "topelem-preprocessor topelem-pperror ppif-directives ppifnumber-condition",
+    ),
+    ("ItemKind", "Binary", "topelem-binary"),
+    (
+        "ItemKind",
+        "Reserved",
+        "topelem-bank topelem-image instr-sax instr-axs arithop-anc arithop-dcp \
+         arithop-isc instr-stack-flags flag-tokens",
+    ),
+    ("ItemKind", "ModuleWidth", "k816-width-annotations"),
+    (
+        "ItemKind",
+        "Func",
+        "topelem-func topelem-naked topelem-inline topelem-main k816-far-function \
+         k816-call-contracts",
+    ),
+    ("ItemKind", "Error", "n/a"),
+    // ---- StatementKind ----------------------------------------------------
+    ("StatementKind", "Label", "instr-label"),
+    ("StatementKind", "Native", "k816-native-mnemonics"),
+    (
+        "StatementKind",
+        "Hla",
+        "instr-arith instr-mov instr-postfix instr-flag-set instr-flag-clear \
+         instr-stack-a instr-stack-flags instr-nop-wait k816-status-register-stack \
+         k816-accumulator-one-name",
+    ),
+    ("StatementKind", "WidthBlock", "k816-width-annotations"),
+    ("StatementKind", "ModeSet", "k816-width-annotations"),
+    ("StatementKind", "Call", "instr-call-label instr-far-call"),
+    (
+        "StatementKind",
+        "BareCall",
+        "instr-call k816-call-contracts",
+    ),
+    ("StatementKind", "Conditional", "instr-branch-block"),
+    (
+        "StatementKind",
+        "ConditionalJump",
+        "instr-goto instr-break instr-repeat",
+    ),
+    (
+        "StatementKind",
+        "Loop",
+        "instr-branch-block k816-postfix-gt k816-postfix-le",
+    ),
+    ("StatementKind", "Goto", "instr-goto instr-far-goto"),
+    ("StatementKind", "Break", "instr-break"),
+    ("StatementKind", "Repeat", "instr-repeat"),
+    (
+        "StatementKind",
+        "Nocross",
+        "data-nocross-flag k816-nocross-shape",
+    ),
+    ("StatementKind", "Data", "instr-data-block"),
+    ("StatementKind", "Align", "align-directive"),
+    ("StatementKind", "Address", "align-directive"),
+    (
+        "StatementKind",
+        "Reserved",
+        "instr-sax instr-axs arithop-anc arithop-dcp arithop-isc instr-stack-flags \
+         flag-tokens",
+    ),
+    ("StatementKind", "Preprocessor", "instr-preprocessor"),
+    ("StatementKind", "Return", "instr-return"),
+    ("StatementKind", "Error", "n/a"),
+    // ---- DataEntryKind ----------------------------------------------------
+    ("DataEntryKind", "Segment", "k816-segment"),
+    ("DataEntryKind", "Align", "align-directive"),
+    ("DataEntryKind", "Address", "align-directive"),
+    ("DataEntryKind", "Nocross", "data-nocross-flag"),
+    ("DataEntryKind", "Charset", "data-charset"),
+    ("DataEntryKind", "Label", "data-label"),
+    ("DataEntryKind", "Typed", "k816-typed-data-entries"),
+    (
+        "DataEntryKind",
+        "Value",
+        "data-arg data-address-word data-string data-undef",
+    ),
+    ("DataEntryKind", "Code", "data-code-block"),
+    ("DataEntryKind", "NocrossGroup", "data-nocross-block"),
+    ("DataEntryKind", "Evaluator", "data-evaluator-entry"),
+    ("DataEntryKind", "Repeat", "data-repeat"),
+    ("DataEntryKind", "ForEval", "data-for-eval"),
+    ("DataEntryKind", "Preprocessor", "data-preprocessor"),
+    ("DataEntryKind", "Binary", "data-binary"),
+    (
+        "DataEntryKind",
+        "Reserved",
+        "topelem-image data-image-tiles data-imgwave",
+    ),
+    ("DataEntryKind", "Error", "n/a"),
+    // ---- ExprKind ---------------------------------------------------------
+    (
+        "ExprKind",
+        "Number",
+        "number terminal-numbers k816-hex-binary-char-literals",
+    ),
+    ("ExprKind", "Symbol", "terminal-ident vararg-label-offset"),
+    ("ExprKind", "LocalSymbol", "ident"),
+    (
+        "ExprKind",
+        "Unary",
+        "arg-forms data-address-word k816-operand-expressions",
+    ),
+    (
+        "ExprKind",
+        "Binary",
+        "vararg-label-offset k816-operand-expressions",
+    ),
+    ("ExprKind", "Field", "k816-field-access"),
+    ("ExprKind", "Subscript", "k816-field-access"),
+    ("ExprKind", "Metadata", "k816-metadata-query"),
+    ("ExprKind", "TypedView", "k816-typed-view"),
+    ("ExprKind", "Eval", "number-eval-bracket"),
+    ("ExprKind", "Error", "n/a"),
+    // ---- HlaStatement -----------------------------------------------------
+    ("HlaStatement", "Assign", "instr-mov"),
+    ("HlaStatement", "Exchange", "k816-accumulator-one-name"),
+    ("HlaStatement", "Arithmetic", "instr-arith"),
+    ("HlaStatement", "Shift", "instr-postfix"),
+    ("HlaStatement", "Step", "instr-postfix"),
+    (
+        "HlaStatement",
+        "Flag",
+        "instr-flag-set instr-flag-clear flag-tokens",
+    ),
+    (
+        "HlaStatement",
+        "Stack",
+        "instr-stack-a instr-stack-flags k816-status-register-stack",
+    ),
+    ("HlaStatement", "Nop", "instr-nop-wait"),
+    ("HlaStatement", "Break", "instr-nop-wait"),
+];
+
+/// Every AST variant is classified, and every classification names a real row.
+///
+/// `src/ast.rs` is read rather than trusted, the way `diagnostic.rs` is read
+/// by `every_declared_code_is_registered` and for the same reason: a variant
+/// nothing references is invisible at run time, and a table that lists only
+/// what someone remembered is a table that agrees with itself.
+#[test]
+fn every_ast_construct_answers_to_a_manifest_row() {
+    let source = std::fs::read_to_string(root().join("src/ast.rs")).expect("read src/ast.rs");
+    let (rows, _) = manifest_rows();
+    let ids: BTreeSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+
+    for (enum_name, variant, classification) in AST_VARIANTS {
+        assert!(
+            AST_VARIANTS
+                .iter()
+                .filter(|(e, v, _)| e == enum_name && v == variant)
+                .count()
+                == 1,
+            "`{enum_name}::{variant}` is listed twice"
+        );
+        if *classification == "n/a" {
+            continue;
+        }
+        for id in classification.split_whitespace() {
+            assert!(
+                ids.contains(id),
+                "`{enum_name}::{variant}` names the row `{id}`, which the manifest \
+                 does not have"
+            );
+        }
+    }
+
+    for enum_name in [
+        "ItemKind",
+        "StatementKind",
+        "DataEntryKind",
+        "ExprKind",
+        "HlaStatement",
+    ] {
+        let body = source
+            .split_once(&format!("pub enum {enum_name} {{"))
+            .unwrap_or_else(|| panic!("src/ast.rs has no `pub enum {enum_name}`"))
+            .1
+            .split_once("\n}")
+            .expect("the enum ends")
+            .0;
+        let mut variants: Vec<&str> = Vec::new();
+        for line in body.lines() {
+            let Some(rest) = line.strip_prefix("    ") else {
+                continue;
+            };
+            if !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                continue;
+            }
+            let name = rest
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .next()
+                .unwrap_or_default();
+            if !name.is_empty() {
+                variants.push(name);
+            }
+        }
+        assert!(!variants.is_empty(), "{enum_name} parsed to no variants");
+        for variant in variants {
+            assert!(
+                AST_VARIANTS
+                    .iter()
+                    .any(|(e, v, _)| *e == enum_name && *v == variant),
+                "`{enum_name}::{variant}` is a construct the compiler can hold and no \
+                 manifest row classifies it. Add the row, or list the variant here with \
+                 the rows that cover it — a construct nobody argued over is exactly how \
+                 raw mnemonics went unclassified from sub-plan C to G10b."
+            );
+        }
+    }
+}
+
 /// Every status is one of the six the manifest defines, and none is `open`.
 ///
 /// `open` stays a legal status so that a rule a later sub-plan adds has
@@ -1090,6 +1419,160 @@ fn every_grammar_rule_carries_its_cheap_judgment() {
             row.fixture
         );
     }
+}
+
+/// `compat::MANIFEST` and `doc/k65-compat-manifest.md` agree, row for row.
+///
+/// The mirror decision 20 asks for, and the risk note's whole point: a table
+/// in the compiler and a table in a document will drift unless something reads
+/// both. Both directions are checked — a row added to the file and not to the
+/// code is as much a failure as the reverse — and so are the status and the
+/// report set, because a row whose `Strict` cell says `rejects` while the code
+/// says `Quiet` is a construct the document promises to reject and nothing
+/// rejects.
+#[test]
+fn the_code_mirrors_the_manifest_row_for_row() {
+    use k816::compat::{Classification, MANIFEST, Strict};
+
+    let (rows, _) = manifest_rows();
+    let file: BTreeMap<&str, (&str, &str)> = rows
+        .iter()
+        .map(|row| (row.id.as_str(), (row.status.as_str(), row.strict.as_str())))
+        .collect();
+    let code: BTreeMap<&str, (&str, &str)> = MANIFEST
+        .iter()
+        .map(|row| {
+            let status = match row.status {
+                Classification::Compatible => "compatible",
+                Classification::IntentionallyChanged => "intentionally-changed",
+                Classification::LegacyDefective => "legacy-defective",
+                Classification::BackendDifferent => "backend-different",
+                Classification::K816Extension => "K816-extension",
+            };
+            let strict = match row.strict {
+                Strict::Rejects => "rejects",
+                Strict::Warns => "warns",
+                Strict::Quiet => "—",
+            };
+            (row.id, (status, strict))
+        })
+        .collect();
+
+    assert_eq!(
+        code.len(),
+        MANIFEST.len(),
+        "`compat::MANIFEST` names a row twice"
+    );
+    let missing: Vec<&&str> = file.keys().filter(|id| !code.contains_key(*id)).collect();
+    assert!(
+        missing.is_empty(),
+        "these rows are in doc/k65-compat-manifest.md and not in `compat::MANIFEST`: {missing:?}"
+    );
+    let extra: Vec<&&str> = code.keys().filter(|id| !file.contains_key(*id)).collect();
+    assert!(
+        extra.is_empty(),
+        "these rows are in `compat::MANIFEST` and not in doc/k65-compat-manifest.md: {extra:?}"
+    );
+    for (id, cells) in &file {
+        assert_eq!(
+            code[id], *cells,
+            "row `{id}` reads (status, strict) = {:?} in the code and {cells:?} in the file",
+            code[id]
+        );
+    }
+}
+
+/// Every row strict mode reports is a row the manifest marks, and every row
+/// the manifest marks is one the corpus makes it report.
+///
+/// The gate the risk note names, and it runs in both directions for the same
+/// reason the mirror does. A construct the walk finds under a row the file
+/// leaves `—` is the flag saying something the document does not; a row marked
+/// `rejects` that nothing in the corpus produces is a promise with no witness,
+/// which is how `binary Ident` and `far goto` both shipped.
+///
+/// The corpus is every fixture under `tests/compat/` plus every `tests/golden/`
+/// program, because the extension rows are what `golden/` is mostly *about* —
+/// subscripts, width annotations, contracts — and asking only the compatibility
+/// fixtures would need each of them written twice.
+#[test]
+fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
+    let (rows, _) = manifest_rows();
+    let marked: BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| row.strict == "rejects" || row.strict == "warns")
+        .map(|row| row.id.as_str())
+        .collect();
+
+    let mut found: BTreeMap<&'static str, String> = BTreeMap::new();
+    for (name, sources) in strict_corpus() {
+        let mut map = SourceMap::new();
+        let ids: Vec<_> = sources
+            .iter()
+            .enumerate()
+            .map(|(index, text)| map.add_file(format!("{name}-{index}.k65"), text.clone()))
+            .collect();
+        for id in ids {
+            let source = map.file(id);
+            let parse = k816::parser::parse_source(source, None);
+            let linkage = k816::linkage::Linkage::resolve(&map);
+            let (model, _) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
+            for (row, _) in k816::compat::classify(model.program(&parse.file), source) {
+                found.entry(row).or_insert_with(|| name.clone());
+            }
+        }
+    }
+
+    assert_eq!(
+        marked.len(),
+        23,
+        "the manifest marks {} rows for the flag; if that is deliberate, move the \
+         number here so the count stays a statement someone made",
+        marked.len()
+    );
+    let unmarked: Vec<&&str> = found.keys().filter(|id| !marked.contains(*id)).collect();
+    assert!(
+        unmarked.is_empty(),
+        "strict mode reports these rows, which the manifest leaves silent: {unmarked:?}"
+    );
+    let unwitnessed: Vec<&&str> = marked
+        .iter()
+        .filter(|id| !found.contains_key(*id))
+        .collect();
+    assert!(
+        unwitnessed.is_empty(),
+        "the manifest marks these rows for `--strict-k65` and no fixture in the corpus \
+         makes it report them: {unwitnessed:?}\n\nWrite the case. A row marked in the \
+         document and found by nothing is a promise with no witness."
+    );
+}
+
+/// Every source the strict gate walks: the compatibility corpus and the
+/// golden programs, each as its unit group.
+fn strict_corpus() -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = fixtures()
+        .iter()
+        .map(|fixture| (fixture.name.clone(), sources_of(fixture)))
+        .collect();
+    let golden = root().join("tests/golden");
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&golden)
+        .expect("read tests/golden")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("k65") | Some("k816")
+            )
+        })
+        .collect();
+    paths.sort();
+    for path in paths {
+        let name = format!("golden/{}", path.file_name().unwrap().to_string_lossy());
+        let text = std::fs::read_to_string(&path).expect("read golden source");
+        out.push((name, vec![text]));
+    }
+    out
 }
 
 /// The `Strict` column agrees with the status it sits beside.

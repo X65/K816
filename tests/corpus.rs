@@ -339,7 +339,14 @@ fn every_corpus_program_compiles_or_names_what_is_left() {
         for unit in *units {
             map.add_file(*unit, read(unit));
         }
-        let result = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false });
+        let result = k816::compile_to_ca65(
+            &map,
+            file,
+            &k816::Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         let codes: Vec<&str> = result
             .diagnostics
             .iter()
@@ -366,7 +373,14 @@ fn no_corpus_program_waits_on_a_sub_plan() {
         for unit in *units {
             map.add_file(*unit, read(unit));
         }
-        let result = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false });
+        let result = k816::compile_to_ca65(
+            &map,
+            file,
+            &k816::Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         for diagnostic in &result.diagnostics {
             assert!(
                 !diagnostic.code.as_str().starts_with("K816-E02"),
@@ -484,7 +498,14 @@ fn every_corpus_program_survives_the_optimizer_with_its_difference_stated() {
             for unit in *units {
                 map.add_file(*unit, read(unit));
             }
-            k816::compile_to_ca65(&map, file, &k816::Options { optimize })
+            k816::compile_to_ca65(
+                &map,
+                file,
+                &k816::Options {
+                    optimize,
+                    ..Default::default()
+                },
+            )
         };
         let optimized = compile(true);
         let codes: Vec<&str> = optimized

@@ -344,6 +344,24 @@ impl DiagnosticCode {
     /// modes the caller establishes before the call: declaring one as an
     /// output would be a promise nothing could check against the body.
     pub const CONTRACT_FLAG_OUTPUT: Self = Self("K816-E0159");
+    /// `--strict-k65` met a construct the original K65 grammar does not have.
+    ///
+    /// One per occurrence, naming the construct and — where one exists — what
+    /// a K65 source writes instead. The set of constructs is not this file's
+    /// to decide: it is the `K816-extension` rows of
+    /// `doc/k65-compat-manifest.md` whose `Strict` column reads `rejects`,
+    /// mirrored by `compat::MANIFEST` and checked against the file by
+    /// `tests/compat.rs` (`plans/06-compatibility.md` decision 20).
+    pub const STRICT_K65_EXTENSION: Self = Self("K816-E0160");
+    /// `--strict-k65` met a construct that compiles in both languages and
+    /// means something different here.
+    ///
+    /// A warning rather than an error, because the source *is* K65 and the
+    /// original would build it — just not into these bytes. Only the
+    /// `intentionally-changed` rows whose construct still compiles reach it;
+    /// where K816 already refuses the construct, decision 0 says the flag has
+    /// nothing to add and the row's `Strict` column reads `—`.
+    pub const STRICT_K65_CHANGED: Self = Self("K816-W0161");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -628,6 +646,8 @@ mod tests {
         DiagnosticCode::INEFFICIENT_BRANCH,
         DiagnosticCode::RETIRED_REGISTER_SPELLING,
         DiagnosticCode::CONTRACT_FLAG_OUTPUT,
+        DiagnosticCode::STRICT_K65_EXTENSION,
+        DiagnosticCode::STRICT_K65_CHANGED,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

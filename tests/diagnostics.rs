@@ -578,6 +578,17 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
          quiet about shapes tree-sitter recovered — see \
          truncating_a_fixture_anywhere_yields_a_usable_tree",
     ),
+    // Both need `--strict-k65`, which no `Case` here turns on: a `Case` is a
+    // source compiled with the default options, and these two are the one
+    // option that changes what the compiler reports.
+    (
+        "K816-E0160",
+        "tests/cli.rs: strict_k65_is_opt_in_and_reaches_both_commands",
+    ),
+    (
+        "K816-W0161",
+        "tests/compat.rs: strict_mode_reports_exactly_the_rows_the_manifest_marks",
+    ),
 ];
 
 /// `K816-E0105` is unreachable from source, and this is why.

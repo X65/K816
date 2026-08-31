@@ -95,7 +95,10 @@ fn hla_slice_links_to_the_expected_bytes() {
         "hla-unopt",
         "slice.k816",
         include_str!("golden/slice.k816"),
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
     assert_eq!(bytes, UNOPTIMIZED_BYTES);
 }
@@ -106,7 +109,10 @@ fn native_slice_links_to_identical_bytes() {
         "native-unopt",
         "slice-native.k816",
         include_str!("golden/slice-native.k816"),
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
     assert_eq!(bytes, UNOPTIMIZED_BYTES);
 }
@@ -124,7 +130,10 @@ fn optimized_slice_links_without_the_dead_load() {
         "hla-opt",
         "slice.k816",
         include_str!("golden/slice.k816"),
-        &Options { optimize: true },
+        &Options {
+            optimize: true,
+            ..Default::default()
+        },
     );
     assert_eq!(hla, OPTIMIZED_BYTES);
 
@@ -132,7 +141,10 @@ fn optimized_slice_links_without_the_dead_load() {
         "native-opt",
         "slice-native.k816",
         include_str!("golden/slice-native.k816"),
-        &Options { optimize: true },
+        &Options {
+            optimize: true,
+            ..Default::default()
+        },
     );
     assert_eq!(native, OPTIMIZED_BYTES);
 }
@@ -143,7 +155,10 @@ fn debug_database_records_k816_source_ownership() {
         "hla-dbg",
         "slice.k816",
         include_str!("golden/slice.k816"),
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
 
     // The K816 source is in the file table...
@@ -199,7 +214,10 @@ fn a_mixed_precedence_expression_links_to_the_k65_value() {
         "precedence",
         "precedence.k816",
         "func precedence @a16 @i16 {\n  spot:\n    lda #spot + 1 & $FF\n}\n",
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
 
     // An ordinary function, so nothing precedes its body: `spot` is at
@@ -225,7 +243,10 @@ fn a_link_time_multiplication_survives_to_ld65() {
         "relocatable-multiply",
         "reloc.k816",
         "func multiply @a16 @i16 {\n  spot:\n    lda #&<spot * 2\n}\n",
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
     assert_eq!(bytes[0], 0xA9, "{bytes:02X?}");
     // `spot` lands at $8000 — nothing precedes the body — so the low byte is
@@ -250,7 +271,14 @@ fn link_two_units(test: &str, main: (&str, &str), other: (&str, &str)) -> Vec<u8
     let dir = work_dir(test);
     let mut objects = Vec::new();
     for (name, file) in [(main.0, main_file), (other.0, other_file)] {
-        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             result.diagnostics,
             vec![],
@@ -343,7 +371,14 @@ fn two_units_defining_one_name_is_a_frontend_error() {
 fn compile_fixture(name: &str, text: &str) -> String {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
     assert!(errors.is_empty(), "{name}: {errors:?}");
     result.assembly.expect("compilation succeeds")
@@ -549,7 +584,15 @@ fn the_legacy_display_list_data_block_compiles() {
 /// then sizes differently, which is exactly the class of mistake the width
 /// model exists to prevent.
 fn linked(test: &str, name: &str, text: &str) -> Vec<u8> {
-    let (bytes, _) = compile_and_link(test, name, text, &Options { optimize: false });
+    let (bytes, _) = compile_and_link(
+        test,
+        name,
+        text,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     bytes
 }
 
@@ -781,7 +824,14 @@ fn an_exported_contract_matches_the_code_the_unit_emits() {
 
     // And the code the unit emits says the same thing: the load after the
     // call to `wrapper` sits under an 8-bit claim.
-    let result = compile_to_ca65(&map, b, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        b,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let assembly = result.assembly.expect("compiles");
     let call = assembly.find("jsr     a:wrapper").expect("the call");
     let load = assembly.find("lda     #$01").expect("the load");
@@ -805,7 +855,14 @@ fn a_branch_past_a_relative_branchs_reach_still_assembles() {
         "branch-range.k816",
         include_str!("golden/branch-range.k816"),
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -824,7 +881,14 @@ fn a_branch_past_a_relative_branchs_reach_still_assembles() {
 fn a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge() {
     let mut map = SourceMap::new();
     let file = map.add_file("block-exit.k816", include_str!("golden/block-exit.k816"));
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -846,7 +910,14 @@ fn a_transfer_out_of_a_width_block_restores_it_on_the_taken_edge() {
 fn the_far_family_and_every_goto_shape_assemble() {
     let mut map = SourceMap::new();
     let file = map.add_file("far-calls.k816", include_str!("golden/far-calls.k816"));
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -907,7 +978,14 @@ fn the_near_far_convention_is_checked_across_units() {
         "far-user.k816",
         "func main @a8 @i8 {\n    call far lib_init\n}\n",
     );
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the matching pair compiles");
     let assembly = result.assembly.expect("compilation succeeds");
     assert!(
@@ -927,7 +1005,14 @@ fn the_near_far_convention_is_checked_across_units() {
         "far-user.k816",
         "func main @a8 @i8 {\n    call lib_init\n}\n",
     );
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
     assert_eq!(codes, vec![DiagnosticCode::CALL_CONVENTION_MISMATCH]);
 }
@@ -945,7 +1030,14 @@ fn the_near_far_convention_is_checked_across_units() {
 fn every_declaration_axis_reserves_and_encodes_what_it_declares() {
     let mut map = SourceMap::new();
     let file = map.add_file("vars.k816", include_str!("golden/vars.k816"));
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -1052,7 +1144,14 @@ fn every_declaration_axis_reserves_and_encodes_what_it_declares() {
 fn every_field_access_folds_to_the_offset_its_layout_declares() {
     let mut map = SourceMap::new();
     let file = map.add_file("subscripts.k816", include_str!("golden/subscripts.k816"));
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -1240,7 +1339,14 @@ fn a_layout_does_not_cross_a_unit_boundary() {
         "layout-unit-a.k816",
         include_str!("golden/layout-unit-a.k816"),
     );
-    let result = compile_to_ca65(&map, b, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        b,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "both units compile");
     let assembly = result.assembly.expect("compilation succeeds");
     assert!(
@@ -1263,7 +1369,14 @@ fn a_layout_does_not_cross_a_unit_boundary() {
         "layout-unit-a.k816",
         include_str!("golden/layout-unit-a.k816"),
     );
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let refusal = result
         .diagnostics
         .iter()
@@ -1292,7 +1405,15 @@ fn a_nocross_run_blames_the_split_that_grew_it() {
     let compile = |source: &str| {
         let mut map = SourceMap::new();
         let file = map.add_file("nocross.k816", source);
-        compile_to_ca65(&map, file, &Options { optimize: false }).diagnostics
+        compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        )
+        .diagnostics
     };
 
     // 250 bytes of `nop`, then a width block a branch leaves. Written, the
@@ -1348,7 +1469,15 @@ fn a_call_that_damages_a_live_register_warns_at_the_call() {
     let compile = |source: &str| {
         let mut map = SourceMap::new();
         let file = map.add_file("clobber.k816", source);
-        compile_to_ca65(&map, file, &Options { optimize: false }).diagnostics
+        compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        )
+        .diagnostics
     };
 
     // `callee` returns A and quietly steps X; the caller reads X after it.
@@ -1405,7 +1534,14 @@ fn every_data_entry_emits_the_bytes_it_describes() {
         "data-entries.k816",
         include_str!("golden/data-entries.k816"),
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -1500,7 +1636,14 @@ fn the_paired_hla_fixtures_assemble() {
     ] {
         let mut map = SourceMap::new();
         let file = map.add_file(format!("{name}.k816"), source);
-        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         // `hla-branches` exercises `>` and `<=`, which is what G8's
         // efficiency warning is about. It is a warning, so the file still
         // compiles; nothing else may appear.
@@ -1537,7 +1680,14 @@ fn the_direct_page_pool_steps_over_its_pinned_slots() {
          \x20   a = second\n\
          }\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
 
@@ -1600,7 +1750,14 @@ fn a_branch_inside_a_data_code_subblock_is_relaxed() {
     );
     let mut map = SourceMap::new();
     let file = map.add_file("data-branch.k816", &source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "the fixture must compile");
     let assembly = result.assembly.expect("compilation succeeds");
     assert!(
@@ -1623,7 +1780,14 @@ fn a_nocross_run_is_measured_after_its_branches_settle() {
     );
     let mut map = SourceMap::new();
     let file = map.add_file("nocross.k816", &source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -1642,7 +1806,14 @@ fn a_nocross_run_is_measured_after_its_branches_settle() {
     );
     let mut map = SourceMap::new();
     let file = map.add_file("nocross-fits.k816", &source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![]);
     let assembly = result.assembly.expect("compiles");
     // 200 nops, `cmp #$00`, and the widened branch's five bytes.
@@ -1680,7 +1851,14 @@ fn a_widened_branch_does_not_hide_a_damaged_register() {
     );
     let mut map = SourceMap::new();
     let file = map.add_file("damage.k816", &with_branch);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -1706,7 +1884,14 @@ fn expansions_and_naked_sections_assemble() {
         "inline-expansion.k816",
         include_str!("golden/inline-expansion.k816"),
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let warnings: Vec<_> = result
         .diagnostics
         .iter()
@@ -1773,7 +1958,14 @@ fn an_argument_that_does_not_fit_is_reported_where_it_was_passed() {
     let source = "inline narrow @a8 (a, #value) -> a {\n    lda #value\n}\n\n\
                   func f @a8 @i8 {\n    narrow a, #300 -> a\n}\n";
     let file = map.add_file("narrow.k816", source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let reported: Vec<_> = result
         .diagnostics
         .iter()
@@ -1804,13 +1996,19 @@ fn the_barrier_fixture_assembles_and_the_optimizer_changes_no_byte() {
         "opt-barriers-unopt",
         "opt-barriers.k816",
         source,
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
     let optimized = link_fixture(
         "opt-barriers-opt",
         "opt-barriers.k816",
         source,
-        &Options { optimize: true },
+        &Options {
+            optimize: true,
+            ..Default::default()
+        },
     );
     assert_eq!(optimized, unoptimized, "{optimized:02X?}");
 }
@@ -1828,13 +2026,19 @@ fn the_live_out_fixture_keeps_everything_a_return_could_hand_back() {
         "opt-liveout-unopt",
         "opt-liveout.k816",
         source,
-        &Options { optimize: false },
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
     );
     let optimized = link_fixture(
         "opt-liveout-opt",
         "opt-liveout.k816",
         source,
-        &Options { optimize: true },
+        &Options {
+            optimize: true,
+            ..Default::default()
+        },
     );
     assert_eq!(
         unoptimized.len() - optimized.len(),
@@ -1879,7 +2083,10 @@ fn the_optimized_branch_fixture_loses_only_what_no_path_depends_on() {
         "width-branch-opt",
         "width-branch.k816",
         include_str!("golden/width-branch.k816"),
-        &Options { optimize: true },
+        &Options {
+            optimize: true,
+            ..Default::default()
+        },
     );
     // `skipped`: bra (2), the unreachable user rep #$20 (2), lda #$01 (2),
     // rts (1). Only the load the branch leaves behind is gone.
@@ -1940,7 +2147,14 @@ fn optimizer_effect_with(
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
     let compile = |optimize: bool| -> String {
-        let result = compile_to_ca65(&map, file, &Options { optimize });
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize,
+                ..Default::default()
+            },
+        );
         let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{name}: {errors:?}");
         result.assembly.expect("compilation succeeds")
@@ -2176,7 +2390,14 @@ fn the_cross_unit_mode_pair_links_with_both_bridges_intact() {
         include_str!("golden/opt-crossunit-b.k816"),
     );
     let assemble = |file, name: &str| -> PathBuf {
-        let result = compile_to_ca65(&map, file, &Options { optimize: true });
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: true,
+                ..Default::default()
+            },
+        );
         let errors: Vec<_> = result.diagnostics.iter().filter(|d| d.is_error()).collect();
         assert!(errors.is_empty(), "{name}: {errors:?}");
         let assembly = result.assembly.expect("compilation succeeds");
@@ -2761,7 +2982,14 @@ fn no_golden_fixtures_optimized_output_changes_without_a_stated_reason() {
         let compile = |optimize: bool| -> Vec<String> {
             let mut map = SourceMap::new();
             let file = map.add_file(name.as_str(), text.as_str());
-            let result = compile_to_ca65(&map, file, &Options { optimize });
+            let result = compile_to_ca65(
+                &map,
+                file,
+                &Options {
+                    optimize,
+                    ..Default::default()
+                },
+            );
             result
                 .assembly
                 .map(|a| instruction_lines(&a))
@@ -2859,7 +3087,10 @@ func caller @a8 @i8 {
         "called-entry-bytes",
         "called-entry.k816",
         source,
-        &Options { optimize: true },
+        &Options {
+            optimize: true,
+            ..Default::default()
+        },
     );
     assert_eq!(
         unoptimized,
@@ -2932,7 +3163,14 @@ fn a_directive_inside_a_nocross_group_pairs_inside_it() {
          \x20 }\n\
          }\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "a paired region is quiet");
     assert!(
         result
@@ -2953,7 +3191,14 @@ fn a_directive_inside_a_nocross_group_pairs_inside_it() {
          \x20 #endif\n\
          }\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3034,7 +3279,14 @@ fn a_transform_runs_per_byte_and_keeps_its_assignments() {
          \x20 [ SIDE ]\n\
          }\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3093,7 +3345,14 @@ fn a_refused_function_inside_a_transform_is_reported() {
          \x20 for i = 0 .. 2 eval [ i ]\n\
          }\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3154,7 +3413,14 @@ fn a_sections_bytes_start_at_its_label() {
         "aligned-mid.k816",
         "data t {\n  1\n  align 4\n  2\n}\ndata probe {\n  [ size(t) ]\n}\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert!(
         result
             .diagnostics
@@ -3200,7 +3466,14 @@ fn a_section_can_be_read_from_another_unit() {
         "data probe {\n  [ index(shared, 1) ]\n  [ size(shared) ]\n}\n",
     );
     let linkage = k816::linkage::Linkage::resolve(&map);
-    let result = compile_to_ca65(&map, reader, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        reader,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "a foreign section reads");
     let assembly = result.assembly.expect("compiles");
     assert!(
@@ -3224,7 +3497,14 @@ fn a_section_can_be_read_from_another_unit() {
         "opaque-reader.k816",
         "data probe {\n  [ index(opaque, 0) ]\n}\n",
     );
-    let result = compile_to_ca65(&map, reader, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        reader,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3272,7 +3552,14 @@ fn an_inline_crosses_a_unit_boundary_with_its_body() {
         "bump-user.k816",
         "@a16\n@i16\nfunc main @a8 @i8 {\n    a = 10\n    twice a -> a\n}\n",
     );
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![], "a foreign inline expands");
     let assembly = result.assembly.expect("compiles");
     // Two expansions of `sub`, reached only through `twice`: the closure is
@@ -3327,7 +3614,14 @@ fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
         "twin-user.k816",
         "func main @a8 @i8 {\n    good\n    bad\n}\n",
     );
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3355,7 +3649,14 @@ fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
         "var slot[ .lo:byte .hi:byte ]\ninline peek @a8 @i8 {\n    a = slot.hi\n}\n",
     );
     let user = map.add_file("layout-user.k816", "func main @a8 @i8 {\n    peek\n}\n");
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3380,7 +3681,14 @@ fn a_far_goto_takes_the_k65_word_order() {
     ] {
         let mut map = SourceMap::new();
         let file = map.add_file("far-goto.k816", source);
-        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         assert_eq!(result.diagnostics, vec![], "{source}");
         assert!(
             result
@@ -3424,7 +3732,14 @@ fn a_borrowed_copy_is_not_a_workspace_node() {
             "graph-main.k816",
             "@a8\n@i8\nmain {\n    call wrapper\n    a = 1\n}\n",
         );
-        let result = compile_to_ca65(&map, caller, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            caller,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         assert_eq!(result.diagnostics, vec![], "sibling={sibling}");
         result.assembly.expect("compiles")
     };
@@ -3457,7 +3772,14 @@ fn a_borrowed_body_does_not_take_the_borrowers_defaults() {
         "plain-user.k816",
         "@a16\n@i16\nfunc user @a8 @i8 {\n    borrowed\n}\n",
     );
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![]);
     let assembly = result.assembly.expect("compiles");
     assert!(
@@ -3471,7 +3793,14 @@ fn a_borrowed_body_does_not_take_the_borrowers_defaults() {
         "plain-together.k816",
         "inline borrowed {\n    nop\n}\nfunc user @a8 @i8 {\n    borrowed\n}\n",
     );
-    let result = compile_to_ca65(&map, together, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        together,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let local = result.assembly.expect("compiles");
     let body = |text: &str| {
         text.lines()
@@ -3511,7 +3840,14 @@ fn a_borrowed_body_reads_its_own_units_constants() {
         let mut map = SourceMap::new();
         map.add_file("const-defs.k816", format!("@a8\n@i8\n{defs}"));
         let user = map.add_file("const-user.k816", "@a8\n@i8\nmain {\n    borrowed\n}\n");
-        let result = compile_to_ca65(&map, user, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            user,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         assert_eq!(result.diagnostics, vec![], "{defs}");
         assert!(
             result.assembly.expect("compiles").contains(expected),
@@ -3535,7 +3871,14 @@ fn a_body_the_parser_recovered_inside_is_not_expanded() {
         "@a8\n@i8\ninline broken {\n    =\n}\ninline sound {\n    nop\n}\n",
     );
     let user = map.add_file("broken-user.k816", "@a8\n@i8\nmain {\n    broken\n}\n");
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let codes: Vec<&str> = result
         .diagnostics
         .iter()
@@ -3552,7 +3895,14 @@ fn a_body_the_parser_recovered_inside_is_not_expanded() {
         "@a8\n@i8\ninline broken {\n    =\n}\ninline sound {\n    nop\n}\n",
     );
     let user = map.add_file("sound-user.k816", "@a8\n@i8\nmain {\n    sound\n}\n");
-    let result = compile_to_ca65(&map, user, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        user,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![]);
     assert!(result.assembly.expect("compiles").contains("nop"));
 }
@@ -3577,7 +3927,14 @@ fn a_unit_level_name_inside_an_inline_is_refused() {
     ] {
         let mut map = SourceMap::new();
         let file = map.add_file("named-in-inline.k816", source);
-        let result = compile_to_ca65(&map, file, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            file,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         let codes: Vec<&str> = result
             .diagnostics
             .iter()
@@ -3602,7 +3959,14 @@ fn a_unit_level_name_inside_an_inline_is_refused() {
         "anon-in-inline.k816",
         "inline emit {\n    data {\n        7 8\n    }\n}\nmain @a8 @i8 {\n    emit\n    emit\n}\n",
     );
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     assert_eq!(result.diagnostics, vec![]);
     let assembly = result.assembly.expect("compiles");
     assert_eq!(
@@ -3634,10 +3998,18 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
         // Its own module's widths, on an axis the section does not state.
         ("@a8\n@i8\n", "a = 1", Ok("lda     #$01")),
         // A `const` of its own unit, read through a bracket.
-        ("@a8\n@i8\nconst NINE = 9\n", "a = [ NINE ]", Ok("lda     #$09")),
+        (
+            "@a8\n@i8\nconst NINE = 9\n",
+            "a = [ NINE ]",
+            Ok("lda     #$09"),
+        ),
         // A name a top-level evaluator block assigned, which is a `const` by
         // the time it is a definition.
-        ("@a8\n@i8\n[ NINE = 9 ]\n", "a = [ NINE ]", Ok("lda     #$09")),
+        (
+            "@a8\n@i8\n[ NINE = 9 ]\n",
+            "a = [ NINE ]",
+            Ok("lda     #$09"),
+        ),
         // A `var` of its own unit, which becomes this unit's import.
         (
             "@a8\n@i8\nvar slot = $40\n",
@@ -3667,7 +4039,14 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
             "carry-user.k816",
             "@a16\n@i16\nmain @a8 @i8 {\n    borrowed\n}\n",
         );
-        let result = compile_to_ca65(&map, user, &Options { optimize: false });
+        let result = compile_to_ca65(
+            &map,
+            user,
+            &Options {
+                optimize: false,
+                ..Default::default()
+            },
+        );
         let codes: Vec<&str> = result
             .diagnostics
             .iter()

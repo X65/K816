@@ -1,0 +1,46 @@
+row       k816-strict-k65
+config    atarixl.cfg
+compare   diagnostics
+strict    yes
+units     input.k65
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-E0160
+expect    input.k65 K816-W0161
+
+**The flag itself**, which is the one row in the manifest whose construct is
+not in any source: `--strict-k65` is a switch, so its fixture is a build run
+with it rather than a program containing it.  `strict yes` in the header is
+what turns it on, and it is the only fixture in the corpus that does.
+
+Nine errors and one warning, in source order.  The nine have no K65 spelling
+at all - `segment`, `var dp`, a field list, a field width, an allocation count,
+a `$` literal, two width annotations and a call contract - and the warning is
+the one construct here that compiles in *both* languages: `* 3` is three
+`NOP`s in K816 and three **cycles** in the original, which spends an odd one
+through `NOP $80` (`instr-nop-wait`, decision 11).
+
+The `* 3` opens its body rather than following the `a + #MASK`, and that is
+K65's own rule rather than a workaround: the language is newline-insensitive
+and `*` is also multiplication, so `a + #MASK` above a `* 3` is the single
+immediate `#(MASK * 3)` in both compilers.
+
+Without the flag this source compiles clean, which is the claim the flag rests
+on: strict mode reports and changes nothing.  That is checked over the whole
+corpus rather than here, by `strict_mode_only_adds_diagnostics` - every fixture
+compiled both ways, and the strict run's diagnostics with `K816-E0160` and
+`K816-W0161` removed have to equal the ordinary run's.
+
+What the flag reports is not decided in code.  It is the `Strict` column of
+`doc/k65-compat-manifest.md`, mirrored by `compat::MANIFEST`, and the two are
+compared row for row in both directions - a row marked in the file and missing
+from the table is a failure, and so is the reverse.  A second gate closes the
+loop from the other end: every row the column marks has to be reported by
+something in the corpus, because a row marked in a document and found by
+nothing is a promise with no witness.

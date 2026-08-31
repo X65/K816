@@ -243,6 +243,63 @@ fn the_unit_flag_carries_width_contracts_across_the_boundary() {
 }
 
 // ---------------------------------------------------------------------------
+// `--strict-k65` (sub-plan G, task G10b)
+// ---------------------------------------------------------------------------
+
+/// A program that is *ordinary* K816 and not K65 at all: `segment`, a width
+/// annotation, a `$` literal, and a call contract.
+const EXTENSIONS: &str = "segment CODE\n\nfunc go @a8 @i8 (a) -> a {\n\
+                          \x20   a + #$01\n}\n";
+
+/// A program the original K65 compiler would accept as written.
+const PORTABLE: &str = "const MASK = 0x0F\n\nmain {\n\
+                        \x20   a + MASK\n    return\n}\n";
+
+/// The flag is off by default, on with `--strict-k65`, and on for `emit-ir`
+/// too — one reporting mode across both commands, which is what "no separate
+/// compiler architecture" means in practice.
+#[test]
+fn strict_k65_is_opt_in_and_reaches_both_commands() {
+    let (quiet, success) = compile("cli-strict-off", EXTENSIONS, &[]);
+    assert!(success, "the extensions compile without the flag: {quiet}");
+    assert!(!quiet.contains("K816-E0160"), "{quiet}");
+
+    let (strict, success) = compile("cli-strict-on", EXTENSIONS, &["--strict-k65"]);
+    assert!(
+        !success,
+        "an extension under the flag is an error: {strict}"
+    );
+    assert!(strict.contains("K816-E0160"), "{strict}");
+    assert!(
+        strict.contains("`segment` is not in the original K65 language"),
+        "the message names the construct: {strict}"
+    );
+
+    // `emit-ir` takes it too. The IR still reaches stdout only when the unit
+    // compiles, so the check is on the diagnostic rather than on the dump.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-strict-ir");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let source = dir.join("input.k816");
+    std::fs::write(&source, EXTENSIONS).expect("write source");
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .args(["emit-ir", "--strict-k65"])
+        .arg(&source)
+        .output()
+        .expect("run k816");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(stderr.contains("K816-E0160"), "{stderr}");
+}
+
+/// A K65 program stays silent under the flag, which is the half that makes it
+/// useful: a mode that complains about everything tells nobody anything.
+#[test]
+fn strict_k65_says_nothing_about_a_k65_program() {
+    let (stderr, success) = compile("cli-strict-portable", PORTABLE, &["--strict-k65"]);
+    assert!(success, "{stderr}");
+    assert_eq!(stderr.trim(), "", "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
 // The explanation surface (sub-plan F, task F8)
 // ---------------------------------------------------------------------------
 

@@ -486,6 +486,7 @@ fn compile(source: &str, stage: Stage) -> (Vec<String>, Vec<String>) {
         file,
         &Options {
             optimize: stage == Stage::Optimized,
+            ..Default::default()
         },
     );
     let codes = result

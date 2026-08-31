@@ -48,7 +48,7 @@ use k816::{Options, compile_to_ca65};
 fn compile(source: &str) -> (Vec<k816::diagnostic::Diagnostic>, String) {
     let mut map = SourceMap::new();
     let file = map.add_file("entry.k816", source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     (result.diagnostics, result.assembly.unwrap_or_default())
 }
 
@@ -159,7 +159,7 @@ fn the_refusal_points_at_the_annotation_and_not_at_the_body() {
     let source = "func main @a16 {\n    nop\n}\n";
     let mut map = SourceMap::new();
     let file = map.add_file("entry.k816", source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false });
+    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
     let refusal = result
         .diagnostics
         .iter()

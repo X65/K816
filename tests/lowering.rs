@@ -805,7 +805,7 @@ fn an_invisible_callee_is_recorded_as_assumed_in_both_surfaces() {
 
     let mut map = SourceMap::new();
     let file = map.add_file("assumed.k816", text);
-    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false })
+    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false, ..Default::default() })
         .assembly
         .expect("compiles");
     assert!(

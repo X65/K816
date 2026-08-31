@@ -105,6 +105,40 @@ it.
 
 I would also provide `--strict-k65`, but not make it a separate compiler architecture. Normal K816 mode accepts the whole superset; strict mode merely rejects K816 extensions so portable K65 programs can be checked.
 
+## `--strict-k65`, and the policy behind it
+
+The flag exists, on `compile` and on `emit-ir` alike, and it is a reporting
+mode and nothing else: no width, no lowering and no byte depends on it. What it
+adds is `K816-E0160` at each construct the original language does not have and
+`K816-W0161` at each construct that compiles in both and means something
+different here. A K65 program is silent under it.
+
+**The rule it enforces is the one this document opens with, and it is worth
+stating as policy rather than as a switch.** K816 is backwards compatible with
+K65 wherever compatibility is *cheap for K816*; where it is not, K816
+recognizes the K65 syntax as a named node and refuses it with a diagnostic of
+its own — never a generic parse error, and never a K65 spelling quietly given a
+K816 meaning. Three consequences follow, and each is checkable rather than
+aspirational:
+
+* **A construct K816 refuses needs no flag.** The compiler already said so, by
+  name, with what to write instead. That is why fifteen of the eighteen
+  intentionally-changed rules of the original grammar have nothing for
+  `--strict-k65` to add, and why the flag's warning set is two rows rather than
+  eighteen.
+* **A construct K816 *accepts* and reads differently is the flag's whole
+  subject**, and there is one of it in the original's grammar: `* N` and `%`,
+  the cycle wait, which is decision 11's recorded exception because the
+  original spends an odd cycle on an encoding the 65816 gives a different, real
+  meaning. Reproducing it is not expensive, it is impossible.
+* **What counts as an extension is not the flag's opinion.** It is the `Strict`
+  column of [`k65-compat-manifest.md`](k65-compat-manifest.md), mirrored in
+  `compat::MANIFEST`; `tests/compat.rs` reads the file and checks the two agree
+  row for row in both directions, and checks from the other end that every row
+  the column marks is reported by something in the corpus. A row marked in the
+  document and found by nothing is a promise with no witness, and that is a
+  test failure here rather than something a reader has to catch.
+
 Before the C rewrite progresses much further, freeze a reference snapshot of the [original K65 repository](https://github.com/Krzysiek-K/k65) and build a compatibility corpus from:
 
 * Its tests and examples.

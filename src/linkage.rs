@@ -39,6 +39,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::abi;
 use crate::ast::{
     AstFile, Block, DataEntry, DataEntryKind, Item, ItemKind, Statement, StatementKind,
     WidthAnnotation, WidthAnnotationKind,
@@ -143,6 +144,16 @@ pub struct Linkage {
     /// contract to compute and are pinned to the language rule.
     recursive: BTreeSet<String>,
     duplicates: Vec<Diagnostic>,
+    /// The state the machine is in when this build's entry point runs.
+    ///
+    /// It lives here because two passes need it and they must not be able to
+    /// disagree: the workspace exit classification below walks every
+    /// function's body from it, and so does `semantic::analyze_unit`, which
+    /// already takes a `&Linkage` as its "everything outside this unit"
+    /// parameter. Handing each of them an environment separately is the shape
+    /// `memory/entry-abi-assumption-conflict.md` records — two places
+    /// documenting one assumption, neither able to detect the other.
+    environment: abi::EntryEnvironment,
 }
 
 impl Linkage {
@@ -154,11 +165,14 @@ impl Linkage {
     /// pass analyzes each unit alone and keeps only what it *defines*; the
     /// second re-analyzes each unit with those definitions visible and keeps
     /// what it *uses*.
-    pub fn resolve(map: &SourceMap) -> Self {
-        let mut linkage = Self::default();
+    pub fn resolve(map: &SourceMap, environment: abi::EntryEnvironment) -> Self {
+        let mut linkage = Self {
+            environment,
+            ..Self::default()
+        };
         for source in map.files() {
             let parse = parser::parse_source(source, None);
-            let (model, _) = semantic::analyze_named(&parse.file, source.name());
+            let (model, _) = semantic::analyze_named(&parse.file, source.name(), environment);
             linkage.units.insert(source.id(), source.name().to_owned());
             linkage.collect_definitions(source.id(), &model);
             // From the *first* pass, which analyzes each unit alone: a body
@@ -294,7 +308,7 @@ impl Linkage {
                 let callees = local_contracts(model, &contracts);
                 let (analysis, _) = width::analyze_function(
                     body,
-                    crate::abi::entry_state(info.entry, info.contract),
+                    self.environment.body_state(info.entry, info.contract),
                     &width::Context {
                         symbols: &model.symbols,
                         eval: &model.eval,
@@ -576,6 +590,11 @@ impl Linkage {
 
     /// The cross-unit duplicate-definition errors, which are reported before
     /// anything is emitted.
+    /// The entry environment this workspace was resolved for.
+    pub fn environment(&self) -> abi::EntryEnvironment {
+        self.environment
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.duplicates
     }

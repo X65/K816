@@ -36,25 +36,52 @@
 //! choosing an ABI that belongs to the startup code and to whatever the
 //! interrupt interrupted.
 //!
-//! The environment is hardcoded in `src/abi.rs` — native mode, `@a8`, `@i8`,
-//! from `examples/fullstack/startup.asm`. Selecting a different one is
-//! sub-plan J's; the check is here now, against the one value there is.
+//! The *default* environment is `examples/fullstack/startup.asm`'s — native
+//! mode, `@a8`, `@i8` — and most of this file checks against it, because that
+//! is what a build that says nothing gets. The value itself is
+//! [`Options::entry`], which `--entry` states, so a build entered by
+//! something other than that stub can say so and be checked against what it
+//! said.
 
+use k816::abi::EntryEnvironment;
 use k816::diagnostic::DiagnosticCode;
+use k816::isa::RegisterWidth;
 use k816::source::{SourceMap, Span};
 use k816::{Options, compile_to_ca65};
 
-/// Compiles `source` and returns its diagnostics and its assembly.
+/// Compiles `source` for the default environment.
 fn compile(source: &str) -> (Vec<k816::diagnostic::Diagnostic>, String) {
+    compile_in(EntryEnvironment::default(), source)
+}
+
+/// Compiles `source` for `environment` and returns its diagnostics and its
+/// assembly.
+fn compile_in(
+    environment: EntryEnvironment,
+    source: &str,
+) -> (Vec<k816::diagnostic::Diagnostic>, String) {
     let mut map = SourceMap::new();
     let file = map.add_file("entry.k816", source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            entry: environment,
+            ..Default::default()
+        },
+    );
     (result.diagnostics, result.assembly.unwrap_or_default())
 }
 
-/// The error codes `source` reports.
+/// The error codes `source` reports for the default environment.
 fn errors(source: &str) -> Vec<String> {
-    compile(source)
+    errors_in(EntryEnvironment::default(), source)
+}
+
+/// The error codes `source` reports for `environment`.
+fn errors_in(environment: EntryEnvironment, source: &str) -> Vec<String> {
+    compile_in(environment, source)
         .0
         .iter()
         .filter(|diagnostic| diagnostic.is_error())
@@ -159,7 +186,14 @@ fn the_refusal_points_at_the_annotation_and_not_at_the_body() {
     let source = "func main @a16 {\n    nop\n}\n";
     let mut map = SourceMap::new();
     let file = map.add_file("entry.k816", source);
-    let result = compile_to_ca65(&map, file, &Options { optimize: false, ..Default::default() });
+    let result = compile_to_ca65(
+        &map,
+        file,
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
     let refusal = result
         .diagnostics
         .iter()
@@ -388,4 +422,66 @@ fn the_fullstack_example_states_the_environment_it_runs_in() {
         source.contains("func main @a8 {"),
         "the entry contract restates the ABI rather than asking to change it"
     );
+}
+
+/// The environment is a value the build states, and stating a different one
+/// moves the check with it.
+///
+/// This is the whole of what J was after and could not do
+/// (`plans/09-entry-abi.md` decision 1): `abi::environment()` used to be a
+/// function returning a constant, so every one of the assertions above was
+/// really an assertion about that constant. With `Options::entry` carrying
+/// it, the *same* source is a true claim under one environment and `E0143`
+/// under another, which is the only way to tell a check that reads the
+/// environment from a check that repeats it.
+#[test]
+fn the_check_follows_the_environment_the_build_states() {
+    let wide = EntryEnvironment {
+        a: RegisterWidth::W16,
+        ..EntryEnvironment::default()
+    };
+    let source = "func main @a8 {\n    a = #$01\n    return\n}\n";
+
+    // True under the startup stub's environment, false under one that hands
+    // `main` a sixteen-bit accumulator.
+    assert_eq!(errors(source), Vec::<String>::new());
+    assert_eq!(errors_in(wide, source), ["K816-E0143"]);
+
+    // And the reverse, so that neither answer is the one the compiler always
+    // gives.
+    let wide_source = "func main @a16 {\n    a = #$0102\n    return\n}\n";
+    assert_eq!(errors(wide_source), ["K816-E0143"]);
+    assert_eq!(errors_in(wide, wide_source), Vec::<String>::new());
+}
+
+/// An *unannotated* body takes its widths from the stated environment too,
+/// not just the annotated one.
+///
+/// The distinction matters because the mismatch check reads the environment
+/// through `mismatches` and the width walk reads it through `body_state`;
+/// a build that threaded the value into one and not the other would pass the
+/// test above and still size every immediate against the old constant.
+#[test]
+fn an_unannotated_entry_point_sizes_its_immediates_against_the_environment() {
+    let wide = EntryEnvironment {
+        a: RegisterWidth::W16,
+        ..EntryEnvironment::default()
+    };
+    let source = "func main {\n    a = #$0102\n    return\n}\n";
+
+    // Eight-bit environment: the immediate does not fit the accumulator.
+    assert_eq!(errors(source), ["K816-E0103"]);
+
+    // Sixteen-bit environment: the same immediate is exactly right, and the
+    // assembly claims the width the environment provided rather than one
+    // K816 established.
+    let (diagnostics, assembly) = compile_in(wide, source);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(k816::diagnostic::Diagnostic::is_error),
+        "{diagnostics:?}"
+    );
+    assert!(assembly.contains(".a16"), "{assembly}");
+    assert_eq!(entry_setup(&assembly), Vec::<String>::new());
 }

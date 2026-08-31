@@ -33,6 +33,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use common::{run_ok, tool, work_dir};
+use k816::abi::EntryEnvironment;
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
 
@@ -809,7 +810,7 @@ fn an_exported_contract_matches_the_code_the_unit_emits() {
         "contract-unit-b.k816",
         include_str!("golden/contract-unit-b.k816"),
     );
-    let linkage = Linkage::resolve(&map);
+    let linkage = Linkage::resolve(&map, EntryEnvironment::default());
 
     // `wrapper` exports the exit it inherits from `foreign`, not the
     // `Preserve` a single-unit summary would produce.
@@ -3465,7 +3466,7 @@ fn a_section_can_be_read_from_another_unit() {
         "shared-reader.k816",
         "data probe {\n  [ index(shared, 1) ]\n  [ size(shared) ]\n}\n",
     );
-    let linkage = k816::linkage::Linkage::resolve(&map);
+    let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
     let result = compile_to_ca65(
         &map,
         reader,

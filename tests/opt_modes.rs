@@ -35,6 +35,7 @@
 //! the failures are silent: the assembly still assembles, the bytes are just
 //! wrong from the change onward.
 
+use k816::abi::EntryEnvironment;
 use k816::isa::Mnemonic;
 use k816::linkage::Linkage;
 use k816::op::{AxisState, KOp, KOpKind, KProgram, Operand, Origin, Reason, RegisterWidth};
@@ -80,7 +81,7 @@ fn optimized_workspace(units: &[(&str, &str)]) -> (SemanticModel, KProgram, Opti
         .iter()
         .map(|(name, text)| map.add_file(*name, *text))
         .collect();
-    let linkage = Linkage::resolve(&map);
+    let linkage = Linkage::resolve(&map, EntryEnvironment::default());
     assert_eq!(linkage.diagnostics(), &[]);
     let parse = parse_source(map.file(ids[0]), None);
     let (model, diagnostics) = analyze_unit(&parse.file, units[0].0, &linkage);

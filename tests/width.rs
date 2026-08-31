@@ -29,6 +29,7 @@
 //! early still assembles, still links, and produces a program whose bytes
 //! are shifted from the one that was written.
 
+use k816::abi::EntryEnvironment;
 use k816::ast::{AstFile, ItemKind, StatementKind, StmtId};
 use k816::diagnostic::{Diagnostic, DiagnosticCode};
 use k816::linkage::Linkage;
@@ -1399,7 +1400,7 @@ fn a_cross_unit_recursion_cycle_is_pinned_and_reported() {
         "right.k816",
         "func right @a8 {\n    rep #$20\n    call left\n}\n",
     );
-    let linkage = k816::linkage::Linkage::resolve(&map);
+    let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
     assert!(linkage.is_recursive("left"));
     assert!(linkage.is_recursive("right"));
     assert_eq!(
@@ -1426,7 +1427,7 @@ fn contract_unit_fixtures_export_a_derived_cross_unit_exit() {
         "contract-unit-b.k816",
         fixture("contract-unit-b.k816").as_str(),
     );
-    let linkage = k816::linkage::Linkage::resolve(&map);
+    let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
     assert_eq!(
         linkage.contract("wrapper").expect("classified").exit.a,
         AxisExit::Fixed(RegisterWidth::W8),
@@ -1487,7 +1488,7 @@ fn an_rti_return_preserves_the_interrupted_widths() {
 fn observed(text: &str, name: &str) -> ((bool, bool), (bool, bool)) {
     let mut map = SourceMap::new();
     let id = map.add_file("width.k816", text);
-    let linkage = Linkage::resolve(&map);
+    let linkage = Linkage::resolve(&map, EntryEnvironment::default());
     let parse = parse_source(map.file(id), None);
     let (model, diagnostics) = analyze_unit(&parse.file, "width.k816", &linkage);
     assert_eq!(error_codes(&diagnostics), Vec::<&str>::new());

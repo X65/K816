@@ -72,6 +72,15 @@ pub struct Options {
     /// `doc/k65-compat-manifest.md`'s answer, mirrored by [`compat::MANIFEST`]
     /// (`plans/06-compatibility.md` decision 20).
     pub strict_k65: bool,
+    /// The state the machine is in when `main` gets control (`--entry`).
+    ///
+    /// Not a preference: it is what the build *states* about its runtime, and
+    /// K816 checks a `main @a8` annotation against it rather than emitting
+    /// anything to establish it (`abi.rs`, `plans/09-entry-abi.md` decision
+    /// 2). Its default is the environment `examples/fullstack/startup.asm`
+    /// hands over — native mode, both axes 8-bit — so a build that says
+    /// nothing gets what the repository's own startup code does.
+    pub entry: abi::EntryEnvironment,
 }
 
 impl Default for Options {
@@ -79,6 +88,7 @@ impl Default for Options {
         Self {
             optimize: true,
             strict_k65: false,
+            entry: abi::EntryEnvironment::default(),
         }
     }
 }
@@ -114,7 +124,7 @@ pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<(FileId, 
 pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
     // Every unit sees every other unit's definitions, which is how a name
     // one file defines resolves in another without any import syntax.
-    let linkage = linkage::Linkage::resolve(map);
+    let linkage = linkage::Linkage::resolve(map, options.entry);
     let mut diagnostics = linkage.diagnostics().to_vec();
     for source in map.files() {
         let parse = parser::parse_source(source, None);
@@ -135,7 +145,7 @@ pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
 /// the assembly together with all diagnostics. Errors suppress emission but
 /// never stop diagnostic collection.
 pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> CompileResult {
-    let linkage = linkage::Linkage::resolve(map);
+    let linkage = linkage::Linkage::resolve(map, options.entry);
     let source = map.file(file);
     let parse = parser::parse_source(source, None);
     let (model, semantic_diagnostics) =
@@ -211,7 +221,7 @@ pub struct IrResult {
 /// Dumps the lowered [`op::KProgram`] of one file as readable IR, optimized
 /// when `options.optimize` is set (`emit-ir --after-opt`).
 pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
-    let linkage = linkage::Linkage::resolve(map);
+    let linkage = linkage::Linkage::resolve(map, options.entry);
     let source = map.file(file);
     let parse = parser::parse_source(source, None);
     let (model, semantic_diagnostics) =

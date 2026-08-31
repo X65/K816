@@ -540,11 +540,18 @@ impl ModeState {
     /// The entry state a contract establishes: a declared axis is known, an
     /// undeclared one is unknown. Never `Bottom` — the entry block is reached
     /// by definition.
-    pub fn from_contract(contract: WidthContract) -> Self {
+    ///
+    /// The emulation state is a parameter because a contract cannot carry
+    /// one — the language has no syntax for emulation mode — so it comes from
+    /// the build's entry environment instead of from the annotation
+    /// ([`crate::abi::EntryEnvironment::body_state`]). It used to be
+    /// hardcoded `Native` here, which was the same claim made in a place
+    /// nothing could tell it from the join identity.
+    pub fn from_contract(contract: WidthContract, e: EmulationState) -> Self {
         Self {
             a: contract.a.map_or(AxisState::Unknown, AxisState::Known),
             i: contract.i.map_or(AxisState::Unknown, AxisState::Known),
-            e: EmulationState::Native,
+            e,
         }
     }
 
@@ -1029,10 +1036,13 @@ mod tests {
     fn an_unreached_edge_contributes_nothing_to_a_merge() {
         // Joining a block no path has reached must not pull a reached one to
         // unknown — that is the whole reason `Bottom` exists.
-        let reached = ModeState::from_contract(super::WidthContract {
-            a: Some(RegisterWidth::W8),
-            i: None,
-        });
+        let reached = ModeState::from_contract(
+            super::WidthContract {
+                a: Some(RegisterWidth::W8),
+                i: None,
+            },
+            EmulationState::Native,
+        );
         assert_eq!(reached.join(ModeState::bottom()), reached);
         assert_eq!(ModeState::bottom().join(reached), reached);
     }
@@ -1050,10 +1060,13 @@ mod tests {
     #[test]
     fn an_unknown_exit_preserves_the_callers_state() {
         // The documented `Unknown ⇒ Preserve` rule, at the type level.
-        let before = ModeState::from_contract(super::WidthContract {
-            a: Some(RegisterWidth::W16),
-            i: Some(RegisterWidth::W8),
-        });
+        let before = ModeState::from_contract(
+            super::WidthContract {
+                a: Some(RegisterWidth::W16),
+                i: Some(RegisterWidth::W8),
+            },
+            EmulationState::Native,
+        );
         assert_eq!(ExitContract::default().apply(before), before);
         assert_eq!(ExitContract::preserving().apply(before), before);
         let fixes_a = ExitContract {

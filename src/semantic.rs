@@ -335,28 +335,38 @@ impl WidthNeeds {
 /// Analyzes `file`, returning the semantic model and all semantic
 /// diagnostics. Runs to completion even on errors so tools see everything.
 pub fn analyze_file(file: &AstFile) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(file, "", None)
+    analyze(file, "", abi::EntryEnvironment::default(), None)
 }
 
 /// Analyzes `file`, naming the unit so `address` placements can derive
 /// stable segment names from it.
-pub fn analyze_named(file: &AstFile, unit: &str) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(file, unit, None)
+pub fn analyze_named(
+    file: &AstFile,
+    unit: &str,
+    environment: abi::EntryEnvironment,
+) -> (SemanticModel, Vec<Diagnostic>) {
+    analyze(file, unit, environment, None)
 }
 
 /// Analyzes `file` as one unit of a workspace, so that names other units
 /// define resolve instead of reporting themselves as undeclared.
+///
+/// The entry environment comes from the `Linkage` rather than from a
+/// parameter of its own: the workspace's exit classification already walked
+/// every body from one, and a second one supplied here could disagree with it
+/// silently.
 pub fn analyze_unit(
     file: &AstFile,
     unit: &str,
     linkage: &Linkage,
 ) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(file, unit, Some(linkage))
+    analyze(file, unit, linkage.environment(), Some(linkage))
 }
 
 fn analyze(
     file: &AstFile,
     unit_name: &str,
+    environment: abi::EntryEnvironment,
     linkage: Option<&Linkage>,
 ) -> (SemanticModel, Vec<Diagnostic>) {
     // The preprocessor runs first and nothing below it ever sees a
@@ -412,6 +422,7 @@ fn analyze(
         current_function: None,
         loops: 0,
         unit: unit_name.to_owned(),
+        environment,
         anonymous_blocks: AnonymousBlocks::default(),
         defaults: WidthContract::default(),
         borrowed_from: borrowed_sections
@@ -548,6 +559,10 @@ struct Analysis {
     loops: usize,
     /// The unit's name, for the synthetic segment names of `address`.
     unit: String,
+    /// The state the machine is in when this build's entry point runs, which
+    /// is what every body's width walk starts from and what an annotation on
+    /// `main` is checked against (`abi.rs`).
+    environment: abi::EntryEnvironment,
     /// Anonymous data blocks seen so far, per site.
     anonymous_blocks: AnonymousBlocks,
     /// The module's default widths, merged into every function that does not
@@ -1223,7 +1238,7 @@ impl Analysis {
     /// Restating what the environment provides is fine: `func main @a8` is a
     /// true claim, and a true claim costs nothing to allow.
     fn check_entry_abi(&mut self, func: &Function, entry: abi::EntryKind, contract: WidthContract) {
-        let environment = abi::environment();
+        let environment = self.environment;
         for axis in environment.mismatches(contract) {
             // The annotation is the thing the author can change, so it is
             // what the diagnostic points at. A width inherited from a module
@@ -1637,7 +1652,7 @@ impl Analysis {
             };
             let (analysis, _) = width::analyze_function(
                 &func.body,
-                abi::entry_state(info.entry, info.contract),
+                self.environment.body_state(info.entry, info.contract),
                 &width::Context {
                     symbols: &self.model.symbols,
                     eval: &self.model.eval,
@@ -1727,7 +1742,7 @@ impl Analysis {
                 };
                 let (analysis, diagnostics) = width::analyze_function(
                     &func.body,
-                    abi::entry_state(info.entry, info.contract),
+                    self.environment.body_state(info.entry, info.contract),
                     &width::Context {
                         symbols: &self.model.symbols,
                         eval: &self.model.eval,
@@ -2067,7 +2082,7 @@ impl Analysis {
             let id: DataCodeId = (item, ordinal);
             let (analysis, diagnostics) = width::analyze_function(
                 body,
-                ModeState::unknown(),
+                self.environment.unknown_state(),
                 &width::Context {
                     symbols: &self.model.symbols,
                     eval: &self.model.eval,

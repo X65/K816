@@ -52,6 +52,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use common::{run_ok, tool, work_dir};
+use k816::abi::EntryEnvironment;
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
 
@@ -208,6 +209,7 @@ fn compile_with(
             &Options {
                 optimize: true,
                 strict_k65,
+                ..Options::default()
             },
         );
         codes.extend(
@@ -1897,7 +1899,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
         for id in ids {
             let source = map.file(id);
             let parse = k816::parser::parse_source(source, None);
-            let linkage = k816::linkage::Linkage::resolve(&map);
+            let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
             let (model, _) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
             for (row, _) in k816::compat::classify(model.program(&parse.file), source) {
                 found.entry(row).or_default().insert(name.clone());

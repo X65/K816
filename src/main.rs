@@ -123,7 +123,7 @@ fn parse_command_line(
     let mut explain = false;
     let mut options = Options {
         optimize: !opt_flag_enables,
-        strict_k65: false,
+        ..Options::default()
     };
     let mut message_format = render::MessageFormat::default();
 

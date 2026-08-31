@@ -33,19 +33,20 @@
 //!
 //! # What is frozen here, and what is not
 //!
-//! The *value* is frozen: [`EntryEnvironment::STARTUP_STUB`], taken from the
-//! repository rather than from the hardware. `examples/fullstack/startup.asm`
-//! does `sei; clc; xce; jsr main`, so `main` is called by a stub that has
-//! already left emulation mode and has widened neither axis. The entry ABI is
-//! a contract between the startup code and the compiler, so the ABI is what
-//! the startup code does — not what the CPU does at reset.
+//! The *default* is frozen: [`EntryEnvironment::STARTUP_STUB`], taken from
+//! the repository rather than from the hardware.
+//! `examples/fullstack/startup.asm` does `sei; clc; xce; jsr main`, so `main`
+//! is called by a stub that has already left emulation mode and has widened
+//! neither axis. The entry ABI is a contract between the startup code and the
+//! compiler, so the ABI is what the startup code does — not what the CPU does
+//! at reset.
 //!
-//! What is *not* here is what makes the value a **choice**: no `--entry`, no
-//! target names, no configuration file. Sub-plan J (`plans/09-entry-abi.md`)
-//! owns those, and until it lands [`environment`] answers with the one
-//! environment K816 knows. The seam is deliberately this narrow: committing
-//! to a way of *supplying* an ABI before the configuration it has to agree
-//! with exists is how two ways of saying one thing end up disagreeing.
+//! The *value* is no longer frozen: [`crate::Options::entry`] carries it and
+//! `--entry` states it, so a build that is not entered by that stub can say
+//! so (`plans/06-compatibility.md` decision 21). What is still absent is
+//! target *names* — no `--target snes`, no configuration file — because a
+//! name is a mapping onto these axes and the configuration it has to agree
+//! with does not exist yet (sub-plan I). The axes landed; the names did not.
 //!
 //! # Which sections the ABI answers for
 //!
@@ -82,6 +83,18 @@ pub struct EntryEnvironment {
     pub a: RegisterWidth,
     /// The index-register width the entry point starts with.
     pub i: RegisterWidth,
+}
+
+impl Default for EntryEnvironment {
+    /// [`Self::STARTUP_STUB`]: what a build gets when it states nothing.
+    ///
+    /// A default rather than a hardcode, which is the whole of the difference
+    /// J was after: the compiler no longer *decides* what `main` is entered
+    /// with, it is told, and this is what it is told when the command line is
+    /// silent.
+    fn default() -> Self {
+        Self::STARTUP_STUB
+    }
 }
 
 impl EntryEnvironment {
@@ -148,15 +161,43 @@ impl EntryEnvironment {
             Axis::Index => self.i,
         }
     }
-}
 
-/// The environment this build targets.
-///
-/// Hardcoded until sub-plan J gives the build a say. Every pass that needs
-/// the entry state calls this, so J replaces one function body rather than
-/// hunting for the passes that each decided for themselves.
-pub fn environment() -> EntryEnvironment {
-    EntryEnvironment::STARTUP_STUB
+    /// The width state a function body starts in.
+    ///
+    /// The single answer to "what holds when control arrives here", for both
+    /// of the passes that ask: the width solver, which walks forward from it,
+    /// and lowering, which claims it to the assembler. An ordinary function's
+    /// answer is its contract — a caller that does not satisfy it is bridged
+    /// at the call site — and a section the ABI answers for takes the
+    /// environment's, since what enters it cannot be bridged.
+    pub fn body_state(self, entry: Option<EntryKind>, contract: WidthContract) -> ModeState {
+        match entry {
+            Some(_) => self.entry_state(contract),
+            None => ModeState::from_contract(contract, self.callee_emulation()),
+        }
+    }
+
+    /// Nothing known but the emulation state, for a body K816 cannot see the
+    /// caller of at all — a `code { }` block inside a data section.
+    pub fn unknown_state(self) -> ModeState {
+        ModeState {
+            a: AxisState::Unknown,
+            i: AxisState::Unknown,
+            e: self.callee_emulation(),
+        }
+    }
+
+    /// The emulation state a body that is *called* starts in.
+    ///
+    /// The environment's, which is the assumption `op.rs::EmulationState` has
+    /// always stated: no contract can carry emulation mode — the language has
+    /// no syntax for it — so a callee's only ground for believing anything is
+    /// a whole-program guarantee. It is unchecked: a caller that runs `xce`
+    /// before the call leaves the program somewhere else and nothing
+    /// propagates that across the call (`plans/09-entry-abi.md` probe 2).
+    fn callee_emulation(self) -> EmulationState {
+        self.e
+    }
 }
 
 /// A section whose caller is not a call site, and so whose widths are the
@@ -195,22 +236,6 @@ impl EntryKind {
     }
 }
 
-/// The width state a function body starts in.
-///
-/// The single answer to "what holds when control arrives here", for both of
-/// the passes that ask: the width solver, which walks forward from it, and
-/// lowering, which claims it to the assembler. An ordinary function's answer
-/// is its contract — a caller that does not satisfy it is bridged at the call
-/// site — and a section the ABI answers for takes the environment's, since
-/// what enters it cannot be bridged.
-pub fn entry_state(entry: Option<EntryKind>, contract: WidthContract) -> ModeState {
-    if entry.is_some() {
-        environment().entry_state(contract)
-    } else {
-        ModeState::from_contract(contract)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,12 +246,12 @@ mod tests {
 
     #[test]
     fn the_environment_answers_the_axes_an_entry_point_left_unstated() {
-        let environment = environment();
+        let environment = EntryEnvironment::default();
         assert_eq!(environment, EntryEnvironment::STARTUP_STUB);
 
         // The case that makes a legacy `main` compile at all: no annotation,
         // and the widths are the environment's rather than unknown.
-        let unannotated = entry_state(Some(EntryKind::Main), contract(None, None));
+        let unannotated = environment.body_state(Some(EntryKind::Main), contract(None, None));
         assert_eq!(unannotated, environment.state());
         assert_eq!(unannotated.a, AxisState::Known(RegisterWidth::W8));
         assert_eq!(unannotated.i, AxisState::Known(RegisterWidth::W8));
@@ -234,7 +259,7 @@ mod tests {
         // A mismatched annotation is refused before this is asked, and the
         // state it produces is what the author believed — so that the body's
         // own diagnostics are about the body rather than about the ABI.
-        let refused = entry_state(
+        let refused = environment.body_state(
             Some(EntryKind::Interrupt),
             contract(Some(RegisterWidth::W16), None),
         );
@@ -247,18 +272,19 @@ mod tests {
         // Its caller can be bridged, so an unstated axis is unknown and stays
         // that way — taking the entry ABI here would be inventing a width no
         // caller promised.
-        let unannotated = entry_state(None, contract(None, None));
+        let environment = EntryEnvironment::default();
+        let unannotated = environment.body_state(None, contract(None, None));
         assert_eq!(unannotated.a, AxisState::Unknown);
         assert_eq!(unannotated.i, AxisState::Unknown);
 
-        let annotated = entry_state(None, contract(Some(RegisterWidth::W16), None));
+        let annotated = environment.body_state(None, contract(Some(RegisterWidth::W16), None));
         assert_eq!(annotated.a, AxisState::Known(RegisterWidth::W16));
         assert_eq!(annotated.i, AxisState::Unknown);
     }
 
     #[test]
     fn only_a_contradicting_annotation_is_a_mismatch() {
-        let environment = environment();
+        let environment = EntryEnvironment::default();
         // Saying nothing asks nothing.
         assert_eq!(environment.mismatches(contract(None, None)), []);
         // Restating what the environment provides is a true claim.
@@ -290,7 +316,7 @@ mod tests {
     /// entry contract states the environment and nothing else.
     #[test]
     fn a_legal_entry_contract_is_the_environment_itself() {
-        let environment = environment();
+        let environment = EntryEnvironment::default();
         for annotation in [
             contract(None, None),
             contract(Some(RegisterWidth::W8), None),
@@ -300,7 +326,7 @@ mod tests {
             assert_eq!(environment.mismatches(annotation), [], "for {annotation:?}");
             for kind in [EntryKind::Main, EntryKind::Interrupt] {
                 assert_eq!(
-                    entry_state(Some(kind), annotation),
+                    environment.body_state(Some(kind), annotation),
                     environment.state(),
                     "{kind:?} for {annotation:?}"
                 );

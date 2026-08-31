@@ -66,9 +66,43 @@
 //! would be K816 choosing an ABI that belongs to the startup code and to
 //! whatever the interrupt interrupted.
 
+use crate::diagnostic::DiagnosticCode;
 use crate::isa::RegisterWidth;
 use crate::op::{AxisState, EmulationState, ModeState, WidthContract};
 use crate::width::Axis;
+
+/// Why a `--entry` spelling was refused.
+///
+/// Not a [`crate::diagnostic::Diagnostic`]: that anchors a message to a
+/// span in a file, and a command line has neither. It carries the code
+/// anyway — the pairing of code and wording belongs in the library, beside
+/// the rule being enforced, rather than in the CLI that prints it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntrySpelling {
+    message: String,
+}
+
+impl EntrySpelling {
+    /// The code every `--entry` refusal carries.
+    pub const CODE: DiagnosticCode = DiagnosticCode::ENTRY_SPELLING;
+
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// What went wrong, without the code.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for EntrySpelling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 
 /// The machine state an entry point is handed.
 ///
@@ -111,6 +145,144 @@ impl EntryEnvironment {
         a: RegisterWidth::W8,
         i: RegisterWidth::W8,
     };
+
+    /// Reads a `--entry` value: `native,a8,i8`, and every prefix and subset of
+    /// it (`plans/06-compatibility.md` decision 21).
+    ///
+    /// Three axes, each optional, written in one order — mode, then
+    /// accumulator, then index. An axis left out keeps the default's value,
+    /// so `--entry a16` states one thing and inherits the rest, and the order
+    /// is fixed so that a reader of a build script does not have to work out
+    /// which spelling of the same environment they are looking at.
+    ///
+    /// `emulation` is not just a third value of the first axis: the machine
+    /// it describes forces M and X to one (`doc/w65c816s.md`), so both
+    /// registers are eight bits wide and there is nothing to choose. Writing
+    /// `emulation,a16` therefore describes no machine at all, and it is
+    /// refused rather than silently corrected — a build that believes it
+    /// asked for sixteen bits and got eight would find out in the bytes.
+    pub fn parse(text: &str) -> Result<Self, EntrySpelling> {
+        /// Which axis a field belongs to, which is also its position.
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Slot {
+            Mode,
+            Accumulator,
+            Index,
+        }
+
+        impl Slot {
+            fn name(self) -> &'static str {
+                match self {
+                    Self::Mode => "mode",
+                    Self::Accumulator => "accumulator",
+                    Self::Index => "index-register",
+                }
+            }
+        }
+
+        // Written but empty: a shell that dropped the value, most likely, and
+        // not a request for the default — which is what saying nothing at all
+        // already means.
+        if text.trim().is_empty() {
+            return Err(EntrySpelling::new(
+                "no axis named; write `native,a8,i8` or any part of it, or leave the flag \
+                 off for the default",
+            ));
+        }
+
+        let mut e: Option<EmulationState> = None;
+        let mut a: Option<(RegisterWidth, &str)> = None;
+        let mut i: Option<(RegisterWidth, &str)> = None;
+        let mut filled: Option<Slot> = None;
+
+        for field in text.split(',') {
+            let field = field.trim();
+            let slot = match field {
+                "native" => {
+                    e = Some(EmulationState::Native);
+                    Slot::Mode
+                }
+                "emulation" => {
+                    e = Some(EmulationState::Emulation);
+                    Slot::Mode
+                }
+                "a8" => {
+                    a = Some((RegisterWidth::W8, field));
+                    Slot::Accumulator
+                }
+                "a16" => {
+                    a = Some((RegisterWidth::W16, field));
+                    Slot::Accumulator
+                }
+                "i8" => {
+                    i = Some((RegisterWidth::W8, field));
+                    Slot::Index
+                }
+                "i16" => {
+                    i = Some((RegisterWidth::W16, field));
+                    Slot::Index
+                }
+                "" => {
+                    return Err(EntrySpelling::new(
+                        "an axis is missing between the commas; write `native,a8,i8` or any \
+                         part of it",
+                    ));
+                }
+                other => {
+                    return Err(EntrySpelling::new(format!(
+                        "unknown axis `{other}` (`native` or `emulation`, `a8` or `a16`, `i8` \
+                         or `i16`)"
+                    )));
+                }
+            };
+            match filled {
+                Some(previous) if previous == slot => {
+                    return Err(EntrySpelling::new(format!(
+                        "`{field}` states the {} axis twice",
+                        slot.name()
+                    )));
+                }
+                Some(previous) if previous > slot => {
+                    return Err(EntrySpelling::new(format!(
+                        "`{field}` comes after the {} axis; the order is `native`/`emulation`, \
+                         `a8`/`a16`, `i8`/`i16`",
+                        previous.name()
+                    )));
+                }
+                _ => filled = Some(slot),
+            }
+        }
+
+        // `emulation` is the one axis that decides another, so a claim on the
+        // widths is checked against it rather than overwritten by it.
+        if e == Some(EmulationState::Emulation) {
+            for (stated, register) in [(a, "accumulator"), (i, "index register")] {
+                if let Some((RegisterWidth::W16, spelling)) = stated {
+                    return Err(EntrySpelling::new(format!(
+                        "`emulation` forces an 8-bit {register}, so `{spelling}` contradicts \
+                         it; write `emulation` or `emulation,{}`",
+                        spelling.replace("16", "8")
+                    )));
+                }
+            }
+        }
+
+        let default = Self::default();
+        Ok(Self {
+            e: e.unwrap_or(default.e),
+            // Emulation pins both axes at eight whatever the default is, so
+            // that a later change to the default cannot make `--entry
+            // emulation` describe a machine that does not exist.
+            a: match e {
+                Some(EmulationState::Emulation) => RegisterWidth::W8,
+                _ => a.map_or(default.a, |(width, _)| width),
+            },
+            i: match e {
+                Some(EmulationState::Emulation) => RegisterWidth::W8,
+                _ => i.map_or(default.i, |(width, _)| width),
+            },
+        })
+    }
 
     /// This environment as a tracked width state.
     pub fn state(self) -> ModeState {
@@ -189,14 +361,34 @@ impl EntryEnvironment {
 
     /// The emulation state a body that is *called* starts in.
     ///
-    /// The environment's, which is the assumption `op.rs::EmulationState` has
-    /// always stated: no contract can carry emulation mode — the language has
-    /// no syntax for it — so a callee's only ground for believing anything is
-    /// a whole-program guarantee. It is unchecked: a caller that runs `xce`
-    /// before the call leaves the program somewhere else and nothing
-    /// propagates that across the call (`plans/09-entry-abi.md` probe 2).
+    /// No contract can carry emulation mode — the language has no syntax for
+    /// it — so nothing propagates it across a call and a callee's only ground
+    /// for believing anything is a whole-program guarantee. `Native` is the
+    /// one this compiler has always made, and it is **unchecked**: a caller
+    /// that runs `xce` before the call leaves a native-entry program in
+    /// emulation mode, and the callee goes on believing its `rep` widens
+    /// (`plans/09-entry-abi.md` probe 2). It is kept because every program in
+    /// the tree rests on it, and narrowing it would make an ordinary `rep`
+    /// unsizeable everywhere.
+    ///
+    /// It is not *extended* to the new environment. Carrying `Emulation` into
+    /// a callee would have it believe a `rep` establishes eight bits, and a
+    /// caller that had left emulation mode would then get a one-byte
+    /// immediate for a sixteen-bit load — a wrong byte, in the direction
+    /// `plans/09-entry-abi.md` decision 3 singles out as the dangerous one.
+    /// `Unknown` refuses to size the immediate instead, which costs working
+    /// code and never writes a wrong one. A program that really does leave
+    /// emulation mode says so with the annotation that is already the
+    /// documented escape hatch for `xce`-then-widen.
+    ///
+    /// The entry point itself is unaffected: nothing runs before it, so there
+    /// is no caller to have exchanged anything, and it starts in exactly what
+    /// the environment states.
     fn callee_emulation(self) -> EmulationState {
-        self.e
+        match self.e {
+            EmulationState::Native => EmulationState::Native,
+            EmulationState::Emulation | EmulationState::Unknown => EmulationState::Unknown,
+        }
     }
 }
 
@@ -304,6 +496,142 @@ mod tests {
         assert_eq!(
             environment.mismatches(contract(Some(RegisterWidth::W16), Some(RegisterWidth::W16))),
             [Axis::Accumulator, Axis::Index]
+        );
+    }
+
+    /// Every `--entry` spelling, read back as the environment it names.
+    ///
+    /// The subsets matter as much as the whole: an axis left out has to mean
+    /// *the default*, because the flag's job is to change what a build states
+    /// and not to force it to state everything.
+    #[test]
+    fn every_entry_spelling_names_the_environment_it_reads_like() {
+        let default = EntryEnvironment::default();
+        for (text, expected) in [
+            ("native,a8,i8", default),
+            ("native", default),
+            ("a8", default),
+            ("i8", default),
+            (
+                "a16",
+                EntryEnvironment {
+                    a: RegisterWidth::W16,
+                    ..default
+                },
+            ),
+            (
+                "native,a16,i16",
+                EntryEnvironment {
+                    a: RegisterWidth::W16,
+                    i: RegisterWidth::W16,
+                    ..default
+                },
+            ),
+            (
+                "i16",
+                EntryEnvironment {
+                    i: RegisterWidth::W16,
+                    ..default
+                },
+            ),
+            (
+                "emulation",
+                EntryEnvironment {
+                    e: EmulationState::Emulation,
+                    a: RegisterWidth::W8,
+                    i: RegisterWidth::W8,
+                },
+            ),
+            (
+                "emulation,a8,i8",
+                EntryEnvironment {
+                    e: EmulationState::Emulation,
+                    a: RegisterWidth::W8,
+                    i: RegisterWidth::W8,
+                },
+            ),
+        ] {
+            assert_eq!(
+                EntryEnvironment::parse(text),
+                Ok(expected),
+                "`--entry {text}`"
+            );
+        }
+
+        // Whitespace around an axis is allowed, so a build script may write
+        // the list the way a person reads it.
+        assert_eq!(EntryEnvironment::parse(" native , a8 , i8 "), Ok(default));
+    }
+
+    /// Every refusal, and the part of the spelling it names.
+    ///
+    /// The wording is asserted rather than merely the failure, because the
+    /// whole reason this is a refusal and not a silent correction is that the
+    /// author has to be told *which* half of what they wrote is impossible.
+    #[test]
+    fn a_spelling_that_names_no_machine_is_refused_and_says_which_half() {
+        for (text, expected) in [
+            ("emulation,a16", "forces an 8-bit accumulator"),
+            ("emulation,a8,i16", "forces an 8-bit index register"),
+            ("a8,native", "comes after the accumulator axis"),
+            ("i8,a8", "comes after the index-register axis"),
+            ("a8,a16", "states the accumulator axis twice"),
+            ("native,native", "states the mode axis twice"),
+            ("native,,a8", "an axis is missing between the commas"),
+            ("A8", "unknown axis `A8`"),
+            ("native a8", "unknown axis `native a8`"),
+        ] {
+            let refusal = EntryEnvironment::parse(text).expect_err(text);
+            assert!(
+                refusal.message().contains(expected),
+                "`--entry {text}` said {refusal:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    /// `emulation` pins the widths whatever the default happens to be.
+    ///
+    /// The default is native `a8,i8` today, so "emulation forces eight" and
+    /// "the default is eight" give the same answer and a version that only
+    /// defaulted would pass. This is the assertion that separates them.
+    #[test]
+    fn emulation_forces_eight_rather_than_inheriting_it() {
+        let environment = EntryEnvironment::parse("emulation").expect("a legal spelling");
+        assert_eq!(environment.a, RegisterWidth::W8);
+        assert_eq!(environment.i, RegisterWidth::W8);
+        assert_eq!(environment.e, EmulationState::Emulation);
+        // And it is the state a body starts in, not merely a parsed value.
+        assert_eq!(
+            environment.body_state(Some(EntryKind::Main), contract(None, None)),
+            environment.state()
+        );
+    }
+
+    /// A callee does not inherit an emulation guarantee, and does inherit a
+    /// native one.
+    ///
+    /// The asymmetry is deliberate and is the only place it is written as an
+    /// assertion: `Native` is the assumption every existing program rests on,
+    /// and extending it to `Emulation` would size an immediate against a
+    /// guarantee no call site made.
+    #[test]
+    fn only_a_native_guarantee_reaches_a_callee() {
+        let native = EntryEnvironment::default();
+        let emulation = EntryEnvironment::parse("emulation").expect("a legal spelling");
+        assert_eq!(
+            native.body_state(None, contract(None, None)).e,
+            EmulationState::Native
+        );
+        assert_eq!(
+            emulation.body_state(None, contract(None, None)).e,
+            EmulationState::Unknown
+        );
+        // The entry point keeps what the environment states, in both.
+        assert_eq!(
+            emulation
+                .body_state(Some(EntryKind::Main), contract(None, None))
+                .e,
+            EmulationState::Emulation
         );
     }
 

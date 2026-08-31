@@ -575,7 +575,9 @@ impl WidthState {
             Axis::I => "index register",
         };
         let cause = match emulation {
-            EmulationState::Native => "",
+            // Emulation mode never gets here: it pins both widths at eight,
+            // so there is nothing to forget.
+            EmulationState::Native | EmulationState::Emulation => "",
             EmulationState::Unknown => ", because emulation mode is unknown here",
         };
         out.push_str(&annotated(

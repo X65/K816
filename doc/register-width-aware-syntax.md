@@ -94,12 +94,47 @@ a body an interrupt vector reaches. A `naked` section without one is an
 ordinary function that happens to have no automatic `RTS`, and declares
 whatever widths it likes.
 
-The ABI K816 currently targets is the one `examples/fullstack/startup.asm`
-establishes: **native mode, 8-bit accumulator, 8-bit index registers**. It is
-a contract between the startup code and the compiler, so the value is what the
-startup code does rather than what the CPU does at reset — the stub runs
-`sei; clc; xce; jsr main`, which leaves emulation mode and widens neither
-axis.
+The ABI is what the build **states**, with `--entry`, and its default is the
+one `examples/fullstack/startup.asm` establishes: **native mode, 8-bit
+accumulator, 8-bit index registers**. It is a contract between the startup
+code and the compiler, so the value is what the startup code does rather than
+what the CPU does at reset — the stub runs `sei; clc; xce; jsr main`, which
+leaves emulation mode and widens neither axis.
+
+```text
+k816 compile --entry native,a8,i8 rom.k816    # the default, spelled out
+k816 compile --entry a16 rom.k816             # one axis stated, the rest default
+k816 compile --entry emulation rom.k816       # a ROM whose reset vector is main
+```
+
+Three axes — `native` or `emulation`, `a8` or `a16`, `i8` or `i16` — written
+in that order, each optional. An axis left out keeps the default's value.
+
+`emulation` is not a fourth width choice but a different machine: emulation
+mode forces the M and X flags to one (`doc/w65c816s.md`), so both registers
+are eight bits wide and stay that way. `--entry emulation,a16` therefore
+names no machine and is refused as `K816-E0162` rather than quietly corrected.
+Under it a `rep #$20` in the entry point establishes nothing — it is a no-op
+on that machine — so K816 goes on sizing immediates against an 8-bit
+accumulator instead of believing the widening:
+
+```k65
+func main {             // under --entry emulation
+    rep #$20            // a no-op: M is forced to one
+    lda #$1234          // K816-E0103: maximum here is $FF
+}
+```
+
+An **ordinary function** under `--entry emulation` starts with emulation mode
+*unknown* rather than emulation. Nothing carries emulation mode across a
+call — there is no syntax to declare it, so no contract can — and a caller
+that ran `xce` before the call has left the machine somewhere the callee
+cannot see. Refusing to size an immediate there costs working code; sizing it
+against a guarantee no call site made writes a wrong byte. `@a8`/`@a16` in the
+body is the escape hatch, as it is after any `xce`.
+
+Target *names* are deliberately absent: a name is a mapping onto these axes,
+and the configuration it would have to agree with does not exist yet.
 
 An annotation on `main` is therefore an **assertion**, not a request. It may
 restate what the environment provides — `func main @a8 @i8` is a true claim,

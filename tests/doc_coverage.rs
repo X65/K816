@@ -44,6 +44,7 @@
 //! stays green — which is why the rows name the section heading, so a reader
 //! comparing the two can see what is missing.
 
+use k816::abi::EntryEnvironment;
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
 
@@ -75,6 +76,10 @@ struct Row {
     expected: &'static [&'static str],
     /// A diagnostic code the snippet must report, if the document says so.
     diagnostic: Option<&'static str>,
+    /// The `--entry` spelling the listing is written under, when the section
+    /// documents one. `None` is the default environment, which is what every
+    /// listing that does not say otherwise means.
+    entry: Option<&'static str>,
 }
 
 const MATRIX: &[Row] = &[
@@ -88,6 +93,7 @@ const MATRIX: &[Row] = &[
         expected: &[],
         // The document prints this exact error, help line included.
         diagnostic: Some("K816-E0104"),
+        entry: None,
     },
     Row {
         section: "Function-level mode contracts",
@@ -116,6 +122,7 @@ func wide_all @a16 @i16 {
             "ldx     #$0001", // 3-byte
         ],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -125,6 +132,7 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &[".a8", ".i8", "lda     #$01"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -135,6 +143,7 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &[".a8", ".i8", "lda     #$01"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -144,6 +153,29 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &[],
         diagnostic: Some("K816-E0143"),
+        entry: None,
+    },
+    Row {
+        section: "The entry point",
+        // The `--entry emulation` listing: the `rep` is a no-op on that
+        // machine, so the immediate is still sized against eight bits.
+        source: "func main {\n    rep #$20\n    lda #$1234\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0103"),
+        entry: Some("emulation"),
+    },
+    Row {
+        section: "The entry point",
+        // The same source under the default environment, which is what makes
+        // the row above a claim about `emulation` rather than about `rep`.
+        source: "func main {\n    rep #$20\n    lda #$1234\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &["rep     #$20", ".a16", "lda     #$1234"],
+        diagnostic: None,
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -153,6 +185,7 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &["rep     #$20", "lda     #$1234", "sep     #$20"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -163,6 +196,7 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &[".a8", ".i8", "lda     #$01"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -172,6 +206,7 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &[],
         diagnostic: Some("K816-E0143"),
+        entry: None,
     },
     Row {
         section: "The entry point",
@@ -182,6 +217,7 @@ func wide_all @a16 @i16 {
         difference: "",
         expected: &["lda     #$1234"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "Call-site bridging",
@@ -230,6 +266,7 @@ func caller {
             "jsr     a:uncolored",
         ],
         diagnostic: None,
+        entry: None,
     },
     Row {
         // The document writes the branch as `c+? goto .loop`, which is
@@ -249,6 +286,7 @@ func main @a8 @i8 {
         difference: "",
         expected: &["bcs     @loop", "rep     #$20", "lda     #$0001"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "Entry-point mode setup",
@@ -266,6 +304,7 @@ func main {
         difference: "",
         expected: &[],
         diagnostic: Some("K816-E0143"),
+        entry: None,
     },
     Row {
         section: "Leaving a block by a branch",
@@ -288,6 +327,7 @@ func f @a8 {
             "lda     #$12", // 8-bit, because the pad got there first
         ],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "Block-level mode scoping",
@@ -326,6 +366,7 @@ func main @a8 @i8 {
             "lda     #$01",
         ],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "Module-level default coloring",
@@ -346,6 +387,7 @@ func helper {
         difference: "",
         expected: &["lda     #$0001", "lda     #$0002"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         section: "Overriding module defaults",
@@ -375,6 +417,7 @@ func narrow @a8 @i8 {
             "ldx     #$01",
         ],
         diagnostic: None,
+        entry: None,
     },
     Row {
         // The width document's "Dead mode elimination", as an algorithm rather
@@ -402,6 +445,7 @@ func stores @a8 {
             "sep     #$20",
         ],
         diagnostic: None,
+        entry: None,
     },
     Row {
         // And the half the section is named for: an axis nothing reads.
@@ -422,6 +466,7 @@ func helper {
         difference: "",
         expected: &["nop", "jsr     a:helper", "rts", "nop", "rts"],
         diagnostic: None,
+        entry: None,
     },
     Row {
         // The folding table, and the row it gets wrong. `rep #$21` clears the
@@ -453,6 +498,7 @@ func folds @a8 @i8 {
             "ldx     a:mem",
         ],
         diagnostic: None,
+        entry: None,
     },
 ];
 
@@ -478,7 +524,7 @@ const NOT_THE_WIDTH_MODELS: &[(&str, &str)] = &[
     ),
 ];
 
-fn compile(source: &str, stage: Stage) -> (Vec<String>, Vec<String>) {
+fn compile(source: &str, stage: Stage, entry: Option<&str>) -> (Vec<String>, Vec<String>) {
     let mut map = SourceMap::new();
     let file = map.add_file("doc.k816", source);
     let result = compile_to_ca65(
@@ -486,6 +532,9 @@ fn compile(source: &str, stage: Stage) -> (Vec<String>, Vec<String>) {
         file,
         &Options {
             optimize: stage == Stage::Optimized,
+            entry: entry.map_or_else(EntryEnvironment::default, |text| {
+                EntryEnvironment::parse(text).unwrap_or_else(|e| panic!("`--entry {text}`: {e}"))
+            }),
             ..Default::default()
         },
     );
@@ -512,7 +561,7 @@ fn compile(source: &str, stage: Stage) -> (Vec<String>, Vec<String>) {
 fn every_documented_example_compiles_to_what_it_documents() {
     let mut failures = Vec::new();
     for row in MATRIX {
-        let (lines, codes) = compile(row.source, row.stage);
+        let (lines, codes) = compile(row.source, row.stage, row.entry);
         match row.diagnostic {
             Some(code) => {
                 if !codes.iter().any(|reported| reported == code) {
@@ -645,7 +694,7 @@ fn every_symbolic_subscript_claim_holds() {
         // these rows read is a `:byte` one — a wider accumulator would be
         // `K816-E0140` against the declared datum, which is its own test.
         let source = format!("{LAYOUTS}\nfunc work @a8 @i8 {{\n    {statement}\n}}\n");
-        let (lines, codes) = compile(&source, Stage::Modelled);
+        let (lines, codes) = compile(&source, Stage::Modelled, None);
         if !codes.is_empty() {
             failures.push(format!("  {section}: `{statement}` reported {codes:?}"));
             continue;

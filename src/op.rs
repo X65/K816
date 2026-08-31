@@ -487,25 +487,45 @@ impl AxisState {
 ///
 /// It is tracked because `REP` cannot widen a register in emulation mode:
 /// `doc/w65c816s.md` says "the M and X flags are always equal to one in
-/// Emulation mode", so after an `XCE` whose result is not known, a `rep #$20`
-/// establishes nothing. A walk that records 16-bit there would accept an
-/// immediate the CPU executes as 8-bit.
+/// Emulation mode", so a `rep #$20` there establishes nothing. A walk that
+/// records 16-bit would accept an immediate the CPU executes as 8-bit.
 ///
-/// K65 has no syntax to declare or exchange emulation mode, so there is
-/// nothing to propagate across a call and nothing to annotate: every function
-/// entry is `Native`, and `XCE` makes it `Unknown` for the rest of the body.
+/// Three states, and the third is the one the language cannot write. There is
+/// no syntax to declare or exchange emulation mode, so nothing propagates
+/// across a call and nothing annotates a function with it; what a body starts
+/// in comes from the **build's entry environment** instead
+/// (`--entry emulation`, `abi::EntryEnvironment`). `XCE` exchanges the carry
+/// with the emulation bit, and K816 tracks neither, so it lands on `Unknown`
+/// from wherever it started.
+///
+/// [`Self::Emulation`] is a *stronger* answer than `Unknown`, not a weaker
+/// one: it says the machine is in emulation mode, so both register widths are
+/// pinned at eight and a `rep` can be given an exact answer rather than
+/// refused (`width.rs::believe`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EmulationState {
+    /// The emulation bit is clear: `REP`/`SEP` mean what they say.
     #[default]
     Native,
+    /// The emulation bit is set: M and X are forced to one, so both registers
+    /// are eight bits wide and stay that way until an `XCE`.
+    Emulation,
+    /// The bit was exchanged and K816 does not know which way.
     Unknown,
 }
 
 impl EmulationState {
-    /// The join: native only where both sides are native.
+    /// The join: an answer survives a merge only where both sides give it.
+    ///
+    /// `Native` is no longer an identity — `Native ⊔ Emulation` is
+    /// `Unknown` — but it never needed to be. The identity of the width
+    /// lattice is [`ModeState::bottom`], and [`ModeState::join`] returns the
+    /// other side outright when one is bottom, so an edge no path has reached
+    /// contributes nothing here either.
     pub fn join(self, other: Self) -> Self {
         match (self, other) {
             (Self::Native, Self::Native) => Self::Native,
+            (Self::Emulation, Self::Emulation) => Self::Emulation,
             _ => Self::Unknown,
         }
     }
@@ -846,6 +866,7 @@ fn dump_mode_state(state: ModeState) -> String {
     }
     let emulation = match state.e {
         EmulationState::Native => "",
+        EmulationState::Emulation => " emu",
         EmulationState::Unknown => " emu?",
     };
     format!(
@@ -1048,13 +1069,29 @@ mod tests {
     }
 
     #[test]
-    fn emulation_is_native_only_where_both_sides_are() {
-        let native = EmulationState::Native;
-        assert_eq!(native.join(native), native);
-        assert_eq!(
-            native.join(EmulationState::Unknown),
-            EmulationState::Unknown
-        );
+    fn an_emulation_answer_survives_a_merge_only_where_both_sides_give_it() {
+        use EmulationState::{Emulation, Native, Unknown};
+        assert_eq!(Native.join(Native), Native);
+        assert_eq!(Emulation.join(Emulation), Emulation);
+        assert_eq!(Native.join(Unknown), Unknown);
+        assert_eq!(Emulation.join(Unknown), Unknown);
+        // The pair that costs `Native` its identity, and the reason
+        // `ModeState::join` short-circuits on `Bottom` rather than relying on
+        // one.
+        assert_eq!(Native.join(Emulation), Unknown);
+        assert_eq!(Emulation.join(Native), Unknown);
+    }
+
+    /// An unreached edge still contributes nothing, emulation included.
+    #[test]
+    fn bottom_is_the_identity_that_native_stopped_being() {
+        let emulating = ModeState {
+            a: AxisState::Known(RegisterWidth::W8),
+            i: AxisState::Known(RegisterWidth::W8),
+            e: EmulationState::Emulation,
+        };
+        assert_eq!(emulating.join(ModeState::bottom()), emulating);
+        assert_eq!(ModeState::bottom().join(emulating), emulating);
     }
 
     #[test]

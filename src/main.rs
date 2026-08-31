@@ -93,6 +93,12 @@ fn usage(prog_name: &str) {
     eprintln!("                                       language does not have. Extensions are");
     eprintln!("                                       errors, and a construct that means");
     eprintln!("                                       something else there is a warning");
+    eprintln!("  --entry AXES                         the state the machine is in when main");
+    eprintln!("                                       gets control: native or emulation, a8 or");
+    eprintln!("                                       a16, i8 or i16, comma-separated in that");
+    eprintln!("                                       order and each optional. Default");
+    eprintln!("                                       native,a8,i8 - what the startup stub in");
+    eprintln!("                                       examples/fullstack establishes");
     eprintln!("  -V, --version                        print the version number and exit");
 }
 
@@ -167,6 +173,21 @@ fn parse_command_line(
                 set_message_format(prog_name, text, &mut message_format)?;
             }
             "--strict-k65" => options.strict_k65 = true,
+            "--entry" => match iter.next() {
+                Some(text) => set_entry(prog_name, text, &mut options, message_format)?,
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        "`--entry` needs a value (`native,a8,i8` or any part of it)",
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
+            _ if arg.starts_with("--entry=") => {
+                let text = &arg["--entry=".len()..];
+                set_entry(prog_name, text, &mut options, message_format)?;
+            }
             "--explain" if opt_flag == "--after-opt" => explain = true,
             flag if flag == opt_flag => options.optimize = opt_flag_enables,
             _ if arg.starts_with('-') => {
@@ -200,6 +221,35 @@ fn parse_command_line(
 
 /// Applies one `--message-format` value, reporting unknown ones in whatever
 /// format is in effect so far.
+/// Reads a `--entry` value into `options`, or reports why it could not be.
+///
+/// The reading is `abi::EntryEnvironment::parse`'s, in the library, because
+/// what it enforces is a fact about the machine and not a convention of this
+/// CLI: `emulation` forces both registers to eight bits, so `emulation,a16`
+/// names no machine. `main.rs` only decides where the sentence goes.
+fn set_entry(
+    prog_name: &str,
+    text: &str,
+    options: &mut Options,
+    message_format: render::MessageFormat,
+) -> Result<(), ()> {
+    match k816::abi::EntryEnvironment::parse(text) {
+        Ok(environment) => {
+            options.entry = environment;
+            Ok(())
+        }
+        Err(refusal) => {
+            render::render_coded_tool_error(
+                prog_name,
+                k816::abi::EntrySpelling::CODE,
+                &format!("`--entry`: {refusal}"),
+                message_format,
+            );
+            Err(())
+        }
+    }
+}
+
 fn set_message_format(
     prog_name: &str,
     text: &str,

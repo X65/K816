@@ -215,9 +215,13 @@ fn unknown_width(
         diagnostic = diagnostic
             .with_note("no path reaches this instruction, so there is no width to size it against");
     } else if widths.e == EmulationState::Unknown {
+        // Two ways to get here and one sentence for both: an `xce` in this
+        // body, or an `--entry emulation` build, where a caller may have left
+        // emulation mode before the call and no contract can say whether it
+        // did (`abi::EntryEnvironment::callee_emulation`).
         diagnostic = diagnostic.with_note(
-            "emulation mode is unknown after `xce`, and the M and X flags are always \
-             set in emulation mode, so a widening `rep` establishes nothing",
+            "emulation mode is unknown here, and the M and X flags are always set in \
+             emulation mode, so a widening `rep` establishes nothing",
         );
     }
     diagnostic

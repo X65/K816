@@ -362,6 +362,15 @@ impl DiagnosticCode {
     /// where K816 already refuses the construct, decision 0 says the flag has
     /// nothing to add and the row's `Strict` column reads `—`.
     pub const STRICT_K65_CHANGED: Self = Self("K816-W0161");
+    /// `--entry` is malformed or contradictory.
+    ///
+    /// A command-line error rather than a source one: there is no file and no
+    /// span to point at, so it is rendered beside the other tool errors with
+    /// its code on the line. It is a code all the same, because what it
+    /// reports is a *language* rule — `emulation` forces both registers to
+    /// eight bits, so `emulation,a16` describes a machine that does not exist
+    /// (`doc/w65c816s.md`) — and a build log should be able to grep for it.
+    pub const ENTRY_SPELLING: Self = Self("K816-E0162");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -648,6 +657,7 @@ mod tests {
         DiagnosticCode::CONTRACT_FLAG_OUTPUT,
         DiagnosticCode::STRICT_K65_EXTENSION,
         DiagnosticCode::STRICT_K65_CHANGED,
+        DiagnosticCode::ENTRY_SPELLING,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

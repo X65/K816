@@ -300,6 +300,137 @@ fn strict_k65_says_nothing_about_a_k65_program() {
 }
 
 // ---------------------------------------------------------------------------
+// The entry environment (sub-plan G, task G11)
+// ---------------------------------------------------------------------------
+
+/// A program whose entry point states nothing and loads a sixteen-bit
+/// immediate: legal under `--entry a16`, out of range under the default.
+const WIDE_ENTRY: &str = "func main {\n    a = #$0102\n    return\n}\n";
+
+/// Every spelling of `--entry`, and what each one does to the same source.
+///
+/// The axes are optional and ordered, so most of these differ only in what
+/// they leave out; the point of listing them is that leaving an axis out has
+/// to mean *the default*, not *unknown*, or a source that states nothing
+/// would stop compiling the moment any axis was named.
+#[test]
+fn the_entry_flag_takes_each_axis_and_defaults_the_rest() {
+    for spelling in [
+        "a16",
+        "native,a16",
+        "a16,i8",
+        "native,a16,i16",
+        "--entry=a16",
+    ] {
+        let (stderr, success) = if let Some(joined) = spelling.strip_prefix("--entry=") {
+            compile(
+                "cli-entry-joined",
+                WIDE_ENTRY,
+                &[&format!("--entry={joined}")],
+            )
+        } else {
+            compile("cli-entry-wide", WIDE_ENTRY, &["--entry", spelling])
+        };
+        assert!(success, "`--entry {spelling}`: {stderr}");
+    }
+
+    // The default is unchanged by the flag existing, and it is the one that
+    // refuses this immediate.
+    let (stderr, success) = compile("cli-entry-default", WIDE_ENTRY, &[]);
+    assert!(!success, "{stderr}");
+    assert!(stderr.contains("K816-E0103"), "{stderr}");
+    let (stderr, success) = compile("cli-entry-native", WIDE_ENTRY, &["--entry", "native,a8,i8"]);
+    assert!(!success, "{stderr}");
+    assert!(stderr.contains("K816-E0103"), "{stderr}");
+}
+
+/// `emulation` states a machine, and the machine decides the widths.
+///
+/// Both registers are eight bits wide in emulation mode and nothing in the
+/// body can widen them, so this is the one axis that is not merely a
+/// preference: a `rep` is a no-op and the immediate that needed it is
+/// refused.
+#[test]
+fn an_emulation_entry_pins_both_widths_at_eight() {
+    let source = "func main {\n    rep #$20\n    a = #$0102\n    return\n}\n";
+    let (stderr, success) = compile("cli-entry-emu-native", source, &["--entry", "native"]);
+    assert!(success, "the `rep` widens in native mode: {stderr}");
+
+    let (stderr, success) = compile("cli-entry-emu", source, &["--entry", "emulation"]);
+    assert!(!success, "{stderr}");
+    assert!(stderr.contains("K816-E0103"), "{stderr}");
+
+    // And an annotation that claims otherwise is the ordinary ABI mismatch,
+    // not a special case of the flag.
+    let claim = "func main @a16 {\n    a = #$0102\n    return\n}\n";
+    let (stderr, success) = compile("cli-entry-emu-claim", claim, &["--entry", "emulation"]);
+    assert!(!success, "{stderr}");
+    assert!(stderr.contains("K816-E0143"), "{stderr}");
+}
+
+/// The refusals, each naming what is wrong with the spelling.
+///
+/// `emulation,a16` is the one decision 21 singles out: it is a command-line
+/// error rather than a silent correction, because a build that believed it
+/// asked for sixteen bits and got eight would find out in the bytes.
+#[test]
+fn the_entry_flag_refuses_a_spelling_that_names_no_machine() {
+    for (spelling, expected) in [
+        ("emulation,a16", "forces an 8-bit accumulator"),
+        ("emulation,i16", "forces an 8-bit index register"),
+        ("a8,native", "comes after the accumulator axis"),
+        ("a8,a16", "states the accumulator axis twice"),
+        ("native,,a8", "an axis is missing between the commas"),
+        ("a32", "unknown axis `a32`"),
+        ("", "no axis named"),
+    ] {
+        let (stderr, success) = compile("cli-entry-bad", WIDE_ENTRY, &["--entry", spelling]);
+        assert!(!success, "`--entry {spelling}` was accepted: {stderr}");
+        assert!(
+            stderr.contains("K816-E0162") && stderr.contains(expected),
+            "`--entry {spelling}`: {stderr}"
+        );
+    }
+
+    // A missing value is a missing argument, not a malformed one. Invoked
+    // directly, because the helper appends the source path and `--entry`
+    // would eat it — the same as every other flag that takes a value.
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .args(["compile", "--entry"])
+        .output()
+        .expect("run k816");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("`--entry` needs a value"), "{stderr}");
+}
+
+/// The refusal is a diagnostic on the JSON stream too, code and all.
+///
+/// `K816-E0162` has no span, which is why it is a tool error and not a
+/// `Diagnostic`; a consumer parsing the stream still gets an object with the
+/// same `severity`, `code` and `message` keys the real ones carry.
+#[test]
+fn the_entry_refusal_carries_its_code_in_json_mode() {
+    let (stderr, success) = compile(
+        "cli-entry-json",
+        WIDE_ENTRY,
+        &["--message-format", "json", "--entry", "emulation,a16"],
+    );
+    assert!(!success, "{stderr}");
+    let object: serde_json::Value =
+        serde_json::from_str(stderr.trim()).unwrap_or_else(|e| panic!("{e}: {stderr}"));
+    assert_eq!(object["severity"], "error");
+    assert_eq!(object["code"], "K816-E0162");
+    assert!(
+        object["message"]
+            .as_str()
+            .expect("a message")
+            .contains("`--entry`"),
+        "{object}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The explanation surface (sub-plan F, task F8)
 // ---------------------------------------------------------------------------
 

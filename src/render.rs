@@ -41,7 +41,9 @@ use std::io::IsTerminal;
 use ariadne::{CharSet, Config, Label, Report, ReportKind, Source};
 use serde_json::json;
 
-use k816::diagnostic::{Applicability, Diagnostic, Label as DiagnosticLabel, Severity};
+use k816::diagnostic::{
+    Applicability, Diagnostic, DiagnosticCode, Label as DiagnosticLabel, Severity,
+};
 use k816::source::{FileId, SourceMap, Span};
 
 /// How diagnostics are presented on stderr (`--message-format`).
@@ -90,6 +92,31 @@ pub fn render_tool_error(prog_name: &str, message: &str, format: MessageFormat) 
     match format {
         MessageFormat::Human | MessageFormat::Compact => eprintln!("{prog_name}: {message}"),
         MessageFormat::Json => eprintln!("{}", json!({ "severity": "error", "message": message })),
+    }
+}
+
+/// The same, for a tool-level failure that *does* enforce a language rule and
+/// so has a code worth grepping for.
+///
+/// `--entry emulation,a16` describes a machine the 65816 cannot be in, which
+/// is the same kind of statement as any `K816-E` in a source file; what it
+/// lacks is a span, not a reason. The code goes on the line in the human
+/// formats and into the object's `code` field in `json`, where it sits beside
+/// the diagnostics' own.
+pub fn render_coded_tool_error(
+    prog_name: &str,
+    code: DiagnosticCode,
+    message: &str,
+    format: MessageFormat,
+) {
+    match format {
+        MessageFormat::Human | MessageFormat::Compact => {
+            eprintln!("{prog_name}: {}: {message}", code.as_str());
+        }
+        MessageFormat::Json => eprintln!(
+            "{}",
+            json!({ "severity": "error", "code": code.as_str(), "message": message })
+        ),
     }
 }
 

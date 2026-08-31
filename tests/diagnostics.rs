@@ -589,6 +589,12 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
         "K816-W0161",
         "tests/compat.rs: strict_mode_reports_exactly_the_rows_the_manifest_marks",
     ),
+    // And this one no source can reach at all: it reports a `--entry` value,
+    // so there is no file for the FAMILY table to compile.
+    (
+        "K816-E0162",
+        "tests/cli.rs: the_entry_flag_refuses_a_spelling_that_names_no_machine",
+    ),
 ];
 
 /// `K816-E0105` is unreachable from source, and this is why.

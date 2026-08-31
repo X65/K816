@@ -1515,11 +1515,24 @@ fn apply_effect(incoming: Fact, effect: WidthEffect, exchanges_emulation: bool) 
     fact
 }
 
+/// What an instruction's *stated* width effect establishes, read through the
+/// emulation state.
+///
+/// Eight bits is eight bits everywhere. Sixteen depends on what the CPU will
+/// do with the `REP`: in native mode it widens, in emulation mode M and X are
+/// forced to one so the register stays eight bits wide
+/// (`doc/w65c816s.md`), and after an `XCE` K816 knows neither.
+///
+/// The emulation answer is the exact one rather than `Unknown` on purpose:
+/// under `--entry emulation` a program that never leaves emulation mode is
+/// fully sized, and a stray `rep` in it is not an error but a no-op — which is
+/// what the machine does with it.
 fn believe(width: RegisterWidth, emulation: EmulationState) -> AxisState {
     match (width, emulation) {
         (RegisterWidth::W8, _) | (RegisterWidth::W16, EmulationState::Native) => {
             AxisState::Known(width)
         }
+        (RegisterWidth::W16, EmulationState::Emulation) => AxisState::Known(RegisterWidth::W8),
         (RegisterWidth::W16, EmulationState::Unknown) => AxisState::Unknown,
     }
 }

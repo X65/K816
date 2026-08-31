@@ -485,3 +485,97 @@ fn an_unannotated_entry_point_sizes_its_immediates_against_the_environment() {
     assert!(assembly.contains(".a16"), "{assembly}");
     assert_eq!(entry_setup(&assembly), Vec::<String>::new());
 }
+
+/// An emulation entry pins both axes at eight, and says so through the
+/// ordinary mismatch check rather than through a rule of its own.
+///
+/// `--entry emulation` is not a third value of a mode axis that then leaves
+/// the widths free: `doc/w65c816s.md` has M and X forced to one in emulation
+/// mode, so the machine has no other widths to offer. A `@a16` on `main` is
+/// therefore false in exactly the way `@a16` against a native 8-bit
+/// environment is false, and it is the same `E0143`.
+#[test]
+fn an_emulation_entry_leaves_no_width_to_declare() {
+    let emulation = EntryEnvironment {
+        e: k816::op::EmulationState::Emulation,
+        a: RegisterWidth::W8,
+        i: RegisterWidth::W8,
+    };
+
+    // Restating what emulation mode forces is a true claim, like any other.
+    let restated = "func main @a8 @i8 {\n    a = #$01\n    return\n}\n";
+    assert_eq!(errors_in(emulation, restated), Vec::<String>::new());
+
+    // Claiming otherwise is the ordinary mismatch, on each axis.
+    let wide = "func main @a16 @i16 {\n    a = #$0102\n    return\n}\n";
+    assert_eq!(
+        errors_in(emulation, wide),
+        ["K816-E0143", "K816-E0143"],
+        "one refusal per axis the environment does not provide"
+    );
+}
+
+/// A `rep` establishes nothing in emulation mode, and the model says what it
+/// *does* establish rather than giving up.
+///
+/// This is the one dataflow rule `EmulationState::Emulation` adds. Under
+/// `Unknown` — after an `xce` — the width becomes unknown and the immediate
+/// is unsizeable; under `Emulation` the width is known to still be eight, so
+/// the immediate is refused for the reason that is actually true of the
+/// machine, and an eight-bit one goes on compiling.
+#[test]
+fn a_rep_in_emulation_mode_leaves_the_width_where_it_was() {
+    let emulation = EntryEnvironment {
+        e: k816::op::EmulationState::Emulation,
+        a: RegisterWidth::W8,
+        i: RegisterWidth::W8,
+    };
+    let source = "func main {\n    rep #$20\n    a = #$0102\n    return\n}\n";
+
+    // Native: the `rep` widens and the immediate fits.
+    assert_eq!(errors(source), Vec::<String>::new());
+
+    // Emulation: the width is still known, and it is eight — so the
+    // complaint is about the immediate's range, not about an unknown width.
+    assert_eq!(errors_in(emulation, source), ["K816-E0103"]);
+
+    // And the same body with an eight-bit immediate compiles, which is what
+    // separates "the width is known to be eight" from "the width is unknown".
+    let narrow = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
+    assert_eq!(errors_in(emulation, narrow), Vec::<String>::new());
+}
+
+/// An ordinary function under an emulation entry starts with emulation mode
+/// *unknown*, not with the environment's answer.
+///
+/// Nothing propagates emulation mode across a call — no contract can state
+/// it — so a callee's only ground is a whole-program guarantee. `Native` is
+/// the one this compiler has always assumed and every program in the tree
+/// rests on it; carrying `Emulation` in the same way would have a callee
+/// believe a `rep` establishes eight bits, and a caller that had left
+/// emulation mode would get a one-byte immediate for a sixteen-bit load.
+/// Refusing to size it costs working code; sizing it wrong writes a wrong
+/// byte.
+#[test]
+fn a_callee_under_an_emulation_entry_does_not_inherit_the_guarantee() {
+    let emulation = EntryEnvironment {
+        e: k816::op::EmulationState::Emulation,
+        a: RegisterWidth::W8,
+        i: RegisterWidth::W8,
+    };
+    let source = "func helper {\n    rep #$20\n    a = #$0102\n    return\n}\n\
+                  func main {\n    call helper\n    return\n}\n";
+
+    // Native entry: the callee inherits it and the `rep` widens, exactly as
+    // it did before `--entry` existed.
+    assert_eq!(errors(source), Vec::<String>::new());
+
+    // Emulation entry: unknown, so the immediate is refused rather than
+    // sized against a guarantee no call site made.
+    assert_eq!(errors_in(emulation, source), ["K816-E0104"]);
+
+    // The entry point itself is not affected — nothing runs before it, so
+    // there is no caller to have exchanged anything.
+    let inline_body = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
+    assert_eq!(errors_in(emulation, inline_body), Vec::<String>::new());
+}

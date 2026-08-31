@@ -391,7 +391,10 @@ fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option
             resolver.report(
                 Diagnostic::error(
                     DiagnosticCode::RETIRED_REGISTER_SPELLING,
-                    format!("`b` is not a stack target, so it cannot be {}ed", if push { "push" } else { "pull" }),
+                    format!(
+                        "`b` is not a stack target, so it cannot be {}ed",
+                        if push { "push" } else { "pull" }
+                    ),
                     Label::new(stack.op_span, "`b` is the accumulator's high half"),
                 )
                 .with_help("to move the data bank, write `dbr!!` / `dbr??`")

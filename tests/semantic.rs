@@ -393,7 +393,8 @@ fn both_sides_of_a_binary_expression_are_diagnosed() {
 fn a_compound_expression_in_a_data_value_list_is_rejected() {
     // The grammar closes most of this; parentheses are the hole it cannot,
     // because `&<(A | B)` is a legal parse of an illegal value.
-    let (_, diagnostics) = analyze("const AA = 1\nconst BB = 2\ndata DD {\n    byte &<(AA | BB)\n}\n");
+    let (_, diagnostics) =
+        analyze("const AA = 1\nconst BB = 2\ndata DD {\n    byte &<(AA | BB)\n}\n");
     let compound: Vec<&k816::diagnostic::Diagnostic> = diagnostics
         .iter()
         .filter(|d| d.code == DiagnosticCode::COMPOUND_DATA_VALUE)

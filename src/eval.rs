@@ -1926,8 +1926,9 @@ mod tests {
 
     #[test]
     fn the_evaluator_reads_the_names_the_compiler_has() {
-        let (values, codes) =
-            evaluate("[ SHIFT = 2 ]\nconst FLAG = 0x30\ndata block {\n  [ FLAG ]\n  [ SHIFT ]\n}\n");
+        let (values, codes) = evaluate(
+            "[ SHIFT = 2 ]\nconst FLAG = 0x30\ndata block {\n  [ FLAG ]\n  [ SHIFT ]\n}\n",
+        );
         assert_eq!(codes, Vec::<String>::new());
         assert_eq!(
             values,
@@ -2010,7 +2011,10 @@ mod tests {
 
         // The five refusals, each naming its own reason.
         for (source, why) in [
-            ("data block {\n  [ index(3, 0) ]\n}\n", "and this is a number"),
+            (
+                "data block {\n  [ index(3, 0) ]\n}\n",
+                "and this is a number",
+            ),
             (
                 "func f {\n  a = 1\n}\ndata block {\n  [ index(f, 0) ]\n}\n",
                 "is a code section",

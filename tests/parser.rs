@@ -25,11 +25,10 @@
 
 use k816::ast::{
     AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, CallArgument,
-    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, FlagKind, FunctionKind,
-    HlaOperandKind, HlaStatement,
-    IndexRegister, IndexRegisterKind, ItemKind, LabelScope, LoopCondition, MetadataQueryKind,
-    NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind, StepOp,
-    StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
+    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, FlagKind, FunctionKind, HlaOperandKind,
+    HlaStatement, IndexRegister, IndexRegisterKind, ItemKind, LabelScope, LoopCondition,
+    MetadataQueryKind, NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind,
+    StepOp, StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
 };
 use k816::diagnostic::{Applicability, DiagnosticCode};
 use k816::parser::parse_source;
@@ -351,10 +350,8 @@ fn dump_ast(file: &AstFile) -> String {
                                 rendered.push_str(&format!(" {}", arguments.join(", ")));
                             }
                             if let Some(outputs) = &call.outputs {
-                                let outputs: Vec<String> = outputs
-                                    .iter()
-                                    .map(dump_contract_output)
-                                    .collect();
+                                let outputs: Vec<String> =
+                                    outputs.iter().map(dump_contract_output).collect();
                                 rendered.push_str(&format!(" -> {}", outputs.join(", ")));
                             }
                             rendered

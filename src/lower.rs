@@ -430,9 +430,7 @@ fn report_damaged_registers(
                 .ops
                 .iter()
                 .fold(CpuState::NONE, |state, op| match &op.kind {
-                    KOpKind::Instruction(instruction) => {
-                        state.union(instruction.effects().writes)
-                    }
+                    KOpKind::Instruction(instruction) => state.union(instruction.effects().writes),
                     _ => state,
                 });
             // The stack pointer is not damage: the `JSR`/`RTS` pair moves it

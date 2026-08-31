@@ -379,7 +379,9 @@ fn a_retired_register_spelling_names_its_replacement() {
         let found = diagnostics
             .iter()
             .find(|d| d.code == DiagnosticCode::RETIRED_REGISTER_SPELLING)
-            .unwrap_or_else(|| panic!("`{source}` did not report a retired spelling: {diagnostics:?}"));
+            .unwrap_or_else(|| {
+                panic!("`{source}` did not report a retired spelling: {diagnostics:?}")
+            });
         let help = found.help.clone().unwrap_or_default();
         assert!(
             help.contains(expected_help),

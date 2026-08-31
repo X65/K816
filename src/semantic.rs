@@ -30,9 +30,8 @@
 
 use crate::ast::{
     self, AstFile, ContractOutput, ContractParameter, DataBlock, DataEntryKind, DataValue,
-    EvalCallName, EvalExpr,
-    EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement, IllegalOpcode, ItemKind,
-    RegisterKind, ReservedKind, Statement, StatementKind, TestableFlag,
+    EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement,
+    IllegalOpcode, ItemKind, RegisterKind, ReservedKind, Statement, StatementKind, TestableFlag,
 };
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1151,9 +1151,16 @@ func f @a8 @i8 {
     // And the immediate really is sized by that width: one byte, not two.
     let mut map = SourceMap::new();
     let file = map.add_file("tail.k816", source);
-    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false, ..Default::default() })
-        .assembly
-        .expect("compiles");
+    let assembly = k816::compile_to_ca65(
+        &map,
+        file,
+        &k816::Options {
+            optimize: false,
+            ..Default::default()
+        },
+    )
+    .assembly
+    .expect("compiles");
     assert!(
         assembly.contains("lda     #$12"),
         "an 8-bit immediate, not a widened one:\n{assembly}"
@@ -1181,9 +1188,16 @@ fn a_goto_out_of_a_width_block_restores_it_too() {
 
         let mut map = SourceMap::new();
         let file = map.add_file("goto.k816", source);
-        let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false, ..Default::default() })
-            .assembly
-            .expect("compiles");
+        let assembly = k816::compile_to_ca65(
+            &map,
+            file,
+            &k816::Options {
+                optimize: false,
+                ..Default::default()
+            },
+        )
+        .assembly
+        .expect("compiles");
         assert!(
             assembly.contains("sep     #$20"),
             "the accumulator is restored before control leaves:\n{assembly}"
@@ -1201,9 +1215,16 @@ fn a_goto_out_of_a_width_block_restores_it_too() {
         "func f @a8 @i8 {\n    @a16 {\n        goto .again\n.again:\n        nop\n    }\n}\n";
     let mut map = SourceMap::new();
     let file = map.add_file("inside.k816", source);
-    let assembly = k816::compile_to_ca65(&map, file, &k816::Options { optimize: false, ..Default::default() })
-        .assembly
-        .expect("compiles");
+    let assembly = k816::compile_to_ca65(
+        &map,
+        file,
+        &k816::Options {
+            optimize: false,
+            ..Default::default()
+        },
+    )
+    .assembly
+    .expect("compiles");
     assert_eq!(
         assembly.matches("sep     #$20").count(),
         1,
@@ -1219,11 +1240,18 @@ fn a_goto_out_of_a_width_block_restores_it_too() {
 fn compile_codes(text: &str) -> Vec<String> {
     let mut map = SourceMap::new();
     let file = map.add_file("contract.k816", text);
-    k816::compile_to_ca65(&map, file, &k816::Options { optimize: false, ..Default::default() })
-        .diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.code.as_str().to_owned())
-        .collect()
+    k816::compile_to_ca65(
+        &map,
+        file,
+        &k816::Options {
+            optimize: false,
+            ..Default::default()
+        },
+    )
+    .diagnostics
+    .iter()
+    .map(|diagnostic| diagnostic.code.as_str().to_owned())
+    .collect()
 }
 
 /// A register parameter is legal on every section kind; an alias is not.

@@ -847,7 +847,14 @@ fn every_manifest_syntax_group_parses() {
         if row.expect == Expect::Compiles {
             // The group's semantics have landed, so its own syntax has to
             // survive the whole pipeline rather than merely parse.
-            let result = k816::compile_to_ca65(&map, id, &k816::Options { optimize: false, ..Default::default() });
+            let result = k816::compile_to_ca65(
+                &map,
+                id,
+                &k816::Options {
+                    optimize: false,
+                    ..Default::default()
+                },
+            );
             let errors: Vec<&str> = result
                 .diagnostics
                 .iter()

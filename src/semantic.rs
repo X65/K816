@@ -1439,10 +1439,14 @@ impl Analysis {
                 }
                 let outputs = declared_outputs.unwrap_or_default();
                 if outputs != flow.outputs {
+                    // A clause may name flags, so the complaint cannot say
+                    // "registers" — and it is the *list* that disagrees, in
+                    // content or in order, since a call site restates what
+                    // the callee declares entry by entry.
                     self.diagnostics.push(call_flow_mismatch(
                         statement.span,
                         format!(
-                            "this call expects different registers back from `{}` than it declares",
+                            "this call expects a different list back from `{}` than it declares",
                             call.target.text
                         ),
                         format!("the declaration reads `{}`", self.describe_flow(&flow)),

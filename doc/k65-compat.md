@@ -122,15 +122,18 @@ K816 meaning. Three consequences follow, and each is checkable rather than
 aspirational:
 
 * **A construct K816 refuses needs no flag.** The compiler already said so, by
-  name, with what to write instead. That is why fifteen of the eighteen
-  intentionally-changed rules of the original grammar have nothing for
-  `--strict-k65` to add, and why the flag's warning set is two rows rather than
-  eighteen.
+  name, with what to write instead. That is why most of the
+  intentionally-changed rules of the original grammar — sixteen of the
+  eighteen — have nothing for `--strict-k65` to add, and why the flag's warning
+  set is two rows rather than eighteen.
 * **A construct K816 *accepts* and reads differently is the flag's whole
-  subject**, and there is one of it in the original's grammar: `* N` and `%`,
-  the cycle wait, which is decision 11's recorded exception because the
-  original spends an odd cycle on an encoding the 65816 gives a different, real
-  meaning. Reproducing it is not expensive, it is impossible.
+  subject**, and there are two of them in the original's grammar. `* N` and
+  `%`, the cycle wait, is decision 11's recorded exception: the original spends
+  an odd cycle on an encoding the 65816 gives a different, real meaning, so
+  reproducing it is not expensive but impossible. And a section's
+  `evaluator [ … ]` transform, where an assignment inside the body does not
+  outlive the byte it ran for — narrowed to bodies that *do* assign, because a
+  transform that only computes has no difference to report.
 * **What counts as an extension is not the flag's opinion.** It is the `Strict`
   column of [`k65-compat-manifest.md`](k65-compat-manifest.md), mirrored in
   `compat::MANIFEST`; `tests/compat.rs` reads the file and checks the two agree

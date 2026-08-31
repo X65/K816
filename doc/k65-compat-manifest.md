@@ -69,11 +69,16 @@ A row that reads `no` is never `compatible`, and `tests/compat.rs` asserts it.
 What `--strict-k65` does where the row's construct appears (decision 20). It is
 a stated fact per row rather than something derived from `Status`, because
 `Status` does not carry the one thing the flag needs to know — whether the
-construct *compiles*. Fifteen of the eighteen `intentionally-changed` grammar
-rows are already hard errors in K816, and warning at them again would say
-nothing; three more name a corner (an out-of-range wrap, `index(t, -1)`) that
-no node marks, and warning at every `#if`, every bracket and every subscript
-would drown the flag in a program that never touches the corner.
+construct *compiles*. Sixteen of the eighteen `intentionally-changed` grammar
+rows are constructs K816 already refuses. Eleven it refuses outright — `bank`,
+`image` and its two entry forms, the five illegal-opcode forms, the seven
+`z??` spellings, `o` in the flag slot — and warning at those again would repeat
+an error the author has already read, which decision 0 says in as many words.
+The other five it refuses at a *corner* the construct only sometimes reaches:
+a condition on the next line, a reassignment across blocks, a valueless
+standalone `const`, an out-of-range bracket, `index(t, -1)`. No node marks a
+corner, and warning at every `#if`, every bracket and every subscript would
+drown the flag in a program that never reaches one.
 
 | Strict | Meaning |
 | --- | --- |
@@ -81,9 +86,11 @@ would drown the flag in a program that never touches the corner.
 | `warns` | A warning, one per occurrence: the construct compiles under both compilers and means something else here. Only an `intentionally-changed` row reads this. |
 | `—` | Nothing to report, and the `Reason` says which of the three it is: the compiler already refuses the construct, so the flag has nothing to add (decision 0); the row is about behaviour rather than about anything a source can contain; or there is no difference to report. |
 
+That leaves two rows reading `warns`, and twenty-four reading `rejects`.
 `compat::classify` mirrors this column, and `tests/compat.rs` reads the file
 and checks that the set of rows the flag reports over the corpus is the set the
-column marks.
+column marks — in both directions, so a row marked here and produced by nothing
+is a failure rather than a promise.
 
 ## Status of the walk
 
@@ -227,7 +234,7 @@ and nothing else.
 | `k816-tail-call` | No `jsr`+`rts` → `jmp` rewrite | intentionally-changed | — | legacy-k816/peephole-tail-control | Declined in F decision 17 and again in decision 19: the rewrite needs an ABI rule about who may read stack memory, and the corpus has nothing to say about it. |
 | `k816-optimizer-dead-writes` | Dead register and flag writes removed | backend-different | — | legacy-k816/peephole-flag-reg-safety | K816's optimizer proves more writes dead than the legacy compiler's did. Same observable behaviour, fewer bytes. |
 | `k816-entry-abi` | `--entry native,a8,i8`, and no mode prologue at a function entry | K816-extension | — | legacy-k816/peephole-load-coalesce | The legacy K816 emitted `sep #$30` at every `@a8 @i8` entry; K816 treats the annotation as an assertion about the environment (`src/abi.rs`, `K816-E0143`) and emits no prologue, which is why every imported optimizer fixture agrees with the legacy bytes *after* that prologue - `legacy-k816/peephole-load-coalesce` says so in place. `--entry` itself is G11's and is a command-line flag, not a source construct, so `--strict-k65` has nothing in the tree to point at; G11 revisits the `Strict` cell when the flag lands. |
-| `k816-strict-k65` | `--strict-k65` | K816-extension | — | k816/strict-k65 | The switch this table exists for, and the one row whose construct is not in any source: it is a *build*, so its fixture is one run with the flag on. `Strict` reads `—` for the same reason - a walk over the tree has nothing to point at. Nine `K816-E0160` and one `K816-W0161` at one site, and the claim the flag rests on is checked over the whole corpus rather than there: every fixture compiled both ways, and the strict run's diagnostics with those two codes removed equal the ordinary run's. G10b. |
+| `k816-strict-k65` | `--strict-k65` | K816-extension | — | k816/strict-k65 | The switch this table exists for, and the one row whose construct is not in any source: it is a *build*, so its fixture is one run with the flag on. `Strict` reads `—` for the same reason - a walk over the tree has nothing to point at. Eleven `K816-E0160` and one `K816-W0161` at one site, and the claim the flag rests on is checked over the whole corpus rather than there: every fixture compiled both ways, and with those two codes removed the strict run has to say what the ordinary run said - a *prefix* of it where an extension stopped the pipeline before lowering, and all of it where none did. G10b. |
 | `pp-dead-conditions` | A condition inside a region that is not taken is not evaluated | intentionally-changed | — | k65/preprocessor-dead-conditions | Measured: `PPIf` and `PPIfNumber` are the only rules in `compiler.inc` whose action has no `ST` guard (`:15,23-25`), so the original evaluates a nested `#if` inside `#if 0`, and an `#elif` after a branch its chain already took. K816 evaluates a condition only where it can decide something, which is C's rule and what makes `#if 0` usable to comment a block out whatever is inside it. The cost is that a typo inside a dead region waits until someone turns it on. Deliberate, ruled in G5; `k816/preprocessor-dead-region` is K816's side. Nothing about what a dead region *leaves behind* changes: a bracket in one does not run and an `#error` in one does not fire, in both compilers (`k65/preprocessor-dead-effects`). |
 | `newline-subscript` | A `[ … ]` block opening the line after an expression is read as a subscript of it | compatible | — | k65/declaration-then-bracket | **A `[ … ]` block opening the line after a declaration is a top-level evaluator block, in both compilers**, and it was `K816-E0001` here until G10a. K65 is newline-insensitive and K816 gave its expression layer a postfix `[` - its own symbolic subscripts are one - so `const BASE = 0x10` above `[ STEP = 3 ]` parsed as `BASE = 0x10[STEP = 3]`. A valid K65 program reaching a *generic parse error* is the shape decision 0 exists to prevent, and this row carried it as `open` from G5, which read the fix as newline sensitivity and therefore an external scanner. It is not: the postfix binds to its base with **no space between**, which is the rule `field_name` has had since B for the same reason one level down, and which is K816's to make because the postfix is K816's. The *evaluator's* `EvElem [ … ]` is K65's own and stays newline-insensitive, since there `t` above a `[0]` is `t[0]` in the original too (`evelem-index`). The declaration bracket of `var buffer [32]` accepts both spellings, so only the postfix narrowed. The cost is that `COMP [2]` with a space is no longer a subscript; no source in this repository writes it. Eighth grammar regeneration; `k65/declaration-then-bracket` is the measurement and the three declaration shapes that end in a value are all in it. |
 | `k65-corpus-whole-program` | — | intentionally-changed | — | k65/whole-program | Not a construct: the row the corpus's one whole program answers to, and its status is the conjunction of the rows it exercises. Those are settled now, and the strongest of them decides: the program uses `bank` and `image`, both `intentionally-changed` removals with a diagnostic of their own, so this row is that. What it is evidence for is the criterion decision 0 states as a whole-program property - **no `K816-E0001` anywhere in it**, which has held since G2 and holds with three more constructs in the file since G7. The remaining `K816-E0101`s are an environment gap, not a compatibility one: the original's system script declares the TIA registers and K816 has no equivalent, so `var WSYNC = 0x02` and its neighbours make them go. |

@@ -436,10 +436,12 @@ fn the_fullstack_example_states_the_environment_it_runs_in() {
 /// environment from a check that repeats it.
 #[test]
 fn the_check_follows_the_environment_the_build_states() {
-    let wide = EntryEnvironment {
-        a: RegisterWidth::W16,
-        ..EntryEnvironment::default()
-    };
+    let wide = EntryEnvironment::new(
+        k816::op::EmulationState::Native,
+        RegisterWidth::W16,
+        RegisterWidth::W8,
+    )
+    .expect("a machine that exists");
     let source = "func main @a8 {\n    a = #$01\n    return\n}\n";
 
     // True under the startup stub's environment, false under one that hands
@@ -463,10 +465,12 @@ fn the_check_follows_the_environment_the_build_states() {
 /// test above and still size every immediate against the old constant.
 #[test]
 fn an_unannotated_entry_point_sizes_its_immediates_against_the_environment() {
-    let wide = EntryEnvironment {
-        a: RegisterWidth::W16,
-        ..EntryEnvironment::default()
-    };
+    let wide = EntryEnvironment::new(
+        k816::op::EmulationState::Native,
+        RegisterWidth::W16,
+        RegisterWidth::W8,
+    )
+    .expect("a machine that exists");
     let source = "func main {\n    a = #$0102\n    return\n}\n";
 
     // Eight-bit environment: the immediate does not fit the accumulator.
@@ -496,11 +500,7 @@ fn an_unannotated_entry_point_sizes_its_immediates_against_the_environment() {
 /// environment is false, and it is the same `E0143`.
 #[test]
 fn an_emulation_entry_leaves_no_width_to_declare() {
-    let emulation = EntryEnvironment {
-        e: k816::op::EmulationState::Emulation,
-        a: RegisterWidth::W8,
-        i: RegisterWidth::W8,
-    };
+    let emulation = EntryEnvironment::emulation();
 
     // Restating what emulation mode forces is a true claim, like any other.
     let restated = "func main @a8 @i8 {\n    a = #$01\n    return\n}\n";
@@ -525,11 +525,7 @@ fn an_emulation_entry_leaves_no_width_to_declare() {
 /// machine, and an eight-bit one goes on compiling.
 #[test]
 fn a_rep_in_emulation_mode_leaves_the_width_where_it_was() {
-    let emulation = EntryEnvironment {
-        e: k816::op::EmulationState::Emulation,
-        a: RegisterWidth::W8,
-        i: RegisterWidth::W8,
-    };
+    let emulation = EntryEnvironment::emulation();
     let source = "func main {\n    rep #$20\n    a = #$0102\n    return\n}\n";
 
     // Native: the `rep` widens and the immediate fits.
@@ -558,11 +554,7 @@ fn a_rep_in_emulation_mode_leaves_the_width_where_it_was() {
 /// byte.
 #[test]
 fn a_callee_under_an_emulation_entry_does_not_inherit_the_guarantee() {
-    let emulation = EntryEnvironment {
-        e: k816::op::EmulationState::Emulation,
-        a: RegisterWidth::W8,
-        i: RegisterWidth::W8,
-    };
+    let emulation = EntryEnvironment::emulation();
     let source = "func helper {\n    rep #$20\n    a = #$0102\n    return\n}\n\
                   func main {\n    call helper\n    return\n}\n";
 
@@ -592,11 +584,7 @@ fn a_callee_under_an_emulation_entry_does_not_inherit_the_guarantee() {
 /// `plp` in a program whose widths are pinned by the machine.
 #[test]
 fn a_restored_status_byte_cannot_widen_a_register_in_emulation_mode() {
-    let emulation = EntryEnvironment {
-        e: k816::op::EmulationState::Emulation,
-        a: RegisterWidth::W8,
-        i: RegisterWidth::W8,
-    };
+    let emulation = EntryEnvironment::emulation();
     let source = "func main {\n    php\n    plp\n    a = #$01\n    return\n}\n";
 
     // Native: the status byte could have said anything, so the width below
@@ -628,11 +616,7 @@ fn a_restored_status_byte_cannot_widen_a_register_in_emulation_mode() {
 /// keeps its `.a16` under the default environment.
 #[test]
 fn emission_reads_a_width_effect_through_the_same_emulation_state_the_model_does() {
-    let emulation = EntryEnvironment {
-        e: k816::op::EmulationState::Emulation,
-        a: RegisterWidth::W8,
-        i: RegisterWidth::W8,
-    };
+    let emulation = EntryEnvironment::emulation();
     let source = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
 
     let (_, assembly) = compile_in(emulation, source);
@@ -656,4 +640,174 @@ fn emission_reads_a_width_effect_through_the_same_emulation_state_the_model_does
         !assembly.contains("width is unknown from here"),
         "{assembly}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Sixteen bits where emulation mode is known (K816-E0163)
+// ---------------------------------------------------------------------------
+
+/// Every route to a widening `REP` K816 authors itself is refused where the
+/// machine is known to be in emulation mode.
+///
+/// The instruction assembles and does nothing there — M and X are forced to
+/// one — so the bridge succeeds on paper and the code below it is assembled
+/// sixteen bits wide while the CPU runs it at eight, reading the next opcode
+/// as operand data. There are five ways to reach a bridge and they are
+/// checked in one place, so this asserts the ones a source can spell.
+#[test]
+fn a_widening_bridge_is_refused_where_emulation_mode_is_known() {
+    let emulation = EntryEnvironment::emulation();
+
+    // A scoped block: the `rep` is generated to enter it.
+    let scoped = "func main {\n    @a16 {\n        a = #$1234\n    }\n    return\n}\n";
+    assert_eq!(errors_in(emulation, scoped), ["K816-E0163"]);
+    assert_eq!(errors(scoped), Vec::<String>::new());
+
+    // A managed call to a wide callee: the `rep` is the call-site bridge.
+    // The callee itself is legal — it may be called from native code — so it
+    // is the *call* that is refused, and only under this environment.
+    let bridged = "func helper @a16 {\n    a = #$1234\n    return\n}\n\
+                   func main {\n    call helper\n    return\n}\n";
+    assert_eq!(errors_in(emulation, bridged), ["K816-E0163"]);
+    assert_eq!(errors(bridged), Vec::<String>::new());
+
+    // The index axis reaches it too, and both axes at once are two refusals.
+    let both = "func main {\n    @a16 @i16 {\n        nop\n    }\n    return\n}\n";
+    assert_eq!(errors_in(emulation, both), ["K816-E0163", "K816-E0163"]);
+
+    // Narrowing is never refused: eight bits is what the machine already is.
+    let narrow = "func main {\n    @a8 {\n        a = #$01\n    }\n    return\n}\n";
+    assert_eq!(errors_in(emulation, narrow), Vec::<String>::new());
+}
+
+/// After an `xce` the refusal lifts, because the flag is no longer known.
+///
+/// This is the line between `K816-E0163` and the escape hatch: `@a16` where
+/// emulation is *unknown* is the documented assertion for exactly the
+/// `xce`-then-widen pattern, and it must keep working. Only a *known*
+/// emulation state contradicts it.
+#[test]
+fn a_sixteen_bit_assertion_is_still_the_escape_hatch_once_the_flag_is_unknown() {
+    let emulation = EntryEnvironment::emulation();
+    let source = "func main {\n    clc\n    xce\n    @a16 {\n        a = #$1234\n    }\n    \
+                  return\n}\n";
+    assert_eq!(errors_in(emulation, source), Vec::<String>::new());
+
+    // And an ordinary function under the same build, which starts with the
+    // flag unknown for the same reason.
+    let callee = "func wide {\n    @a16 {\n        a = #$1234\n    }\n    return\n}\n\
+                  func main {\n    call wide\n    return\n}\n";
+    assert_eq!(errors_in(emulation, callee), Vec::<String>::new());
+}
+
+/// A known emulation state is not upgraded by an annotation that contradicts
+/// it.
+///
+/// `@a16` used to set the tracked emulation flag to `Native` whenever it
+/// appeared — sound where the flag is unknown, since the author knows
+/// something the compiler does not, and wrong where the *build* has stated
+/// the machine. Without this the refusal above would fire once and then every
+/// `rep` below it would be believed, which is the miscompile arriving one
+/// statement later.
+#[test]
+fn an_annotation_does_not_overrule_what_the_build_stated_about_the_machine() {
+    let emulation = EntryEnvironment::emulation();
+    let source = "func main {\n    @a16 {\n        nop\n    }\n    rep #$20\n    \
+                  a = #$1234\n    return\n}\n";
+    let codes = errors_in(emulation, source);
+    assert!(
+        codes.contains(&"K816-E0163".to_owned()),
+        "the block is refused: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"K816-E0103".to_owned()),
+        "and the `rep` below it still establishes nothing: {codes:?}"
+    );
+}
+
+/// Emulation mode does not survive a call, because no contract can carry it.
+///
+/// A callee may run `clc; xce`, satisfy its declared *width* exit contract,
+/// and return onto a machine that has left emulation mode. The caller cannot
+/// see that — a contract describes widths only — so believing `Emulation`
+/// afterwards would size an immediate at one byte for a register the callee
+/// had just widened, and the CPU would eat the following opcode.
+///
+/// `Native` deliberately does survive: every program in the tree rests on
+/// that assumption and it is argued in `abi::callee_emulation`. The point
+/// here is that the *new* state does not inherit it.
+#[test]
+fn emulation_mode_does_not_survive_a_call() {
+    let emulation = EntryEnvironment::emulation();
+    // `leave` really does change the machine, and its width contract is
+    // still satisfiable, so nothing else refuses this.
+    let source = "func leave -> @a8 @i8 {\n    clc\n    xce\n    sep #$30\n    return\n}\n\
+                  func main {\n    call leave\n    rep #$20\n    a = #$01\n    return\n}\n";
+    let codes = errors_in(emulation, source);
+    assert!(
+        codes.contains(&"K816-E0104".to_owned()),
+        "the `rep` after the call establishes nothing, so the immediate is \
+         unsizeable rather than sized at one byte: {codes:?}"
+    );
+
+    // Before the call the state is still known, so the same `rep` is a
+    // no-op with an exact answer and the eight-bit immediate compiles.
+    let before = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
+    assert_eq!(errors_in(emulation, before), Vec::<String>::new());
+}
+
+/// An environment that describes no machine cannot be built, by any route.
+///
+/// `--entry` refused the spelling, and a library caller assembling the struct
+/// went straight past that check — so the fields are private and `new` is the
+/// one door. Everything downstream trusts the value, which is only safe if
+/// there is no way to hand it a false one.
+#[test]
+fn an_environment_that_describes_no_machine_cannot_be_constructed() {
+    use k816::op::EmulationState;
+
+    for (e, a, i) in [
+        (
+            EmulationState::Emulation,
+            RegisterWidth::W16,
+            RegisterWidth::W8,
+        ),
+        (
+            EmulationState::Emulation,
+            RegisterWidth::W8,
+            RegisterWidth::W16,
+        ),
+        (
+            EmulationState::Emulation,
+            RegisterWidth::W16,
+            RegisterWidth::W16,
+        ),
+        // "I do not know" is not a statement about the machine, and an entry
+        // environment is nothing but a statement about the machine.
+        (
+            EmulationState::Unknown,
+            RegisterWidth::W8,
+            RegisterWidth::W8,
+        ),
+    ] {
+        assert!(
+            EntryEnvironment::new(e, a, i).is_err(),
+            "{e:?} {a:?} {i:?} was accepted"
+        );
+    }
+
+    // The four that do describe a machine are built without complaint, and
+    // the emulation one has the widths the machine forces.
+    for (a, i) in [
+        (RegisterWidth::W8, RegisterWidth::W8),
+        (RegisterWidth::W8, RegisterWidth::W16),
+        (RegisterWidth::W16, RegisterWidth::W8),
+        (RegisterWidth::W16, RegisterWidth::W16),
+    ] {
+        assert!(EntryEnvironment::new(EmulationState::Native, a, i).is_ok());
+    }
+    let emulation = EntryEnvironment::emulation();
+    assert_eq!(emulation.e(), EmulationState::Emulation);
+    assert_eq!(emulation.a(), RegisterWidth::W8);
+    assert_eq!(emulation.i(), RegisterWidth::W8);
 }

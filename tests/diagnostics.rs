@@ -595,6 +595,12 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
         "K816-E0162",
         "tests/cli.rs: the_entry_flag_refuses_a_spelling_that_names_no_machine",
     ),
+    // Reachable only under `--entry emulation`, so `FAMILY`'s
+    // default-options compile cannot produce it either.
+    (
+        "K816-E0163",
+        "tests/abi.rs: a_widening_bridge_is_refused_where_emulation_mode_is_known",
+    ),
 ];
 
 /// `K816-E0105` is unreachable from source, and this is why.

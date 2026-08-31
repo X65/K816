@@ -125,13 +125,48 @@ func main {             // under --entry emulation
 }
 ```
 
+Sixteen bits are not merely unproven there, they are **impossible**, so
+anything that would have K816 emit a widening `REP` of its own is refused with
+`K816-E0163` — a scoped `@a16 { … }` block, a bare `@a16` annotation, and a
+managed `call` to a callee whose entry contract asks for one:
+
+```k65
+func helper @a16 { … }
+
+func main {             // under --entry emulation
+    @a16 {              // K816-E0163: cannot be established here
+        lda #$1234
+    }
+    call helper         // K816-E0163: this call would bridge to @a16
+}
+```
+
+The callee is not at fault and is not refused — `helper` may be called from
+native code elsewhere. It is the *call site* that cannot establish what it
+promises.
+
+The refusal lifts as soon as the flag stops being known. After `clc; xce` the
+mode is `unknown`, and there `@a16` is the documented assertion for exactly
+the `xce`-then-widen pattern:
+
+```k65
+func main {             // under --entry emulation
+    clc
+    xce                 // the flag is unknown from here
+    @a16 {              // allowed: the assertion is the escape hatch
+        lda #$1234
+    }
+}
+```
+
 An **ordinary function** under `--entry emulation` starts with emulation mode
-*unknown* rather than emulation. Nothing carries emulation mode across a
-call — there is no syntax to declare it, so no contract can — and a caller
-that ran `xce` before the call has left the machine somewhere the callee
-cannot see. Refusing to size an immediate there costs working code; sizing it
-against a guarantee no call site made writes a wrong byte. `@a8`/`@a16` in the
-body is the escape hatch, as it is after any `xce`.
+*unknown* rather than emulation, and so does an entry point **after a call**.
+Nothing carries emulation mode across a call — there is no syntax to declare
+it, so no contract can — and a callee may run `clc; xce`, satisfy its declared
+width contract, and return onto a machine that has left emulation mode.
+Refusing to size an immediate there costs working code; sizing it against a
+guarantee no call site made writes a wrong byte. `@a8`/`@a16` in the body is
+the escape hatch, as it is after any `xce`.
 
 Target *names* are deliberately absent: a name is a mapping onto these axes,
 and the configuration it would have to agree with does not exist yet.

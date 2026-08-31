@@ -179,6 +179,38 @@ func wide_all @a16 @i16 {
     },
     Row {
         section: "The entry point",
+        // The `K816-E0163` listing: a scoped block whose `rep` is a no-op.
+        source: "func main {\n    @a16 {\n        lda #$1234\n    }\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0163"),
+        entry: Some("emulation"),
+    },
+    Row {
+        section: "The entry point",
+        // And the call bridge beside it, which is the same refusal reached a
+        // different way.
+        source: "func helper @a16 {\n    lda #$1234\n}\n\nfunc main {\n    call helper\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0163"),
+        entry: Some("emulation"),
+    },
+    Row {
+        section: "The entry point",
+        // The escape hatch, which is the line the refusal is drawn at: once
+        // `xce` has made the flag unknown, `@a16` is the assertion again.
+        source: "func main {\n    clc\n    xce\n    @a16 {\n        lda #$1234\n    }\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &["rep     #$20", "lda     #$1234"],
+        diagnostic: None,
+        entry: Some("emulation"),
+    },
+    Row {
+        section: "The entry point",
         // And the way to get wider registers in `main`: widen the body.
         source: "func main @a8 {\n    @a16 {\n        lda #$1234\n    }\n}\n",
         stage: Stage::Modelled,

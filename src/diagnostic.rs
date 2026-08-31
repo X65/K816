@@ -371,6 +371,21 @@ impl DiagnosticCode {
     /// eight bits, so `emulation,a16` describes a machine that does not exist
     /// (`doc/w65c816s.md`) — and a build log should be able to grep for it.
     pub const ENTRY_SPELLING: Self = Self("K816-E0162");
+    /// Sixteen bits are asked for where the machine is known to be in
+    /// emulation mode.
+    ///
+    /// Not "the width is unproven" — [`UNKNOWN_WIDTH`](Self::UNKNOWN_WIDTH)
+    /// is that. This is the state where K816 knows the answer and the answer
+    /// is no: `doc/w65c816s.md` has the M and X flags forced to one in
+    /// emulation mode, so the `REP` a bridge would emit is a hardware no-op
+    /// and the register stays eight bits wide. Emitting it anyway assembles
+    /// the code below at sixteen bits and runs it at eight, which reads the
+    /// following opcode as operand data.
+    ///
+    /// Reachable only under `--entry emulation`, and only where the state is
+    /// *known*: after an `xce` the flag is `Unknown` and a 16-bit annotation
+    /// is the documented escape hatch, not a contradiction.
+    pub const EMULATION_WIDTH: Self = Self("K816-E0163");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -658,6 +673,7 @@ mod tests {
         DiagnosticCode::STRICT_K65_EXTENSION,
         DiagnosticCode::STRICT_K65_CHANGED,
         DiagnosticCode::ENTRY_SPELLING,
+        DiagnosticCode::EMULATION_WIDTH,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

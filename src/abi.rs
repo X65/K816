@@ -109,14 +109,27 @@ impl std::fmt::Display for EntrySpelling {
 /// Three axes, because they are the three the width model tracks. Banks,
 /// memory layout, and the direct-page register are not here: an ABI fact
 /// nothing can check is a comment with a struct around it.
+/// The fields are private, and the only ways in are [`Self::STARTUP_STUB`],
+/// [`Self::emulation`], [`Self::parse`] and [`Self::new`] — because two of
+/// the eighteen combinations describe no machine. Emulation mode forces the M
+/// and X flags to one (`doc/w65c816s.md`), so `Emulation` with a 16-bit
+/// register is not a configuration K816 should refuse to *compile*; it is one
+/// nothing should be able to hand it. `--entry` already refused the spelling,
+/// and a library caller assembling the struct directly went straight past
+/// that check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntryEnvironment {
     /// Whether the CPU has left emulation mode.
-    pub e: EmulationState,
+    ///
+    /// Never [`EmulationState::Unknown`]: this is what the build *states*
+    /// about its runtime, and "I do not know" is not a statement. A body that
+    /// cannot be sure reaches `Unknown` through
+    /// [`Self::callee_emulation`] or an `xce`, which is a different fact.
+    e: EmulationState,
     /// The accumulator width the entry point starts with.
-    pub a: RegisterWidth,
+    a: RegisterWidth,
     /// The index-register width the entry point starts with.
-    pub i: RegisterWidth,
+    i: RegisterWidth,
 }
 
 impl Default for EntryEnvironment {
@@ -267,21 +280,75 @@ impl EntryEnvironment {
             }
         }
 
+        // Emulation pins both axes at eight whatever the default is, so that
+        // a later change to the default cannot make `--entry emulation`
+        // describe a machine that does not exist. `new` is the one place the
+        // invariant is enforced; the contradiction above is checked first
+        // only so the message can name the axis the author wrote.
         let default = Self::default();
-        Ok(Self {
-            e: e.unwrap_or(default.e),
-            // Emulation pins both axes at eight whatever the default is, so
-            // that a later change to the default cannot make `--entry
-            // emulation` describe a machine that does not exist.
-            a: match e {
-                Some(EmulationState::Emulation) => RegisterWidth::W8,
-                _ => a.map_or(default.a, |(width, _)| width),
-            },
-            i: match e {
-                Some(EmulationState::Emulation) => RegisterWidth::W8,
-                _ => i.map_or(default.i, |(width, _)| width),
-            },
-        })
+        if e == Some(EmulationState::Emulation) {
+            return Ok(Self::emulation());
+        }
+        Self::new(
+            e.unwrap_or(default.e),
+            a.map_or(default.a, |(width, _)| width),
+            i.map_or(default.i, |(width, _)| width),
+        )
+    }
+
+    /// The environment a machine running in emulation mode hands over.
+    ///
+    /// Its widths are not a choice, so this takes no arguments: emulation
+    /// mode forces both registers to eight bits.
+    pub fn emulation() -> Self {
+        Self {
+            e: EmulationState::Emulation,
+            a: RegisterWidth::W8,
+            i: RegisterWidth::W8,
+        }
+    }
+
+    /// Builds an environment from three axes, refusing the ones that describe
+    /// no machine.
+    ///
+    /// The same refusal `--entry` reports, reachable by a library caller who
+    /// never went through a command line. `parse` checks the contradiction
+    /// first so that it can name the axis the *author wrote*; this is the
+    /// backstop that makes the illegal state unconstructible rather than
+    /// merely unspellable.
+    pub fn new(
+        e: EmulationState,
+        a: RegisterWidth,
+        i: RegisterWidth,
+    ) -> Result<Self, EntrySpelling> {
+        match e {
+            EmulationState::Unknown => Err(EntrySpelling::new(
+                "an entry environment states what the machine is, and `unknown` is not a \
+                 statement about it",
+            )),
+            EmulationState::Emulation if a == RegisterWidth::W16 || i == RegisterWidth::W16 => {
+                Err(EntrySpelling::new(
+                    "emulation mode forces both registers to 8 bits, so a 16-bit entry width \
+                     describes no machine",
+                ))
+            }
+            EmulationState::Native | EmulationState::Emulation => Ok(Self { e, a, i }),
+        }
+    }
+
+    /// Whether this environment has left emulation mode.
+    pub fn e(self) -> EmulationState {
+        self.e
+    }
+
+    /// The accumulator width it hands the entry point.
+    pub fn a(self) -> RegisterWidth {
+        self.a
+    }
+
+    /// The index-register width it hands the entry point.
+    pub fn i(self) -> RegisterWidth {
+        self.i
     }
 
     /// This environment as a tracked width state.

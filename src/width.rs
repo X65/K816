@@ -1380,7 +1380,14 @@ fn solve(
         }
     }
     let mut diagnostics = graph.diagnostics;
-    record_bridges(&mut analysis, nodes, &r#in, &graph.blocks, callees);
+    record_bridges(
+        &mut analysis,
+        nodes,
+        &r#in,
+        &graph.blocks,
+        callees,
+        &mut diagnostics,
+    );
     report_unbridged_calls(nodes, &r#in, callees, &mut diagnostics);
     (analysis, diagnostics)
 }
@@ -1419,7 +1426,17 @@ fn apply(
             // An 8-bit assertion says nothing: 8-bit is what emulation mode
             // forces, so `@a8` is equally true either way and leaves the
             // emulation state exactly as unknown as it found it.
-            if axes.a == Some(RegisterWidth::W16) || axes.i == Some(RegisterWidth::W16) {
+            //
+            // And the escape hatch only opens where the flag is *unknown*.
+            // Under a known `Emulation` the build has stated what machine
+            // this is, and an annotation inside a body does not get to
+            // overrule the command line — `record_bridges` refuses the
+            // widening with `K816-E0163`. The state is left alone here so
+            // that the refusal is not followed by a second, contradictory
+            // reading of every `rep` below it.
+            if fact.mode.e == EmulationState::Unknown
+                && (axes.a == Some(RegisterWidth::W16) || axes.i == Some(RegisterWidth::W16))
+            {
                 fact.mode.e = EmulationState::Native;
             }
             if let Some(width) = axes.a {
@@ -1476,6 +1493,19 @@ fn apply(
             fact.mode = contract.exit.apply(fact.mode);
             fact.touched.a |= matches!(contract.exit.a, AxisExit::Fixed(_));
             fact.touched.i |= matches!(contract.exit.i, AxisExit::Fixed(_));
+            // A contract describes widths and cannot describe the emulation
+            // flag, so a callee that runs `clc; xce` and still satisfies its
+            // exit contract leaves the caller believing a machine it is no
+            // longer on. `Native` survives this — every program in the tree
+            // rests on that assumption and `abi::EntryEnvironment::
+            // callee_emulation` is where it is argued — but `Emulation` is
+            // new and does not inherit it. Dropping to `Unknown` costs a
+            // `rep` after a call in an emulation program; keeping it would
+            // size an immediate at one byte for a register the callee had
+            // just widened.
+            if fact.mode.e == EmulationState::Emulation {
+                fact.mode.e = EmulationState::Unknown;
+            }
             fact
         }
     }
@@ -1628,12 +1658,54 @@ fn unbridged_native_call(span: Span, axis: Axis, required: RegisterWidth) -> Dia
     .with_docs("doc/register-width-aware-syntax.md#call-site-bridging")
 }
 
+/// Sixteen bits asked for where the machine is known to be in emulation mode.
+///
+/// The distinction from `K816-E0104` is the whole message: that one says the
+/// width could not be determined, this one says it *was* determined and the
+/// answer is eight. A `REP` here assembles as an instruction and executes as
+/// nothing.
+fn emulation_width(span: Span, axis: Axis, reason: Reason) -> Diagnostic {
+    let wide = axis.annotation(RegisterWidth::W16);
+    let narrow = axis.annotation(RegisterWidth::W8);
+    let (what, help) = match reason {
+        Reason::CallBridge(_) => (
+            "this call reaches a function that expects it",
+            format!(
+                "give the callee a `{narrow}` contract, or leave emulation mode with \
+                 `clc; xce` before the call \u{2014} an annotation there is the escape hatch \
+                 once the flag is no longer known"
+            ),
+        ),
+        _ => (
+            "this asks for a 16-bit register",
+            format!(
+                "drop to `{narrow}`, or leave emulation mode with `clc; xce` first \u{2014} \
+                 after an `xce` the flag is no longer known and `{wide}` is the documented \
+                 assertion for exactly that"
+            ),
+        ),
+    };
+    Diagnostic::error(
+        DiagnosticCode::EMULATION_WIDTH,
+        format!("`{wide}` cannot be established while the machine is in emulation mode"),
+        Label::new(span, what),
+    )
+    .with_note(
+        "the M and X flags are always set in emulation mode, so the `rep` K816 would emit \
+         here executes and changes nothing, leaving the code below assembled 16 bits wide \
+         and running 8 bits wide",
+    )
+    .with_help(help)
+    .with_docs("doc/register-width-aware-syntax.md#the-entry-point")
+}
+
 fn record_bridges(
     analysis: &mut WidthAnalysis,
     nodes: &[Node],
     r#in: &[Fact],
     blocks: &[BlockRange],
     callees: &BTreeMap<SymbolId, CalleeContract>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     for (index, node) in nodes.iter().enumerate() {
         if r#in[index].is_bottom() {
@@ -1693,10 +1765,25 @@ fn record_bridges(
         };
         let state = r#in[index].mode;
         let mut bridges = Vec::new();
-        for (width, mask, current) in [(axes.a, P_MASK_M, state.a), (axes.i, P_MASK_X, state.i)] {
+        for (axis, width, mask, current) in [
+            (Axis::Accumulator, axes.a, P_MASK_M, state.a),
+            (Axis::Index, axes.i, P_MASK_X, state.i),
+        ] {
             let Some(width) = width else { continue };
             if current == AxisState::Known(width) {
                 continue; // Already established; there is nothing to emit.
+            }
+            // This is the one place K816 *authors* a `REP`/`SEP` of its own,
+            // and in a known emulation state a widening one cannot work: the
+            // CPU forces M and X to one, so the instruction runs and changes
+            // nothing while everything below it is assembled sixteen bits
+            // wide. Every route to a widening bridge passes here — a scoped
+            // `@a16` block, a bare annotation, a label bridge, a block
+            // restore, and a managed `call` to a wide callee — so one check
+            // covers them instead of one per `Transfer` arm.
+            if width == RegisterWidth::W16 && state.e == EmulationState::Emulation {
+                diagnostics.push(emulation_width(node.span, axis, reason));
+                continue;
             }
             bridges.push(Bridge {
                 width,

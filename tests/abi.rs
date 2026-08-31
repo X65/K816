@@ -579,3 +579,81 @@ fn a_callee_under_an_emulation_entry_does_not_inherit_the_guarantee() {
     let inline_body = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
     assert_eq!(errors_in(emulation, inline_body), Vec::<String>::new());
 }
+
+/// In emulation mode nothing but an `xce` can change a register width — not
+/// even the instructions the effect table gives up on.
+///
+/// `RTI` and `PLP` restore a status byte K816 cannot read, so under `Native`
+/// they make both widths unknown and every immediate below them unsizeable.
+/// Under `Emulation` there is nothing to be unsure about: M and X are forced
+/// to one, so whatever byte comes back, both registers are still eight bits.
+/// This is the second half of the same rule `believe` is the first half of,
+/// and without it `--entry emulation` would report an unknown width at every
+/// `plp` in a program whose widths are pinned by the machine.
+#[test]
+fn a_restored_status_byte_cannot_widen_a_register_in_emulation_mode() {
+    let emulation = EntryEnvironment {
+        e: k816::op::EmulationState::Emulation,
+        a: RegisterWidth::W8,
+        i: RegisterWidth::W8,
+    };
+    let source = "func main {\n    php\n    plp\n    a = #$01\n    return\n}\n";
+
+    // Native: the status byte could have said anything, so the width below
+    // it is unknown and the immediate cannot be sized.
+    assert_eq!(errors(source), ["K816-E0104"]);
+
+    // Emulation: still eight bits, and the immediate compiles.
+    assert_eq!(errors_in(emulation, source), Vec::<String>::new());
+
+    // `xce` is the exception, and it is the exception in *both*: it decides
+    // the emulation flag from the carry, so nothing below it is known.
+    let exchanged = "func main {\n    xce\n    a = #$01\n    return\n}\n";
+    assert_eq!(errors_in(emulation, exchanged), ["K816-E0104"]);
+    assert_eq!(errors(exchanged), ["K816-E0104"]);
+}
+
+/// What ca65 is told and what the model believes are one answer, in emulation
+/// mode too.
+///
+/// This is the half a source-level test cannot see. The width model reads an
+/// instruction's effect through the emulation state; emission used to read it
+/// straight off the effect table, so a `rep #$20` under `--entry emulation`
+/// made the model say "still 8-bit" and made the assembly say `.a16`. ca65
+/// sizes immediates from the directive, so the next `lda #` would have been
+/// assembled two bytes wide for a register the CPU is running at one — and
+/// the byte after it read as the operand's high half.
+///
+/// Both are checked, because the claim is that they *agree*: the same source
+/// keeps its `.a16` under the default environment.
+#[test]
+fn emission_reads_a_width_effect_through_the_same_emulation_state_the_model_does() {
+    let emulation = EntryEnvironment {
+        e: k816::op::EmulationState::Emulation,
+        a: RegisterWidth::W8,
+        i: RegisterWidth::W8,
+    };
+    let source = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
+
+    let (_, assembly) = compile_in(emulation, source);
+    assert!(
+        !assembly.contains(".a16"),
+        "the `rep` establishes nothing on this machine: {assembly}"
+    );
+    assert!(assembly.contains("lda     #$01"), "{assembly}");
+
+    // Under the default the `rep` really does widen, and the directive says
+    // so — which is what makes the assertion above about `emulation`.
+    let (_, assembly) = compile_in(EntryEnvironment::default(), source);
+    assert!(assembly.contains(".a16"), "{assembly}");
+
+    // `PLP` restores a status byte, and in emulation mode no status byte can
+    // widen a register — so the assembly says nothing about an unknown width
+    // where the default's assembly has to.
+    let restoring = "func main {\n    php\n    plp\n    a = #$01\n    return\n}\n";
+    let (_, assembly) = compile_in(emulation, restoring);
+    assert!(
+        !assembly.contains("width is unknown from here"),
+        "{assembly}"
+    );
+}

@@ -1489,6 +1489,13 @@ fn apply(
 /// is the answer in both modes — while a *widening* one yields `Unknown`,
 /// because `REP` cannot widen a register the CPU is forcing to 8 bits. The
 /// asymmetry is the whole point: `SEP` is safe to believe, `REP` is not.
+///
+/// Under `Emulation` the answer is *known* in every case, which is what makes
+/// that state stronger than `Unknown` rather than a synonym for it: a
+/// widening transition establishes 8 bits (`believe`), and so does a
+/// transition the effect table cannot describe at all — `RTI` and `PLP`
+/// restore a status byte, and no status byte can widen a register in
+/// emulation mode.
 fn apply_effect(incoming: Fact, effect: WidthEffect, exchanges_emulation: bool) -> Fact {
     let mut fact = incoming;
     match effect {
@@ -1502,6 +1509,21 @@ fn apply_effect(incoming: Fact, effect: WidthEffect, exchanges_emulation: bool) 
                 fact.mode.i = believe(width, fact.mode.e);
                 fact.touched.i = true;
             }
+        }
+        // `RTI` and `PLP` restore a status byte the model cannot read, and
+        // `XCE` decides the emulation flag from the carry. In *emulation*
+        // mode the first two cannot widen anything: M and X are forced to
+        // one, so whatever byte comes back off the stack, both registers are
+        // still eight bits wide. `XCE` is the one that really is unknown
+        // afterwards, and it says so through `exchanges_emulation` below —
+        // which is read *before* this, so the exchange does not get to
+        // benefit from the state it is leaving.
+        WidthEffect::Unknown
+            if fact.mode.e == EmulationState::Emulation && !exchanges_emulation =>
+        {
+            fact.mode.a = AxisState::Known(RegisterWidth::W8);
+            fact.mode.i = AxisState::Known(RegisterWidth::W8);
+            fact.touched = Touched { a: true, i: true };
         }
         WidthEffect::Unknown => {
             fact.mode.a = AxisState::Unknown;
@@ -1527,7 +1549,13 @@ fn apply_effect(incoming: Fact, effect: WidthEffect, exchanges_emulation: bool) 
 /// under `--entry emulation` a program that never leaves emulation mode is
 /// fully sized, and a stray `rep` in it is not an error but a no-op — which is
 /// what the machine does with it.
-fn believe(width: RegisterWidth, emulation: EmulationState) -> AxisState {
+///
+/// `emit_ca65` calls this too rather than reading the effect table directly,
+/// so that what ca65 is told and what the model believes are one answer. They
+/// disagreed for exactly as long as `Emulation` existed and this was private:
+/// the model said the accumulator was still 8-bit after a `rep` and emission
+/// wrote `.a16`.
+pub(crate) fn believe(width: RegisterWidth, emulation: EmulationState) -> AxisState {
     match (width, emulation) {
         (RegisterWidth::W8, _) | (RegisterWidth::W16, EmulationState::Native) => {
             AxisState::Known(width)

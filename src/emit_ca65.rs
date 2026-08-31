@@ -40,7 +40,7 @@
 use std::collections::HashMap;
 
 use crate::effects::WidthEffect;
-use crate::isa::{ImmediateWidthClass, RegisterWidth, spec};
+use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
 use crate::linkage::Linkage;
 use crate::op::{
     AxisState, DataOp, EmulationState, IndexRegister, Instruction, KFunction, KOp, KOpKind,
@@ -523,6 +523,14 @@ enum Axis {
 struct WidthState {
     a: Option<RegisterWidth>,
     i: Option<RegisterWidth>,
+    /// The emulation state the model last claimed.
+    ///
+    /// Here for the same reason it is in [`crate::op::ModeState`]: an
+    /// instruction's width effect is what the effect table says only in
+    /// native mode. Emission reads it through the same
+    /// [`crate::width::believe`] the solver uses, so ca65 is told what the
+    /// model believes rather than what the encoding literally requests.
+    e: EmulationState,
 }
 
 impl WidthState {
@@ -535,6 +543,9 @@ impl WidthState {
     /// have to be tested together: a change that removes the refusal must
     /// fail on this side too.
     fn claim(&mut self, state: ModeState, op: &KOp, unit: &Unit<'_>, out: &mut String) {
+        // Before the widths, because it is what the *next* instruction's
+        // effect is read through.
+        self.e = state.e;
         let why = reason_text(op, unit);
         let why = why.as_str();
         let before = out.len();
@@ -615,23 +626,52 @@ impl WidthState {
     /// mnemonic match would need one arm per instruction. An unknown
     /// transition drops the tracked widths so nothing downstream emits a
     /// width claim K816 cannot justify.
-    fn apply(&mut self, width: WidthEffect, out: &mut String) {
+    fn apply(&mut self, width: WidthEffect, exchanges_emulation: bool, out: &mut String) {
+        let why = "the width the instruction above established";
         match width {
             WidthEffect::Unchanged => {}
             WidthEffect::Known { a, i } => {
+                // Read through the emulation state, not off the encoding: a
+                // `rep #$20` in emulation mode requests sixteen bits and
+                // establishes eight, and telling ca65 `.a16` there sizes the
+                // next immediate at two bytes for a register the CPU is
+                // running at one.
                 if let Some(a) = a {
-                    self.set_a(a, "the width the instruction above established", out);
+                    match crate::width::believe(a, self.e) {
+                        AxisState::Known(width) => self.set_a(width, why, out),
+                        _ => self.forget(Axis::A, self.e, out),
+                    }
                 }
                 if let Some(i) = i {
-                    self.set_i(i, "the width the instruction above established", out);
+                    match crate::width::believe(i, self.e) {
+                        AxisState::Known(width) => self.set_i(width, why, out),
+                        _ => self.forget(Axis::I, self.e, out),
+                    }
                 }
+            }
+            // `RTI` and `PLP` restore a status byte, which cannot widen a
+            // register in emulation mode — so there is nothing to forget and
+            // the widths are still the eight the machine forces. `XCE` is
+            // excluded because it is what makes the mode unknown in the first
+            // place.
+            WidthEffect::Unknown if self.e == EmulationState::Emulation && !exchanges_emulation => {
+                self.set_a(
+                    RegisterWidth::W8,
+                    "emulation mode forces both widths to 8",
+                    out,
+                );
+                self.set_i(
+                    RegisterWidth::W8,
+                    "emulation mode forces both widths to 8",
+                    out,
+                );
             }
             // The instruction destroyed both tracked widths. ca65 has no
             // directive to un-assume one, so the drop is stated in a comment
             // and the next claim is what brings a width back.
             WidthEffect::Unknown => {
-                self.forget(Axis::A, EmulationState::Native, out);
-                self.forget(Axis::I, EmulationState::Native, out);
+                self.forget(Axis::A, self.e, out);
+                self.forget(Axis::I, self.e, out);
             }
         }
     }
@@ -718,7 +758,11 @@ fn emit_instruction(
     out.push_str(&annotated(text.trim_end(), &comment));
 
     // Keep the assembler's width tracking in sync after mode changes.
-    widths.apply(instruction.effects().width, out);
+    widths.apply(
+        instruction.effects().width,
+        instruction.mnemonic == Mnemonic::Xce,
+        out,
+    );
 }
 
 fn format_operand(

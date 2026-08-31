@@ -259,6 +259,25 @@ pub struct Context<'a> {
 /// pass list; `plans/05-optimizer.md` decision 17 names the three language
 /// decisions that would unlock it, all of them sub-plan G's.
 pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLog {
+    run_passes(program, context, LiveOut::Everything)
+}
+
+/// Which live-out seed one run of the pass sequence uses.
+///
+/// Two values and one production caller: [`optimize`] passes
+/// [`LiveOut::Everything`] in every compilation, and
+/// [`measure_narrowed_live_outs`] is the second user the abstraction rule
+/// (`doc/design.md` §14 rule 9) asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiveOut {
+    /// Everything, at every function exit — decision 12's seed.
+    Everything,
+    /// What a function's `->` clause names, where it names anything, and
+    /// everything where there is no clause. Nothing compiles this way.
+    Declared,
+}
+
+fn run_passes(program: &mut KProgram, context: &Context<'_>, live_out: LiveOut) -> OptimizationLog {
     let mut log = OptimizationLog::default();
     let symbols = &context.model.symbols;
     let callees = context.callee_contracts();
@@ -280,6 +299,16 @@ pub fn optimize(program: &mut KProgram, context: &Context<'_>) -> OptimizationLo
                 .get(&function.symbol)
                 .is_none_or(|info| info.entry.is_none() || called.contains(&function.symbol)),
             observed_nowhere,
+            live_on_exit: match live_out {
+                LiveOut::Everything => CpuState::ALL,
+                // A width-only clause records no outputs and is `None` here,
+                // which is the same answer as no clause at all — `-> @a8`
+                // declares an exit width, not a register flow.
+                LiveOut::Declared => info
+                    .get(&function.symbol)
+                    .and_then(|info| info.declared_outputs)
+                    .unwrap_or(CpuState::ALL),
+            },
         };
         eliminate_dead_mode_changes(&unit, &mut function.ops, &mut log);
         fold_mode_operations(&unit, &mut function.ops, &mut log);
@@ -379,6 +408,91 @@ impl Context<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// What narrowing the live-out seed would buy (sub-plan G, task G13)
+// ---------------------------------------------------------------------------
+
+/// One unit's answer to "what would a narrowed live-out set buy here".
+///
+/// Counts, not a rewrite. The pair of numbers that matters is
+/// [`Self::removed`] against [`Self::removed_narrowed`] — how many operations
+/// pass 3 deletes each way — with [`Self::bytes`] and
+/// [`Self::bytes_narrowed`] saying what the difference weighs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Narrowing {
+    /// Functions in the unit.
+    pub functions: usize,
+    /// Functions whose `->` clause names a register or a flag, so that a
+    /// narrowing rule would have something to narrow *to*. A width-only
+    /// clause is not one of them.
+    pub declaring: usize,
+    /// Operations pass 3 removes as the compiler ships.
+    pub removed: usize,
+    /// Operations pass 3 removes when each declaring function's exit is
+    /// seeded with what its clause names.
+    pub removed_narrowed: usize,
+    /// Bytes the optimized unit occupies as the compiler ships.
+    ///
+    /// By `lower::byte_length`, which is deliberately an **over-estimate**
+    /// for a width-dependent immediate: it counts `lda #$01` as three bytes
+    /// whether or not the accumulator is eight bits wide, because a `nocross`
+    /// guard must never under-measure a run. A difference between this and
+    /// [`Self::bytes_narrowed`] is therefore an upper bound on what the
+    /// narrowing would save — the direction a measurement of a deferral's
+    /// cost should err in.
+    pub bytes: u32,
+    /// Bytes it would occupy with the narrowed seed — every knock-on
+    /// included, since the whole sequence runs both ways.
+    pub bytes_narrowed: u32,
+}
+
+/// Measures what seeding each function's exit with its declared outputs would
+/// let the optimizer delete, over one unit.
+///
+/// **A measurement, not an optimization.** It rewrites nothing the caller can
+/// see, no pass reads its answer, and [`optimize`] seeds every function with
+/// [`CpuState::ALL`] whatever it says. Sub-plan F's decision 12 chose that
+/// seed and named three objections to narrowing it; G9b closed two of them —
+/// a `->` clause may name a flag, and an unlisted output of a clause-bearing
+/// function is undefined — leaving one, that `call NAME` opts out of the
+/// check that would make a clause a fact. **A deferral standing on one
+/// objection deserves a number**, which is what task G13 asked for and what
+/// this produces.
+///
+/// The whole pass sequence runs both ways over a clone of `program`, rather
+/// than pass 3 alone over one stream, because passes 1 and 2 read the same
+/// liveness and run first: measuring pass 3 against a stream the earlier
+/// passes never saw would count deletions the real sequence had already made.
+pub fn measure_narrowed_live_outs(program: &KProgram, context: &Context<'_>) -> Narrowing {
+    let declaring = context
+        .model
+        .functions
+        .iter()
+        .filter(|info| info.declared_outputs.is_some())
+        .count();
+    let mut today = program.clone();
+    let mut narrowed = program.clone();
+    let shipped = run_passes(&mut today, context, LiveOut::Everything);
+    let hypothetical = run_passes(&mut narrowed, context, LiveOut::Declared);
+    Narrowing {
+        functions: program.functions().count(),
+        declaring,
+        removed: shipped.by_pass(Pass::RemoveOverwritten).count(),
+        removed_narrowed: hypothetical.by_pass(Pass::RemoveOverwritten).count(),
+        bytes: emitted_bytes(&today),
+        bytes_narrowed: emitted_bytes(&narrowed),
+    }
+}
+
+/// What a lowered unit occupies, by lowering's own measurement.
+///
+/// `lower::byte_length` is what `nocross` is checked against, so a byte count
+/// derived from it and the assembler's cannot drift apart without a test that
+/// already exists failing.
+fn emitted_bytes(program: &KProgram) -> u32 {
+    program.ops().map(crate::lower::byte_length).sum()
+}
+
 /// What one function's passes need to know about the unit around it.
 ///
 /// Every field is a fact the width model, the semantic model, or the linkage
@@ -417,6 +531,17 @@ struct Unit<'a> {
     /// a property of the operation stream rather than as a mutation of a
     /// contract F has no business rewriting (decision 4).
     observed_nowhere: WidthNeeds,
+    /// What is live where control leaves this function.
+    ///
+    /// [`CpuState::ALL`] in every compilation: decision 12's seed, and the
+    /// difference between an optimizer and one that deletes return values.
+    /// The field exists because the seed is a *decision* and not an accident
+    /// of where the fixpoint starts, and because sub-plan G's task G13 had to
+    /// measure the alternative — [`measure_narrowed_live_outs`] builds a
+    /// second `Unit` with each function's `declared_outputs` here and counts
+    /// what pass 3 would delete. Nothing in the pass sequence sets it to
+    /// anything else; `postmortem.md` §G.22 has the number and the reason.
+    live_on_exit: CpuState,
 }
 
 impl Unit<'_> {
@@ -590,6 +715,7 @@ impl Flow {
                 reachable: &reachable,
                 block_of: &block_of,
             },
+            unit.live_on_exit,
         );
         Self {
             blocks,
@@ -824,11 +950,12 @@ fn liveness_and_doomed(
     blocks: &[Block],
     transfers: &[Transfer],
     removable: &Removable<'_>,
+    exit: CpuState,
 ) -> (Vec<CpuState>, Vec<bool>) {
     let mut doomed = vec![false; ops.len()];
     let mut live_after;
     loop {
-        live_after = liveness(ops, blocks, transfers, &doomed);
+        live_after = liveness(ops, blocks, transfers, &doomed, exit);
         let condemned: Vec<usize> = (0..ops.len())
             .filter(|index| {
                 !doomed[*index] && is_dead(ops, transfers, removable, &live_after, *index)
@@ -854,6 +981,7 @@ fn liveness(
     blocks: &[Block],
     transfers: &[Transfer],
     doomed: &[bool],
+    exit: CpuState,
 ) -> Vec<CpuState> {
     let mut live_after = vec![CpuState::NONE; ops.len()];
     let mut live_in = vec![CpuState::NONE; blocks.len()];
@@ -862,11 +990,21 @@ fn liveness(
         changed = false;
         for index in (0..blocks.len()).rev() {
             let block = &blocks[index];
-            // An exit block has no successors, and its seed is everything:
-            // decision 12, and the difference between an optimizer and one
-            // that deletes return values.
+            // An exit block has no successors, and its seed is whatever is
+            // live where control leaves the function — everything, in every
+            // compilation: decision 12, and the difference between an
+            // optimizer and one that deletes return values.
+            //
+            // **The seed is not what keeps a return value alive**, though
+            // decision 12 is worded as though it were. A block that ends in
+            // an `rts` reaches [`live_before`], which answers for the return
+            // itself; and a block that leaves by a jump K816 cannot resolve
+            // is opaque, which is a barrier. G13 measured both halves
+            // separately: narrowing this line alone changes nothing anywhere
+            // in the corpus, and narrowing the return changes everything the
+            // measurement found (`postmortem.md` §G.22).
             let mut live = if block.successors.is_empty() {
-                CpuState::ALL
+                exit
             } else {
                 block
                     .successors
@@ -878,7 +1016,7 @@ fn liveness(
             for op in (block.start..block.end).rev() {
                 live_after[op] = live;
                 if !doomed[op] {
-                    live = live_before(&ops[op], transfers[op], live);
+                    live = live_before(&ops[op], transfers[op], live, exit);
                 }
             }
             if live != live_in[index] {
@@ -918,13 +1056,22 @@ fn is_dead(
 }
 
 /// The state live before one operation, given what is live after it.
-fn live_before(op: &KOp, transfer: Transfer, live_after: CpuState) -> CpuState {
+fn live_before(op: &KOp, transfer: Transfer, live_after: CpuState, exit: CpuState) -> CpuState {
     let Some(effects) = effects_of(op) else {
         // A label, a width claim, a directive: no bytes, no CPU state.
         return live_after;
     };
     if is_liveness_barrier(effects, transfer) {
-        return CpuState::ALL;
+        // A return is the one barrier whose answer is a *decision*: what is
+        // live after an `rts` is what the caller reads, which is
+        // [`Unit::live_on_exit`]. Every other barrier is everything because
+        // K816 does not know, and `exit` is everything in every compilation,
+        // so the two agree today.
+        return if returns_from_the_function(effects, transfer) {
+            exit
+        } else {
+            CpuState::ALL
+        };
     }
     let live = live_after.without(effects.writes).union(effects.reads);
     // **A width transition redefines what a register write covers.**
@@ -985,6 +1132,25 @@ fn is_liveness_barrier(effects: Effects, transfer: Transfer) -> bool {
         effects.memory,
         MemoryEffect::Unknown | MemoryEffect::Volatile
     ) || effects.width.is_unknown()
+}
+
+/// True when this operation is a barrier *only* because it returns.
+///
+/// The distinction matters where the two answers could differ. An `rts` hands
+/// control back to a caller, so what is live after it is what the caller
+/// reads. An `rti` is also a return, and is a barrier for a second reason as
+/// well — it pulls a status byte nothing tracked, so its width transition is
+/// unknown — and an unknown width transition is everything whatever the
+/// caller reads. So `rti` is excluded here, along with a return that is
+/// opaque or touches memory K816 cannot see.
+fn returns_from_the_function(effects: Effects, transfer: Transfer) -> bool {
+    matches!(effects.control, ControlEffect::Return)
+        && !transfer.opaque
+        && !matches!(
+            effects.memory,
+            MemoryEffect::Unknown | MemoryEffect::Volatile
+        )
+        && !effects.width.is_unknown()
 }
 
 /// The operations inside a `nocross`-guarded run, which no pass may change.

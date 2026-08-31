@@ -29,16 +29,17 @@
 //! diagnostics.
 
 use crate::ast::{
-    self, AstFile, ContractParameter, DataBlock, DataEntryKind, DataValue, EvalCallName, EvalExpr,
+    self, AstFile, ContractOutput, ContractParameter, DataBlock, DataEntryKind, DataValue,
+    EvalCallName, EvalExpr,
     EvalExprKind, Expr, ExprKind, Function, FunctionKind, HlaStatement, IllegalOpcode, ItemKind,
-    RegisterKind, ReservedKind, Statement, StatementKind,
+    RegisterKind, ReservedKind, Statement, StatementKind, TestableFlag,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::abi;
 use crate::compat;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, TextEdit};
-use crate::effects::ControlEffect;
+use crate::effects::{ControlEffect, CpuState};
 use crate::eval;
 use crate::isa::RegisterWidth;
 use crate::layout;
@@ -208,6 +209,20 @@ pub struct FunctionInfo {
     /// True when the inferred exit fell back to the language's
     /// `Unknown ⇒ Preserve` rule rather than being derived from the body.
     pub exit_is_assumed: bool,
+    /// What a `->` clause promises, as a set — `None` when there is no clause
+    /// naming a register or a flag.
+    ///
+    /// Recorded for the optimizer, which does not read it yet. F's
+    /// decision 12 seeds liveness with *everything* at a function exit, and
+    /// named the two language rules that would let it narrow: a flag-output
+    /// clause, and a rule that an unlisted output is undefined. Both exist
+    /// now (`plans/06-compatibility.md` decision 19), so the fact is recorded
+    /// where F can find it — and narrowing on it stays F's decision, with
+    /// `call foo` opting out of contract checking still to answer for.
+    ///
+    /// `None` for a width-only clause: `-> @a8` declares an exit *width*, not
+    /// a register flow, and must not read as "everything is undefined".
+    pub declared_outputs: Option<CpuState>,
 }
 
 /// The register flow a `func NAME (a, x) -> a, y` header declares.
@@ -219,9 +234,27 @@ pub struct CallFlow {
     /// The input list **in written order**, because an `inline`'s aliases
     /// bind positionally against the use site's arguments.
     pub inputs: Vec<FlowInput>,
-    pub outputs: Vec<RegisterKind>,
+    /// The output list, also in written order: a call site restates the
+    /// clause and the two are compared as written.
+    pub outputs: Vec<FlowOutput>,
     /// The clause itself, for the "declared here" label.
     pub span: Span,
+}
+
+/// One entry of a declared output list: a register, or a flag.
+///
+/// A flag output is the same kind of promise a register output is. It is what
+/// separates a *result* from damage: `K816-W0123` reports every register and
+/// flag a callee writes that its clause does not name, and naming `c` is how
+/// an author says the carry is an answer rather than wreckage
+/// (`plans/06-compatibility.md` decision 19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowOutput {
+    Register(RegisterKind),
+    /// One of `c z n v` — the four a callee can compute and a branch can
+    /// test. `i` and `d` are modes the *caller* establishes, so declaring one
+    /// as an output would be a claim nothing can check.
+    Flag(TestableFlag),
 }
 
 /// One entry of a declared input list.
@@ -964,6 +997,14 @@ impl Analysis {
                         needs: WidthNeeds::default(),
                         observes: WidthNeeds::default(),
                         callees: Vec::new(),
+                        // `check_contract` ran just above, so the flow is in
+                        // the model by now if the clause declared one.
+                        declared_outputs: self
+                            .model
+                            .contracts
+                            .get(&symbol)
+                            .filter(|flow| !flow.outputs.is_empty())
+                            .map(|flow| crate::lower::declared_state(&flow.outputs)),
                     });
                 }
                 ItemKind::Error => {}
@@ -1242,14 +1283,14 @@ impl Analysis {
             self.diagnostics
                 .push(naked_exit_contract(&func.name, outputs.span));
         }
-        let outputs: Vec<RegisterKind> = contract
+        let outputs: Vec<FlowOutput> = contract
             .outputs
             .iter()
-            .flat_map(|outputs| outputs.registers.iter())
-            .map(|register| register.kind)
+            .flat_map(|outputs| outputs.outputs.iter())
+            .filter_map(|output| self.flow_output(output))
             .collect();
-        // Only a clause that names registers asks anything of a call site; an
-        // exit-width-only clause is checked against the body instead.
+        // Only a clause that names registers or flags asks anything of a call
+        // site; an exit-width-only clause is checked against the body instead.
         if contract.inputs.is_some() || !outputs.is_empty() {
             self.model.contracts.insert(
                 symbol,
@@ -1259,6 +1300,30 @@ impl Analysis {
                     span: contract.span,
                 },
             );
+        }
+    }
+
+    /// One declared output, or `None` once the flag has been refused.
+    ///
+    /// The four a clause may name are `c z n v`: the flags a callee can
+    /// *compute* and a branch can test. `i` and `d` are real P-register bits
+    /// and are not among them, because they are modes the caller establishes
+    /// before the call — declaring one as an output would be a claim nothing
+    /// can check (`plans/06-compatibility.md` decision 19).
+    fn flow_output(&mut self, output: &ContractOutput) -> Option<FlowOutput> {
+        let name = match output {
+            ContractOutput::Register(register) => return Some(FlowOutput::Register(register.kind)),
+            ContractOutput::Flag(name) => name,
+        };
+        match name.text.to_ascii_lowercase().as_str() {
+            "c" => Some(FlowOutput::Flag(TestableFlag::Carry)),
+            "z" => Some(FlowOutput::Flag(TestableFlag::Zero)),
+            "n" => Some(FlowOutput::Flag(TestableFlag::Negative)),
+            "v" => Some(FlowOutput::Flag(TestableFlag::Overflow)),
+            _ => {
+                self.diagnostics.push(contract_flag_output(name));
+                None
+            }
         }
     }
 
@@ -1309,7 +1374,7 @@ impl Analysis {
         let outputs = flow
             .outputs
             .iter()
-            .map(|register| register_name(*register))
+            .map(|output| flow_output_name(*output))
             .collect::<Vec<_>>()
             .join(", ");
         format!("{inputs} -> {outputs}")
@@ -1325,10 +1390,12 @@ impl Analysis {
         };
         let flow = self.model.contracts.get(&symbol).cloned();
         let written = call.arguments.as_ref();
-        let declared_outputs: Option<Vec<RegisterKind>> = call
-            .outputs
-            .as_ref()
-            .map(|outputs| outputs.iter().map(|register| register.kind).collect());
+        let declared_outputs: Option<Vec<FlowOutput>> = call.outputs.as_ref().map(|outputs| {
+            outputs
+                .iter()
+                .filter_map(|output| self.flow_output(output))
+                .collect()
+        });
 
         match flow {
             None if written.is_none() && declared_outputs.is_none() => {}
@@ -3930,6 +3997,38 @@ fn register_name(register: RegisterKind) -> &'static str {
         RegisterKind::B => "b",
         RegisterKind::P => "p",
     }
+}
+
+/// One declared output's source spelling, for the "declared here" help.
+fn flow_output_name(output: FlowOutput) -> &'static str {
+    match output {
+        FlowOutput::Register(register) => register_name(register),
+        FlowOutput::Flag(TestableFlag::Carry) => "c",
+        FlowOutput::Flag(TestableFlag::Zero) => "z",
+        FlowOutput::Flag(TestableFlag::Negative) => "n",
+        FlowOutput::Flag(TestableFlag::Overflow) => "v",
+    }
+}
+
+/// A `->` clause naming a flag K816 will not accept as an output.
+///
+/// The set is `c z n v` and the reason is what a callee can *hand back*: those
+/// four are results, computed by the body and testable by a branch at the call
+/// site. `i` and `d` are modes the caller establishes before the call, so a
+/// clause naming one would be describing the caller's state as the callee's
+/// answer — a promise with nothing to check it against.
+fn contract_flag_output(name: &crate::ast::Name) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::CONTRACT_FLAG_OUTPUT,
+        format!("`{}` is not a flag a contract can hand back", name.text),
+        Label::new(name.span, "not one of `c`, `z`, `n`, `v`"),
+    )
+    .with_note(
+        "those four are the flags a body computes and a branch tests; `i` and `d` are \
+         modes the caller sets before the call, so a callee cannot return one",
+    )
+    .with_help("name a register, or one of `c z n v`")
+    .with_docs("doc/syntax-reference.md#code-sections")
 }
 
 /// A module-level width annotation that a code section already precedes.

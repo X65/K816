@@ -60,6 +60,13 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::K65_FLAG_STACK_FORM,
         caret: "z??",
     },
+    // A `->` clause may name `c z n v` and no other flag: `i` is a mode the
+    // caller establishes, not an answer the callee computes.
+    Case {
+        source: "func f (a) -> a, i {\n    nop\n}\n",
+        code: DiagnosticCode::CONTRACT_FLAG_OUTPUT,
+        caret: "i",
+    },
     // `o` is the original's letter for the overflow flag in this construct
     // and `v` its letter in the branch tests; K816 spells it `v` in both.
     Case {

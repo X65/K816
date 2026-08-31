@@ -1,0 +1,31 @@
+row       k816-call-contracts
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-W0123
+
+**One warning, and the three sections around it are why it is only one.**
+
+A `->` clause draws the line between a *result* and damage.  Registers have
+been on that line since sub-plan E; flags are on it now, and the whole
+observable difference is which side the carry falls on.
+
+`check` declares `-> a, c`, so the `c-?` after its call site is reading an
+answer and nothing is reported.  `silent` has the identical body and declares
+`-> a`, so the same `c-?` is reading a flag the callee never promised - which
+is the warning, and it names `N Z C` because a compare writes all three.
+
+That is the point of the pair: the two bodies are the same instructions.  The
+only thing that changed is what the clause claims, which is what makes this a
+*language* rule rather than an analysis heuristic.
+
+`narrows` is the third case and it reports nothing.  A width-only clause
+declares an exit width, not a register flow: `FunctionInfo::declared_outputs`
+is `None` for it, and it makes nothing undefined.  If it recorded an empty set
+instead, every register and flag would read as undefined after the call and
+this fixture would carry a fourth diagnostic.
+
+`call foo` is not exercised here because it opts out of the check entirely,
+which `doc/syntax-reference.md` documents and G9b did not change.  The
+undefinedness is still recorded for the optimizer at every call site; the
+*warning* is what the escape hatch escapes.

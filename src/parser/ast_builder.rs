@@ -31,7 +31,7 @@ use crate::ast::{
     BinaryDeclaration, BinaryExpr, BinaryInclusion, BinaryOp, Block, BlockMoveOperand,
     BranchCondition, BranchConditionKind, CallArgument, CallContract, CallStatement,
     ComparisonKind, ConditionalBlock, ConditionalJump, ConstDeclaration, ConstEntry,
-    ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue,
+    ContractOutput, ContractOutputs, ContractParameter, DataBlock, DataEntry, DataEntryKind, DataValue,
     EvalCallName, EvalExpr, EvalExprKind, EvalFunction, Expr, ExprKind, FieldAccess,
     FieldDeclaration, FlagKind, Function, FunctionKind, GotoStatement, HlaArithmetic,
     HlaAssignment, HlaExchange, HlaFlag, HlaOperand, HlaOperandKind, HlaShift, HlaStack,
@@ -546,14 +546,10 @@ impl AstBuilder<'_> {
             parameters
         });
         let outputs = node.child_by_field_name("outputs").map(|outputs| {
-            let mut registers = Vec::new();
-            let mut cursor = outputs.walk();
-            for register in outputs.children_by_field_name("register", &mut cursor) {
-                registers.push(self.register(Some(register), outputs));
-            }
+            let list = self.contract_outputs(outputs);
             ContractOutputs {
                 width: self.width_annotations(outputs),
-                registers,
+                outputs: list,
                 // The `->` is part of the clause: a diagnostic that offers to
                 // delete the clause has to take the arrow with it, and one
                 // that points at "the declared exit" reads better including
@@ -1516,14 +1512,9 @@ impl AstBuilder<'_> {
             }
             arguments
         });
-        let outputs = node.child_by_field_name("outputs").map(|list| {
-            let mut registers = Vec::new();
-            let mut cursor = list.walk();
-            for register in list.children_by_field_name("register", &mut cursor) {
-                registers.push(self.register(Some(register), list));
-            }
-            registers
-        });
+        let outputs = node
+            .child_by_field_name("outputs")
+            .map(|list| self.contract_outputs(list));
         Statement::new(
             StatementKind::BareCall(BareCall {
                 target: self.name(node.child_by_field_name("target"), node),
@@ -1532,6 +1523,29 @@ impl AstBuilder<'_> {
             }),
             self.span(node),
         )
+    }
+
+    /// The entries of a `->` list, **in written order**.
+    ///
+    /// Walked child by child rather than through `children_by_field_name`,
+    /// which yields one field at a time and would sort every register ahead
+    /// of every flag. The order is the whole point: a call site restates the
+    /// callee's clause and the two are compared as written.
+    fn contract_outputs(&mut self, list: Node<'_>) -> Vec<ContractOutput> {
+        let mut outputs = Vec::new();
+        for index in 0..list.child_count() as u32 {
+            let Some(child) = list.child(index) else {
+                continue;
+            };
+            match list.field_name_for_child(index) {
+                Some("register") => outputs.push(ContractOutput::Register(
+                    self.register(Some(child), list),
+                )),
+                Some("flag") => outputs.push(ContractOutput::Flag(self.name(Some(child), list))),
+                _ => {}
+            }
+        }
+        outputs
     }
 
     fn label(&mut self, node: Node<'_>) -> Statement {

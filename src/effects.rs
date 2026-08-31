@@ -178,6 +178,22 @@ impl std::fmt::Display for FlagSet {
     }
 }
 
+/// Registers first, then flags, so `A, X, C` reads the way the clause does.
+///
+/// Both halves are named because damage tracking reports them together: a
+/// callee that returns its answer in the carry and wrecks `X` on the way is
+/// one complaint about two different kinds of loss.
+impl std::fmt::Display for CpuState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.registers.is_empty(), self.flags.is_empty()) {
+            (true, true) => f.write_str("nothing"),
+            (false, true) => write!(f, "{}", self.registers),
+            (true, false) => write!(f, "{}", self.flags),
+            (false, false) => write!(f, "{}, {}", self.registers, self.flags),
+        }
+    }
+}
+
 /// Registers and flags together: the CPU state an instruction touches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CpuState {
@@ -199,9 +215,17 @@ impl CpuState {
     /// register elimination deletes return values. A declared `-> a` is not a
     /// licence to narrow it: `call foo` opts out of contract checking, a
     /// hand-written `jsr foo` never had a contract, and an undeclared clobber
-    /// is a warning rather than a guarantee. Flags cannot be narrowed even in
-    /// principle, because the contract syntax has no way to name one
-    /// (`plans/05-optimizer.md` decision 12).
+    /// is a warning rather than a guarantee (`plans/05-optimizer.md`
+    /// decision 12).
+    ///
+    /// A `->` clause **can** name a flag now, and an unlisted output of a
+    /// clause-bearing function is undefined
+    /// (`plans/06-compatibility.md` decision 19) — which is the pair of
+    /// language rules decision 12 said it would need. The seed is still
+    /// everything: `semantic.rs` records what each function declares, in
+    /// `FunctionInfo::declared_outputs`, and narrowing on it is a separate
+    /// decision with the three objections above still standing. G recorded
+    /// the fact and stopped.
     pub const ALL: Self = Self {
         registers: RegisterSet::ALL,
         flags: FlagSet::ALL,

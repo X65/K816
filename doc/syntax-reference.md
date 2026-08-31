@@ -546,6 +546,7 @@ func add @a16 @i16 (a, x) -> @a8 a, y {
 ```
 
 - `()` enables checked zero-input calls.
+- A `->` clause names registers and the flags `c z n v`; anything it omits is undefined after the call.
 - Register parameters use `a`, `x`, and `y`.
 - `inline` functions may additionally declare immediate aliases (`#name`, `#name:byte`, `#name:word`) and bare identifier aliases for variables/addresses. See *Why aliases are inline-only* below — they are not available to `func`, and not available at any call site.
 - `->` can declare output registers, exit-width checks, or both.
@@ -628,7 +629,24 @@ func test {
 }
 ```
 
-Damage tracking for contract-bearing bare calls is **block-local**: after every such call the compiler scans the remaining statements in the same basic block and reports registers that are live past the call but clobbered by the callee. It does not perform inter-procedural or whole-program dataflow — split work into smaller functions if you need the check to see across block boundaries. Use `call foo` to opt out of the check entirely.
+A `->` clause may name **flags** as well as registers. The four a callee can hand back are `c`, `z`, `n`, and `v` — the ones a body computes and a branch tests:
+
+```k65
+func check @a8 @i8 (a) -> a, c {   // the carry is a result
+  a ? #10
+}
+
+func caller @a8 @i8 {
+  check a -> a, c
+  c-? { ... }                      // reading an answer
+}
+```
+
+`i` and `d` are refused with `K816-E0159`: they are modes the *caller* establishes before the call, so a clause naming one would be a promise nothing could check.
+
+**An output the clause does not list is undefined after the call.** This applies only to a function that *has* a `->` clause — a contract-less function is untouched, which is every K65 function, since K65 has no contracts. Writing the clause is what makes the promise; anything outside it is damage.
+
+Damage tracking for contract-bearing bare calls is **block-local**: after every such call the compiler scans the remaining statements in the same basic block and reports registers and flags that are live past the call but clobbered by the callee. So the same body warns or does not depending on what its clause claims — drop `c` from `check`'s clause above and the `c-?` becomes `K816-W0123`, because a compare writes `N`, `Z` and `C` and the clause promised none of them. It does not perform inter-procedural or whole-program dataflow — split work into smaller functions if you need the check to see across block boundaries. Use `call foo` to opt out of the check entirely.
 
 Exit-width annotations in a `->` clause are **check-only**. They describe the widths the function body must actually have at every reachable return; they do not force the caller into that mode by declaration alone. If no exit-width annotation is present, a checked bare call adopts the callee's inferred exit mode from its reachable returns. An inferred exit mode of `Unknown` (callee not yet parsed, cross-unit reference, or body variants that are neither uniformly `Fixed` nor uniformly `Preserve`) is treated at the call site as `Preserve` — the caller's tracked widths are left unchanged. See *Unknown exit contracts preserve caller mode* in [register-width-aware-syntax.md](register-width-aware-syntax.md).
 

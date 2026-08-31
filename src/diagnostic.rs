@@ -337,6 +337,13 @@ impl DiagnosticCode {
     /// decision 0 exists to prevent, and decision 33 applies that rule to
     /// K816's own retired spellings and not only to the original's.
     pub const RETIRED_REGISTER_SPELLING: Self = Self("K816-E0158");
+    /// A `->` clause naming a flag outside `c z n v`.
+    ///
+    /// Those four are the flags a callee can *compute* and a branch can test.
+    /// `i` and `d` are real P-register bits, and are refused because they are
+    /// modes the caller establishes before the call: declaring one as an
+    /// output would be a promise nothing could check against the body.
+    pub const CONTRACT_FLAG_OUTPUT: Self = Self("K816-E0159");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -620,6 +627,7 @@ mod tests {
         DiagnosticCode::BORROWED_INLINE_UNUSABLE,
         DiagnosticCode::INEFFICIENT_BRANCH,
         DiagnosticCode::RETIRED_REGISTER_SPELLING,
+        DiagnosticCode::CONTRACT_FLAG_OUTPUT,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

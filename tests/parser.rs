@@ -25,7 +25,8 @@
 
 use k816::ast::{
     AddressEncoding, ArithmeticOp, AstFile, BinaryOp, BranchConditionKind, CallArgument,
-    ComparisonKind, EvalExprKind, ExprKind, FlagKind, FunctionKind, HlaOperandKind, HlaStatement,
+    ComparisonKind, ContractOutput, EvalExprKind, ExprKind, FlagKind, FunctionKind,
+    HlaOperandKind, HlaStatement,
     IndexRegister, IndexRegisterKind, ItemKind, LabelScope, LoopCondition, MetadataQueryKind,
     NativeOperand, RegisterKind, ReturnKind, ShiftOp, StackOp, StatementKind, StepOp,
     StorageClassKind, TestableFlag, TypeWidthKind, UnaryOp, WidthAnnotationKind,
@@ -350,9 +351,9 @@ fn dump_ast(file: &AstFile) -> String {
                                 rendered.push_str(&format!(" {}", arguments.join(", ")));
                             }
                             if let Some(outputs) = &call.outputs {
-                                let outputs: Vec<&str> = outputs
+                                let outputs: Vec<String> = outputs
                                     .iter()
-                                    .map(|register| dump_register(register.kind))
+                                    .map(dump_contract_output)
                                     .collect();
                                 rendered.push_str(&format!(" -> {}", outputs.join(", ")));
                             }
@@ -466,6 +467,14 @@ fn dump_width(kind: WidthAnnotationKind) -> &'static str {
         WidthAnnotationKind::A16 => "@a16",
         WidthAnnotationKind::I8 => "@i8",
         WidthAnnotationKind::I16 => "@i16",
+    }
+}
+
+/// A `->` entry: a register, or a flag under its own name.
+fn dump_contract_output(output: &ContractOutput) -> String {
+    match output {
+        ContractOutput::Register(register) => dump_register(register.kind).to_owned(),
+        ContractOutput::Flag(name) => name.text.to_ascii_lowercase(),
     }
 }
 
@@ -1996,7 +2005,7 @@ func add @a16 (contract) @83..119
     assert_eq!(inputs.len(), 2);
     let outputs = contract.outputs.as_ref().expect("an output clause");
     assert_eq!(outputs.width.len(), 1);
-    assert_eq!(outputs.registers.len(), 2);
+    assert_eq!(outputs.outputs.len(), 2);
 }
 
 #[test]

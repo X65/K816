@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::ast::{AstFile, FunctionKind, ItemKind, ReturnKind, StatementKind};
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Label};
-use crate::effects::{ControlEffect, Effects, RegisterSet, WidthEffect};
+use crate::effects::{ControlEffect, CpuState, Effects, FlagSet, RegisterSet, WidthEffect};
 use crate::expand;
 use crate::hla;
 use crate::isa::{AddressEncoding, AddressingMode, Mnemonic};
@@ -416,24 +416,32 @@ fn report_damaged_registers(
     checked_calls: &[(usize, Vec<CheckedCall>)],
 ) -> Vec<Diagnostic> {
     let functions: Vec<&KFunction> = program.functions().collect();
-    // The damage set of each function: every register its lowered body
-    // writes. A callee K816 did not lower has none, and is silent.
-    let damage: std::collections::BTreeMap<SymbolId, RegisterSet> = functions
+    // The damage set of each function: every register *and flag* its lowered
+    // body writes. A callee K816 did not lower has none, and is silent.
+    //
+    // Flags are in it because a declared output is what separates a result
+    // from damage, and `plans/06-compatibility.md` decision 19 lets a clause
+    // name one. Before that they could not be declared, so counting them
+    // would have been a warning with no way to answer it.
+    let damage: std::collections::BTreeMap<SymbolId, CpuState> = functions
         .iter()
         .map(|function| {
             let written = function
                 .ops
                 .iter()
-                .fold(RegisterSet::NONE, |set, op| match &op.kind {
+                .fold(CpuState::NONE, |state, op| match &op.kind {
                     KOpKind::Instruction(instruction) => {
-                        set.union(instruction.effects().writes.registers)
+                        state.union(instruction.effects().writes)
                     }
-                    _ => set,
+                    _ => state,
                 });
             // The stack pointer is not damage: the `JSR`/`RTS` pair moves it
             // and puts it back, so every subroutine writes it and naming that
             // would bury the registers a caller can actually lose.
-            (function.symbol, written.without(RegisterSet::S))
+            (
+                function.symbol,
+                written.without(CpuState::new(RegisterSet::S, FlagSet::NONE)),
+            )
         })
         .collect();
 
@@ -449,7 +457,7 @@ fn report_damaged_registers(
             let declared = model
                 .contracts
                 .get(&call.callee)
-                .map_or(RegisterSet::NONE, |flow| registers_of(&flow.outputs));
+                .map_or(CpuState::NONE, |flow| declared_state(&flow.outputs));
             // A register the contract hands back is not damage: the caller
             // asked for it.
             let at_risk = damaged.without(declared);
@@ -466,7 +474,7 @@ fn report_damaged_registers(
 
 /// The span of the first operation after `call` in the same basic block that
 /// reads one of `at_risk` before writing it again.
-fn first_live_read(ops: &[KOp], call: usize, at_risk: RegisterSet) -> Option<Span> {
+fn first_live_read(ops: &[KOp], call: usize, at_risk: CpuState) -> Option<Span> {
     let mut pending = at_risk;
     for op in ops.iter().skip(call + 1) {
         let KOpKind::Instruction(instruction) = &op.kind else {
@@ -478,10 +486,10 @@ fn first_live_read(ops: &[KOp], call: usize, at_risk: RegisterSet) -> Option<Spa
             return None;
         };
         let effects = instruction.effects();
-        if effects.reads.registers.intersects(pending) {
+        if effects.reads.intersects(pending) {
             return Some(op.span);
         }
-        pending = pending.without(effects.writes.registers);
+        pending = pending.without(effects.writes);
         if pending.is_empty() || effects.control != ControlEffect::FallThrough {
             return None;
         }
@@ -489,35 +497,64 @@ fn first_live_read(ops: &[KOp], call: usize, at_risk: RegisterSet) -> Option<Spa
     None
 }
 
-fn registers_of(registers: &[crate::ast::RegisterKind]) -> RegisterSet {
-    use crate::ast::RegisterKind;
-    registers
-        .iter()
-        .fold(RegisterSet::NONE, |set, register| match register {
+/// The CPU state a `->` clause promises, as a set.
+///
+/// The written order the clause keeps is for comparing one against another;
+/// what damage tracking wants is membership, and this is where the two views
+/// part company.
+pub(crate) fn declared_state(outputs: &[crate::semantic::FlowOutput]) -> CpuState {
+    use crate::ast::{RegisterKind, TestableFlag};
+    use crate::semantic::FlowOutput;
+    outputs.iter().fold(CpuState::NONE, |state, output| {
+        let claimed = match output {
             // `b` is the accumulator's high half, so it claims the
             // accumulator: `XBA` reads and writes that one register.
-            RegisterKind::A | RegisterKind::B => set.union(RegisterSet::A),
-            RegisterKind::X => set.union(RegisterSet::X),
-            RegisterKind::Y => set.union(RegisterSet::Y),
-            RegisterKind::S => set.union(RegisterSet::S),
-            RegisterKind::Dpr => set.union(RegisterSet::D),
-            RegisterKind::Dbr => set.union(RegisterSet::DBR),
-            RegisterKind::P => set,
-        })
+            FlowOutput::Register(RegisterKind::A | RegisterKind::B) => {
+                CpuState::new(RegisterSet::A, FlagSet::NONE)
+            }
+            FlowOutput::Register(RegisterKind::X) => CpuState::new(RegisterSet::X, FlagSet::NONE),
+            FlowOutput::Register(RegisterKind::Y) => CpuState::new(RegisterSet::Y, FlagSet::NONE),
+            FlowOutput::Register(RegisterKind::S) => CpuState::new(RegisterSet::S, FlagSet::NONE),
+            FlowOutput::Register(RegisterKind::Dpr) => CpuState::new(RegisterSet::D, FlagSet::NONE),
+            FlowOutput::Register(RegisterKind::Dbr) => {
+                CpuState::new(RegisterSet::DBR, FlagSet::NONE)
+            }
+            FlowOutput::Register(RegisterKind::P) => CpuState::NONE,
+            FlowOutput::Flag(TestableFlag::Carry) => CpuState::new(RegisterSet::NONE, FlagSet::C),
+            FlowOutput::Flag(TestableFlag::Zero) => CpuState::new(RegisterSet::NONE, FlagSet::Z),
+            FlowOutput::Flag(TestableFlag::Negative) => {
+                CpuState::new(RegisterSet::NONE, FlagSet::N)
+            }
+            FlowOutput::Flag(TestableFlag::Overflow) => {
+                CpuState::new(RegisterSet::NONE, FlagSet::V)
+            }
+        };
+        state.union(claimed)
+    })
 }
 
-fn clobbered_register(call: Span, read: Span, damaged: RegisterSet) -> Diagnostic {
+fn clobbered_register(call: Span, read: Span, damaged: CpuState) -> Diagnostic {
+    // Registers and flags are one complaint, and the wording follows what is
+    // actually in the set: "declare the register as an output" is unhelpful
+    // advice when what was lost is the carry.
+    let what = match (damaged.registers.is_empty(), damaged.flags.is_empty()) {
+        (false, true) => "register",
+        (true, false) => "flag",
+        _ => "register or flag",
+    };
     Diagnostic::warning(
         DiagnosticCode::CLOBBERED_REGISTER,
         format!("this call writes {damaged}, and the value is read again below"),
-        Label::new(call, "the callee does not hand this register back"),
+        Label::new(call, format!("the callee does not hand this {what} back")),
     )
     .with_secondary(Label::new(read, "read here, after the call wrote it"))
     .with_note(
         "the callee's contract names what it returns; anything else it writes is \
          damage the caller has to expect",
     )
-    .with_help("save the value across the call, or declare the register as an output")
+    .with_help(format!(
+        "save the value across the call, or declare the {what} as an output"
+    ))
     .with_docs("doc/syntax-reference.md#code-sections")
 }
 

@@ -216,8 +216,33 @@ pub enum ContractParameter {
 pub struct ContractOutputs {
     /// Exit-width annotations, which are check-only.
     pub width: Vec<WidthAnnotation>,
-    pub registers: Vec<Register>,
+    /// The registers and flags handed back, **in written order**, because a
+    /// call site restates the clause and the two are compared as written.
+    pub outputs: Vec<ContractOutput>,
     pub span: Span,
+}
+
+/// One entry of a `->` clause: a register, or a flag.
+///
+/// `(a) -> a, c` hands back the accumulator and the carry. A flag output is
+/// the same kind of promise a register output is — it is what draws the line
+/// between a *result* and damage `K816-W0123` reports
+/// (`plans/06-compatibility.md` decision 19).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContractOutput {
+    Register(Register),
+    /// One of `c z n v`. Which flags may be named is contract analysis, not
+    /// grammar, so the name is carried as written and checked there.
+    Flag(Name),
+}
+
+impl ContractOutput {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Register(register) => register.span,
+            Self::Flag(name) => name.span,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -449,8 +474,9 @@ pub struct BareCall {
     pub target: Name,
     /// `Some` when an argument list was written.
     pub arguments: Option<Vec<CallArgument>>,
-    /// `Some` when a `->` clause was written.
-    pub outputs: Option<Vec<Register>>,
+    /// `Some` when a `->` clause was written. A call site restates what the
+    /// callee declares, flags included, so this is the declaration's shape.
+    pub outputs: Option<Vec<ContractOutput>>,
 }
 
 /// What a call site can hand over. Registers and immediates are the whole

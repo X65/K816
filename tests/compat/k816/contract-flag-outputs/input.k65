@@ -1,0 +1,36 @@
+// Flag outputs in a `->` clause, and what an unlisted one costs.
+//
+// K65 has no call contracts at all, so nothing here is a compatibility
+// question: every line is K816's own extension.
+
+// The carry is a result, and the clause says so.
+func check @a8 @i8 (a) -> a, c {
+  a ? #10
+  return
+}
+
+// The same body, with the carry left out of the clause.  Everything it writes
+// that the clause does not name is damage the caller has to expect.
+func silent @a8 @i8 (a) -> a {
+  a ? #10
+  return
+}
+
+// A width-only clause declares an exit *width*, not a register flow, so it
+// records no outputs and makes nothing undefined.
+func narrows @a8 -> @a8 {
+  return
+}
+
+func main @a8 @i8 {
+  a = #1
+  check a -> a, c
+  c-? { nop }
+
+  a = #1
+  silent a -> a
+  c-? { nop }
+
+  narrows
+  return
+}

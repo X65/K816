@@ -60,7 +60,9 @@ The command-line compiler and LSP call the same frontend API. Neither independen
 
 One consequence of that boundary is easy to forget and expensive to rediscover, so it is stated here rather than left implicit in the syntax.
 
-K816 does not have function parameters. A `func` is entered by `JSR` or `JSL`, and nothing crosses that jump except the machine's own registers and memory the caller wrote. There is no stack frame, no argument area, and no calling convention the compiler is free to invent — inventing one would mean owning a runtime, which is outside the four jobs above. A call contract therefore names only `a`, `x`, and `y`, and a call site passes only registers and immediates.
+K816 does not have function parameters. A `func` is entered by `JSR` or `JSL`, and nothing crosses that jump except the machine's own registers and memory the caller wrote. There is no stack frame, no argument area, and no calling convention the compiler is free to invent — inventing one would mean owning a runtime, which is outside the four jobs above. A call site therefore passes only registers and immediates.
+
+A contract's *inputs* are registers for that reason. Its *outputs* are registers and the four condition flags — `c`, `z`, `n`, `v` — because those cross the jump too: a subroutine that answers a question in the carry is returning a value, and `(a) -> a, c` is how it says so. `i` and `d` are not among them; they are modes the caller establishes before the call, so a callee cannot hand one back.
 
 `inline` is the exception, and it is an exception about *expansion*, not about calling. An inline body is substituted at the use site before instruction selection, so a parameter never has to travel: the compiler can bind an immediate alias (`#factor`) or an identifier alias for a variable or address while it emits the body. Macro expansion is the only mechanism in the language that can inject an arbitrary parameter, which is why aliases exist there and nowhere else.
 
@@ -408,7 +410,7 @@ Optimization should be conservative:
 * Stack operations are visible.
 * Flag writes are visible whenever a later operation reads those flags.
 * Width-changing operations participate in the same state model, and they redefine what a register write *covers*: at eight bits an `LDA` writes the low byte and leaves the accumulator's hidden high byte alone, and a narrowing `SEP` zeroes the high bytes of X and Y while preserving the low ones. Both are partial writes the effect model records as whole ones, so the registers a width transition resizes are live across it.
-* Nothing is dead where a function returns. Every register and every flag is live at every exit: a caller may legally read a register the contract does not list, and the contract syntax has no way to name a flag at all.
+* Nothing is dead where a function returns. Every register and every flag is live at every exit, and the reason is `call foo`: it opts out of contract checking by design, so a caller may read a register or flag the contract does not list and no diagnostic will have said otherwise. A contract *can* name a flag, and an unlisted output of a clause-bearing function is undefined — the two language rules that would license narrowing this seed. The compiler records what each function declares, in `FunctionInfo::declared_outputs`, and narrowing on it is a separate decision that has to answer for the escape hatch first.
 * User-written native instructions and HLA-generated instructions receive identical treatment after lowering.
 
 The optimizer can remain a fixed sequence of small, understandable passes:

@@ -327,6 +327,16 @@ impl DiagnosticCode {
     /// into each other, so which of them a site pays for depends on the form
     /// and not on the token. The help names the pair the site actually emits.
     pub const INEFFICIENT_BRANCH: Self = Self("K816-W0157");
+    /// A K816 register spelling that decisions 29 and 30 retired.
+    ///
+    /// `c` and `d` in a register position, `b` outside `~`, and the
+    /// `b!!`/`b??` stack forms. Each names its replacement — the accumulator
+    /// is `a` at both widths, and the two registers that had taken the flag
+    /// letters are `dpr` and `dbr`. Registered because a spelling that
+    /// vanishes into a generic parse error is what `plans/06-compatibility.md`
+    /// decision 0 exists to prevent, and decision 33 applies that rule to
+    /// K816's own retired spellings and not only to the original's.
+    pub const RETIRED_REGISTER_SPELLING: Self = Self("K816-E0158");
 
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
@@ -365,11 +375,20 @@ impl DiagnosticCode {
     ///
     /// In the original the letter is decoration: every one of the seven
     /// letters is plain `PLP`/`PHP`, all fourteen spellings meaning the same
-    /// two instructions. K816 does not carry that, and `b`/`d` are excluded
-    /// because they name the 65816's data-bank and direct-page registers
-    /// here — which is a K65 spelling given another meaning, recorded as
-    /// `instr-stack-flags`'s `intentionally-changed` half rather than hidden.
+    /// two instructions. K816 does not carry that, and now refuses all seven
+    /// uniformly: `b` and `d` used to be excluded because they named the
+    /// data-bank and direct-page registers here, and those registers are
+    /// `dbr` and `dpr` since `plans/06-compatibility.md` decisions 29 and 30.
     pub const K65_FLAG_STACK_FORM: Self = Self("K816-K65-0005");
+    /// `o` or `O` where the overflow flag is meant — `o-`, `o+`, `o-?`, `o+?`.
+    ///
+    /// The original spells the *set/clear* shorthand with `o` (`o-` is
+    /// `"CL"+"v"`, `compiler.inc:161-162, 259-260`) and the *branch tests*
+    /// with `v` (`v-?` is `BVC`, `:318-319`) — one flag under two letters,
+    /// split by construct. K816 accepted both letters everywhere, which is
+    /// what let the two intermix; it now spells the flag `v` throughout and
+    /// names that here (decision 32).
+    pub const K65_OVERFLOW_FLAG_SPELLING: Self = Self("K816-K65-0006");
 
     pub fn as_str(self) -> &'static str {
         self.0
@@ -598,11 +617,44 @@ mod tests {
         DiagnosticCode::BINARY_NOT_FOUND,
         DiagnosticCode::SECTION_NOT_READABLE,
         DiagnosticCode::SECTION_NO_DIMENSIONS,
+        DiagnosticCode::BORROWED_INLINE_UNUSABLE,
+        DiagnosticCode::INEFFICIENT_BRANCH,
+        DiagnosticCode::RETIRED_REGISTER_SPELLING,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,
         DiagnosticCode::K65_UNSUPPORTED_ILLEGAL_OPCODE,
+        DiagnosticCode::K65_FLAG_STACK_FORM,
+        DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING,
     ];
+
+    /// Every declared code is in [`REGISTERED`].
+    ///
+    /// Without this the uniqueness check above only sees the codes someone
+    /// remembered to list, which is how three of them — `E0156`, `W0157`, and
+    /// `K65-0005` — went unchecked for four tasks. Reading the source is the
+    /// only way to ask the question: a `const` nothing references is invisible
+    /// at run time.
+    #[test]
+    fn every_declared_code_is_registered() {
+        let listed: std::collections::HashSet<&str> =
+            REGISTERED.iter().map(|code| code.as_str()).collect();
+        for line in include_str!("diagnostic.rs").lines() {
+            let Some(rest) = line.trim().strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(": Self = Self(\"") else {
+                continue;
+            };
+            let Some((code, _)) = value.split_once('"') else {
+                continue;
+            };
+            assert!(
+                listed.contains(code),
+                "{name} ({code}) is declared but missing from REGISTERED"
+            );
+        }
+    }
 
     #[test]
     fn codes_are_unique_and_well_formed() {

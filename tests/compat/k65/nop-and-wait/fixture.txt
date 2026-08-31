@@ -2,6 +2,7 @@ row       instr-nop-wait
 config    atarixl.cfg
 compare   diagnostics
 units     input.k65
+expect    input.k65 K816-K65-0006
 expect    input.k65 K816-K65-0005
 expect    input.k65 K816-K65-0005
 expect    input.k65 K816-K65-0005
@@ -19,11 +20,12 @@ letter is decoration, all fourteen spellings mean the same two instructions
 refuses five of the seven by name - `z c n v i` - because `p??`/`p!!` says
 that instruction without pretending to move one flag, and the help names it.
 
-`b` and `d` are the other two and they are *not* refused: they name the
-65816's data-bank and direct-page registers, so `b!!` is `PHB` here and `PHP`
-there.  That is a K65 spelling with a K816 meaning, which the manifest records
-as `instr-stack-flags`'s `intentionally-changed` half rather than leaving it
-in the bytes to be found.
+All seven are refused now, and uniformly.  `b` and `d` used to be the
+exceptions - they named the data-bank and direct-page registers, so `b!!` was
+`PHB` here and `PHP` there - and those registers are spelled `dbr` and `dpr`
+since decisions 29 and 30.  No K65 flag letter carries a K816 meaning in the
+stack slot any more, which is why `instr-stack-flags` no longer needs an
+`intentionally-changed` half to cover one.
 
 `o+` stays out of this source: the 65816 has no `SEV`, the original assembles
 `SEv` and dies without a diagnostic, and `instr-flag-set` records that.
@@ -50,13 +52,18 @@ its own meaning for `* N` and `%` (`doc/syntax-reference.md`: N NOPs, and
 `BRK`), `--strict-k65` warns, and the row is `intentionally-changed` with this
 golden as its evidence.
 
-Since G1 there is one `K816-E0001` here, not two: the grammar takes `o` as a
-flag name, so `o-` parses.  The one left is `z?? z!!`, which is the status
-register spelled `z` - a K65 form no decision has reached yet.
+**`o-` is `K816-K65-0006`, and the golden's `B8` is what it gives up.**
+`Flag -> o` is the original's spelling of the overflow flag
+(`compiler.inc:259-260`) and `B8` is `CLV`, so decision 14 accepted `o` as an
+alias for `v`.  Decision 32 reverses that, and the reason is one line above
+this fixture's own evidence: the original spells the *set/clear* shorthand
+`o-` and the *branch tests* `v-?` (`:318-319`) - one flag under two letters,
+split by construct.  Accepting both letters everywhere is what let the two
+intermix in one source.  K816 spells it `v` throughout and names that here, so
+this is the one construct in the corpus where K816 gives up a working K65
+spelling; decision 0's rule still holds, because the refusal says what to
+write.
 
-`o-` is the other half of the fixture and needs no argument: `Flag -> o` is the
-original's spelling of the overflow flag (`compiler.inc:259-260`) and `B8` is
-`CLV`, so decision 14's alias is `compatible`.  Its opposite is not: `o+`
-assembles to `SEv`, which does not exist, and the original compiler dies
-without a diagnostic.  That is a `legacy-defective` row, and K816 refusing
-`o+` is the right behaviour rather than a compatibility break.
+`o+` was never on the table: it assembles to `SEv`, which does not exist, and
+the original compiler dies without a diagnostic.  That is a `legacy-defective`
+row, and refusing it is right rather than a compatibility break.

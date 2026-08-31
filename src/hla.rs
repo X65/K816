@@ -87,6 +87,18 @@ fn assignment(
         return without_a_register(resolver, assign, site);
     }
 
+    // A retired register spelling reaches lowering as an *address*, because
+    // an unknown identifier in an operand slot is one. Asked here, before any
+    // of the rules below: each of them has a true answer about the operand it
+    // looks at, and none of them is the answer to `c = s` (decision 33).
+    if let Some(diagnostic) = std::iter::once(&assign.source)
+        .chain(targets.iter())
+        .find_map(retired_operand)
+    {
+        resolver.report(diagnostic);
+        return None;
+    }
+
     let mut steps = Vec::new();
     // Where the value is right now.
     let mut carrier = match register_of(&assign.source) {
@@ -349,10 +361,12 @@ fn set_or_clear_flag(
 
 /// `a!!`, `x??`, `p!!`, `b!!`, `d??` — push and pull.
 ///
-/// `b` and `d` are the *bank* and *direct page* registers here, not the
-/// accumulator's high byte and the decimal flag: `PHB` pushes the data bank
-/// and `PHD` the direct page (`doc/syntax-reference.md`, "65816 Bank
-/// Registers and Mode Switch").
+/// `dbr` and `dpr` are the data-bank and direct-page registers: `PHB` pushes
+/// the first and `PHD` the second (`doc/syntax-reference.md`, "65816 Bank
+/// Registers and Mode Switch"). They were spelled `b` and `d` until
+/// `plans/06-compatibility.md` decisions 29 and 30 — `b` names the
+/// accumulator's high half, which the stack cannot move on its own, and `d`
+/// is the decimal flag.
 fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option<Vec<Classified>> {
     let push = stack.op == StackOp::Push;
     let register = stack.register.kind;
@@ -365,10 +379,30 @@ fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option
         (RegisterKind::Y, false) => Mnemonic::Ply,
         (RegisterKind::P, true) => Mnemonic::Php,
         (RegisterKind::P, false) => Mnemonic::Plp,
-        (RegisterKind::B, true) => Mnemonic::Phb,
-        (RegisterKind::B, false) => Mnemonic::Plb,
-        (RegisterKind::D, true) => Mnemonic::Phd,
-        (RegisterKind::D, false) => Mnemonic::Pld,
+        (RegisterKind::Dbr, true) => Mnemonic::Phb,
+        (RegisterKind::Dbr, false) => Mnemonic::Plb,
+        (RegisterKind::Dpr, true) => Mnemonic::Phd,
+        (RegisterKind::Dpr, false) => Mnemonic::Pld,
+        // `b` reaches here because it is still a register token, for `a~b`.
+        // It is the accumulator's high half, which no stack instruction moves
+        // on its own — and the register `b!!` used to push is `dbr`, so the
+        // spelling gets its replacement named rather than a bare refusal.
+        (RegisterKind::B, _) => {
+            resolver.report(
+                Diagnostic::error(
+                    DiagnosticCode::RETIRED_REGISTER_SPELLING,
+                    format!("`b` is not a stack target, so it cannot be {}ed", if push { "push" } else { "pull" }),
+                    Label::new(stack.op_span, "`b` is the accumulator's high half"),
+                )
+                .with_help("to move the data bank, write `dbr!!` / `dbr??`")
+                .with_note(
+                    "`b` names one half of the accumulator and exists for `a~b` alone; \
+                     `PHB` pushes the data bank, which is a different register",
+                )
+                .with_docs("doc/syntax-reference.md#registers"),
+            );
+            return None;
+        }
         _ => {
             resolver.report(
                 unavailable(
@@ -380,7 +414,7 @@ fn push_or_pull(resolver: &mut Resolver, stack: &HlaStack, site: Span) -> Option
                     stack.op_span,
                     "no instruction moves this register through the stack",
                 )
-                .with_help("`a`, `x`, `y`, `p`, `b`, and `d` have push and pull"),
+                .with_help("`a`, `x`, `y`, `p`, `dbr`, and `dpr` have push and pull"),
             );
             return None;
         }
@@ -577,10 +611,14 @@ const TRANSFERS: &[(RegisterKind, RegisterKind, Mnemonic)] = &[
     (RegisterKind::Y, RegisterKind::X, Mnemonic::Tyx),
     (RegisterKind::X, RegisterKind::S, Mnemonic::Txs),
     (RegisterKind::S, RegisterKind::X, Mnemonic::Tsx),
-    (RegisterKind::C, RegisterKind::D, Mnemonic::Tcd),
-    (RegisterKind::D, RegisterKind::C, Mnemonic::Tdc),
-    (RegisterKind::C, RegisterKind::S, Mnemonic::Tcs),
-    (RegisterKind::S, RegisterKind::C, Mnemonic::Tsc),
+    // The four that move all sixteen bits whatever `M` says. They are spelled
+    // with the accumulator's one name: `a` *is* the accumulator at both
+    // widths, and what these move is the register, not the low byte
+    // (`plans/06-compatibility.md` decision 29).
+    (RegisterKind::A, RegisterKind::Dpr, Mnemonic::Tcd),
+    (RegisterKind::Dpr, RegisterKind::A, Mnemonic::Tdc),
+    (RegisterKind::A, RegisterKind::S, Mnemonic::Tcs),
+    (RegisterKind::S, RegisterKind::A, Mnemonic::Tsc),
 ];
 
 /// The instruction that moves `from` into `to`, if the CPU has one.
@@ -601,26 +639,39 @@ fn two_step(from: RegisterKind, to: RegisterKind) -> Option<RegisterKind> {
         .find(|middle| transfer(*middle, to).is_some())
 }
 
+/// The retired-spelling refusal for an operand that is one, if it is.
+///
+/// `c` and `d` are ordinary identifiers now, so an operand written with
+/// either arrives as an address naming nothing. `resolve` catches the general
+/// case; this catches it one stage earlier, where the statement is rejected
+/// for a different reason before the name is ever looked up.
+fn retired_operand(target: &HlaOperand) -> Option<Diagnostic> {
+    let HlaOperandKind::Memory(address) = &target.kind else {
+        return None;
+    };
+    let crate::ast::ExprKind::Symbol(name) = &address.value.kind else {
+        return None;
+    };
+    crate::compat::retired_register_spelling(name.span, &name.text)
+}
+
 /// A register memory cannot be loaded into.
 ///
-/// Only `d` and `s` are in that position, and both are reachable from the
-/// accumulator — under the name `c`, because the transfer moves all sixteen
-/// bits of it.
+/// Only `dpr` and `s` are in that position, and both are reachable from the
+/// accumulator, whose transfer moves all sixteen bits of it.
 fn no_load(register: RegisterKind, operand: &HlaOperand) -> Diagnostic {
     let diagnostic = no_instruction(
         format!("no instruction loads `{}`", register.k65()),
         Label::new(operand.span, "nothing loads this register from memory"),
         None,
     );
-    if transfer(RegisterKind::C, register).is_none() {
+    if transfer(RegisterKind::A, register).is_none() {
         return diagnostic;
     }
-    diagnostic
-        .with_help(format!(
-            "load the accumulator, then transfer it: `a = ...` and `{} = c`",
-            register.k65()
-        ))
-        .with_note("`c` is the accumulator under the name a transfer gives it")
+    diagnostic.with_help(format!(
+        "load the accumulator, then transfer it: `a = ...` and `{} = a`",
+        register.k65()
+    ))
 }
 
 /// A register whose value memory cannot be stored from.
@@ -630,15 +681,13 @@ fn no_store(register: RegisterKind, operand: &HlaOperand) -> Diagnostic {
         Label::new(operand.span, "nothing stores this register to memory"),
         None,
     );
-    if transfer(register, RegisterKind::C).is_none() {
+    if transfer(register, RegisterKind::A).is_none() {
         return diagnostic;
     }
-    diagnostic
-        .with_help(format!(
-            "transfer it into the accumulator first: `c = {}` and then store `a`",
-            register.k65()
-        ))
-        .with_note("`c` is the accumulator under the name a transfer gives it")
+    diagnostic.with_help(format!(
+        "transfer it into the accumulator first: `a = {}` and then store `a`",
+        register.k65()
+    ))
 }
 
 fn no_transfer(
@@ -647,6 +696,24 @@ fn no_transfer(
     target: &HlaOperand,
     right: &HlaOperand,
 ) -> Diagnostic {
+    // `b` is the accumulator's high half and an `a~b` operand only: there is
+    // no instruction that moves a value into or out of it on its own, because
+    // `XBA` swaps the halves of one register rather than copying between two
+    // (`plans/06-compatibility.md` decision 30). Named, so the author is not
+    // left reading a generic refusal about a register that half-exists.
+    if from == RegisterKind::B || to == RegisterKind::B {
+        return Diagnostic::error(
+            DiagnosticCode::RETIRED_REGISTER_SPELLING,
+            "`b` is not a transfer operand",
+            Label::new(target.span, "`b` is the accumulator's high half"),
+        )
+        .with_note(
+            "`XBA` swaps the accumulator's two halves rather than copying one register \
+             into another, so `b` exists for that one statement and nothing else",
+        )
+        .with_help("write `a~b` to swap the halves, or `dbr` for the data bank")
+        .with_docs("doc/syntax-reference.md#registers");
+    }
     let diagnostic = no_instruction(
         format!(
             "the 65816 cannot transfer `{}` to `{}`",
@@ -656,21 +723,6 @@ fn no_transfer(
         Label::new(target.span, "no instruction moves the value here"),
         None,
     );
-    // The accumulator has two names and only one of them appears in the
-    // transfer table: the 65816 moves all sixteen bits here, and K65 spells
-    // that `c`.
-    if to == RegisterKind::A && transfer(from, RegisterKind::C).is_some() {
-        return diagnostic.with_help(format!(
-            "this transfer moves the whole accumulator: write `c = {}`",
-            from.k65()
-        ));
-    }
-    if from == RegisterKind::A && transfer(RegisterKind::C, to).is_some() {
-        return diagnostic.with_help(format!(
-            "this transfer moves the whole accumulator: write `{} = c`",
-            to.k65()
-        ));
-    }
     // The route is suggested, never inserted: an inserted transfer clobbers
     // the register it passes through, which is the damage `W0123` exists to
     // report. K816 does not author a bug it also warns about.

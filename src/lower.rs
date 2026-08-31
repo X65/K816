@@ -494,11 +494,14 @@ fn registers_of(registers: &[crate::ast::RegisterKind]) -> RegisterSet {
     registers
         .iter()
         .fold(RegisterSet::NONE, |set, register| match register {
-            RegisterKind::A | RegisterKind::B | RegisterKind::C => set.union(RegisterSet::A),
+            // `b` is the accumulator's high half, so it claims the
+            // accumulator: `XBA` reads and writes that one register.
+            RegisterKind::A | RegisterKind::B => set.union(RegisterSet::A),
             RegisterKind::X => set.union(RegisterSet::X),
             RegisterKind::Y => set.union(RegisterSet::Y),
             RegisterKind::S => set.union(RegisterSet::S),
-            RegisterKind::D => set.union(RegisterSet::D),
+            RegisterKind::Dpr => set.union(RegisterSet::D),
+            RegisterKind::Dbr => set.union(RegisterSet::DBR),
             RegisterKind::P => set,
         })
 }

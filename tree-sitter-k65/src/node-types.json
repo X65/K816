@@ -1114,9 +1114,19 @@
     "type": "call_outputs",
     "named": true,
     "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "register": {
         "multiple": true,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "register",
@@ -1376,6 +1386,16 @@
     "type": "contract_outputs",
     "named": true,
     "fields": {
+      "flag": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
       "register": {
         "multiple": true,
         "required": false,

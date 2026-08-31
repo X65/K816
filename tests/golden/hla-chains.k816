@@ -36,7 +36,7 @@ func chain_native @a8 @i8 {
 // transfer sequences".
 func transfers @a8 @i8 {
     y=x=a
-    d=c=s
+    dpr=a=s
     s=x=y
     return
 }

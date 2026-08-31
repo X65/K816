@@ -1,0 +1,14 @@
+// Every K816 register spelling decisions 29, 30 and 33 retired, one per line.
+//
+// None of these is a K65 construct: the original names four registers, `A X Y
+// S`, and spells `c` and `d` as the carry and decimal flags.  They were
+// K816's own, and each is refused by name so an author reading the message
+// learns what to write instead.
+func main @a8 @i8 {
+  c = s
+  d = a
+  b = x
+  x = b
+  b!!
+  return
+}

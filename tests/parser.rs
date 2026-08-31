@@ -473,8 +473,8 @@ fn dump_register(kind: RegisterKind) -> &'static str {
     match kind {
         RegisterKind::A => "a",
         RegisterKind::B => "b",
-        RegisterKind::C => "c",
-        RegisterKind::D => "d",
+        RegisterKind::Dpr => "dpr",
+        RegisterKind::Dbr => "dbr",
         RegisterKind::S => "s",
         RegisterKind::X => "x",
         RegisterKind::Y => "y",
@@ -809,7 +809,7 @@ fn a_flag_statement_is_peeled_off_the_store_that_swallowed_it() {
 func f @a8 @i8 {
   i+ d-
   s = x = $FF
-                    o-
+                    v-
   mem = a
   mem+1 = a
 }
@@ -1841,7 +1841,8 @@ fn a_chain_flows_from_its_rightmost_operand() {
 #[test]
 fn registers_are_case_insensitive() {
     assert_eq!(parse_hla("A = X"), "a = x");
-    assert_eq!(parse_hla("D = C"), "d = c");
+    assert_eq!(parse_hla("DPR = A"), "dpr = a");
+    assert_eq!(parse_hla("DBR!!"), "dbr!!");
     assert_eq!(parse_hla("S = X = Y"), "s = x = y");
 }
 
@@ -1887,7 +1888,8 @@ fn every_shorthand_reaches_the_ast() {
     assert_eq!(parse_hla("c+"), "c+");
     assert_eq!(parse_hla("v-"), "v-");
     assert_eq!(parse_hla("a!!"), "a!!");
-    assert_eq!(parse_hla("d??"), "d??");
+    assert_eq!(parse_hla("dpr??"), "dpr??");
+    assert_eq!(parse_hla("dbr!!"), "dbr!!");
     assert_eq!(parse_hla("flag!!"), "p!!");
     assert_eq!(parse_hla("*"), "*");
     assert_eq!(parse_hla("* 5"), "* 5");
@@ -1913,13 +1915,36 @@ fn a_shift_statement_ends_at_its_operator() {
 }
 
 #[test]
-fn a_flag_shorthand_is_not_arithmetic_on_a_register() {
-    // `c` names both a register and a flag; `c+` sets the carry while
-    // `c+mem` is arithmetic, and only the token after the operator says which.
+fn a_flag_letter_is_only_ever_a_flag() {
+    // `c` and `d` named a register *and* a flag until decisions 29 and 30,
+    // and only the token after the operator said which — the ambiguity that
+    // made `i+ d-` parse as the arithmetic `i + d` (`postmortem.md` §G.1.16).
+    // Both are flags now and nothing else.
     assert_eq!(parse_hla("c+"), "c+");
-    assert_eq!(parse_hla("c+mem"), "c+mem");
     assert_eq!(parse_hla("d-"), "d-");
-    assert_eq!(parse_hla("d = c"), "d = c");
+    assert_eq!(parse_hla("dpr = a"), "dpr = a");
+}
+
+/// `c+mem` is `SEC` and then a call, which is what the original does too.
+///
+/// `Flag` is a terminal class distinct from `Ident` there
+/// (`compiler.inc:253-260`), so `Instr -> Flag +` ends at the sign and `mem`
+/// begins a new statement. K816 read it as one arithmetic statement for as
+/// long as `c` was also a register; now it reads it the way K65 always did.
+#[test]
+fn a_flag_set_ends_at_its_sign() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("flag.k65", "var mem = $80\nfunc f @a8 @i8 {\n  c+mem\n}\n");
+    let result = parse_source(map.file(id), None);
+    assert_eq!(result.diagnostics, vec![]);
+    let ItemKind::Func(func) = &result.file.items[1].kind else {
+        panic!("expected a func");
+    };
+    assert_eq!(func.body.statements.len(), 2, "`c+mem` is two statements");
+    assert!(matches!(
+        func.body.statements[0].kind,
+        StatementKind::Hla(HlaStatement::Flag(_))
+    ));
 }
 
 #[test]

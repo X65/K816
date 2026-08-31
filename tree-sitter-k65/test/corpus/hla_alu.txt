@@ -187,7 +187,8 @@ Stack shorthands
 ================================================================================
 
 func main {
-  a!! a?? x!! x?? y!! y?? p!! p?? flag!! b!! b?? d!! d??
+  a!! a?? x!! x?? y!! y?? p!! p?? flag!! b!! b?? dpr!! dpr?? dbr!! dbr??
+  d!! d?? c!! c??
 }
 
 --------------------------------------------------------------------------------
@@ -221,7 +222,15 @@ func main {
       (hla_stack
         register: (register))
       (hla_stack
-        register: (register)))))
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack
+        register: (register))
+      (hla_stack_flag)
+      (hla_stack_flag)
+      (hla_stack_flag)
+      (hla_stack_flag))))
 
 ================================================================================
 NOP and break shorthands
@@ -248,14 +257,17 @@ func main {
       (hla_break))))
 
 ================================================================================
-A flag operation is not arithmetic on a register of that name
+A flag letter is never a register, and a register letter is never a flag
 ================================================================================
 
 func main {
   c+
-  c+mem
   d-
-  d = c
+  i+
+  v-
+  a+mem
+  dpr = a
+  dbr!!
 }
 
 --------------------------------------------------------------------------------
@@ -266,15 +278,21 @@ func main {
     body: (block
       (hla_flag
         flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
+      (hla_flag
+        flag: (flag_name))
       (hla_arithmetic
         register: (register)
         operand: (address
           value: (identifier)))
-      (hla_flag
-        flag: (flag_name))
       (hla_assignment
         operand: (register)
-        operand: (register)))))
+        operand: (register))
+      (hla_stack
+        register: (register)))))
 
 ================================================================================
 A binary literal is not the break shorthand

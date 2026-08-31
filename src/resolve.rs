@@ -1173,15 +1173,22 @@ impl<'a> Resolver<'a> {
                 Some(id)
             }
             None => {
-                self.report(
-                    Diagnostic::error(
-                        DiagnosticCode::UNDECLARED_SYMBOL,
-                        format!("`{name}` is not declared"),
-                        Label::new(span, "used here without a declaration"),
-                    )
-                    .with_help(format!("declare it first, e.g. `var {name} = $0400`"))
-                    .with_docs("doc/syntax-reference.md#variable-declaration"),
-                );
+                // `c` and `d` reach here as ordinary identifiers, because
+                // that is what they are now — but an author who wrote `c = s`
+                // meant the register the letter used to name, and telling
+                // them to `var c = $0400` is advice that compiles and does
+                // something else. Named before the general case.
+                let diagnostic = crate::compat::retired_register_spelling(span, name)
+                    .unwrap_or_else(|| {
+                        Diagnostic::error(
+                            DiagnosticCode::UNDECLARED_SYMBOL,
+                            format!("`{name}` is not declared"),
+                            Label::new(span, "used here without a declaration"),
+                        )
+                        .with_help(format!("declare it first, e.g. `var {name} = $0400`"))
+                        .with_docs("doc/syntax-reference.md#variable-declaration")
+                    });
+                self.report(diagnostic);
                 None
             }
         }

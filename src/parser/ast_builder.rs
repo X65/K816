@@ -938,15 +938,38 @@ impl AstBuilder<'_> {
 
     /// The flags with a set/clear shorthand, as the source spells them.
     ///
-    /// `o` is the original's name for the overflow flag and `v` is K816's;
-    /// `c` and `d` name registers as well, and which one a statement meant
-    /// follows from its shape rather than from the spelling.
+    /// `o` is here so that `o-` is *recognised* and refused with `v-` named
+    /// rather than falling through to arithmetic: the original spells the
+    /// set/clear shorthand `o` and the branch tests `v`, and K816 spells both
+    /// `v` (`plans/06-compatibility.md` decision 32). Every letter here is a
+    /// flag and nothing else — `c` and `d` stopped naming registers with
+    /// decisions 29 and 30 — so a statement's shape no longer has to settle
+    /// which was meant.
     fn flag_spelling(&self, node: Node<'_>) -> bool {
         matches!(node.kind(), "identifier" | "register")
             && matches!(
                 self.text(node).to_ascii_lowercase().as_str(),
                 "c" | "d" | "i" | "v" | "o"
             )
+    }
+
+    /// The reserved node for `o`/`O` where `v` is meant.
+    ///
+    /// A node rather than a diagnostic, because that is the shape decision 0
+    /// gives every retired spelling: the parser recognises the construct and
+    /// `semantic.rs` says what is wrong with it, so the refusal arrives with
+    /// the rest and a parse stays clean.
+    fn overflow_spelling(&self, span: Span) -> ReservedConstruct {
+        ReservedConstruct {
+            kind: ReservedKind::OverflowFlagSpelling,
+            keyword_span: span,
+            name: None,
+        }
+    }
+
+    /// Whether `text` is the retired `o` spelling of the overflow flag.
+    fn is_overflow_spelling(text: &str) -> bool {
+        text.eq_ignore_ascii_case("o")
     }
 
     /// `i+ d-` followed by `s = x = $FF` is three statements — SEI, CLD, and
@@ -1019,7 +1042,11 @@ impl AstBuilder<'_> {
     fn flag_statement(&mut self, name: Node<'_>, operator: Node<'_>) -> Statement {
         let flag_span = self.span(name);
         let span = Span::new(flag_span.file, flag_span.start, self.span(operator).end);
-        let flag = match self.text(name).to_ascii_lowercase().as_str() {
+        let text = self.text(name).to_ascii_lowercase();
+        if Self::is_overflow_spelling(&text) {
+            return Statement::new(StatementKind::Reserved(self.overflow_spelling(span)), span);
+        }
+        let flag = match text.as_str() {
             "c" => FlagKind::Carry,
             "d" => FlagKind::Decimal,
             "i" => FlagKind::Interrupt,
@@ -1243,9 +1270,16 @@ impl AstBuilder<'_> {
             Some("c") => FlagKind::Carry,
             Some("d") => FlagKind::Decimal,
             Some("i") => FlagKind::Interrupt,
-            // `o` is the original's spelling of the overflow flag; `v` is
-            // K816's. One flag, two names.
-            Some("v") | Some("o") => FlagKind::Overflow,
+            Some("v") => FlagKind::Overflow,
+            // Recognised so it is refused by name rather than reaching the
+            // "not a flag" arm below, which would say the wrong thing: `o`
+            // *is* a flag, and the complaint is about which letter spells it.
+            Some("o") => {
+                return Statement::new(
+                    StatementKind::Reserved(self.overflow_spelling(span)),
+                    span,
+                );
+            }
             other => {
                 self.diagnostics.push(
                     Diagnostic::error(
@@ -1356,7 +1390,19 @@ impl AstBuilder<'_> {
                     Some('c') => TestableFlag::Carry,
                     Some('n') => TestableFlag::Negative,
                     Some('z') => TestableFlag::Zero,
-                    Some('v') | Some('o') => TestableFlag::Overflow,
+                    Some('v') => TestableFlag::Overflow,
+                    // `o-?` and `o+?` were K816's own extension on top of
+                    // decision 14: the original spells the branch tests `v`
+                    // and has no `o` form at all (`compiler.inc:318-319`).
+                    // Reported here rather than as a reserved node because a
+                    // condition is an operand and there is nowhere to hang a
+                    // statement — but it is the same refusal, from the same
+                    // place, so the two spellings cannot drift apart.
+                    Some('o') | Some('O') => {
+                        self.diagnostics
+                            .push(crate::compat::k65_overflow_flag_spelling(self.span(node)));
+                        return fallback;
+                    }
                     _ => {
                         self.unexpected(node, "a branch condition");
                         return fallback;
@@ -1521,8 +1567,8 @@ impl AstBuilder<'_> {
         let kind = match self.text(node).to_ascii_lowercase().as_str() {
             "a" => RegisterKind::A,
             "b" => RegisterKind::B,
-            "c" => RegisterKind::C,
-            "d" => RegisterKind::D,
+            "dpr" => RegisterKind::Dpr,
+            "dbr" => RegisterKind::Dbr,
             "s" => RegisterKind::S,
             "x" => RegisterKind::X,
             "y" => RegisterKind::Y,

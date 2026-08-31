@@ -418,14 +418,25 @@ export default grammar({
 
     _contract_outputs: $ => seq('->', field('outputs', $.contract_outputs)),
 
+    // An output is a register or a flag: `(a) -> a, c` hands back the
+    // accumulator and the carry. Which flags a clause may name is contract
+    // analysis, not grammar — the four a callee can compute are `c z n v`,
+    // and a mode bit like `i` is refused there with a message.
+    //
+    // A flag arrives as an identifier rather than a token, for the reason the
+    // `register` rule gives: a letter in the lexer's reach is a letter every
+    // rule that wants an identifier loses.
     contract_outputs: $ =>
       choice(
         seq(
           repeat1(field('width', $.width_annotation)),
-          optional(commaSep1(field('register', $.register))),
+          optional(commaSep1($._contract_output)),
         ),
-        commaSep1(field('register', $.register)),
+        commaSep1($._contract_output),
       ),
+
+    _contract_output: $ =>
+      choice(field('register', $.register), field('flag', $.identifier)),
 
     // Module-level default widths sit at the top of a file on their own.
     // Each annotation is its own item, so a run of them needs no lookahead to
@@ -893,7 +904,9 @@ export default grammar({
     call_argument: $ =>
       choice(field('register', $.register), field('immediate', $.immediate)),
 
-    call_outputs: $ => commaSep1(field('register', $.register)),
+    // A call site restates what the callee declares, flags included, so this
+    // takes the same shape as `contract_outputs`.
+    call_outputs: $ => commaSep1($._contract_output),
 
     width_annotation: _ => token(choice('@a8', '@a16', '@i8', '@i16')),
 
@@ -1172,6 +1185,10 @@ export default grammar({
     // exactly how `i+ d-` came to parse as the arithmetic `i + d`
     // (`postmortem.md` §G.1.16). `i??` as a single token cannot change how a
     // bare `i` lexes anywhere else.
+    // `c` and `d` join them for the same reason, now that neither is a
+    // register: they used to reach `hla_stack` as one and be refused there by
+    // name. Six letters, and `b` is the seventh — it stays in `register` for
+    // `a~b`, so `b!!` parses as a stack form and the builder refuses it.
     hla_stack_flag: _ =>
       token(
         choice(
@@ -1179,6 +1196,8 @@ export default grammar({
           'n??', 'n!!', 'N??', 'N!!',
           'v??', 'v!!', 'V??', 'V!!',
           'i??', 'i!!', 'I??', 'I!!',
+          'c??', 'c!!', 'C??', 'C!!',
+          'd??', 'd!!', 'D??', 'D!!',
         ),
       ),
 
@@ -1276,29 +1295,47 @@ export default grammar({
 
     return_statement: _ => choice('return', 'return_i'),
 
-    // Register names are case-insensitive. `C` and `D` name both a register
-    // and a flag; which one is meant follows from the statement, not the
-    // spelling.
+    // Register names are case-insensitive.
+    //
+    // One rule decides what belongs here: **a single letter is a flag, and a
+    // register that is not `a x y s` is spelled by its datasheet
+    // abbreviation** (`plans/06-compatibility.md` decision 27). `a x y s` are
+    // the four the original names (`compiler.inc:244-251`); everything longer
+    // is a register the 6502 did not have.
+    //
+    // So `c` and `d` are *not* here. They are the carry and decimal flags,
+    // which is what the original spells them (`Flag -> C|c|D|d|I|i|O|o`,
+    // `:253-260`), and the registers that had taken those letters are `dpr`
+    // and `dbr` now. That also removes the last of the ambiguity §G.1.16
+    // describes: a letter that is both a flag and a register has two
+    // complete readings wherever an expression can follow.
     register: _ =>
       prec(
         2,
         token(
           choice(
-            'a', 'A', 'b', 'B', 'c', 'C', 'd', 'D',
-            's', 'S', 'x', 'X', 'y', 'Y',
+            'a', 'A', 's', 'S', 'x', 'X', 'y', 'Y',
+            // The accumulator's high half, and the *only* thing it is: `XBA`
+            // exchanges the halves of one register, which is why the effect
+            // model has no B bit and why `b` is not a transfer operand, a
+            // contract output, or a stack target (decision 30).
+            'b', 'B',
+            // The direct page and data bank, which used to be `d` and `b`.
+            // `dp` is not available for the first: it is the storage-class
+            // prefix in `var dp counter`, and a token would stop that being a
+            // declaration.
+            'dpr', 'DPR', 'dbr', 'DBR',
             // The status register, whose stack shorthand spells it either
             // way. One token for the registers keeps the lexer from having
             // to choose between two rules over the same spelling; the
             // builder decides which meaning the statement asked for.
             'p', 'P', 'flag',
-            // `i` and `v` are deliberately *not* here. They are flags, not
-            // registers, and no rule but `hla_flag` has a use for them —
-            // while every rule this token reaches gains them, which is what
-            // went wrong: `i+ d-` (SEI then CLD) read as the arithmetic
-            // `i + d`, because `hla_arithmetic` takes a register and `i` was
-            // one. They reach the flag slot as identifiers, the same way
-            // `o` does and for the same reason (`postmortem.md` §G.1.16,
-            // §G.1.8b).
+            // `c`, `d`, `i` and `v` are deliberately *not* here. They are
+            // flags, and no rule but `hla_flag` has a use for them — while
+            // every rule this token reaches gains them, which is what went
+            // wrong: `i+ d-` (SEI then CLD) read as the arithmetic `i + d`,
+            // because `hla_arithmetic` takes a register and `i` was one. They
+            // reach the flag slot as identifiers (`postmortem.md` §G.1.16).
           ),
         ),
       ),

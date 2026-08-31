@@ -88,8 +88,8 @@ func steps_native @a8 @i8 {
     rts
 }
 
-// The flag shorthands. `d` here is the decimal flag; `d!!` below is the
-// direct page register.
+// The flag shorthands. Every letter here is a flag and nothing else: the
+// registers that used to share `c` and `d` are `dpr` and `dbr` now.
 func flags @a8 @i8 {
     c+ c- d+ d- i+ i- v-
     return
@@ -100,8 +100,8 @@ func flags_native @a8 @i8 {
     rts
 }
 
-// Push and pull, including the two whose letters mean a different register
-// here than they do elsewhere: `b` is the data bank and `d` the direct page.
+// Push and pull. The data bank and direct page are `dbr` and `dpr`, spelled
+// out because a single letter is a flag.
 //
 // `p??` pulls the processor status and with it the width flags, so both
 // halves re-establish the widths before returning — and that they *both*
@@ -111,8 +111,8 @@ func stack @a8 @i8 {
     x!! x??
     y!! y??
     p!! p??
-    b!! b??
-    d!! d??
+    dbr!! dbr??
+    dpr!! dpr??
     @a8 @i8
     return
 }

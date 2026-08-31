@@ -3177,6 +3177,9 @@ fn reserved_diagnostic(reserved: &crate::ast::ReservedConstruct) -> Diagnostic {
                 .map_or("z", |name| name.text.as_str());
             compat::k65_flag_stack_form(reserved.keyword_span, letter)
         }
+        ReservedKind::OverflowFlagSpelling => {
+            compat::k65_overflow_flag_spelling(reserved.keyword_span)
+        }
     }
 }
 
@@ -3922,10 +3925,10 @@ fn register_name(register: RegisterKind) -> &'static str {
         RegisterKind::X => "x",
         RegisterKind::Y => "y",
         RegisterKind::S => "s",
-        RegisterKind::D => "d",
+        RegisterKind::Dpr => "dpr",
+        RegisterKind::Dbr => "dbr",
         RegisterKind::B => "b",
         RegisterKind::P => "p",
-        RegisterKind::C => "c",
     }
 }
 

@@ -868,12 +868,8 @@
                   "type": "SEQ",
                   "members": [
                     {
-                      "type": "FIELD",
-                      "name": "register",
-                      "content": {
-                        "type": "SYMBOL",
-                        "name": "register"
-                      }
+                      "type": "SYMBOL",
+                      "name": "_contract_output"
                     },
                     {
                       "type": "REPEAT",
@@ -885,12 +881,8 @@
                             "value": ","
                           },
                           {
-                            "type": "FIELD",
-                            "name": "register",
-                            "content": {
-                              "type": "SYMBOL",
-                              "name": "register"
-                            }
+                            "type": "SYMBOL",
+                            "name": "_contract_output"
                           }
                         ]
                       }
@@ -908,12 +900,8 @@
           "type": "SEQ",
           "members": [
             {
-              "type": "FIELD",
-              "name": "register",
-              "content": {
-                "type": "SYMBOL",
-                "name": "register"
-              }
+              "type": "SYMBOL",
+              "name": "_contract_output"
             },
             {
               "type": "REPEAT",
@@ -925,17 +913,34 @@
                     "value": ","
                   },
                   {
-                    "type": "FIELD",
-                    "name": "register",
-                    "content": {
-                      "type": "SYMBOL",
-                      "name": "register"
-                    }
+                    "type": "SYMBOL",
+                    "name": "_contract_output"
                   }
                 ]
               }
             }
           ]
+        }
+      ]
+    },
+    "_contract_output": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "register",
+          "content": {
+            "type": "SYMBOL",
+            "name": "register"
+          }
+        },
+        {
+          "type": "FIELD",
+          "name": "flag",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
         }
       ]
     },
@@ -2535,12 +2540,8 @@
       "type": "SEQ",
       "members": [
         {
-          "type": "FIELD",
-          "name": "register",
-          "content": {
-            "type": "SYMBOL",
-            "name": "register"
-          }
+          "type": "SYMBOL",
+          "name": "_contract_output"
         },
         {
           "type": "REPEAT",
@@ -2552,12 +2553,8 @@
                 "value": ","
               },
               {
-                "type": "FIELD",
-                "name": "register",
-                "content": {
-                  "type": "SYMBOL",
-                  "name": "register"
-                }
+                "type": "SYMBOL",
+                "name": "_contract_output"
               }
             ]
           }
@@ -3962,6 +3959,38 @@
           {
             "type": "STRING",
             "value": "I!!"
+          },
+          {
+            "type": "STRING",
+            "value": "c??"
+          },
+          {
+            "type": "STRING",
+            "value": "c!!"
+          },
+          {
+            "type": "STRING",
+            "value": "C??"
+          },
+          {
+            "type": "STRING",
+            "value": "C!!"
+          },
+          {
+            "type": "STRING",
+            "value": "d??"
+          },
+          {
+            "type": "STRING",
+            "value": "d!!"
+          },
+          {
+            "type": "STRING",
+            "value": "D??"
+          },
+          {
+            "type": "STRING",
+            "value": "D!!"
           }
         ]
       }
@@ -4299,30 +4328,6 @@
             },
             {
               "type": "STRING",
-              "value": "b"
-            },
-            {
-              "type": "STRING",
-              "value": "B"
-            },
-            {
-              "type": "STRING",
-              "value": "c"
-            },
-            {
-              "type": "STRING",
-              "value": "C"
-            },
-            {
-              "type": "STRING",
-              "value": "d"
-            },
-            {
-              "type": "STRING",
-              "value": "D"
-            },
-            {
-              "type": "STRING",
               "value": "s"
             },
             {
@@ -4344,6 +4349,30 @@
             {
               "type": "STRING",
               "value": "Y"
+            },
+            {
+              "type": "STRING",
+              "value": "b"
+            },
+            {
+              "type": "STRING",
+              "value": "B"
+            },
+            {
+              "type": "STRING",
+              "value": "dpr"
+            },
+            {
+              "type": "STRING",
+              "value": "DPR"
+            },
+            {
+              "type": "STRING",
+              "value": "dbr"
+            },
+            {
+              "type": "STRING",
+              "value": "DBR"
             },
             {
               "type": "STRING",

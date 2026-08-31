@@ -60,6 +60,21 @@ const FAMILY: &[Case] = &[
         code: DiagnosticCode::K65_FLAG_STACK_FORM,
         caret: "z??",
     },
+    // `o` is the original's letter for the overflow flag in this construct
+    // and `v` its letter in the branch tests; K816 spells it `v` in both.
+    Case {
+        source: "main @a8 @i8 {\n    o-\n}\n",
+        code: DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING,
+        caret: "o-",
+    },
+    // A K816 spelling decisions 29 and 30 retired: `b` is the accumulator's
+    // high half and only an `a~b` operand, so the stack cannot take it, and
+    // the register `b!!` used to push is `dbr`.
+    Case {
+        source: "main @a8 @i8 {\n    b!!\n}\n",
+        code: DiagnosticCode::RETIRED_REGISTER_SPELLING,
+        caret: "!!",
+    },
     Case {
         source: "func f @a8 {\n    return\n}\nvar X = f + 1\n",
         code: DiagnosticCode::NOT_CONSTANT,
@@ -182,9 +197,9 @@ const FAMILY: &[Case] = &[
         caret: "s",
     },
     Case {
-        source: "var mem = $10\nfunc f @a8 @i8 {\n    d = mem\n}\n",
+        source: "var mem = $10\nfunc f @a8 @i8 {\n    dpr = mem\n}\n",
         code: DiagnosticCode::NO_SUCH_INSTRUCTION,
-        caret: "d",
+        caret: "dpr",
     },
     Case {
         source: "var mem = $10\nfunc f @a8 @i8 {\n    mem = 5\n}\n",

@@ -1649,21 +1649,24 @@ Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed va
 
 ### Registers
 
-- `A` accumulator (8/16 bit)
-- `B` high byte of 16bit accumulator (8 bit, can be swapped with A via `b~a`)
-- `C` full 16-bit accumulator (16bit, available only to register transfer instructions)
+**One rule names them all: a single letter is a flag, and a register that is not `a x y s` is spelled by its datasheet abbreviation.** `a`, `x`, `y`, and `s` are the four the K65 grammar itself names; every other register the 65816 has and the 6502 did not gets a longer name, so no spelling has to be read two ways.
+
+- `A` accumulator (8/16 bit) — one name at both widths. The transfers that move all sixteen bits whatever `M` says (`TCD`, `TDC`, `TCS`, `TSC`) are spelled with it too: what they move is the register.
+- `B` high byte of the accumulator (8 bit) — an `a~b` operand and nothing else, because `XBA` swaps one register's halves rather than copying between two. Not a transfer operand, not a contract output, not a stack target.
 - `X` index register X (8/16 bit)
 - `Y` index register Y (8/16 bit)
-- `D` direct page register (16 bit)
+- `DPR` direct page register (16 bit) — `dpr = a` is `TCD`, `dpr!!` is `PHD`. Spelled `dpr` and not `dp`, because `dp` is the storage-class prefix in `var dp counter`.
+- `DBR` data bank register (8 bit) — `dbr!!` / `dbr??` are `PHB` / `PLB`.
 - `S` stack pointer (16 bit)
 - `PC` program counter (16 bit; CPU architectural register, not an HLA assignment target)
-- `DBR` data bank register (CPU architectural register, manipulated with native mnemonics such as `phb`/`plb`)
-- `PBR` program bank register (CPU architectural register, manipulated through long control flow and `phk`)
+- `PBR` program bank register — **no HLA name.** No instruction loads, stores, or transfers it: only `PHK` names it as a source, and there is no `PLK`. Which bank code runs in is decided by a section's `far` declaration and by the linker, not by a program writing the register, so `phk` is the whole of the surface.
 - `P` processor status register **NVMXDIZC** (8 bit; stack shorthand target as `p` or `flag` — **not** as an individual flag name, see below)
 
-**A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!` and `i??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses the five with `K816-K65-0005` and names `p??` / `p!!`, which is those two instructions without the suggestion that one flag moves on its own. `b` and `d` are the exception and keep K816's meaning — they name the data-bank and direct-page registers the 65816 has and the 6502 did not, so `b!!` is `PHB` here and `PHP` in the original.
+**A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!`, `i??`, `b!!` and `d??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses all seven with `K816-K65-0005` and names `p??` / `p!!`, which is those two instructions without the suggestion that one flag moves on its own.
 
-In K65 HLA syntax, single-letter register names `A`, `B`, `C`, `D`, `S`, `X`, and `Y` are native symbols used by the supported assignment, transfer, and stack shorthand parsers. Not every CPU register is a general-purpose assignment target; unsupported HLA assignments are rejected and must be written with the dedicated native mnemonic. The `b~a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
+**`c` and `d` are flags, not registers.** They name the carry and the decimal flag, which is what the K65 grammar spells them (`Flag -> C|c|D|d|I|i|O|o`). Earlier K816 releases gave `c` to the 16-bit accumulator and `d` to the direct page; both spellings are refused now with `K816-E0158`, naming `a` and `dpr`. `b` outside `a~b` is refused the same way.
+
+In K65 HLA syntax the register names above are native symbols used by the assignment, transfer, and stack shorthand parsers. Not every CPU register is a general-purpose assignment target; unsupported HLA assignments are rejected and must be written with the dedicated native mnemonic. The `b~a` shorthand lowers to the 65816 `XBA` (exchange B and A) instruction.
 
 ### SR Flags NVMXDIZC
 
@@ -1683,6 +1686,8 @@ E ....  Emulation mode (65816, hidden, can be exchanged with Carry flag via XCE 
 ```
 
 Flag shorthand operations: `c+` (SEC), `c-` (CLC), `d+` (SED), `d-` (CLD), `i+` (SEI), `i-` (CLI), `v-` (CLV).
+
+The overflow flag is `v` in every construct. The K65 grammar is not consistent about it — the set/clear shorthand is `o-` and the branch tests are `v-?` / `v+?`, one flag under two letters — so `o` in the flag slot is refused with `K816-K65-0006` and `v` named. `o` remains an ordinary identifier: `var o` is a declaration. There is no `SEV` on the 65816, so `v+` has no form at all.
 
 ### Processor Stack
 
@@ -3031,21 +3036,22 @@ XBA  Exchange B and A Accumulators
 
 ### Complete Register Transfer Table
 
-Source \ Dest|A|B|C|D|X|Y|S
-:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:
-A|-|`b~a`|-|`x=a` TAX|`y=a` TAY|-
-B|`b~a`|-|-|-|-|-|-
-C|-|-|-|`d=c` TCD|-|-|`s=c` TCS
-D|-|-|`c=d` TDC|-|-|-|-
-X|`a=x` TXA|-|-|-|-|`y=x` TXY|`s=x` TXS
-Y|`a=y` TYA|-|-|-|`x=y` TYX|-|-
-S|-|-|`c=s` TSC|-|`x=s` TSX|-|-
+Source \ Dest|A|B|DPR|X|Y|S
+:---|:---:|:---:|:---:|:---:|:---:|:---:
+A|-|`b~a`|`dpr=a` TCD|`x=a` TAX|`y=a` TAY|`s=a` TCS
+B|`b~a`|-|-|-|-|-
+DPR|`a=dpr` TDC|-|-|-|-|-
+X|`a=x` TXA|-|-|-|`y=x` TXY|`s=x` TXS
+Y|`a=y` TYA|-|-|`x=y` TYX|-|-
+S|`a=s` TSC|-|-|`x=s` TSX|-|-
+
+`a=s` and `s=a` are `TSC` and `TCS`, which move all sixteen bits regardless of `M` — the accumulator is one register and `a` names it at either width. `DBR` has no transfer: `PHB`/`PLB` are the only instructions that move it, spelled `dbr!!` and `dbr??`.
 
 Unsupported direct transfers (e.g. `s=y`, `d=x`) produce a compile error with a hint suggesting a two-step chain:
 
 ```k65
 s=x=y                  // s=y is not supported; use s=x=y instead (TYX + TXS)
-d=c=s                  // d=s is not supported; use d=c=s instead (TSC + TCD)
+dpr=a=s                // dpr=s is not supported; use dpr=a=s instead (TSC + TCD)
 ```
 
 ---

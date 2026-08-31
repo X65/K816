@@ -355,6 +355,39 @@ fn paired_fixture_warning(name: &str, text: &str, expected_pairs: usize, expecte
     );
 }
 
+/// A retired K816 spelling names its replacement, rather than falling out as
+/// whatever the surrounding rule makes of it.
+///
+/// Each of these was a working K816 spelling until decisions 29 and 30, and
+/// each fails a *different* way without the refusal: `c` and `d` become
+/// undeclared identifiers, so `c = s` reads as a store and reports on the
+/// source while the help offers `var c = $0400`; `b` is still a register
+/// token, so it reaches the transfer table and gets a generic refusal about a
+/// register that only half exists. Decision 33 is why they are named.
+#[test]
+fn a_retired_register_spelling_names_its_replacement() {
+    for (source, expected_help) in [
+        ("    c = s", "the accumulator is `a` at both widths"),
+        ("    dpr = c", "the accumulator is `a` at both widths"),
+        ("    d = a", "the direct page register is `dpr`"),
+        ("    b = x", "write `a~b` to swap the halves"),
+        ("    x = b", "write `a~b` to swap the halves"),
+        ("    b!!", "write `dbr!!`"),
+    ] {
+        let program = format!("func main @a8 @i8 {{\n{source}\n}}\n");
+        let diagnostics = diagnostics(&program);
+        let found = diagnostics
+            .iter()
+            .find(|d| d.code == DiagnosticCode::RETIRED_REGISTER_SPELLING)
+            .unwrap_or_else(|| panic!("`{source}` did not report a retired spelling: {diagnostics:?}"));
+        let help = found.help.clone().unwrap_or_default();
+        assert!(
+            help.contains(expected_help),
+            "`{source}` help was `{help}`, expected it to name `{expected_help}`"
+        );
+    }
+}
+
 /// The shorthands the 65816 has no instruction for, all reported the same
 /// way: one code, and a help that names the route where one exists.
 ///
@@ -366,11 +399,11 @@ fn a_shorthand_the_cpu_cannot_do_is_refused_with_its_route() {
     for (source, expected_help) in [
         ("    x+1", Some("only the accumulator")),
         ("    y&mask", Some("only the accumulator")),
-        ("    d?1", Some("only `a`, `x`, and `y` compare")),
+        ("    dpr?1", Some("only `a`, `x`, and `y` compare")),
         ("    v+", Some("only `v-` exists")),
         ("    s!!", Some("have push and pull")),
         ("    x~y", Some("`XBA` swaps the accumulator halves")),
-        ("    d<<", Some("only the accumulator and memory shift")),
+        ("    dpr<<", Some("only the accumulator and memory shift")),
         ("    s++", Some("step by one")),
     ] {
         let source = format!("var mask = $10\nfunc main @a8 @i8 {{\n{source}\n}}\n");

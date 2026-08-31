@@ -132,6 +132,65 @@ pub fn k65_flag_stack_form(span: Span, letter: &str) -> Diagnostic {
     .with_docs("doc/k65-compat.md")
 }
 
+/// `o`/`O` where the overflow flag is meant.
+///
+/// A *refusal* of a spelling the original accepts, which decision 0 normally
+/// forbids — so the note carries the reason. The original is not consistent
+/// about this flag: `Instr -> Flag -` spells it `o` (`compiler.inc:161-162`,
+/// `259-260`) while `BranchOp -> v-?` spells it `v` (`:318-319`), so a source
+/// clearing the flag and branching on it writes two different letters for one
+/// bit. K816 accepted both letters in both constructs, which did not resolve
+/// the split so much as let it into a single line. One letter, everywhere.
+pub fn k65_overflow_flag_spelling(span: Span) -> Diagnostic {
+    Diagnostic::error(
+        DiagnosticCode::K65_OVERFLOW_FLAG_SPELLING,
+        "K816 spells the overflow flag `v`, not `o`",
+        Label::new(span, "write `v` here"),
+    )
+    .with_note(
+        "the original spells the set/clear shorthand `o-` and the branch tests `v-?`, \
+         which is one flag under two letters; K816 uses `v` for both",
+    )
+    .with_help("`v-` is `CLV`, and `v-?` / `v+?` are the branch tests")
+    .with_docs("doc/k65-compat.md")
+}
+
+/// A K816 register spelling decisions 29 and 30 retired.
+///
+/// K816's own spelling rather than the original's, and it gets the same
+/// courtesy for the same reason: decision 0 refuses generic parse errors for
+/// retired syntax because the author needs to be told what to write instead,
+/// and that need does not depend on which dialect the spelling came from
+/// (decision 33). Without this `c = s` reads as a store into an undeclared
+/// name and the help offers `var c = $0400` — advice that compiles and does
+/// something else entirely.
+pub fn retired_register_spelling(span: Span, spelling: &str) -> Option<Diagnostic> {
+    let (was, now) = match spelling.to_ascii_lowercase().as_str() {
+        "c" => (
+            "the 16-bit accumulator",
+            "the accumulator is `a` at both widths, and `c` is the carry flag",
+        ),
+        "d" => (
+            "the direct page register",
+            "the direct page register is `dpr`, and `d` is the decimal flag",
+        ),
+        _ => return None,
+    };
+    Some(
+        Diagnostic::error(
+            DiagnosticCode::RETIRED_REGISTER_SPELLING,
+            format!("`{spelling}` no longer names {was}"),
+            Label::new(span, "this is a flag letter now"),
+        )
+        .with_note(
+            "a single letter is a flag, and a register that is not `a x y s` is spelled \
+             by its datasheet abbreviation — `dpr`, `dbr`",
+        )
+        .with_help(now)
+        .with_docs("doc/syntax-reference.md#registers"),
+    )
+}
+
 /// `bank NAME` is removed, and `segment NAME` is what replaced it.
 ///
 /// A *removal* rather than a reservation, so the wording says so: nothing

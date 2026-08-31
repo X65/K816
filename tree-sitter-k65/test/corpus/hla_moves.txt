@@ -187,14 +187,14 @@ func main {
   a = y
   x = s
   s = x
-  d = c
-  c = d
-  s = c
-  c = s
+  dpr = a
+  a = dpr
+  s = a
+  a = s
   y = x
   x = y
   y = x = a
-  d = c = s
+  dpr = a = s
   s = x = y
 }
 
@@ -261,7 +261,8 @@ func main {
   A = #0
   X = A
   Y = x
-  D = C
+  DPR = A
+  DBR!!
   S = X
 }
 
@@ -284,6 +285,8 @@ func main {
       (hla_assignment
         operand: (register)
         operand: (register))
+      (hla_stack
+        register: (register))
       (hla_assignment
         operand: (register)
         operand: (register)))))

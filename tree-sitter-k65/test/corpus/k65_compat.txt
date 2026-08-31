@@ -44,7 +44,7 @@ var abstract_free?
       name: (identifier))))
 
 ================================================================================
-The overflow flag is spelled o as well as v
+The overflow flag is spelled v, and o is refused
 ================================================================================
 
 var o = $0400

@@ -327,7 +327,7 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Register-to-register transfers",
-        source: "func f {\n  x = a\n  d = c\n  s = x = y\n}\n",
+        source: "func f {\n  x = a\n  dpr = a\n  s = x = y\n}\n",
         expect: Expect::Compiles,
         case: "Register to register transfers",
     },
@@ -369,7 +369,7 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Stack shorthands",
-        source: "func f {\n  a!! a?? p!! b!! d??\n}\n",
+        source: "func f {\n  a!! a?? p!! dbr!! dpr??\n}\n",
         expect: Expect::Compiles,
         case: "Stack shorthands",
     },
@@ -660,7 +660,7 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "Case-insensitive registers and flags",
-        source: "func f @a8 @i8 {\n  A = #0\n  X = A\n  D = C\n}\n",
+        source: "func f @a8 @i8 {\n  A = #0\n  X = A\n  DPR = A\n}\n",
         expect: Expect::Compiles,
         case: "Registers are case-insensitive",
     },
@@ -688,12 +688,14 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`o`/`O` as the overflow flag",
-        // `var o` rides along: the alias must not cost the name. A token for
-        // `o` would win in the lexer wherever an identifier is also valid,
-        // and this store would stop being one.
-        source: "var o = $0400\nfunc f @a8 @i8 {\n  o-\n  o-? { nop }\n  o = a\n}\n",
-        expect: Expect::Compiles,
-        case: "The overflow flag is spelled o as well as v",
+        // Refused, with `v` named. `var o` still rides along and still has to
+        // compile: `o` is an ordinary identifier, and refusing the *flag*
+        // spelling must not cost the *name* — a token for `o` would win in
+        // the lexer wherever an identifier is also valid, and this store
+        // would stop being one.
+        source: "var o = $0400\nfunc f @a8 @i8 {\n  o-\n  o = a\n}\n",
+        expect: Expect::Refuses("K816-K65-0006"),
+        case: "The overflow flag is spelled v, and o is refused",
     },
     Row {
         group: "`align N + M`",

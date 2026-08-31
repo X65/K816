@@ -1,0 +1,41 @@
+row       k816-retired-register-spellings
+config    atarixl.cfg
+compare   diagnostics
+units     input.k65
+expect    input.k65 K816-E0158
+expect    input.k65 K816-E0158
+expect    input.k65 K816-E0158
+expect    input.k65 K816-E0158
+expect    input.k65 K816-E0158
+
+**Five statements, one code, and the point is that each of them would fail a
+*different* way without it.**
+
+These are K816's own spellings, not the original's, so decision 0 does not
+reach them on its face.  Decision 33 says it should: the reason decision 0
+gives for refusing by name - an author needs to be told what to write instead
+- has nothing to do with which dialect a spelling came from.
+
+Left alone, the three shapes fail like this:
+
+  - `c = s` and `d = a`.  Both letters are ordinary identifiers now, so the
+    target is an *address* naming nothing.  `d = a` reported "`d` is not
+    declared" and offered `var d = $0400` - advice that compiles and stores to
+    a variable.  `c = s` was worse: the store rule rejects the statement on
+    its *source* first, so the message was "no instruction stores `s`", which
+    answers a question nobody asked.  That is why the operands are swept for
+    a retired spelling before any of the "no such instruction" rules run.
+
+  - `b = x`, `x = b`.  `b` is still a register token, because `a~b` needs two
+    operands, so these reach the transfer table and collected the generic "the
+    65816 cannot transfer `x` to `b`" - true, and silent about the fact that
+    `b` is one half of a register and `XBA` is the only instruction that
+    touches it.
+
+  - `b!!`.  Reaches the stack rule as a register and is refused there, naming
+    `dbr!!`, which is the register the spelling used to push.
+
+One diagnostic per statement, and both directions of the `b` transfer are
+listed because they take different paths to the same refusal - one is a
+carrier that cannot be stored, the other a destination that cannot be
+loaded.

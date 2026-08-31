@@ -745,16 +745,36 @@ pub struct Register {
     pub span: Span,
 }
 
+/// A register a source line can name.
+///
+/// One rule decides the spellings: a single letter is a flag, and a register
+/// that is not `a x y s` is spelled by its datasheet abbreviation
+/// (`plans/06-compatibility.md` decision 27). `a x y s` are the four the
+/// original names; `c` and `d` are the carry and decimal *flags* there, so the
+/// registers that once took those letters are `dpr` and `dbr`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegisterKind {
-    /// The 8-bit accumulator.
+    /// The accumulator, at whatever width `M` selects.
+    ///
+    /// One name for one register: the width-independent transfers (`TCD`,
+    /// `TDC`, `TCS`, `TSC`) move all sixteen bits and are spelled with this
+    /// too, because a second name for the same register bought nothing but
+    /// the question of which one to write.
     A,
-    /// The high half of the 16-bit accumulator.
+    /// The high half of the accumulator, and *only* an `XBA` operand.
+    ///
+    /// Not a register in the effect model — `XBA` exchanges one register's
+    /// halves, so it reads and writes `A`. It is therefore not a transfer
+    /// operand, not a contract output, and not a stack target; the register
+    /// `b!!` used to push is [`Self::Dbr`] (decision 30).
     B,
-    /// The full 16-bit accumulator, available to transfers only.
-    C,
-    /// The direct page register.
-    D,
+    /// The direct page register, spelled `dpr`.
+    ///
+    /// Not `dp`: that is the storage-class prefix in `var dp counter`, and a
+    /// token would stop it being a declaration.
+    Dpr,
+    /// The data bank register, spelled `dbr`.
+    Dbr,
     /// The stack pointer.
     S,
     X,
@@ -764,13 +784,13 @@ pub enum RegisterKind {
 }
 
 impl RegisterKind {
-    /// The register's K65 spelling, for diagnostics that quote a chain.
+    /// The register's source spelling, for diagnostics that quote a chain.
     pub fn k65(self) -> &'static str {
         match self {
             Self::A => "a",
             Self::B => "b",
-            Self::C => "c",
-            Self::D => "d",
+            Self::Dpr => "dpr",
+            Self::Dbr => "dbr",
             Self::S => "s",
             Self::X => "x",
             Self::Y => "y",
@@ -1182,10 +1202,16 @@ pub enum ReservedKind {
     ///
     /// In the original the letter is decoration and every one of them is
     /// plain `PLP`/`PHP`. K816 does not give them that meaning: `p??`/`p!!`
-    /// say it without pretending to move one flag. `b` and `d` are absent on
-    /// purpose — they name the 65816's data-bank and direct-page registers
-    /// here, which is `instr-stack-flags`'s `intentionally-changed` half.
+    /// say it without pretending to move one flag. All seven letters are here
+    /// since `plans/06-compatibility.md` decisions 29 and 30 moved the
+    /// data-bank and direct-page registers off `b` and `d`.
     StackFlag,
+    /// `o`/`O` where the overflow flag is meant — `o-`, `o+`, `o-?`, `o+?`.
+    ///
+    /// The original spells the set/clear shorthand `o` and the branch tests
+    /// `v`, one flag under two letters; K816 spells it `v` in both and names
+    /// that here rather than accepting either everywhere (decision 32).
+    OverflowFlagSpelling,
 }
 
 /// The five K65 HLA forms whose bytes are illegal 6502 opcodes.

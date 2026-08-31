@@ -1297,23 +1297,63 @@ fn every_reserved_spelling_the_document_lists_is_reserved_and_refused() {
         "the document's list and `compat::RESERVED_NAMES` have drifted"
     );
 
-    // And each one really is refused, in both cases the sentence promises.
+    // Every declaration form the sentence names, in both cases it promises.
+    // `var` alone would have left four of the five paths free to regress:
+    // the reservation is checked where each kind of name is *declared*, and
+    // those are different places in `semantic.rs`.
+    const FORMS: &[(&str, &str)] = &[
+        ("var", "var {name} = $10\n"),
+        ("const", "const {name} = 5\n"),
+        ("func", "func {name} @a8 @i8 {{\n  return\n}}\n"),
+        ("data", "data {name} {{ $01 }}\n"),
+        ("inline", "inline {name} @a8 {{ nop }}\n"),
+        ("inline alias", "inline taker @a8 (#{name}) {{ nop }}\n"),
+    ];
     for spelling in &reserved {
         for name in [(*spelling).to_owned(), spelling.to_uppercase()] {
-            let source = format!("var {name} = $10\n");
-            let mut map = SourceMap::new();
-            let file = map.add_file("reserved.k816", &source);
-            let result = compile_to_ca65(&map, file, &Options::default());
-            let codes: Vec<&str> = result
-                .diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.code.as_str())
-                .collect();
-            assert!(
-                codes.contains(&"K816-E0158"),
-                "`var {name}` reported {codes:?}"
-            );
+            for (form, template) in FORMS {
+                let source = template
+                    .replace("{name}", &name)
+                    .replace("{{", "{")
+                    .replace("}}", "}");
+                let mut map = SourceMap::new();
+                let file = map.add_file("reserved.k816", &source);
+                let result = compile_to_ca65(&map, file, &Options::default());
+                let codes: Vec<&str> = result
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.code.as_str())
+                    .collect();
+                assert!(
+                    codes.contains(&"K816-E0158"),
+                    "`{form} {name}` reported {codes:?}"
+                );
+            }
         }
+    }
+
+    // A label is the position the paragraph below singles out: the eight
+    // register spellings begin a statement in the HLA layer, so `a:` fails to
+    // parse before any name is declared and the reservation never sees it.
+    // The seven flag letters are not statement starters and reach it. The
+    // split is asserted rather than described, because a change on either
+    // side of it makes the document's paragraph false.
+    for spelling in &reserved {
+        let source = format!("func holder @a8 @i8 {{\n{spelling}:\n  return\n}}\n");
+        let mut map = SourceMap::new();
+        let file = map.add_file("label.k816", &source);
+        let result = compile_to_ca65(&map, file, &Options::default());
+        let codes: Vec<&str> = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect();
+        let register = matches!(*spelling, "a" | "b" | "x" | "y" | "s" | "p" | "dpr" | "dbr");
+        let expected = if register { "K816-E0001" } else { "K816-E0158" };
+        assert!(
+            codes.contains(&expected),
+            "label `{spelling}` should report {expected}, reported {codes:?}"
+        );
     }
 
     // The counter-claim in the same paragraph, which is what keeps the rule

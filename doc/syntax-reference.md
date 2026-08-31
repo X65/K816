@@ -1511,7 +1511,7 @@ Prec|Assoc|Operators|Description
 16|R-L|`=` `+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `^=` `\|=`|assignment operators
 18|L-R|`,`|expression list (returns value of last)
 
-Four notes on what these compute, each of which differs from what the table alone suggests:
+Five notes on what these compute, each of which differs from what the table alone suggests:
 
 - **`%` is a non-negative modulo** — `fmod(fmod(a, b) + b, b)` — so `(0 - 7) % 3` is `2`, not `-1`.
 - **`/` is float division.** `[7 / 2]` is `3.5`, which becomes `4` at an integer boundary.
@@ -1682,7 +1682,9 @@ Operand rule for **raw mnemonics**: `#expr` is immediate, while an unprefixed va
 
 **A flag letter is not a stack shorthand target.** `z??`, `c!!`, `n??`, `v!!`, `i??`, `b!!` and `d??` are legal K65, and there the letter is decoration: all seven of `z c n v b i d` assemble to plain `PLP`/`PHP`, so every one of the fourteen spellings means the same two instructions. K816 refuses all seven with `K816-K65-0005` and names `p??` / `p!!`, which is those two instructions without the suggestion that one flag moves on its own.
 
-**Every register and flag spelling is reserved as a name.** A `var`, `const`, `func`, label or `inline` alias may not be called `a b x y s p dpr dbr c d i v n z o`, in any case — `K816-E0158`. A name that is also a register would mean two things in one statement, which is the ambiguity the convention exists to remove.
+**Every register and flag spelling is reserved as a name.** A `var`, `const`, `func`, `data`, `inline` or `inline` alias may not be called `a b x y s p dpr dbr c d i v n z o`, in any case — `K816-E0158`. A name that is also a register would mean two things in one statement, which is the ambiguity the convention exists to remove.
+
+A **label** is the one position where the eight register spellings report `K816-E0001` instead. A register name begins a statement in the HLA layer — `a = 1`, `x++` — so `a:` fails to parse before any name has been declared and the reservation never sees it. The seven flag letters are not statement starters, so they reach it and report `K816-E0158` there like everywhere else. The name is under the caret either way, but only one of the two says why.
 
 The compile-time evaluator is **not** covered, and deliberately: the K65 grammar's `AllIdent` rule lets these letters be names again in an evaluator block and as a `for` variable, and `for i = 0 .. 3` is the idiomatic K65 loop. A reserved name is then an evaluator *local* — a later bracket in another item cannot read it, because the bridge is the symbol table and that is what the reservation closes.
 

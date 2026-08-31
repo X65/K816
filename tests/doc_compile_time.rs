@@ -73,6 +73,13 @@ struct Case {
     bytes: &'static [u8],
     /// The diagnostic codes it reports, in order. Empty means it is clean.
     codes: &'static [&'static str],
+    /// Emitted assembly lines the source must produce, in order.
+    ///
+    /// A data section is read through [`Case::bytes`], but not every listing
+    /// in these two chapters is a data section: a region may hold statements
+    /// or top-level items, and an `inline` body holds instructions. Reading
+    /// only `.byte` there would let a listing lose its `nop` and stay green.
+    emits: &'static [&'static str],
 }
 
 const EVALUATOR: &str = "Compile-time Evaluator";
@@ -98,6 +105,7 @@ const CASES: &[Case] = &[
         source: "data NumberFour {\n  [2+2]\n}\n",
         bytes: &[0x04],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALUATOR,
@@ -107,6 +115,7 @@ const CASES: &[Case] = &[
                  data FourFiveSix {\n  FOUR\n  [FIVE = FOUR+1]\n  [FIVE+1]\n}\n",
         bytes: &[0x04, 0x05, 0x06],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALUATOR,
@@ -117,6 +126,7 @@ const CASES: &[Case] = &[
         source: "const FIRST = 3, SECOND = [FIRST + 1]\ndata seq {\n  FIRST\n  SECOND\n}\n",
         bytes: &[0x03, 0x04],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALUATOR,
@@ -124,6 +134,7 @@ const CASES: &[Case] = &[
         source: "[ n = 1 ]\n[ n = 2 ]\n",
         bytes: &[],
         codes: &["K816-E0149"],
+        emits: &[],
     },
     Case {
         section: EVALUATOR,
@@ -132,6 +143,7 @@ const CASES: &[Case] = &[
         source: "[ n = 0  while n < 5 { n = n + 1 } ]\ndata counted {\n  [n]\n}\n",
         bytes: &[0x05],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALUATOR,
@@ -140,6 +152,7 @@ const CASES: &[Case] = &[
         source: "const OWNED = 1\n[ OWNED = 2 ]\n",
         bytes: &[],
         codes: &["K816-E0149"],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Statements
@@ -152,6 +165,7 @@ const CASES: &[Case] = &[
                  [ m = 0  while m 3 ]\n  [ { 1 2 5 } ]\n}\n",
         bytes: &[0x00, 0x07, 0x09, 0x00, 0x05],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: STATEMENTS,
@@ -166,6 +180,7 @@ const CASES: &[Case] = &[
                  [FLAGS]\n}\n",
         bytes: &[0x00, 0x01],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: STATEMENTS,
@@ -174,6 +189,7 @@ const CASES: &[Case] = &[
         source: "data runaway {\n  [ n = 1  while n 0 ]\n}\n",
         bytes: &[],
         codes: &["K816-E0147"],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // `evalfunc`
@@ -186,6 +202,7 @@ const CASES: &[Case] = &[
                  data fns {\n  [ dbl(5) ]\n  [ lerp(0, 10, 0.5) ]\n}\n",
         bytes: &[0x0A, 0x05],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -196,6 +213,7 @@ const CASES: &[Case] = &[
                  data arity {\n  [ f(3) ]\n  [ f(3, 4) ]\n}\n",
         bytes: &[0x03, 0x07],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -203,6 +221,7 @@ const CASES: &[Case] = &[
         source: "evalfunc g(q) [ q ]\nevalfunc g(q) [ q + 1 ]\n",
         bytes: &[],
         codes: &["K816-E0102"],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -211,6 +230,7 @@ const CASES: &[Case] = &[
         source: "evalfunc abs(q) [ q ]\n",
         bytes: &[],
         codes: &["K816-E0102"],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -219,6 +239,7 @@ const CASES: &[Case] = &[
         source: "evalfunc up(q) [ down(q) ]\nevalfunc down(q) [ q ]\n",
         bytes: &[],
         codes: &["K816-E0101"],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -228,6 +249,7 @@ const CASES: &[Case] = &[
                  data scoped {\n  [ outer(5) ]\n}\n",
         bytes: &[],
         codes: &["K816-E0101"],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -237,6 +259,7 @@ const CASES: &[Case] = &[
                  data globals {\n  [ reads() ]\n}\n",
         bytes: &[0x09],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -245,6 +268,7 @@ const CASES: &[Case] = &[
                  data recursion {\n  [ fact(5) ]\n}\n",
         bytes: &[0x78],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: EVALFUNC,
@@ -253,6 +277,7 @@ const CASES: &[Case] = &[
         source: "evalfunc down(n) [ down(n + 1) ]\ndata deep {\n  [ down(0) ]\n}\n",
         bytes: &[],
         codes: &["K816-E0147"],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Operators
@@ -265,14 +290,33 @@ const CASES: &[Case] = &[
         source: "data ops {\n  [ (0 - 7) % 3 ]\n  [ 7 / 2 ]\n  [ X = 1, X += (X = 5), X ]\n}\n",
         bytes: &[0x02, 0x04, 0x06],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: OPERATORS,
-        claim: "`&&` and `||` do not short-circuit. Both operands are evaluated",
+        claim: "`&&` and `||` do not short-circuit. Both operands are evaluated, and so are                 all three arms of `?:`",
+        // One case per operator the sentence names. `&&` alone would leave
+        // `||` and the ternary free to start short-circuiting: the counter
+        // reaches 2 only because the right operand ran after a decided left
+        // one, and 11 only because both arms of `?:` did.
         source: "data shortcut {\n  \
-                 [ SEEN = 0, ((SEEN = SEEN + 1) && 0) && (SEEN = SEEN + 1), SEEN ]\n}\n",
-        bytes: &[0x02],
+                 [ SEEN = 0, ((SEEN = SEEN + 1) && 0) && (SEEN = SEEN + 1), SEEN ]\n  \
+                 [ SAW = 0, ((SAW = SAW + 1) || 1) || (SAW = SAW + 1), SAW ]\n  \
+                 [ T = 0, (1 ? (T = T + 1) : (T = T + 10)), T ]\n}\n",
+        bytes: &[0x02, 0x02, 0x0B],
         codes: &[],
+        emits: &[],
+    },
+    Case {
+        section: OPERATORS,
+        claim: "`||` is a K816 extension: the original spells both logical operators `&&`,                 so a source containing `||` does not compile there",
+        // Here it does, which is the half of the sentence this side owns;
+        // that the original refuses it is `doc/k65-compat-manifest.md`'s
+        // `evexpr-operators` row and the oracle behind it.
+        source: "data extension {\n  [ 1 || 0 ]\n  [ 0 || 0 ]\n}\n",
+        bytes: &[0x01, 0x00],
+        codes: &[],
+        emits: &[],
     },
     Case {
         section: OPERATORS,
@@ -285,6 +329,7 @@ const CASES: &[Case] = &[
         source: "data rounding {\n  [ ((0 - 2.7) | 0) + 10 ]\n  [ (0 - 2.7) + 10 ]\n}\n",
         bytes: &[0x08, 0x07],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: OPERATORS,
@@ -292,6 +337,7 @@ const CASES: &[Case] = &[
         source: "data select {\n  [ 2 ?> 9 ]\n  [ 2 ?< 9 ]\n}\n",
         bytes: &[0x09, 0x02],
         codes: &[],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Functions
@@ -308,6 +354,7 @@ const CASES: &[Case] = &[
             0x05, 0x02, 0x03, 0x03, 0x4B, 0x03, 0x09, 0x09, 0x09, 0x20, 0x00, 0x01, 0x00, 0x00,
         ],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -316,14 +363,48 @@ const CASES: &[Case] = &[
         source: "data pival {\n  [ pi == 3.141593 ]\n}\n",
         bytes: &[0x01],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
         claim: "Strings support `+`, `==`, `!=`, `<`, `<=`, `>` and `>=`",
-        source: "data strings {\n  [ \"abc\" < \"abd\" ]\n  [ \"a\" + \"b\" == \"ab\" ]\n  \
-                 [ \"a\" != \"b\" ]\n}\n",
-        bytes: &[0x01, 0x01, 0x01],
+        // All seven the sentence lists, each with an answer that is only
+        // right for that operator: `<=` and `>=` on equal strings separate
+        // them from `<` and `>`.
+        source: "data strings {\n  [ \"a\" + \"b\" == \"ab\" ]\n  [ \"a\" != \"b\" ]\n  \
+                 [ \"abc\" < \"abd\" ]\n  [ \"abc\" <= \"abc\" ]\n  \
+                 [ \"abd\" > \"abc\" ]\n  [ \"abc\" >= \"abc\" ]\n  \
+                 [ \"abd\" < \"abc\" ]\n}\n",
+        bytes: &[0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00],
         codes: &[],
+        emits: &[],
+    },
+    Case {
+        section: FUNCTIONS,
+        claim: "`print(msg)`: Reports `msg` as a compile-time note (`K816-N0145`)",
+        // The note's *text* is asserted by
+        // `a_number_spliced_into_a_string_carries_the_documented_format`
+        // below; this is the row, and the value the call leaves behind.
+        source: "data noted {\n  [ print(\"hello\") ]\n}\n",
+        bytes: &[0x00],
+        codes: &["K816-N0145"],
+        emits: &[],
+    },
+    Case {
+        section: FUNCTIONS,
+        claim: "`error(msg)`: Reports `msg` as a compile-time error (`K816-E0146`)",
+        source: "data reported {\n  [ error(\"said plainly\") ]\n}\n",
+        bytes: &[],
+        codes: &["K816-E0146"],
+        emits: &[],
+    },
+    Case {
+        section: FUNCTIONS,
+        claim: "`abs` is a K816 extension: the original's library does not have it, and                 calling it there ends the build",
+        source: "data extension {\n  [ abs(0 - 1) ]\n}\n",
+        bytes: &[0x01],
+        codes: &[],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -332,6 +413,7 @@ const CASES: &[Case] = &[
         source: "data stringout {\n  [ \"abc\" ]\n}\n",
         bytes: &[],
         codes: &["K816-E0148"],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -340,6 +422,7 @@ const CASES: &[Case] = &[
         source: "data one { $01 $02 }\ndata refused {\n  [ addbyte(one, 3) ]\n}\n",
         bytes: &[],
         codes: &["K816-K65-0002"],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -347,6 +430,7 @@ const CASES: &[Case] = &[
         source: "data refused {\n  [ color(1, 2, 3) ]\n  [ color(4) ]\n  [ rnd() ]\n}\n",
         bytes: &[],
         codes: &["K816-K65-0002", "K816-K65-0002", "K816-K65-0002"],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -357,6 +441,7 @@ const CASES: &[Case] = &[
                  [ index(tab, 99) ]\n  [ index(tab, 1.7) ]\n}\n",
         bytes: &[0x10, 0x20, 0x30, 0x20, 0x20, 0x03, 0x00, 0x20],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -364,6 +449,7 @@ const CASES: &[Case] = &[
         source: "data early {\n  [ size(late) ]\n}\ndata late { $01 $02 }\n",
         bytes: &[],
         codes: &["K816-E0154"],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -372,6 +458,7 @@ const CASES: &[Case] = &[
         source: "data flat { $10 $20 }\ndata twodim {\n  [ index(flat, 0, 0) ]\n}\n",
         bytes: &[],
         codes: &["K816-E0155"],
+        emits: &[],
     },
     Case {
         section: FUNCTIONS,
@@ -380,6 +467,7 @@ const CASES: &[Case] = &[
         source: "data commas {\n  [ 10, 20, 30 ]\n}\n",
         bytes: &[0x1E],
         codes: &[],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Member access and method calls
@@ -392,6 +480,7 @@ const CASES: &[Case] = &[
                  [ (7).max(9) ]\n}\n",
         bytes: &[0x4B, 0x03, 0x09],
         codes: &[],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Preprocessor Directives — the opening listing
@@ -404,6 +493,7 @@ const CASES: &[Case] = &[
                  #endif\n}\n",
         bytes: &[0xBB],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: PREPROCESSOR,
@@ -412,6 +502,7 @@ const CASES: &[Case] = &[
         source: "#if 1\n#error \"stated plainly\"\n#warn \"and this\"\n#endif\n",
         bytes: &[],
         codes: &["K816-E0150", "K816-W0151"],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Where a region may sit
@@ -426,6 +517,9 @@ const CASES: &[Case] = &[
                  func main @a8 @i8 {\n#if ON\n  nop\n#endif\n  return\n}\n",
         bytes: &[0x01],
         codes: &[],
+        // The data entry is the byte; the other two lists have to be read as
+        // *output*, or a region that quietly stopped taking would pass.
+        emits: &["slot:", "nop"],
     },
     Case {
         section: WHERE,
@@ -434,6 +528,7 @@ const CASES: &[Case] = &[
         source: "func main @a8 @i8 {\n  #if 1\n  return\n}\n#endif\n",
         bytes: &[],
         codes: &["K816-E0152", "K816-E0152"],
+        emits: &[],
     },
     Case {
         section: WHERE,
@@ -441,6 +536,7 @@ const CASES: &[Case] = &[
         source: "data chain {\n#if 0\n  $01\n#else\n  $02\n#else\n  $03\n#endif\n}\n",
         bytes: &[],
         codes: &["K816-E0152"],
+        emits: &[],
     },
     Case {
         section: WHERE,
@@ -449,6 +545,7 @@ const CASES: &[Case] = &[
         source: "#if 1\n#error\n  \"message below\"\n#endif\n",
         bytes: &[],
         codes: &["K816-E0001"],
+        emits: &[],
     },
     Case {
         section: WHERE,
@@ -458,6 +555,7 @@ const CASES: &[Case] = &[
                  data wrapped {\n#if [ LEVEL > 1 &&\n      !QUIET ]\n  $01\n#endif\n}\n",
         bytes: &[0x01],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: WHERE,
@@ -466,6 +564,7 @@ const CASES: &[Case] = &[
                  #endif\n}\n",
         bytes: &[0x07],
         codes: &[],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Conditions
@@ -484,6 +583,7 @@ const CASES: &[Case] = &[
                  #if [ 0.4 ]\n  $05\n#endif\n}\n",
         bytes: &[0x01, 0x02, 0x04],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: CONDITIONS,
@@ -491,6 +591,7 @@ const CASES: &[Case] = &[
         source: "#if [ TARGET = 3 ]\n#endif\ndata target {\n  [ TARGET ]\n}\n",
         bytes: &[0x03],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: CONDITIONS,
@@ -498,6 +599,7 @@ const CASES: &[Case] = &[
         source: "data undeclared {\n#if NOPE\n  $01\n#endif\n}\n",
         bytes: &[],
         codes: &["K816-E0101"],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // Order
@@ -511,6 +613,7 @@ const CASES: &[Case] = &[
         source: "data table {\n  [ FLAG = 1 ]\n  #if FLAG\n  $42\n  #endif\n}\n",
         bytes: &[0x01, 0x42],
         codes: &[],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // What a region that is not taken does
@@ -524,6 +627,7 @@ const CASES: &[Case] = &[
                  #error \"not said\"\n  #warn \"not said either\"\n  $AA\n#endif\n  $BB\n}\n",
         bytes: &[0xBB],
         codes: &[],
+        emits: &[],
     },
     Case {
         section: NOT_TAKEN,
@@ -531,6 +635,7 @@ const CASES: &[Case] = &[
         source: "#if 0\n[ NEVER = 1 ]\n#endif\ndata reads {\n  [ NEVER ]\n}\n",
         bytes: &[],
         codes: &["K816-E0101"],
+        emits: &[],
     },
     Case {
         section: NOT_TAKEN,
@@ -539,6 +644,7 @@ const CASES: &[Case] = &[
         source: "data chain {\n#if 1\n  $01\n#elif NOPE\n  $02\n#endif\n}\n",
         bytes: &[0x01],
         codes: &[],
+        emits: &[],
     },
     // -----------------------------------------------------------------
     // `inline` bodies
@@ -551,6 +657,9 @@ const CASES: &[Case] = &[
                  func main @a8 @i8 {\n  once\n  once\n  return\n}\n",
         bytes: &[],
         codes: &["K816-W0151"],
+        // "Every expansion gets the branch that was chosen there" is a claim
+        // about the *bytes*, not only about how often the `#warn` speaks.
+        emits: &["nop", "nop"],
     },
 ];
 
@@ -558,7 +667,7 @@ const CASES: &[Case] = &[
 ///
 /// Unoptimized: nothing here is a claim about the optimizer, and a pass that
 /// folded a data section away would make a row pass for the wrong reason.
-fn compile(source: &str) -> (Vec<u8>, Vec<String>) {
+fn compile(source: &str) -> (Vec<u8>, Vec<String>, Vec<String>) {
     let mut map = SourceMap::new();
     let file = map.add_file("doc.k816", source);
     let result = compile_to_ca65(
@@ -574,20 +683,23 @@ fn compile(source: &str) -> (Vec<u8>, Vec<String>) {
         .iter()
         .map(|diagnostic| diagnostic.code.as_str().to_owned())
         .collect();
-    let bytes = result
-        .assembly
-        .map(|assembly| {
-            assembly
-                .lines()
-                .filter_map(|line| line.split(';').next())
-                .filter_map(|line| line.trim().strip_prefix(".byte"))
-                .flat_map(|values| values.split(','))
-                .filter_map(|value| value.trim().strip_prefix('$'))
-                .filter_map(|value| u8::from_str_radix(value, 16).ok())
-                .collect()
-        })
-        .unwrap_or_default();
-    (bytes, codes)
+    let assembly = result.assembly.unwrap_or_default();
+    // Comments carry the source line, so a `nop` in a listing would match its
+    // own echo rather than the instruction; the code is what is read.
+    let lines: Vec<String> = assembly
+        .lines()
+        .filter_map(|line| line.split(';').next())
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let bytes = lines
+        .iter()
+        .filter_map(|line| line.strip_prefix(".byte"))
+        .flat_map(|values| values.split(','))
+        .filter_map(|value| value.trim().strip_prefix('$'))
+        .filter_map(|value| u8::from_str_radix(value, 16).ok())
+        .collect();
+    (bytes, codes, lines)
 }
 
 /// Every claim the two sections make, checked against the compiler.
@@ -595,7 +707,7 @@ fn compile(source: &str) -> (Vec<u8>, Vec<String>) {
 fn every_documented_compile_time_claim_holds() {
     let mut failures = Vec::new();
     for case in CASES {
-        let (bytes, codes) = compile(case.source);
+        let (bytes, codes, lines) = compile(case.source);
         if codes != case.codes {
             failures.push(format!(
                 "  [{}] {}\n    expected {:?}, reported {:?}",
@@ -608,6 +720,19 @@ fn every_documented_compile_time_claim_holds() {
                 "  [{}] {}\n    expected bytes {:02X?}, assembled {:02X?}",
                 case.section, case.claim, case.bytes, bytes
             ));
+            continue;
+        }
+        // In order, so a listing cannot satisfy its expectation by emitting
+        // the right instructions in the wrong places.
+        let mut remaining = lines.iter();
+        for wanted in case.emits {
+            if !remaining.any(|line| line == wanted) {
+                failures.push(format!(
+                    "  [{}] {}\n    expected to emit {:?}, assembled {:?}",
+                    case.section, case.claim, case.emits, lines
+                ));
+                break;
+            }
         }
     }
     assert!(
@@ -618,6 +743,107 @@ fn every_documented_compile_time_claim_holds() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// Every row of the document's **Functions** table is exercised by a case,
+/// counting arguments.
+///
+/// The heading gate below is section-level, and a section-level gate cannot
+/// see a claim that goes untested *inside* a covered section — which is what
+/// let `error(msg)` sit in the table with nothing calling it. This one reads
+/// the enumerable side: the table's own rows, name and arity, matched against
+/// the calls the cases make (`memory/inventory-from-the-enumerable-side`).
+///
+/// Arity is part of the identity, and not incidentally: the document lists
+/// `index(sec, x)` beside `index(sec, x, y)` and `color(r, g, b)` beside
+/// `color(x)`, and in both pairs the two rows do different things — one is
+/// answered and one is `K816-E0155`, one is refused twice for one reason.
+/// Matching on the name alone would let either half go untested.
+#[test]
+fn every_row_of_the_functions_table_is_called_by_a_case() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("doc/syntax-reference.md");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let table = text
+        .split_once("\n### Functions\n")
+        .expect("the Functions heading")
+        .1;
+    let table = table.split("\n### ").next().unwrap_or(table);
+
+    // `\`name(a, b)\`|Description` — the first cell of each row.
+    let documented: Vec<(String, usize)> = table
+        .lines()
+        .filter_map(|line| line.strip_prefix('`'))
+        .filter_map(|line| line.split('`').next())
+        .filter_map(|signature| signature.split_once('('))
+        .map(|(name, args)| {
+            let args = args.trim_end_matches(')').trim();
+            let arity = if args.is_empty() {
+                0
+            } else {
+                args.split(',').count()
+            };
+            (name.trim().to_owned(), arity)
+        })
+        .collect();
+    assert!(
+        documented.len() > 20,
+        "the table parse found {documented:?}, so its shape changed"
+    );
+
+    let called: Vec<(String, usize)> = CASES
+        .iter()
+        .flat_map(|case| calls_in(case.source))
+        .collect();
+    let missing: Vec<&(String, usize)> = documented
+        .iter()
+        .filter(|row| !called.contains(row))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "rows of the Functions table no case calls: {missing:?}\n\
+         add a case, or the row is a promise nothing keeps"
+    );
+}
+
+/// Every `name(…)` call in `source`, as (name, argument count).
+///
+/// Counts commas at bracket depth zero so that `index(tab, 1)` inside
+/// `[ … ]` is two arguments and a nested call's commas are its own.
+fn calls_in(source: &str) -> Vec<(String, usize)> {
+    let bytes: Vec<char> = source.chars().collect();
+    let mut found = Vec::new();
+    for (index, &character) in bytes.iter().enumerate() {
+        if character != '(' {
+            continue;
+        }
+        let start = bytes[..index]
+            .iter()
+            .rposition(|c| !c.is_alphanumeric() && *c != '_')
+            .map_or(0, |position| position + 1);
+        let name: String = bytes[start..index].iter().collect();
+        if name.is_empty() || name.chars().next().is_some_and(char::is_numeric) {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut arity = 0usize;
+        let mut empty = true;
+        for &character in &bytes[index..] {
+            match character {
+                '(' | '[' => depth += 1,
+                ')' | ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                ',' if depth == 1 => arity += 1,
+                c if !c.is_whitespace() && depth == 1 => empty = false,
+                _ => {}
+            }
+        }
+        found.push((name, if empty { 0 } else { arity + 1 }));
+    }
+    found
 }
 
 /// Every heading in the two sections is named by at least one case.

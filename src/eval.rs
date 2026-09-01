@@ -53,7 +53,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::ast::{EvalCallName, EvalExpr, EvalExprKind, Expr, ExprKind, Name, ReservedCall};
 use crate::source::Span;
-use crate::symbol::{SymbolKind, SymbolTable};
+use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 
 /// How many expression nodes one evaluation may visit.
 ///
@@ -571,6 +571,28 @@ pub struct Interpreter<'a> {
     frames: Vec<BTreeMap<String, Value>>,
     steps: u64,
     notes: Vec<Note>,
+    /// Where each name resolved, and to what.
+    ///
+    /// The evaluator reads three namespaces in order — a call frame, the
+    /// unit's evaluator variables, and the unit's symbols — and an editor
+    /// needs to know which one answered. A frame hit is not recorded at all:
+    /// an `evalfunc` parameter is local to a call and names nothing outside
+    /// it.
+    resolutions: Vec<Resolution>,
+}
+
+/// One name the evaluator resolved, and where it found it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// It resolved to one of the unit's symbols, which the evaluator can name
+    /// directly.
+    Symbol { span: Span, symbol: SymbolId },
+    /// It resolved to something the symbol table names *later*: an evaluator
+    /// variable, which becomes a compiler constant when the bracket
+    /// finishes, or a section another unit defines, whose import the
+    /// declaration pass adds. The caller looks the name up when it records,
+    /// and records nothing when the table still does not hold it.
+    Variable { span: Span, name: String },
 }
 
 impl<'a> Interpreter<'a> {
@@ -590,6 +612,7 @@ impl<'a> Interpreter<'a> {
             frames: Vec::new(),
             steps: STEP_BUDGET,
             notes: Vec::new(),
+            resolutions: Vec::new(),
         }
     }
 
@@ -604,6 +627,11 @@ impl<'a> Interpreter<'a> {
     /// The `print` calls this evaluation made, in order.
     pub fn take_notes(&mut self) -> Vec<Note> {
         std::mem::take(&mut self.notes)
+    }
+
+    /// Where every name this run resolved was written, and to what.
+    pub fn take_resolutions(&mut self) -> Vec<Resolution> {
+        std::mem::take(&mut self.resolutions)
     }
 
     /// Evaluates one whole bracket.
@@ -781,6 +809,10 @@ impl<'a> Interpreter<'a> {
             return Ok(value.clone());
         }
         if let Some(value) = self.env.get(&name.text) {
+            self.resolutions.push(Resolution::Variable {
+                span: name.span,
+                name: name.text.clone(),
+            });
             return Ok(value.clone());
         }
         let Some(id) = self.symbols.lookup(&name.text) else {
@@ -794,9 +826,17 @@ impl<'a> Interpreter<'a> {
             // local one does; the symbol table was asked first, so a local
             // declaration still wins the name.
             if let Some(value) = self.sections.foreign_const(&name.text) {
+                self.resolutions.push(Resolution::Variable {
+                    span: name.span,
+                    name: name.text.clone(),
+                });
                 return Ok(Value::Number(value));
             }
             if self.sections.foreign(&name.text).is_some() {
+                self.resolutions.push(Resolution::Variable {
+                    span: name.span,
+                    name: name.text.clone(),
+                });
                 return Ok(Value::Section(name.text.clone()));
             }
             return Err(Error::Name {
@@ -804,6 +844,10 @@ impl<'a> Interpreter<'a> {
                 name: name.text.clone(),
             });
         };
+        self.resolutions.push(Resolution::Symbol {
+            span: name.span,
+            symbol: id,
+        });
         match self.symbols.kind(id) {
             SymbolKind::Const { value } => Ok(Value::Number(f64::from(value))),
             // A data label is the section it names, which is what makes
@@ -838,6 +882,12 @@ impl<'a> Interpreter<'a> {
             *slot = value.clone();
             return Ok(value);
         }
+        if self.env.values.contains_key(&name.text) {
+            self.resolutions.push(Resolution::Variable {
+                span: name.span,
+                name: name.text.clone(),
+            });
+        }
         if let Some(binding) = self.env.values.get_mut(&name.text) {
             // Write-once outside the block that introduced the name.
             if binding.block != self.block {
@@ -867,6 +917,12 @@ impl<'a> Interpreter<'a> {
             },
         );
         self.env.fresh.push(name.text.clone());
+        // The declaring occurrence of an evaluator variable, which becomes a
+        // compiler constant when the bracket finishes.
+        self.resolutions.push(Resolution::Variable {
+            span: name.span,
+            name: name.text.clone(),
+        });
         Ok(value)
     }
 

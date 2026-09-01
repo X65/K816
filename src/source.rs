@@ -43,7 +43,11 @@ impl FileId {
 /// `start` and `end` are byte offsets into the file's UTF-8 text with
 /// `start <= end`. A zero-width span (`start == end`) marks a point location,
 /// used for EOF diagnostics and synthetic nodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// Ordered by file, then start, then end — source order within a file, which
+/// is what makes a span usable as a map key for the reference index the
+/// editor reads (`plans/07-lsp-tooling.md` decision 11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Span {
     pub file: FileId,
     pub start: u32,

@@ -608,6 +608,16 @@ fn datum_width_mismatch(
 #[derive(Debug, Default)]
 pub struct Resolved {
     pub referenced: Vec<SymbolId>,
+    /// Where each name that resolved to a symbol was written, in the order
+    /// the resolver met them. The model turns it into a span-keyed map.
+    pub references: Vec<(Span, SymbolId)>,
+    /// Where each `.field` step was written, and which field it selected.
+    pub field_references: Vec<(Span, (LayoutId, usize))>,
+    /// Names the evaluator resolved to something the symbol table will hold
+    /// *later* — an evaluator variable, or a section another unit defines.
+    /// The caller looks each one up once the unit's declarations are
+    /// complete.
+    pub pending_references: Vec<(Span, String)>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -632,6 +642,14 @@ pub struct Resolver<'a> {
     /// Every symbol this resolver looked up, which is what tells an
     /// `.import` a unit needs from one it merely could have had.
     referenced: Vec<SymbolId>,
+    /// Where each of them was written. Separate from `referenced` because the
+    /// two answer different questions and one of them predates the other:
+    /// `.import` wants the set, and an editor wants the positions.
+    references: Vec<(Span, SymbolId)>,
+    /// Where each `.field` step was written, and what it selected.
+    field_references: Vec<(Span, (LayoutId, usize))>,
+    /// Names to look up once the unit's declarations are complete.
+    pending_references: Vec<(Span, String)>,
     /// What an `inline`'s aliases stand for, while an expansion is lowered.
     /// Empty everywhere else, including at the declaration.
     aliases: BTreeMap<SymbolId, KExpr>,
@@ -646,6 +664,9 @@ impl<'a> Resolver<'a> {
             widths: ModeState::unknown(),
             diagnostics: Vec::new(),
             referenced: Vec::new(),
+            references: Vec::new(),
+            field_references: Vec::new(),
+            pending_references: Vec::new(),
             aliases: BTreeMap::new(),
         }
     }
@@ -687,6 +708,9 @@ impl<'a> Resolver<'a> {
     pub fn finish(self) -> Resolved {
         Resolved {
             referenced: self.referenced,
+            references: self.references,
+            field_references: self.field_references,
+            pending_references: self.pending_references,
             diagnostics: self.diagnostics,
         }
     }
@@ -697,6 +721,80 @@ impl<'a> Resolver<'a> {
 
     pub(crate) fn report(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
+    }
+
+    /// Records that the name written at `span` resolved to `id`.
+    ///
+    /// Called from the resolution itself rather than from a walk over the
+    /// result, so a name the resolver reached is a name the index holds and
+    /// there is no second opinion about scoping.
+    pub(crate) fn record(&mut self, span: Span, id: SymbolId) {
+        self.references.push((span, id));
+    }
+
+    /// Records where a deferred evaluation resolved its names.
+    ///
+    /// The deferred runs — a `for … eval` body and a section's per-byte
+    /// transform — happen here rather than in `semantic.rs`, and an
+    /// evaluator variable is an ordinary compiler constant by the time they
+    /// do, so a `Variable` resolution is looked up in the table like any
+    /// other name. A per-byte transform runs once per byte and records the
+    /// same span every time; the map the model keeps collapses them.
+    fn absorb_eval(&mut self, resolutions: Vec<eval::Resolution>) {
+        for resolution in resolutions {
+            match resolution {
+                eval::Resolution::Symbol { span, symbol } => self.record(span, symbol),
+                eval::Resolution::Variable { span, name } => {
+                    self.pending_references.push((span, name));
+                }
+            }
+        }
+    }
+
+    /// Records where the names in `expr` resolve, reporting nothing.
+    ///
+    /// For the one position analysis never folds: a bare call's immediate
+    /// arguments, which bind to an `inline`'s aliases during *expansion*.
+    /// The editor still has to be able to say what `#mem` names there, and
+    /// re-reporting what the expansion will report would double every
+    /// diagnostic an expanded body produces. The lookup order is
+    /// [`Self::scoped_symbol`]'s, so this and the real fold cannot disagree
+    /// about scope.
+    pub fn index_names(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Symbol(name) => {
+                if let Some(id) = self.scoped_symbol(&name.text) {
+                    self.record(name.span, id);
+                }
+            }
+            ExprKind::LocalSymbol(name) => {
+                if let Some(id) = self
+                    .function
+                    .and_then(|owner| self.symbols.lookup_local(owner, &name.text))
+                {
+                    self.record(name.span, id);
+                }
+            }
+            ExprKind::Unary(unary) => self.index_names(&unary.operand),
+            ExprKind::Binary(binary) => {
+                self.index_names(&binary.left);
+                self.index_names(&binary.right);
+            }
+            ExprKind::Field(access) => self.index_names(&access.base),
+            ExprKind::Subscript(subscript) => {
+                self.index_names(&subscript.base);
+                self.index_names(&subscript.index);
+            }
+            ExprKind::Metadata(query) => self.index_names(&query.base),
+            ExprKind::TypedView(view) => self.index_names(&view.base),
+            ExprKind::Number(_) | ExprKind::Eval(_) | ExprKind::Error => {}
+        }
+    }
+
+    /// Records that the `.field` step written at `span` selected field
+    /// `index` of `layout`.
+    fn record_field(&mut self, span: Span, layout: LayoutId, index: usize) {
+        self.field_references.push((span, (layout, index)));
     }
 
     // ---------------------------------------------------------- expressions
@@ -960,6 +1058,9 @@ impl<'a> Resolver<'a> {
             ));
             return None;
         };
+        if let Some(index) = self.symbols.layout(layout).field_index(name) {
+            self.record_field(access.field.span, layout, index);
+        }
         let layouts = self.symbols.layouts();
         let Some(field) = self.symbols.layout(layout).field(name) else {
             let owner = base.root.map_or_else(
@@ -1169,11 +1270,13 @@ impl<'a> Resolver<'a> {
             .function
             .and_then(|owner| self.symbols.lookup_local(owner, name))
         {
+            self.record(span, alias);
             return Some(alias);
         }
         match self.symbols.lookup(name) {
             Some(id) => {
                 self.referenced.push(id);
+                self.record(span, id);
                 Some(id)
             }
             None => {
@@ -1221,7 +1324,10 @@ impl<'a> Resolver<'a> {
             return None;
         };
         match self.symbols.lookup_local(owner, name) {
-            Some(id) => Some(id),
+            Some(id) => {
+                self.record(span, id);
+                Some(id)
+            }
             None => {
                 let function = self.symbols.name(owner).to_owned();
                 self.report(
@@ -3241,6 +3347,8 @@ impl Resolver<'_> {
             for note in interpreter.take_notes() {
                 self.report(eval_note(note));
             }
+            let resolutions = interpreter.take_resolutions();
+            self.absorb_eval(resolutions);
             let value = match value {
                 Ok(value) => value,
                 Err(error) => {
@@ -3531,6 +3639,8 @@ impl Resolver<'_> {
         .with_local("x", eval::Value::Number(f64::from(byte)));
         let value = interpreter.evaluate(transform);
         let notes = interpreter.take_notes();
+        let resolutions = interpreter.take_resolutions();
+        self.absorb_eval(resolutions);
         // A `print` inside a transform is a program run per byte, and it
         // says so once per byte — which is what the original does, since the
         // transform is a program it runs per byte too. An *error* is

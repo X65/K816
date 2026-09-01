@@ -44,6 +44,7 @@ pub mod config;
 mod context;
 pub mod convert;
 pub mod diagnostics;
+pub mod navigation;
 
 pub use context::{Context, at};
 pub use convert::{span_to_range, uri};
@@ -54,10 +55,15 @@ use lsp_types::notification::{
     DidChangeConfiguration, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
     Notification, PublishDiagnostics, ShowMessage,
 };
+use lsp_types::request::{
+    DocumentSymbolRequest, GotoDefinition, References, Request, WorkspaceSymbolRequest,
+};
 use lsp_types::{
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, MessageType, PublishDiagnosticsParams, ServerCapabilities,
-    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, MessageType, OneOf, PublishDiagnosticsParams, ReferenceParams,
+    ServerCapabilities, ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 use crate::Options;
@@ -77,6 +83,10 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::INCREMENTAL,
         )),
+        definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         ..Default::default()
     })?;
     let params = connection.initialize(capabilities)?;
@@ -144,7 +154,13 @@ pub fn serve(
             if connection.handle_shutdown(&request)? {
                 return Ok(());
             }
-            // No other request is implemented yet; H3 onward dispatch here.
+            let response = answer(&mut workspace, &request);
+            connection
+                .sender
+                .send(Message::Response(lsp_server::Response {
+                    id: request.id,
+                    response_result: Ok(response),
+                }))?;
         }
     }
     Ok(())
@@ -227,6 +243,144 @@ fn apply(
         }
         _ => Ok(false),
     }
+}
+
+/// Answers one request against the workspace's current analysis.
+///
+/// Every arm returns the protocol's empty answer rather than an error when it
+/// cannot answer — a document the workspace does not hold, a position off the
+/// end of one, a parse that is all `ERROR`. A panic in a request handler
+/// kills the editor's session (decision 18), and there is nothing useful to
+/// say to a client that asked about a document it has not opened.
+fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_json::Value {
+    let analysis = workspace.analyze();
+    let map = workspace.map();
+    match request.method.as_str() {
+        GotoDefinition::METHOD => {
+            let answer = serde_json::from_value::<GotoDefinitionParams>(request.params.clone())
+                .ok()
+                .and_then(|params| {
+                    let (file, offset) =
+                        position(workspace, &params.text_document_position_params)?;
+                    let span = navigation::definition(&analysis, file, offset)?;
+                    convert::location(map, span)
+                })
+                .map(GotoDefinitionResponse::Scalar);
+            serde_json::to_value(answer).unwrap_or(serde_json::Value::Null)
+        }
+        References::METHOD => {
+            let locations: Vec<lsp_types::Location> =
+                serde_json::from_value::<ReferenceParams>(request.params.clone())
+                    .ok()
+                    .and_then(|params| {
+                        let include = params.context.include_declaration;
+                        let (file, offset) = position(workspace, &params.text_document_position)?;
+                        Some(
+                            navigation::references(&analysis, file, offset, include)
+                                .into_iter()
+                                .filter_map(|span| convert::location(map, span))
+                                .collect(),
+                        )
+                    })
+                    .unwrap_or_default();
+            serde_json::to_value(locations).unwrap_or(serde_json::Value::Null)
+        }
+        DocumentSymbolRequest::METHOD => {
+            let symbols: Vec<lsp_types::DocumentSymbol> =
+                serde_json::from_value::<DocumentSymbolParams>(request.params.clone())
+                    .ok()
+                    .and_then(|params| workspace.file(&params.text_document.uri.to_string()))
+                    .map(|file| {
+                        navigation::document_symbols(&analysis, file)
+                            .iter()
+                            .map(|outline| document_symbol(map, outline))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            serde_json::to_value(DocumentSymbolResponse::Nested(symbols))
+                .unwrap_or(serde_json::Value::Null)
+        }
+        WorkspaceSymbolRequest::METHOD => {
+            let symbols: Vec<lsp_types::SymbolInformation> =
+                serde_json::from_value::<WorkspaceSymbolParams>(request.params.clone())
+                    .ok()
+                    .map(|params| {
+                        navigation::workspace_symbols(&analysis, &params.query)
+                            .iter()
+                            .filter_map(|(_, outline)| symbol_information(map, outline))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            serde_json::to_value(WorkspaceSymbolResponse::Flat(symbols))
+                .unwrap_or(serde_json::Value::Null)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// The file and byte offset a text-document position names.
+fn position(
+    workspace: &Workspace,
+    position: &lsp_types::TextDocumentPositionParams,
+) -> Option<(crate::source::FileId, u32)> {
+    let file = workspace.file(&position.text_document.uri.to_string())?;
+    Some((
+        file,
+        convert::offset_in(workspace.map().file(file), position.position),
+    ))
+}
+
+/// K816's outline kinds, rendered into the protocol's one list for every
+/// language. Which entry a `data` label belongs in is a rendering decision.
+fn symbol_kind(kind: navigation::OutlineKind) -> lsp_types::SymbolKind {
+    use navigation::OutlineKind;
+    match kind {
+        OutlineKind::Function => lsp_types::SymbolKind::FUNCTION,
+        OutlineKind::Inline => lsp_types::SymbolKind::METHOD,
+        OutlineKind::Variable => lsp_types::SymbolKind::VARIABLE,
+        OutlineKind::Constant => lsp_types::SymbolKind::CONSTANT,
+        OutlineKind::Field => lsp_types::SymbolKind::FIELD,
+        OutlineKind::Label => lsp_types::SymbolKind::KEY,
+        OutlineKind::Data => lsp_types::SymbolKind::ARRAY,
+    }
+}
+
+#[expect(deprecated, reason = "lsp-types keeps `deprecated` on the struct")]
+fn document_symbol(
+    map: &crate::source::SourceMap,
+    outline: &navigation::Outline,
+) -> lsp_types::DocumentSymbol {
+    lsp_types::DocumentSymbol {
+        name: outline.name.clone(),
+        detail: outline.detail.clone(),
+        kind: symbol_kind(outline.kind),
+        tags: None,
+        deprecated: None,
+        range: convert::span_to_range(map, outline.full),
+        selection_range: convert::span_to_range(map, outline.declaration),
+        children: (!outline.children.is_empty()).then(|| {
+            outline
+                .children
+                .iter()
+                .map(|child| document_symbol(map, child))
+                .collect()
+        }),
+    }
+}
+
+#[expect(deprecated, reason = "lsp-types keeps `deprecated` on the struct")]
+fn symbol_information(
+    map: &crate::source::SourceMap,
+    outline: &navigation::Outline,
+) -> Option<lsp_types::SymbolInformation> {
+    Some(lsp_types::SymbolInformation {
+        name: outline.name.clone(),
+        kind: symbol_kind(outline.kind),
+        tags: None,
+        deprecated: None,
+        location: convert::location(map, outline.full)?,
+        container_name: None,
+    })
 }
 
 /// Analyzes the whole workspace through the shared frontend and publishes

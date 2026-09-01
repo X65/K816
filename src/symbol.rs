@@ -184,6 +184,13 @@ impl Layout {
     pub fn field(&self, name: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.name == name)
     }
+
+    /// The position of the field `name` names, which is how a reference to it
+    /// is recorded: a `(LayoutId, usize)` names a field across a re-analysis
+    /// the way a `SymbolId` names a symbol.
+    pub fn field_index(&self, name: &str) -> Option<usize> {
+        self.fields.iter().position(|field| field.name == name)
+    }
 }
 
 /// One entry of a symbolic subscript field list.

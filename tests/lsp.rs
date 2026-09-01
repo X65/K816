@@ -1120,3 +1120,408 @@ fn notifications_delivered_one_at_a_time_are_analyzed_one_at_a_time() {
     }
     worker.join().expect("the server thread finishes");
 }
+
+// ---------------------------------------------------------------------------
+// H3 — definition, references, and the symbol table as an outline
+// ---------------------------------------------------------------------------
+
+const UNIT_A: &str = "file:///unit-a.k816";
+const UNIT_B: &str = "file:///unit-b.k816";
+
+/// The two-unit golden pair, open together the way an editor would have them.
+fn cross_unit_workspace() -> Workspace {
+    let mut workspace = Workspace::new();
+    workspace.update(UNIT_A, include_str!("golden/unit-a.k816"));
+    workspace.update(UNIT_B, include_str!("golden/unit-b.k816"));
+    workspace
+}
+
+/// Definition of a name a *sibling* unit defines lands in that unit.
+///
+/// The reference index keys by span and a `Symbol.declaration` of an imported
+/// symbol points into the defining unit, which together are what makes a
+/// cross-unit answer possible at all: a `SymbolId` means nothing outside its
+/// own table.
+#[test]
+fn definition_of_an_imported_symbol_lands_in_the_defining_unit() {
+    use k816::lsp::navigation::definition;
+
+    let mut workspace = cross_unit_workspace();
+    let analysis = workspace.analyze();
+    let (a, b) = (
+        workspace.file(UNIT_A).expect("open"),
+        workspace.file(UNIT_B).expect("open"),
+    );
+
+    // `jsr helper` in unit A, at the use on line 8. (Byte offsets: the
+    // comment header holds em dashes, so they are not column counts.)
+    let target = definition(&analysis, a, 476).expect("`helper` resolves");
+    assert_eq!(target.file, b);
+    assert_eq!(workspace.map().span_text(target), "helper");
+    // `lda CURSOR` and `lda BANKED`, the direct-page and far imports.
+    for (offset, name) in [(536, "CURSOR"), (606, "BANKED")] {
+        let target = definition(&analysis, a, offset).expect("resolves");
+        assert_eq!(target.file, b, "`{name}`");
+        assert_eq!(workspace.map().span_text(target), name);
+    }
+
+    // A declaration answers with itself, which is what an editor shows when
+    // a user asks a declaration where it is declared.
+    let target = definition(&analysis, b, 356).expect("`helper` is declared here");
+    assert_eq!((target.file, target.start), (b, 356));
+}
+
+/// References of an imported symbol span both units, and the declaration is
+/// included only when asked for.
+#[test]
+fn references_of_an_imported_symbol_reach_every_open_unit() {
+    use k816::lsp::navigation::references;
+
+    let mut workspace = cross_unit_workspace();
+    let analysis = workspace.analyze();
+    let (a, b) = (
+        workspace.file(UNIT_A).expect("open"),
+        workspace.file(UNIT_B).expect("open"),
+    );
+
+    // From the *use* in unit A.
+    let found = references(&analysis, a, 536, true);
+    let places: Vec<(bool, &str)> = found
+        .iter()
+        .map(|span| (span.file == b, workspace.map().span_text(*span)))
+        .collect();
+    // Sorted by span, and a span orders by file first: unit A is the first
+    // document the workspace holds, so its two uses come before unit B's
+    // declaration.
+    assert_eq!(
+        places,
+        [(false, "CURSOR"), (false, "CURSOR"), (true, "CURSOR")],
+        "both uses in A and the declaration in B"
+    );
+
+    // Without the declaration, only the uses.
+    let uses = references(&analysis, a, 536, false);
+    assert_eq!(uses.len(), 2);
+    assert!(uses.iter().all(|span| span.file == a));
+
+    // From the *declaration* in unit B, the same answer. (Byte 256 is the
+    // `CURSOR` inside that unit's header comment; 307 is the declaration.)
+    assert_eq!(references(&analysis, b, 307, true), found);
+}
+
+/// A local label's references stay inside its own function, even when
+/// another function declares a label of the same name.
+#[test]
+fn references_of_a_local_label_are_confined_to_its_function() {
+    use k816::lsp::navigation::{definition, references};
+
+    const SOURCE: &str = "func first @a8 @i8 {\n\
+        \x20   .spin:\n\
+        \x20   x++\n\
+        \x20   != goto .spin\n\
+        }\n\
+        \n\
+        func second @a8 @i8 {\n\
+        \x20   .spin:\n\
+        \x20   y++\n\
+        \x20   != goto .spin\n\
+        }\n";
+
+    let mut workspace = Workspace::new();
+    let uri = "file:///labels.k816";
+    workspace.update(uri, SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+
+    let first_use = SOURCE.find("goto .spin").expect("a use") as u32 + 5;
+    let second_use = SOURCE.rfind("goto .spin").expect("a second use") as u32 + 5;
+    assert_ne!(first_use, second_use);
+
+    // Each use resolves to its *own* function's label.
+    let first_declaration = definition(&analysis, file, first_use).expect("resolves");
+    let second_declaration = definition(&analysis, file, second_use).expect("resolves");
+    assert_ne!(first_declaration, second_declaration);
+    assert!(first_declaration.start < second_declaration.start);
+
+    // And each label's references are its own function's.
+    let found = references(&analysis, file, first_use, true);
+    assert_eq!(
+        found,
+        [first_declaration, Span::new(file, first_use, first_use + 5)]
+    );
+    assert!(
+        found
+            .iter()
+            .all(|span| span.start < second_declaration.start),
+        "a reference escaped into the second function"
+    );
+}
+
+/// A `.field` step resolves to the field's declaration, not to the variable's.
+#[test]
+fn a_field_reference_resolves_to_the_field_declaration() {
+    use k816::lsp::navigation::{definition, references};
+
+    let mut workspace = Workspace::new();
+    let uri = "file:///layout.k816";
+    workspace.update(uri, include_str!("golden/layout-unit-a.k816"));
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+
+    // `TABLE[3].hi = a` — the `.hi` at byte 1135.
+    let target = definition(&analysis, file, 1136).expect("`.hi` resolves");
+    assert_eq!(target.start, 707, "the `.hi :byte` entry of the field list");
+    assert!(workspace.map().span_text(target).starts_with(".hi"));
+
+    // The base name of the same expression resolves to the variable.
+    let base = definition(&analysis, file, 1128).expect("`TABLE` resolves");
+    assert_eq!(workspace.map().span_text(base), "TABLE");
+
+    // Both uses of `.hi` are found; the declaration is the field list entry.
+    let found = references(&analysis, file, 1136, true);
+    assert_eq!(found.len(), 2, "the declaration and the one use");
+    assert_eq!(found[0].start, 707);
+    assert_eq!(found[1].start, 1135);
+}
+
+/// The document outline is the symbol table, with local labels nested under
+/// the function that scopes them and fields under their variable.
+#[test]
+fn the_document_outline_is_the_symbol_table() {
+    use k816::lsp::navigation::{OutlineKind, document_symbols};
+
+    const SOURCE: &str = "var SCREEN = $0400\n\
+        const LIMIT = 8\n\
+        var PAIR[ .lo :byte .hi :byte ]\n\
+        \n\
+        data table {\n\
+        \x20   $01 $02\n\
+        }\n\
+        \n\
+        func work @a8 @i8 {\n\
+        \x20   .again:\n\
+        \x20   x++\n\
+        \x20   != goto .again\n\
+        }\n";
+
+    let mut workspace = Workspace::new();
+    let uri = "file:///outline.k816";
+    workspace.update(uri, SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+
+    let outline = document_symbols(&analysis, file);
+    let top: Vec<(&str, OutlineKind)> = outline
+        .iter()
+        .map(|entry| (entry.name.as_str(), entry.kind))
+        .collect();
+    assert_eq!(
+        top,
+        [
+            ("SCREEN", OutlineKind::Variable),
+            ("LIMIT", OutlineKind::Constant),
+            ("PAIR", OutlineKind::Variable),
+            ("table", OutlineKind::Data),
+            ("work", OutlineKind::Function),
+        ]
+    );
+
+    // The fields hang off the variable that declares them.
+    let pair = &outline[2];
+    let fields: Vec<&str> = pair.children.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(fields, [".lo", ".hi"]);
+    assert_eq!(pair.children[1].detail.as_deref(), Some("+1"));
+
+    // The local label hangs off its function, and the function's full range
+    // covers its whole body while the selection is just the name.
+    let work = &outline[4];
+    assert_eq!(
+        work.children
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        [".again"]
+    );
+    assert_eq!(workspace.map().span_text(work.declaration), "work");
+    assert!(work.full.start < work.declaration.start);
+    assert!(work.full.end > work.children[0].declaration.end);
+
+    // Details are the facts the model holds, not text re-read from source.
+    assert_eq!(outline[0].detail.as_deref(), Some("@ $0400"));
+    assert_eq!(outline[1].detail.as_deref(), Some("= $0008"));
+}
+
+/// The workspace outline is every open unit's, filtered by substring, and it
+/// never lists an import — a symbol is listed by the unit that declares it.
+#[test]
+fn workspace_symbols_filter_across_open_units_and_skip_imports() {
+    use k816::lsp::navigation::workspace_symbols;
+
+    let mut workspace = cross_unit_workspace();
+    let analysis = workspace.analyze();
+    let b = workspace.file(UNIT_B).expect("open");
+
+    let all: Vec<String> = workspace_symbols(&analysis, "")
+        .into_iter()
+        .map(|(_, outline)| outline.name)
+        .collect();
+    assert_eq!(all, ["caller", "CURSOR", "BANKED", "helper"]);
+
+    // `CURSOR` is declared once even though both units name it.
+    let cursor = workspace_symbols(&analysis, "curs");
+    assert_eq!(cursor.len(), 1);
+    assert_eq!(cursor[0].0, b);
+
+    // The filter is case-insensitive and matches anywhere in the name.
+    assert_eq!(workspace_symbols(&analysis, "ANK").len(), 1);
+    assert!(workspace_symbols(&analysis, "nothing-like-this").is_empty());
+}
+
+/// A name inside a cross-unit `inline` body resolves to the *defining* unit's
+/// declarations, not to whatever the expanding unit happens to call the same
+/// thing.
+///
+/// G7 copies the body into the expanding unit's program carrying the defining
+/// unit's spans, so the index records a span in one file mapping to a symbol
+/// resolved in another unit's table. Keying by `Span` — which carries the
+/// file — is what makes that answerable.
+#[test]
+fn names_inside_a_borrowed_inline_body_point_at_the_defining_unit() {
+    use k816::lsp::navigation::definition;
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/compat/k816/inline-across-units");
+    let mut workspace = Workspace::new();
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("read the fixture") {
+        let path = entry.expect("a fixture entry").path();
+        if path
+            .extension()
+            .is_none_or(|ext| ext != "k65" && ext != "k816")
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read a unit");
+        let uri = format!("file:///{}", path.file_name().unwrap().to_string_lossy());
+        workspace.update(uri.clone(), text);
+        names.push(uri);
+    }
+    names.sort();
+    assert!(names.len() >= 2, "the fixture is two units: {names:?}");
+
+    let analysis = workspace.analyze();
+    // Every reference the index recorded resolves to a declaration, and the
+    // declaration is in whichever file actually declares it — which for a
+    // borrowed body is the file the body was written in.
+    let mut cross_file = 0;
+    for unit in &analysis.units {
+        for span in unit.model.references.keys() {
+            let target = definition(&analysis, span.file, span.start)
+                .unwrap_or_else(|| panic!("a recorded reference that resolves to nothing"));
+            assert!(
+                !workspace.map().span_text(target).is_empty(),
+                "a declaration with no text"
+            );
+            if target.file != unit.file {
+                cross_file += 1;
+            }
+        }
+    }
+    assert!(
+        cross_file > 0,
+        "the fixture is supposed to resolve names across the unit boundary"
+    );
+}
+
+/// Every request the server answers, thrown at an empty workspace, at a
+/// document it does not hold, and at one that is a single `ERROR` node.
+///
+/// A panic in a request handler kills the editor's session, so the claim is
+/// not "the answer is right" but "there is an answer" (decision 18). The
+/// sweep grows with every task that adds a request.
+#[test]
+fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
+    let request = |id: i32, method: &str, params: serde_json::Value| serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let at_position = |uri: &str| {
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": 400, "character": 900 },
+        })
+    };
+    let sweep = |uri: &str| {
+        vec![
+            request(10, "textDocument/definition", at_position(uri)),
+            request(
+                11,
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 },
+                    "context": { "includeDeclaration": true },
+                }),
+            ),
+            request(
+                12,
+                "textDocument/documentSymbol",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            ),
+            request(
+                13,
+                "workspace/symbol",
+                serde_json::json!({ "query": "anything" }),
+            ),
+            // A method the server does not implement is answered, not
+            // dropped: a client that never gets a response waits forever.
+            request(14, "textDocument/somethingElse", serde_json::json!({})),
+        ]
+    };
+
+    for messages in [
+        // Nothing open at all.
+        sweep("file:///never-opened.k816"),
+        // A document open and unreadable by the grammar.
+        std::iter::once(did_open("}{ ??? &&&\n"))
+            .chain(sweep(DOC))
+            .collect(),
+        // A document the workspace does not hold, while it holds another.
+        std::iter::once(did_open("var SCREEN = $0400\n"))
+            .chain(sweep("file:///other.k816"))
+            .collect(),
+    ] {
+        let mut all = messages;
+        all.extend(shutdown_and_exit());
+        let (server, client) = lsp_server::Connection::memory();
+        for message in all {
+            client
+                .sender
+                .send(serde_json::from_value(message).expect("a protocol message"))
+                .expect("the server is listening");
+        }
+        k816::lsp::serve(&server, Options::default(), &serde_json::Value::Null)
+            .expect("the server survives the sweep");
+        drop(server);
+
+        let mut answered = Vec::new();
+        while let Ok(message) = client.receiver.try_recv() {
+            if let lsp_server::Message::Response(response) = message {
+                assert!(
+                    response.response_result.is_ok(),
+                    "{:?} came back as an error",
+                    response.id
+                );
+                answered.push(format!("{}", response.id));
+            }
+        }
+        // Five requests plus the shutdown, each answered exactly once.
+        assert_eq!(
+            answered,
+            ["10", "11", "12", "13", "14", "1"],
+            "every request is answered, in order"
+        );
+    }
+}

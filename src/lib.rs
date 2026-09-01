@@ -41,6 +41,7 @@ pub mod layout;
 pub mod linkage;
 pub mod lower;
 pub mod lsp;
+pub mod names;
 pub mod op;
 pub mod optimize;
 pub mod parser;

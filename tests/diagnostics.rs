@@ -34,7 +34,10 @@
 use k816::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Severity};
 use k816::parser::parse_source;
 use k816::semantic::analyze_file;
-use k816::source::{SourceMap, Span};
+use k816::source::{Provenance, SourceMap, Span};
+
+#[path = "common/corpus.rs"]
+mod corpus_files;
 
 /// One case: source, the code it must report, and the text the caret covers.
 struct Case {
@@ -984,4 +987,118 @@ fn diagnostics_survive_past_the_first_error() {
             "`THIRD` is not declared",
         ]
     );
+}
+
+// ---------------------------------------------------------------------------
+// The reference index (sub-plan H, task H3, decision 11)
+// ---------------------------------------------------------------------------
+
+/// Every name a corpus program writes is explained.
+///
+/// **The inventory comes from the enumerable side.** The reference index an
+/// editor reads is filled at the point a name *resolves*, and those points
+/// are scattered across `resolve.rs`, `semantic.rs`, `eval.rs` and
+/// `width.rs`; counting them cannot say whether one was missed. Walking every
+/// name a program writes can, because `names::visit_names` is exhaustive by
+/// construction — every match in it lists its variants, so a construct added
+/// later cannot carry a name the walk skips
+/// (`memory/inventory-from-the-enumerable-side`).
+///
+/// A name is explained when it is one of five things, and the five are the
+/// whole list:
+///
+/// - a **declaration**, which is what the index points *at* rather than from;
+/// - a **fixed** slot — a mnemonic, a flag letter, a segment name — whose
+///   vocabulary no declaration can extend;
+/// - a name with an **index entry**, which is the case this gate exists for;
+/// - a name under a **diagnostic**, because a name the compiler refused has
+///   no symbol to record;
+/// - a **synthetic** name, which the parser invented for a `MISSING` node and
+///   which covers no source text.
+///
+/// An evaluator name gets one more: it may resolve against the evaluator's
+/// own environment, and a binding whose value was not a number never becomes
+/// a symbol at all. It is explained when the unit's table does not hold the
+/// name either — which is what says the evaluator, and not the compiler,
+/// owns it.
+#[test]
+fn every_name_a_corpus_program_writes_is_explained() {
+    use corpus_files::{corpus, root};
+    use k816::names::{NameRole, visit_names};
+    use k816::{Options, analyze_workspace};
+
+    let mut unexplained: Vec<String> = Vec::new();
+    let mut counted = 0usize;
+    let mut indexed = 0usize;
+
+    for set in corpus() {
+        let mut map = SourceMap::new();
+        for file in &set.files {
+            let text = std::fs::read_to_string(file).expect("read a corpus source");
+            let name = file
+                .strip_prefix(root())
+                .unwrap_or(file)
+                .to_string_lossy()
+                .into_owned();
+            map.add_file(name, text);
+        }
+        let analysis = analyze_workspace(&map, &Options::default());
+
+        for unit in &analysis.units {
+            let mut names = Vec::new();
+            visit_names(unit.program(), &mut |name, role| {
+                names.push((name.clone(), role));
+            });
+            for (name, role) in names {
+                counted += 1;
+                if name.provenance == Provenance::Synthetic {
+                    continue;
+                }
+                let covered = analysis.diagnostics.iter().any(|diagnostic| {
+                    let at = diagnostic.primary.span;
+                    at.file == name.span.file
+                        && at.start <= name.span.start
+                        && name.span.end <= at.end
+                });
+                if covered {
+                    continue;
+                }
+                let explained = match role {
+                    NameRole::Declaration | NameRole::Fixed => true,
+                    NameRole::Symbol => unit.model.references.contains_key(&name.span),
+                    NameRole::Field => unit.model.field_references.contains_key(&name.span),
+                    NameRole::Evaluator => {
+                        unit.model.references.contains_key(&name.span)
+                            || unit.model.symbols.lookup(&name.text).is_none()
+                    }
+                };
+                if explained
+                    && matches!(
+                        role,
+                        NameRole::Symbol | NameRole::Field | NameRole::Evaluator
+                    )
+                {
+                    indexed += 1;
+                }
+                if !explained {
+                    unexplained.push(format!(
+                        "{}: `{}` ({role:?}) at bytes {}..{}",
+                        set.name, name.text, name.span.start, name.span.end
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        unexplained.is_empty(),
+        "{} names nothing explains — each is a resolution site the reference index \
+         does not record:\n  {}",
+        unexplained.len(),
+        unexplained.join("\n  ")
+    );
+    // The corpus is large enough that a walk finding nothing would be a walk
+    // that broke, not a corpus with no names in it.
+    assert!(counted > 3_000, "the walk found only {counted} names");
+    assert!(indexed > 800, "only {indexed} names reached the index");
 }

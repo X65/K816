@@ -39,8 +39,8 @@
 use crate::AnalyzedUnit;
 use crate::ast::{ItemKind, StmtId};
 use crate::parser::CstNode;
-use crate::source::FileId;
-use crate::symbol::SymbolId;
+use crate::source::{FileId, Span};
+use crate::symbol::{LayoutId, SymbolId};
 
 /// What the model holds at one byte offset of one document.
 #[derive(Debug)]
@@ -60,11 +60,14 @@ pub struct Context<'a> {
     /// The function whose body the offset is inside.
     pub function: Option<SymbolId>,
     /// The symbol whose *declaring* name the offset sits in.
-    ///
-    /// H3 adds the other half — the symbol a *use* of a name resolves to —
-    /// through the reference index; until then a use answers `None` rather
-    /// than being guessed at from its text.
     pub declaration: Option<SymbolId>,
+    /// The symbol a *use* of a name at this offset resolves to, from the
+    /// reference index the semantic pass recorded while resolving names.
+    pub reference: Option<SymbolId>,
+    /// The field a `.field` step at this offset selected. A field is not a
+    /// symbol — it has no scope of its own — so it is named by its layout and
+    /// its position in it.
+    pub field: Option<(LayoutId, usize)>,
 }
 
 impl Context<'_> {
@@ -91,6 +94,47 @@ impl Context<'_> {
     /// between two.
     pub fn on_token(&self) -> bool {
         self.node().is_some_and(CstNode::is_leaf)
+    }
+
+    /// The symbol this position names, whether it declares one or uses one.
+    pub fn symbol(&self) -> Option<SymbolId> {
+        self.declaration.or(self.reference)
+    }
+
+    /// The span of the name this position sits in, if it sits in one.
+    ///
+    /// Either a declaring name or a reference-index key — which are the two
+    /// spans a rename may edit and the two `prepareRename` answers on.
+    pub fn name_span(&self) -> Option<Span> {
+        let file = self.file();
+        let covering = |span: &Span| span.file == file && span.contains(self.offset);
+        if let Some((_, symbol)) = self
+            .unit
+            .model
+            .symbols
+            .iter()
+            .find(|(_, symbol)| covering(&symbol.declaration))
+        {
+            return Some(symbol.declaration);
+        }
+        self.unit
+            .model
+            .references
+            .keys()
+            .find(|span| covering(span))
+            .or_else(|| {
+                self.unit
+                    .model
+                    .field_references
+                    .keys()
+                    .find(|span| covering(span))
+            })
+            .copied()
+    }
+
+    /// The file the offset belongs to.
+    pub fn file(&self) -> FileId {
+        self.unit.file
     }
 }
 
@@ -137,6 +181,19 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
         .iter()
         .find(|(_, symbol)| symbol.declaration.file == file && symbol.declaration.contains(offset))
         .map(|(id, _)| id);
+    let covering = |span: &Span| span.file == file && span.contains(offset);
+    let reference = unit
+        .model
+        .references
+        .iter()
+        .find(|(span, _)| covering(span))
+        .map(|(_, id)| *id);
+    let field = unit
+        .model
+        .field_references
+        .iter()
+        .find(|(span, _)| covering(span))
+        .map(|(_, field)| *field);
 
     Some(Context {
         unit,
@@ -145,6 +202,8 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
         statement,
         function,
         declaration,
+        reference,
+        field,
     })
 }
 

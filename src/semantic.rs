@@ -93,6 +93,26 @@ pub struct SemanticModel {
     /// Every unit-level symbol the unit actually referred to, which is what
     /// separates an `.import` this unit needs from one it merely could have.
     pub referenced: BTreeSet<SymbolId>,
+    /// Where each name that resolved to a symbol was written.
+    ///
+    /// [`Self::referenced`] answers *which* symbols a unit used, for
+    /// `.import`; this answers *where*, which is what definition, references,
+    /// rename and semantic tokens are questions about. Recorded at the point
+    /// a name resolves rather than derived afterwards: a second walk that
+    /// re-resolved names would be a second name resolver, and the two would
+    /// disagree the first time a scoping rule changed.
+    ///
+    /// Keyed by the name's [`Span`], which carries the file — a cross-unit
+    /// `inline` body is copied into the expanding unit with the *defining*
+    /// unit's spans, so an entry's key and the symbol it names can belong to
+    /// different files (`plans/07-lsp-tooling.md` decision 11 and its risk
+    /// note).
+    pub references: BTreeMap<Span, SymbolId>,
+    /// Where each `.field` step was written, and which field it selected.
+    ///
+    /// A field is not a symbol — it has no `SymbolId` and no scope of its own
+    /// — so it is named by its layout and its position in it.
+    pub field_references: BTreeMap<Span, FieldRef>,
     /// The declared register flow of each contract-bearing function.
     ///
     /// Separate from [`FunctionInfo`] because most functions have none: a
@@ -140,6 +160,10 @@ pub struct SemanticModel {
     /// nothing differently after that.
     pub data_code: BTreeMap<DataCodeId, WidthAnalysis>,
 }
+
+/// A field of a layout, named the way a [`SymbolId`] names a symbol: by where
+/// it is, not by what it is called.
+pub type FieldRef = (LayoutId, usize);
 
 /// One allocated variable's claim on the linker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -445,6 +469,7 @@ fn analyze(
         direct_page_reported: false,
         eval_env: eval::Environment::default(),
         eval_block: 0,
+        pending_references: Vec::new(),
         eval_effects: effects,
     };
     analysis.declare_placed_symbols(file);
@@ -554,6 +579,9 @@ fn analyze(
             ));
         }
     }
+    // Last, because a deferred name is one the table did not hold when it
+    // resolved and every declaration this unit makes is in it by now.
+    analysis.settle_pending_references();
     analysis.model.preprocessed = preprocessed;
     (analysis.model, analysis.diagnostics)
 }
@@ -608,6 +636,9 @@ struct Analysis {
     /// Which bracket is being evaluated, so a name assigned in one block and
     /// again in another is caught.
     eval_block: eval::BlockId,
+    /// Names the evaluator resolved to something the symbol table holds only
+    /// later; see [`Analysis::settle_pending_references`].
+    pending_references: Vec<(Span, String)>,
     /// What the preprocessor's live `#if` conditions assigned, waiting to be
     /// installed at the item each one is anchored to.
     ///
@@ -1108,6 +1139,7 @@ impl Analysis {
         );
         let value = interpreter.evaluate(body);
         let notes = interpreter.take_notes();
+        let resolutions = interpreter.take_resolutions();
         let fresh = environment.take_new_names();
         self.eval_env = environment;
 
@@ -1125,6 +1157,22 @@ impl Analysis {
             };
             let value = eval::to_integer(number) as u32;
             self.publish_eval_name(&name, value, body.span);
+        }
+        // Recorded *after* the fresh names are published: an evaluator
+        // variable is not a symbol while the bracket is running, and the
+        // point of the index is to name the symbol it turned into. A name
+        // that never became one — an `evalfunc` parameter, or a binding whose
+        // value was not a number — records nothing, which is right: there is
+        // nothing for an editor to navigate to.
+        for resolution in resolutions {
+            match resolution {
+                eval::Resolution::Symbol { span, symbol } => {
+                    self.model.references.insert(span, symbol);
+                }
+                eval::Resolution::Variable { span, name } => {
+                    self.pending_references.push((span, name));
+                }
+            }
         }
         match value {
             Ok(value) => self.model.eval.record(body.span, value),
@@ -2239,8 +2287,28 @@ impl Analysis {
                 self.check_call_target(&call.target);
                 self.check_call_convention(&call.target, false);
                 self.check_call_flow(statement, call);
+                self.index_call_arguments(call);
             }
         }
+    }
+
+    /// Records what a bare call's immediate arguments name.
+    ///
+    /// The one position analysis never folds: `#mem` in `store_to a, #mem`
+    /// binds to the callee's alias during *expansion*, which is lowering's
+    /// work. The names still have to be answerable in an editor, so they are
+    /// indexed here — silently, because reporting them is the expansion's
+    /// job and doing it twice would double every diagnostic an expanded body
+    /// produces.
+    fn index_call_arguments(&mut self, call: &crate::ast::BareCall) {
+        let mut resolver = self.resolver();
+        for argument in call.arguments.iter().flatten() {
+            if let crate::ast::CallArgument::Immediate(expr) = argument {
+                resolver.index_names(expr);
+            }
+        }
+        let resolved = resolver.finish();
+        self.absorb(resolved);
     }
 
     /// Reports every reserved legacy construct nested inside a data block.
@@ -2536,7 +2604,29 @@ impl Analysis {
     /// Records what a resolver run found into the model this analysis owns.
     fn absorb(&mut self, resolved: Resolved) {
         self.model.referenced.extend(resolved.referenced);
+        self.model.references.extend(resolved.references);
+        self.model
+            .field_references
+            .extend(resolved.field_references);
+        self.pending_references.extend(resolved.pending_references);
         self.diagnostics.extend(resolved.diagnostics);
+    }
+
+    /// Resolves the names the evaluator deferred, once every declaration the
+    /// unit makes is in the table.
+    ///
+    /// An evaluator variable becomes a compiler constant when its bracket
+    /// finishes, and a section another unit defines becomes an import when
+    /// the declaration pass reaches the use — so both are names the table
+    /// does not hold at the moment they resolve. A name it still does not
+    /// hold when analysis ends records nothing: there is nothing for an
+    /// editor to navigate to.
+    fn settle_pending_references(&mut self) {
+        for (span, name) in std::mem::take(&mut self.pending_references) {
+            if let Some(id) = self.model.symbols.lookup(&name) {
+                self.model.references.insert(span, id);
+            }
+        }
     }
 
     /// The absolute value of `expr` in a position that requires one.
@@ -2991,6 +3081,7 @@ impl Analysis {
             return;
         };
         self.model.referenced.insert(id);
+        self.model.references.insert(target.span, id);
         let symbol = self.model.symbols.symbol(id);
         // A call transfers to an *address*, and a K65 program routinely
         // names one that is not a section of its own: `var openmode = $EF9C`

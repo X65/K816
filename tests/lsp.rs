@@ -1455,6 +1455,18 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
     };
     let sweep = |uri: &str| {
         vec![
+            request(
+                7,
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 400, "character": 900 },
+                    },
+                    "context": { "diagnostics": [] },
+                }),
+            ),
             request(8, "textDocument/completion", at_position(uri)),
             request(9, "textDocument/hover", at_position(uri)),
             request(10, "textDocument/definition", at_position(uri)),
@@ -1538,7 +1550,7 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
         // Every request plus the shutdown, each answered exactly once.
         assert_eq!(
             answered,
-            ["8", "9", "10", "11", "12", "13", "15", "16", "14", "1"],
+            ["7", "8", "9", "10", "11", "12", "13", "15", "16", "14", "1"],
             "every request is answered, in order"
         );
     }
@@ -2354,4 +2366,123 @@ fn every_offered_keyword_is_a_literal_the_grammar_has() {
             "`@{annotation}` is offered and the grammar has no such literal"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// H7 — code actions
+// ---------------------------------------------------------------------------
+
+/// Every fix a diagnostic carries becomes an action, and none is filtered.
+///
+/// The `isPreferred` flag is the applicability: a `MachineApplicable` fix is
+/// one an editor may apply on a bare Quick Fix, and a `MaybeIncorrect` one is
+/// not.
+#[test]
+fn every_fix_becomes_an_action_with_its_applicability() {
+    use k816::diagnostic::Applicability;
+    use k816::lsp::actions::actions;
+
+    // One source with a machine-applicable fix, and one with a plausible one.
+    for (source, title, preferred) in [
+        (
+            "const K = $10\nfunc main @a8 @i8 {\n    lda K\n    return\n}\n",
+            "load the value with `#K`",
+            true,
+        ),
+        (
+            "func w @a8 @a16 @i8 {\n    return\n}\n",
+            "drop the contradicting annotation",
+            false,
+        ),
+    ] {
+        let mut workspace = Workspace::new();
+        let uri = "file:///actions.k816";
+        workspace.update(uri, source);
+        let analysis = workspace.analyze();
+        let file = workspace.file(uri).expect("open");
+
+        let whole = Span::new(file, 0, source.len() as u32);
+        let found = actions(&analysis.diagnostics, whole);
+        let offered: Vec<&str> = found
+            .iter()
+            .map(|action| action.fix.title.as_str())
+            .collect();
+        assert!(offered.contains(&title), "{offered:?}");
+
+        let action = found
+            .iter()
+            .find(|action| action.fix.title == title)
+            .expect("the fix is offered");
+        assert_eq!(action.preferred, preferred);
+        assert_eq!(
+            action.fix.applicability == Applicability::MachineApplicable,
+            preferred
+        );
+        assert!(!action.fix.edits.is_empty());
+        // The diagnostic comes with it, so the editor shows what it answers.
+        assert!(action.diagnostic.fixes.iter().any(|fix| fix.title == title));
+    }
+}
+
+/// A range meets a diagnostic it overlaps, and a diagnostic with no fixes
+/// yields no action.
+#[test]
+fn actions_are_offered_by_overlap_and_only_where_a_fix_exists() {
+    use k816::lsp::actions::actions;
+
+    // `SCREEN` is undeclared: a diagnostic, and no fix for it.
+    const SOURCE: &str = "func main @a8 @i8 {\n    SCREEN = a\n    return\n}\n";
+    let mut workspace = Workspace::new();
+    let uri = "file:///nofix.k816";
+    workspace.update(uri, SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert!(analysis.diagnostics[0].fixes.is_empty());
+    let whole = Span::new(file, 0, SOURCE.len() as u32);
+    assert!(actions(&analysis.diagnostics, whole).is_empty());
+
+    // Overlap: a caret anywhere in the diagnostic's span, including at either
+    // end of it, offers the fix.
+    const FIXABLE: &str = "const K = $10\nfunc main @a8 @i8 {\n    lda K\n    return\n}\n";
+    workspace.update(uri, FIXABLE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    let at = FIXABLE.find("lda K").expect("the load") as u32 + 4;
+    for caret in [at, at + 1] {
+        let range = Span::new(file, caret, caret);
+        assert_eq!(
+            actions(&analysis.diagnostics, range).len(),
+            1,
+            "no action at byte {caret}"
+        );
+    }
+    // A caret far away offers nothing.
+    let elsewhere = Span::new(file, 0, 1);
+    assert!(actions(&analysis.diagnostics, elsewhere).is_empty());
+}
+
+/// A published diagnostic says how many fixes it carries, so a client can
+/// draw its lightbulb without a round trip.
+#[test]
+fn a_published_diagnostic_says_whether_it_has_fixes() {
+    let mut workspace = Workspace::new();
+    let uri = "file:///data.k816";
+    workspace.update(
+        uri,
+        "const K = $10\nfunc main @a8 @i8 {\n    lda K\n    return\n}\n",
+    );
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    let published = file_diagnostics(workspace.map(), file, &analysis.diagnostics);
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].data, Some(serde_json::json!({ "fixes": 1 })));
+
+    // A diagnostic with no fix carries nothing rather than a zero.
+    workspace.update(uri, "func main @a8 @i8 {\n    SCREEN = a\n    return\n}\n");
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    let published = file_diagnostics(workspace.map(), file, &analysis.diagnostics);
+    assert_eq!(published[0].data, None);
 }

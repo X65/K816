@@ -40,6 +40,7 @@
 //! `lsp_types` stops at this directory: nothing outside `src/lsp/` imports
 //! it, the way nothing outside `src/parser/` imports `tree_sitter`.
 
+pub mod actions;
 pub mod completion;
 pub mod config;
 mod context;
@@ -59,10 +60,11 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, PrepareRenameRequest,
-    References, Rename, Request, WorkspaceSymbolRequest,
+    CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
+    PrepareRenameRequest, References, Rename, Request, WorkspaceSymbolRequest,
 };
 use lsp_types::{
+    CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
@@ -91,6 +93,7 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
             TextDocumentSyncKind::INCREMENTAL,
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(
                 completion::TRIGGERS
@@ -282,6 +285,24 @@ fn answer(
     let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
+        CodeActionRequest::METHOD => {
+            let found: Vec<CodeActionOrCommand> =
+                serde_json::from_value::<CodeActionParams>(request.params.clone())
+                    .ok()
+                    .and_then(|params| {
+                        let file = workspace.file(&params.text_document.uri.to_string())?;
+                        let source = workspace.map().file(file);
+                        let range = convert::range_to_span(source, params.range);
+                        Some(
+                            actions::actions(&analysis.diagnostics, range)
+                                .iter()
+                                .map(|action| code_action(map, action))
+                                .collect(),
+                        )
+                    })
+                    .unwrap_or_default();
+            Ok(serde_json::to_value(found).unwrap_or(serde_json::Value::Null))
+        }
         Completion::METHOD => {
             let items: Vec<CompletionItem> =
                 serde_json::from_value::<CompletionParams>(request.params.clone())
@@ -417,6 +438,43 @@ fn answer(
         }
         _ => Ok(serde_json::Value::Null),
     }
+}
+
+/// One offered fix in the protocol's form.
+///
+/// The diagnostic goes with it, so an editor shows which complaint the action
+/// answers; `is_preferred` is set for a `MachineApplicable` fix, which is the
+/// protocol's way of saying "apply this one on a bare Quick Fix".
+#[expect(
+    clippy::mutable_key_type,
+    reason = "`WorkspaceEdit.changes` is keyed by `Uri`, whose interior state               clippy reads as mutable; the protocol chooses the type"
+)]
+fn code_action(
+    map: &crate::source::SourceMap,
+    action: &actions::Action<'_>,
+) -> CodeActionOrCommand {
+    let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
+        std::collections::HashMap::new();
+    for edit in &action.fix.edits {
+        let Some(uri) = convert::uri(map, edit.span.file) else {
+            continue;
+        };
+        changes.entry(uri).or_default().push(TextEdit {
+            range: convert::span_to_range(map, edit.span),
+            new_text: edit.replacement.clone(),
+        });
+    }
+    CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+        title: action.fix.title.clone(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diagnostics::diagnostic_to_lsp(map, action.diagnostic)]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        is_preferred: Some(action.preferred),
+        ..Default::default()
+    })
 }
 
 /// One candidate in the protocol's form.

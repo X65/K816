@@ -1102,3 +1102,269 @@ fn every_name_a_corpus_program_writes_is_explained() {
     assert!(counted > 3_000, "the walk found only {counted} names");
     assert!(indexed > 800, "only {indexed} names reached the index");
 }
+
+// ---------------------------------------------------------------------------
+// Fixes fix (sub-plan H, task H7, decision 5)
+// ---------------------------------------------------------------------------
+
+/// Every place the compiler attaches a [`Fix`], with a source that reaches it
+/// and the title it produces there.
+///
+/// The count is checked against a walk of `src/`, so a producer added later
+/// fails this test until it is listed here with a source that reaches it —
+/// which is the only way "every fix is offered, and every machine-applicable
+/// one removes its diagnostic" can mean anything.
+struct FixSite {
+    /// Where the fix is attached, `file:line`, as a reader's pointer.
+    site: &'static str,
+    /// A program that reaches it.
+    source: &'static str,
+    /// The title it produces, exactly.
+    title: &'static str,
+}
+
+const FIX_SITES: &[FixSite] = &[
+    FixSite {
+        site: "src/parser/diagnostics.rs — a MISSING token",
+        source: "func main @a8 {\n    return\n",
+        title: "insert `}`",
+    },
+    FixSite {
+        site: "src/hla.rs — a transfer the 65816 has no instruction for",
+        source: "func w @a8 @i8 {\n    dpr = x\n    return\n}\n",
+        title: "transfer through `a`",
+    },
+    FixSite {
+        site: "src/width.rs — two annotations contradicting each other",
+        source: "func w @a8 @a16 @i8 {\n    return\n}\n",
+        title: "drop the contradicting annotation",
+    },
+    FixSite {
+        site: "src/resolve.rs — a `.field` step naming no field",
+        source: "var PAIR[ .lo :byte .hi :byte ]\nfunc w @a8 @i8 {\n    a = PAIR.hii\n    return\n}\n",
+        title: "change it to `.hi`",
+    },
+    FixSite {
+        site: "src/resolve.rs — a `const` in address position",
+        source: "const K = $10\nfunc main @a8 @i8 {\n    lda K\n    return\n}\n",
+        title: "load the value with `#K`",
+    },
+    FixSite {
+        site: "src/resolve.rs — an offset marker where none is legal",
+        source: "var V = $10\nfunc w @a8 @i8 {\n    a = &V\n    return\n}\n",
+        title: "remove the offset marker",
+    },
+    FixSite {
+        site: "src/resolve.rs — an encoding prefix on a form that encodes no address",
+        source: "func w @a8 @i8 {\n    bra dp there\nthere:\n    return\n}\n",
+        title: "remove the encoding prefix",
+    },
+    FixSite {
+        site: "src/resolve.rs — an encoding prefix where exactly one is legal",
+        source: "func w @a8 @i8 {\n    jmp dp $10\n    return\n}\n",
+        title: "use `abs` instead",
+    },
+    FixSite {
+        site: "src/semantic.rs — a `const` with no value",
+        source: "const A0\nfunc main @a8 @i8 {\n    return\n}\n",
+        title: "give the constant a value",
+    },
+    FixSite {
+        site: "src/semantic.rs — a `->` clause on a `naked` section",
+        source: "naked w @a8 @i8 -> a {\n    return\n}\n",
+        title: "drop the exit contract",
+    },
+    FixSite {
+        site: "src/semantic.rs — a module default below the first item",
+        source: "func w @a8 @i8 {\n    return\n}\n@a16\n",
+        title: "move the default to the top of the file",
+    },
+];
+
+/// Every diagnostic `source` reports, syntax and semantic together.
+fn all_diagnostics(source: &str) -> Vec<Diagnostic> {
+    let mut map = SourceMap::new();
+    let id = map.add_file("fix.k816", source);
+    let parse = parse_source(map.file(id), None);
+    let (_, semantic) = analyze_file(&parse.file);
+    let mut all = parse.diagnostics;
+    all.extend(semantic);
+    all
+}
+
+/// `source` with `fix` applied.
+fn with_fix_applied(source: &str, fix: &k816::diagnostic::Fix) -> String {
+    let mut edits = fix.edits.clone();
+    // Back to front, so an earlier edit does not move a later one.
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.start));
+    let mut fixed = source.to_owned();
+    for edit in edits {
+        fixed.replace_range(
+            edit.span.start as usize..edit.span.end as usize,
+            &edit.replacement,
+        );
+    }
+    fixed
+}
+
+/// Every site that attaches a fix is reached by a source here.
+///
+/// Counted from `src/` rather than trusted: `with_fix(` is the one way a
+/// diagnostic gets one, so the number of call sites is the number of rows
+/// this table must have.
+#[test]
+fn every_site_that_attaches_a_fix_is_reached_by_a_source() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut producers = 0;
+    for file in [
+        "src/hla.rs",
+        "src/width.rs",
+        "src/resolve.rs",
+        "src/semantic.rs",
+        "src/parser/diagnostics.rs",
+    ] {
+        let text = std::fs::read_to_string(root.join(file)).expect("read a source file");
+        producers += text.matches(".with_fix(").count();
+    }
+    assert_eq!(
+        producers,
+        FIX_SITES.len(),
+        "`src/` attaches {producers} fixes and this table has {} rows: a producer \
+         added without a source that reaches it is a fix nothing checks",
+        FIX_SITES.len()
+    );
+
+    for site in FIX_SITES {
+        let titles: Vec<String> = all_diagnostics(site.source)
+            .iter()
+            .flat_map(|diagnostic| diagnostic.fixes.iter().map(|fix| fix.title.clone()))
+            .collect();
+        assert!(
+            titles.iter().any(|title| title == site.title),
+            "{}: the source reaches no fix titled `{}`; it produced {titles:?}",
+            site.site,
+            site.title
+        );
+    }
+}
+
+/// Applying a machine-applicable fix removes the diagnostic it was attached
+/// to.
+///
+/// The property decision 5 adds, and the one nothing checked before: a fix
+/// could have been offered for years while producing source the compiler
+/// refused *differently*, and an editor's user would have seen the complaint
+/// change rather than go away.
+///
+/// A `MaybeIncorrect` fix is applied and re-analyzed too, and what happens is
+/// recorded rather than asserted — "plausible but needs review" is exactly
+/// the claim that it may leave something else to say.
+#[test]
+fn every_machine_applicable_fix_removes_its_diagnostic() {
+    let mut reviewed: Vec<String> = Vec::new();
+
+    for site in FIX_SITES {
+        let before = all_diagnostics(site.source);
+        for diagnostic in &before {
+            for fix in &diagnostic.fixes {
+                if fix.title != site.title {
+                    continue;
+                }
+                let fixed = with_fix_applied(site.source, fix);
+                let after = all_diagnostics(&fixed);
+                let survivors: Vec<(&str, &str)> = after
+                    .iter()
+                    .map(|diagnostic| (diagnostic.code.as_str(), diagnostic.title.as_str()))
+                    .collect();
+
+                if fix.applicability != Applicability::MachineApplicable {
+                    reviewed.push(format!(
+                        "{}: `{}` leaves {survivors:?}",
+                        site.site, fix.title
+                    ));
+                    continue;
+                }
+                assert!(
+                    !survivors.contains(&(diagnostic.code.as_str(), diagnostic.title.as_str())),
+                    "{}: applying `{}` left `{}` still reported:\n{fixed}",
+                    site.site,
+                    fix.title,
+                    diagnostic.code.as_str()
+                );
+            }
+        }
+    }
+
+    // Every `MaybeIncorrect` fix was applied and its outcome looked at. The
+    // count is asserted so a fix that stops being reachable is noticed.
+    assert_eq!(
+        reviewed.len(),
+        FIX_SITES
+            .iter()
+            .filter(|site| {
+                all_diagnostics(site.source).iter().any(|diagnostic| {
+                    diagnostic.fixes.iter().any(|fix| {
+                        fix.title == site.title
+                            && fix.applicability != Applicability::MachineApplicable
+                    })
+                })
+            })
+            .count(),
+        "a `MaybeIncorrect` fix went unreviewed: {reviewed:#?}"
+    );
+}
+
+/// Every fix a *corpus* program produces removes its diagnostic too.
+///
+/// The sites above are reached by sources invented for them; this is the same
+/// property over the programs the tree actually holds, which is where a fix
+/// meets a construct nobody wrote a case for.
+#[test]
+fn every_fix_a_corpus_program_produces_is_applied_and_checked() {
+    use corpus_files::{corpus, root};
+    use k816::{Options, analyze_workspace};
+
+    let mut applied = 0;
+    for set in corpus() {
+        for entry in &set.files {
+            let source = std::fs::read_to_string(entry).expect("read a corpus source");
+            let mut map = SourceMap::new();
+            let file = map.add_file(
+                entry
+                    .strip_prefix(root())
+                    .unwrap_or(entry)
+                    .to_string_lossy(),
+                source.clone(),
+            );
+            let analysis = analyze_workspace(&map, &Options::default());
+            for diagnostic in &analysis.diagnostics {
+                if diagnostic.primary.span.file != file {
+                    continue;
+                }
+                for fix in &diagnostic.fixes {
+                    applied += 1;
+                    let fixed = with_fix_applied(&source, fix);
+                    let mut after_map = SourceMap::new();
+                    after_map.add_file("fixed", fixed.clone());
+                    let after = analyze_workspace(&after_map, &Options::default());
+                    if fix.applicability != Applicability::MachineApplicable {
+                        continue;
+                    }
+                    assert!(
+                        !after.diagnostics.iter().any(|other| {
+                            other.code == diagnostic.code && other.title == diagnostic.title
+                        }),
+                        "{}: applying `{}` left `{}` still reported",
+                        entry.display(),
+                        fix.title,
+                        diagnostic.code.as_str()
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        applied > 0,
+        "no corpus program produced a fix, so this gate checked nothing"
+    );
+}

@@ -71,7 +71,19 @@ pub fn diagnostic_to_lsp(map: &SourceMap, diagnostic: &Diagnostic) -> lsp_types:
         message,
         related_information: (!related.is_empty()).then_some(related),
         tags: None,
-        data: None,
+        // What the diagnostic carries that the protocol has no field for: how
+        // many structured fixes it has. A client that wants them asks for
+        // code actions; a client that only wants to know whether to draw a
+        // lightbulb can read this without a round trip.
+        //
+        // Deliberately *not* an index into the analysis that produced it
+        // (`plans/07-lsp-tooling.md` H7 asked for one): every request
+        // re-analyzes (decision 12), so an index would name a position in a
+        // list the request itself has just rebuilt. `actions` matches by span
+        // instead, which degrades gracefully when the document moved under a
+        // stale diagnostic rather than pointing at the wrong fix.
+        data: (!diagnostic.fixes.is_empty())
+            .then(|| serde_json::json!({ "fixes": diagnostic.fixes.len() })),
     }
 }
 

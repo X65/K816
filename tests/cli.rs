@@ -23,7 +23,7 @@
 //! `--message-format` behavior of the `k816` CLI, and the non-TTY fallback:
 //! piped stderr gets plain ASCII without ANSI colors.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The slice without its declaration: exactly one semantic error.
@@ -716,4 +716,117 @@ fn every_readme_example_compiles() {
             index + 1
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Two names that must not come back
+// ---------------------------------------------------------------------------
+//
+// Sub-plan I removed an acceptance gate named after a project outside this
+// repository (decision 4) and let the legacy compiler's history go (decision
+// 5). Both removals are the kind that a paragraph pasted from an old document
+// silently undoes, so both are swept for rather than merely done.
+//
+// Each needle is assembled from pieces at run time. A sweep whose only hit is
+// its own source is a sweep that can never fail, and writing the literal here
+// would be exactly that.
+
+/// Every file under the roots the sweeps read, in a stable order.
+///
+/// `target/` and `.git/` are not roots, so nothing generated or checked out is
+/// walked; everything else under a root is, including fixtures, because the
+/// point is that *no* file carries the name.
+fn swept_files() -> Vec<PathBuf> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut files = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![
+        root.join("README.md"),
+        root.join("AGENTS.md"),
+        root.join("doc"),
+        root.join("plans"),
+        root.join("src"),
+        root.join("tests"),
+        root.join("examples"),
+    ];
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+                .map(|entry| entry.expect("read a directory entry").path())
+                .collect();
+            entries.sort();
+            stack.extend(entries);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Case-insensitive byte search: is `needle` (ASCII) anywhere in `haystack`?
+///
+/// Files are read as bytes rather than as text because the roots hold
+/// fixtures that are not UTF-8, and a sweep that skipped them would be a
+/// sweep with a hole in it.
+fn contains_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len()).find(|&start| {
+        haystack[start..start + needle.len()]
+            .iter()
+            .zip(needle)
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// Reports every (file, needle) pair a sweep found, with the line it is on.
+fn sweep(needles: &[String], allow: &dyn Fn(&Path, &str) -> bool) -> Vec<String> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut hits = Vec::new();
+    for path in swept_files() {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => panic!("read {}: {error}", path.display()),
+        };
+        let relative = path.strip_prefix(&root).unwrap_or(&path);
+        for needle in needles {
+            if allow(relative, needle) {
+                continue;
+            }
+            let Some(offset) = contains_ignore_ascii_case(&bytes, needle.as_bytes()) else {
+                continue;
+            };
+            let line = bytes[..offset].iter().filter(|&&b| b == b'\n').count() + 1;
+            hits.push(format!("{}:{line}: `{needle}`", relative.display()));
+        }
+    }
+    hits
+}
+
+/// Nothing in the tree names the operating-system project the removed phase-12
+/// acceptance gate was named after.
+///
+/// Sub-plan I decision 4 removed the gate — the acceptance is the
+/// compatibility corpus and the examples built through `cl65` — and rewrote
+/// the three places that named the project *descriptively* to "a program an
+/// operating system loads", which is the phrasing `implementation.md`
+/// decision 16 already used. The argument survives; the name does not.
+#[test]
+fn no_document_names_the_operating_system_project() {
+    let stem = format!("{}{}", "o", "s");
+    let needles: Vec<String> = ["/", "-"]
+        .iter()
+        .map(|separator| format!("{stem}{separator}816"))
+        .collect();
+    let hits = sweep(&needles, &|_, _| false);
+    assert!(
+        hits.is_empty(),
+        "the removed acceptance gate's project is named again:\n  {}\n\
+         Sub-plan I decision 4 took the name out of this repository. Say what \
+         the sentence means instead — \"a program an operating system loads\" \
+         is the phrasing `implementation.md` decision 16 uses.",
+        hits.join("\n  ")
+    );
 }

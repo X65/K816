@@ -607,6 +607,11 @@ Integration with the cc65 toolchain should happen in two stages:
 1. Make `k816 compile file.k816 -o file.s` stable.
 2. Teach the cc65 driver to recognize `.k816`, invoke the K816 frontend, and feed the resulting assembly to ca65.
 
+Both stages are done, and the driver is `cl65`: it recognizes `.k65` and
+`.k816`, compiles every K816 file on one command line with the others as
+`--unit` siblings, and hands the assembly to ca65 exactly as it does a C
+file's. `plans/08-cc65-integration.md` is the sub-plan that landed it.
+
 K816 can be distributed alongside cc65 without being rewritten into the cc65 C codebase. “Part of the cc65 toolchain” should mean one installation and one driver experience, not necessarily one implementation language.
 
 ## 12. Golden tests
@@ -731,16 +736,20 @@ Features that do not justify their complexity can be explicitly removed rather t
 * ca65 and ld65 invocation is standardized
 * cc65-dbg receives correct source mappings
 * VS Code extension switches to the new LSP
-* OS/816 builds through the new path
+* the compatibility corpus and the examples build through the new path
 
 ### Milestone 6: Retirement
 
-Only after OS/816 and the compatibility corpus pass:
+Only after the compatibility corpus and the examples build through `cl65`:
 
-* archive the custom O65 backend
-* archive the custom linker
-* remove obsolete workspace crates
-* make the new compiler the default K816
+* the custom O65 backend, the custom linker and the workspace crates were
+  never published from this history; they are unpublished by decision, so
+  there is nothing to archive
+* the new compiler already *is* the published K816; there is no default to
+  switch
+
+Milestones 5 and 6 were amended on 2026-09-01 by sub-plan I's interview
+(`plans/08-cc65-integration.md`, decisions 4 and 5).
 
 ## 14. Non-negotiable design rules
 

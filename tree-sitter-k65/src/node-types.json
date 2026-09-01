@@ -4923,6 +4923,10 @@
           {
             "type": "local_identifier",
             "named": true
+          },
+          {
+            "type": "register",
+            "named": true
           }
         ]
       }

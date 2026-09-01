@@ -9,7 +9,7 @@
 # Hashes are FNV-1a/64 over the raw file bytes.
 
 tree-sitter-cli = 0.26
-grammar.js = 10c23e7c63270ad9
-src/parser.c = 0af682d571038b4c
-src/grammar.json = 8a7e3685498ef0d4
-src/node-types.json = 51b30e393c4b05b6
+grammar.js = 97dfc8be8962db52
+src/parser.c = a3bcbe988141e547
+src/grammar.json = 76f3fede3c92ac66
+src/node-types.json = 812f2c5838ad407c

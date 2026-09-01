@@ -234,6 +234,28 @@ func two {
       (return_statement))))
 
 ================================================================================
+A register spelling in a label's name slot
+================================================================================
+
+func holder {
+  a:
+  DPR:
+  return
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (func_declaration
+    name: (identifier)
+    body: (block
+      (label
+        name: (register))
+      (label
+        name: (register))
+      (return_statement))))
+
+================================================================================
 Label plus offset assignment targets
 ================================================================================
 

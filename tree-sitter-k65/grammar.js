@@ -969,8 +969,20 @@ export default grammar({
 
     // `name:` is a global label; `.name:` is local to the enclosing function,
     // so two functions may use the same local label name.
+    //
+    // A *register* spelling is accepted here and refused in `semantic.rs`
+    // like every other reserved name. It has to be accepted first: `a` is a
+    // token, because `a = 1` and `x++` need it to be, so `a:` would otherwise
+    // fail to parse before any name was declared and report "expected a
+    // statement" instead of the reservation. The flag letters are identifiers
+    // and already reach the refusal (`postmortem.md` §G.21.5). One token of
+    // lookahead separates the label from an assignment or a step, so this
+    // costs no conflict.
     label: $ =>
-      seq(field('name', choice($.identifier, $.local_identifier)), ':'),
+      seq(
+        field('name', choice($.identifier, $.local_identifier, $.register)),
+        ':',
+      ),
 
     // A raw mnemonic with one of the classical operand shapes. Which shapes a
     // given mnemonic actually accepts is an ISA question, not a grammar one —

@@ -1332,28 +1332,29 @@ fn every_reserved_spelling_the_document_lists_is_reserved_and_refused() {
         }
     }
 
-    // A label is the position the paragraph below singles out: the eight
-    // register spellings begin a statement in the HLA layer, so `a:` fails to
-    // parse before any name is declared and the reservation never sees it.
-    // The seven flag letters are not statement starters and reach it. The
-    // split is asserted rather than described, because a change on either
-    // side of it makes the document's paragraph false.
+    // A label is the position that used to be the exception. The eight
+    // register spellings are *tokens* — `a = 1` and `x++` need them to be —
+    // so `a:` failed to parse before any name was declared and reported
+    // `K816-E0001` where the sentence promises `K816-E0158`. The grammar
+    // accepts a register spelling in a label's name slot now and the
+    // reservation refuses it there like everywhere else, in either case
+    // (`postmortem.md` §G.23.1). All fifteen, one answer.
     for spelling in &reserved {
-        let source = format!("func holder @a8 @i8 {{\n{spelling}:\n  return\n}}\n");
-        let mut map = SourceMap::new();
-        let file = map.add_file("label.k816", &source);
-        let result = compile_to_ca65(&map, file, &Options::default());
-        let codes: Vec<&str> = result
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.code.as_str())
-            .collect();
-        let register = matches!(*spelling, "a" | "b" | "x" | "y" | "s" | "p" | "dpr" | "dbr");
-        let expected = if register { "K816-E0001" } else { "K816-E0158" };
-        assert!(
-            codes.contains(&expected),
-            "label `{spelling}` should report {expected}, reported {codes:?}"
-        );
+        for name in [(*spelling).to_owned(), spelling.to_uppercase()] {
+            let source = format!("func holder @a8 @i8 {{\n{name}:\n  return\n}}\n");
+            let mut map = SourceMap::new();
+            let file = map.add_file("label.k816", &source);
+            let result = compile_to_ca65(&map, file, &Options::default());
+            let codes: Vec<&str> = result
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect();
+            assert!(
+                codes.contains(&"K816-E0158"),
+                "label `{name}:` reported {codes:?}"
+            );
+        }
     }
 
     // The counter-claim in the same paragraph, which is what keeps the rule

@@ -209,6 +209,12 @@ pub struct Field {
     /// it — for "declared here" secondary labels. It covers the width too,
     /// because the width is what most of those labels are about.
     pub declaration: Span,
+    /// Span of the `.name` alone, which is what a rename replaces.
+    ///
+    /// Separate from `declaration` because that one deliberately covers the
+    /// width: a "declared here" label is usually about the width, and an
+    /// editor replacing that span would delete `:byte` along with the name.
+    pub name_span: Span,
 }
 
 impl Field {
@@ -640,6 +646,7 @@ mod tests {
     fn pair(span: Span) -> Layout {
         let field = |name: &str, offset: u32| Field {
             name: name.to_owned(),
+            name_span: span,
             offset,
             shape: FieldShape::Scalar(DataWidth::Byte),
             count: 1,
@@ -808,6 +815,7 @@ mod tests {
                 shape: FieldShape::Nested(inner),
                 count: 4,
                 declaration: span,
+                name_span: span,
             }],
             size: 8,
         };

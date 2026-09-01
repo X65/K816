@@ -117,7 +117,8 @@ impl Context<'_> {
         {
             return Some(symbol.declaration);
         }
-        self.unit
+        if let Some(span) = self
+            .unit
             .model
             .references
             .keys()
@@ -129,7 +130,21 @@ impl Context<'_> {
                     .keys()
                     .find(|span| covering(span))
             })
-            .copied()
+        {
+            return Some(*span);
+        }
+        // A field's declaring `.name`, which is narrower than the entry the
+        // model records for "declared here" — that one covers the width too,
+        // and an editor replacing it would delete `:byte` with the name.
+        let (layout, index) = self.field?;
+        self.unit
+            .model
+            .symbols
+            .layout(layout)
+            .fields
+            .get(index)
+            .map(|field| field.name_span)
+            .filter(covering)
     }
 
     /// The file the offset belongs to.
@@ -193,7 +208,11 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
         .field_references
         .iter()
         .find(|(span, _)| covering(span))
-        .map(|(_, field)| *field);
+        .map(|(_, field)| *field)
+        // A field's *declaring* `.name` is not a reference and not a symbol —
+        // a field has no `SymbolId` — so it is found the way a symbol's
+        // declaration is: by walking what declares it.
+        .or_else(|| declared_field(unit, offset));
 
     Some(Context {
         unit,
@@ -205,6 +224,35 @@ pub fn at(analysis: &crate::Analysis, file: FileId, offset: u32) -> Option<Conte
         reference,
         field,
     })
+}
+
+/// The field whose declaring `.name` covers `offset`.
+///
+/// The layouts are walked rather than the AST: a layout is the thing a
+/// reference names, and the AST's field list would have to be matched back to
+/// one anyway.
+fn declared_field(unit: &AnalyzedUnit, offset: u32) -> Option<(LayoutId, usize)> {
+    for (id, _) in unit.model.symbols.iter() {
+        let layout = match unit.model.symbols.kind(id) {
+            crate::symbol::SymbolKind::Var {
+                layout: Some(layout),
+                ..
+            }
+            | crate::symbol::SymbolKind::AbstractVar { layout } => layout,
+            _ => continue,
+        };
+        let found = unit
+            .model
+            .symbols
+            .layout(layout)
+            .fields
+            .iter()
+            .position(|field| field.name_span.contains(offset));
+        if let Some(index) = found {
+            return Some((layout, index));
+        }
+    }
+    None
 }
 
 /// The deepest statement covering `offset` in a pre-order walk.

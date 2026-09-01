@@ -107,19 +107,14 @@ pub fn references(
             }
         }
     } else if let Some((layout, index)) = context.field {
-        let declaration = context
-            .unit
-            .model
-            .symbols
-            .layout(layout)
-            .fields
-            .get(index)
-            .map(|field| field.declaration);
-        let Some(declaration) = declaration else {
+        let field = context.unit.model.symbols.layout(layout).fields.get(index);
+        let Some((declaration, declaring_name)) =
+            field.map(|field| (field.declaration, field.name_span))
+        else {
             return Vec::new();
         };
         if include_declaration {
-            found.push(declaration);
+            found.push(declaring_name);
         }
         for unit in &analysis.units {
             for (span, (other_layout, other_index)) in &unit.model.field_references {

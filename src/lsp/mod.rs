@@ -46,6 +46,7 @@ pub mod convert;
 pub mod diagnostics;
 pub mod hover;
 pub mod navigation;
+pub mod rename;
 
 pub use context::{Context, at};
 pub use convert::{span_to_range, uri};
@@ -57,16 +58,17 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request,
-    WorkspaceSymbolRequest,
+    DocumentSymbolRequest, GotoDefinition, HoverRequest, PrepareRenameRequest, References, Rename,
+    Request, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
-    MarkupKind, MessageType, OneOf, PublishDiagnosticsParams, ReferenceParams, ServerCapabilities,
-    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
-    WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    MarkupKind, MessageType, OneOf, PrepareRenameResponse, PublishDiagnosticsParams,
+    ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ShowMessageParams,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 use crate::Options;
@@ -91,6 +93,12 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
         references_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
+        // `prepareProvider`, so the editor asks before it opens a rename box
+        // and never offers one for a mnemonic or a register token.
+        rename_provider: Some(OneOf::Right(RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
         ..Default::default()
     })?;
     let params = connection.initialize(capabilities)?;
@@ -158,12 +166,12 @@ pub fn serve(
             if connection.handle_shutdown(&request)? {
                 return Ok(());
             }
-            let response = answer(&mut workspace, &request);
+            let response_result = answer(&mut workspace, &request);
             connection
                 .sender
                 .send(Message::Response(lsp_server::Response {
                     id: request.id,
-                    response_result: Ok(response),
+                    response_result,
                 }))?;
         }
     }
@@ -256,7 +264,10 @@ fn apply(
 /// end of one, a parse that is all `ERROR`. A panic in a request handler
 /// kills the editor's session (decision 18), and there is nothing useful to
 /// say to a client that asked about a document it has not opened.
-fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_json::Value {
+fn answer(
+    workspace: &mut Workspace,
+    request: &lsp_server::Request,
+) -> Result<serde_json::Value, lsp_server::ResponseError> {
     let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
@@ -275,7 +286,7 @@ fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_jso
                         range: Some(convert::span_to_range(map, found.span)),
                     })
                 });
-            serde_json::to_value(answer).unwrap_or(serde_json::Value::Null)
+            Ok(serde_json::to_value(answer).unwrap_or(serde_json::Value::Null))
         }
         GotoDefinition::METHOD => {
             let answer = serde_json::from_value::<GotoDefinitionParams>(request.params.clone())
@@ -287,7 +298,7 @@ fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_jso
                     convert::location(map, span)
                 })
                 .map(GotoDefinitionResponse::Scalar);
-            serde_json::to_value(answer).unwrap_or(serde_json::Value::Null)
+            Ok(serde_json::to_value(answer).unwrap_or(serde_json::Value::Null))
         }
         References::METHOD => {
             let locations: Vec<lsp_types::Location> =
@@ -304,7 +315,7 @@ fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_jso
                         )
                     })
                     .unwrap_or_default();
-            serde_json::to_value(locations).unwrap_or(serde_json::Value::Null)
+            Ok(serde_json::to_value(locations).unwrap_or(serde_json::Value::Null))
         }
         DocumentSymbolRequest::METHOD => {
             let symbols: Vec<lsp_types::DocumentSymbol> =
@@ -318,8 +329,10 @@ fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_jso
                             .collect()
                     })
                     .unwrap_or_default();
-            serde_json::to_value(DocumentSymbolResponse::Nested(symbols))
-                .unwrap_or(serde_json::Value::Null)
+            Ok(
+                serde_json::to_value(DocumentSymbolResponse::Nested(symbols))
+                    .unwrap_or(serde_json::Value::Null),
+            )
         }
         WorkspaceSymbolRequest::METHOD => {
             let symbols: Vec<lsp_types::SymbolInformation> =
@@ -332,10 +345,75 @@ fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_jso
                             .collect()
                     })
                     .unwrap_or_default();
-            serde_json::to_value(WorkspaceSymbolResponse::Flat(symbols))
-                .unwrap_or(serde_json::Value::Null)
+            Ok(serde_json::to_value(WorkspaceSymbolResponse::Flat(symbols))
+                .unwrap_or(serde_json::Value::Null))
         }
-        _ => serde_json::Value::Null,
+        PrepareRenameRequest::METHOD => {
+            let answer =
+                serde_json::from_value::<TextDocumentPositionParams>(request.params.clone())
+                    .ok()
+                    .and_then(|params| {
+                        let (file, offset) = position(workspace, &params)?;
+                        let span = rename::prepare(&analysis, file, offset)?;
+                        Some(PrepareRenameResponse::Range(convert::span_to_range(
+                            map, span,
+                        )))
+                    });
+            Ok(serde_json::to_value(answer).unwrap_or(serde_json::Value::Null))
+        }
+        Rename::METHOD => {
+            let Ok(params) = serde_json::from_value::<RenameParams>(request.params.clone()) else {
+                return Ok(serde_json::Value::Null);
+            };
+            let Some((file, offset)) = position(workspace, &params.text_document_position) else {
+                return Ok(serde_json::Value::Null);
+            };
+            match rename::rename(&analysis, file, offset, &params.new_name) {
+                Ok(renamed) => Ok(serde_json::to_value(workspace_edit(map, &renamed))
+                    .unwrap_or(serde_json::Value::Null)),
+                // A refusal carries the compiler's own words, and the
+                // protocol has exactly one way to put them in front of the
+                // user: a response error, which the client shows beside the
+                // rename box. Answering `null` instead would refuse silently.
+                Err(refusal) => Err(lsp_server::ResponseError {
+                    code: lsp_server::ErrorCode::RequestFailed as i32,
+                    message: refusal,
+                    data: None,
+                }),
+            }
+        }
+        _ => Ok(serde_json::Value::Null),
+    }
+}
+
+/// A rename's spans as the protocol's `WorkspaceEdit`.
+#[expect(
+    clippy::mutable_key_type,
+    reason = "`WorkspaceEdit.changes` is keyed by `Uri`, whose interior state \
+              clippy reads as mutable; the protocol chooses the type and the \
+              state does not reach its hash"
+)]
+fn workspace_edit(map: &crate::source::SourceMap, renamed: &rename::Rename) -> WorkspaceEdit {
+    let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
+        std::collections::HashMap::new();
+    for (file, spans) in &renamed.edits {
+        let Some(uri) = convert::uri(map, *file) else {
+            continue;
+        };
+        changes.insert(
+            uri,
+            spans
+                .iter()
+                .map(|span| TextEdit {
+                    range: convert::span_to_range(map, *span),
+                    new_text: renamed.replacement.clone(),
+                })
+                .collect(),
+        );
+    }
+    WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
     }
 }
 

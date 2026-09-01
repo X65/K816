@@ -648,6 +648,15 @@ struct Analysis {
     eval_effects: Vec<crate::preprocess::Effect>,
 }
 
+/// What a duplicate declaration is called.
+///
+/// Public because a rename has to refuse the collision it would create, in
+/// the words the build would use if it were allowed through
+/// (`plans/07-lsp-tooling.md` decision 8).
+pub fn duplicate_symbol_title(name: &str) -> String {
+    format!("`{name}` is declared more than once")
+}
+
 /// A preprocessor directive that survived `preprocess::apply`.
 ///
 /// Not a user error: every directive is deleted before analysis begins, so
@@ -1612,7 +1621,7 @@ impl Analysis {
         self.diagnostics.push(
             Diagnostic::error(
                 DiagnosticCode::DUPLICATE_SYMBOL,
-                format!("`{name}` is declared more than once"),
+                duplicate_symbol_title(name),
                 Label::new(again, "redeclared here"),
             )
             .with_secondary(Label::new(first, "first declared here"))
@@ -2903,7 +2912,14 @@ impl Analysis {
                 self.diagnostics.push(duplicate_field(field, previous));
                 continue;
             }
-            packing.push(name, shape, count, field.span, self.model.symbols.layouts());
+            packing.push(
+                name,
+                shape,
+                count,
+                field.span,
+                field.name.span,
+                self.model.symbols.layouts(),
+            );
         }
         self.model.symbols.add_layout(packing.finish())
     }

@@ -220,14 +220,14 @@ pub const RESERVED_NAMES: &[&str] = &[
     "c", "d", "i", "v", "n", "z", "o",
 ];
 
-/// A declaration asking for a register or flag spelling.
+/// Why `name` cannot be declared, when it cannot — the refusal's own
+/// sentence, without a span around it.
 ///
-/// Reserved in the symbol table rather than in the lexer, which is the whole
-/// trick: a token for these letters wins wherever an identifier is also
-/// valid, and that is how `i+ d-` came to parse as the arithmetic `i + d`
-/// (`postmortem.md` §G.1.16). The grammar keeps them as identifiers and this
-/// refuses the ones that would shadow a register or a flag.
-pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
+/// Split out from [`reserved_name`] because a *rename* has to make the same
+/// refusal and has no span to anchor a diagnostic to: a new name an editor
+/// accepts and the next build rejects is worse than one the editor declined,
+/// and the two agreeing has to be a fact rather than a habit.
+pub fn reserved_name_refusal(name: &str) -> Option<String> {
     let lowered = name.to_ascii_lowercase();
     if !RESERVED_NAMES.contains(&lowered.as_str()) {
         return None;
@@ -240,10 +240,24 @@ pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
     } else {
         "a flag"
     };
+    Some(format!(
+        "`{name}` names {what}, so a declaration cannot take it"
+    ))
+}
+
+/// A declaration asking for a register or flag spelling.
+///
+/// Reserved in the symbol table rather than in the lexer, which is the whole
+/// trick: a token for these letters wins wherever an identifier is also
+/// valid, and that is how `i+ d-` came to parse as the arithmetic `i + d`
+/// (`postmortem.md` §G.1.16). The grammar keeps them as identifiers and this
+/// refuses the ones that would shadow a register or a flag.
+pub fn reserved_name(span: Span, name: &str) -> Option<Diagnostic> {
+    let refusal = reserved_name_refusal(name)?;
     Some(
         Diagnostic::error(
             DiagnosticCode::RETIRED_REGISTER_SPELLING,
-            format!("`{name}` names {what}, so a declaration cannot take it"),
+            refusal,
             Label::new(span, "this name is reserved"),
         )
         .with_note(

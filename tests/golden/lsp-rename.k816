@@ -1,0 +1,42 @@
+// Sub-plan H's rename fixture: one identifier text, five different things.
+//
+// `state` is a local label in two different functions, a field of a layout, a
+// word inside a string, and a word inside this comment.  A textual rename
+// changes all of them; a semantic one changes exactly the occurrences the
+// compiler resolved, which is the phase-11 criterion "rename uses semantic
+// references rather than textual replacement" made checkable
+// (`plans/07-lsp-tooling.md` decision 8).
+
+var TASKS[
+    .state :byte
+    .other :byte
+] * 2
+
+func first @a8 @i8 {
+.state:
+    a = TASKS[0].state
+    != goto .state
+    return
+}
+
+// A second function with a local label of the same name.  It is a different
+// symbol: local labels are scoped to their function, so renaming one must not
+// touch the other.
+func second @a8 @i8 {
+.state:
+    a = TASKS[1].state
+    != goto .state
+    return
+}
+
+// The same word in a string, which is bytes and not a name.
+data banner {
+    "state"
+    $00
+}
+
+func main @a8 @i8 {
+    call first
+    call second
+    return
+}

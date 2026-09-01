@@ -132,6 +132,18 @@ fn the_hover_fixture_is_a_program_ca65_accepts() {
     assert!(!bytes.is_empty(), "the fixture linked to no bytes at all");
 }
 
+/// Sub-plan H's rename fixture is a program too, for the same reason.
+#[test]
+fn the_rename_fixture_is_a_program_ca65_accepts() {
+    let (bytes, _) = compile_and_link(
+        "rename-fixture",
+        "lsp-rename.k816",
+        include_str!("golden/lsp-rename.k816"),
+        &Options::default(),
+    );
+    assert!(!bytes.is_empty(), "the fixture linked to no bytes at all");
+}
+
 /// The unoptimized slice: both loads, the store, and the return.
 ///
 /// No entry setup at all. `main @a8` restates what the environment provides,

@@ -159,6 +159,7 @@ impl Packing {
         shape: FieldShape,
         count: u32,
         declaration: Span,
+        name_span: Span,
         layouts: &Layouts,
     ) {
         let field = Field {
@@ -167,6 +168,7 @@ impl Packing {
             shape,
             count,
             declaration,
+            name_span,
         };
         self.size = self.size.saturating_add(field.size(layouts));
         self.fields.push(field);
@@ -325,11 +327,19 @@ mod tests {
         let file = map.add_file("t.k816", "var TASKS[ .sp :word .state .str[5] ]\n");
         let span = Span::new(file, 0, 0);
         let mut packing = Packing::default();
-        packing.push("sp", FieldShape::Scalar(DataWidth::Word), 1, span, &layouts);
+        packing.push(
+            "sp",
+            FieldShape::Scalar(DataWidth::Word),
+            1,
+            span,
+            span,
+            &layouts,
+        );
         packing.push(
             "state",
             FieldShape::Scalar(DataWidth::Byte),
             1,
+            span,
             span,
             &layouts,
         );
@@ -337,6 +347,7 @@ mod tests {
             "str",
             FieldShape::Scalar(DataWidth::Byte),
             5,
+            span,
             span,
             &layouts,
         );

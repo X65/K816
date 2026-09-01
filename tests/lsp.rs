@@ -1476,6 +1476,16 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
                 "workspace/symbol",
                 serde_json::json!({ "query": "anything" }),
             ),
+            request(15, "textDocument/prepareRename", at_position(uri)),
+            request(
+                16,
+                "textDocument/rename",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 },
+                    "newName": "renamed",
+                }),
+            ),
             // A method the server does not implement is answered, not
             // dropped: a client that never gets a response waits forever.
             request(14, "textDocument/somethingElse", serde_json::json!({})),
@@ -1510,18 +1520,24 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
         let mut answered = Vec::new();
         while let Ok(message) = client.receiver.try_recv() {
             if let lsp_server::Message::Response(response) = message {
-                assert!(
-                    response.response_result.is_ok(),
-                    "{:?} came back as an error",
-                    response.id
-                );
+                // A `rename` refusal is a response error carrying the
+                // compiler's words, which is the protocol's only way to put
+                // them in front of the user; every other request answers.
+                if let Err(error) = &response.response_result {
+                    assert_eq!(
+                        format!("{}", response.id),
+                        "16",
+                        "only a rename refuses: {error:?}"
+                    );
+                    assert!(!error.message.is_empty(), "a refusal with no words");
+                }
                 answered.push(format!("{}", response.id));
             }
         }
         // Every request plus the shutdown, each answered exactly once.
         assert_eq!(
             answered,
-            ["9", "10", "11", "12", "13", "14", "1"],
+            ["9", "10", "11", "12", "13", "15", "16", "14", "1"],
             "every request is answered, in order"
         );
     }
@@ -1822,4 +1838,244 @@ fn hover_answers_nothing_where_the_model_holds_nothing() {
     let analysis = workspace.analyze();
     let file = workspace.file(HOVER_DOC).expect("open");
     assert_eq!(k816::lsp::hover::hover(&analysis, file, 9_999_999), None);
+}
+
+// ---------------------------------------------------------------------------
+// H5 — semantic rename
+// ---------------------------------------------------------------------------
+
+const RENAME_SOURCE: &str = include_str!("golden/lsp-rename.k816");
+const RENAME_DOC: &str = "file:///lsp-rename.k816";
+
+/// The rename fixture, analyzed.
+fn rename_workspace() -> Workspace {
+    let mut workspace = Workspace::new();
+    workspace.update(RENAME_DOC, RENAME_SOURCE);
+    workspace
+}
+
+/// The spans a rename at `offset` would replace, as `(file, text)` pairs.
+fn rename_edits(
+    workspace: &mut Workspace,
+    doc: &str,
+    offset: u32,
+    to: &str,
+) -> Result<(String, Vec<Span>), String> {
+    let analysis = workspace.analyze();
+    let file = workspace.file(doc).expect("open");
+    let renamed = k816::lsp::rename::rename(&analysis, file, offset, to)?;
+    let spans: Vec<Span> = renamed.spans().collect();
+    Ok((renamed.replacement, spans))
+}
+
+/// The decision-8 fixture: one identifier text, five different things, and a
+/// rename that touches exactly the semantic occurrences.
+///
+/// `state` is a local label in `first`, a local label in `second`, a field of
+/// `TASKS`, a word inside a string, and a word inside a comment. A textual
+/// rename changes all of them.
+#[test]
+fn rename_touches_the_occurrences_the_compiler_resolved_and_no_others() {
+    let mut workspace = rename_workspace();
+
+    // From `first`'s local label: its declaration and its one `goto`.
+    let (replacement, spans) =
+        rename_edits(&mut workspace, RENAME_DOC, 564, "spin").expect("a rename");
+    assert_eq!(replacement, ".spin", "a local label keeps its leading `.`");
+    assert_eq!(spans.len(), 2);
+    // Both inside `first`, which ends before `second` begins.
+    let second_label = 825;
+    assert!(
+        spans.iter().all(|span| span.start < second_label),
+        "a reference escaped into the second function: {spans:?}"
+    );
+
+    // From `second`'s: a different symbol, a different pair of spans.
+    let (_, other) = rename_edits(&mut workspace, RENAME_DOC, 826, "spin").expect("a rename");
+    assert_eq!(other.len(), 2);
+    assert!(other.iter().all(|span| span.start >= second_label));
+    assert!(spans.iter().all(|span| !other.contains(span)));
+
+    // From the field: its declaration and both `.state` selections, and
+    // nothing in the string or the comment.
+    let (replacement, fields) =
+        rename_edits(&mut workspace, RENAME_DOC, 506, "phase").expect("a rename");
+    assert_eq!(replacement, ".phase", "a field keeps its leading `.`");
+    assert_eq!(fields.len(), 3);
+    let text = |span: &Span| workspace.map().span_text(*span).to_owned();
+    assert!(fields.iter().all(|span| text(span) == ".state"));
+
+    // The string and the comment are untouched by all three.
+    let string_at = 968;
+    let comment_at = 83;
+    for span in spans.iter().chain(&other).chain(&fields) {
+        assert_ne!(span.start, string_at, "the string was renamed");
+        assert_ne!(span.start, comment_at, "the comment was renamed");
+    }
+}
+
+/// Renaming an imported symbol edits its definition and every importer.
+#[test]
+fn rename_of_an_imported_symbol_edits_both_units() {
+    let mut workspace = cross_unit_workspace();
+    let (a, b) = (
+        workspace.file(UNIT_A).expect("open"),
+        workspace.file(UNIT_B).expect("open"),
+    );
+
+    // From the *use* in unit A, at the `lda CURSOR` on its line.
+    let (replacement, spans) =
+        rename_edits(&mut workspace, UNIT_A, 536, "SCRATCH").expect("a rename");
+    assert_eq!(replacement, "SCRATCH");
+    assert_eq!(spans.len(), 3, "the declaration in B and both uses in A");
+    assert_eq!(spans.iter().filter(|span| span.file == b).count(), 1);
+    assert_eq!(spans.iter().filter(|span| span.file == a).count(), 2);
+    for span in &spans {
+        assert_eq!(workspace.map().span_text(*span), "CURSOR");
+    }
+}
+
+/// Every refusal decision 8 names, in the compiler's own words where it has
+/// them.
+#[test]
+fn rename_refuses_what_the_compiler_would_refuse() {
+    let mut workspace = rename_workspace();
+    let refuse = |workspace: &mut Workspace, offset, to: &str| {
+        rename_edits(workspace, RENAME_DOC, offset, to)
+            .expect_err("this rename should have been refused")
+    };
+
+    // A reserved spelling, worded by `compat::reserved_name_refusal` itself.
+    let refusal = refuse(&mut workspace, 564, "x");
+    assert_eq!(
+        refusal,
+        k816::compat::reserved_name_refusal("x").expect("`x` is reserved")
+    );
+    assert!(refusal.contains("names a register"), "{refusal}");
+    assert!(refuse(&mut workspace, 564, "c").contains("names a flag"));
+
+    // A collision inside the owner's scope: `first` already has `.state`.
+    let refusal = refuse(&mut workspace, 564, "state");
+    assert!(refusal.contains("is already its name"), "{refusal}");
+
+    // A collision with a unit-level name, in the duplicate-declaration
+    // wording the build would use.
+    let mut cross = cross_unit_workspace();
+    let refusal = rename_edits(&mut cross, UNIT_A, 536, "BANKED")
+        .expect_err("`BANKED` is taken by the other unit");
+    assert!(
+        refusal.starts_with(&k816::semantic::duplicate_symbol_title("BANKED")),
+        "{refusal}"
+    );
+
+    // Not a name at all: a mnemonic, a register token, and whitespace.
+    let mut hover = Workspace::new();
+    hover.update(HOVER_DOC, HOVER_SOURCE);
+    for (needle, into) in [("lda #LIMIT", 1u32), ("asl a", 4), ("\n    nop", 0)] {
+        let offset = offset_of(needle, 0, into);
+        let refusal =
+            rename_edits(&mut hover, HOVER_DOC, offset, "thing").expect_err("this is not a name");
+        assert!(
+            refusal.contains("nothing here that K816 resolved"),
+            "at `{needle}`: {refusal}"
+        );
+    }
+
+    // An `inline` alias binds positionally, so renaming it is renaming the
+    // contract; refused rather than reasoned about.
+    let alias = offset_of("amount, slot", 0, 0);
+    assert!(
+        rename_edits(&mut hover, HOVER_DOC, alias, "howmuch")
+            .expect_err("an alias is refused")
+            .contains("nothing here that K816 resolved")
+    );
+
+    // A name that is not an identifier.
+    for bad in ["9lives", "has-dash", "", "  "] {
+        assert!(
+            rename_edits(&mut workspace, RENAME_DOC, 564, bad).is_err(),
+            "`{bad}` was accepted as a name"
+        );
+    }
+}
+
+/// `prepareRename` answers exactly where `rename` would work.
+///
+/// The two share one gate, so an editor never offers a rename box for
+/// something the rename would then refuse.
+#[test]
+fn prepare_rename_answers_where_a_rename_would_work() {
+    use k816::lsp::rename::prepare;
+
+    let mut workspace = rename_workspace();
+    let analysis = workspace.analyze();
+    let file = workspace.file(RENAME_DOC).expect("open");
+
+    // On a name: the span whose text the editor offers.
+    let span = prepare(&analysis, file, 564).expect("a local label is renameable");
+    assert_eq!(workspace.map().span_text(span), ".state");
+    let span = prepare(&analysis, file, 506).expect("a field is renameable");
+    assert_eq!(workspace.map().span_text(span), ".state");
+    assert!(prepare(&analysis, file, 495).is_some(), "`TASKS` is a name");
+
+    // Inside the string and inside the comment: nothing.
+    assert_eq!(prepare(&analysis, file, 969), None, "inside a string");
+    assert_eq!(prepare(&analysis, file, 84), None, "inside a comment");
+
+    // A document the workspace does not hold, and a position past the end.
+    assert_eq!(prepare(&analysis, file, 9_999_999), None);
+}
+
+/// A rename applied and re-analyzed produces the same diagnostics.
+///
+/// This is what makes "semantic, not textual" a property rather than a claim:
+/// if the rename had touched a string, a comment, or another function's
+/// label, the program would compile to something else — or stop compiling.
+#[test]
+fn applying_a_rename_leaves_the_program_saying_the_same_things() {
+    for (offset, to) in [(564u32, "spin"), (506, "phase"), (495, "SLOTS")] {
+        let mut workspace = rename_workspace();
+        let before: Vec<String> = workspace
+            .analyze()
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str().to_owned())
+            .collect();
+
+        let (replacement, mut spans) =
+            rename_edits(&mut workspace, RENAME_DOC, offset, to).expect("a rename");
+        // Applied back to front so an earlier edit does not move a later one.
+        spans.sort_by_key(|span| std::cmp::Reverse(span.start));
+        let mut text = RENAME_SOURCE.to_owned();
+        for span in &spans {
+            text.replace_range(span.start as usize..span.end as usize, &replacement);
+        }
+        assert!(text.contains(&replacement), "the rename changed nothing");
+
+        let mut renamed = Workspace::new();
+        renamed.update(RENAME_DOC, text.clone());
+        let after: Vec<String> = renamed
+            .analyze()
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str().to_owned())
+            .collect();
+        assert_eq!(before, after, "renaming to `{to}` changed the diagnostics");
+
+        // And the assembly is the same program, modulo the name itself.
+        let compile = |text: &str| {
+            let mut map = SourceMap::new();
+            let file = map.add_file("r.k816", text);
+            compile_to_ca65(&map, file, &Options::default())
+                .assembly
+                .expect("it compiles")
+        };
+        let original = compile(RENAME_SOURCE);
+        let renamed = compile(&text);
+        assert_eq!(
+            original.lines().count(),
+            renamed.lines().count(),
+            "renaming to `{to}` changed the emitted program"
+        );
+    }
 }

@@ -43,7 +43,7 @@
 //!   - **What it would buy**, in [`narrowing_the_live_out_seed_buys_only_what_the_table_lists`]:
 //!     three instructions, six bytes, in three units of the whole corpus.
 //!     [`the_escape_hatch_is_how_most_of_the_corpus_calls`] says why so
-//!     little — five of 251 emitted sections declare an output at all, so
+//!     little — five of 254 emitted sections declare an output at all, so
 //!     most of the corpus cannot be narrowed by any rule.
 //!   - **What still stands in the way**, in
 //!     [`a_tail_jump_makes_a_clause_the_wrong_contract_for_a_return`]: a
@@ -176,11 +176,11 @@ struct Census {
 
 /// The census, as measured. Update it and `postmortem.md` §G.22 together.
 const CENSUS: Census = Census {
-    sections: 251,
+    sections: 254,
     declaring: 5,
     inlines: 13,
     inlines_declaring: 7,
-    escape_hatch: 32,
+    escape_hatch: 34,
     stating: 3,
     bare: 4,
     native: 15,

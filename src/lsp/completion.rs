@@ -46,7 +46,7 @@
 //! offers what a statement position offers, which is the largest honest set.
 
 use crate::isa::{Mnemonic, OperandForm};
-use crate::source::FileId;
+use crate::source::{FileId, Span};
 use crate::symbol::SymbolKind;
 use crate::{Analysis, AnalyzedUnit};
 
@@ -64,6 +64,23 @@ pub enum Kind {
     Field,
     /// A width annotation: `@a8`, `@a16`, `@i8`, `@i16`.
     Annotation,
+}
+
+/// What a completion request answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Completions {
+    pub items: Vec<Candidate>,
+    /// The text accepting a candidate replaces.
+    ///
+    /// **A candidate's label includes the punctuation that provoked it** —
+    /// `.lo`, `@a8`, `#LIMIT` — because that is what the user is choosing
+    /// between, and an editor showing `lo` under a list of fields is showing
+    /// the wrong thing. So the character they already typed has to be
+    /// *replaced*, not inserted after: without this the client appends at the
+    /// cursor and produces `PAIR..lo`, `@@a8`, `##LIMIT`.
+    ///
+    /// Zero-width where nothing has been typed yet, which is an insertion.
+    pub replace: Span,
 }
 
 /// One thing that would resolve here.
@@ -162,7 +179,7 @@ pub fn complete(
     file: FileId,
     offset: u32,
     trigger: Option<char>,
-) -> Vec<Candidate> {
+) -> Completions {
     // A cursor sits *between* tokens, and what it is completing is the token
     // behind it: at `lda SCR|` no node covers the position past the
     // identifier's last byte, and the construct the user is inside is the
@@ -172,9 +189,13 @@ pub fn complete(
         _ => offset.saturating_sub(1),
     };
     let Some(context) = at(analysis, file, probe) else {
-        return Vec::new();
+        return Completions {
+            items: Vec::new(),
+            replace: Span::empty_at(file, offset),
+        };
     };
-    match position(&context, offset, trigger) {
+    let replace = replaced_span(&context, file, offset, trigger);
+    let items = match position(&context, offset, trigger) {
         Position::Annotation => ANNOTATIONS
             .iter()
             .map(|name| Candidate::new(format!("@{name}"), Kind::Annotation))
@@ -193,9 +214,12 @@ pub fn complete(
             .collect(),
         Position::LocalLabel => local_labels(&context),
         Position::Immediate => immediates(&context),
+        // Labelled with their `:`, as `.lo` and `@a8` are labelled with
+        // theirs: `NAME:sizeof` is how the language spells it, and the
+        // punctuation the user already typed is what the candidate replaces.
         Position::ColonSuffix => COLON_SUFFIXES
             .iter()
-            .map(|suffix| Candidate::new(*suffix, Kind::Keyword))
+            .map(|suffix| Candidate::new(format!(":{suffix}"), Kind::Keyword))
             .collect(),
         Position::Item => ITEM_KEYWORDS
             .iter()
@@ -228,6 +252,37 @@ pub fn complete(
             }
             candidates
         }
+    };
+    Completions { items, replace }
+}
+
+/// The span accepting a candidate replaces.
+///
+/// Two cases, and neither reads source text. A *triggered* request has the
+/// trigger one byte behind the cursor — all four of them are one byte — and
+/// the candidate's label repeats it, so it is replaced. An untriggered one is
+/// the user asking part-way through a name, and the name so far is replaced;
+/// the token has to be a name-like one, because a request just after `{`
+/// must not offer to overwrite the brace.
+fn replaced_span(context: &Context<'_>, file: FileId, offset: u32, trigger: Option<char>) -> Span {
+    if trigger.is_some() {
+        return Span::new(file, offset.saturating_sub(1), offset);
+    }
+    let partial = context
+        .unit
+        .parse
+        .tree
+        .token_before(file, offset)
+        .filter(|token| token.span.end == offset)
+        .filter(|token| {
+            matches!(
+                token.kind.as_str(),
+                "identifier" | "local_identifier" | "field_name" | "mnemonic" | "register"
+            )
+        });
+    match partial {
+        Some(token) => Span::new(file, token.span.start, offset),
+        None => Span::empty_at(file, offset),
     }
 }
 

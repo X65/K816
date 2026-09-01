@@ -92,12 +92,18 @@ pub fn format(source: &SourceFile, tree: &SyntaxTree) -> Option<String> {
     let text = source.text();
     let tokens = leaves(tree);
     if tokens.is_empty() {
-        // An empty file, or one that is only whitespace. One newline, or
-        // nothing at all for a file that was empty.
-        return Some(if text.trim().is_empty() {
+        // A file with nothing in it to place. Trailing whitespace still goes,
+        // and what is left still ends with one newline — but an *empty* file
+        // stays empty rather than growing a byte it never had. "The file ends
+        // with exactly one newline" is a rule about a file with a line in it;
+        // a formatter that wrote one into an empty file would be adding
+        // content, which is the one thing this one does not do
+        // (`plans/07-lsp-tooling.md` decision 4, corrected).
+        let trimmed = text.trim_end();
+        return Some(if trimmed.is_empty() {
             String::new()
         } else {
-            text.to_owned()
+            format!("{trimmed}\n")
         });
     }
 

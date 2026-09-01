@@ -202,6 +202,11 @@ fn classify(unit: &AnalyzedUnit, capture: &Capture) -> (Option<u32>, u32) {
                         0
                     },
             ),
+            // A field is not a symbol — it has no `SymbolId` — so a field's
+            // *declaring* `.name` is neither a symbol declaration nor a
+            // reference, and it was the one declaring occurrence in the
+            // language that carried no `declaration` modifier.
+            None if declares_field(unit, capture.span) => ("property", MODIFIER_DECLARATION),
             // Not a name the compiler resolved — an undeclared symbol, or a
             // capture on something that is not an identifier at all. The
             // query's own answer stands.
@@ -226,6 +231,30 @@ fn resolved(unit: &AnalyzedUnit, span: Span) -> Option<(SymbolKind, bool)> {
     }
     let id = unit.model.references.get(&span)?;
     Some((unit.model.symbols.kind(*id), false))
+}
+
+/// Whether `span` is the declaring `.name` of a layout field.
+///
+/// The layouts are walked rather than the AST for the same reason
+/// `lsp::at` walks them: a layout is what a field reference names, and the
+/// AST's field list would have to be matched back to one anyway.
+fn declares_field(unit: &AnalyzedUnit, span: Span) -> bool {
+    unit.model.symbols.iter().any(|(id, _)| {
+        let layout = match unit.model.symbols.kind(id) {
+            SymbolKind::Var {
+                layout: Some(layout),
+                ..
+            }
+            | SymbolKind::AbstractVar { layout } => layout,
+            _ => return false,
+        };
+        unit.model
+            .symbols
+            .layout(layout)
+            .fields
+            .iter()
+            .any(|field| field.name_span == span)
+    })
 }
 
 /// The index a capture name has in [`token_types`].

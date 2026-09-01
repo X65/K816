@@ -39,7 +39,7 @@
 use std::collections::BTreeMap;
 
 use crate::source::{FileId, Span};
-use crate::symbol::{SymbolId, SymbolKind};
+use crate::symbol::{LayoutId, SymbolId, SymbolKind};
 use crate::{Analysis, AnalyzedUnit};
 
 use super::context::{Context, at};
@@ -127,16 +127,17 @@ fn renameable<'a>(context: &Context<'a>) -> Option<Target<'a>> {
         .fields
         .get(index)
         .filter(|field| field.declaration.file == context.unit.file)?;
-    Some(Target::Field)
+    Some(Target::Field(layout, context.unit))
 }
 
 /// What the position under the cursor names.
 enum Target<'a> {
     Symbol(SymbolId, &'a AnalyzedUnit),
-    /// A `.field` step or a field declaration. Fields carry no `SymbolId`;
-    /// the occurrences come from the field index, and the only question left
-    /// is what the replacement text is.
-    Field,
+    /// A `.field` step or a field declaration, named by its layout and its
+    /// position in it. Fields carry no `SymbolId`, so the occurrences come
+    /// from the field index rather than the symbol table — and so does the
+    /// collision check, because a field's scope is its own layout.
+    Field(LayoutId, &'a AnalyzedUnit),
 }
 
 /// The edits that rename what is at `offset` to `new_name`.
@@ -184,8 +185,9 @@ pub fn rename(
     if spans.is_empty() {
         return Err("K816 resolved no occurrences of this name".to_owned());
     }
-    if let Target::Symbol(id, unit) = target {
-        check_collision(analysis, unit, id, bare, &replacement)?;
+    match target {
+        Target::Symbol(id, unit) => check_collision(analysis, unit, id, bare, &replacement)?,
+        Target::Field(layout, unit) => check_field_collision(unit, layout, bare)?,
     }
 
     let mut edits: BTreeMap<FileId, Vec<Span>> = BTreeMap::new();
@@ -236,6 +238,31 @@ fn check_spelling(bare: &str, replacement: &str) -> Result<(), Refusal> {
         return Err(format!(
             "`{replacement}` is not an identifier: a name starts with a letter or `_` and \
              continues with letters, digits or `_`"
+        ));
+    }
+    Ok(())
+}
+
+/// Refuses a field name the layout already declares.
+///
+/// A field's scope is its own layout — `semantic.rs` reports a second entry
+/// under one name as `K816-E0158`'s sibling, "declared twice in this field
+/// list" — and the rename has to make the same refusal in the same words. It
+/// was the one target that reached the edits without a collision check, so a
+/// rename of `.state` to an existing `.other` was offered and then refused by
+/// the next build.
+fn check_field_collision(unit: &AnalyzedUnit, layout: LayoutId, bare: &str) -> Result<(), Refusal> {
+    let taken = unit
+        .model
+        .symbols
+        .layout(layout)
+        .fields
+        .iter()
+        .any(|field| field.name == bare);
+    if taken {
+        return Err(format!(
+            "`.{bare}` is declared twice in this field list — a field name selects one \
+             offset, so a second entry under the same name could never be reached"
         ));
     }
     Ok(())

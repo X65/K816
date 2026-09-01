@@ -997,7 +997,11 @@ fn the_workspace_counts_its_analyses() {
 
 /// Drives the real server loop over an in-memory connection with `messages`
 /// already queued, and returns every notification it sent back.
-fn run_server(messages: Vec<serde_json::Value>) -> Vec<lsp_server::Notification> {
+/// [`run_server`], and how many times the workspace was analyzed.
+///
+/// The count is the only way to see the batch contract: the same diagnostics
+/// arrive whether they were computed once or six times.
+fn run_server_counting(messages: Vec<serde_json::Value>) -> (Vec<lsp_server::Notification>, u64) {
     let (server, client) = lsp_server::Connection::memory();
     for message in messages {
         client
@@ -1005,7 +1009,8 @@ fn run_server(messages: Vec<serde_json::Value>) -> Vec<lsp_server::Notification>
             .send(serde_json::from_value(message).expect("a protocol message"))
             .expect("the server is listening");
     }
-    k816::lsp::serve(&server, Options::default(), &serde_json::Value::Null)
+    let mut workspace = Workspace::new();
+    k816::lsp::serve(&server, &mut workspace, &serde_json::Value::Null)
         .expect("the server runs to shutdown");
     drop(server);
 
@@ -1015,7 +1020,7 @@ fn run_server(messages: Vec<serde_json::Value>) -> Vec<lsp_server::Notification>
             sent.push(notification);
         }
     }
-    sent
+    (sent, workspace.analyses())
 }
 
 fn did_open(text: &str) -> serde_json::Value {
@@ -1066,11 +1071,72 @@ fn a_burst_of_notifications_produces_one_analysis() {
     }
     messages.extend(shutdown_and_exit());
 
-    let published = run_server(messages)
+    let (sent, analyses) = run_server_counting(messages);
+    let published = sent
         .iter()
         .filter(|notification| notification.method == "textDocument/publishDiagnostics")
         .count();
     assert_eq!(published, 1, "one analysis for the whole burst");
+    assert_eq!(analyses, 1, "the workspace was analyzed more than once");
+}
+
+/// A batch holding *requests* as well as notifications is still one analysis.
+///
+/// The publish count cannot see this: the server published once either way,
+/// and answered each request against an analysis of its own. That is the
+/// coalescing buying nothing for exactly the case it exists for — a burst of
+/// keystrokes with a `hover` in it — so the count is asserted directly.
+#[test]
+fn a_batch_of_notifications_and_requests_is_one_analysis() {
+    let position = serde_json::json!({
+        "textDocument": { "uri": DOC },
+        "position": { "line": 1, "character": 4 },
+    });
+    let mut messages = vec![did_open("func main @a8 {\n    return\n}\n")];
+    for character in 0..3 {
+        messages.push(did_change(1, 4 + character, "n"));
+    }
+    for (id, method) in [
+        (20, "textDocument/hover"),
+        (21, "textDocument/definition"),
+        (22, "textDocument/documentSymbol"),
+    ] {
+        messages.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": if method == "textDocument/documentSymbol" {
+                serde_json::json!({ "textDocument": { "uri": DOC } })
+            } else {
+                position.clone()
+            },
+        }));
+    }
+    messages.extend(shutdown_and_exit());
+
+    let (sent, analyses) = run_server_counting(messages);
+    assert_eq!(
+        analyses, 1,
+        "four notifications and three requests, one analysis"
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|n| n.method == "textDocument/publishDiagnostics")
+            .count(),
+        1
+    );
+}
+
+/// A batch with nothing in it but requests analyzes once, not zero times.
+///
+/// The requests still need an analysis to be answered against; skipping it
+/// would answer them all with nothing.
+#[test]
+fn a_batch_of_requests_alone_still_analyzes_once() {
+    let mut messages = vec![did_open("var SCREEN = $0400\n")];
+    messages.extend(shutdown_and_exit());
+    let (_, opening) = run_server_counting(messages);
+    assert_eq!(opening, 1);
 }
 
 /// The same six notifications, delivered one at a time, are six analyses.
@@ -1083,7 +1149,8 @@ fn a_burst_of_notifications_produces_one_analysis() {
 fn notifications_delivered_one_at_a_time_are_analyzed_one_at_a_time() {
     let (server, client) = lsp_server::Connection::memory();
     let worker = std::thread::spawn(move || {
-        k816::lsp::serve(&server, Options::default(), &serde_json::Value::Null)
+        let mut workspace = Workspace::new();
+        k816::lsp::serve(&server, &mut workspace, &serde_json::Value::Null)
             .expect("the server runs to shutdown");
         drop(server);
     });
@@ -1539,7 +1606,8 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
                 .send(serde_json::from_value(message).expect("a protocol message"))
                 .expect("the server is listening");
         }
-        k816::lsp::serve(&server, Options::default(), &serde_json::Value::Null)
+        let mut workspace = Workspace::new();
+        k816::lsp::serve(&server, &mut workspace, &serde_json::Value::Null)
             .expect("the server survives the sweep");
         drop(server);
 
@@ -1742,10 +1810,14 @@ fn hover_sizes_an_instruction_against_the_tracked_width() {
             "`ldx` — addressing mode `#`",
             &["Encodes to 2 byte", "as the `X` flag selects"],
         ),
+        // `SEP`/`REP` derive their effects *from the mask*, and the
+        // classifier has already folded it: with the mask withheld the
+        // effect table has to answer for every mask at once, and `sep #$20`
+        // reports writing nothing definite when what it writes is `M`.
         (
             "sep #$20",
             "`sep` — addressing mode `#`",
-            &["Encodes to 2 byte", "always one byte"],
+            &["Encodes to 2 byte", "always one byte", "writes `M`"],
         ),
         // The three address encodings.
         (
@@ -1996,6 +2068,24 @@ fn rename_refuses_what_the_compiler_would_refuse() {
         "{refusal}"
     );
 
+    // A field's scope is its own layout, and `TASKS` already has `.other`.
+    // This was the one target that reached the edits with no collision check
+    // at all, so the rename was offered and the next build refused it.
+    let refusal = refuse(&mut workspace, 506, "other");
+    assert!(
+        refusal.contains("declared twice in this field list"),
+        "{refusal}"
+    );
+    // A field of a *different* layout is not a collision.
+    let mut two = Workspace::new();
+    two.update(
+        "file:///two.k816",
+        "var LEFT[ .state :byte ]\nvar RIGHT[ .other :byte ]\n",
+    );
+    let (_, spans) = rename_edits(&mut two, "file:///two.k816", 11, "other")
+        .expect("a different layout's field is not a collision");
+    assert_eq!(spans.len(), 1);
+
     // Not a name at all: a mnemonic, a register token, and whitespace.
     let mut hover = Workspace::new();
     hover.update(HOVER_DOC, HOVER_SOURCE);
@@ -2120,6 +2210,7 @@ fn candidates(source: &str, offset: u32, trigger: Option<char>) -> Vec<(String, 
     let analysis = workspace.analyze();
     let file = workspace.file(uri).expect("open");
     k816::lsp::completion::complete(&analysis, file, offset, trigger)
+        .items
         .into_iter()
         .map(|candidate| {
             let inserted = candidate.insert.unwrap_or_else(|| candidate.label.clone());
@@ -2316,7 +2407,11 @@ fn a_colon_offers_the_widths_and_the_metadata_queries() {
         }\n";
     let found = candidates(SOURCE, after(SOURCE, "PAIR:"), Some(':'));
     let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
-    assert_eq!(labels, ["byte", "word", "far", "sizeof", "offsetof"]);
+    assert_eq!(
+        labels,
+        [":byte", ":word", ":far", ":sizeof", ":offsetof"],
+        "a colon suffix is labelled with its `:`, like `.lo` and `@a8`"
+    );
 }
 
 /// Every keyword the server offers is one the grammar has.
@@ -2705,4 +2800,137 @@ fn a_multi_line_token_is_split_per_line() {
             "a token still crosses a line"
         );
     }
+}
+
+/// Accepting a completion replaces the punctuation that provoked it.
+///
+/// A candidate's label carries the `.`, `@` or `#` — an editor showing `lo`
+/// under a list of fields is showing the wrong thing — so the character the
+/// user already typed has to be *replaced*. Without a range the client
+/// appends at the cursor and produces `PAIR..lo`, `@@a8`, `##LIMIT`: text the
+/// compiler then refuses, from a completion it offered.
+///
+/// The test applies the edit, which is the only way to see it.
+#[test]
+fn accepting_a_completion_does_not_double_the_punctuation() {
+    let apply = |source: &str, offset: u32, trigger: Option<char>, label: &str| -> String {
+        let mut workspace = Workspace::new();
+        let uri = "file:///accept.k816";
+        workspace.update(uri, source);
+        let analysis = workspace.analyze();
+        let file = workspace.file(uri).expect("open");
+        let found = k816::lsp::completion::complete(&analysis, file, offset, trigger);
+        let candidate = found
+            .items
+            .iter()
+            .find(|candidate| candidate.label == label)
+            .unwrap_or_else(|| panic!("`{label}` was not offered"));
+        let new_text = candidate
+            .insert
+            .clone()
+            .unwrap_or_else(|| candidate.label.clone());
+        let mut edited = source.to_owned();
+        edited.replace_range(
+            found.replace.start as usize..found.replace.end as usize,
+            &new_text,
+        );
+        edited
+    };
+
+    // A field step: the `.` is replaced, not appended to.
+    const FIELDS: &str = "var PAIR[ .lo :byte .hi :byte ]\nfunc w @a8 @i8 {\n    a = PAIR.\n}\n";
+    let edited = apply(FIELDS, after(FIELDS, "a = PAIR."), Some('.'), ".lo");
+    assert!(edited.contains("a = PAIR.lo"), "{edited}");
+    assert!(
+        !edited.contains("PAIR..lo"),
+        "the dot was doubled: {edited}"
+    );
+
+    // A width annotation.
+    let source = "func work @";
+    let edited = apply(source, after(source, "@"), Some('@'), "@a8");
+    assert_eq!(edited, "func work @a8");
+
+    // An immediate: the `#` is part of what is inserted *and* part of what is
+    // replaced.
+    const IMM: &str = "const LIMIT = 8\nfunc w @a8 @i8 {\n    lda #\n}\n";
+    let edited = apply(IMM, after(IMM, "lda #"), Some('#'), "LIMIT");
+    assert!(edited.contains("lda #LIMIT"), "{edited}");
+    assert!(!edited.contains("##"), "the marker was doubled: {edited}");
+
+    // A colon suffix.
+    const SUFFIX: &str = "var PAIR[ .lo :byte ]\nfunc w @a8 @i8 {\n    a = PAIR:\n}\n";
+    let edited = apply(SUFFIX, after(SUFFIX, "PAIR:"), Some(':'), ":sizeof");
+    assert!(edited.contains("a = PAIR:sizeof"), "{edited}");
+
+    // And an *untriggered* request part-way through a name replaces the part
+    // typed so far rather than doubling it.
+    const PARTIAL: &str = "var SCREEN = $0400\nfunc w @a8 @i8 {\n    lda SCR\n}\n";
+    let edited = apply(PARTIAL, after(PARTIAL, "lda SCR"), None, "SCREEN");
+    assert!(edited.contains("lda SCREEN"), "{edited}");
+    assert!(!edited.contains("SCRSCREEN"), "{edited}");
+}
+
+/// The replaced span never covers a token that is not part of the name.
+///
+/// A request just after `{` must not offer to overwrite the brace, which is
+/// what an unguarded "replace the token behind the cursor" would do.
+#[test]
+fn an_untriggered_completion_replaces_only_a_partial_name() {
+    let span = |source: &str, offset: u32| {
+        let mut workspace = Workspace::new();
+        let uri = "file:///span.k816";
+        workspace.update(uri, source);
+        let analysis = workspace.analyze();
+        let file = workspace.file(uri).expect("open");
+        k816::lsp::completion::complete(&analysis, file, offset, None).replace
+    };
+
+    // Immediately after a brace: an insertion, not a replacement.
+    const BRACE: &str = "func w @a8 @i8 {\n    nop\n}\n";
+    let at = after(BRACE, "{");
+    assert_eq!(span(BRACE, at), Span::new(span(BRACE, at).file, at, at));
+    // Immediately after a name: the name.
+    let at = after(BRACE, "nop");
+    let replaced = span(BRACE, at);
+    assert_eq!(
+        &BRACE[replaced.start as usize..replaced.end as usize],
+        "nop"
+    );
+}
+
+/// A field's declaring `.name` carries the `declaration` modifier.
+///
+/// It was the one declaring occurrence in the language that did not: a field
+/// has no `SymbolId`, so its declaration is neither in the symbol table nor
+/// in the reference index, and the refinement looked in both.
+#[test]
+fn a_field_declaration_is_marked_as_one() {
+    const SOURCE: &str = "var PAIR[ .lo :byte .hi :byte ]\nfunc w @a8 @i8 {\n    a = PAIR.hi\n}\n";
+    let tokens = decoded_tokens(SOURCE);
+    let at = |needle: &str, nth: usize| {
+        let mut found = 0usize;
+        for _ in 0..=nth {
+            found = SOURCE[found..].find(needle).expect(needle) + found + 1;
+        }
+        let offset = (found - 1) as u32;
+        tokens
+            .iter()
+            .find(|(span, _, _)| span.contains(offset))
+            .unwrap_or_else(|| panic!("no token at `{needle}` #{nth}"))
+            .clone()
+    };
+
+    // The declaration in the field list.
+    let (_, kind, modifiers) = at(".lo", 0);
+    assert_eq!(kind, "property");
+    assert_eq!(modifiers, ["declaration"]);
+    let (_, kind, modifiers) = at(".hi", 0);
+    assert_eq!(kind, "property");
+    assert_eq!(modifiers, ["declaration"]);
+
+    // The *use* is a property too, and carries no modifier.
+    let (_, kind, modifiers) = at(".hi", 1);
+    assert_eq!(kind, "property");
+    assert!(modifiers.is_empty(), "a use is not a declaration");
 }

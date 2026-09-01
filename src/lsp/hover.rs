@@ -38,11 +38,14 @@ use std::fmt::Write as _;
 
 use crate::ast::{ItemKind, StatementKind, StmtId};
 use crate::isa::RegisterWidth;
-use crate::op::{AxisExit, AxisState, EmulationExit, EmulationState, ExitContract, ModeState};
+use crate::op::{
+    AxisExit, AxisState, EmulationExit, EmulationState, ExitContract, ModeState, Operand,
+};
 use crate::resolve::Resolver;
 use crate::semantic::{CallFlow, FlowInput, FlowOutput, FunctionInfo};
 use crate::source::{FileId, Span};
 use crate::symbol::{AddressSize, LayoutId, SymbolId, SymbolKind};
+use crate::value::KExpr;
 use crate::width::{Axis, Bridge, BridgeAnchor};
 use crate::{Analysis, AnalyzedUnit};
 
@@ -463,7 +466,16 @@ fn instruction_hover(context: &Context<'_>) -> Option<Hover> {
         let _ = writeln!(out, "\nOperand: {}.", immediate_class(class));
     }
 
-    let effects = crate::effects::instruction_effects(spec.mnemonic, spec.mode, None);
+    // The operand, where it folded to a literal. `SEP`/`REP` derive their
+    // effects *from the mask*: with `None` the effect table has to answer for
+    // every mask at once, so `sep #$20` reports writing nothing definite when
+    // what it writes is `M`. The classifier already folded it, so throwing it
+    // away here made the hover say less than the model knows.
+    let immediate = match &classified.operand {
+        Some(Operand::Immediate(KExpr::Number(value))) => Some(value.get()),
+        _ => None,
+    };
+    let effects = crate::effects::instruction_effects(spec.mnemonic, spec.mode, immediate);
     let _ = writeln!(
         out,
         "\nReads `{}`; writes `{}`.",

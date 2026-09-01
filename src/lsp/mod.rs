@@ -134,7 +134,8 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
         ..Default::default()
     })?;
     let params = connection.initialize(capabilities)?;
-    serve(&connection, options, &params)?;
+    let mut workspace = Workspace::with_options(options);
+    serve(&connection, &mut workspace, &params)?;
     // The writer thread finishes only once the connection's channel closes.
     drop(connection);
     io_threads.join()?;
@@ -156,7 +157,10 @@ fn initialization_options(params: &serde_json::Value) -> Option<&serde_json::Val
 /// Separate from [`run_stdio_server`] so the tests can drive the real loop
 /// over an in-memory connection rather than a subprocess: what happens *in*
 /// the loop — the coalescing above all — is not observable from the outside
-/// except as a count of the notifications it sends.
+/// except as a count of the notifications it sends. The workspace is the
+/// caller's for the same reason: [`Workspace::analyses`] is how "one analysis
+/// per batch" is checked, and a workspace the loop owned would take the count
+/// with it.
 ///
 /// **Messages are handled in batches, and the batch is one analysis.** After
 /// any message arrives, everything the channel already holds is taken with
@@ -168,12 +172,11 @@ fn initialization_options(params: &serde_json::Value) -> Option<&serde_json::Val
 /// would answer it, but with a newer answer (decision 3).
 pub fn serve(
     connection: &Connection,
-    options: Options,
+    workspace: &mut Workspace,
     initialize_params: &serde_json::Value,
 ) -> Result<(), ServerError> {
-    let mut workspace = Workspace::with_options(options);
     if let Some(value) = initialization_options(initialize_params) {
-        configure(connection, &mut workspace, value)?;
+        configure(connection, workspace, value)?;
     }
 
     while let Ok(first) = connection.receiver.recv() {
@@ -185,20 +188,29 @@ pub fn serve(
             match message {
                 Message::Request(request) => requests.push(request),
                 Message::Notification(notification) => {
-                    changed |= apply(connection, &mut workspace, notification)?;
+                    changed |= apply(connection, workspace, notification)?;
                 }
                 Message::Response(_) => {}
             }
         }
 
+        // **One analysis for the batch**, which is what coalescing is for
+        // (decision 3). It used to be one for the publish and then one more
+        // per queued request, so a burst that arrived with a `hover` in it
+        // re-analyzed the whole workspace twice — the coalescing bought
+        // nothing for exactly the case it exists for.
+        if !changed && requests.is_empty() {
+            continue;
+        }
+        let analysis = workspace.analyze();
         if changed {
-            publish_all(connection, &mut workspace)?;
+            publish_all(connection, workspace, &analysis)?;
         }
         for request in requests {
             if connection.handle_shutdown(&request)? {
                 return Ok(());
             }
-            let response_result = answer(&mut workspace, &request);
+            let response_result = answer(workspace, &analysis, &request);
             connection
                 .sender
                 .send(Message::Response(lsp_server::Response {
@@ -297,10 +309,10 @@ fn apply(
 /// kills the editor's session (decision 18), and there is nothing useful to
 /// say to a client that asked about a document it has not opened.
 fn answer(
-    workspace: &mut Workspace,
+    workspace: &Workspace,
+    analysis: &crate::Analysis,
     request: &lsp_server::Request,
 ) -> Result<serde_json::Value, lsp_server::ResponseError> {
-    let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
         Formatting::METHOD => {
@@ -338,7 +350,7 @@ fn answer(
                 .and_then(|params| {
                     let file = workspace.file(&params.text_document.uri.to_string())?;
                     let source = workspace.map().file(file);
-                    let found = tokens::tokens(&analysis, file, source);
+                    let found = tokens::tokens(analysis, file, source);
                     Some(SemanticTokensResult::Tokens(SemanticTokens {
                         result_id: None,
                         data: tokens::encode(&found, source),
@@ -375,10 +387,13 @@ fn answer(
                             .and_then(|context| context.trigger_character.as_ref())
                             .and_then(|trigger| trigger.chars().next());
                         let (file, offset) = position(workspace, &params.text_document_position)?;
+                        let found = completion::complete(analysis, file, offset, trigger);
+                        let range = convert::span_to_range(map, found.replace);
                         Some(
-                            completion::complete(&analysis, file, offset, trigger)
+                            found
+                                .items
                                 .into_iter()
-                                .map(completion_item)
+                                .map(|candidate| completion_item(candidate, range))
                                 .collect(),
                         )
                     })
@@ -392,7 +407,7 @@ fn answer(
                 .and_then(|params| {
                     let (file, offset) =
                         position(workspace, &params.text_document_position_params)?;
-                    let found = hover::hover(&analysis, file, offset)?;
+                    let found = hover::hover(analysis, file, offset)?;
                     Some(lsp_types::Hover {
                         contents: HoverContents::Markup(MarkupContent {
                             kind: MarkupKind::Markdown,
@@ -409,7 +424,7 @@ fn answer(
                 .and_then(|params| {
                     let (file, offset) =
                         position(workspace, &params.text_document_position_params)?;
-                    let span = navigation::definition(&analysis, file, offset)?;
+                    let span = navigation::definition(analysis, file, offset)?;
                     convert::location(map, span)
                 })
                 .map(GotoDefinitionResponse::Scalar);
@@ -423,7 +438,7 @@ fn answer(
                         let include = params.context.include_declaration;
                         let (file, offset) = position(workspace, &params.text_document_position)?;
                         Some(
-                            navigation::references(&analysis, file, offset, include)
+                            navigation::references(analysis, file, offset, include)
                                 .into_iter()
                                 .filter_map(|span| convert::location(map, span))
                                 .collect(),
@@ -438,7 +453,7 @@ fn answer(
                     .ok()
                     .and_then(|params| workspace.file(&params.text_document.uri.to_string()))
                     .map(|file| {
-                        navigation::document_symbols(&analysis, file)
+                        navigation::document_symbols(analysis, file)
                             .iter()
                             .map(|outline| document_symbol(map, outline))
                             .collect()
@@ -454,7 +469,7 @@ fn answer(
                 serde_json::from_value::<WorkspaceSymbolParams>(request.params.clone())
                     .ok()
                     .map(|params| {
-                        navigation::workspace_symbols(&analysis, &params.query)
+                        navigation::workspace_symbols(analysis, &params.query)
                             .iter()
                             .filter_map(|(_, outline)| symbol_information(map, outline))
                             .collect()
@@ -469,7 +484,7 @@ fn answer(
                     .ok()
                     .and_then(|params| {
                         let (file, offset) = position(workspace, &params)?;
-                        let span = rename::prepare(&analysis, file, offset)?;
+                        let span = rename::prepare(analysis, file, offset)?;
                         Some(PrepareRenameResponse::Range(convert::span_to_range(
                             map, span,
                         )))
@@ -483,7 +498,7 @@ fn answer(
             let Some((file, offset)) = position(workspace, &params.text_document_position) else {
                 return Ok(serde_json::Value::Null);
             };
-            match rename::rename(&analysis, file, offset, &params.new_name) {
+            match rename::rename(analysis, file, offset, &params.new_name) {
                 Ok(renamed) => Ok(serde_json::to_value(workspace_edit(map, &renamed))
                     .unwrap_or(serde_json::Value::Null)),
                 // A refusal carries the compiler's own words, and the
@@ -540,9 +555,14 @@ fn code_action(
 
 /// One candidate in the protocol's form.
 ///
-/// `sort_text` is the label itself: decision 9 declines to rank, so the
-/// server states no preference and the client sorts as it likes.
-fn completion_item(candidate: completion::Candidate) -> CompletionItem {
+/// Decision 9 declines to rank, so the server states no preference and the
+/// client sorts as it likes.
+///
+/// `range` is what accepting the candidate replaces, and it is a `textEdit`
+/// rather than an `insertText` because the client's own idea of the word
+/// under the cursor does not include the `.`, `@` or `#` a label carries —
+/// so an insertion doubles it.
+fn completion_item(candidate: completion::Candidate, range: lsp_types::Range) -> CompletionItem {
     use completion::Kind;
     let kind = match candidate.kind {
         Kind::Mnemonic => CompletionItemKind::OPERATOR,
@@ -554,8 +574,12 @@ fn completion_item(candidate: completion::Candidate) -> CompletionItem {
         Kind::Field => CompletionItemKind::FIELD,
         Kind::Annotation => CompletionItemKind::TYPE_PARAMETER,
     };
+    let new_text = candidate.insert.unwrap_or_else(|| candidate.label.clone());
     CompletionItem {
-        insert_text: candidate.insert.filter(|insert| *insert != candidate.label),
+        text_edit: Some(lsp_types::CompletionTextEdit::Edit(TextEdit {
+            range,
+            new_text,
+        })),
         label: candidate.label,
         kind: Some(kind),
         detail: candidate.detail,
@@ -661,8 +685,11 @@ fn symbol_information(
 
 /// Analyzes the whole workspace through the shared frontend and publishes
 /// per-document diagnostics.
-fn publish_all(connection: &Connection, workspace: &mut Workspace) -> Result<(), ServerError> {
-    let analysis = workspace.analyze();
+fn publish_all(
+    connection: &Connection,
+    workspace: &Workspace,
+    analysis: &crate::Analysis,
+) -> Result<(), ServerError> {
     let map = workspace.map();
     for source in map.files() {
         let Ok(uri) = source.name().parse::<Uri>() else {

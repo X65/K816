@@ -418,3 +418,23 @@ fn the_analysis_of_a_whole_workspace_is_measured() {
         "the whole corpus took {whole:?}"
     );
 }
+
+/// A file with no tokens in it.
+///
+/// An empty file stays empty: "the file ends with exactly one newline" is a
+/// rule about a file with a line in it, and writing one into an empty file
+/// would be the formatter adding content — the one thing it does not do. A
+/// file of nothing but whitespace is all trailing whitespace, so it formats
+/// to empty too, and both are idempotent.
+#[test]
+fn a_file_with_nothing_in_it_formats_to_nothing() {
+    for source in ["", "\n", "\n\n\n", "   ", "  \n\t\n  "] {
+        let once =
+            formatted("empty.k816", source).unwrap_or_else(|| panic!("{source:?} does not parse"));
+        assert_eq!(once, "", "{source:?}");
+        // And again, because idempotence is the property that would notice a
+        // rule which adds a newline and then trims it back.
+        let twice = formatted("empty.k816", &once).expect("it parses");
+        assert_eq!(twice, "", "{source:?}");
+    }
+}

@@ -109,9 +109,9 @@ func after_opaque @a8 @i8 {
 // one around it.
 //
 // In a section of its own, and not inside `work`, deliberately: `work` calls
-// a section that runs an `xce`, and a widening block under an emulation flag
-// K816 cannot see is a case the compiler gets wrong today
-// (`postmortem.md` §H.5.4). Nothing about a hover is at stake in it.
+// a section that runs an `xce`, and this fixture is about hovers rather than
+// about that interaction.  It used to be a case the compiler got wrong
+// (`postmortem.md` §H.5.4); the fix and its four gates are §H.13.
 func widen @a8 @i8 {
     @a16 {
         lda #$1234

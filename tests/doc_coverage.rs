@@ -227,10 +227,16 @@ func wide_all @a16 @i16 {
         section: "The entry point",
         // The escape hatch, which is the line the refusal is drawn at: once
         // `xce` has made the flag unknown, `@a16` is the assertion again.
+        //
+        // `.a16` is in the list because the *bytes* are what the assertion is
+        // about, and the emitted text was valid without it: ca65 assembled
+        // `lda #$1234` at eight bits and the CPU read the next instruction as
+        // the immediate's high byte. A gate on the mnemonics alone could not
+        // see it (`postmortem.md` §H.13).
         source: "func main {\n    clc\n    xce\n    @a16 {\n        lda #$1234\n    }\n}\n",
         stage: Stage::Modelled,
         difference: "",
-        expected: &["rep     #$20", "lda     #$1234"],
+        expected: &["rep     #$20", ".a16", "lda     #$1234"],
         diagnostic: None,
         entry: Some("emulation"),
     },

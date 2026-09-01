@@ -153,6 +153,31 @@ pub enum Reason {
 }
 
 impl Reason {
+    /// True for the five reasons that name a `REP`/`SEP` **K816 authored
+    /// itself** to establish a width.
+    ///
+    /// The discriminator the assembler's width tracking needs. A `rep #$20`
+    /// executed with the emulation flag unknown establishes *nothing* — the
+    /// CPU ignores it in emulation mode — so a user-written one leaves the
+    /// tracked width unknown. A bridge is different: `width::record_bridges`
+    /// authors one only where the model concluded the width holds, and it
+    /// refuses to author a widening one where emulation is *known* to defeat
+    /// it (`K816-E0163`). What is left is the documented `xce`-then-widen
+    /// escape hatch, where an `@a16` annotation is the author's assertion
+    /// that the machine is native — and that assertion is what every
+    /// immediate below it was sized against, so the assembler is told it
+    /// (`postmortem.md` §H.13).
+    pub fn is_width_bridge(self) -> bool {
+        matches!(
+            self,
+            Self::ModeSet
+                | Self::BlockEnter
+                | Self::BlockRestore
+                | Self::LabelBridge
+                | Self::CallBridge(_)
+        )
+    }
+
     /// The annotation text, given a way to name a symbol.
     pub fn describe(self, name: impl Fn(SymbolId) -> String) -> String {
         match self {

@@ -27,27 +27,58 @@
 use k816::source::SourceMap;
 use k816::{Options, compile_to_ca65};
 
+mod common;
+
 /// The lowered, unoptimized program of one source — what `emitted_bytes`
 /// measures.
 fn lowered(name: &str, text: &str) -> k816::op::KProgram {
+    lowered_allowing(name, text, false)
+}
+
+/// [`lowered`], for a source that warns on purpose.
+///
+/// A section that runs an `xce` earns `K816-W0124` — it is the whole point of
+/// the escape-hatch cases — so the strict helper cannot express them. Errors
+/// are still refused: a program that does not compile has no bytes to count.
+fn lowered_allowing(name: &str, text: &str, warnings: bool) -> k816::op::KProgram {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
     let linkage = k816::linkage::Linkage::resolve(&map, k816::abi::EntryEnvironment::default());
     let source = map.file(file);
     let parse = k816::parser::parse_source(source, None);
     let (model, diagnostics) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
-    assert_eq!(diagnostics, vec![], "unexpected diagnostics");
+    assert_diagnostics(&diagnostics, warnings);
     let (program, lower_diagnostics) =
         k816::lower::lower_unit(model.program(&parse.file), &model, source.name());
-    assert_eq!(lower_diagnostics, vec![], "unexpected diagnostics");
+    assert_diagnostics(&lower_diagnostics, warnings);
     program
+}
+
+fn assert_diagnostics(diagnostics: &[k816::diagnostic::Diagnostic], warnings: bool) {
+    if warnings {
+        assert!(
+            !k816::diagnostic::has_errors(diagnostics),
+            "unexpected errors: {diagnostics:?}"
+        );
+    } else {
+        assert_eq!(diagnostics, [], "unexpected diagnostics");
+    }
 }
 
 fn bytes(name: &str, text: &str) -> u32 {
     k816::emit_ca65::emitted_bytes(&lowered(name, text))
 }
 
+fn bytes_allowing_warnings(name: &str, text: &str) -> u32 {
+    k816::emit_ca65::emitted_bytes(&lowered_allowing(name, text, true))
+}
+
 fn emit(name: &str, text: &str) -> String {
+    emit_allowing(name, text, false)
+}
+
+/// [`emit`], for a source that warns on purpose.
+fn emit_allowing(name: &str, text: &str, warnings: bool) -> String {
     let mut map = SourceMap::new();
     let file = map.add_file(name, text);
     let result = compile_to_ca65(
@@ -58,7 +89,7 @@ fn emit(name: &str, text: &str) -> String {
             ..Default::default()
         },
     );
-    assert_eq!(result.diagnostics, vec![], "unexpected diagnostics");
+    assert_diagnostics(&result.diagnostics, warnings);
     result.assembly.expect("compilation succeeds")
 }
 
@@ -813,4 +844,155 @@ fn the_byte_count_sizes_an_immediate_at_the_width_it_will_be_assembled_at() {
         ),
         8
     );
+}
+
+/// A bridge K816 authored establishes its width for the assembler, even where
+/// the emulation flag is unknown.
+///
+/// A `rep #$20` the *source* wrote there establishes nothing — the CPU
+/// ignores it in emulation mode — and the emitter says so. A **bridge** is
+/// different: `width::record_bridges` authors one only where the model
+/// concluded the width holds, and refuses a widening one outright where
+/// emulation is known to defeat it (`K816-E0163`). What is left is the
+/// documented `xce`-then-widen escape hatch, where the `@a16` annotation is
+/// the author's assertion that the machine is native.
+///
+/// **That assertion is what the immediates below it were sized against.**
+/// Withdrawing it here left ca65 assembling `lda #$12` with one operand byte
+/// after a `rep` that had widened the register, so the CPU read the *next*
+/// instruction as the immediate's high byte (`postmortem.md` §H.13).
+#[test]
+fn a_bridge_establishes_its_width_even_where_emulation_is_unknown() {
+    // `opaque` runs an `xce`, so the flag is unknown after the call and the
+    // `@a16` block is the escape hatch.
+    let assembly = emit_allowing(
+        "hatch.k816",
+        "naked opaque @a8 @i8 {\n    xce\n    return\n}\n\
+         \n\
+         func main @a8 @i8 {\n\
+         \x20   call opaque\n\
+         \x20   @a16 {\n\
+         \x20       lda #$12\n\
+         \x20   }\n\
+         \x20   nop\n\
+         \x20   return\n\
+         }\n",
+        true,
+    );
+
+    let entering = assembly
+        .find("entering the width block")
+        .expect("the block is bridged");
+    let after = &assembly[entering..];
+    assert!(
+        after.starts_with(|_: char| true) && after.contains(".a16"),
+        "the bridge did not claim its width:\n{assembly}"
+    );
+    // The claim comes before the immediate, which is what sizes it.
+    let claim = assembly.find(".a16").expect("the claim");
+    let load = assembly.find("lda").expect("the load");
+    assert!(claim < load, "the claim is after the load:\n{assembly}");
+    assert!(
+        !after[..load - entering].contains("accumulator width is unknown"),
+        "the bridge's width was withdrawn:\n{assembly}"
+    );
+
+    // A `rep` the *source* wrote in the same place still establishes nothing:
+    // it carries no assertion, so the tracked width is dropped.
+    let written = emit_allowing(
+        "written.k816",
+        "func main @a8 @i8 {\n    xce\n    rep #$20\n    nop\n    return\n}\n",
+        true,
+    );
+    assert!(
+        written.contains("because emulation mode is unknown here"),
+        "{written}"
+    );
+    assert!(!written.contains(".a16"), "{written}");
+}
+
+/// The model's byte count is what ca65 assembles, across every width
+/// transition the language has.
+///
+/// The two sizings — `emitted_bytes`, which decides branch ranges and
+/// `nocross` runs, and ca65's, which decides the object file — read the same
+/// `.a8`-family directives. Where they part company the bytes are wrong and
+/// nothing else notices: the emitted *text* is valid either way, and the
+/// program simply executes something else. This is the gate that would have
+/// caught §H.13.
+#[test]
+fn the_model_and_ca65_size_every_width_transition_alike() {
+    // (name, source, the bytes the model counts)
+    let cases: &[(&str, String, u32)] = &[
+        // A widening annotation: `lda #$0002` is three bytes under `@a16`.
+        (
+            "block",
+            "func w @a8 @i8 {\n    @a16 {\n        lda #$0002\n    }\n    nop\n}\n".to_owned(),
+            // rep(2) + lda(3) + sep(2) + nop(1) + rts(1)
+            9,
+        ),
+        // The same block after a callee that runs an `xce`, which is the
+        // escape hatch: the flag is unknown and the widths are the same.
+        (
+            "hatch",
+            "naked opaque @a8 @i8 {\n    xce\n    return\n}\n\
+             \n\
+             func w @a8 @i8 {\n\
+             \x20   call opaque\n\
+             \x20   @a16 {\n\
+             \x20       lda #$0002\n\
+             \x20   }\n\
+             \x20   nop\n\
+             }\n"
+            .to_owned(),
+            // opaque: xce(1) + rts(1); w: jsr(3) + rep(2) + lda(3) + sep(2)
+            // + nop(1) + rts(1)
+            14,
+        ),
+        // A narrowing bridge, which every emulation state agrees about.
+        (
+            "narrow",
+            "func w @a16 @i8 {\n    @a8 {\n        lda #$02\n    }\n    nop\n}\n".to_owned(),
+            // sep(2) + lda(2) + rep(2) + nop(1) + rts(1)
+            8,
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let file = format!("{name}.k816");
+        assert_eq!(
+            bytes_allowing_warnings(&file, source),
+            *expected,
+            "{name}: the model's byte count moved"
+        );
+
+        // And ca65 agrees, which is the half a unit test cannot assert.
+        let dir = common::work_dir(&format!("size-{name}"));
+        let asm = dir.join("out.s");
+        let obj = dir.join("out.o");
+        let bin = dir.join("out.bin");
+        std::fs::write(&asm, emit_allowing(&file, source, true)).expect("write assembly");
+        common::run_ok(
+            std::process::Command::new(common::tool("CA65", "ca65"))
+                .arg(&asm)
+                .args(["-o".as_ref(), obj.as_os_str()]),
+            "ca65",
+        );
+        let config =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+        common::run_ok(
+            std::process::Command::new(common::tool("LD65", "ld65"))
+                .args(["-C".as_ref(), config.as_os_str()])
+                .args(["-o".as_ref(), bin.as_os_str()])
+                .arg(&obj),
+            "ld65",
+        );
+        let linked = std::fs::read(&bin).expect("read the linked binary");
+        assert_eq!(
+            linked.len() as u32,
+            *expected,
+            "{name}: ca65 assembled {} bytes where the model counted {expected}",
+            linked.len()
+        );
+    }
 }

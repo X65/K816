@@ -545,6 +545,7 @@ pub fn emitted_bytes(program: &KProgram) -> u32 {
                 widths.apply(
                     instruction.effects().width,
                     instruction.mnemonic == Mnemonic::Xce,
+                    is_authored_bridge(op),
                     &mut discarded,
                 );
             }
@@ -552,6 +553,16 @@ pub fn emitted_bytes(program: &KProgram) -> u32 {
         }
     }
     total
+}
+
+/// Whether `op` is a `REP`/`SEP` the width model authored to establish a
+/// width, rather than one the source wrote.
+///
+/// Both halves are needed: `Origin` says who wrote it and [`Reason`] says
+/// what for, and the instruction is identical either way.
+fn is_authored_bridge(op: &KOp) -> bool {
+    op.origin == Origin::CompilerGenerated
+        && op.reason.is_some_and(crate::op::Reason::is_width_bridge)
 }
 
 /// One instruction's assembled length, at the widths tracked so far.
@@ -683,8 +694,31 @@ impl WidthState {
     /// mnemonic match would need one arm per instruction. An unknown
     /// transition drops the tracked widths so nothing downstream emits a
     /// width claim K816 cannot justify.
-    fn apply(&mut self, width: WidthEffect, exchanges_emulation: bool, out: &mut String) {
-        let why = "the width the instruction above established";
+    fn apply(
+        &mut self,
+        width: WidthEffect,
+        exchanges_emulation: bool,
+        authored: bool,
+        out: &mut String,
+    ) {
+        let why = if authored {
+            "the width the bridge above establishes"
+        } else {
+            "the width the instruction above established"
+        };
+        // An `XCE` leaves the flag unknown (`doc/w65c816s.md`, sub-plan D's
+        // decision 4), and the tracked state has to say so *here*: a
+        // `ModeAssumption` is the only other writer of `self.e`, and
+        // `lower::reconcile` emits none when the widths agree — which they do
+        // across an `xce`, both being unknown. Without this the emitter went
+        // on believing the machine was native and told ca65 `.a16` for a
+        // following `REP` that may have changed nothing. No byte was wrong,
+        // because `K816-E0104` refuses every width-dependent immediate while
+        // the axis is unknown; the directive was still a claim the model does
+        // not make (`postmortem.md` §H.13.2).
+        if exchanges_emulation {
+            self.e = EmulationState::Unknown;
+        }
         match width {
             WidthEffect::Unchanged => {}
             WidthEffect::Known { a, i } => {
@@ -693,14 +727,31 @@ impl WidthState {
                 // establishes eight, and telling ca65 `.a16` there sizes the
                 // next immediate at two bytes for a register the CPU is
                 // running at one.
+                //
+                // Unless K816 *authored* it. A bridge exists because the
+                // model concluded the width holds, and a widening one is
+                // refused outright where emulation is known to defeat it
+                // (`K816-E0163`) — so the only bridge `believe` would
+                // disagree with is one an `@a16` annotation asserted under an
+                // unknown flag, which is the documented `xce`-then-widen
+                // escape hatch. That assertion is what the immediates below
+                // were sized against; withdrawing it here left ca65 sizing
+                // them for the narrower register (`postmortem.md` §H.13).
+                let read = |width: RegisterWidth, emulation| {
+                    if authored {
+                        AxisState::Known(width)
+                    } else {
+                        crate::width::believe(width, emulation)
+                    }
+                };
                 if let Some(a) = a {
-                    match crate::width::believe(a, self.e) {
+                    match read(a, self.e) {
                         AxisState::Known(width) => self.set_a(width, why, out),
                         _ => self.forget(Axis::A, self.e, out),
                     }
                 }
                 if let Some(i) = i {
-                    match crate::width::believe(i, self.e) {
+                    match read(i, self.e) {
                         AxisState::Known(width) => self.set_i(width, why, out),
                         _ => self.forget(Axis::I, self.e, out),
                     }
@@ -818,6 +869,7 @@ fn emit_instruction(
     widths.apply(
         instruction.effects().width,
         instruction.mnemonic == Mnemonic::Xce,
+        is_authored_bridge(op),
         out,
     );
 }

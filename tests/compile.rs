@@ -132,6 +132,51 @@ fn the_hover_fixture_is_a_program_ca65_accepts() {
     assert!(!bytes.is_empty(), "the fixture linked to no bytes at all");
 }
 
+/// The `xce`-then-widen escape hatch assembles to the bytes the model
+/// counted.
+///
+/// `doc/register-width-aware-syntax.md` documents `@a16` after an `xce` as an
+/// *assertion*: the flag is unknown, and the author is saying the machine is
+/// native. K816 emits the `rep` and used to withhold the `.a16` that goes
+/// with it, so ca65 assembled `lda #$12` with **one** operand byte after a
+/// `REP` that had widened the register — and the CPU read the following `nop`
+/// as the immediate's high byte, executing an instruction nobody wrote.
+///
+/// The bytes are the whole point of this test: the emitted *text* was valid
+/// either way, and the program simply did something else
+/// (`postmortem.md` §H.13).
+#[test]
+fn the_escape_hatch_assembles_to_the_width_it_asserts() {
+    const SOURCE: &str = "naked opaque @a8 @i8 {\n\
+        \x20   xce\n\
+        \x20   return\n\
+        }\n\
+        \n\
+        func main @a8 @i8 {\n\
+        \x20   call opaque\n\
+        \x20   @a16 {\n\
+        \x20       lda #$12\n\
+        \x20   }\n\
+        \x20   nop\n\
+        \x20   return\n\
+        }\n";
+
+    let bytes = link_allowing_warnings("escape-hatch", "hatch.k816", SOURCE);
+    assert_eq!(
+        bytes,
+        &[
+            0xFB, // opaque: xce
+            0x60, // opaque: rts
+            0x20, 0x00, 0x80, // main: jsr opaque
+            0xC2, 0x20, // rep #$20 — the block's entry bridge
+            0xA9, 0x12, 0x00, // lda #$0012 — *two* operand bytes
+            0xEA, // nop, which the one-byte form used to swallow
+            0x60, // rts
+        ],
+        "the escape hatch assembled to the wrong widths"
+    );
+}
+
 /// Sub-plan H's rename fixture is a program too, for the same reason.
 #[test]
 fn the_rename_fixture_is_a_program_ca65_accepts() {

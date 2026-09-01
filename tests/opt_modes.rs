@@ -533,14 +533,22 @@ fn stripping_a_dead_width_bit_keeps_the_rest_of_the_mask() {
 /// takes, on the affected axis, the value the *preceding* claim carried. F
 /// never writes an axis value it did not read off another claim, and never
 /// turns `Unknown` into `Known`.
+///
+/// The callee is deliberately mixed — it *fixes* the accumulator and
+/// *preserves* the index register — because the two axes then take the two
+/// different paths through the pass in one program: the accumulator's claim
+/// stands, because `helper` re-establishes what F removed, and the index
+/// register's is rewritten to the entry contract's `@i8`. `main` is the caller
+/// because nothing observes an entry point's exit contract, which is what lets
+/// the bridge be eliminated at all (`postmortem.md` §I.2).
 #[test]
 fn claim_substitution_carries_the_preceding_claims_value() {
-    let quiet = "func main @a8 @i8 {\n    call helper\n}\n\n\
-                 func helper @a16 @i16 {\n    nop\n}\n";
+    let quiet = "func main @a8 @i8 {\n    call helper\n    nop\n}\n\n\
+                 func helper @a16 @i16 {\n    sep #$20\n}\n";
     let (model, program, _) = optimized(quiet);
-    // Entry: @a8 @i8. After the call, `helper` preserves, so with the bridge
-    // gone the claim is the one the entry contract carried — not the @a16 @i16
-    // the bridge used to justify.
+    // Entry: @a8 @i8. The call's claim was `@a8 @i16` — the accumulator from
+    // `helper`'s exit, the index register from the bridge that is now gone —
+    // and the index axis takes the entry contract's `@i8` in its place.
     assert_eq!(
         claims(&program, &model, "main"),
         vec![

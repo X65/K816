@@ -44,6 +44,7 @@ pub mod config;
 mod context;
 pub mod convert;
 pub mod diagnostics;
+pub mod hover;
 pub mod navigation;
 
 pub use context::{Context, at};
@@ -56,13 +57,15 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, GotoDefinition, References, Request, WorkspaceSymbolRequest,
+    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, MessageType, OneOf, PublishDiagnosticsParams, ReferenceParams,
-    ServerCapabilities, ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
+    MarkupKind, MessageType, OneOf, PublishDiagnosticsParams, ReferenceParams, ServerCapabilities,
+    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
@@ -83,6 +86,7 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
             TextDocumentSyncKind::INCREMENTAL,
         )),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
@@ -256,6 +260,23 @@ fn answer(workspace: &mut Workspace, request: &lsp_server::Request) -> serde_jso
     let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
+        HoverRequest::METHOD => {
+            let answer = serde_json::from_value::<HoverParams>(request.params.clone())
+                .ok()
+                .and_then(|params| {
+                    let (file, offset) =
+                        position(workspace, &params.text_document_position_params)?;
+                    let found = hover::hover(&analysis, file, offset)?;
+                    Some(lsp_types::Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: found.markdown,
+                        }),
+                        range: Some(convert::span_to_range(map, found.span)),
+                    })
+                });
+            serde_json::to_value(answer).unwrap_or(serde_json::Value::Null)
+        }
         GotoDefinition::METHOD => {
             let answer = serde_json::from_value::<GotoDefinitionParams>(request.params.clone())
                 .ok()

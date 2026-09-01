@@ -560,19 +560,9 @@ pub fn emitted_bytes(program: &KProgram) -> u32 {
 /// refuses a width-dependent immediate while the axis is unknown, so an
 /// untracked width here means the operand does not depend on one.
 fn instruction_bytes(instruction: &crate::op::Instruction, widths: &WidthState) -> u32 {
-    use crate::isa::{ImmediateWidthClass, OperandWidth};
-    let Some(spec) = instruction.spec() else {
-        return 0;
-    };
-    let narrow = match spec.operand.width {
-        OperandWidth::Immediate(ImmediateWidthClass::MDependent) => widths.a,
-        OperandWidth::Immediate(ImmediateWidthClass::XDependent) => widths.i,
-        _ => None,
-    };
-    match narrow {
-        Some(RegisterWidth::W8) => spec.encoded_length() - 1,
-        _ => spec.encoded_length(),
-    }
+    instruction
+        .spec()
+        .map_or(0, |spec| spec.encoded_length_at(widths.a, widths.i))
 }
 
 /// Tracked assembler width state, kept in sync with `.a8`-family directives

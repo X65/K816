@@ -1121,6 +1121,10 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "native-reloc.k816",
             "the_emitted_assembly_does_not_depend_on_where_ld65_puts_it",
         ),
+        (
+            "lsp-hover.k816",
+            "the_hover_fixture_is_a_program_ca65_accepts",
+        ),
         ("slice.k816", "hla_slice_links_to_the_expected_bytes"),
         ("slice-native.k816", "native_slice_links_to_identical_bytes"),
         (

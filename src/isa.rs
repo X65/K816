@@ -498,6 +498,30 @@ impl InstructionSpec {
     /// `nocross` run, and the optimizer needs it to decide whether a branch
     /// E emitted long now reaches. Two implementations would put the same
     /// branch in two places.
+    /// This instruction's length at the widths a caller knows.
+    ///
+    /// [`Self::encoded_length`] is the *upper bound*: a width-dependent
+    /// immediate counts as two operand bytes, which is what it takes when the
+    /// axis is sixteen bits or unknown. Where the axis is known to be eight,
+    /// the instruction is one byte shorter — and this is the one place that
+    /// says so, because ca65 emission and an editor's hover answering it
+    /// separately is two chances to disagree about how long an instruction is.
+    pub fn encoded_length_at(
+        &self,
+        accumulator: Option<RegisterWidth>,
+        index: Option<RegisterWidth>,
+    ) -> u32 {
+        let narrow = match self.operand.width {
+            OperandWidth::Immediate(ImmediateWidthClass::MDependent) => accumulator,
+            OperandWidth::Immediate(ImmediateWidthClass::XDependent) => index,
+            _ => None,
+        };
+        match narrow {
+            Some(RegisterWidth::W8) => self.encoded_length() - 1,
+            _ => self.encoded_length(),
+        }
+    }
+
     pub fn encoded_length(&self) -> u32 {
         1 + match self.operand.width {
             OperandWidth::None => 0,

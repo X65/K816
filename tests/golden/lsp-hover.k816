@@ -1,0 +1,127 @@
+// Sub-plan H's hover fixture: one of every symbol kind and one instruction of
+// every operand class, in one file, so the hover table has one source.
+//
+// Written for what H implements rather than borrowed from the legacy server's
+// tests, which tested a different compiler.  Everything here compiles clean,
+// because a hover is about a program the model understood: a hover over a
+// construct the compiler refused is the diagnostic's job.
+
+// A `const` -- a value, with no address at all.
+const LIMIT = $0F
+
+// A pinned variable, and one the linker places.
+var SCREEN = $0400
+var COUNTER
+
+// The direct page, which is where the one-operand-byte encoding comes from,
+// and a far variable, which is where the three-byte one comes from.
+var dp CURSOR = $10
+var far FARDATA = $030000
+
+// A field layout, and one with no storage behind it.
+var PAIR[
+    .lo :byte
+    .hi :byte
+] * 4
+
+abstract var HANDLER[
+    .open  :word
+    .close :word
+]
+
+// A data section, whose name is a label ld65 places.
+data message {
+    "hi"
+    $00
+}
+
+// An `inline` with an immediate alias and an identifier alias, which are the
+// two alias kinds the language has.
+inline stash @a8 (a, #amount, slot) -> a {
+    a + #amount
+    slot = a
+}
+
+// A `far func`, whose convention is the other half of the calling contract.
+far func banked @a8 @i8 {
+    nop
+}
+
+// A section whose exit the model can classify, and one it cannot: `spin`
+// returns at a width every path agrees on, and `opaque` runs an `xce`.
+func settle @a8 @i8 -> a {
+    a = #1
+    return
+}
+
+naked opaque @a8 @i8 {
+    xce
+    return
+}
+
+func work @a8 @i8 {
+.again:
+    // Immediate operand classes: `M`-dependent, `X`-dependent, and fixed.
+    lda #LIMIT
+    ldx #0
+    sep #$20
+
+    // Address encodings: direct page, absolute, and long.
+    lda CURSOR
+    lda SCREEN
+    sta COUNTER
+
+    lda FARDATA
+
+    // No operand at all, the accumulator as an operand, a bank pair, and a
+    // displacement ca65 computes.
+    nop
+    asl a
+    mvn $01,$02
+    bra .onwards
+.onwards:
+
+    // A call whose callee's exit the model inferred, so nothing about the
+    // widths changes across it.
+    call settle
+
+    // A field step and a subscript, which resolve through the layout.
+    a = PAIR[1].hi
+    a = HANDLER:sizeof
+
+    // An `inline` expansion, which binds both alias kinds at the use site.
+    stash a, #LIMIT, #COUNTER -> a
+
+    != goto .again
+    return
+}
+
+// A straight-line call to the section the model could not classify. The
+// widths survive it by the language's rule and the emulation flag does not,
+// which is the one place a statement's before and after differ.
+func after_opaque @a8 @i8 {
+    call opaque
+    nop
+    return
+}
+
+// A width block, so a statement inside it reports a different state than the
+// one around it.
+//
+// In a section of its own, and not inside `work`, deliberately: `work` calls
+// a section that runs an `xce`, and a widening block under an emulation flag
+// K816 cannot see is a case the compiler gets wrong today
+// (`postmortem.md` §H.5.4). Nothing about a hover is at stake in it.
+func widen @a8 @i8 {
+    @a16 {
+        lda #$1234
+    }
+    return
+}
+
+func main @a8 @i8 {
+    call work
+    call after_opaque
+    call widen
+    return
+}

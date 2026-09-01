@@ -24,7 +24,7 @@
 //
 // G13 also priced the deferral: three instructions and six bytes over
 // `examples/`, the goldens and the imported corpus, one of them the `ldy` in
-// `produce` below. Four of 244 emitted sections declare an output at all.
+// `produce` below. Five of 251 emitted sections declare an output at all.
 // `tests/live_outs.rs` holds both measurements; `postmortem.md` §G.22 argues
 // them.
 //

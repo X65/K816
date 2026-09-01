@@ -75,6 +75,63 @@ fn compile_and_link(test: &str, name: &str, text: &str, options: &Options) -> (V
     )
 }
 
+/// [`compile_and_link`] for a fixture that legitimately warns.
+///
+/// The stricter helper asserts *no* diagnostics, which is right for a fixture
+/// whose subject is the bytes. A fixture whose subject is something else may
+/// still have a warning in it on purpose — and "no errors" is the property
+/// that says it is a program.
+fn link_allowing_warnings(test: &str, name: &str, text: &str) -> Vec<u8> {
+    let mut map = SourceMap::new();
+    let file = map.add_file(name, text);
+    let result = compile_to_ca65(&map, file, &Options::default());
+    assert!(
+        !k816::diagnostic::has_errors(&result.diagnostics),
+        "unexpected errors: {:?}",
+        result.diagnostics
+    );
+    let assembly = result.assembly.expect("compilation succeeds");
+
+    let dir = work_dir(test);
+    let asm_path = dir.join("out.s");
+    let obj_path = dir.join("out.o");
+    let bin_path = dir.join("out.bin");
+    std::fs::write(&asm_path, assembly).expect("write assembly");
+    run_ok(
+        Command::new(tool("CA65", "ca65"))
+            .arg(&asm_path)
+            .args(["-o".as_ref(), obj_path.as_os_str()]),
+        "ca65 (build it with `make -C ../.. ca65` first)",
+    );
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    run_ok(
+        Command::new(tool("LD65", "ld65"))
+            .args(["-C".as_ref(), config.as_os_str()])
+            .args(["-o".as_ref(), bin_path.as_os_str()])
+            .arg(&obj_path),
+        "ld65 (build it with `make -C ../.. ld65` first)",
+    );
+    std::fs::read(&bin_path).expect("read linked binary")
+}
+
+/// Sub-plan H's hover fixture is a program, not a sample of syntax.
+///
+/// `tests/lsp.rs` reads it as the one source for the hover table, and a hover
+/// is about what the model *understood* — so a fixture that stopped
+/// assembling would be a table asserting about a program the compiler was
+/// refusing. Its two `K816-W0124` warnings are its subject: they are the
+/// section whose exit the model cannot classify, which is the case decision 7
+/// names.
+#[test]
+fn the_hover_fixture_is_a_program_ca65_accepts() {
+    let bytes = link_allowing_warnings(
+        "hover-fixture",
+        "lsp-hover.k816",
+        include_str!("golden/lsp-hover.k816"),
+    );
+    assert!(!bytes.is_empty(), "the fixture linked to no bytes at all");
+}
+
 /// The unoptimized slice: both loads, the store, and the return.
 ///
 /// No entry setup at all. `main @a8` restates what the environment provides,

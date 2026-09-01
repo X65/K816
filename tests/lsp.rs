@@ -1455,6 +1455,7 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
     };
     let sweep = |uri: &str| {
         vec![
+            request(9, "textDocument/hover", at_position(uri)),
             request(10, "textDocument/definition", at_position(uri)),
             request(
                 11,
@@ -1517,11 +1518,308 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
                 answered.push(format!("{}", response.id));
             }
         }
-        // Five requests plus the shutdown, each answered exactly once.
+        // Every request plus the shutdown, each answered exactly once.
         assert_eq!(
             answered,
-            ["10", "11", "12", "13", "14", "1"],
+            ["9", "10", "11", "12", "13", "14", "1"],
             "every request is answered, in order"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// H4 — hover
+// ---------------------------------------------------------------------------
+
+const HOVER_SOURCE: &str = include_str!("golden/lsp-hover.k816");
+const HOVER_DOC: &str = "file:///lsp-hover.k816";
+
+/// The byte offset of the `nth` occurrence of `needle`, plus `into`.
+fn offset_of(needle: &str, nth: usize, into: u32) -> u32 {
+    let mut at = 0usize;
+    for step in 0..=nth {
+        at = HOVER_SOURCE[at..]
+            .find(needle)
+            .map(|found| found + at)
+            .unwrap_or_else(|| panic!("`{needle}` occurrence {step} is not in the fixture"));
+        if step < nth {
+            at += 1;
+        }
+    }
+    at as u32 + into
+}
+
+/// The hover Markdown at the `nth` occurrence of `needle`, `into` bytes in.
+fn hover_at(options: &Options, needle: &str, nth: usize, into: u32) -> Option<String> {
+    let mut workspace = Workspace::with_options(options.clone());
+    workspace.update(HOVER_DOC, HOVER_SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(HOVER_DOC).expect("open");
+    k816::lsp::hover::hover(&analysis, file, offset_of(needle, nth, into))
+        .map(|hover| hover.markdown)
+}
+
+/// One of every `SymbolKind`, and every fact the model holds about it.
+///
+/// The fixture is one file so the table has one source, and the assertions
+/// are on the *facts* rather than on the whole rendering: a sentence reworded
+/// is not a regression, and a number that changed is.
+#[test]
+fn hover_answers_for_one_symbol_of_every_kind() {
+    let table: &[(&str, usize, &[&str])] = &[
+        // `const` — a value, no address.
+        ("LIMIT = $0F", 0, &["a `const`", "`$000F` (15)"]),
+        // A pinned variable and a linker-allocated one.
+        (
+            "SCREEN = $0400",
+            0,
+            &["a variable", "At `$0400`", "two operand bytes"],
+        ),
+        (
+            "COUNTER\n",
+            0,
+            &["a variable", "Allocated by ld65", "Reserves 1 byte"],
+        ),
+        // The direct page and the long encoding.
+        ("CURSOR = $10", 0, &["At `$0010`", "one operand byte"]),
+        ("FARDATA = $030000", 0, &["three operand bytes"]),
+        // A field layout, with its offsets and its repeat count.
+        (
+            "PAIR[",
+            0,
+            &[
+                "`* 4` — 4 elements",
+                "Reserves 8 byte",
+                "- `.lo` at `+0`",
+                "- `.hi` at `+1`",
+            ],
+        ),
+        // An `abstract var`: a layout and nothing else.
+        (
+            "HANDLER[",
+            0,
+            &[
+                "an `abstract var`",
+                "No storage",
+                "- `.open` at `+0`",
+                "- `.close` at `+2`",
+            ],
+        ),
+        // A data label.
+        ("message {", 0, &["a data label", "An address ld65 places"]),
+        // The three section kinds, their conventions, and their contracts.
+        (
+            "stash @a8",
+            0,
+            &[
+                "an `inline`",
+                "Written `inline`",
+                "Declares `@a8`",
+                "Register flow `(a, #amount, slot) -> a`",
+            ],
+        ),
+        (
+            "banked @a8",
+            0,
+            &[
+                "Written `far func`",
+                "called with `JSL`",
+                "returns with `RTL`",
+            ],
+        ),
+        (
+            "opaque @a8",
+            0,
+            &[
+                "Written `naked`",
+                "not classified",
+                "**Assumed, not inferred.**",
+            ],
+        ),
+        (
+            "settle @a8",
+            0,
+            &["Written `func`", "the accumulator is unchanged"],
+        ),
+        // A local label, and the function it is scoped to.
+        (".again:", 0, &["a local label", "Scoped to `work`"]),
+        // Both alias kinds.
+        (
+            "amount, slot",
+            0,
+            &["an `inline` alias", "`#name`, so it stands for a value"],
+        ),
+        (
+            "slot) -> a",
+            0,
+            &["an `inline` alias", "a bare name, so it stands for a place"],
+        ),
+        // A `.field` step, which resolves through the layout.
+        ("hi\n    a", 0, &["`.hi` — a field", "offset `+1`"]),
+    ];
+
+    for (needle, nth, expected) in table {
+        let markdown = hover_at(&Options::default(), needle, *nth, 0)
+            .unwrap_or_else(|| panic!("no hover at `{needle}`"));
+        for fact in *expected {
+            assert!(
+                markdown.contains(fact),
+                "hover at `{needle}` is missing `{fact}`:\n{markdown}"
+            );
+        }
+    }
+}
+
+/// One instruction of every operand class, sized against the widths the model
+/// tracked *there*.
+///
+/// The length is the point: `encoded_length` is an upper bound, and `lda #1`
+/// is two bytes under `@a8` and three under `@a16`. A hover that answered
+/// from the mnemonic alone would be wrong exactly where the language is
+/// interesting.
+#[test]
+fn hover_sizes_an_instruction_against_the_tracked_width() {
+    let table: &[(&str, &str, &[&str])] = &[
+        // `M`-dependent, at a point the model knows is `@a8`.
+        (
+            "lda #LIMIT",
+            "`lda` — addressing mode `#`",
+            &["Encodes to 2 byte", "as the `M` flag selects"],
+        ),
+        // …and the same mnemonic inside `@a16 { }`, one byte longer.
+        (
+            "lda #$1234",
+            "`lda` — addressing mode `#`",
+            &["Encodes to 3 byte", "Sized against `@a16 @i8`"],
+        ),
+        // `X`-dependent, and a fixed-width immediate.
+        (
+            "ldx #0",
+            "`ldx` — addressing mode `#`",
+            &["Encodes to 2 byte", "as the `X` flag selects"],
+        ),
+        (
+            "sep #$20",
+            "`sep` — addressing mode `#`",
+            &["Encodes to 2 byte", "always one byte"],
+        ),
+        // The three address encodings.
+        (
+            "lda CURSOR",
+            "`lda` — addressing mode `d`",
+            &["Encodes to 2 byte"],
+        ),
+        (
+            "sta COUNTER",
+            "`sta` — addressing mode `a`",
+            &["Encodes to 3 byte"],
+        ),
+        (
+            "lda FARDATA",
+            "`lda` — addressing mode `al`",
+            &["Encodes to 4 byte"],
+        ),
+        // No operand, the accumulator, a bank pair, and a displacement.
+        (
+            "nop\n",
+            "`nop` — addressing mode `i`",
+            &["Encodes to 1 byte"],
+        ),
+        (
+            "asl a",
+            "`asl` — addressing mode `A`",
+            &["Encodes to 1 byte", "writes `A, N Z C`"],
+        ),
+        (
+            "mvn $01",
+            "`mvn` — addressing mode `xyc`",
+            &["Encodes to 3 byte", "reads `A X Y DBR`"],
+        ),
+        (
+            "bra .onwards",
+            "`bra` — addressing mode `r`",
+            &["Encodes to 2 byte"],
+        ),
+    ];
+
+    for (needle, headline, expected) in table {
+        let markdown = hover_at(&Options::default(), needle, 0, 0)
+            .unwrap_or_else(|| panic!("no hover at `{needle}`"));
+        // `Reads`/`reads` — the first word of its own line either way.
+        let lowered = markdown.to_lowercase();
+        assert!(
+            markdown.starts_with(headline),
+            "hover at `{needle}` does not open with `{headline}`:\n{markdown}"
+        );
+        for fact in *expected {
+            assert!(
+                lowered.contains(&fact.to_lowercase()),
+                "hover at `{needle}` is missing `{fact}`:\n{markdown}"
+            );
+        }
+    }
+}
+
+/// A statement reports what the model believed on either side of it.
+#[test]
+fn hover_on_a_statement_reports_the_width_state() {
+    // `call settle` — the callee's exit is inferred, so the widths do not
+    // change across it and the hover says nothing about "after".
+    let settled = hover_at(&Options::default(), "call settle", 0, 0).expect("a hover");
+    assert!(settled.starts_with("Widths here: `@a8 @i8"), "{settled}");
+    assert!(!settled.contains("After this statement"), "{settled}");
+
+    // `call opaque` — the callee runs an `xce`. The widths survive it by the
+    // language's rule and the emulation flag does not, so the state after the
+    // call differs from the state before it and the hover reports the change.
+    let opaque = hover_at(&Options::default(), "call opaque", 0, 0).expect("a hover");
+    assert!(opaque.starts_with("Widths here: `@a8 @i8`"), "{opaque}");
+    assert!(
+        opaque.contains("After this statement: `@a8 @i8, emulation flag unknown`"),
+        "{opaque}"
+    );
+
+    // Inside a `@a16 { }` block the state is the block's, not the section's:
+    // `widen` declares `@a8` and the statement inside its block is `@a16`.
+    let inside = hover_at(&Options::default(), "lda #$1234", 0, 0).expect("a hover");
+    assert!(inside.contains("Sized against `@a16 @i8`"), "{inside}");
+    let around = hover_at(&Options::default(), "widen @a8", 0, 0).expect("a hover");
+    assert!(around.contains("Declares `@a8 @i8`"), "{around}");
+}
+
+/// A hover on `main` says which machine the *build* states — the one fact
+/// about the entry point that is nowhere in the source.
+#[test]
+fn hover_on_main_states_the_machine_the_build_stated() {
+    let default = hover_at(&Options::default(), "main @a8", 0, 0).expect("a hover");
+    assert!(default.contains("**The entry point.**"), "{default}");
+    assert!(default.contains("`native,a8,i8`"), "{default}");
+
+    // The same source, a different build: the hover follows the option, which
+    // is H0's seam observed from a second place.
+    let emulation = Options {
+        entry: EntryEnvironment::parse("emulation").expect("a machine that exists"),
+        ..Options::default()
+    };
+    let stated = hover_at(&emulation, "main @a8", 0, 0).expect("a hover");
+    assert!(stated.contains("`emulation,a8,i8`"), "{stated}");
+    assert_ne!(default, stated);
+}
+
+/// Whitespace is not a construct, so it is not a question.
+#[test]
+fn hover_answers_nothing_where_the_model_holds_nothing() {
+    // Column 0 of a body line, between the brace above and the token right.
+    assert_eq!(
+        hover_at(&Options::default(), "\n    lda #LIMIT", 0, 1),
+        None
+    );
+    // Inside a comment.
+    assert_eq!(hover_at(&Options::default(), "// A `const`", 0, 3), None);
+    // Past the end of the file.
+    let mut workspace = Workspace::new();
+    workspace.update(HOVER_DOC, HOVER_SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(HOVER_DOC).expect("open");
+    assert_eq!(k816::lsp::hover::hover(&analysis, file, 9_999_999), None);
 }

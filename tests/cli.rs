@@ -531,3 +531,81 @@ fn the_inspection_commands_still_answer_what_they_answered() {
     let (stderr, success) = compile("cli-no-opt", DEAD_LOAD, &["--no-opt"]);
     assert!(success, "{stderr}");
 }
+
+// ---------------------------------------------------------------------------
+// The language server's command line (sub-plan H, task H0)
+// ---------------------------------------------------------------------------
+
+/// Runs `k816 lsp` with `args` and no protocol traffic, returning
+/// (stderr, success).
+///
+/// A refused flag never reaches the transport, so the server exits before
+/// reading stdin; a flag it accepts leaves it waiting, which is why every
+/// case here is one it refuses.
+fn lsp_refusal(args: &[&str]) -> (String, bool) {
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("lsp")
+        .args(args)
+        .output()
+        .expect("run k816");
+    (
+        String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+        output.status.success(),
+    )
+}
+
+/// `lsp` reads `--entry` through the same arm `compile` does, so a spelling
+/// that names no machine is refused with the same code and the same words.
+#[test]
+fn the_lsp_refuses_an_entry_spelling_the_same_way_compile_does() {
+    let (compile_stderr, compile_ok) = compile("cli-lsp-entry", WIDE_ENTRY, &["--entry", "a32"]);
+    let (lsp_stderr, lsp_ok) = lsp_refusal(&["--entry", "a32"]);
+    assert!(!compile_ok && !lsp_ok, "{compile_stderr}{lsp_stderr}");
+    assert_eq!(compile_stderr, lsp_stderr);
+    assert!(lsp_stderr.contains("K816-E0162"), "{lsp_stderr}");
+
+    let (stderr, success) = lsp_refusal(&["--entry"]);
+    assert!(!success, "{stderr}");
+    assert!(stderr.contains("`--entry` needs a value"), "{stderr}");
+}
+
+/// The options that describe one compilation are not the server's to take:
+/// its documents arrive over the protocol, and naming a unit on its command
+/// line would be a second way to describe the program (decision 2).
+#[test]
+fn the_lsp_takes_no_input_file_and_no_compilation_options() {
+    let (stderr, success) = lsp_refusal(&["some.k816"]);
+    assert!(!success, "{stderr}");
+    assert!(stderr.contains("`lsp` takes no input file"), "{stderr}");
+
+    for flag in [
+        vec!["--unit", "other.k816"],
+        vec!["--unit=other.k816"],
+        vec!["-o", "out.s"],
+        vec!["--no-opt"],
+        vec!["--after-opt"],
+    ] {
+        let (stderr, success) = lsp_refusal(&flag);
+        assert!(!success, "`lsp {}` was accepted: {stderr}", flag.join(" "));
+        assert!(
+            stderr.contains(&format!("unknown option `{}`", flag[0])),
+            "`lsp {}`: {stderr}",
+            flag.join(" ")
+        );
+    }
+}
+
+/// The usage text names the flags the server takes, so a user who reaches
+/// for `k816.server.args` can find out what to put there.
+#[test]
+fn the_usage_text_names_the_servers_flags() {
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .output()
+        .expect("run k816");
+    let stderr = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("lsp [--strict-k65] [--entry AXES]"),
+        "{stderr}"
+    );
+}

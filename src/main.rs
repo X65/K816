@@ -59,13 +59,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("compile") => compile(&prog_name, &args[1..]),
         Some("emit-ir") => emit_ir(&prog_name, &args[1..]),
-        Some("lsp") => match k816::lsp::run_stdio_server() {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("{prog_name}: LSP server error: {error}");
-                ExitCode::FAILURE
-            }
-        },
+        Some("lsp") => lsp(&prog_name, &args[1..]),
         _ => {
             usage(&prog_name);
             ExitCode::FAILURE
@@ -81,7 +75,11 @@ fn usage(prog_name: &str) {
     eprintln!("  emit-ir [--after-opt] [--explain] FILE");
     eprintln!("                                       dump the lowered operation stream, and");
     eprintln!("                                       with --explain what the optimizer did");
-    eprintln!("  lsp                                  run the language server over stdio");
+    eprintln!("  lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The");
+    eprintln!("                                       same options a build states, so an editor");
+    eprintln!("                                       and a build agree; a client may also send");
+    eprintln!("                                       them as `strict-k65` and `entry` in its");
+    eprintln!("                                       initializationOptions or configuration");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --unit PATH                          a sibling unit whose names this one may");
@@ -102,8 +100,47 @@ fn usage(prog_name: &str) {
     eprintln!("  -V, --version                        print the version number and exit");
 }
 
+/// Which subcommand's command line is being read.
+///
+/// The arms a command accepts are a property of the command, and this is
+/// what says so in one place: `lsp` takes the two options that describe the
+/// *project* — `--strict-k65` and `--entry` — because an editor and a build
+/// have to agree about them, and none of the options that describe one
+/// compilation, because it compiles nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Command {
+    /// `compile [--no-opt] [-o OUT] [--unit PATH] FILE`
+    Compile,
+    /// `emit-ir [--after-opt] [--explain] [--unit PATH] FILE`
+    EmitIr,
+    /// `lsp [--strict-k65] [--entry AXES]`
+    Lsp,
+}
+
+impl Command {
+    /// The optimizer toggle this command takes, and the value it sets.
+    fn opt_flag(self) -> Option<(&'static str, bool)> {
+        match self {
+            Self::Compile => Some(("--no-opt", false)),
+            Self::EmitIr => Some(("--after-opt", true)),
+            Self::Lsp => None,
+        }
+    }
+
+    /// Whether the command reads source files named on the command line.
+    ///
+    /// The LSP's documents arrive over the protocol, so it takes no input
+    /// file, no `-o`, and no `--unit`: naming a unit there would be a second
+    /// way to describe the program, and decision 2 keeps the program the set
+    /// of open documents until sub-plan I lands a project file.
+    fn takes_files(self) -> bool {
+        !matches!(self, Self::Lsp)
+    }
+}
+
 struct CommandLine {
-    input: PathBuf,
+    /// The file to compile, and `None` for a command that reads none.
+    input: Option<PathBuf>,
     /// Print what the optimizer did, after the dump (`emit-ir --explain`).
     explain: bool,
     /// Sibling units, whose definitions this unit may refer to. K65 has no
@@ -115,20 +152,27 @@ struct CommandLine {
     message_format: render::MessageFormat,
 }
 
-/// Parses `FILE`, `-o OUT`, and the optimizer toggle named by `opt_flag`
-/// (with the polarity given by `opt_flag_enables`).
+/// Parses one subcommand's command line.
+///
+/// Every command reads `--strict-k65`, `--entry` and `--message-format`
+/// through these same arms, which is what makes a refused `--entry` render
+/// identically whichever command was asked for it — and, for the LSP, what
+/// makes the editor's configuration and the build's flags one vocabulary
+/// (`plans/07-lsp-tooling.md` decision 1).
 fn parse_command_line(
     prog_name: &str,
     args: &[String],
-    opt_flag: &str,
-    opt_flag_enables: bool,
+    command: Command,
 ) -> Result<CommandLine, ()> {
+    let opt_flag = command.opt_flag();
     let mut input: Option<PathBuf> = None;
     let mut units: Vec<PathBuf> = Vec::new();
     let mut output: Option<PathBuf> = None;
     let mut explain = false;
     let mut options = Options {
-        optimize: !opt_flag_enables,
+        // The toggle names the value it sets, so the starting value is the
+        // other one; a command with no toggle keeps the default.
+        optimize: opt_flag.is_none_or(|(_, enables)| !enables),
         ..Options::default()
     };
     let mut message_format = render::MessageFormat::default();
@@ -136,14 +180,14 @@ fn parse_command_line(
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
-            "-o" => match iter.next() {
+            "-o" if command.takes_files() => match iter.next() {
                 Some(path) => output = Some(PathBuf::from(path)),
                 None => {
                     render::render_tool_error(prog_name, "`-o` needs a file name", message_format);
                     return Err(());
                 }
             },
-            "--unit" => match iter.next() {
+            "--unit" if command.takes_files() => match iter.next() {
                 Some(path) => units.push(PathBuf::from(path)),
                 None => {
                     render::render_tool_error(
@@ -154,7 +198,7 @@ fn parse_command_line(
                     return Err(());
                 }
             },
-            _ if arg.starts_with("--unit=") => {
+            _ if command.takes_files() && arg.starts_with("--unit=") => {
                 units.push(PathBuf::from(&arg["--unit=".len()..]));
             }
             "--message-format" => match iter.next() {
@@ -188,8 +232,10 @@ fn parse_command_line(
                 let text = &arg["--entry=".len()..];
                 set_entry(prog_name, text, &mut options, message_format)?;
             }
-            "--explain" if opt_flag == "--after-opt" => explain = true,
-            flag if flag == opt_flag => options.optimize = opt_flag_enables,
+            "--explain" if command == Command::EmitIr => explain = true,
+            flag if opt_flag.is_some_and(|(name, _)| name == flag) => {
+                options.optimize = opt_flag.expect("matched the toggle's own name").1;
+            }
             _ if arg.starts_with('-') => {
                 render::render_tool_error(
                     prog_name,
@@ -198,17 +244,25 @@ fn parse_command_line(
                 );
                 return Err(());
             }
-            _ if input.is_none() => input = Some(PathBuf::from(arg)),
-            _ => {
+            _ if command.takes_files() && input.is_none() => input = Some(PathBuf::from(arg)),
+            _ if command.takes_files() => {
                 render::render_tool_error(prog_name, "more than one input file", message_format);
+                return Err(());
+            }
+            _ => {
+                render::render_tool_error(
+                    prog_name,
+                    &format!("`lsp` takes no input file, but `{arg}` was given"),
+                    message_format,
+                );
                 return Err(());
             }
         }
     }
-    let Some(input) = input else {
+    if command.takes_files() && input.is_none() {
         render::render_tool_error(prog_name, "no input file", message_format);
         return Err(());
-    };
+    }
     Ok(CommandLine {
         input,
         explain,
@@ -290,12 +344,26 @@ fn load(
     }
 }
 
-fn compile(prog_name: &str, args: &[String]) -> ExitCode {
-    let Ok(command) = parse_command_line(prog_name, args, "--no-opt", false) else {
+fn lsp(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(command) = parse_command_line(prog_name, args, Command::Lsp) else {
         return ExitCode::FAILURE;
     };
+    match k816::lsp::run_stdio_server(command.options) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{prog_name}: LSP server error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn compile(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(command) = parse_command_line(prog_name, args, Command::Compile) else {
+        return ExitCode::FAILURE;
+    };
+    let input = command.input.clone().expect("compile requires an input");
     let mut map = SourceMap::new();
-    let Ok(file) = load(prog_name, &mut map, &command.input, command.message_format) else {
+    let Ok(file) = load(prog_name, &mut map, &input, command.message_format) else {
         return ExitCode::FAILURE;
     };
     // The sibling units go into the same map, which is the whole workspace
@@ -312,9 +380,7 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     let Some(assembly) = result.assembly else {
         return ExitCode::FAILURE;
     };
-    let output = command
-        .output
-        .unwrap_or_else(|| command.input.with_extension("s"));
+    let output = command.output.unwrap_or_else(|| input.with_extension("s"));
     if let Err(error) = std::fs::write(&output, assembly) {
         render::render_tool_error(
             prog_name,
@@ -327,11 +393,12 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
 }
 
 fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
-    let Ok(command) = parse_command_line(prog_name, args, "--after-opt", true) else {
+    let Ok(command) = parse_command_line(prog_name, args, Command::EmitIr) else {
         return ExitCode::FAILURE;
     };
+    let input = command.input.clone().expect("emit-ir requires an input");
     let mut map = SourceMap::new();
-    let Ok(file) = load(prog_name, &mut map, &command.input, command.message_format) else {
+    let Ok(file) = load(prog_name, &mut map, &input, command.message_format) else {
         return ExitCode::FAILURE;
     };
     // The sibling units go into the same map, which is the whole workspace

@@ -34,15 +34,50 @@ use std::collections::BTreeMap;
 use crate::source::{FileId, SourceMap};
 use crate::{Analysis, Options};
 
-/// Live documents, keyed by their URI (or path) string.
+/// Live documents, keyed by their URI (or path) string, and the options they
+/// are analyzed under.
+///
+/// The options live here rather than at each `analyze` call because they are
+/// a property of the *project* the documents belong to, not of one analysis:
+/// an editor states them once (through `initializationOptions`, through
+/// `workspace/didChangeConfiguration`, or on the `k816 lsp` command line) and
+/// every re-analysis after that has to use the same ones. A parameter would
+/// let one caller pass `--strict-k65` and the next forget, which is exactly
+/// the disagreement between a build and an editor that sub-plan H exists to
+/// close (`plans/07-lsp-tooling.md` decision 1).
 #[derive(Debug, Default)]
 pub struct Workspace {
     documents: BTreeMap<String, String>,
+    options: Options,
 }
 
 impl Workspace {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A workspace whose documents are analyzed under `options`.
+    pub fn with_options(options: Options) -> Self {
+        Self {
+            documents: BTreeMap::new(),
+            options,
+        }
+    }
+
+    /// The options every analysis of this workspace runs under.
+    pub fn options(&self) -> &Options {
+        &self.options
+    }
+
+    /// Replaces the options wholesale.
+    ///
+    /// Wholesale rather than field by field: the last statement of the
+    /// configuration wins, and a caller that wants to change one axis reads
+    /// [`Self::options`] first. Both sources of the configuration — the
+    /// command line at startup and the protocol afterwards — go through this
+    /// one door, so there is never a *default* competing with a statement.
+    pub fn set_options(&mut self, options: Options) {
+        self.options = options;
     }
 
     /// Opens a document or replaces the text of an already open one.
@@ -60,12 +95,12 @@ impl Workspace {
 
     /// Analyzes every open document through the shared frontend and returns
     /// the source map (for span translation) alongside the analysis.
-    pub fn analyze(&self, options: &Options) -> (SourceMap, Analysis) {
+    pub fn analyze(&self) -> (SourceMap, Analysis) {
         let mut map = SourceMap::new();
         for (name, text) in &self.documents {
             map.add_file(name.clone(), text.clone());
         }
-        let analysis = crate::analyze_workspace(&map, options);
+        let analysis = crate::analyze_workspace(&map, &self.options);
         (map, analysis)
     }
 }

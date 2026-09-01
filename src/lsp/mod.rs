@@ -29,23 +29,33 @@
 //! protocol and the compiler's structured [`Diagnostic`] values. There is no
 //! editor-specific code here; hover, definition, rename, completion, and
 //! formatting arrive with sub-plan H.
+//!
+//! What the analysis runs under is the editor's to state, in the same
+//! spellings the command line uses — see [`config`]. Until it states
+//! something the server uses the same defaults `k816 compile` does, so the
+//! two agree by construction rather than by coincidence.
+
+pub mod config;
 
 use lsp_server::{Connection, Message, Notification as ServerNotification};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Notification,
-    PublishDiagnostics,
+    DidChangeConfiguration, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
+    Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::{
-    DiagnosticRelatedInformation, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, Location, NumberOrString, Position,
-    PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    DiagnosticRelatedInformation, DiagnosticSeverity, DidChangeConfigurationParams,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Location,
+    MessageType, NumberOrString, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
+    ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
 use crate::Options;
 use crate::diagnostic::{Diagnostic, Severity};
 use crate::source::{FileId, SourceMap, Span};
 use crate::workspace::Workspace;
+
+/// Anything that goes wrong while the server is talking to its client.
+type ServerError = Box<dyn std::error::Error + Sync + Send>;
 
 /// Converts a byte [`Span`] into an LSP range (UTF-16 columns).
 pub fn span_to_range(map: &SourceMap, span: Span) -> Range {
@@ -123,22 +133,42 @@ pub fn file_diagnostics(
 }
 
 /// Runs the synchronous LSP server over stdio until the client shuts down.
-pub fn run_stdio_server() -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
+///
+/// `options` is what the command line stated; a configuration the client
+/// sends replaces it, wholly or key by key (`config`, decision 1).
+pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = serde_json::to_value(ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         ..Default::default()
     })?;
-    connection.initialize(capabilities)?;
-    main_loop(&connection)?;
+    let params = connection.initialize(capabilities)?;
+    main_loop(&connection, options, &params)?;
     // The writer thread finishes only once the connection's channel closes.
     drop(connection);
     io_threads.join()?;
     Ok(())
 }
 
-fn main_loop(connection: &Connection) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
-    let mut workspace = Workspace::new();
+/// The `initializationOptions` member of an `initialize` request's params.
+///
+/// Read out of the raw value rather than through `InitializeParams` because
+/// that is the only member of it this server uses, and deserializing the
+/// whole structure would make an unrelated field the client spells oddly
+/// into a failure to start.
+fn initialization_options(params: &serde_json::Value) -> Option<&serde_json::Value> {
+    params.get("initializationOptions")
+}
+
+fn main_loop(
+    connection: &Connection,
+    options: Options,
+    initialize_params: &serde_json::Value,
+) -> Result<(), ServerError> {
+    let mut workspace = Workspace::with_options(options);
+    if let Some(value) = initialization_options(initialize_params) {
+        configure(connection, &mut workspace, value)?;
+    }
     for message in &connection.receiver {
         match message {
             Message::Request(request) => {
@@ -166,6 +196,14 @@ fn main_loop(connection: &Connection) -> Result<(), Box<dyn std::error::Error + 
                         publish_all(connection, &workspace)?;
                     }
                 }
+                DidChangeConfiguration::METHOD => {
+                    let params: DidChangeConfigurationParams =
+                        serde_json::from_value(notification.params)?;
+                    configure(connection, &mut workspace, &params.settings)?;
+                    // The options may have changed what every open document
+                    // reports, so the whole workspace is republished.
+                    publish_all(connection, &workspace)?;
+                }
                 DidCloseTextDocument::METHOD => {
                     let params: DidCloseTextDocumentParams =
                         serde_json::from_value(notification.params)?;
@@ -184,11 +222,8 @@ fn main_loop(connection: &Connection) -> Result<(), Box<dyn std::error::Error + 
 
 /// Analyzes the whole workspace through the shared frontend and publishes
 /// per-document diagnostics.
-fn publish_all(
-    connection: &Connection,
-    workspace: &Workspace,
-) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
-    let (map, analysis) = workspace.analyze(&Options::default());
+fn publish_all(connection: &Connection, workspace: &Workspace) -> Result<(), ServerError> {
+    let (map, analysis) = workspace.analyze();
     for source in map.files() {
         let Ok(uri) = source.name().parse::<Uri>() else {
             continue;
@@ -199,11 +234,53 @@ fn publish_all(
     Ok(())
 }
 
+/// Reads a configuration object into the workspace and tells the editor
+/// about anything it could not use.
+///
+/// A refused value leaves the option standing rather than falling back to a
+/// default: the client stated something, the server could not read it, and
+/// quietly compiling under a *third* configuration would be the disagreement
+/// this seam exists to remove.
+fn configure(
+    connection: &Connection,
+    workspace: &mut Workspace,
+    settings: &serde_json::Value,
+) -> Result<(), ServerError> {
+    let mut options = workspace.options().clone();
+    let messages = config::apply(&mut options, settings);
+    workspace.set_options(options);
+    for message in &messages {
+        show_message(connection, message)?;
+    }
+    Ok(())
+}
+
+fn show_message(
+    connection: &Connection,
+    message: &config::ConfigMessage,
+) -> Result<(), ServerError> {
+    let params = ShowMessageParams {
+        typ: if message.is_error {
+            MessageType::ERROR
+        } else {
+            MessageType::WARNING
+        },
+        message: message.render(),
+    };
+    connection
+        .sender
+        .send(Message::Notification(ServerNotification::new(
+            ShowMessage::METHOD.to_owned(),
+            params,
+        )))?;
+    Ok(())
+}
+
 fn send_diagnostics(
     connection: &Connection,
     uri: Uri,
     diagnostics: Vec<lsp_types::Diagnostic>,
-) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
+) -> Result<(), ServerError> {
     let params = PublishDiagnosticsParams {
         uri,
         diagnostics,

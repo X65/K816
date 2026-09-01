@@ -61,6 +61,7 @@ use lsp_types::{
 };
 
 use crate::Options;
+use crate::parser::SourceEdit;
 use crate::workspace::Workspace;
 
 /// Anything that goes wrong while the server is talking to its client.
@@ -73,11 +74,13 @@ type ServerError = Box<dyn std::error::Error + Sync + Send>;
 pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = serde_json::to_value(ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(
+            TextDocumentSyncKind::INCREMENTAL,
+        )),
         ..Default::default()
     })?;
     let params = connection.initialize(capabilities)?;
-    main_loop(&connection, options, &params)?;
+    serve(&connection, options, &params)?;
     // The writer thread finishes only once the connection's channel closes.
     drop(connection);
     io_threads.join()?;
@@ -94,7 +97,22 @@ fn initialization_options(params: &serde_json::Value) -> Option<&serde_json::Val
     params.get("initializationOptions")
 }
 
-fn main_loop(
+/// Runs the server's message loop over `connection` until it shuts down.
+///
+/// Separate from [`run_stdio_server`] so the tests can drive the real loop
+/// over an in-memory connection rather than a subprocess: what happens *in*
+/// the loop — the coalescing above all — is not observable from the outside
+/// except as a count of the notifications it sends.
+///
+/// **Messages are handled in batches, and the batch is one analysis.** After
+/// any message arrives, everything the channel already holds is taken with
+/// it; every notification in the batch is applied to the workspace, *then*
+/// the workspace is analyzed once, *then* the batch's requests are answered
+/// in the order they arrived. A burst of keystrokes is therefore one
+/// analysis, and a request that arrived inside the burst is answered against
+/// the analysis that burst produced — later than a strictly sequential server
+/// would answer it, but with a newer answer (decision 3).
+pub fn serve(
     connection: &Connection,
     options: Options,
     initialize_params: &serde_json::Value,
@@ -103,55 +121,112 @@ fn main_loop(
     if let Some(value) = initialization_options(initialize_params) {
         configure(connection, &mut workspace, value)?;
     }
-    for message in &connection.receiver {
-        match message {
-            Message::Request(request) => {
-                if connection.handle_shutdown(&request)? {
-                    return Ok(());
+
+    while let Ok(first) = connection.receiver.recv() {
+        let batch = drain(connection, first);
+        let mut changed = false;
+        let mut requests = Vec::new();
+
+        for message in batch {
+            match message {
+                Message::Request(request) => requests.push(request),
+                Message::Notification(notification) => {
+                    changed |= apply(connection, &mut workspace, notification)?;
                 }
-                // No other requests are implemented in the slice.
+                Message::Response(_) => {}
             }
-            Message::Notification(notification) => match notification.method.as_str() {
-                DidOpenTextDocument::METHOD => {
-                    let params: DidOpenTextDocumentParams =
-                        serde_json::from_value(notification.params)?;
-                    workspace.update(
-                        params.text_document.uri.to_string(),
-                        params.text_document.text,
-                    );
-                    publish_all(connection, &mut workspace)?;
-                }
-                DidChangeTextDocument::METHOD => {
-                    let params: DidChangeTextDocumentParams =
-                        serde_json::from_value(notification.params)?;
-                    // Full sync: the last content change is the new text.
-                    if let Some(change) = params.content_changes.into_iter().next_back() {
-                        workspace.update(params.text_document.uri.to_string(), change.text);
-                        publish_all(connection, &mut workspace)?;
-                    }
-                }
-                DidChangeConfiguration::METHOD => {
-                    let params: DidChangeConfigurationParams =
-                        serde_json::from_value(notification.params)?;
-                    configure(connection, &mut workspace, &params.settings)?;
-                    // The options may have changed what every open document
-                    // reports, so the whole workspace is republished.
-                    publish_all(connection, &mut workspace)?;
-                }
-                DidCloseTextDocument::METHOD => {
-                    let params: DidCloseTextDocumentParams =
-                        serde_json::from_value(notification.params)?;
-                    workspace.close(params.text_document.uri.as_str());
-                    // Clear stale diagnostics for the closed document.
-                    send_diagnostics(connection, params.text_document.uri, Vec::new())?;
-                    publish_all(connection, &mut workspace)?;
-                }
-                _ => {}
-            },
-            Message::Response(_) => {}
+        }
+
+        if changed {
+            publish_all(connection, &mut workspace)?;
+        }
+        for request in requests {
+            if connection.handle_shutdown(&request)? {
+                return Ok(());
+            }
+            // No other request is implemented yet; H3 onward dispatch here.
         }
     }
     Ok(())
+}
+
+/// `first` plus everything the channel already holds, up to and including a
+/// `shutdown` request.
+///
+/// Draining stops at `shutdown` because `Connection::handle_shutdown` waits
+/// on the channel for the `exit` that follows it — a client that pipelines
+/// the two would otherwise have its `exit` sitting in this vector while the
+/// server waits for it to arrive.
+fn drain(connection: &Connection, first: Message) -> Vec<Message> {
+    let mut batch = vec![first];
+    while !is_shutdown(batch.last().expect("just pushed")) {
+        match connection.receiver.try_recv() {
+            Ok(message) => batch.push(message),
+            Err(_) => break,
+        }
+    }
+    batch
+}
+
+fn is_shutdown(message: &Message) -> bool {
+    matches!(message, Message::Request(request) if request.method == "shutdown")
+}
+
+/// Applies one notification to the workspace, returning whether the analysis
+/// it describes is now stale.
+fn apply(
+    connection: &Connection,
+    workspace: &mut Workspace,
+    notification: ServerNotification,
+) -> Result<bool, ServerError> {
+    match notification.method.as_str() {
+        DidOpenTextDocument::METHOD => {
+            let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
+            workspace.update(
+                params.text_document.uri.to_string(),
+                params.text_document.text,
+            );
+            Ok(true)
+        }
+        DidChangeTextDocument::METHOD => {
+            let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
+            let name = params.text_document.uri.to_string();
+            for change in params.content_changes {
+                match change.range {
+                    // A ranged change says what moved, so the retained tree
+                    // can be told and the next parse is incremental. The
+                    // range is converted against the text the *preceding*
+                    // changes left, which is what the map holds by now.
+                    Some(range) => {
+                        let Some(file) = workspace.file(&name) else {
+                            continue;
+                        };
+                        let span = convert::range_to_span(workspace.map().file(file), range);
+                        workspace.apply_edit(&name, &SourceEdit::new(span, change.text));
+                    }
+                    // A whole-document change: no tree to reuse.
+                    None => workspace.update(&name, change.text),
+                }
+            }
+            Ok(true)
+        }
+        DidChangeConfiguration::METHOD => {
+            let params: DidChangeConfigurationParams = serde_json::from_value(notification.params)?;
+            configure(connection, workspace, &params.settings)?;
+            // The options may have changed what every open document reports.
+            Ok(true)
+        }
+        DidCloseTextDocument::METHOD => {
+            let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
+            workspace.close(params.text_document.uri.as_str());
+            // Clear stale diagnostics for the closed document: it is no
+            // longer in the workspace, so the republish below says nothing
+            // about it.
+            send_diagnostics(connection, params.text_document.uri, Vec::new())?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 /// Analyzes the whole workspace through the shared frontend and publishes

@@ -24,23 +24,22 @@
 //! edited tree must equal parsing the new text from scratch — on the CST dump,
 //! on the owned `AstFile`, and on the diagnostics.
 //!
-//! The scenarios run over the slice program, `examples/hello_uart.k65`, and a
-//! control-flow-heavy fixture, and cover every class the sub-plan lists:
-//! typing a statement, deleting and restoring a brace, inserting an item,
-//! editing inside a comment, a string, and a data block, editing at EOF, and
-//! an edit that flips a construct between two rules.
+//! The scenarios themselves live in `tests/common/scenarios.rs`, because
+//! `tests/lsp.rs` runs the same list through the server's edit path
+//! (`plans/07-lsp-tooling.md` H2). They run over the slice program,
+//! `examples/hello_uart.k65`, and a control-flow-heavy fixture, and cover
+//! every class the sub-plan lists: typing a statement, deleting and restoring
+//! a brace, inserting an item, editing inside a comment, a string, and a data
+//! block, editing at EOF, an edit that flips a construct between two rules,
+//! and lines holding two- and four-byte characters.
 
 use k816::parser::{SourceEdit, SyntaxTree, parse_source};
 use k816::source::{FileId, SourceFile, SourceMap, Span};
 
-const SLICE: &str = "var SCREEN = $0400
+#[path = "common/scenarios.rs"]
+mod scenarios;
 
-func work @a8 @i16 {
-    a = #1
-    SCREEN = a
-    return
-}
-";
+use scenarios::{Edit, Scenario};
 
 /// One source revision. Each revision owns its map, so a file keeps the same
 /// [`FileId`] across revisions and spans stay directly comparable.
@@ -61,32 +60,21 @@ impl Revision {
     }
 }
 
-/// One edit, addressed by text rather than by byte offset: the first
-/// occurrence of `find` becomes `replace`.
-#[derive(Clone, Debug)]
-struct Edit {
-    find: String,
-    replace: String,
+/// The scenario of that name, which must exist.
+fn scenario(name: &str) -> Scenario {
+    scenarios::scenarios()
+        .into_iter()
+        .find(|scenario| scenario.name == name)
+        .unwrap_or_else(|| panic!("no scenario named `{name}`"))
 }
 
-fn edit(find: &str, replace: &str) -> Edit {
-    Edit {
-        find: find.to_owned(),
-        replace: replace.to_owned(),
-    }
+/// Applies a scenario's edits one at a time, asserting after each that the
+/// incremental reparse is indistinguishable from a clean one.
+fn assert_incremental_equals_clean(scenario: Scenario) {
+    run(scenario.name, &scenario.source, scenario.edits);
 }
 
-/// Types `text` one character at a time immediately before `anchor` — the
-/// mid-typing scenario that matters most for an editor.
-fn typing(anchor: &str, text: &str) -> Vec<Edit> {
-    text.chars()
-        .map(|character| edit(anchor, &format!("{character}{anchor}")))
-        .collect()
-}
-
-/// Applies `edits` one at a time, asserting after each that the incremental
-/// reparse is indistinguishable from a clean one.
-fn assert_incremental_equals_clean(scenario: &str, source: &str, edits: Vec<Edit>) {
+fn run(scenario: &str, source: &str, edits: Vec<Edit>) {
     let mut current = Revision::new(source);
     let mut tree: SyntaxTree = parse_source(current.file(), None).tree;
 
@@ -127,168 +115,96 @@ fn assert_incremental_equals_clean(scenario: &str, source: &str, edits: Vec<Edit
 
 #[test]
 fn typing_a_statement_inside_a_function() {
-    assert_incremental_equals_clean(
-        "typing a statement",
-        SLICE,
-        typing("    return", "a = #2\n    "),
-    );
+    assert_incremental_equals_clean(scenario("typing a statement"));
 }
 
 #[test]
 fn deleting_and_restoring_a_closing_brace() {
-    assert_incremental_equals_clean(
-        "delete and restore `}`",
-        SLICE,
-        vec![edit("}\n", "\n"), edit("\n\n", "\n}\n")],
-    );
+    assert_incremental_equals_clean(scenario("delete and restore `}`"));
 }
 
 #[test]
 fn inserting_an_item_between_two_items() {
-    assert_incremental_equals_clean(
-        "insert an item",
-        SLICE,
-        vec![edit("\nfunc work", "\nvar OTHER = $0500\n\nfunc work")],
-    );
+    assert_incremental_equals_clean(scenario("insert an item"));
 }
 
 #[test]
 fn editing_inside_a_comment() {
-    let source = "// leading note\nvar SCREEN = $0400 // trailing note\n";
-    assert_incremental_equals_clean(
-        "edit inside a comment",
-        source,
-        vec![
-            edit("leading", "LEADING"),
-            edit("trailing note", "trailing note; var XX = 1"),
-            edit("// LEADING", "/* LEADING */ //"),
-        ],
-    );
+    assert_incremental_equals_clean(scenario("edit inside a comment"));
 }
 
 #[test]
 fn editing_at_end_of_file() {
-    assert_incremental_equals_clean(
-        "edit at EOF",
-        SLICE,
-        vec![
-            edit("return\n}\n", "return\n}\n\nvar TAIL = $0500\n"),
-            edit("var TAIL = $0500\n", "var TAIL = $0500"),
-        ],
-    );
+    assert_incremental_equals_clean(scenario("edit at EOF"));
 }
-
-/// The stress-test fixture, which exercises data blocks, a wait loop, an
-/// assignment chain, and an evaluator bracket at once.
-fn hello_uart() -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/hello_uart.k65");
-    std::fs::read_to_string(path).expect("read the stress-test fixture")
-}
-
-const CONTROL_FLOW: &str = "func main @a8 @i8 {
-    x = %0
-    {
-        { a&?READY } n-?
-        DATA = a = text,x
-        x++
-        a?0
-    } !=
-    >={ x-- } else { y++ }
-    < goto done
-    { } always
-}
-
-data text {
-    \"Hello\"
-    $0D $0A $00
-}
-";
 
 #[test]
 fn editing_inside_a_string() {
-    assert_incremental_equals_clean(
-        "edit inside a string",
-        CONTROL_FLOW,
-        vec![
-            edit("Hello", "Hello, World!"),
-            edit("Hello, World!", "Hello, World!\\n"),
-            // Closing the string is what makes this class interesting: the
-            // edit changes where the string ends, not only its contents.
-            edit("\"Hello, World!\\n\"", "\"Hello, World!\\n"),
-        ],
-    );
+    assert_incremental_equals_clean(scenario("edit inside a string"));
 }
 
 #[test]
 fn editing_inside_a_data_block() {
-    assert_incremental_equals_clean(
-        "edit inside a data block",
-        CONTROL_FLOW,
-        vec![
-            edit("$0D $0A $00", "$0D $0A"),
-            edit("$0D $0A", "$0D $0A $00 $FF"),
-            edit("data text {", "data text {\n    align 256"),
-        ],
-    );
+    assert_incremental_equals_clean(scenario("edit inside a data block"));
 }
 
 #[test]
 fn an_edit_that_flips_a_construct_between_two_rules() {
-    // `{ ... } !=` is a loop and `!= { ... }` is a conditional, so moving the
-    // condition across the brace changes which rule matched — the hardest
-    // case for tree reuse, because the reused subtree is the block itself.
-    assert_incremental_equals_clean(
-        "flip loop and conditional",
-        CONTROL_FLOW,
-        vec![
-            edit("    } !=\n", "    }\n"),
-            edit(
-                "    {\n        { a&?READY }",
-                "    != {\n        { a&?READY }",
-            ),
-            edit("< goto done", "< break"),
-            edit("{ } always", "{ } !="),
-        ],
-    );
+    assert_incremental_equals_clean(scenario("flip loop and conditional"));
 }
 
 #[test]
 fn typing_a_statement_into_the_stress_test_fixture() {
-    assert_incremental_equals_clean(
-        "typing into hello_uart",
-        &hello_uart(),
-        typing("    x++", "a?$FF\n    "),
-    );
+    assert_incremental_equals_clean(scenario("typing into hello_uart"));
 }
 
 #[test]
 fn editing_the_stress_test_fixture_across_its_shapes() {
-    assert_incremental_equals_clean(
-        "edits across hello_uart",
-        &hello_uart(),
-        vec![
-            edit("$0D $0A $00", "$0D $0A"),
-            edit("Hello, World!", "Goodbye"),
-            edit("UART example", "UART sample"),
-            edit("word 0 0 0 0 0 0 main 0", "word 0 0 0 0 0 0 0 main"),
-            edit("x = %0", "x = %1"),
-            edit("[$FF]", "[$FE]"),
-            edit("func main @a8 @i8 {", "func main @a8 {"),
-        ],
-    );
+    assert_incremental_equals_clean(scenario("edits across hello_uart"));
 }
 
 #[test]
 fn an_edit_that_breaks_and_repairs_the_file() {
-    // Diagnostics have to agree too, not just the trees.
-    assert_incremental_equals_clean(
+    assert_incremental_equals_clean(scenario("break and repair"));
+}
+
+/// The multi-byte scenarios, which the parser has to survive for the same
+/// reason as any other and the server has to survive for one more: its edits
+/// arrive as UTF-16 ranges.
+#[test]
+fn editing_lines_holding_multi_byte_characters() {
+    for name in [
+        "typing after a two-byte character",
+        "typing around a four-byte character",
+        "editing a string with multi-byte characters",
+    ] {
+        assert_incremental_equals_clean(scenario(name));
+    }
+}
+
+/// Every scenario is reached by a test above, so a scenario added for the
+/// server's sake is run against the parser too.
+#[test]
+fn every_scenario_is_covered_here() {
+    const NAMED: &[&str] = &[
+        "typing a statement",
+        "delete and restore `}`",
+        "insert an item",
+        "edit inside a comment",
+        "edit at EOF",
+        "edit inside a string",
+        "edit inside a data block",
+        "flip loop and conditional",
+        "typing into hello_uart",
+        "edits across hello_uart",
         "break and repair",
-        SLICE,
-        vec![
-            edit("a = #1", "a = ="),
-            edit("a = =", "a = #1"),
-            edit("func work", "func"),
-            edit("func @a8", "func work @a8"),
-        ],
-    );
+        "typing after a two-byte character",
+        "typing around a four-byte character",
+        "editing a string with multi-byte characters",
+    ];
+    let names: Vec<&str> = scenarios::scenarios()
+        .iter()
+        .map(|scenario| scenario.name)
+        .collect();
+    assert_eq!(names, NAMED);
 }

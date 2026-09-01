@@ -37,7 +37,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::parser::SyntaxTree;
+use crate::parser::{SourceEdit, SyntaxTree};
 use crate::source::{FileId, SourceMap};
 use crate::{Analysis, Options};
 
@@ -74,6 +74,8 @@ pub struct Workspace {
     map: SourceMap,
     documents: BTreeMap<String, Document>,
     options: Options,
+    /// How many times [`Self::analyze`] has run; see [`Self::analyses`].
+    analyses: u64,
 }
 
 impl Workspace {
@@ -135,6 +137,38 @@ impl Workspace {
         }
     }
 
+    /// Applies one text replacement to an open document, incrementally.
+    ///
+    /// The difference from [`Self::update`] is the whole of what makes the
+    /// next parse incremental: an edit says *what moved*, so the retained
+    /// tree can be told and reused, while a whole-text replacement says only
+    /// what the text now is. A client that sends ranged content changes gets
+    /// the first; one that sends whole documents gets the second, and both
+    /// are correct.
+    ///
+    /// Changes arrive in order and each is against the text the previous ones
+    /// left, so a caller applying several converts each one's range against
+    /// [`Self::map`] *after* the preceding call.
+    ///
+    /// Nothing here validates the edit: `edit.span` is already clamped to the
+    /// document by the conversion that produced it, and there is no way to
+    /// report a refusal from inside a notification anyway (decision 18).
+    pub fn apply_edit(&mut self, name: &str, edit: &SourceEdit) {
+        let Self { map, documents, .. } = self;
+        let Some(document) = documents.get_mut(name) else {
+            return;
+        };
+        debug_assert_eq!(edit.span.file, document.file);
+        let before = map.file(document.file);
+        let after = edit.apply(before);
+        if let Some(tree) = &mut document.tree {
+            // Recorded against the text the tree was parsed from, which is
+            // still what the map holds — hence before the replacement.
+            tree.edit(before, edit);
+        }
+        map.replace_file(document.file, after);
+    }
+
     pub fn close(&mut self, name: &str) {
         if self.documents.remove(name).is_some() {
             self.rebuild();
@@ -175,16 +209,28 @@ impl Workspace {
         }
     }
 
+    /// How many analyses this workspace has run.
+    ///
+    /// A test hook, and the only one: the server coalesces a burst of
+    /// notifications into a single analysis (decision 3), and "one analysis"
+    /// is not observable from the diagnostics it produces — the same answer
+    /// arrives whether it was computed once or five times.
+    pub fn analyses(&self) -> u64 {
+        self.analyses
+    }
+
     /// Analyzes every open document through the shared frontend.
     ///
     /// Each document is parsed against the tree it last produced, and the
     /// fresh tree is retained for the next analysis. The spans the result
     /// carries point into [`Self::map`].
     pub fn analyze(&mut self) -> Analysis {
+        self.analyses += 1;
         let Self {
             map,
             documents,
             options,
+            ..
         } = self;
         let mut by_file: BTreeMap<FileId, &mut Document> = documents
             .values_mut()

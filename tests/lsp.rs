@@ -861,3 +861,262 @@ fn re_analyzing_an_unchanged_workspace_answers_the_same() {
     );
     assert_eq!(first.units[0].parse.file, second.units[0].parse.file);
 }
+
+// ---------------------------------------------------------------------------
+// H2 — incremental sync and coalescing
+// ---------------------------------------------------------------------------
+
+#[path = "common/scenarios.rs"]
+mod scenarios;
+
+const DOC: &str = "file:///scenario.k816";
+
+/// Applies one *ranged* content change the way the server does: convert the
+/// UTF-16 range against the text the workspace currently holds, then hand the
+/// byte-span edit to the store.
+///
+/// The two calls `lsp::apply` makes, in the order it makes them, so the test
+/// exercises the conversion and the store's edit path and not a third
+/// arrangement of them (decision 17).
+fn apply_ranged_change(workspace: &mut Workspace, range: lsp_types::Range, text: &str) {
+    use k816::lsp::convert::range_to_span;
+    use k816::parser::SourceEdit;
+
+    let file = workspace.file(DOC).expect("an open document");
+    let span = range_to_span(workspace.map().file(file), range);
+    workspace.apply_edit(DOC, &SourceEdit::new(span, text));
+}
+
+/// Every edit scenario, run through the server's edit path.
+///
+/// The edit is found by text, turned into a UTF-16 range *by the same
+/// conversion the server uses in the other direction*, and fed back in — so
+/// the two halves of decision 13 are checked against each other on every
+/// character class the corpus has. The claim at the end is the phase-11 one:
+/// what the incremental workspace holds is what a fresh workspace holding the
+/// final text would produce, on the CST, the AST and the diagnostics.
+#[test]
+fn every_edit_scenario_survives_the_servers_incremental_path() {
+    use k816::lsp::convert::span_to_range;
+    use k816::source::Span;
+
+    for scenario in scenarios::scenarios() {
+        let mut workspace = Workspace::new();
+        workspace.update(DOC, scenario.source.clone());
+        // The first analysis is what gives the store a tree to edit, exactly
+        // as the `didOpen` publish does in the server.
+        workspace.analyze();
+
+        for (step, edit) in scenario.edits.iter().enumerate() {
+            let step = format!("{} (edit {})", scenario.name, step + 1);
+            let file = workspace.file(DOC).expect("an open document");
+            let text = workspace.map().file(file).text();
+            let start = text
+                .find(&edit.find)
+                .unwrap_or_else(|| panic!("{step}: `{}` not found", edit.find));
+            let span = Span::new(file, start as u32, (start + edit.find.len()) as u32);
+            let range = span_to_range(workspace.map(), span);
+
+            apply_ranged_change(&mut workspace, range, &edit.replace);
+            workspace.analyze();
+        }
+
+        let final_text = {
+            let file = workspace.file(DOC).expect("an open document");
+            workspace.map().file(file).text().to_owned()
+        };
+        let incremental = workspace.analyze();
+
+        let mut fresh = Workspace::new();
+        fresh.update(DOC, final_text.clone());
+        let clean = fresh.analyze();
+
+        assert_eq!(
+            incremental.units[0].parse.tree.dump(),
+            clean.units[0].parse.tree.dump(),
+            "{}: CST differs for:\n{final_text}",
+            scenario.name
+        );
+        assert_eq!(
+            incremental.units[0].parse.file, clean.units[0].parse.file,
+            "{}: AST differs for:\n{final_text}",
+            scenario.name
+        );
+        assert_eq!(
+            format!("{:?}", incremental.diagnostics),
+            format!("{:?}", clean.diagnostics),
+            "{}: diagnostics differ for:\n{final_text}",
+            scenario.name
+        );
+    }
+}
+
+/// A range off the end of the document is clamped, not a panic (decision 18).
+#[test]
+fn a_change_beyond_the_end_of_the_document_is_clamped() {
+    let mut workspace = Workspace::new();
+    workspace.update(DOC, "var SCREEN = $0400\n");
+    workspace.analyze();
+
+    // Both ends past the last line: an insertion at end of file.
+    apply_ranged_change(
+        &mut workspace,
+        lsp_types::Range::new(Position::new(99, 0), Position::new(200, 5)),
+        "var OTHER = $0500\n",
+    );
+    let file = workspace.file(DOC).expect("an open document");
+    assert_eq!(
+        workspace.map().file(file).text(),
+        "var SCREEN = $0400\nvar OTHER = $0500\n"
+    );
+
+    // A column past the end of a line is that line's end, and a reversed
+    // range covers what it covers.
+    apply_ranged_change(
+        &mut workspace,
+        lsp_types::Range::new(Position::new(1, 999), Position::new(0, 0)),
+        "",
+    );
+    let file = workspace.file(DOC).expect("an open document");
+    assert_eq!(workspace.map().file(file).text(), "\n");
+    assert!(workspace.analyze().units[0].parse.diagnostics.is_empty());
+}
+
+/// The workspace counts its own analyses, which is what makes "one analysis"
+/// a checkable claim rather than an unobservable one.
+#[test]
+fn the_workspace_counts_its_analyses() {
+    let mut workspace = Workspace::new();
+    assert_eq!(workspace.analyses(), 0);
+    workspace.update(DOC, "var SCREEN = $0400\n");
+    assert_eq!(workspace.analyses(), 0, "an edit is not an analysis");
+    workspace.analyze();
+    workspace.analyze();
+    assert_eq!(workspace.analyses(), 2);
+}
+
+/// Drives the real server loop over an in-memory connection with `messages`
+/// already queued, and returns every notification it sent back.
+fn run_server(messages: Vec<serde_json::Value>) -> Vec<lsp_server::Notification> {
+    let (server, client) = lsp_server::Connection::memory();
+    for message in messages {
+        client
+            .sender
+            .send(serde_json::from_value(message).expect("a protocol message"))
+            .expect("the server is listening");
+    }
+    k816::lsp::serve(&server, Options::default(), &serde_json::Value::Null)
+        .expect("the server runs to shutdown");
+    drop(server);
+
+    let mut sent = Vec::new();
+    while let Ok(message) = client.receiver.try_recv() {
+        if let lsp_server::Message::Notification(notification) = message {
+            sent.push(notification);
+        }
+    }
+    sent
+}
+
+fn did_open(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": { "uri": DOC, "languageId": "k816", "version": 1, "text": text },
+        },
+    })
+}
+
+fn did_change(line: u32, character: u32, text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": { "uri": DOC, "version": 2 },
+            "contentChanges": [{
+                "range": {
+                    "start": { "line": line, "character": character },
+                    "end": { "line": line, "character": character },
+                },
+                "text": text,
+            }],
+        },
+    })
+}
+
+fn shutdown_and_exit() -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "shutdown", "params": null }),
+        serde_json::json!({ "jsonrpc": "2.0", "method": "exit", "params": null }),
+    ]
+}
+
+/// A burst of notifications is one analysis, and therefore one publish.
+///
+/// The server drains everything already queued before it analyzes, so six
+/// notifications that arrived together produce one answer rather than six
+/// (decision 3). Queueing them before the loop starts is what makes the test
+/// deterministic: there is no timer to race.
+#[test]
+fn a_burst_of_notifications_produces_one_analysis() {
+    let mut messages = vec![did_open("func main @a8 {\n    return\n}\n")];
+    for character in 0..5 {
+        messages.push(did_change(1, 4 + character, "n"));
+    }
+    messages.extend(shutdown_and_exit());
+
+    let published = run_server(messages)
+        .iter()
+        .filter(|notification| notification.method == "textDocument/publishDiagnostics")
+        .count();
+    assert_eq!(published, 1, "one analysis for the whole burst");
+}
+
+/// The same six notifications, delivered one at a time, are six analyses.
+///
+/// Without this the test above would pass for a server that published once
+/// and stopped. The server runs on its own thread and the test waits for each
+/// answer before sending the next, so "arrived together" is the only
+/// difference between the two.
+#[test]
+fn notifications_delivered_one_at_a_time_are_analyzed_one_at_a_time() {
+    let (server, client) = lsp_server::Connection::memory();
+    let worker = std::thread::spawn(move || {
+        k816::lsp::serve(&server, Options::default(), &serde_json::Value::Null)
+            .expect("the server runs to shutdown");
+        drop(server);
+    });
+
+    let send = |message: serde_json::Value| {
+        client
+            .sender
+            .send(serde_json::from_value(message).expect("a protocol message"))
+            .expect("the server is listening");
+    };
+    let await_publish = || {
+        loop {
+            let message = client.receiver.recv().expect("the server answers");
+            if let lsp_server::Message::Notification(notification) = message
+                && notification.method == "textDocument/publishDiagnostics"
+            {
+                break;
+            }
+        }
+    };
+
+    send(did_open("func main @a8 {\n    return\n}\n"));
+    await_publish();
+    let mut publishes = 1;
+    for character in 0..5 {
+        send(did_change(1, 4 + character, "n"));
+        await_publish();
+        publishes += 1;
+    }
+    assert_eq!(publishes, 6);
+
+    for message in shutdown_and_exit() {
+        send(message);
+    }
+    worker.join().expect("the server thread finishes");
+}

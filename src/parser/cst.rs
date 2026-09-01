@@ -22,7 +22,7 @@
 
 //! Thin wrapper around the Tree-sitter tree plus CST inspection helpers.
 
-use crate::source::{LineCol, SourceFile, Span};
+use crate::source::{FileId, LineCol, SourceFile, Span};
 
 /// One text replacement inside a source file: `span` becomes `replacement`.
 ///
@@ -56,14 +56,93 @@ impl SourceEdit {
     }
 }
 
+/// One CST node, named and located, with the Tree-sitter type left behind.
+///
+/// The door through which everything outside `src/parser/` learns what the
+/// grammar saw at a position (A3's rule: `tree_sitter` types stop at this
+/// module). `kind` is the grammar's own node name — the same string
+/// `node-types.json` lists and the query files match on — so a consumer and a
+/// query cannot be talking about different nodes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CstNode {
+    pub kind: String,
+    pub span: Span,
+    /// False for punctuation and keywords the grammar spells inline.
+    pub named: bool,
+    /// A token error recovery inserted; it occupies no source text.
+    pub missing: bool,
+    /// This node is the `ERROR` node itself.
+    pub error: bool,
+    /// Whether the node has no children; read through [`Self::is_leaf`].
+    leaf: bool,
+}
+
+impl CstNode {
+    /// Whether this node has children in the CST.
+    ///
+    /// A leaf is a token, which is what a hover, a completion context, or a
+    /// semantic token is about; an interior node is the construct around it.
+    pub fn is_leaf(&self) -> bool {
+        self.leaf
+    }
+}
+
 /// An immutable parse tree for one source file.
 ///
 /// Wraps the Tree-sitter tree so `tree_sitter` types stay inside `parser::`.
+#[derive(Debug)]
 pub struct SyntaxTree {
     pub(super) tree: tree_sitter::Tree,
 }
 
+/// Cloning a tree is a refcount bump in the Tree-sitter runtime, which is what
+/// lets the document store keep the tree it just handed to an [`Analysis`].
+impl Clone for SyntaxTree {
+    fn clone(&self) -> Self {
+        Self {
+            tree: self.tree.clone(),
+        }
+    }
+}
+
 impl SyntaxTree {
+    /// Every node covering `offset`, outermost (`source_file`) first.
+    ///
+    /// The chain rather than only the innermost node, because every consumer
+    /// H builds wants a different depth of it: a hover wants the token, a
+    /// completion wants the construct the token sits in, and the formatter
+    /// wants how many brace-delimited ancestors there are. Deriving all three
+    /// from one walk is what keeps them from disagreeing about what is under
+    /// the cursor.
+    ///
+    /// An offset in whitespace between two tokens yields the chain down to
+    /// the enclosing construct and stops there — the last element is then not
+    /// a leaf, which is how a caller tells "on a token" from "near one".
+    pub fn node_path(&self, file: FileId, offset: u32) -> Vec<CstNode> {
+        let mut path = Vec::new();
+        let mut node = self.root();
+        loop {
+            path.push(describe(node, file));
+            let mut cursor = node.walk();
+            let child = node.children(&mut cursor).find(|child| {
+                (child.start_byte() as u32) <= offset && offset < (child.end_byte() as u32)
+            });
+            match child {
+                Some(child) => node = child,
+                None => break,
+            }
+        }
+        path
+    }
+
+    /// Whether the parse contains an `ERROR` or a `MISSING` node.
+    ///
+    /// What the formatter refuses on (decision 4) and what a request answers
+    /// nothing for when it would have to guess (decision 18).
+    pub fn has_error(&self) -> bool {
+        self.root().has_error()
+    }
+
     pub(super) fn root(&self) -> tree_sitter::Node<'_> {
         self.tree.root_node()
     }
@@ -104,6 +183,18 @@ impl SyntaxTree {
             old_end_position: point(old_end),
             new_end_position: point(advance(start, &edit.replacement)),
         });
+    }
+}
+
+/// The k816-typed description of one Tree-sitter node.
+fn describe(node: tree_sitter::Node<'_>, file: FileId) -> CstNode {
+    CstNode {
+        kind: node.kind().to_owned(),
+        span: Span::new(file, node.start_byte() as u32, node.end_byte() as u32),
+        named: node.is_named(),
+        missing: node.is_missing(),
+        error: node.is_error(),
+        leaf: node.child_count() == 0,
     }
 }
 

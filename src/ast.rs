@@ -1343,3 +1343,80 @@ pub enum BinaryOp {
     BitXor,
     BitOr,
 }
+
+/// Visits every statement of `block` in source order, entering nested blocks
+/// before moving on — the same pre-order walk that numbers them.
+///
+/// The match is exhaustive for the same reason
+/// [`assign_statement_ids`](crate::parser) is: a statement form added later
+/// that carries nested statements would otherwise be silently invisible to
+/// every consumer of this walk, and "the editor knows nothing about the
+/// inside of this construct" is a bug that looks like a missing feature.
+pub fn visit_statements(block: &Block, visit: &mut impl FnMut(&Statement)) {
+    for statement in &block.statements {
+        visit_statement(statement, visit);
+    }
+}
+
+fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&Statement)) {
+    visit(statement);
+    match &statement.kind {
+        StatementKind::WidthBlock(width) => visit_statements(&width.body, visit),
+        StatementKind::Nocross(body) => visit_statements(body, visit),
+        StatementKind::Loop(loop_statement) => visit_statements(&loop_statement.body, visit),
+        StatementKind::Conditional(conditional) => {
+            visit_statements(&conditional.body, visit);
+            if let Some(otherwise) = &conditional.otherwise {
+                visit_statements(otherwise, visit);
+            }
+        }
+        StatementKind::ConditionalJump(jump) => visit_statement(&jump.jump, visit),
+        StatementKind::Data(data) => visit_data_statements(data, visit),
+        StatementKind::Label(_)
+        | StatementKind::Native(_)
+        | StatementKind::Hla(_)
+        | StatementKind::ModeSet(_)
+        | StatementKind::Call(_)
+        | StatementKind::BareCall(_)
+        | StatementKind::Goto(_)
+        | StatementKind::Break
+        | StatementKind::Repeat
+        | StatementKind::Preprocessor(_)
+        | StatementKind::Return(_)
+        | StatementKind::Align(_)
+        | StatementKind::Address(_)
+        | StatementKind::Reserved(_)
+        | StatementKind::Error => {}
+    }
+}
+
+/// Visits every statement inside a data block's `code { … }` entries.
+pub fn visit_data_statements(data: &DataBlock, visit: &mut impl FnMut(&Statement)) {
+    for entry in &data.entries {
+        match &entry.kind {
+            DataEntryKind::Code { body, .. } => visit_statements(body, visit),
+            DataEntryKind::Repeat { body, .. } => visit_data_statements(body, visit),
+            DataEntryKind::NocrossGroup(entries) => {
+                for entry in entries {
+                    if let DataEntryKind::Code { body, .. } = &entry.kind {
+                        visit_statements(body, visit);
+                    }
+                }
+            }
+            DataEntryKind::Evaluator(_)
+            | DataEntryKind::Label(_)
+            | DataEntryKind::Value(_)
+            | DataEntryKind::Typed { .. }
+            | DataEntryKind::Align(_)
+            | DataEntryKind::Address(_)
+            | DataEntryKind::Segment(_)
+            | DataEntryKind::Nocross
+            | DataEntryKind::Charset(_)
+            | DataEntryKind::ForEval { .. }
+            | DataEntryKind::Preprocessor(_)
+            | DataEntryKind::Binary(_)
+            | DataEntryKind::Reserved(_)
+            | DataEntryKind::Error => {}
+        }
+    }
+}

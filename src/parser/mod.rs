@@ -31,7 +31,7 @@ mod cst;
 mod diagnostics;
 
 pub(crate) use ast_builder::assign_statement_ids;
-pub use cst::{SourceEdit, SyntaxTree};
+pub use cst::{CstNode, SourceEdit, SyntaxTree};
 
 use crate::ast::AstFile;
 use crate::diagnostic::Diagnostic;
@@ -52,6 +52,7 @@ fn language() -> Language {
 
 /// Result of parsing one source file: the retained syntax tree, the owned
 /// AST, and structured syntax diagnostics.
+#[derive(Debug)]
 pub struct ParseResult {
     pub tree: SyntaxTree,
     pub file: AstFile,

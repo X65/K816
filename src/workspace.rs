@@ -24,15 +24,38 @@
 //! holding live documents).
 //!
 //! It never analyzes on its own — analysis goes through the same shared
-//! frontend APIs the CLI uses ([`crate::analyze_workspace`]), so the two can
-//! never disagree. Documents are re-analyzed from scratch on every change;
-//! K816 sources are small (see `doc/design.md` §10), and incremental
-//! semantic analysis is deliberately deferred until profiling demands it.
+//! frontend APIs the CLI uses ([`crate::analyze_parsed`]), so the two can
+//! never disagree. What the store adds is *retention*: it owns the source
+//! map, so a document keeps its [`FileId`] across an edit, and it keeps the
+//! syntax tree of each document's last parse so the next one can be
+//! incremental.
+//!
+//! Semantic analysis is not incremental and is not cached: every change
+//! re-analyzes the whole workspace and the previous [`Analysis`] is dropped.
+//! K816 sources are small (`doc/design.md` §10), and the number that would
+//! justify anything else is `plans/07-lsp-tooling.md` H9's to measure.
 
 use std::collections::BTreeMap;
 
+use crate::parser::SyntaxTree;
 use crate::source::{FileId, SourceMap};
 use crate::{Analysis, Options};
+
+/// One open document: where its text lives, and the tree it last parsed to.
+#[derive(Debug)]
+struct Document {
+    /// This document's identity in the workspace's [`SourceMap`], which is
+    /// also where its text lives — the map is the single owner of source
+    /// text, here as everywhere else.
+    file: FileId,
+    /// The tree of the last parse, or `None` when the text has changed in a
+    /// way the tree cannot describe.
+    ///
+    /// Tree-sitter can only reuse a tree that has been told what moved, so a
+    /// whole-text replacement drops it. Cloning one is a refcount bump, which
+    /// is what lets the store keep the tree it just handed to an `Analysis`.
+    tree: Option<SyntaxTree>,
+}
 
 /// Live documents, keyed by their URI (or path) string, and the options they
 /// are analyzed under.
@@ -47,7 +70,9 @@ use crate::{Analysis, Options};
 /// close (`plans/07-lsp-tooling.md` decision 1).
 #[derive(Debug, Default)]
 pub struct Workspace {
-    documents: BTreeMap<String, String>,
+    /// Every open document's text, and the identity each span points into.
+    map: SourceMap,
+    documents: BTreeMap<String, Document>,
     options: Options,
 }
 
@@ -59,8 +84,8 @@ impl Workspace {
     /// A workspace whose documents are analyzed under `options`.
     pub fn with_options(options: Options) -> Self {
         Self {
-            documents: BTreeMap::new(),
             options,
+            ..Self::default()
         }
     }
 
@@ -80,33 +105,107 @@ impl Workspace {
         self.options = options;
     }
 
+    /// The source map holding every open document's text.
+    ///
+    /// Every [`Span`](crate::source::Span) an [`Analysis`] carries points
+    /// into it, so it is what a caller translates positions against.
+    pub fn map(&self) -> &SourceMap {
+        &self.map
+    }
+
+    /// The identity of the open document named `name`.
+    pub fn file(&self, name: &str) -> Option<FileId> {
+        self.documents.get(name).map(|document| document.file)
+    }
+
     /// Opens a document or replaces the text of an already open one.
     pub fn update(&mut self, name: impl Into<String>, text: impl Into<String>) {
-        self.documents.insert(name.into(), text.into());
+        let name = name.into();
+        match self.documents.get_mut(&name) {
+            Some(document) => {
+                self.map.replace_file(document.file, text);
+                // A whole-text replacement says nothing about what moved, so
+                // the retained tree cannot be reused for it.
+                document.tree = None;
+            }
+            None => {
+                let file = self.map.add_file(name.clone(), text);
+                self.documents.insert(name, Document { file, tree: None });
+            }
+        }
     }
 
     pub fn close(&mut self, name: &str) {
-        self.documents.remove(name);
+        if self.documents.remove(name).is_some() {
+            self.rebuild();
+        }
     }
 
     pub fn is_empty(&self) -> bool {
         self.documents.is_empty()
     }
 
-    /// Analyzes every open document through the shared frontend and returns
-    /// the source map (for span translation) alongside the analysis.
-    pub fn analyze(&self) -> (SourceMap, Analysis) {
-        let mut map = SourceMap::new();
-        for (name, text) in &self.documents {
-            map.add_file(name.clone(), text.clone());
+    /// Rebuilds the source map over the documents that remain, reassigning
+    /// their identities.
+    ///
+    /// A [`FileId`] is a position in the map, so closing a document moves
+    /// every later one. The retained trees survive it — a syntax tree records
+    /// byte offsets and node kinds and knows nothing about which file it came
+    /// from — so a close costs the *other* documents nothing.
+    fn rebuild(&mut self) {
+        let mut surviving: Vec<(String, String)> = self
+            .documents
+            .iter()
+            .map(|(name, document)| (name.clone(), document.file))
+            .collect::<Vec<_>>()
+            .into_iter()
+            // In the order they had, so the analysis order does not jump
+            // around when an unrelated document closes.
+            .map(|(name, file)| (name, self.map.file(file).text().to_owned()))
+            .collect();
+        surviving.sort_by_key(|(name, _)| self.documents[name.as_str()].file.index());
+
+        self.map = SourceMap::new();
+        for (name, text) in surviving {
+            let file = self.map.add_file(name.clone(), text);
+            self.documents
+                .get_mut(&name)
+                .expect("collected from this map")
+                .file = file;
         }
-        let analysis = crate::analyze_workspace(&map, &self.options);
-        (map, analysis)
+    }
+
+    /// Analyzes every open document through the shared frontend.
+    ///
+    /// Each document is parsed against the tree it last produced, and the
+    /// fresh tree is retained for the next analysis. The spans the result
+    /// carries point into [`Self::map`].
+    pub fn analyze(&mut self) -> Analysis {
+        let Self {
+            map,
+            documents,
+            options,
+        } = self;
+        let mut by_file: BTreeMap<FileId, &mut Document> = documents
+            .values_mut()
+            .map(|document| (document.file, document))
+            .collect();
+
+        crate::analyze_parsed(map, options, |source| match by_file.get_mut(&source.id()) {
+            Some(document) => {
+                let result = crate::parser::parse_source(source, document.tree.as_ref());
+                document.tree = Some(result.tree.clone());
+                result
+            }
+            // A file in the map that is not an open document cannot happen
+            // while `update`, `close` and `rebuild` are the only writers; a
+            // fresh parse is the answer that is never wrong if it does.
+            None => crate::parser::parse_source(source, None),
+        })
     }
 }
 
-/// The [`FileId`] of the document named `name` inside a map returned by
-/// [`Workspace::analyze`].
+/// The [`FileId`] of the document named `name` inside `map`.
 pub fn find_file(map: &SourceMap, name: &str) -> Option<FileId> {
     map.files()
         .find(|file| file.name() == name)

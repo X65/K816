@@ -1,6 +1,6 @@
 /*****************************************************************************/
 /*                                                                           */
-/*                                   lsp.rs                                  */
+/*                                   mod.rs                                  */
 /*                                                                           */
 /*         Editor-neutral LSP server publishing compiler diagnostics         */
 /*                                                                           */
@@ -20,22 +20,34 @@
 /*                                                                           */
 /*****************************************************************************/
 
-//! The minimal, synchronous LSP server: live syntax and semantic
-//! diagnostics.
+//! The synchronous LSP server: live syntax and semantic diagnostics, and
+//! the surface built on the same analysis.
 //!
 //! The server never runs an approximate compiler — every analysis goes
 //! through the same shared frontend the CLI uses, via
-//! [`crate::workspace::Workspace`]. This module only converts between the
-//! protocol and the compiler's structured [`Diagnostic`] values. There is no
-//! editor-specific code here; hover, definition, rename, completion, and
-//! formatting arrive with sub-plan H.
+//! [`crate::workspace::Workspace`], and stops at [`crate::Analysis`]
+//! (`doc/design.md` §10). What lives here is the protocol: the loop, the
+//! capabilities, the dispatch, and the conversions.
 //!
-//! What the analysis runs under is the editor's to state, in the same
-//! spellings the command line uses — see [`config`]. Until it states
-//! something the server uses the same defaults `k816 compile` does, so the
-//! two agree by construction rather than by coincidence.
+//! The modules divide by what they answer for. [`convert`] owns positions,
+//! ranges and URIs, in both directions and nowhere else. [`diagnostics`]
+//! renders the compiler's structured [`Diagnostic`](crate::diagnostic::Diagnostic)
+//! values into their protocol form. [`config`] reads the options an editor
+//! states, in the spellings the command line uses. [`context`] answers "what
+//! is under this byte", which is where every request that is about a position
+//! begins.
+//!
+//! `lsp_types` stops at this directory: nothing outside `src/lsp/` imports
+//! it, the way nothing outside `src/parser/` imports `tree_sitter`.
 
 pub mod config;
+mod context;
+pub mod convert;
+pub mod diagnostics;
+
+pub use context::{Context, at};
+pub use convert::{span_to_range, uri};
+pub use diagnostics::{diagnostic_to_lsp, file_diagnostics};
 
 use lsp_server::{Connection, Message, Notification as ServerNotification};
 use lsp_types::notification::{
@@ -43,94 +55,16 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::{
-    DiagnosticRelatedInformation, DiagnosticSeverity, DidChangeConfigurationParams,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Location,
-    MessageType, NumberOrString, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
+    DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, MessageType, PublishDiagnosticsParams, ServerCapabilities,
     ShowMessageParams, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
 use crate::Options;
-use crate::diagnostic::{Diagnostic, Severity};
-use crate::source::{FileId, SourceMap, Span};
 use crate::workspace::Workspace;
 
 /// Anything that goes wrong while the server is talking to its client.
 type ServerError = Box<dyn std::error::Error + Sync + Send>;
-
-/// Converts a byte [`Span`] into an LSP range (UTF-16 columns).
-pub fn span_to_range(map: &SourceMap, span: Span) -> Range {
-    Range::new(
-        position(map, span.file, span.start),
-        position(map, span.file, span.end),
-    )
-}
-
-fn position(map: &SourceMap, file: FileId, offset: u32) -> Position {
-    let source = map.file(file);
-    let location = source.line_col(offset);
-    let line_text = source.line_text(location.line);
-    let byte_column = (location.column as usize).min(line_text.len());
-    let utf16_column: usize = line_text[..byte_column].chars().map(char::len_utf16).sum();
-    Position::new(location.line, utf16_column as u32)
-}
-
-/// Converts one structured compiler diagnostic into its protocol form.
-///
-/// The CLI renders the same [`Diagnostic`] values with Ariadne; neither side
-/// re-derives anything, so they cannot disagree.
-pub fn diagnostic_to_lsp(map: &SourceMap, diagnostic: &Diagnostic) -> lsp_types::Diagnostic {
-    let severity = match diagnostic.severity {
-        Severity::Error => DiagnosticSeverity::ERROR,
-        Severity::Warning => DiagnosticSeverity::WARNING,
-        Severity::Note => DiagnosticSeverity::INFORMATION,
-        Severity::Help => DiagnosticSeverity::HINT,
-    };
-
-    let mut message = diagnostic.title.clone();
-    if !diagnostic.primary.message.is_empty() {
-        message.push_str(&format!("\n{}", diagnostic.primary.message));
-    }
-    if let Some(help) = &diagnostic.help {
-        message.push_str(&format!("\nhelp: {help}"));
-    }
-
-    let related: Vec<DiagnosticRelatedInformation> = diagnostic
-        .secondary
-        .iter()
-        .filter_map(|label| {
-            let uri: Uri = map.file(label.span.file).name().parse().ok()?;
-            Some(DiagnosticRelatedInformation {
-                location: Location::new(uri, span_to_range(map, label.span)),
-                message: label.message.clone(),
-            })
-        })
-        .collect();
-
-    lsp_types::Diagnostic {
-        range: span_to_range(map, diagnostic.primary.span),
-        severity: Some(severity),
-        code: Some(NumberOrString::String(diagnostic.code.as_str().to_owned())),
-        code_description: None,
-        source: Some("k816".to_owned()),
-        message,
-        related_information: (!related.is_empty()).then_some(related),
-        tags: None,
-        data: None,
-    }
-}
-
-/// All protocol diagnostics belonging to `file`.
-pub fn file_diagnostics(
-    map: &SourceMap,
-    file: FileId,
-    diagnostics: &[Diagnostic],
-) -> Vec<lsp_types::Diagnostic> {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.primary.span.file == file)
-        .map(|diagnostic| diagnostic_to_lsp(map, diagnostic))
-        .collect()
-}
 
 /// Runs the synchronous LSP server over stdio until the client shuts down.
 ///
@@ -185,7 +119,7 @@ fn main_loop(
                         params.text_document.uri.to_string(),
                         params.text_document.text,
                     );
-                    publish_all(connection, &workspace)?;
+                    publish_all(connection, &mut workspace)?;
                 }
                 DidChangeTextDocument::METHOD => {
                     let params: DidChangeTextDocumentParams =
@@ -193,7 +127,7 @@ fn main_loop(
                     // Full sync: the last content change is the new text.
                     if let Some(change) = params.content_changes.into_iter().next_back() {
                         workspace.update(params.text_document.uri.to_string(), change.text);
-                        publish_all(connection, &workspace)?;
+                        publish_all(connection, &mut workspace)?;
                     }
                 }
                 DidChangeConfiguration::METHOD => {
@@ -202,7 +136,7 @@ fn main_loop(
                     configure(connection, &mut workspace, &params.settings)?;
                     // The options may have changed what every open document
                     // reports, so the whole workspace is republished.
-                    publish_all(connection, &workspace)?;
+                    publish_all(connection, &mut workspace)?;
                 }
                 DidCloseTextDocument::METHOD => {
                     let params: DidCloseTextDocumentParams =
@@ -210,7 +144,7 @@ fn main_loop(
                     workspace.close(params.text_document.uri.as_str());
                     // Clear stale diagnostics for the closed document.
                     send_diagnostics(connection, params.text_document.uri, Vec::new())?;
-                    publish_all(connection, &workspace)?;
+                    publish_all(connection, &mut workspace)?;
                 }
                 _ => {}
             },
@@ -222,13 +156,14 @@ fn main_loop(
 
 /// Analyzes the whole workspace through the shared frontend and publishes
 /// per-document diagnostics.
-fn publish_all(connection: &Connection, workspace: &Workspace) -> Result<(), ServerError> {
-    let (map, analysis) = workspace.analyze();
+fn publish_all(connection: &Connection, workspace: &mut Workspace) -> Result<(), ServerError> {
+    let analysis = workspace.analyze();
+    let map = workspace.map();
     for source in map.files() {
         let Ok(uri) = source.name().parse::<Uri>() else {
             continue;
         };
-        let diagnostics = file_diagnostics(&map, source.id(), &analysis.diagnostics);
+        let diagnostics = file_diagnostics(map, source.id(), &analysis.diagnostics);
         send_diagnostics(connection, uri, diagnostics)?;
     }
     Ok(())

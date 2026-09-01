@@ -93,12 +93,61 @@ impl Default for Options {
     }
 }
 
+/// One analyzed unit of a workspace: what it parsed to and what it means.
+///
+/// Kept rather than dropped because everything an editor asks — hover,
+/// definition, completion, rename, semantic tokens — is a question about one
+/// of these three, and the alternative is a second, approximate reading of
+/// the program in the server (`doc/design.md` §10 forbids exactly that).
+/// `analyze_workspace` always computed all of it; before sub-plan H it threw
+/// it away on return.
+#[derive(Debug)]
+pub struct AnalyzedUnit {
+    pub file: FileId,
+    /// The retained tree, the owned AST, and the syntax diagnostics.
+    pub parse: ParseResult,
+    pub model: semantic::SemanticModel,
+}
+
+impl AnalyzedUnit {
+    /// The AST every stage after analysis walks: the preprocessed program
+    /// where the preprocessor removed anything, and the parsed file
+    /// otherwise.
+    ///
+    /// Never `parse.file` directly. A region an `#if` did not take has no
+    /// symbols, no widths and no references, and the items after one have
+    /// shifted — a consumer that reaches for the parsed file sees directives
+    /// that no longer exist and indices that no longer line up
+    /// (`postmortem.md` §G.6.9).
+    pub fn program(&self) -> &ast::AstFile {
+        self.model.program(&self.parse.file)
+    }
+}
+
 /// Result of semantic analysis over a workspace. The LSP stops here; the CLI
 /// may continue to ca65 emission.
+///
+/// The CLI reads `diagnostics` and ignores the rest, which is deliberate:
+/// there is one analysis function, and what a consumer needs from it is the
+/// consumer's business. Nothing here is cached — every change re-analyzes the
+/// whole workspace and the previous `Analysis` is dropped, until profiling
+/// says otherwise (`doc/design.md` §10, `plans/07-lsp-tooling.md` decision
+/// 12).
 #[derive(Debug, Default)]
 pub struct Analysis {
     /// Syntax and semantic diagnostics for all analyzed files.
     pub diagnostics: Vec<Diagnostic>,
+    /// Every analyzed unit, in the map's file order.
+    pub units: Vec<AnalyzedUnit>,
+    /// What the units know about each other's names.
+    pub linkage: linkage::Linkage,
+}
+
+impl Analysis {
+    /// The analyzed unit for `file`, if it is one of the workspace's.
+    pub fn unit(&self, file: FileId) -> Option<&AnalyzedUnit> {
+        self.units.iter().find(|unit| unit.file == file)
+    }
 }
 
 /// Result of compiling one file to ca65 assembly.
@@ -122,21 +171,47 @@ pub fn parse_file(map: &mut SourceMap, path: &Path) -> std::io::Result<(FileId, 
 /// Each file is currently analyzed as its own unit — cross-unit symbols are
 /// sub-plan C territory.
 pub fn analyze_workspace(map: &SourceMap, options: &Options) -> Analysis {
+    analyze_parsed(map, options, |source| parser::parse_source(source, None))
+}
+
+/// [`analyze_workspace`], over parses the caller produces.
+///
+/// The hook exists for one caller: a live document store holds each
+/// document's previous tree and wants the incremental reparse
+/// (`parse_source(source, Some(previous))`) rather than a fresh one. Nothing
+/// else about the analysis differs, which is the point — a store that parsed
+/// its own way and then called a *different* analysis would be the second
+/// reading of the program `doc/design.md` §10 forbids.
+pub fn analyze_parsed(
+    map: &SourceMap,
+    options: &Options,
+    mut parse_file: impl FnMut(&source::SourceFile) -> ParseResult,
+) -> Analysis {
     // Every unit sees every other unit's definitions, which is how a name
     // one file defines resolves in another without any import syntax.
     let linkage = linkage::Linkage::resolve(map, options.entry);
     let mut diagnostics = linkage.diagnostics().to_vec();
+    let mut units = Vec::new();
     for source in map.files() {
-        let parse = parser::parse_source(source, None);
+        let mut parse = parse_file(source);
         let (model, semantic_diagnostics) =
             semantic::analyze_unit(&parse.file, source.name(), &linkage);
-        diagnostics.extend(parse.diagnostics);
+        diagnostics.append(&mut parse.diagnostics);
         diagnostics.extend(semantic_diagnostics);
         if options.strict_k65 {
             diagnostics.extend(compat::strict_k65(model.program(&parse.file), source));
         }
+        units.push(AnalyzedUnit {
+            file: source.id(),
+            parse,
+            model,
+        });
     }
-    Analysis { diagnostics }
+    Analysis {
+        diagnostics,
+        units,
+        linkage,
+    }
 }
 
 /// Compiles one file to ca65 assembly.

@@ -29,7 +29,7 @@ use k816::abi::EntryEnvironment;
 use k816::lsp::config;
 use k816::lsp::{diagnostic_to_lsp, file_diagnostics, span_to_range};
 use k816::source::{SourceMap, Span};
-use k816::workspace::{Workspace, find_file};
+use k816::workspace::Workspace;
 use k816::{Options, compile_to_ca65};
 
 /// The slice with its declaration removed: one syntax-clean semantic error.
@@ -68,9 +68,9 @@ fn cli_and_lsp_report_identical_diagnostics_for_the_slice() {
         // frontend, published per file.
         let mut workspace = Workspace::new();
         workspace.update(name, text);
-        let (lsp_map, analysis) = workspace.analyze();
-        let lsp_file = find_file(&lsp_map, name).expect("document analyzed");
-        let lsp_diagnostics = file_diagnostics(&lsp_map, lsp_file, &analysis.diagnostics);
+        let analysis = workspace.analyze();
+        let lsp_file = workspace.file(name).expect("document analyzed");
+        let lsp_diagnostics = file_diagnostics(workspace.map(), lsp_file, &analysis.diagnostics);
 
         assert_eq!(cli_diagnostics, lsp_diagnostics, "diverged for {name}");
     }
@@ -81,9 +81,9 @@ fn published_diagnostics_carry_code_range_severity_and_help() {
     let mut workspace = Workspace::new();
     let uri = "file:///broken.k816";
     workspace.update(uri, BROKEN_SLICE);
-    let (map, analysis) = workspace.analyze();
-    let file = find_file(&map, uri).expect("document analyzed");
-    let diagnostics = file_diagnostics(&map, file, &analysis.diagnostics);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("document analyzed");
+    let diagnostics = file_diagnostics(workspace.map(), file, &analysis.diagnostics);
 
     assert_eq!(diagnostics.len(), 1);
     let diagnostic = &diagnostics[0];
@@ -121,11 +121,11 @@ fn closing_a_document_removes_it_from_analysis() {
     workspace.update("file:///a.k816", BROKEN_SLICE);
     workspace.update("file:///b.k816", include_str!("golden/slice.k816"));
 
-    let (_, analysis) = workspace.analyze();
+    let analysis = workspace.analyze();
     assert_eq!(analysis.diagnostics.len(), 1);
 
     workspace.close("file:///a.k816");
-    let (_, analysis) = workspace.analyze();
+    let analysis = workspace.analyze();
     assert_eq!(analysis.diagnostics.len(), 0);
     assert!(!workspace.is_empty());
 }
@@ -204,9 +204,9 @@ fn cli_codes(name: &str, text: &str, options: &Options) -> Vec<String> {
 fn lsp_codes(name: &str, text: &str, options: &Options) -> Vec<String> {
     let mut workspace = Workspace::with_options(options.clone());
     workspace.update(name, text);
-    let (map, analysis) = workspace.analyze();
-    let file = find_file(&map, name).expect("document analyzed");
-    file_diagnostics(&map, file, &analysis.diagnostics)
+    let analysis = workspace.analyze();
+    let file = workspace.file(name).expect("document analyzed");
+    file_diagnostics(workspace.map(), file, &analysis.diagnostics)
         .iter()
         .map(|diagnostic| match &diagnostic.code {
             Some(NumberOrString::String(code)) => code.clone(),
@@ -517,4 +517,347 @@ fn the_binary_speaks_the_protocol_and_reads_its_initialization_options() {
     while output.read_line(&mut rest).unwrap_or(0) > 0 {}
     let status = server.wait().expect("the server exits after `exit`");
     assert!(status.success(), "the server exited with {status}");
+}
+
+// ---------------------------------------------------------------------------
+// H1 — the analysis the server reads, and what is under a byte
+// ---------------------------------------------------------------------------
+
+/// A document holding one of everything the conversion has to survive: an
+/// ASCII line, a two-byte character, and a four-byte one.
+const MIXED: &str = "// żab\n𝕏x\n";
+
+/// Decision 13's table, both ways, on one-, two-, and four-byte characters.
+///
+/// Byte offsets and UTF-16 positions that name the same place, so a single
+/// list checks the conversion and its inverse against each other *and*
+/// against an independently computed answer — a pair of functions that are
+/// each other's inverse can still both be wrong.
+#[test]
+fn positions_and_offsets_convert_both_ways() {
+    use k816::lsp::convert::{offset_in, position_in};
+
+    let mut map = SourceMap::new();
+    let id = map.add_file("mixed.k816", MIXED);
+    let source = map.file(id);
+
+    // (byte offset, line, UTF-16 character)
+    for (offset, line, character) in [
+        (0, 0, 0),  // `/`
+        (3, 0, 3),  // `ż` — two bytes, one UTF-16 unit
+        (5, 0, 4),  // `a`, after it
+        (7, 0, 6),  // end of the first line
+        (8, 1, 0),  // `𝕏` — four bytes, two UTF-16 units
+        (12, 1, 2), // `x`, after it
+        (13, 1, 3), // end of the second line
+        (14, 2, 0), // the empty line a trailing newline leaves
+    ] {
+        assert_eq!(
+            position_in(source, offset),
+            Position::new(line, character),
+            "byte {offset}"
+        );
+        assert_eq!(
+            offset_in(source, Position::new(line, character)),
+            offset,
+            "position {line}:{character}"
+        );
+    }
+}
+
+/// The positions that do not round-trip, and what each of them means.
+///
+/// A client legitimately sends every one of these; none may panic and none
+/// may guess (decision 18).
+#[test]
+fn out_of_range_and_split_positions_clamp_rather_than_panic() {
+    use k816::lsp::convert::{offset_in, position_in, range_to_span};
+
+    let mut map = SourceMap::new();
+    let id = map.add_file("mixed.k816", MIXED);
+    let source = map.file(id);
+
+    // Inside `𝕏`'s second UTF-16 unit: rounds down to the character's start.
+    assert_eq!(offset_in(source, Position::new(1, 1)), 8);
+    // Past the end of a line: that line's end, not the next line's start.
+    assert_eq!(offset_in(source, Position::new(0, 99)), 7);
+    // Past the last line: the end of the file.
+    assert_eq!(offset_in(source, Position::new(9, 0)), MIXED.len() as u32);
+    // A byte offset that splits a character: the character's own position.
+    assert_eq!(position_in(source, 4), Position::new(0, 3));
+    assert_eq!(position_in(source, 10), Position::new(1, 0));
+    // Past the end of the file.
+    assert_eq!(position_in(source, 9_999), Position::new(2, 0));
+    // A reversed range covers what it covers.
+    let span = range_to_span(
+        source,
+        lsp_types::Range::new(Position::new(1, 2), Position::new(0, 0)),
+    );
+    assert_eq!((span.start, span.end), (0, 12));
+}
+
+/// `at` on the slice: the node, the statement, the function and the
+/// declaration each answered for a table of offsets.
+///
+/// One function answers "what is under this byte" for hover, definition,
+/// references, rename and completion alike, so this table is the place all
+/// five of them are wrong at once if it is.
+#[test]
+fn at_names_the_node_the_statement_and_the_function() {
+    let mut workspace = Workspace::new();
+    let uri = "file:///slice.k816";
+    workspace.update(uri, include_str!("golden/slice.k816"));
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("document analyzed");
+    let names = |id| {
+        analysis
+            .unit(file)
+            .unwrap()
+            .model
+            .symbols
+            .name(id)
+            .to_owned()
+    };
+
+    /// One row: the byte offset, the innermost node's kind, whether it is a
+    /// token rather than the whitespace between two, whether a statement
+    /// covers it, and the function and declaration it names.
+    struct Row {
+        offset: u32,
+        kind: &'static str,
+        on_token: bool,
+        has_statement: bool,
+        function: Option<&'static str>,
+        declaration: Option<&'static str>,
+    }
+    const fn row(
+        offset: u32,
+        kind: &'static str,
+        on_token: bool,
+        has_statement: bool,
+        function: Option<&'static str>,
+        declaration: Option<&'static str>,
+    ) -> Row {
+        Row {
+            offset,
+            kind,
+            on_token,
+            has_statement,
+            function,
+            declaration,
+        }
+    }
+
+    let table = &[
+        // `var` on line 0 — a unit-level declaration, no function around it.
+        row(0, "var", true, false, None, None),
+        row(4, "identifier", true, false, None, Some("SCREEN")),
+        row(13, "number", true, false, None, None),
+        // The `func` keyword is inside the item, so `main` is the function.
+        row(20, "func", true, false, Some("main"), None),
+        row(25, "identifier", true, false, Some("main"), Some("main")),
+        row(31, "width_annotation", true, false, Some("main"), None),
+        // Column 0 of a body line: between tokens, so no statement.
+        row(36, "block", false, false, Some("main"), None),
+        row(40, "register", true, true, Some("main"), None),
+        row(44, "#", true, true, Some("main"), None),
+        // A use of `SCREEN`: H3's reference index is what makes this a
+        // symbol; H1 answers the statement and the function.
+        row(64, "identifier", true, true, Some("main"), None),
+        row(84, "}", true, false, Some("main"), None),
+        // End of file, and past it.
+        row(86, "source_file", false, false, None, None),
+        row(9_999, "source_file", false, false, None, None),
+    ];
+
+    for expected in table {
+        let offset = expected.offset;
+        let context = k816::lsp::at(&analysis, file, offset).expect("an analyzed document");
+        assert_eq!(context.node_kind(), expected.kind, "node at {offset}");
+        assert_eq!(context.on_token(), expected.on_token, "token at {offset}");
+        assert_eq!(
+            context.statement.is_some(),
+            expected.has_statement,
+            "statement at {offset}"
+        );
+        assert_eq!(
+            context.function.map(&names).as_deref(),
+            expected.function,
+            "function at {offset}"
+        );
+        assert_eq!(
+            context.declaration.map(&names).as_deref(),
+            expected.declaration,
+            "declaration at {offset}"
+        );
+    }
+}
+
+/// The node path is a path: outermost first, innermost last, every element
+/// covering the offset.
+#[test]
+fn the_node_path_runs_from_the_file_to_the_token() {
+    let mut workspace = Workspace::new();
+    let uri = "file:///slice.k816";
+    workspace.update(uri, include_str!("golden/slice.k816"));
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("document analyzed");
+
+    let context = k816::lsp::at(&analysis, file, 64).expect("an analyzed document");
+    let kinds: Vec<&str> = context.path.iter().map(|node| node.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "source_file",
+            "func_declaration",
+            "block",
+            "hla_assignment",
+            "address",
+            "identifier",
+        ]
+    );
+    for node in &context.path {
+        assert!(node.span.contains(64), "{} does not cover 64", node.kind);
+    }
+    // The innermost *named* node is the identifier itself; on the `=` two
+    // characters earlier it is the assignment around the anonymous token.
+    assert_eq!(
+        context.named_node().map(|node| node.kind.as_str()),
+        Some("identifier")
+    );
+    let context = k816::lsp::at(&analysis, file, 65).expect("an analyzed document");
+    assert_eq!(context.node_kind(), "identifier");
+}
+
+/// The analysis carries the model the CLI throws away, and it is the same
+/// model: the unit's symbols, its program, and its widths are all there.
+#[test]
+fn the_analysis_carries_every_units_model() {
+    let mut workspace = Workspace::new();
+    workspace.update("file:///a.k816", include_str!("golden/unit-a.k816"));
+    workspace.update("file:///b.k816", include_str!("golden/unit-b.k816"));
+    let analysis = workspace.analyze();
+
+    assert_eq!(analysis.units.len(), 2);
+    for unit in &analysis.units {
+        assert_eq!(
+            analysis.unit(unit.file).map(|found| found.file),
+            Some(unit.file)
+        );
+        // A program with no preprocessor directive in it *is* the parsed
+        // file, and `program()` is how a consumer gets the right one without
+        // having to know which case it is in.
+        assert!(!unit.program().items.is_empty());
+        assert!(unit.model.symbols.iter().count() > 0);
+    }
+    // The linkage that resolved the two against each other is kept too.
+    assert!(analysis.linkage.diagnostics().is_empty());
+}
+
+/// Nothing panics on a document the workspace does not hold, on an empty
+/// workspace, or on a document that is one `ERROR` node (decision 18).
+#[test]
+fn at_answers_for_an_empty_workspace_and_an_error_document() {
+    // An empty workspace has no units, so every file is a miss.
+    let mut workspace = Workspace::new();
+    let analysis = workspace.analyze();
+    assert!(analysis.units.is_empty());
+    let mut map = SourceMap::new();
+    let stranger = map.add_file("file:///absent.k816", "");
+    assert!(k816::lsp::at(&analysis, stranger, 0).is_none());
+
+    // A document the grammar cannot read still answers, from what parsed.
+    let uri = "file:///garbage.k816";
+    workspace.update(uri, "}{ ??? &&&\n");
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("document analyzed");
+    assert!(!analysis.diagnostics.is_empty());
+    for offset in 0..=12 {
+        let context = k816::lsp::at(&analysis, file, offset).expect("an analyzed document");
+        assert_eq!(
+            context.path.first().map(|node| node.kind.as_str()),
+            Some("source_file")
+        );
+        assert_eq!(context.statement, None);
+    }
+}
+
+/// The store keeps a document's identity across an edit and reassigns them on
+/// a close, and an analysis is always over the text the store holds.
+///
+/// A `FileId` is what every span points into, so an edit that changed one
+/// would invalidate the identity of every *other* document too. Closing one
+/// is the case where identities legitimately move, and the test says which is
+/// which.
+#[test]
+fn a_document_keeps_its_identity_across_an_edit_and_the_map_follows_the_text() {
+    let mut workspace = Workspace::new();
+    workspace.update("file:///a.k816", "var LEFT = 1\n");
+    workspace.update("file:///b.k816", "var RIGHT = 2\n");
+    let (a, b) = (
+        workspace.file("file:///a.k816").expect("open"),
+        workspace.file("file:///b.k816").expect("open"),
+    );
+    assert_ne!(a, b);
+
+    workspace.update("file:///a.k816", "var LEFT = 1\nvar EXTRA = 3\n");
+    assert_eq!(workspace.file("file:///a.k816"), Some(a));
+    assert_eq!(workspace.file("file:///b.k816"), Some(b));
+    assert_eq!(
+        workspace.map().file(a).text(),
+        "var LEFT = 1\nvar EXTRA = 3\n"
+    );
+
+    // The analysis is over what the store holds, and its spans point into it.
+    let analysis = workspace.analyze();
+    let unit = analysis.unit(a).expect("an analyzed unit");
+    // The unit's own declarations; the third symbol is the `RIGHT` the other
+    // open document defines, whose declaration points into *that* file.
+    let own: Vec<&str> = unit
+        .model
+        .symbols
+        .iter()
+        .filter(|(_, symbol)| !symbol.imported)
+        .map(|(_, symbol)| symbol.name.as_str())
+        .collect();
+    assert_eq!(own, ["LEFT", "EXTRA"]);
+    for (_, symbol) in unit.model.symbols.iter().filter(|(_, s)| !s.imported) {
+        assert_eq!(symbol.declaration.file, a);
+        assert_eq!(
+            workspace.map().span_text(symbol.declaration),
+            symbol.name.as_str()
+        );
+    }
+
+    // Closing the first document renumbers the second, and the store says so.
+    workspace.close("file:///a.k816");
+    assert_eq!(workspace.file("file:///a.k816"), None);
+    let b = workspace.file("file:///b.k816").expect("still open");
+    assert_eq!(workspace.map().files().count(), 1);
+    assert_eq!(workspace.map().file(b).text(), "var RIGHT = 2\n");
+    let analysis = workspace.analyze();
+    assert_eq!(analysis.units.len(), 1);
+    assert_eq!(analysis.units[0].file, b);
+}
+
+/// Re-analyzing an unchanged workspace produces the same answers.
+///
+/// The store hands the previous tree back to the parser, so this is the
+/// property that says reuse is not a change: same diagnostics, same CST.
+#[test]
+fn re_analyzing_an_unchanged_workspace_answers_the_same() {
+    let mut workspace = Workspace::new();
+    workspace.update("file:///slice.k816", include_str!("golden/slice.k816"));
+
+    let first = workspace.analyze();
+    let second = workspace.analyze();
+    assert_eq!(
+        format!("{:?}", first.diagnostics),
+        format!("{:?}", second.diagnostics)
+    );
+    assert_eq!(
+        first.units[0].parse.tree.dump(),
+        second.units[0].parse.tree.dump()
+    );
+    assert_eq!(first.units[0].parse.file, second.units[0].parse.file);
 }

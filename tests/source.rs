@@ -147,3 +147,74 @@ fn file_ids_are_stable_indices() {
     let collected: Vec<FileId> = map.files().map(|f| f.id()).collect();
     assert_eq!(collected, vec![a, b]);
 }
+
+/// `offset` is `line_col`'s inverse, and clamps rather than failing.
+///
+/// A live document store converts an editor's line/column positions into byte
+/// spans on every keystroke, so this direction has to exist and has to be
+/// total: a position past the end of a line, past the end of a file, or
+/// inside a multi-byte character is what a client sends when it has seen a
+/// newer version of the document than the server holds
+/// (`plans/07-lsp-tooling.md` decision 13).
+#[test]
+fn offsets_translate_back_from_lines_and_columns() {
+    let mut map = SourceMap::new();
+    let id = map.add_file("main.k816", "var SCREEN = $0400\n\nfunc main {\n}\n");
+    let file = map.file(id);
+
+    for offset in [0u32, 4, 18, 19, 20, 25, 32, 34] {
+        assert_eq!(file.offset(file.line_col(offset)), offset, "byte {offset}");
+    }
+
+    // Past the end of a line is that line's end, not the next line's start.
+    assert_eq!(file.offset(line_col(0, 999)), 18);
+    // Past the last line is the end of the file.
+    assert_eq!(file.offset(line_col(99, 0)), 34);
+    assert_eq!(file.line_count(), 5);
+}
+
+/// A column that splits a multi-byte character rounds down to its first byte,
+/// so the result is always a character boundary.
+#[test]
+fn offsets_round_down_to_a_character_boundary() {
+    let mut map = SourceMap::new();
+    // `ż` is two bytes at 3..5; the second line starts at 7 and `𝕏` is four
+    // bytes at 7..11. A `LineCol` column counts *bytes* within its line.
+    let id = map.add_file("uni.k816", "// ża\n𝕏x\n");
+    let file = map.file(id);
+
+    assert_eq!(file.offset(line_col(0, 3)), 3);
+    assert_eq!(file.offset(line_col(0, 4)), 3); // inside `ż`
+    assert_eq!(file.offset(line_col(1, 0)), 7);
+    for column in 1..4 {
+        assert_eq!(
+            file.offset(line_col(1, column)),
+            7,
+            "inside `𝕏` at {column}"
+        );
+    }
+    assert_eq!(file.offset(line_col(1, 4)), 11); // `x`
+}
+
+/// Replacing a file's text keeps its identity and its name, and rebuilds the
+/// line index.
+///
+/// What a document store needs: a `FileId` is what every span points into, so
+/// an edit that changed it would invalidate the identity of every document
+/// after the edited one rather than only the spans inside it.
+#[test]
+fn replacing_a_files_text_keeps_its_identity() {
+    let mut map = SourceMap::new();
+    let first = map.add_file("a.k816", "var A = 1\n");
+    let second = map.add_file("b.k816", "var B = 2\n");
+
+    map.replace_file(first, "var A = 1\nvar C = 3\n");
+
+    assert_eq!(map.file(first).id(), first);
+    assert_eq!(map.file(first).name(), "a.k816");
+    assert_eq!(map.file(first).text(), "var A = 1\nvar C = 3\n");
+    assert_eq!(map.file(first).line_col(10), line_col(1, 0));
+    // The other file is untouched, identity included.
+    assert_eq!(map.file(second).text(), "var B = 2\n");
+    assert_eq!(map.files().count(), 2);
+}

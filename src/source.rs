@@ -157,6 +157,12 @@ impl SourceFile {
         Span::empty_at(self.id, self.text.len() as u32)
     }
 
+    /// How many lines the file has. A file ending in a newline has an empty
+    /// final line, which is where an editor's cursor legitimately sits.
+    pub fn line_count(&self) -> u32 {
+        self.line_starts.len() as u32
+    }
+
     /// Translates a byte offset into a zero-based line/column pair.
     ///
     /// Offsets past the end of the file clamp to the final position. The
@@ -172,6 +178,34 @@ impl SourceFile {
             line: line as u32,
             column: offset - self.line_starts[line],
         }
+    }
+
+    /// Translates a zero-based line/column pair back into a byte offset.
+    ///
+    /// The inverse of [`Self::line_col`], and clamped at both ends: a line
+    /// past the last one gives the end of the file, and a column past the end
+    /// of its line gives that line's end. An editor's cursor legitimately
+    /// sits one position past the last character, and a client that has seen
+    /// a newer version of a document than the server holds sends positions
+    /// that do not exist here — neither is an error, and neither may panic
+    /// (`plans/07-lsp-tooling.md` decision 18).
+    ///
+    /// A column that falls inside a multi-byte character rounds *down* to
+    /// that character's first byte, so the result is always a character
+    /// boundary and `&text[..offset]` never panics.
+    pub fn offset(&self, location: LineCol) -> u32 {
+        let Some(&start) = self.line_starts.get(location.line as usize) else {
+            return self.text.len() as u32;
+        };
+        let line = self.line_text(location.line);
+        let column = (location.column as usize).min(line.len());
+        // `floor_char_boundary` is unstable; walking back off a continuation
+        // byte is the same answer.
+        let mut column = column;
+        while column > 0 && !line.is_char_boundary(column) {
+            column -= 1;
+        }
+        start + column as u32
     }
 
     /// The text of a zero-based line, without its trailing newline.
@@ -210,6 +244,18 @@ impl SourceMap {
         self.files
             .push(SourceFile::new(id, name.into(), text.into()));
         id
+    }
+
+    /// Replaces the text of an already registered file, keeping its
+    /// [`FileId`].
+    ///
+    /// For a live document store, whose file identities have to survive an
+    /// edit: every span taken from the previous text is stale afterwards,
+    /// which is what re-analysis is for. The name is unchanged, because it is
+    /// what identifies the document to the editor.
+    pub fn replace_file(&mut self, id: FileId, text: impl Into<String>) {
+        let name = std::mem::take(&mut self.files[id.index()].name);
+        self.files[id.index()] = SourceFile::new(id, name, text.into());
     }
 
     pub fn file(&self, id: FileId) -> &SourceFile {

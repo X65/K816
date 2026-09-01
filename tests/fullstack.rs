@@ -32,7 +32,7 @@ mod common;
 use std::path::PathBuf;
 use std::process::Command;
 
-use common::{run_ok, tool, work_dir};
+use common::{run_ok, tool, toolchain, work_dir};
 
 const ROM_BASE: usize = 0x8000;
 const ROM_SIZE: usize = 0x8000;
@@ -140,31 +140,17 @@ fn build_image(test: &str) -> (Vec<u8>, String) {
 
 /// Builds the same example with one `cl65` command line — the Makefile's.
 ///
-/// `cl65` finds its tools beside itself, so it is staged into a scratch
-/// directory alongside the `k816` Cargo just built; otherwise this would
-/// exercise whatever `make k816` last installed rather than the compiler
-/// under test.
+/// `cl65` finds its tools beside itself, so it is run from the staged
+/// directory `common::toolchain` builds; otherwise this would exercise
+/// whatever `make k816` last installed rather than the compiler under test.
 fn build_image_through_cl65(test: &str) -> (Vec<u8>, String) {
     let example = example_dir();
     let dir = work_dir(test);
     let bin_path = dir.join("fullstack.bin");
     let dbg_path = dir.join("fullstack.dbg");
 
-    let tools = work_dir("fullstack-toolchain");
-    for (source, name) in [
-        (PathBuf::from(env!("CARGO_BIN_EXE_k816")), "k816"),
-        (tool("CA65", "ca65"), "ca65"),
-        (tool("LD65", "ld65"), "ld65"),
-        (tool("CL65", "cl65"), "cl65"),
-    ] {
-        let destination = tools.join(name);
-        let _ = std::fs::remove_file(&destination);
-        std::fs::copy(&source, &destination)
-            .unwrap_or_else(|error| panic!("cannot stage {}: {error}", source.display()));
-    }
-
     run_ok(
-        Command::new(tools.join("cl65"))
+        Command::new(toolchain().join("cl65"))
             // `-t none` because cl65 defaults to the C64, and
             // `--no-target-lib` because -C replaces the target's
             // configuration but not its library.

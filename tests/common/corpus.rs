@@ -206,3 +206,104 @@ pub fn fixture_units(dir: &Path) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+
+/// One program of the corpus, with what it takes to link it.
+pub struct Program {
+    pub name: String,
+    pub units: Vec<PathBuf>,
+    pub config: PathBuf,
+    /// Hand-written ca65 modules the program is linked with. Only
+    /// `examples/fullstack` has one.
+    pub extra: Vec<PathBuf>,
+}
+
+/// Every distinct program in the tree, with the layout each one links against.
+///
+/// `corpus()` yields one entry per *unit compilation* — a fixture with two
+/// units appears twice, once with each as the entry — because that is what
+/// the suites which measure a compilation need. A link is over the whole set
+/// at once, so the sets are deduplicated by their file list here; the entry
+/// index is not consulted, because `cl65` compiles every K816 file on its
+/// command line and so does the manual path.
+pub fn programs() -> Vec<Program> {
+    let root = root();
+    let driver_cfg = root.join("tests/driver.cfg");
+    let mut seen: Vec<Vec<PathBuf>> = Vec::new();
+    let mut programs = Vec::new();
+
+    for set in corpus() {
+        if seen.contains(&set.files) {
+            continue;
+        }
+        seen.push(set.files.clone());
+
+        // A compat fixture states its layout in its header, and
+        // `tests/compat.rs` requires every configuration under
+        // `tests/compat/` to be named by one; an example is not a fixture and
+        // does not share them.
+        let (config, extra) = if set.name.starts_with("tests/compat/") {
+            let fixture = set.files[0].parent().expect("a fixture directory");
+            let named = fixture_header(fixture)
+                .remove("config")
+                .and_then(|values| values.into_iter().next())
+                .unwrap_or_else(|| panic!("{}: fixture.txt has no `config`", set.name));
+            (root.join("tests/compat").join(named), Vec::new())
+        } else if set.name == "examples/fullstack/main.k816" {
+            (
+                root.join("examples/fullstack/fullstack.cfg"),
+                vec![root.join("examples/fullstack/startup.asm")],
+            )
+        } else if set.name.starts_with("examples/k65/atari-xl/") && !set.name.contains("/include/")
+        {
+            (root.join("examples/k65/atari-xl/atarixl.cfg"), Vec::new())
+        } else {
+            (driver_cfg.clone(), Vec::new())
+        };
+
+        programs.push(Program {
+            name: set.name,
+            units: set.files,
+            config,
+            extra,
+        });
+    }
+    programs
+}
+
+/// Compiles every unit of `program` into `directory`, returning the assembly
+/// each one emitted.
+///
+/// `None` when any unit is a refusal — forty of the corpus's unit
+/// compilations are, by design: a fixture whose `expect` list is its point.
+/// Those are the business of `tests/compat.rs` and `tests/diagnostics.rs`,
+/// not of a gate over what a build produces.
+pub fn compile_units(directory: &Path, program: &Program) -> Option<Vec<PathBuf>> {
+    let mut assemblies = Vec::new();
+    for (index, unit) in program.units.iter().enumerate() {
+        let assembly = directory.join(format!("unit-{index}.s"));
+        let mut compile = std::process::Command::new(env!("CARGO_BIN_EXE_k816"));
+        compile.arg("compile").arg(unit);
+        for sibling in program.units.iter().filter(|sibling| *sibling != unit) {
+            compile.args(["--unit".as_ref(), sibling.as_os_str()]);
+        }
+        compile.args(["-o".as_ref(), assembly.as_os_str()]);
+        let output = compile
+            .output()
+            .unwrap_or_else(|error| panic!("cannot run k816 compile: {error}"));
+        if !output.status.success() {
+            return None;
+        }
+        assemblies.push(assembly);
+    }
+    Some(assemblies)
+}
+
+/// Whether every unit of `program` compiles, which is what makes it linkable.
+pub fn compiles(directory: &Path, program: &Program) -> bool {
+    compile_units(directory, program).is_some()
+}
+
+/// A file-system-safe stem for a program's scratch directory.
+pub fn stem(name: &str) -> String {
+    name.replace(['/', '.'], "-")
+}

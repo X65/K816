@@ -44,47 +44,13 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::OnceLock;
 
-use common::{run_ok, tool, work_dir};
+use common::{run_ok, toolchain, work_dir};
 
 #[path = "common/corpus.rs"]
 mod corpus;
 
-/// The tools, gathered so that `cl65` finds *this* build's `k816`.
-///
-/// `cl65` prefixes each tool it runs with its own directory (`CmdInit`), so a
-/// `cl65` run from the cc65 tree's `bin/` runs the `k816` installed there —
-/// which is whatever `make k816` last copied, not what Cargo just built. A
-/// gate that compared an installed compiler's output with the one under test
-/// would fail for a reason that has nothing to do with the driver, so the
-/// four tools are copied into one scratch directory and `cl65` is run from
-/// there. Copied rather than symlinked because a copy is what every platform
-/// has.
-fn toolchain() -> &'static Path {
-    static TOOLCHAIN: OnceLock<PathBuf> = OnceLock::new();
-    TOOLCHAIN
-        .get_or_init(|| {
-            let dir = work_dir("driver-toolchain");
-            for (source, name) in [
-                (PathBuf::from(env!("CARGO_BIN_EXE_k816")), "k816"),
-                (tool("CA65", "ca65"), "ca65"),
-                (tool("LD65", "ld65"), "ld65"),
-                (tool("CL65", "cl65"), "cl65"),
-            ] {
-                let destination = dir.join(name);
-                let _ = std::fs::remove_file(&destination);
-                std::fs::copy(&source, &destination).unwrap_or_else(|error| {
-                    panic!(
-                        "cannot stage {} (build it with `make -C ../.. bin`): {error}",
-                        source.display()
-                    )
-                });
-            }
-            dir
-        })
-        .as_path()
-}
+use corpus::{compiles, programs, stem};
 
 fn cl65() -> Command {
     Command::new(toolchain().join("cl65"))
@@ -553,97 +519,6 @@ fn a_failed_compilation_ends_the_driver_run() {
 // ---------------------------------------------------------------------------
 // I2 — the whole corpus, and the compat images, through the driver
 // ---------------------------------------------------------------------------
-
-/// One program of the corpus, with what it takes to link it.
-struct Program {
-    name: String,
-    units: Vec<PathBuf>,
-    config: PathBuf,
-    /// Hand-written ca65 modules the program is linked with. Only
-    /// `examples/fullstack` has one.
-    extra: Vec<PathBuf>,
-}
-
-/// Every distinct program in the tree, with the layout each one links against.
-///
-/// `corpus()` yields one entry per *unit compilation* — a fixture with two
-/// units appears twice, once with each as the entry — because that is what
-/// the suites which measure a compilation need. A link is over the whole set
-/// at once, so the sets are deduplicated by their file list here; the entry
-/// index is not consulted, because `cl65` compiles every K816 file on its
-/// command line and so does the manual path.
-fn programs() -> Vec<Program> {
-    let root = corpus::root();
-    let driver_cfg = root.join("tests/driver.cfg");
-    let mut seen: Vec<Vec<PathBuf>> = Vec::new();
-    let mut programs = Vec::new();
-
-    for set in corpus::corpus() {
-        if seen.contains(&set.files) {
-            continue;
-        }
-        seen.push(set.files.clone());
-
-        // A compat fixture states its layout in its header, and
-        // `tests/compat.rs` requires every configuration under
-        // `tests/compat/` to be named by one; an example is not a fixture and
-        // does not share them.
-        let (config, extra) = if set.name.starts_with("tests/compat/") {
-            let fixture = set.files[0].parent().expect("a fixture directory");
-            let named = corpus::fixture_header(fixture)
-                .remove("config")
-                .and_then(|values| values.into_iter().next())
-                .unwrap_or_else(|| panic!("{}: fixture.txt has no `config`", set.name));
-            (root.join("tests/compat").join(named), Vec::new())
-        } else if set.name == "examples/fullstack/main.k816" {
-            (
-                root.join("examples/fullstack/fullstack.cfg"),
-                vec![root.join("examples/fullstack/startup.asm")],
-            )
-        } else if set.name.starts_with("examples/k65/atari-xl/") && !set.name.contains("/include/")
-        {
-            (root.join("examples/k65/atari-xl/atarixl.cfg"), Vec::new())
-        } else {
-            (driver_cfg.clone(), Vec::new())
-        };
-
-        programs.push(Program {
-            name: set.name,
-            units: set.files,
-            config,
-            extra,
-        });
-    }
-    programs
-}
-
-/// Whether every unit of `program` compiles, which is what makes it linkable.
-///
-/// Forty of the corpus's unit compilations are refusals by design — a fixture
-/// whose `expect` list is its point — and they are the business of
-/// `tests/compat.rs` and `tests/diagnostics.rs`, not of the driver.
-fn compiles(directory: &Path, program: &Program) -> bool {
-    for (index, unit) in program.units.iter().enumerate() {
-        let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
-        compile.arg("compile").arg(unit);
-        for sibling in program.units.iter().filter(|sibling| *sibling != unit) {
-            compile.args(["--unit".as_ref(), sibling.as_os_str()]);
-        }
-        compile.args([
-            "-o".as_ref(),
-            directory.join(format!("probe-{index}.s")).as_os_str(),
-        ]);
-        if !run(&mut compile, "k816 compile").status.success() {
-            return false;
-        }
-    }
-    true
-}
-
-/// A file-system-safe stem for a program's scratch directory.
-fn stem(name: &str) -> String {
-    name.replace(['/', '.'], "-")
-}
 
 /// The driver adds nothing to, and loses nothing from, the manual path.
 ///

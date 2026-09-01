@@ -517,7 +517,7 @@ func draw_level {
 
 ## Segment Selection
 
-The 65816 has a linear 16MB address space. The k816 linker splits this memory into versatile, user-defined segments. The active segment can be changed at any point in a file to place functions or data blocks within different segments.
+The 65816 has a linear 16MB address space. K816 does not divide it: `segment` emits a ca65 `.segment` directive and nothing more, and where a segment lands in memory is decided by the ld65 config the program is linked with. The active segment can be changed at any point in a file to place functions or data blocks within different segments.
 
 ```k65
 segment my_segment      // select output segment

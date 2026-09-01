@@ -29,9 +29,11 @@
 mod ast_builder;
 mod cst;
 mod diagnostics;
+pub mod query;
 
 pub(crate) use ast_builder::assign_statement_ids;
 pub use cst::{CstNode, SourceEdit, SyntaxTree};
+pub use query::{Capture, Query, QueryError};
 
 use crate::ast::AstFile;
 use crate::diagnostic::Diagnostic;

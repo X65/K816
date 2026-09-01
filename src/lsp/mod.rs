@@ -49,6 +49,7 @@ pub mod diagnostics;
 pub mod hover;
 pub mod navigation;
 pub mod rename;
+pub mod tokens;
 
 pub use context::{Context, at};
 pub use convert::{span_to_range, uri};
@@ -61,7 +62,8 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
-    PrepareRenameRequest, References, Rename, Request, WorkspaceSymbolRequest,
+    PrepareRenameRequest, References, Rename, Request, SemanticTokensFullRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
@@ -70,7 +72,9 @@ use lsp_types::{
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
     MarkupKind, MessageType, OneOf, PrepareRenameResponse, PublishDiagnosticsParams,
-    ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ShowMessageParams,
+    ReferenceParams, RenameOptions, RenameParams, SemanticTokens, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ShowMessageParams,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
     WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
@@ -94,6 +98,19 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        // Full documents only: no delta and no range. A K816 file is small,
+        // and a second encoding is a second thing to keep in step with the
+        // query (decision 6).
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: tokens::token_types(),
+                    token_modifiers: tokens::token_modifiers(),
+                },
+                full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                ..Default::default()
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(
                 completion::TRIGGERS
@@ -285,6 +302,20 @@ fn answer(
     let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
+        SemanticTokensFullRequest::METHOD => {
+            let answer = serde_json::from_value::<SemanticTokensParams>(request.params.clone())
+                .ok()
+                .and_then(|params| {
+                    let file = workspace.file(&params.text_document.uri.to_string())?;
+                    let source = workspace.map().file(file);
+                    let found = tokens::tokens(&analysis, file, source.text());
+                    Some(SemanticTokensResult::Tokens(SemanticTokens {
+                        result_id: None,
+                        data: tokens::encode(&found, source),
+                    }))
+                });
+            Ok(serde_json::to_value(answer).unwrap_or(serde_json::Value::Null))
+        }
         CodeActionRequest::METHOD => {
             let found: Vec<CodeActionOrCommand> =
                 serde_json::from_value::<CodeActionParams>(request.params.clone())

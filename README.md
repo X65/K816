@@ -180,11 +180,37 @@ After regeneration, verify fixtures:
 
 - `cargo test -p k816-golden-tests`
 
-## Visual Studio Code
+## Editor support
 
-The [Kk816 Language Support](https://marketplace.visualstudio.com/items?itemName=X65-Project.vscode-k816) extension provides syntax highlighting, formatting, and inline error reporting for K816 source files.
+`k816 lsp` runs a language server over stdio. It answers live diagnostics,
+hover, go-to-definition, references, document and workspace symbols, semantic
+rename, completion, code actions from the compiler's own structured fixes,
+document formatting, and semantic tokens.
 
-It works by invoking the `k816 lsp` tool, which provides a language server implementation for K816.
+**It analyzes with the options the build uses**, which is what stops an editor
+and a build disagreeing about the same file. State them on the command line —
+`k816 lsp --strict-k65 --entry native,a8,i8` — or send them as `strict-k65`
+and `entry` in the client's `initializationOptions` or configuration, at the
+top level or under a `k816` section. The values are read by the same functions
+the flags are, so a spelling the command line refuses is refused in the editor
+with the same words.
+
+**Highlighting comes in two formats, and the second is derived from the
+first.** Editors that read Tree-sitter queries — Helix, Neovim, Zed, Emacs —
+highlight from `tree-sitter-k65/queries/highlights.scm`. Editors that do not
+are served `textDocument/semanticTokens`, which the server answers by running
+that same query and refining what only the symbol table knows. No TextMate
+grammar is shipped (`doc/tree-sitter.md`).
+
+**Not offered**, deliberately: inlay hints, code lens, folding ranges, and
+signature help. The [K816 Language
+Support](https://marketplace.visualstudio.com/items?itemName=X65-Project.vscode-k816)
+extension was written against an older server that had all four, so their
+absence is a difference to expect rather than a fault to report.
+
+The program the server analyzes is the set of documents the editor has open.
+A name another unit defines resolves only while that unit is open; naming the
+units in a project file is future work.
 
 ## License
 

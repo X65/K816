@@ -215,17 +215,43 @@ help: write `if <expression> {`
 
 Semantic diagnostics remain completely under our control. Tree-sitter provides reliable ranges; K816 supplies the explanation, documentation link, and fixup.
 
-## Syntax highlighting caveat
+## Syntax highlighting: two formats, and the second is derived from the first
 
-For Helix, Neovim, and Zed, `queries/highlights.scm` is essentially the solution. Tree-sitter highlighting is defined through query captures over syntax nodes. [Official highlighting documentation](https://tree-sitter.github.io/tree-sitter/3-syntax-highlighting.html)
+**Amended.** This section proposed a TextMate grammar beside semantic tokens.
+`implementation.md` §3 decision 12 was amended on 2026-09-01 to refuse the
+TextMate half, and what is implemented is what follows
+(`plans/07-lsp-tooling.md` decision 15).
 
-For VS Code, Tree-sitter queries are not consumed automatically. The K816 extension should provide:
+There are two formats and no third:
 
-* A small TextMate grammar for immediate lexical highlighting.
-* LSP semantic tokens f     or accurate symbol-aware highlighting.
-* Tree-sitter inside the language server for syntax understanding.
+* **`queries/highlights.scm`**, which Helix, Neovim, Zed and Emacs read
+  directly. Tree-sitter highlighting is defined through query captures over
+  syntax nodes. [Official highlighting documentation](https://tree-sitter.github.io/tree-sitter/3-syntax-highlighting.html)
+* **`textDocument/semanticTokens`**, for editors that do not read
+  Tree-sitter queries — VS Code among them. The server answers it by running
+  *that same file* over the document's tree and mapping each capture onto the
+  token legend, then refining the captures the grammar could not decide —
+  a bare identifier — through the symbol table.
 
-The TextMate grammar can remain deliberately shallow because the semantic token provider corrects identifiers, registers, labels, types, functions, constants, and directives once the LSP responds.
+**No TextMate grammar is written or shipped**, by the server or by any
+extension. A TextMate grammar is a second description of the same
+highlighting, written in a second language, and it drifts: the case the
+amendment turns on is that a shallow grammar is shallow *differently* from
+the query, so the two disagree on exactly the constructs a reader is unsure
+about. The semantic tokens are not a workaround for the missing TextMate
+grammar; they are the same description delivered in the other format, which
+is why `highlights.scm` is compiled into the server binary and run rather
+than transcribed.
+
+What keeps them one description is a pair of gates in `tests/queries.rs`: a
+capture name the token legend does not map is a failure, and a legend entry
+the query never produces is a failure too. The legend and the query's capture
+set are the same closed set.
+
+**Still declined**: inlay hints, code lens, folding ranges, and signature
+help. The legacy server offered all four; phase 11 lists none of them, and
+their absence is a decision rather than an omission
+(`plans/07-lsp-tooling.md` decision 6).
 
 ## Practical implementation order
 

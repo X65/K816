@@ -1456,6 +1456,11 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
     let sweep = |uri: &str| {
         vec![
             request(
+                6,
+                "textDocument/semanticTokens/full",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            ),
+            request(
                 7,
                 "textDocument/codeAction",
                 serde_json::json!({
@@ -1550,7 +1555,9 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
         // Every request plus the shutdown, each answered exactly once.
         assert_eq!(
             answered,
-            ["7", "8", "9", "10", "11", "12", "13", "15", "16", "14", "1"],
+            [
+                "6", "7", "8", "9", "10", "11", "12", "13", "15", "16", "14", "1"
+            ],
             "every request is answered, in order"
         );
     }
@@ -2485,4 +2492,209 @@ fn a_published_diagnostic_says_whether_it_has_fixes() {
     let file = workspace.file(uri).expect("open");
     let published = file_diagnostics(workspace.map(), file, &analysis.diagnostics);
     assert_eq!(published[0].data, None);
+}
+
+// ---------------------------------------------------------------------------
+// H8b — semantic tokens, derived from the highlighting query
+// ---------------------------------------------------------------------------
+
+/// The tokens for `source`, decoded back into `(span, type, modifiers)`.
+fn decoded_tokens(source: &str) -> Vec<(Span, String, Vec<String>)> {
+    use k816::lsp::tokens;
+
+    let mut workspace = Workspace::new();
+    let uri = "file:///tokens.k816";
+    workspace.update(uri, source);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    let types = tokens::token_types();
+    let modifiers = tokens::token_modifiers();
+
+    tokens::tokens(&analysis, file, source)
+        .into_iter()
+        .map(|token| {
+            let named: Vec<String> = modifiers
+                .iter()
+                .enumerate()
+                .filter(|(bit, _)| token.modifiers & (1 << bit) != 0)
+                .map(|(_, modifier)| modifier.as_str().to_owned())
+                .collect();
+            (
+                token.span,
+                types[token.token_type as usize].as_str().to_owned(),
+                named,
+            )
+        })
+        .collect()
+}
+
+/// The token stream is the highlighting query's captures, refined where the
+/// symbol table knows more than the grammar can.
+///
+/// This is what makes the second format *derived* from the first rather than
+/// a second description of the same thing (decision 6): every token comes
+/// from a capture, and the only differences are refinements the compiler
+/// resolved.
+#[test]
+fn the_token_stream_is_the_query_refined_by_the_symbol_table() {
+    use k816::parser::{Query, parse_source};
+
+    let source = include_str!("golden/slice.k816");
+    let highlights = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tree-sitter-k65/queries/highlights.scm"),
+    )
+    .expect("read highlights.scm");
+    let query = Query::compile(&highlights).expect("the query compiles");
+
+    let mut map = SourceMap::new();
+    let file = map.add_file("slice.k816", source);
+    let parse = parse_source(map.file(file), None);
+    let captured = query.captures(&parse.tree, file, source);
+
+    let tokens = decoded_tokens(source);
+    assert!(!tokens.is_empty());
+
+    // Every token sits exactly where a capture did.
+    for (span, _, _) in &tokens {
+        assert!(
+            captured.iter().any(|capture| capture.span == *span),
+            "a token at {span:?} that no capture produced"
+        );
+    }
+    // Nothing overlaps, and everything is in source order — the protocol
+    // requires both.
+    for pair in tokens.windows(2) {
+        assert!(pair[0].0.end <= pair[1].0.start, "{pair:?}");
+    }
+
+    // The refinements, listed. `main` is captured `@variable` by the general
+    // `(identifier)` pattern and `@function` by the specific one; `SCREEN`'s
+    // declaring occurrence carries `declaration`.
+    let by_text = |needle: &str, nth: usize| {
+        let mut at = 0usize;
+        for _ in 0..=nth {
+            at = source[at..]
+                .find(needle)
+                .map(|found| found + at)
+                .expect(needle)
+                + 1;
+        }
+        (at - 1) as u32
+    };
+    let token_at = |offset: u32| {
+        tokens
+            .iter()
+            .find(|(span, _, _)| span.contains(offset))
+            .unwrap_or_else(|| panic!("no token at {offset}"))
+            .clone()
+    };
+
+    let (_, kind, modifiers) = token_at(by_text("SCREEN", 0));
+    assert_eq!(kind, "variable");
+    assert_eq!(modifiers, ["declaration"], "the declaring occurrence");
+    let (_, kind, modifiers) = token_at(by_text("SCREEN", 1));
+    assert_eq!(kind, "variable");
+    assert!(modifiers.is_empty(), "a use carries no declaration");
+    let (_, kind, modifiers) = token_at(by_text("main", 0));
+    assert_eq!(kind, "function", "refined from `@variable` by the query");
+    assert_eq!(modifiers, ["declaration"]);
+}
+
+/// A `const` carries `readonly`, which is the second and last modifier.
+#[test]
+fn a_constant_is_marked_readonly_and_nothing_else_is() {
+    const SOURCE: &str = "const LIMIT = 8\nvar SCREEN = $0400\nfunc main @a8 @i8 {\n    lda #LIMIT\n    sta SCREEN\n    return\n}\n";
+    let tokens = decoded_tokens(SOURCE);
+    let modifiers_of = |needle: &str, nth: usize| {
+        let mut at = 0usize;
+        for _ in 0..=nth {
+            at = SOURCE[at..].find(needle).map(|f| f + at).expect(needle) + 1;
+        }
+        let offset = (at - 1) as u32;
+        tokens
+            .iter()
+            .find(|(span, _, _)| span.contains(offset))
+            .unwrap_or_else(|| panic!("no token at `{needle}`"))
+            .2
+            .clone()
+    };
+
+    assert_eq!(modifiers_of("LIMIT", 0), ["declaration", "readonly"]);
+    assert_eq!(modifiers_of("LIMIT", 1), ["readonly"], "a use of a `const`");
+    assert_eq!(modifiers_of("SCREEN", 1), Vec::<String>::new());
+    // Nothing else carries either modifier.
+    for (span, _, modifiers) in &tokens {
+        if modifiers.contains(&"readonly".to_owned()) {
+            assert_eq!(
+                &SOURCE[span.start as usize..span.end as usize],
+                "LIMIT",
+                "only a `const` is readonly"
+            );
+        }
+    }
+}
+
+/// The encoding is relative, per line, and counts UTF-16 units.
+#[test]
+fn the_encoding_is_relative_and_counts_utf16_units() {
+    use k816::lsp::tokens;
+
+    // `ż` is two bytes and one unit; `𝕏` is four bytes and two.
+    const SOURCE: &str = "// żab 𝕏\nvar SCREEN = $0400\n";
+    let mut workspace = Workspace::new();
+    let uri = "file:///utf16.k816";
+    workspace.update(uri, SOURCE);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    let source = workspace.map().file(file);
+    let found = tokens::tokens(&analysis, file, SOURCE);
+    let encoded = tokens::encode(&found, source);
+
+    assert!(!encoded.is_empty());
+    // The comment is the first token: line 0, column 0, and its length is
+    // the line's UTF-16 length — 9 units for eleven bytes.
+    assert_eq!(encoded[0].delta_line, 0);
+    assert_eq!(encoded[0].delta_start, 0);
+    assert_eq!(encoded[0].length, 9, "`// żab 𝕏` is nine UTF-16 units");
+    // The next token is on the following line, so its start is absolute.
+    assert_eq!(encoded[1].delta_line, 1);
+    assert_eq!(encoded[1].delta_start, 0);
+}
+
+/// A document the grammar could not read still returns tokens for what
+/// parsed (decision 18).
+#[test]
+fn a_broken_document_still_returns_tokens_for_what_parsed() {
+    const SOURCE: &str = "var SCREEN = $0400\n}{ ??? &&&\nconst LIMIT = 8\n";
+    let tokens = decoded_tokens(SOURCE);
+    let texts: Vec<&str> = tokens
+        .iter()
+        .map(|(span, _, _)| &SOURCE[span.start as usize..span.end as usize])
+        .collect();
+    assert!(texts.contains(&"SCREEN"), "{texts:?}");
+    assert!(texts.contains(&"LIMIT"), "{texts:?}");
+    // And the stream is still ordered and non-overlapping.
+    for pair in tokens.windows(2) {
+        assert!(pair[0].0.end <= pair[1].0.start, "{pair:?}");
+    }
+}
+
+/// A block comment spanning lines becomes one token per line, because the
+/// protocol's encoding is per line.
+#[test]
+fn a_multi_line_token_is_split_per_line() {
+    const SOURCE: &str = "/* one\n   two\n   three */\nvar SCREEN = $0400\n";
+    let tokens = decoded_tokens(SOURCE);
+    let comments: Vec<&(Span, String, Vec<String>)> = tokens
+        .iter()
+        .filter(|(_, kind, _)| kind == "comment")
+        .collect();
+    assert_eq!(comments.len(), 3, "one per line: {comments:?}");
+    for (span, _, _) in &comments {
+        assert!(
+            !SOURCE[span.start as usize..span.end as usize].contains('\n'),
+            "a token still crosses a line"
+        );
+    }
 }

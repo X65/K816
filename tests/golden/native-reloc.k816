@@ -32,14 +32,14 @@ func wide @a16 @i16 {
 }
 
 func helper @a8 @i16 {
-  .spin:
+.spin:
     bne .spin
 }
 
 // Not `main`: this wants 16-bit index registers, and an entry point takes
 // its widths from the environment rather than declaring them.
 func reloc @a8 @i16 {
-  top:
+top:
     lda table
     lda table,x
     lda #&<table

@@ -60,6 +60,7 @@ fn main() -> ExitCode {
         Some("compile") => compile(&prog_name, &args[1..]),
         Some("emit-ir") => emit_ir(&prog_name, &args[1..]),
         Some("lsp") => lsp(&prog_name, &args[1..]),
+        Some("fmt") => fmt(&prog_name, &args[1..]),
         _ => {
             usage(&prog_name);
             ExitCode::FAILURE
@@ -75,6 +76,12 @@ fn usage(prog_name: &str) {
     eprintln!("  emit-ir [--after-opt] [--explain] FILE");
     eprintln!("                                       dump the lowered operation stream, and");
     eprintln!("                                       with --explain what the optimizer did");
+    eprintln!("  fmt [--check] FILE...                normalize whitespace: indentation, trailing");
+    eprintln!(
+        "                                       space, and the final newline. --check writes"
+    );
+    eprintln!("                                       nothing and exits non-zero if a file would");
+    eprintln!("                                       change");
     eprintln!("  lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The");
     eprintln!("                                       same options a build states, so an editor");
     eprintln!("                                       and a build agree; a client may also send");
@@ -115,6 +122,8 @@ enum Command {
     EmitIr,
     /// `lsp [--strict-k65] [--entry AXES]`
     Lsp,
+    /// `fmt [--check] FILE...`
+    Fmt,
 }
 
 impl Command {
@@ -123,7 +132,7 @@ impl Command {
         match self {
             Self::Compile => Some(("--no-opt", false)),
             Self::EmitIr => Some(("--after-opt", true)),
-            Self::Lsp => None,
+            Self::Lsp | Self::Fmt => None,
         }
     }
 
@@ -136,11 +145,19 @@ impl Command {
     fn takes_files(self) -> bool {
         !matches!(self, Self::Lsp)
     }
+
+    /// Whether the command reads *several* files rather than one.
+    fn takes_many(self) -> bool {
+        matches!(self, Self::Fmt)
+    }
 }
 
 struct CommandLine {
-    /// The file to compile, and `None` for a command that reads none.
-    input: Option<PathBuf>,
+    /// The files named on the command line, in order. `compile` and
+    /// `emit-ir` take one; `fmt` takes any number; `lsp` takes none.
+    inputs: Vec<PathBuf>,
+    /// `fmt --check`: report what would change and write nothing.
+    check: bool,
     /// Print what the optimizer did, after the dump (`emit-ir --explain`).
     explain: bool,
     /// Sibling units, whose definitions this unit may refer to. K65 has no
@@ -165,10 +182,11 @@ fn parse_command_line(
     command: Command,
 ) -> Result<CommandLine, ()> {
     let opt_flag = command.opt_flag();
-    let mut input: Option<PathBuf> = None;
+    let mut inputs: Vec<PathBuf> = Vec::new();
     let mut units: Vec<PathBuf> = Vec::new();
     let mut output: Option<PathBuf> = None;
     let mut explain = false;
+    let mut check = false;
     let mut options = Options {
         // The toggle names the value it sets, so the starting value is the
         // other one; a command with no toggle keeps the default.
@@ -233,6 +251,7 @@ fn parse_command_line(
                 set_entry(prog_name, text, &mut options, message_format)?;
             }
             "--explain" if command == Command::EmitIr => explain = true,
+            "--check" if command == Command::Fmt => check = true,
             flag if opt_flag.is_some_and(|(name, _)| name == flag) => {
                 options.optimize = opt_flag.expect("matched the toggle's own name").1;
             }
@@ -244,7 +263,9 @@ fn parse_command_line(
                 );
                 return Err(());
             }
-            _ if command.takes_files() && input.is_none() => input = Some(PathBuf::from(arg)),
+            _ if command.takes_files() && (command.takes_many() || inputs.is_empty()) => {
+                inputs.push(PathBuf::from(arg));
+            }
             _ if command.takes_files() => {
                 render::render_tool_error(prog_name, "more than one input file", message_format);
                 return Err(());
@@ -259,12 +280,13 @@ fn parse_command_line(
             }
         }
     }
-    if command.takes_files() && input.is_none() {
+    if command.takes_files() && inputs.is_empty() {
         render::render_tool_error(prog_name, "no input file", message_format);
         return Err(());
     }
     Ok(CommandLine {
-        input,
+        inputs,
+        check,
         explain,
         units,
         output,
@@ -357,11 +379,69 @@ fn lsp(prog_name: &str, args: &[String]) -> ExitCode {
     }
 }
 
+/// `k816 fmt [--check] FILE...`
+///
+/// The same function the editor's `textDocument/formatting` calls, because a
+/// formatter reachable only through an editor cannot run in CI and cannot
+/// format the corpus for its own gate (`plans/07-lsp-tooling.md` decision 16).
+fn fmt(prog_name: &str, args: &[String]) -> ExitCode {
+    let Ok(command) = parse_command_line(prog_name, args, Command::Fmt) else {
+        return ExitCode::FAILURE;
+    };
+
+    let mut changed = 0usize;
+    let mut failed = false;
+    for input in &command.inputs {
+        let mut map = SourceMap::new();
+        let Ok(file) = load(prog_name, &mut map, input, command.message_format) else {
+            return ExitCode::FAILURE;
+        };
+        let source = map.file(file);
+        let parse = k816::parser::parse_source(source, None);
+        let Some(formatted) = k816::parser::format::format(source, &parse.tree) else {
+            // A program the grammar could not read is not formatted, because
+            // formatting one is guessing. The diagnostics already say why,
+            // and this says which file was left alone.
+            render::render_tool_error(
+                prog_name,
+                &format!(
+                    "{}: not formatted — its parse has an error, and formatting a program                      the grammar could not read would be guessing",
+                    input.display()
+                ),
+                command.message_format,
+            );
+            failed = true;
+            continue;
+        };
+        if formatted == source.text() {
+            continue;
+        }
+        changed += 1;
+        if command.check {
+            eprintln!("{}: would be reformatted", input.display());
+            continue;
+        }
+        if let Err(error) = std::fs::write(input, formatted) {
+            render::render_tool_error(
+                prog_name,
+                &format!("cannot write {}: {error}", input.display()),
+                command.message_format,
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    if failed || (command.check && changed > 0) {
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     let Ok(command) = parse_command_line(prog_name, args, Command::Compile) else {
         return ExitCode::FAILURE;
     };
-    let input = command.input.clone().expect("compile requires an input");
+    let input = command.inputs[0].clone();
     let mut map = SourceMap::new();
     let Ok(file) = load(prog_name, &mut map, &input, command.message_format) else {
         return ExitCode::FAILURE;
@@ -396,7 +476,7 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
     let Ok(command) = parse_command_line(prog_name, args, Command::EmitIr) else {
         return ExitCode::FAILURE;
     };
-    let input = command.input.clone().expect("emit-ir requires an input");
+    let input = command.inputs[0].clone();
     let mut map = SourceMap::new();
     let Ok(file) = load(prog_name, &mut map, &input, command.message_format) else {
         return ExitCode::FAILURE;

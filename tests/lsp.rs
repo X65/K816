@@ -1456,6 +1456,14 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
     let sweep = |uri: &str| {
         vec![
             request(
+                5,
+                "textDocument/formatting",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            ),
+            request(
                 6,
                 "textDocument/semanticTokens/full",
                 serde_json::json!({ "textDocument": { "uri": uri } }),
@@ -1556,7 +1564,7 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
         assert_eq!(
             answered,
             [
-                "6", "7", "8", "9", "10", "11", "12", "13", "15", "16", "14", "1"
+                "5", "6", "7", "8", "9", "10", "11", "12", "13", "15", "16", "14", "1"
             ],
             "every request is answered, in order"
         );

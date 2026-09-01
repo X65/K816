@@ -61,7 +61,7 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
-    CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
+    CodeActionRequest, Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest,
     PrepareRenameRequest, References, Rename, Request, SemanticTokensFullRequest,
     WorkspaceSymbolRequest,
 };
@@ -69,12 +69,12 @@ use lsp_types::{
     CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability,
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
-    MarkupKind, MessageType, OneOf, PrepareRenameResponse, PublishDiagnosticsParams,
-    ReferenceParams, RenameOptions, RenameParams, SemanticTokens, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ShowMessageParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
+    HoverParams, HoverProviderCapability, MarkupContent, MarkupKind, MessageType, OneOf,
+    PrepareRenameResponse, PublishDiagnosticsParams, ReferenceParams, RenameOptions, RenameParams,
+    SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ShowMessageParams,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
     WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
@@ -98,6 +98,7 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         // Full documents only: no delta and no range. A K816 file is small,
         // and a second encoding is a second thing to keep in step with the
         // query (decision 6).
@@ -302,6 +303,32 @@ fn answer(
     let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
+        Formatting::METHOD => {
+            let edits: Vec<TextEdit> =
+                serde_json::from_value::<DocumentFormattingParams>(request.params.clone())
+                    .ok()
+                    .and_then(|params| {
+                        let file = workspace.file(&params.text_document.uri.to_string())?;
+                        let source = workspace.map().file(file);
+                        let unit = analysis.unit(file)?;
+                        let formatted = crate::parser::format::format(source, &unit.parse.tree)?;
+                        if formatted == source.text() {
+                            return Some(Vec::new());
+                        }
+                        // One edit over the whole document. A K816 file is
+                        // small, and a minimal edit set is a second
+                        // description of the same change.
+                        Some(vec![TextEdit {
+                            range: convert::span_to_range(map, source.span()),
+                            new_text: formatted,
+                        }])
+                    })
+                    // A parse the grammar could not read formats to nothing:
+                    // the request returns no edits, and the diagnostics
+                    // already say why (decision 4).
+                    .unwrap_or_default();
+            Ok(serde_json::to_value(edits).unwrap_or(serde_json::Value::Null))
+        }
         SemanticTokensFullRequest::METHOD => {
             let answer = serde_json::from_value::<SemanticTokensParams>(request.params.clone())
                 .ok()

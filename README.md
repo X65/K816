@@ -180,6 +180,21 @@ After regeneration, verify fixtures:
 
 - `cargo test -p k816-golden-tests`
 
+## Formatting
+
+`k816 fmt FILE...` normalizes whitespace and nothing else: the indentation of
+each line — four spaces per brace-delimited construct — trailing whitespace,
+and the final newline. Whitespace *inside* a line is left exactly as written,
+so a column of aligned `=` signs or trailing comments survives, and a file's
+line endings are not converted.
+
+`k816 fmt --check FILE...` writes nothing and exits non-zero if a file would
+change.
+
+A file whose parse has an error is never formatted: formatting a program the
+grammar could not read is guessing, and the diagnostics already say why. The
+editor's `textDocument/formatting` calls the same function.
+
 ## Editor support
 
 `k816 lsp` runs a language server over stdio. It answers live diagnostics,

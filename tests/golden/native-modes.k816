@@ -101,7 +101,7 @@ func flags_and_modes @a8 @i16 {
 }
 
 func control @a8 @i16 {
-  .again:
+.again:
     bcc .again
     bcs .again
     beq .again

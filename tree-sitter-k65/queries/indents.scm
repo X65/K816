@@ -17,6 +17,7 @@
 (data_body) @indent
 (code_subblock) @indent
 (field_list) @indent
+(eval_bracket) @indent
 (eval_statement_block) @indent
 (nocross_data_group) @indent
 

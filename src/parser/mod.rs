@@ -29,6 +29,7 @@
 mod ast_builder;
 mod cst;
 mod diagnostics;
+pub mod format;
 pub mod query;
 
 pub(crate) use ast_builder::assign_statement_ids;

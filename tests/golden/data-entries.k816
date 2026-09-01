@@ -106,18 +106,18 @@ data mixed {
     // A subblock of a *top-level* data block is a body with no function, so
     // nothing says what widths hold when control reaches it. A width block
     // is how it says.
-    code {
-        @a8 {
-            a = FRAME_BYTES
+        code {
+            @a8 {
+                a = FRAME_BYTES
+            }
         }
-    }
     // `nocross` on a subblock asks the same page-fit question the statement
     // form does.
-    nocross code {
-        @i8 {
-            y = 3
+        nocross code {
+            @i8 {
+                y = 3
+            }
         }
-    }
     $FF
 }
 
@@ -127,7 +127,7 @@ func caller @a8 @i8 {
     // is sized by the contract above without saying so again.
     data {
         1 2
-        code { a = #7 }
+            code { a = #7 }
     }
     return
 }

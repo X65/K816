@@ -231,9 +231,9 @@ impl CpuState {
     /// bound by a *different* clause — so the section's own clause is not the
     /// contract its return has to satisfy. **G13 demonstrated the miscompile
     /// and priced the deferral**: three instructions and six bytes over the
-    /// whole corpus, with five of 254 emitted sections declaring an output at
-    /// all. `tests/live_outs.rs` re-derives it; `postmortem.md` §G.22 argues
-    /// it.
+    /// whole corpus, of which only a handful of emitted sections declare an
+    /// output at all. `tests/live_outs.rs` re-derives it and publishes the
+    /// counts in `doc/corpus-census.md`; `postmortem.md` §G.22 argues it.
     pub const ALL: Self = Self {
         registers: RegisterSet::ALL,
         flags: FlagSet::ALL,

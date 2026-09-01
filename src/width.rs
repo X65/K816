@@ -1925,7 +1925,7 @@ pub fn classify_exit(analysis: &WidthAnalysis) -> ExitClassification {
 /// differs between two returns is a mistake an author can usually see and fix,
 /// and `K816-W0121` names both sites; an emulation flag that differs is an
 /// `XCE` on one path and not another, which is `xce`'s ordinary meaning and
-/// not something to warn about (sub-plan G, decision 34).
+/// not something to warn about (`plans/06-compatibility.md` decision 37).
 fn classify_emulation(sites: &[ReturnSite]) -> EmulationExit {
     // No reachable return — a body that ends in `stp` or loops forever — has
     // no exit for a caller to observe.

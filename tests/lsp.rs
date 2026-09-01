@@ -1455,6 +1455,7 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
     };
     let sweep = |uri: &str| {
         vec![
+            request(8, "textDocument/completion", at_position(uri)),
             request(9, "textDocument/hover", at_position(uri)),
             request(10, "textDocument/definition", at_position(uri)),
             request(
@@ -1537,7 +1538,7 @@ fn no_request_panics_on_an_empty_workspace_or_a_broken_document() {
         // Every request plus the shutdown, each answered exactly once.
         assert_eq!(
             answered,
-            ["9", "10", "11", "12", "13", "15", "16", "14", "1"],
+            ["8", "9", "10", "11", "12", "13", "15", "16", "14", "1"],
             "every request is answered, in order"
         );
     }
@@ -2076,6 +2077,281 @@ fn applying_a_rename_leaves_the_program_saying_the_same_things() {
             original.lines().count(),
             renamed.lines().count(),
             "renaming to `{to}` changed the emitted program"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// H6 — completion
+// ---------------------------------------------------------------------------
+
+/// The candidates at an offset of `source`, as `(label, inserted text)`.
+fn candidates(source: &str, offset: u32, trigger: Option<char>) -> Vec<(String, String)> {
+    let mut workspace = Workspace::new();
+    let uri = "file:///completion.k816";
+    workspace.update(uri, source);
+    let analysis = workspace.analyze();
+    let file = workspace.file(uri).expect("open");
+    k816::lsp::completion::complete(&analysis, file, offset, trigger)
+        .into_iter()
+        .map(|candidate| {
+            let inserted = candidate.insert.unwrap_or_else(|| candidate.label.clone());
+            (candidate.label, inserted)
+        })
+        .collect()
+}
+
+/// The offset just after the first occurrence of `needle`.
+fn after(source: &str, needle: &str) -> u32 {
+    (source
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` is not in the source"))
+        + needle.len()) as u32
+}
+
+/// A statement position offers every mnemonic, the statement keywords, the
+/// unit's names, and the enclosing function's local labels — and nothing that
+/// exists only in a comment or a string.
+#[test]
+fn a_statement_position_offers_what_may_stand_there() {
+    const SOURCE: &str = "// commentonly is written here and nowhere else\n\
+        var SCREEN = $0400\n\
+        const LIMIT = 8\n\
+        \n\
+        func other @a8 @i8 {\n\
+        \x20   .elsewhere:\n\
+        \x20   nop\n\
+        \x20   != goto .elsewhere\n\
+        }\n\
+        \n\
+        func work @a8 @i8 {\n\
+        \x20   .again:\n\
+        \x20   \n\
+        \x20   != goto .again\n\
+        }\n\
+        \n\
+        data words {\n\
+        \x20   \"stringonly\"\n\
+        }\n";
+
+    let offset = after(SOURCE, ".again:\n    ");
+    let found = candidates(SOURCE, offset, None);
+    let labels: Vec<&str> = found.iter().map(|(label, _)| label.as_str()).collect();
+
+    // Every mnemonic the ISA table has, and no fewer.
+    for mnemonic in k816::isa::Mnemonic::ALL {
+        assert!(
+            labels.contains(&mnemonic.ca65()),
+            "`{}` is not offered at a statement start",
+            mnemonic.ca65()
+        );
+    }
+    // Every statement keyword, and every unit-level name.
+    for keyword in k816::lsp::completion::STATEMENT_KEYWORDS {
+        assert!(labels.contains(keyword), "`{keyword}` is not offered");
+    }
+    for name in ["SCREEN", "LIMIT", "other", "work", "words"] {
+        assert!(labels.contains(&name), "`{name}` is not offered");
+    }
+    // The register spellings a statement may open with: an HLA statement
+    // starts with one, so a statement position without them would be missing
+    // the language's commonest first token.
+    for register in ["a", "x", "y", "dpr"] {
+        assert!(labels.contains(&register), "`{register}` is not offered");
+    }
+    // This function's local label, and not the other function's.
+    assert!(labels.contains(&".again"), "the enclosing label is missing");
+    assert!(
+        !labels.contains(&".elsewhere"),
+        "another function's local label leaked in"
+    );
+    // A word that exists only in a comment or only in a string was never
+    // declared, so it is not a candidate — and nothing filters it out.
+    assert!(!labels.contains(&"commentonly"));
+    assert!(!labels.contains(&"stringonly"));
+}
+
+/// An empty document offers the item keywords, and nothing else.
+#[test]
+fn an_empty_document_offers_the_item_keywords() {
+    let found = candidates("", 0, None);
+    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    let expected: Vec<String> = k816::lsp::completion::ITEM_KEYWORDS
+        .iter()
+        .map(|keyword| (*keyword).to_owned())
+        .collect();
+    assert_eq!(labels, expected);
+}
+
+/// After `.` on a laid-out variable: exactly that layout's fields.
+#[test]
+fn a_field_step_offers_exactly_that_layouts_fields() {
+    const SOURCE: &str = "var PAIR[ .lo :byte .hi :byte ]\n\
+        var TRIPLE[ .one :byte .two :byte .three :byte ]\n\
+        func work @a8 @i8 {\n\
+        \x20   a = PAIR.\n\
+        }\n";
+
+    let found = candidates(SOURCE, after(SOURCE, "a = PAIR."), Some('.'));
+    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    assert_eq!(
+        labels,
+        [".lo", ".hi"],
+        "the other layout's fields leaked in"
+    );
+}
+
+/// After `.` where no variable precedes it: the enclosing function's local
+/// labels, which is the language's *other* meaning for a leading dot.
+#[test]
+fn a_bare_dot_offers_the_enclosing_functions_local_labels() {
+    const SOURCE: &str = "func other @a8 @i8 {\n\
+        .elsewhere:\n\
+        \x20   nop\n\
+        \x20   != goto .elsewhere\n\
+        }\n\
+        \n\
+        func work @a8 @i8 {\n\
+        .again:\n\
+        \x20   goto .\n\
+        }\n";
+
+    // The needle has to be unique: `other`'s `!= goto .elsewhere` contains
+    // `goto .` too.
+    let found = candidates(SOURCE, after(SOURCE, "\n    goto ."), Some('.'));
+    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    assert_eq!(labels, [".again"]);
+}
+
+/// After `@`: exactly the four width annotations.
+#[test]
+fn an_annotation_position_offers_exactly_the_four_annotations() {
+    let source = "func work @";
+    let found = candidates(source, after(source, "@"), Some('@'));
+    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    assert_eq!(labels, ["@a8", "@a16", "@i8", "@i16"]);
+}
+
+/// In an operand, a `#` is offered only where the ISA admits an immediate.
+///
+/// `lda #K` is a load and `sta #K` is not a store, so offering the second
+/// would trade one error for another — the same reasoning `resolve.rs` uses
+/// when it decides whether to *fix* a `const` in address position.
+#[test]
+fn an_immediate_is_offered_only_where_the_isa_admits_one() {
+    const SOURCE: &str = "var SCREEN = $0400\n\
+        const LIMIT = 8\n\
+        func work @a8 @i8 {\n\
+        \x20   lda LIM\n\
+        \x20   sta LIM\n\
+        }\n";
+
+    let loading = candidates(SOURCE, after(SOURCE, "lda LIM"), None);
+    assert!(
+        loading.contains(&("LIMIT".to_owned(), "#LIMIT".to_owned())),
+        "`lda` should offer `#LIMIT`: {loading:?}"
+    );
+
+    let storing = candidates(SOURCE, after(SOURCE, "sta LIM"), None);
+    assert!(
+        storing.iter().any(|(label, _)| label == "LIMIT"),
+        "`sta` should still offer the name: {storing:?}"
+    );
+    assert!(
+        !storing
+            .iter()
+            .any(|(_, inserted)| inserted.starts_with('#')),
+        "`sta` has no immediate form, so nothing may be offered with a `#`: {storing:?}"
+    );
+
+    // After a `#` the user has already committed to an immediate, so the
+    // candidates are the values, each with the marker they follow.
+    let immediate = candidates(SOURCE, after(SOURCE, "lda LIM"), Some('#'));
+    assert!(
+        immediate
+            .iter()
+            .all(|(_, inserted)| inserted.starts_with('#')),
+        "{immediate:?}"
+    );
+    assert!(immediate.iter().any(|(label, _)| label == "LIMIT"));
+    assert!(immediate.iter().any(|(label, _)| label == "SCREEN"));
+}
+
+/// After `:` — the data widths and the two metadata queries.
+///
+/// Not one of decision 9's four contexts; added because the legacy server
+/// offered it and these are the language's own spellings (probe 11).
+#[test]
+fn a_colon_offers_the_widths_and_the_metadata_queries() {
+    const SOURCE: &str = "var PAIR[ .lo :byte ]\n\
+        func work @a8 @i8 {\n\
+        \x20   a = PAIR:\n\
+        }\n";
+    let found = candidates(SOURCE, after(SOURCE, "PAIR:"), Some(':'));
+    let labels: Vec<String> = found.into_iter().map(|(label, _)| label).collect();
+    assert_eq!(labels, ["byte", "word", "far", "sizeof", "offsetof"]);
+}
+
+/// Every keyword the server offers is one the grammar has.
+///
+/// The lists are written out — a grammar rule is a shape, not a list of what
+/// a user may usefully type next — so this is what stops them naming a
+/// keyword the language does not have, or keeping one it removed.
+#[test]
+fn every_offered_keyword_is_a_literal_the_grammar_has() {
+    let grammar = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tree-sitter-k65/src/grammar.json"),
+    )
+    .expect("read the generated grammar");
+    let grammar: serde_json::Value = serde_json::from_str(&grammar).expect("valid JSON");
+
+    let mut literals = std::collections::BTreeSet::new();
+    fn walk(value: &serde_json::Value, literals: &mut std::collections::BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(|t| t.as_str()) == Some("STRING")
+                    && let Some(text) = map.get("value").and_then(|v| v.as_str())
+                {
+                    literals.insert(text.to_owned());
+                }
+                for nested in map.values() {
+                    walk(nested, literals);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, literals);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&grammar["rules"], &mut literals);
+    assert!(literals.len() > 100, "the grammar walk found nothing");
+
+    for keyword in k816::lsp::completion::ITEM_KEYWORDS
+        .iter()
+        .chain(k816::lsp::completion::STATEMENT_KEYWORDS)
+        .chain(k816::lsp::completion::COLON_SUFFIXES)
+    {
+        assert!(
+            literals.contains(*keyword),
+            "`{keyword}` is offered and the grammar has no such literal"
+        );
+    }
+    // The registers, whose spellings are `RegisterKind`'s own.
+    for register in k816::lsp::completion::REGISTERS {
+        assert!(
+            literals.contains(register.k65()),
+            "`{}` is offered and the grammar has no such literal",
+            register.k65()
+        );
+    }
+    // The annotations are spelled with their `@` in the grammar.
+    for annotation in k816::lsp::completion::ANNOTATIONS {
+        assert!(
+            literals.contains(&format!("@{annotation}")),
+            "`@{annotation}` is offered and the grammar has no such literal"
         );
     }
 }

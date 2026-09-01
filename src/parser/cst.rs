@@ -135,6 +135,32 @@ impl SyntaxTree {
         path
     }
 
+    /// The innermost token that ends at or before `offset`.
+    ///
+    /// What a completion needs and [`Self::node_path`] cannot give: at a
+    /// cursor the interesting node is usually the one just *behind* it — the
+    /// `.` of a field step, the `@` of an annotation, the `#` of an immediate
+    /// — and a zero-width position between two tokens is inside neither.
+    pub fn token_before(&self, file: FileId, offset: u32) -> Option<CstNode> {
+        if offset == 0 {
+            return None;
+        }
+        let mut node = self.root();
+        let at = offset - 1;
+        loop {
+            let mut cursor = node.walk();
+            let child = node
+                .children(&mut cursor)
+                .find(|child| (child.start_byte() as u32) <= at && at < (child.end_byte() as u32));
+            match child {
+                Some(child) => node = child,
+                None => break,
+            }
+        }
+        let described = describe(node, file);
+        described.is_leaf().then_some(described)
+    }
+
     /// Whether the parse contains an `ERROR` or a `MISSING` node.
     ///
     /// What the formatter refuses on (decision 4) and what a request answers

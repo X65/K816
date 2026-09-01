@@ -37,7 +37,7 @@
 //! the preprocessed program's holes).
 
 use crate::AnalyzedUnit;
-use crate::ast::{ItemKind, StmtId};
+use crate::ast::{Block, DataBlock, DataEntryKind, ItemKind, Statement, StatementKind, StmtId};
 use crate::parser::CstNode;
 use crate::source::{FileId, Span};
 use crate::symbol::{LayoutId, SymbolId};
@@ -70,7 +70,7 @@ pub struct Context<'a> {
     pub field: Option<(LayoutId, usize)>,
 }
 
-impl Context<'_> {
+impl<'a> Context<'a> {
     /// The innermost CST node covering the offset.
     pub fn node(&self) -> Option<&CstNode> {
         self.path.last()
@@ -150,6 +150,71 @@ impl Context<'_> {
     /// The file the offset belongs to.
     pub fn file(&self) -> FileId {
         self.unit.file
+    }
+
+    /// The statement `id` names, in the program the compiler walked.
+    ///
+    /// The walk is here rather than generic because a consumer wants a borrow
+    /// of the *program*, and `ast::visit_statements` hands out a borrow of the
+    /// closure's own frame.
+    pub fn statement_node(&self, id: StmtId) -> Option<&'a Statement> {
+        let mut found: Option<&'a Statement> = None;
+        for item in &self.unit.program().items {
+            let mut visit = |candidate: &'a Statement| {
+                if candidate.id == id {
+                    found = Some(candidate);
+                }
+            };
+            match &item.kind {
+                ItemKind::Func(function) => collect(&function.body, &mut visit),
+                ItemKind::Data(data) => collect_data(data, &mut visit),
+                _ => {}
+            }
+        }
+        found
+    }
+}
+
+/// [`crate::ast::visit_statements`], with the lifetime the caller needs: the
+/// generic walk hands out a borrow of the closure's own frame, and a consumer
+/// of this one wants a borrow of the program.
+fn collect<'a>(block: &'a Block, visit: &mut impl FnMut(&'a Statement)) {
+    let mut stack: Vec<&'a Statement> = block.statements.iter().collect();
+    while let Some(statement) = stack.pop() {
+        visit(statement);
+        match &statement.kind {
+            StatementKind::WidthBlock(width) => stack.extend(width.body.statements.iter()),
+            StatementKind::Nocross(body) => stack.extend(body.statements.iter()),
+            StatementKind::Loop(loop_statement) => {
+                stack.extend(loop_statement.body.statements.iter());
+            }
+            StatementKind::Conditional(conditional) => {
+                stack.extend(conditional.body.statements.iter());
+                if let Some(otherwise) = &conditional.otherwise {
+                    stack.extend(otherwise.statements.iter());
+                }
+            }
+            StatementKind::ConditionalJump(jump) => stack.push(&jump.jump),
+            StatementKind::Data(data) => collect_data(data, visit),
+            _ => {}
+        }
+    }
+}
+
+fn collect_data<'a>(data: &'a DataBlock, visit: &mut impl FnMut(&'a Statement)) {
+    for entry in &data.entries {
+        match &entry.kind {
+            DataEntryKind::Code { body, .. } => collect(body, visit),
+            DataEntryKind::Repeat { body, .. } => collect_data(body, visit),
+            DataEntryKind::NocrossGroup(entries) => {
+                for entry in entries {
+                    if let DataEntryKind::Code { body, .. } = &entry.kind {
+                        collect(body, visit);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

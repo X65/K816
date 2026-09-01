@@ -494,77 +494,9 @@ fn find_native<'a>(
     context: &Context<'a>,
     statement: StmtId,
 ) -> Option<&'a crate::ast::NativeInstruction> {
-    match &find_statement(context, statement)?.kind {
+    match &context.statement_node(statement)?.kind {
         StatementKind::Native(native) => Some(native),
         _ => None,
-    }
-}
-
-/// The statement carrying `statement`, in the program the compiler walked.
-fn find_statement<'a>(
-    context: &Context<'a>,
-    statement: StmtId,
-) -> Option<&'a crate::ast::Statement> {
-    let mut found: Option<&crate::ast::Statement> = None;
-    for item in &context.unit.program().items {
-        let mut visit = |candidate: &'a crate::ast::Statement| {
-            if candidate.id == statement {
-                found = Some(candidate);
-            }
-        };
-        match &item.kind {
-            ItemKind::Func(function) => collect(&function.body, &mut visit),
-            ItemKind::Data(data) => collect_data(data, &mut visit),
-            _ => {}
-        }
-    }
-    found
-}
-
-/// [`crate::ast::visit_statements`], with the lifetime the caller needs: the
-/// generic walk hands out a borrow of the closure's own frame, and a hover
-/// wants a borrow of the program.
-fn collect<'a>(block: &'a crate::ast::Block, visit: &mut impl FnMut(&'a crate::ast::Statement)) {
-    let mut stack: Vec<&'a crate::ast::Statement> = block.statements.iter().collect();
-    while let Some(statement) = stack.pop() {
-        visit(statement);
-        match &statement.kind {
-            StatementKind::WidthBlock(width) => stack.extend(width.body.statements.iter()),
-            StatementKind::Nocross(body) => stack.extend(body.statements.iter()),
-            StatementKind::Loop(loop_statement) => {
-                stack.extend(loop_statement.body.statements.iter());
-            }
-            StatementKind::Conditional(conditional) => {
-                stack.extend(conditional.body.statements.iter());
-                if let Some(otherwise) = &conditional.otherwise {
-                    stack.extend(otherwise.statements.iter());
-                }
-            }
-            StatementKind::ConditionalJump(jump) => stack.push(&jump.jump),
-            StatementKind::Data(data) => collect_data(data, visit),
-            _ => {}
-        }
-    }
-}
-
-fn collect_data<'a>(
-    data: &'a crate::ast::DataBlock,
-    visit: &mut impl FnMut(&'a crate::ast::Statement),
-) {
-    use crate::ast::DataEntryKind;
-    for entry in &data.entries {
-        match &entry.kind {
-            DataEntryKind::Code { body, .. } => collect(body, visit),
-            DataEntryKind::Repeat { body, .. } => collect_data(body, visit),
-            DataEntryKind::NocrossGroup(entries) => {
-                for entry in entries {
-                    if let DataEntryKind::Code { body, .. } = &entry.kind {
-                        collect(body, visit);
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 }
 
@@ -631,7 +563,9 @@ fn analysis_for<'a>(context: &Context<'a>) -> Option<&'a crate::width::WidthAnal
 }
 
 fn statement_span(context: &Context<'_>, statement: StmtId) -> Option<Span> {
-    find_statement(context, statement).map(|statement| statement.span)
+    context
+        .statement_node(statement)
+        .map(|statement| statement.span)
 }
 
 /// A width state in the spelling the language uses.

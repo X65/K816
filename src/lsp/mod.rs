@@ -40,6 +40,7 @@
 //! `lsp_types` stops at this directory: nothing outside `src/lsp/` imports
 //! it, the way nothing outside `src/parser/` imports `tree_sitter`.
 
+pub mod completion;
 pub mod config;
 mod context;
 pub mod convert;
@@ -58,10 +59,11 @@ use lsp_types::notification::{
     Notification, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, GotoDefinition, HoverRequest, PrepareRenameRequest, References, Rename,
-    Request, WorkspaceSymbolRequest,
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, PrepareRenameRequest,
+    References, Rename, Request, WorkspaceSymbolRequest,
 };
 use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeConfigurationParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, HoverContents, HoverParams, HoverProviderCapability, MarkupContent,
@@ -89,6 +91,15 @@ pub fn run_stdio_server(options: Options) -> Result<(), ServerError> {
             TextDocumentSyncKind::INCREMENTAL,
         )),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(
+                completion::TRIGGERS
+                    .iter()
+                    .map(|trigger| (*trigger).to_owned())
+                    .collect(),
+            ),
+            ..Default::default()
+        }),
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
@@ -271,6 +282,28 @@ fn answer(
     let analysis = workspace.analyze();
     let map = workspace.map();
     match request.method.as_str() {
+        Completion::METHOD => {
+            let items: Vec<CompletionItem> =
+                serde_json::from_value::<CompletionParams>(request.params.clone())
+                    .ok()
+                    .and_then(|params| {
+                        let trigger = params
+                            .context
+                            .as_ref()
+                            .and_then(|context| context.trigger_character.as_ref())
+                            .and_then(|trigger| trigger.chars().next());
+                        let (file, offset) = position(workspace, &params.text_document_position)?;
+                        Some(
+                            completion::complete(&analysis, file, offset, trigger)
+                                .into_iter()
+                                .map(completion_item)
+                                .collect(),
+                        )
+                    })
+                    .unwrap_or_default();
+            Ok(serde_json::to_value(CompletionResponse::Array(items))
+                .unwrap_or(serde_json::Value::Null))
+        }
         HoverRequest::METHOD => {
             let answer = serde_json::from_value::<HoverParams>(request.params.clone())
                 .ok()
@@ -383,6 +416,31 @@ fn answer(
             }
         }
         _ => Ok(serde_json::Value::Null),
+    }
+}
+
+/// One candidate in the protocol's form.
+///
+/// `sort_text` is the label itself: decision 9 declines to rank, so the
+/// server states no preference and the client sorts as it likes.
+fn completion_item(candidate: completion::Candidate) -> CompletionItem {
+    use completion::Kind;
+    let kind = match candidate.kind {
+        Kind::Mnemonic => CompletionItemKind::OPERATOR,
+        Kind::Keyword => CompletionItemKind::KEYWORD,
+        Kind::Function => CompletionItemKind::FUNCTION,
+        Kind::Variable => CompletionItemKind::VARIABLE,
+        Kind::Constant => CompletionItemKind::CONSTANT,
+        Kind::Label => CompletionItemKind::REFERENCE,
+        Kind::Field => CompletionItemKind::FIELD,
+        Kind::Annotation => CompletionItemKind::TYPE_PARAMETER,
+    };
+    CompletionItem {
+        insert_text: candidate.insert.filter(|insert| *insert != candidate.label),
+        label: candidate.label,
+        kind: Some(kind),
+        detail: candidate.detail,
+        ..Default::default()
     }
 }
 

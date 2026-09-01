@@ -609,3 +609,111 @@ fn the_usage_text_names_the_servers_flags() {
         "{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The README, held to the binary it describes
+// ---------------------------------------------------------------------------
+//
+// Nothing gated `README.md` until now, and it had rotted all the way through:
+// its usage block advertised `link`, `init`, `build`, `run` and `clean`, a
+// `-T` linker config and an `--output-format`, and its development section
+// named a `k816-golden-tests` crate and a `K816_BLESS` variable. None of that
+// has ever existed in this compiler — it is the legacy tool's command line,
+// carried forward unread. Three of the six language examples were wrong too.
+//
+// So the README is now tested the way `doc/` is: the usage block *is* the
+// binary's own output, and every example in it compiles.
+
+/// The README section, by heading, from `##` to the next `##`.
+fn readme_section(heading: &str) -> String {
+    let readme = std::fs::read_to_string(readme_path()).expect("read README.md");
+    let start = readme
+        .find(&format!("\n## {heading}\n"))
+        .unwrap_or_else(|| panic!("README.md has no `## {heading}` section"));
+    let rest = &readme[start + 1..];
+    let end = rest[3..]
+        .find("\n## ")
+        .map_or(rest.len(), |offset| offset + 4);
+    rest[..end].to_owned()
+}
+
+fn readme_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("README.md")
+}
+
+/// The bodies of the fenced blocks in `text` whose info string is `language`.
+fn fenced_blocks(text: &str, language: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if line.trim_end() != format!("```{language}") {
+            continue;
+        }
+        let mut body = String::new();
+        for line in lines.by_ref() {
+            if line.trim_end() == "```" {
+                break;
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        blocks.push(body);
+    }
+    blocks
+}
+
+/// The usage block in the README is the usage text the binary prints.
+///
+/// Not "describes the same commands" — the same bytes. A paraphrase is what
+/// let the old block drift into documenting a different program, and a
+/// paraphrase is the only thing this cannot tell apart from an edit.
+#[test]
+fn the_readme_usage_block_is_the_binarys_own_usage() {
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .output()
+        .expect("run k816");
+    let printed = String::from_utf8(output.stderr).expect("stderr is UTF-8");
+
+    let section = readme_section("CLI Usage");
+    let blocks = fenced_blocks(&section, "text");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "`## CLI Usage` should hold exactly one ```text block, the usage text"
+    );
+    assert_eq!(
+        blocks[0].trim_end(),
+        printed.trim_end(),
+        "README.md's usage block is not what `k816` prints. Paste the current \
+         output of `cargo run --quiet --` into the ```text block under \
+         `## CLI Usage`."
+    );
+}
+
+/// Every K65 example in the README compiles.
+///
+/// Each block is a whole compilation unit, which is what makes this checkable
+/// at all — a reader who pastes one into a file gets what the README showed
+/// them. It is also the only thing that would have caught the three that were
+/// wrong: an `inline` whose body sized an index immediate with no index
+/// contract to size it by, an `a = a + 1` the grammar has never had, and a
+/// comment promising a `REP #$30` the optimizer is right to leave out.
+#[test]
+fn every_readme_example_compiles() {
+    let readme = std::fs::read_to_string(readme_path()).expect("read README.md");
+    let examples = fenced_blocks(&readme, "k65");
+    assert!(
+        examples.len() >= 6,
+        "expected the README's language examples, found {}",
+        examples.len()
+    );
+
+    for (index, example) in examples.iter().enumerate() {
+        let (stderr, success) = compile(&format!("readme-{index}"), example, &[]);
+        assert!(
+            success,
+            "README example {} does not compile:\n\n{example}\n{stderr}",
+            index + 1
+        );
+    }
+}

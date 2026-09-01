@@ -50,8 +50,8 @@ func draw @a16 @i16 {
 }
 
 func main {
-  call draw           // REP #$30 emitted before JSR
-}
+  call draw           // REP #$20 before JSR -- the accumulator half only,
+}                     // because nothing in draw reads the index width
 ```
 
 Functions can also declare register contracts that are echoed at bare call
@@ -62,7 +62,7 @@ func add @a16 @i16 (a, x) -> a, y {
   // body
 }
 
-inline scale @a16 (a, #factor:byte) -> a {
+inline scale @a16 @i8 (a, #factor:byte) -> a {
   ldx #factor
 }
 
@@ -88,8 +88,9 @@ var player[
 
 func tick @a16 {
   a = player.x
-  player.x = a = a + 1
-  lda #player.hp:offsetof   // compile-time field offset
+  a++
+  player.x = a
+  lda #player.hp:offsetof   // 4 -- folded at compile time
 }
 ```
 
@@ -126,59 +127,97 @@ func main {
 
 ## CLI Usage
 
-```bash
-> k816 help
-High-level assembler for the WDC 65816
+K816 compiles one source file to ca65 assembly. It does not assemble, link, or
+manage projects: `ca65` assembles what it emits and `ld65` links the result,
+which is the rest of the cc65 toolchain doing what it already does.
 
-Usage: k816 [COMMAND] [INPUT]
+```text
+Usage: k816 <command> [options]
 
 Commands:
-  compile  Compile source file into relocatable o65 object file
-  link     Link one or more o65 object files into final binary output
-  init     Scaffold a new project directory
-  build    Build the current k816 project
-  run      Build and run the current k816 project
-  clean    Remove project build outputs
-  lsp      Run the Language Server Protocol server over stdio
-  fmt      Format source files
-  help     Print this message or the help of the given subcommand(s)
-
-Arguments:
-  [INPUT]  Input source file
+  compile [--no-opt] [-o OUT.s] FILE   compile K816 source to ca65 assembly
+  emit-ir [--after-opt] [--explain] FILE
+                                       dump the lowered operation stream, and
+                                       with --explain what the optimizer did
+  fmt [--check] FILE...                normalize whitespace: indentation, trailing
+                                       space, and the final newline. --check writes
+                                       nothing and exits non-zero if a file would
+                                       change
+  lsp [--strict-k65] [--entry AXES]    run the language server over stdio. The
+                                       same options a build states, so an editor
+                                       and a build agree; a client may also send
+                                       them as `strict-k65` and `entry` in its
+                                       initializationOptions or configuration
 
 Options:
-  -T, --config <CONFIG>           Linker config file in RON format
-      --output-format <FORMAT>    Output binary format override (`raw` or `xex`) [possible values: raw, xex]
-      --listing [<LISTING_FILE>]  Optional listing output path for linked output. When passed without value, writes <output>.lst
-  -o, --output <OUTPUT_FILE>      Output file path. In `compile`, this is the object output path. In `link` and shortcut mode, this is the linked artifact path
-  -h, --help                      Print help
-  -V, --version                   Print version
-
-Examples:
-  k816 path/to/input.k65
-  k816 -T path/to/link.ld.ron path/to/input.k65
-  k816 compile path/to/input.k65
-  k816 link path/to/input.o65 -T link.ld.ron
-  k816 init hello
-  k816 build
-  k816 run -- --fast
-  k816 clean
-  k816 fmt src/*.k65
-  k816 fmt --check src/*.k65
-  k816 lsp
-  k816 --help
+  --unit PATH                          a sibling unit whose names this one may
+                                       use; repeatable. K816 derives the
+                                       imports and exports from them
+  --message-format FORMAT              diagnostic output of compile and emit-ir:
+                                       human, compact, json
+  --strict-k65                         report every construct the original K65
+                                       language does not have. Extensions are
+                                       errors, and a construct that means
+                                       something else there is a warning
+  --entry AXES                         the state the machine is in when main
+                                       gets control: native or emulation, a8 or
+                                       a16, i8 or i16, comma-separated in that
+                                       order and each optional. Default
+                                       native,a8,i8 - what the startup stub in
+                                       examples/fullstack establishes
+  -V, --version                        print the version number and exit
 ```
+
+One unit, through the three tools:
+
+```bash
+k816 compile main.k816 -o main.s
+ca65 main.s -o main.o
+ld65 -C fullstack.cfg -o fullstack.bin startup.o main.o
+```
+
+A unit that uses another unit's names. K816 has no `import` syntax — it reads
+the siblings you name and derives the imports and exports from them, so every
+unit of a program is compiled with the same `--unit` set:
+
+```bash
+k816 compile main.k816 --unit lib.k816 -o main.s
+k816 compile lib.k816  --unit main.k816 -o lib.s
+```
+
+Inspecting a compilation rather than building it:
+
+```bash
+k816 emit-ir main.k816                       # the lowered operation stream
+k816 emit-ir main.k816 --after-opt --explain # ... and what the optimizer did to it
+k816 compile main.k816 --no-opt -o main.s    # skip the optimizer entirely
+```
+
+`examples/fullstack/` is a worked build — K816 source, a startup stub, a linker
+config, and a `Makefile` wiring the three tools together.
 
 ## Development
 
-Regenerate golden fixtures:
+K816 is one Cargo package. Four gates have to pass:
 
-- Via env-gated test flow: `K816_BLESS=1 cargo test -p k816-golden-tests`
-- Via CLI bless tool: `cargo run -p k816-golden-tests --bin bless --`
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+make -C .. k816          # cc65 integration; produces ../../bin/k816
+```
 
-After regeneration, verify fixtures:
+`cargo test` needs `ca65` and `ld65` on hand for the end-to-end tests: they are
+looked up in the cc65 tree's `bin/` (build them with `make -C ../..`) and can be
+pointed elsewhere with the `CA65` and `LD65` environment variables.
 
-- `cargo test -p k816-golden-tests`
+Two tracked files are generated, and their tests tell you so when they drift:
+
+- `tree-sitter-k65/generated.lock` — the checksum of the committed parser.
+  After editing `grammar.js` and re-running `tree-sitter generate`, refresh it
+  with `UPDATE_GENERATED_LOCK=1 cargo test --test corpus`.
+- `doc/corpus-census.md` — the counts the prose cites instead of quoting.
+  Refresh with `UPDATE_CORPUS_CENSUS=1 cargo test --test live_outs`.
 
 ## Formatting
 

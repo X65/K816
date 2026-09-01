@@ -203,6 +203,88 @@ fn dash_capital_s_leaves_the_compilers_own_assembly() {
     );
 }
 
+/// `-c` keeps the object and removes the intermediate, as it does for C.
+///
+/// The `.s` cl65 hands ca65 is a temporary with a PID in its name; under `-c`
+/// the object it produces is the product and the assembly goes. That is the
+/// other half of decision 10 — `-S` above is the half where the assembly is
+/// the product — and together they are why a K816 file behaves like a C file
+/// in a Makefile that already knows cl65.
+#[test]
+fn dash_c_keeps_the_object_and_removes_the_intermediate() {
+    let directory = work_dir("driver-dash-c");
+    let object = directory.join("slice.o");
+    let _ = std::fs::remove_file(&object);
+
+    run_ok(
+        cl65()
+            .arg("-c")
+            .args(["-o".as_ref(), object.as_os_str()])
+            .arg(root().join("tests/golden/slice.k816")),
+        "cl65 -c",
+    );
+    assert!(object.exists(), "cl65 -c produced no object file");
+
+    let leftovers: Vec<String> = std::fs::read_dir(&directory)
+        .expect("read the scratch directory")
+        .map(|entry| {
+            entry
+                .expect("read an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".s"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "the intermediate assembly was left behind: {leftovers:?}"
+    );
+}
+
+/// The unit pre-scan starts at the first K816 file, and the caveat that costs.
+///
+/// The scan cannot know which options take a separate value, so a bare token
+/// with a K816 extension that is an option's value is counted as a unit too.
+/// It is a *bounded* cost, which is the half worth pinning: the scan begins at
+/// the first K816 file, so an option before it is never seen. `-o out.k65`
+/// written first is an ordinary build; written after the source it is a unit
+/// k816 cannot read, and it says so rather than quietly building something
+/// else.
+#[test]
+fn the_unit_scan_starts_at_the_first_k816_file() {
+    let directory = work_dir("driver-prescan");
+    let source = root().join("tests/golden/slice.k816");
+
+    // Before the source: not scanned, so this is just an output name.
+    let before = directory.join("before.k65");
+    run_ok(
+        cl65()
+            .arg("-S")
+            .args(["-o".as_ref(), before.as_os_str()])
+            .arg(&source),
+        "cl65 -S with a K816-named output before the source",
+    );
+    assert!(before.exists(), "the output was not written");
+
+    // After it: scanned, taken for a unit, and refused by name.
+    let after = directory.join("after.k65");
+    let _ = std::fs::remove_file(&after);
+    let output = run(
+        cl65()
+            .arg("-S")
+            .arg(&source)
+            .args(["-o".as_ref(), after.as_os_str()]),
+        "cl65 -S with a K816-named output after the source",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot read") && stderr.contains("after.k65"),
+        "the option value was not taken for a unit, or the refusal does not \
+         name it:\n{stderr}"
+    );
+}
+
 /// Two K816 files on one command line are two units of one program.
 ///
 /// K65 has no import syntax, so this is the whole mechanism by which a name

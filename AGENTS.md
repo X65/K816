@@ -22,6 +22,10 @@ fixtures in `tests/golden/`. Do not commit generated files from `target/`.
   as errors before review.
 - `make -C .. k816` exercises cc65 integration, producing `../../bin/k816` with
   the repository build ID.
+- `make -C ../.. bin` builds the whole cc65 toolchain, which `cargo test` needs:
+  `tests/driver.rs`, `tests/debug.rs`, `tests/fullstack.rs` and `tests/compat.rs`
+  drive `../../bin/{ca65,ld65,cl65}`. `make -C ../.. checkstyle` and
+  `make -C ../.. sorted` are the cc65 tree's own checks over the C sources.
 
 ## Coding Style & Naming Conventions
 

@@ -56,7 +56,8 @@ use crate::diagnostic::{Applicability, Diagnostic, DiagnosticCode, Fix, Label, T
 use crate::effects::{ControlEffect, Effects, FlagSet, WidthEffect};
 use crate::isa::{Mnemonic, RegisterWidth};
 use crate::op::{
-    AxisExit, AxisState, EmulationState, ExitContract, ModeState, Operand, Reason, WidthContract,
+    AxisExit, AxisState, EmulationExit, EmulationState, ExitContract, ModeState, Operand, Reason,
+    WidthContract,
 };
 use crate::resolve::Resolver;
 use crate::semantic::WidthNeeds;
@@ -191,6 +192,12 @@ pub enum BridgeAnchor {
 pub struct Touched {
     pub a: bool,
     pub i: bool,
+    /// Some path executed an `XCE`.
+    ///
+    /// What separates a callee that leaves the emulation flag alone — the
+    /// overwhelming majority, and the ones a caller's own belief survives —
+    /// from one whose exit has to say something about it.
+    pub e: bool,
 }
 
 impl Touched {
@@ -198,6 +205,7 @@ impl Touched {
         Self {
             a: self.a || other.a,
             i: self.i || other.i,
+            e: self.e || other.e,
         }
     }
 }
@@ -241,7 +249,11 @@ fn opaque_arrival() -> Fact {
             i: AxisState::Unknown,
             e: EmulationState::Unknown,
         },
-        touched: Touched { a: true, i: true },
+        touched: Touched {
+            a: true,
+            i: true,
+            e: true,
+        },
     }
 }
 
@@ -1490,22 +1502,16 @@ fn apply(
                     fact.touched.i = true;
                 }
             }
+            // The exit contract describes the emulation flag too, so a
+            // callee that runs `clc; xce` no longer leaves the caller
+            // believing a machine it is not on. A callee nobody classified
+            // carries `EmulationExit::Assumed`, which is where the older
+            // rule lives: `Native` survives an unseen call and `Emulation`
+            // does not.
             fact.mode = contract.exit.apply(fact.mode);
             fact.touched.a |= matches!(contract.exit.a, AxisExit::Fixed(_));
             fact.touched.i |= matches!(contract.exit.i, AxisExit::Fixed(_));
-            // A contract describes widths and cannot describe the emulation
-            // flag, so a callee that runs `clc; xce` and still satisfies its
-            // exit contract leaves the caller believing a machine it is no
-            // longer on. `Native` survives this — every program in the tree
-            // rests on that assumption and `abi::EntryEnvironment::
-            // callee_emulation` is where it is argued — but `Emulation` is
-            // new and does not inherit it. Dropping to `Unknown` costs a
-            // `rep` after a call in an emulation program; keeping it would
-            // size an immediate at one byte for a register the callee had
-            // just widened.
-            if fact.mode.e == EmulationState::Emulation {
-                fact.mode.e = EmulationState::Unknown;
-            }
+            fact.touched.e |= contract.exit.e != EmulationExit::Preserve;
             fact
         }
     }
@@ -1553,16 +1559,25 @@ fn apply_effect(incoming: Fact, effect: WidthEffect, exchanges_emulation: bool) 
         {
             fact.mode.a = AxisState::Known(RegisterWidth::W8);
             fact.mode.i = AxisState::Known(RegisterWidth::W8);
-            fact.touched = Touched { a: true, i: true };
+            fact.touched = Touched {
+                a: true,
+                i: true,
+                e: fact.touched.e,
+            };
         }
         WidthEffect::Unknown => {
             fact.mode.a = AxisState::Unknown;
             fact.mode.i = AxisState::Unknown;
-            fact.touched = Touched { a: true, i: true };
+            fact.touched = Touched {
+                a: true,
+                i: true,
+                e: fact.touched.e,
+            };
         }
     }
     if exchanges_emulation {
         fact.mode.e = EmulationState::Unknown;
+        fact.touched.e = true;
     }
     fact
 }
@@ -1895,11 +1910,53 @@ pub fn classify_exit(analysis: &WidthAnalysis) -> ExitClassification {
             Axis::Index => exit.i = classified,
         }
     }
+    exit.e = classify_emulation(&analysis.returns);
     ExitClassification {
         exit,
         assumed,
         divergent,
     }
+}
+
+/// What the reachable returns say about the emulation flag.
+///
+/// The same shape as [`classify_axis`] and for the same reasons, with one
+/// difference worth stating: there is no divergence to report. A width that
+/// differs between two returns is a mistake an author can usually see and fix,
+/// and `K816-W0121` names both sites; an emulation flag that differs is an
+/// `XCE` on one path and not another, which is `xce`'s ordinary meaning and
+/// not something to warn about (sub-plan G, decision 34).
+fn classify_emulation(sites: &[ReturnSite]) -> EmulationExit {
+    // No reachable return — a body that ends in `stp` or loops forever — has
+    // no exit for a caller to observe.
+    if sites.is_empty() {
+        return EmulationExit::Preserve;
+    }
+    // Nothing exchanged the flag on any path, so it comes back as the caller
+    // had it. This is the case almost every function is in, and the one that
+    // keeps the change from costing anything.
+    if sites.iter().all(|site| !site.touched.e) {
+        return EmulationExit::Preserve;
+    }
+    // Some path exchanged it, so an untouched path alongside is not `Fixed`:
+    // what the caller sees would depend on which one ran.
+    if sites.iter().any(|site| !site.touched.e) {
+        return EmulationExit::Unknown;
+    }
+    let mut fixed: Option<EmulationState> = None;
+    for site in sites {
+        // `Fixed(Unknown)` would be a promise of nothing, spelled as a
+        // promise.
+        if site.state.e == EmulationState::Unknown {
+            return EmulationExit::Unknown;
+        }
+        match fixed {
+            Some(first) if first != site.state.e => return EmulationExit::Unknown,
+            Some(_) => {}
+            None => fixed = Some(site.state.e),
+        }
+    }
+    fixed.map_or(EmulationExit::Unknown, EmulationExit::Fixed)
 }
 
 fn classify_axis(axis: Axis, sites: &[ReturnSite], divergent: &mut Vec<Divergence>) -> AxisExit {

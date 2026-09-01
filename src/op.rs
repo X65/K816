@@ -628,11 +628,60 @@ impl AxisExit {
     }
 }
 
+/// What a call does to the caller's belief about the emulation flag.
+///
+/// The flag is not a width, so it does not fit [`AxisExit`]: there is no
+/// "sixteen bits" to fix it at, and the fallback a caller must take when
+/// nothing classified the callee is not `Preserve`. It is a separate axis for
+/// the same reason `E` is a separate field of [`ModeState`] — it decides what
+/// the width axes *mean*.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EmulationExit {
+    /// No reachable return executed an `XCE`, so the flag comes back as the
+    /// caller had it, whatever that was.
+    Preserve,
+    /// Every reachable return leaves the flag in the same known state.
+    Fixed(EmulationState),
+    /// The returns disagree, or one of them could not say.
+    Unknown,
+    /// Nothing classified this callee: it is outside the workspace, or in a
+    /// call cycle.
+    ///
+    /// **`Native` survives this and `Emulation` does not**, which is the
+    /// asymmetry `abi::EntryEnvironment::callee_emulation` argues at the
+    /// other end of a call. Every program in the tree rests on the assumption
+    /// that a callee returns onto the machine it was called from, and
+    /// invalidating `Native` would make every `rep` after every call
+    /// unsizeable; `Emulation` is newer and inherits no such debt, and
+    /// keeping it would size an immediate at one byte for a register an
+    /// unseen callee had just widened (`postmortem.md` §G.20.10).
+    #[default]
+    Assumed,
+}
+
+impl EmulationExit {
+    /// The flag a caller may believe after the call, given what it believed
+    /// before it.
+    pub fn apply(self, before: EmulationState) -> EmulationState {
+        match self {
+            Self::Preserve => before,
+            Self::Fixed(state) => state,
+            Self::Unknown => EmulationState::Unknown,
+            Self::Assumed => match before {
+                EmulationState::Native => EmulationState::Native,
+                EmulationState::Emulation | EmulationState::Unknown => EmulationState::Unknown,
+            },
+        }
+    }
+}
+
 /// A function's outbound width contract, per axis.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExitContract {
     pub a: AxisExit,
     pub i: AxisExit,
+    /// What the call does to the caller's emulation flag.
+    pub e: EmulationExit,
 }
 
 impl ExitContract {
@@ -642,6 +691,11 @@ impl ExitContract {
         Self {
             a: AxisExit::Preserve,
             i: AxisExit::Preserve,
+            // Not `Preserve`: this is the contract of a callee nobody
+            // classified, and such a callee may execute an `XCE`. The widths
+            // are grandfathered by the language rule; the emulation flag is
+            // grandfathered only where it is `Native`.
+            e: EmulationExit::Assumed,
         }
     }
 
@@ -650,7 +704,7 @@ impl ExitContract {
         ModeState {
             a: self.a.apply(before.a),
             i: self.i.apply(before.i),
-            e: before.e,
+            e: self.e.apply(before.e),
         }
     }
 }
@@ -1028,7 +1082,9 @@ fn origin_note(
 
 #[cfg(test)]
 mod tests {
-    use super::{AxisExit, AxisState, EmulationState, ExitContract, ModeState, RegisterWidth};
+    use super::{
+        AxisExit, AxisState, EmulationExit, EmulationState, ExitContract, ModeState, RegisterWidth,
+    };
 
     #[test]
     fn bottom_is_the_join_identity() {
@@ -1109,10 +1165,51 @@ mod tests {
         let fixes_a = ExitContract {
             a: AxisExit::Fixed(RegisterWidth::W8),
             i: AxisExit::Preserve,
+            e: EmulationExit::Preserve,
         };
         let after = fixes_a.apply(before);
         assert_eq!(after.a, AxisState::Known(RegisterWidth::W8));
         assert_eq!(after.i, before.i);
+        assert_eq!(after.e, before.e);
+    }
+
+    /// The emulation axis, including the asymmetry an unclassified callee
+    /// carries.
+    #[test]
+    fn an_exit_contract_says_what_a_call_does_to_the_emulation_flag() {
+        let after = |exit: EmulationExit, before: EmulationState| exit.apply(before);
+        // Nothing exchanged the flag, so the caller keeps whatever it had.
+        for state in [
+            EmulationState::Native,
+            EmulationState::Emulation,
+            EmulationState::Unknown,
+        ] {
+            assert_eq!(after(EmulationExit::Preserve, state), state);
+        }
+        // A classified exchange is an answer, not a doubt.
+        assert_eq!(
+            after(
+                EmulationExit::Fixed(EmulationState::Native),
+                EmulationState::Emulation
+            ),
+            EmulationState::Native
+        );
+        assert_eq!(
+            after(EmulationExit::Unknown, EmulationState::Native),
+            EmulationState::Unknown
+        );
+        // Unclassified: `Native` is grandfathered, `Emulation` is not.
+        assert_eq!(
+            after(EmulationExit::Assumed, EmulationState::Native),
+            EmulationState::Native
+        );
+        assert_eq!(
+            after(EmulationExit::Assumed, EmulationState::Emulation),
+            EmulationState::Unknown
+        );
+        // And `preserving()` — the contract of a callee nobody classified —
+        // is the assumed one, not the preserving one.
+        assert_eq!(ExitContract::preserving().e, EmulationExit::Assumed);
     }
 
     #[test]

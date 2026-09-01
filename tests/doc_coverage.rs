@@ -157,6 +157,31 @@ func wide_all @a16 @i16 {
     },
     Row {
         section: "The entry point",
+        // The listing for a callee that enters emulation mode: the caller's
+        // widening `rep` is a no-op there, so its immediate is unsizeable.
+        source: "func flips @a8 @i8 {\n    sec\n    xce\n}\n\
+                 func caller @a8 @i8 {\n    call flips\n    rep #$20\n    a = #$1234\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0104"),
+        entry: None,
+    },
+    Row {
+        section: "The entry point",
+        // The same source under `--entry emulation`, which the listing does
+        // not claim anything about: the refusal is the callee's doing and
+        // not the environment's, so it must not move with the flag.
+        source: "func flips @a8 @i8 {\n    sec\n    xce\n}\n\
+                 func caller @a8 @i8 {\n    call flips\n    rep #$20\n    a = #$1234\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0104"),
+        entry: Some("emulation"),
+    },
+    Row {
+        section: "The entry point",
         // The `--entry emulation` listing: the `rep` is a no-op on that
         // machine, so the immediate is still sized against eight bits.
         source: "func main {\n    rep #$20\n    lda #$1234\n}\n",

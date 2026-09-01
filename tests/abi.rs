@@ -737,7 +737,7 @@ fn an_annotation_does_not_overrule_what_the_build_stated_about_the_machine() {
 /// that assumption and it is argued in `abi::callee_emulation`. The point
 /// here is that the *new* state does not inherit it.
 #[test]
-fn emulation_mode_does_not_survive_a_call() {
+fn emulation_mode_does_not_survive_a_callee_that_exchanges_the_flag() {
     let emulation = EntryEnvironment::emulation();
     // `leave` really does change the machine, and its width contract is
     // still satisfiable, so nothing else refuses this.
@@ -754,6 +754,78 @@ fn emulation_mode_does_not_survive_a_call() {
     // no-op with an exact answer and the eight-bit immediate compiles.
     let before = "func main {\n    rep #$20\n    a = #$01\n    return\n}\n";
     assert_eq!(errors_in(emulation, before), Vec::<String>::new());
+}
+
+/// And it survives a callee that leaves the flag alone.
+///
+/// G11 invalidated `Emulation` at *every* call, because a contract described
+/// widths and nothing else, so any callee might have run an `xce`. The exit
+/// contract has an emulation axis now, so a callee that does not touch the
+/// flag classifies as `EmulationExit::Preserve` and the caller keeps what it
+/// knew — which is the difference between a rule and a blanket.
+#[test]
+fn emulation_mode_survives_a_callee_that_leaves_the_flag_alone() {
+    let emulation = EntryEnvironment::emulation();
+    let source = "func quiet {\n    nop\n    return\n}\n\
+                  func main {\n    call quiet\n    rep #$20\n    a = #$01\n    return\n}\n";
+    assert_eq!(
+        errors_in(emulation, source),
+        Vec::<String>::new(),
+        "the `rep` is still a hardware no-op with an exact answer, so the \
+         eight-bit immediate is sizeable"
+    );
+}
+
+/// The other half of the same hole: a callee that leaves *native* mode.
+///
+/// This is `plans/09-entry-abi.md`'s probe 2, and until the exit contract
+/// could describe the flag it was a miscompile rather than a diagnostic.
+/// `flips` runs `sec; xce`, so the machine is emulating when it returns; the
+/// caller's `rep #$20` is then a no-op, and the accumulator the `lda`
+/// believes is sixteen bits wide is eight. K816 emitted `.a16` and a
+/// three-byte immediate for it.
+///
+/// The width axes cannot catch this on their own: `xce` makes them
+/// `Unknown`, and `AxisExit::Unknown` is defined to *preserve* the caller's
+/// widths — the language rule that keeps an unclassifiable callee usable. It
+/// is the emulation axis that has to say something, and it says `Unknown`.
+#[test]
+fn a_callee_that_leaves_native_mode_is_not_believed_afterwards() {
+    let source = "func flips @a8 @i8 {\n    sec\n    xce\n}\n\
+                  func caller @a8 @i8 {\n    call flips\n    rep #$20\n    a = #$1234\n}\n";
+    let codes = errors(source);
+    assert!(
+        codes.contains(&"K816-E0104".to_owned()),
+        "the widening `rep` after `flips` establishes nothing: {codes:?}"
+    );
+}
+
+/// A callee nobody classified keeps the older assumption, in one direction.
+///
+/// A recursive function has no exit contract to compute — the classification
+/// would be its own input — so it takes `ExitContract::preserving()`, whose
+/// emulation axis is `Assumed`. `Native` survives that and `Emulation` does
+/// not: every program in the tree rests on a callee returning onto the
+/// machine it was called from, and invalidating `Native` would make every
+/// `rep` after every call unsizeable, while `Emulation` is newer and
+/// inherits no such debt.
+#[test]
+fn an_unclassified_callee_keeps_native_and_drops_emulation() {
+    let recursive = "func loop @a8 @i8 {\n    < goto .done\n    call loop\n.done:\n    return\n}\n\
+                     func caller @a8 @i8 {\n    call loop\n    rep #$20\n    a = #$1234\n}\n";
+    assert_eq!(
+        errors(recursive),
+        Vec::<String>::new(),
+        "under a native entry the caller may still believe its own `rep`"
+    );
+
+    let emulating = "func loop {\n    < goto .done\n    call loop\n.done:\n    return\n}\n\
+                     func main {\n    call loop\n    rep #$20\n    a = #$01\n    return\n}\n";
+    let codes = errors_in(EntryEnvironment::emulation(), emulating);
+    assert!(
+        codes.contains(&"K816-E0104".to_owned()),
+        "and under an emulation entry it may not: {codes:?}"
+    );
 }
 
 /// An environment that describes no machine cannot be built, by any route.

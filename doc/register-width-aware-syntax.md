@@ -160,13 +160,51 @@ func main {             // under --entry emulation
 ```
 
 An **ordinary function** under `--entry emulation` starts with emulation mode
-*unknown* rather than emulation, and so does an entry point **after a call**.
-Nothing carries emulation mode across a call — there is no syntax to declare
-it, so no contract can — and a callee may run `clc; xce`, satisfy its declared
-width contract, and return onto a machine that has left emulation mode.
-Refusing to size an immediate there costs working code; sizing it against a
-guarantee no call site made writes a wrong byte. `@a8`/`@a16` in the body is
-the escape hatch, as it is after any `xce`.
+*unknown* rather than emulation: nothing carries the flag *into* a call, and a
+function reached from somewhere K816 cannot see may be entered on either
+machine. `@a8`/`@a16` in the body is the escape hatch, as it is after any
+`xce`.
+
+**Across a call the compiler works it out.** A callee's inferred exit contract
+describes the emulation flag alongside the two widths, so:
+
+| the callee | what the caller believes afterwards |
+| --- | --- |
+| never executes an `XCE` | whatever it believed before the call |
+| exchanges the flag on every return, to one known state | that state |
+| exchanges it on some paths, or to a state K816 cannot name | nothing: the flag is unknown |
+| is one K816 did not classify — another unit's, or one in a call cycle | native mode survives; emulation mode does not |
+
+The last row is the only asymmetric one, and it is deliberate. Every program
+ever written for this compiler assumes a callee returns onto the machine it
+was called from, and dropping that assumption for `native` would make the
+`rep` after every call unsizeable. Emulation mode is newer and inherits no
+such debt: an unseen callee may `clc; xce`, satisfy its declared width
+contract, and return onto a machine that is no longer emulating, and sizing an
+immediate against a guarantee nobody made writes a wrong byte.
+
+The rule runs in the other direction too. A callee that executes `sec; xce`
+puts the machine *into* emulation mode, where a subsequent `rep` is a hardware
+no-op — so a caller that went on believing its own `rep` would assemble a
+three-byte immediate the CPU reads as two. That is `K816-E0104` now, where the
+caller's widening `rep` cannot be believed:
+
+```k65
+func flips @a8 @i8 {
+    sec
+    xce                 // the machine is emulating when this returns
+}
+
+func caller @a8 @i8 {
+    call flips
+    rep #$20            // a no-op there, and K816 no longer believes it
+    a = #$1234          // K816-E0104: accumulator width is unknown
+}
+```
+
+None of this is declarable. There is no `-> @native`: the flag is inferred
+from the body and published with the exit contract, the way the exit *widths*
+already are.
 
 Target *names* are deliberately absent: a name is a mapping onto these axes,
 and the configuration it would have to agree with does not exist yet.

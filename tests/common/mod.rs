@@ -21,7 +21,12 @@
 /*****************************************************************************/
 
 //! The cc65 tools are located in the cc65 tree's `bin/` (`../../bin` from
-//! this crate), overridable via the `CA65`/`LD65` environment variables.
+//! this crate), overridable via the `CA65`/`LD65`/`CL65` environment
+//! variables.
+//!
+//! `cl65` finds `k816` beside itself, so the driver gates in
+//! `tests/driver.rs` exercise the *installed* compiler rather than the one
+//! Cargo just built. `make -C ../.. k816` is what keeps the two the same.
 
 use std::path::PathBuf;
 use std::process::Command;

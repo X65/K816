@@ -731,23 +731,27 @@ fn every_readme_example_compiles() {
 // its own source is a sweep that can never fail, and writing the literal here
 // would be exactly that.
 
-/// Every file under the roots the sweeps read, in a stable order.
+/// Everything this repository writes, for the sweep that must find no hit
+/// anywhere. `plans/` is here because it is prose about the compiler too.
+const SWEPT_ROOTS: &[&str] = &[
+    "README.md",
+    "AGENTS.md",
+    "doc",
+    "plans",
+    "src",
+    "tests",
+    "examples",
+];
+
+/// Every file under `roots`, in a stable order.
 ///
-/// `target/` and `.git/` are not roots, so nothing generated or checked out is
-/// walked; everything else under a root is, including fixtures, because the
-/// point is that *no* file carries the name.
-fn swept_files() -> Vec<PathBuf> {
+/// `target/` and `.git/` are never roots, so nothing generated or checked out
+/// is walked; everything else under a root is, including fixtures, because the
+/// point of a sweep is that *no* file carries the text.
+fn swept_files(roots: &[&str]) -> Vec<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    let mut stack: Vec<PathBuf> = vec![
-        root.join("README.md"),
-        root.join("AGENTS.md"),
-        root.join("doc"),
-        root.join("plans"),
-        root.join("src"),
-        root.join("tests"),
-        root.join("examples"),
-    ];
+    let mut stack: Vec<PathBuf> = roots.iter().map(|name| root.join(name)).collect();
     while let Some(path) = stack.pop() {
         if path.is_dir() {
             let mut entries: Vec<PathBuf> = std::fs::read_dir(&path)
@@ -782,10 +786,20 @@ fn contains_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Reports every (file, needle) pair a sweep found, with the line it is on.
-fn sweep(needles: &[String], allow: &dyn Fn(&Path, &str) -> bool) -> Vec<String> {
+///
+/// `fold_case` is the difference between the two sweeps below: a project name
+/// can be written in any case, while a command spelling cannot — `k816 build`
+/// is a command and "a K816 build" is a sentence, and a case-folding sweep
+/// cannot tell them apart.
+fn sweep(
+    roots: &[&str],
+    needles: &[String],
+    fold_case: bool,
+    allow: &dyn Fn(&Path, &str) -> bool,
+) -> Vec<String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut hits = Vec::new();
-    for path in swept_files() {
+    for path in swept_files(roots) {
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) => panic!("read {}: {error}", path.display()),
@@ -795,7 +809,14 @@ fn sweep(needles: &[String], allow: &dyn Fn(&Path, &str) -> bool) -> Vec<String>
             if allow(relative, needle) {
                 continue;
             }
-            let Some(offset) = contains_ignore_ascii_case(&bytes, needle.as_bytes()) else {
+            let found = if fold_case {
+                contains_ignore_ascii_case(&bytes, needle.as_bytes())
+            } else {
+                bytes
+                    .windows(needle.len())
+                    .position(|window| window == needle.as_bytes())
+            };
+            let Some(offset) = found else {
                 continue;
             };
             let line = bytes[..offset].iter().filter(|&&b| b == b'\n').count() + 1;
@@ -820,7 +841,7 @@ fn no_document_names_the_operating_system_project() {
         .iter()
         .map(|separator| format!("{stem}{separator}816"))
         .collect();
-    let hits = sweep(&needles, &|_, _| false);
+    let hits = sweep(SWEPT_ROOTS, &needles, true, &|_, _| false);
     assert!(
         hits.is_empty(),
         "the removed acceptance gate's project is named again:\n  {}\n\
@@ -828,5 +849,94 @@ fn no_document_names_the_operating_system_project() {
          the sentence means instead — \"a program an operating system loads\" \
          is the phrasing `implementation.md` decision 16 uses.",
         hits.join("\n  ")
+    );
+}
+
+/// Nothing a user reads describes the legacy compiler's vocabulary.
+///
+/// The legacy K816 was a different program with a different command line: it
+/// had `build`, `link`, `init` and `metadata` subcommands, a `k816.toml`
+/// project file, a RON link script, and an o65 object writer. None of that
+/// exists in this compiler, and §H.15 is the record of what happens when a
+/// document keeps saying otherwise — `README.md` advertised five commands
+/// that have never existed here, carried forward unread until something
+/// checked.
+///
+/// So this is the sweep that keeps a paragraph pasted from the legacy README
+/// out next time. It is over what a *user* reads — the README, `AGENTS.md`,
+/// `doc/` and the examples — and not over `plans/`, which is a history of
+/// decisions and names the legacy tool on purpose.
+#[test]
+fn no_document_describes_the_legacy_tools_vocabulary() {
+    // The command spellings, and the files that were the legacy build's
+    // vocabulary. Matched case-sensitively: "a K816 build" is a sentence.
+    let needles: Vec<String> = [
+        "link.ron",
+        ".ld.ron",
+        "k816.toml",
+        "k816 build",
+        "k816 link",
+        "k816 init",
+        "k816 metadata",
+        "o65 object",
+    ]
+    .iter()
+    .map(|needle| (*needle).to_owned())
+    .collect();
+
+    // No allow-list entries. `doc/design.md` §13 describes the retirement in
+    // terms of what was archived — "the custom O65 backend", "the custom
+    // linker" — rather than in the legacy command line's words, so nothing a
+    // user reads needs an exception. One added here has to say which sentence
+    // needs it and why that sentence is history rather than instruction.
+    let hits = sweep(
+        &["README.md", "AGENTS.md", "doc", "examples"],
+        &needles,
+        false,
+        &|_, _| false,
+    );
+    assert!(
+        hits.is_empty(),
+        "the legacy tool's vocabulary is back:\n  {}\n\
+         This compiler has `compile`, `emit-ir`, `fmt` and `lsp`, and a build \
+         is `cl65 -t none --no-target-lib -C layout.cfg`. If the sentence is \
+         about history, say so and add it to this sweep's allow-list.",
+        hits.join("\n  ")
+    );
+}
+
+/// The README's `cl65` line is the line the example's Makefile runs.
+///
+/// Neither gate above reads a ```` ```bash ```` block: the usage block is
+/// byte-compared against the binary and the ```` ```k65 ```` blocks are
+/// compiled, and a shell command is neither. This section has exactly one
+/// claim that could drift — the command a K816 build states — so it is
+/// compared with the build file that runs it, which `tests/driver.rs` in turn
+/// executes.
+#[test]
+fn the_readme_build_line_is_the_examples_own() {
+    let section = readme_section("Building with cl65");
+    let shown = fenced_blocks(&section, "bash")
+        .into_iter()
+        .find(|block| block.contains("fullstack.cfg"))
+        .expect("`## Building with cl65` shows the full-stack build");
+
+    let makefile = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fullstack/Makefile"),
+    )
+    .expect("read the example's Makefile");
+    let recipe = makefile
+        .lines()
+        .find(|line| line.contains("$(CL65)"))
+        .expect("the Makefile has a cl65 recipe")
+        .trim()
+        .replace("$(CL65)", "cl65")
+        .replace("$@", "fullstack.bin");
+
+    assert_eq!(
+        shown.trim(),
+        recipe,
+        "README.md's `## Building with cl65` shows a command the example does \
+         not run. The README says it is the Makefile's line, so make it be one."
     );
 }

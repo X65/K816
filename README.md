@@ -194,7 +194,58 @@ k816 compile main.k816 --no-opt -o main.s    # skip the optimizer entirely
 ```
 
 `examples/fullstack/` is a worked build — K816 source, a startup stub, a linker
-config, and a `Makefile` wiring the three tools together.
+config, and a `Makefile`.
+
+## Building with cl65
+
+You do not have to run the three tools yourself. `cl65`, the cc65 driver,
+knows the pipeline: it compiles a `.k816` or `.k65` file with `k816`,
+assembles what `k816` emits with `ca65`, and links the objects with `ld65`.
+One installation provides all four, and `cl65` finds them beside itself.
+
+```bash
+cl65 -t none --no-target-lib -C fullstack.cfg -o fullstack.bin startup.asm main.k816
+```
+
+That is the whole of `examples/fullstack/Makefile`, and it is the command the
+test suite runs: `tests/driver.rs` requires the image `cl65` produces to be
+byte-identical to the one the three tools produce by hand, for every program
+in this repository.
+
+**`-t none --no-target-lib -C <config>` is what a K816 build says.** `cl65`
+defaults to the C64, so without `-t none` `ld65` looks for `c64.cfg` and links
+`c64.lib` into a program with no C runtime; `-C` replaces the target's
+configuration but not its library, and there is no `none.lib`. The layout is
+your program's, and you state it. There is no cc65 target for a K816 machine
+and `k816` never sees `-t`.
+
+**Every K816 file on one command line is a unit of one program.** K65 has no
+`import` syntax, so this is where the unit set comes from: `cl65` compiles each
+K816 file with the others as `--unit` siblings, so a name one defines resolves
+in another.
+
+```bash
+cl65 -t none --no-target-lib -C game.cfg -o game.bin startup.asm main.k816 sprites.k816
+```
+
+Two programs that share an include are two `cl65` command lines, not one.
+
+**`-Wk` forwards one option to `k816`, exactly as written.** Unlike `-Wa`,
+`-Wc` and `-Wl`, it does not split its argument at commas — a comma is data
+inside a K816 option value:
+
+```bash
+cl65 -t none --no-target-lib -C game.cfg -Wk --entry=native,a16,i16 -o game.bin main.k816
+cl65 -S -Wk --strict-k65 main.k65        # compile only; leaves k816's own main.s
+```
+
+`cl65` invents no K816 options of its own: there is one vocabulary, spelled the
+way `k816` spells it. `cl65 -S` leaves exactly the assembly `k816 compile`
+writes, and `cl65 -g` reaches `ca65` so that a hand-written module linked
+beside your K816 one is in the debug database too — K816's own module is there
+either way, because it asks for debug info itself.
+
+`doc/cl65.sgml` in the cc65 tree is the driver's reference.
 
 ## Development
 
@@ -262,9 +313,12 @@ Support](https://marketplace.visualstudio.com/items?itemName=X65-Project.vscode-
 extension was written against an older server that had all four, so their
 absence is a difference to expect rather than a fault to report.
 
-The program the server analyzes is the set of documents the editor has open.
-A name another unit defines resolves only while that unit is open; naming the
-units in a project file is future work.
+The program the server analyzes is the set of documents the editor has open,
+and that is a property rather than a limitation waiting on a file. A build
+takes its unit set from one `cl65` command line, and there is no project file
+anywhere for the editor to read instead — so a name another unit defines
+resolves while that unit is open, and open the units of a program and the
+editor sees the program a build sees.
 
 ## License
 

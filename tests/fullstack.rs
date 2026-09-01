@@ -87,8 +87,13 @@ fn example_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/fullstack")
 }
 
-/// Builds the example app exactly as its Makefile does, but driving the
-/// CLI binary Cargo built for this test run.
+/// Builds the example app by hand — `k816 compile`, two `ca65`, an `ld65` —
+/// driving the CLI binary Cargo built for this test run.
+///
+/// This is what `examples/fullstack/Makefile` spelled out in four rules
+/// before sub-plan I replaced them with one `cl65` line. It stays because it
+/// is the *oracle*: [`build_image_through_cl65`] below is the same program
+/// built by the driver, and the two are required to agree.
 fn build_image(test: &str) -> (Vec<u8>, String) {
     let example = example_dir();
     let dir = work_dir(test);
@@ -125,6 +130,58 @@ fn build_image(test: &str) -> (Vec<u8>, String) {
             .arg(&startup_o)
             .arg(&main_o),
         "ld65 linking both modules",
+    );
+
+    (
+        std::fs::read(&bin_path).expect("read linked image"),
+        std::fs::read_to_string(&dbg_path).expect("read debug file"),
+    )
+}
+
+/// Builds the same example with one `cl65` command line — the Makefile's.
+///
+/// `cl65` finds its tools beside itself, so it is staged into a scratch
+/// directory alongside the `k816` Cargo just built; otherwise this would
+/// exercise whatever `make k816` last installed rather than the compiler
+/// under test.
+fn build_image_through_cl65(test: &str) -> (Vec<u8>, String) {
+    let example = example_dir();
+    let dir = work_dir(test);
+    let bin_path = dir.join("fullstack.bin");
+    let dbg_path = dir.join("fullstack.dbg");
+
+    let tools = work_dir("fullstack-toolchain");
+    for (source, name) in [
+        (PathBuf::from(env!("CARGO_BIN_EXE_k816")), "k816"),
+        (tool("CA65", "ca65"), "ca65"),
+        (tool("LD65", "ld65"), "ld65"),
+        (tool("CL65", "cl65"), "cl65"),
+    ] {
+        let destination = tools.join(name);
+        let _ = std::fs::remove_file(&destination);
+        std::fs::copy(&source, &destination)
+            .unwrap_or_else(|error| panic!("cannot stage {}: {error}", source.display()));
+    }
+
+    run_ok(
+        Command::new(tools.join("cl65"))
+            // `-t none` because cl65 defaults to the C64, and
+            // `--no-target-lib` because -C replaces the target's
+            // configuration but not its library.
+            .args(["-t", "none", "--no-target-lib"])
+            .args(["-C".as_ref(), example.join("fullstack.cfg").as_os_str()])
+            // Two argv elements: cl65 reads `-Wl` only when it is the whole
+            // argument, and `-Wl--dbgfile,…` falls into the "anything else
+            // after -W is a cc65 warning" branch and is silently dropped.
+            .arg("-Wl")
+            .arg(format!("--dbgfile,{}", dbg_path.display()))
+            .args(["-o".as_ref(), bin_path.as_os_str()])
+            // The startup module first: it owns the STARTUP segment and the
+            // reset vector, and cl65 links each object where its source
+            // appears on the command line.
+            .arg(example.join("startup.asm"))
+            .arg(example.join("main.k816")),
+        "cl65 building the full-stack example",
     );
 
     (
@@ -189,4 +246,48 @@ fn debug_database_names_both_source_modules() {
         }),
         "no K816-owned line records in:\n{dbg}"
     );
+}
+
+/// The driver builds the same ROM, and the same debug ownership, as the hand
+/// recipe it replaced.
+///
+/// `examples/fullstack/Makefile` is one `cl65` rule now, and this is what
+/// says the rule is the four it replaced: the image is byte-identical, and it
+/// still passes the two structural assertions above. If the driver ever adds
+/// something to or loses something from the pipeline, this is where a program
+/// with a hand-written module, a cross-module call and a vector table says so.
+#[test]
+fn the_driver_builds_the_same_rom_and_names_the_same_sources() {
+    let (by_hand, _) = build_image("fullstack-manual-for-driver");
+    let (through_driver, dbg) = build_image_through_cl65("fullstack-driver");
+
+    assert_eq!(
+        through_driver, by_hand,
+        "cl65's image is not the manual path's"
+    );
+
+    // The same two assertions the manual path is held to, restated against
+    // the driver's bytes rather than inferred from the equality above: an
+    // equality between two wrong images would satisfy it.
+    assert_eq!(through_driver.len(), ROM_SIZE);
+    assert_eq!(&through_driver[..CODE_PREFIX.len()], CODE_PREFIX);
+    for &(address, target) in VECTORS {
+        assert_eq!(
+            word_at(&through_driver, address),
+            target,
+            "vector at ${address:04X}"
+        );
+    }
+
+    // And both sources are in the linker's file table. The K816 module gets
+    // there through the `.dbg file` k816 emits, which names the source rather
+    // than the intermediate assembly cl65 handed ca65 — so a driver that lost
+    // the source's identity would show up here even though the bytes matched.
+    for source in ["main.k816\"", "startup.asm\""] {
+        assert!(
+            dbg.lines()
+                .any(|line| line.starts_with("file") && line.contains(source)),
+            "{source} is not in the debug file table"
+        );
+    }
 }

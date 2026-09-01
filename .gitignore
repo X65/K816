@@ -3,3 +3,4 @@ plans/
 examples/fullstack/*.s
 examples/fullstack/*.o
 examples/fullstack/*.bin
+examples/k65/atari-xl/*/main.xex

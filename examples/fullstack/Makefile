@@ -2,7 +2,7 @@
 #
 #                                  Makefile
 #
-#     Builds the full-stack example: k816 -> ca65 -> ld65 -> 65816 ROM
+#          Builds the full-stack example with cl65: a 65816 ROM image
 #
 #
 # Copyright (c) 2026 Tomasz Sterna (smokku)
@@ -19,29 +19,31 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 #*****************************************************************************
+#
+# One rule, because cl65 knows the pipeline: it compiles main.k816 with k816,
+# assembles what k816 emits and startup.asm with ca65, and links both with
+# ld65 against fullstack.cfg. The four hand-written rules this replaced are
+# what `cl65 -v` still prints.
+#
+# `-t none` because cl65's default target is the C64, and ld65 would look for
+# c64.cfg and link c64.lib into a program with no C runtime.
+# `--no-target-lib` because -C replaces the target's configuration but not its
+# library, and there is no none.lib. Both are properties of this command, not
+# things cl65 infers from a K816 file being on the line.
+#
+# startup.asm comes first because it owns the STARTUP segment and the reset
+# vector: cl65 adds each object to the link where its source appears.
 
-# Tools default to the cc65 tree's bin/ (build them with `make -C ../../..`
-# and `make -C ../../.. k816`); override K816/CA65/LD65 to use others.
-BIN  := ../../../../bin
-K816 ?= $(BIN)/k816
-CA65 ?= $(BIN)/ca65
-LD65 ?= $(BIN)/ld65
+# Defaults to the cc65 tree's bin/ (build it with `make -C ../../.. bin`);
+# override CL65 to use an installed one.
+CL65 ?= ../../../../bin/cl65
 
 all: fullstack.bin
 
-main.s: main.k816
-	$(K816) compile $< -o $@
-
-main.o: main.s
-	$(CA65) $< -o $@
-
-startup.o: startup.asm
-	$(CA65) $< -o $@
-
-fullstack.bin: startup.o main.o fullstack.cfg
-	$(LD65) -C fullstack.cfg -o $@ startup.o main.o
+fullstack.bin: main.k816 startup.asm fullstack.cfg
+	$(CL65) -t none --no-target-lib -C fullstack.cfg -o $@ startup.asm main.k816
 
 clean:
-	rm -f main.s main.o startup.o fullstack.bin
+	rm -f fullstack.bin
 
 .PHONY: all clean

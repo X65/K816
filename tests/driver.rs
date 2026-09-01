@@ -549,3 +549,383 @@ fn a_failed_compilation_ends_the_driver_run() {
         "the driver added a message of its own:\n{stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// I2 — the whole corpus, and the compat images, through the driver
+// ---------------------------------------------------------------------------
+
+/// One program of the corpus, with what it takes to link it.
+struct Program {
+    name: String,
+    units: Vec<PathBuf>,
+    config: PathBuf,
+    /// Hand-written ca65 modules the program is linked with. Only
+    /// `examples/fullstack` has one.
+    extra: Vec<PathBuf>,
+}
+
+/// Every distinct program in the tree, with the layout each one links against.
+///
+/// `corpus()` yields one entry per *unit compilation* — a fixture with two
+/// units appears twice, once with each as the entry — because that is what
+/// the suites which measure a compilation need. A link is over the whole set
+/// at once, so the sets are deduplicated by their file list here; the entry
+/// index is not consulted, because `cl65` compiles every K816 file on its
+/// command line and so does the manual path.
+fn programs() -> Vec<Program> {
+    let root = corpus::root();
+    let driver_cfg = root.join("tests/driver.cfg");
+    let mut seen: Vec<Vec<PathBuf>> = Vec::new();
+    let mut programs = Vec::new();
+
+    for set in corpus::corpus() {
+        if seen.contains(&set.files) {
+            continue;
+        }
+        seen.push(set.files.clone());
+
+        // A compat fixture states its layout in its header, and
+        // `tests/compat.rs` requires every configuration under
+        // `tests/compat/` to be named by one; an example is not a fixture and
+        // does not share them.
+        let (config, extra) = if set.name.starts_with("tests/compat/") {
+            let fixture = set.files[0].parent().expect("a fixture directory");
+            let named = corpus::fixture_header(fixture)
+                .remove("config")
+                .and_then(|values| values.into_iter().next())
+                .unwrap_or_else(|| panic!("{}: fixture.txt has no `config`", set.name));
+            (root.join("tests/compat").join(named), Vec::new())
+        } else if set.name == "examples/fullstack/main.k816" {
+            (
+                root.join("examples/fullstack/fullstack.cfg"),
+                vec![root.join("examples/fullstack/startup.asm")],
+            )
+        } else if set.name.starts_with("examples/k65/atari-xl/") && !set.name.contains("/include/")
+        {
+            (root.join("examples/k65/atari-xl/atarixl.cfg"), Vec::new())
+        } else {
+            (driver_cfg.clone(), Vec::new())
+        };
+
+        programs.push(Program {
+            name: set.name,
+            units: set.files,
+            config,
+            extra,
+        });
+    }
+    programs
+}
+
+/// Whether every unit of `program` compiles, which is what makes it linkable.
+///
+/// Forty of the corpus's unit compilations are refusals by design — a fixture
+/// whose `expect` list is its point — and they are the business of
+/// `tests/compat.rs` and `tests/diagnostics.rs`, not of the driver.
+fn compiles(directory: &Path, program: &Program) -> bool {
+    for (index, unit) in program.units.iter().enumerate() {
+        let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
+        compile.arg("compile").arg(unit);
+        for sibling in program.units.iter().filter(|sibling| *sibling != unit) {
+            compile.args(["--unit".as_ref(), sibling.as_os_str()]);
+        }
+        compile.args([
+            "-o".as_ref(),
+            directory.join(format!("probe-{index}.s")).as_os_str(),
+        ]);
+        if !run(&mut compile, "k816 compile").status.success() {
+            return false;
+        }
+    }
+    true
+}
+
+/// A file-system-safe stem for a program's scratch directory.
+fn stem(name: &str) -> String {
+    name.replace(['/', '.'], "-")
+}
+
+/// The driver adds nothing to, and loses nothing from, the manual path.
+///
+/// This is sub-plan I's whole correctness claim, over every program in the
+/// tree rather than over an example of one. *Adds nothing*: no `-t` reaches
+/// k816, no argument is reordered, no segment moves. *Loses nothing*: no unit
+/// is dropped, no `--bin-include-dir` is missing, no object is left out of
+/// the link. Either would show up here as different bytes, because the two
+/// sides differ in nothing else — same compiler, same assembler, same linker,
+/// same configuration, same order.
+#[test]
+fn every_program_in_the_tree_links_to_the_same_bytes_either_way() {
+    let mut built = 0;
+    let mut skipped = 0;
+    for program in programs() {
+        let directory = work_dir(&format!("driver-corpus/{}", stem(&program.name)));
+        if !compiles(&directory, &program) {
+            skipped += 1;
+            continue;
+        }
+        let extra: Vec<&Path> = program.extra.iter().map(PathBuf::as_path).collect();
+        let by_hand = build_by_hand(&directory, &program.units, &program.config, &extra);
+        let through_driver =
+            build_through_driver(&directory, &program.units, &program.config, &extra);
+        assert_eq!(
+            through_driver, by_hand,
+            "{}: the driver's image is not the manual path's.\n\
+             The driver owns no emitted byte: if these differ, cl65 is wrong.",
+            program.name
+        );
+        built += 1;
+    }
+    assert!(
+        built > 60,
+        "only {built} programs were built through the driver ({skipped} skipped) - \
+         the corpus enumeration or the compile probe is broken"
+    );
+}
+
+/// Reads a committed `.hex` golden: `origin AAAA`, then hex bytes per line
+/// behind an address column, `#` comments ignored.
+///
+/// The same format `tests/compat.rs` writes and reads. Only the bytes are
+/// needed here — the origin is the configuration's, and both sides use the
+/// fixture's own configuration.
+fn read_hex(path: &Path) -> Vec<u8> {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let mut bytes = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("origin ") {
+            continue;
+        }
+        for field in line.split_whitespace().skip(1) {
+            bytes.push(
+                u8::from_str_radix(field, 16)
+                    .unwrap_or_else(|_| panic!("{}: `{field}` is not hex", path.display())),
+            );
+        }
+    }
+    bytes
+}
+
+/// The image with its trailing fill removed, as `tests/compat.rs` trims it.
+fn without_fill(mut bytes: Vec<u8>) -> Vec<u8> {
+    while bytes.last() == Some(&0) {
+        bytes.pop();
+    }
+    bytes
+}
+
+/// Every compat fixture that commits an image reproduces it through `cl65`.
+///
+/// `tests/compat.rs` builds those images from the *library* API and asserts
+/// them against the golden; this builds them from the driver. The two chains
+/// share only the golden, so a fixture that agreed with itself and not with
+/// the committed bytes would be caught in one of them — and the manual recipe
+/// in `tests/compat.rs` stays where it is, because an oracle that runs the
+/// thing under test is not an oracle.
+#[test]
+fn every_committed_compat_image_is_reproduced_through_the_driver() {
+    let mut compared = 0;
+    for program in programs() {
+        let Some(rest) = program.name.strip_prefix("tests/compat/") else {
+            continue;
+        };
+        let fixture = program.units[0].parent().expect("a fixture directory");
+        let golden = fixture.join("expected.hex");
+        if !golden.exists() {
+            continue;
+        }
+        let name = rest.rsplit_once('/').map_or(rest, |(dir, _)| dir);
+        let directory = work_dir(&format!("driver-compat/{}", stem(name)));
+        if !compiles(&directory, &program) {
+            continue;
+        }
+
+        let image = without_fill(build_through_driver(
+            &directory,
+            &program.units,
+            &program.config,
+            &[],
+        ));
+        assert_eq!(
+            image,
+            read_hex(&golden),
+            "{name}: the image cl65 builds is not the one committed beside the \
+             fixture"
+        );
+        compared += 1;
+    }
+    assert!(
+        compared > 20,
+        "only {compared} committed images were compared - the fixture walk is broken"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// I2 — the examples, built the way their build files build them
+// ---------------------------------------------------------------------------
+
+/// Copies a directory tree into `destination`, which is created.
+fn copy_tree(source: &Path, destination: &Path) {
+    std::fs::create_dir_all(destination).expect("create a staging directory");
+    for entry in std::fs::read_dir(source).expect("read an example directory") {
+        let entry = entry.expect("read an example entry");
+        let target = destination.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("stage an example file");
+        }
+    }
+}
+
+/// Stages an example under `work_dir` and runs its build file there.
+///
+/// The build file is what a user runs, so it is what is gated — not a command
+/// line the test spells out beside it, which is the arrangement that lets the
+/// two drift. It runs against a *copy* so that a build never writes a product
+/// into the source tree.
+fn make(test: &str, example: &str, subdirectory: &str) -> (PathBuf, Output) {
+    let staged = work_dir(test).join("example");
+    let _ = std::fs::remove_dir_all(&staged);
+    copy_tree(&root().join(example), &staged);
+    let directory = staged.join(subdirectory);
+    let output = run(
+        Command::new("make")
+            .arg("-C")
+            .arg(&directory)
+            .arg(format!("CL65={}", toolchain().join("cl65").display())),
+        "make",
+    );
+    (directory, output)
+}
+
+/// Where `main` ended up, from a second link of the same staged example.
+///
+/// A probe rather than a build: the same units and the same configuration,
+/// with `-Ln` asking ld65 for a VICE label file, because the run address in
+/// the executable is only interesting if it is the address of `main`. The
+/// example's own build file has no reason to ask for labels.
+fn linked_address_of_main(directory: &Path) -> u16 {
+    let labels = directory.join("labels.txt");
+    run_ok(
+        cl65()
+            .current_dir(directory)
+            .args(TARGET_ARGS)
+            .args(["-C", "../atarixl.cfg"])
+            .args(["-Ln".as_ref(), labels.as_os_str()])
+            .args(["-o".as_ref(), directory.join("probe.xex").as_os_str()])
+            .args(["main.k65", "../include/defs.k65"]),
+        "cl65 linking the example again for its labels",
+    );
+    let text = std::fs::read_to_string(&labels).expect("read the label file");
+    // `al 00201C .main`
+    let address = text
+        .lines()
+        .find_map(|line| {
+            let mut fields = line.split_whitespace();
+            let address = fields.nth(1)?;
+            (fields.next()? == ".main").then_some(address)
+        })
+        .unwrap_or_else(|| panic!("no `main` in the label file:\n{text}"));
+    u32::from_str_radix(address, 16).expect("a hex address") as u16
+}
+
+/// `examples/fullstack` builds through its one `cl65` rule.
+///
+/// The four hand-written rules this replaced — `k816 compile`, two `ca65`, an
+/// `ld65` — are what `cl65` runs, and `tests/fullstack.rs` is what says the
+/// image is right. What this adds is that the *Makefile* still works.
+#[test]
+fn the_fullstack_example_builds_through_its_makefile() {
+    let (directory, output) = make("driver-example-fullstack", "examples/fullstack", ".");
+    assert!(
+        output.status.success(),
+        "examples/fullstack did not build:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let image = std::fs::read(directory.join("fullstack.bin")).expect("read fullstack.bin");
+    assert_eq!(image.len(), 0x8000, "the ROM image is not 32 KiB");
+    // The reset vector, which is the one byte pair that says the link put the
+    // startup module where the machine looks for it.
+    assert_eq!(
+        &image[0x7FFC..0x7FFE],
+        &[0x00, 0x80],
+        "the reset vector moved"
+    );
+}
+
+/// The Atari XL examples link into loadable executables — and one does not.
+///
+/// This closes sub-plan F's handoff (`postmortem.md` §F.3.2): the four
+/// examples had no link step at all, because each `makefile` called the
+/// *original* K65 with a project file, and the corpus gate could only compare
+/// instruction streams. They link now, against a configuration of their own,
+/// and `main` is the run address without a startup stub — ld65's `atari`
+/// format writes the RUNAD segment the loader reads.
+///
+/// `starfield` is the fourth, and it does not build: its `for … eval [ rnd()
+/// & 255 ]` tables ask for different bytes on every build, which K816 refuses
+/// by decision (`K816-K65-0002`, sub-plan E decision 18). That is a product
+/// boundary rather than a gap, so it is asserted rather than skipped — a
+/// refusal nobody checks is a refusal that can quietly become something else.
+#[test]
+fn the_atari_examples_link_into_loadable_executables() {
+    for name in ["dli-example", "landscape", "rainbow"] {
+        let (directory, output) = make(
+            &format!("driver-example-atari-{name}"),
+            "examples/k65/atari-xl",
+            name,
+        );
+        assert!(
+            output.status.success(),
+            "{name} did not build:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let xex = std::fs::read(directory.join("main.xex")).expect("read main.xex");
+        // $FFFF, then the load chunk's first and last address, then the
+        // bytes, then a RUNAD chunk: $02E0, $02E1, and the run address.
+        assert_eq!(
+            &xex[..2],
+            &[0xFF, 0xFF],
+            "{name}: no Atari executable header"
+        );
+        let start = u16::from_le_bytes([xex[2], xex[3]]);
+        let end = u16::from_le_bytes([xex[4], xex[5]]);
+        assert_eq!(start, 0x2000, "{name}: the load address is not $2000");
+        assert_eq!(
+            usize::from(end - start) + 1,
+            xex.len() - 6 - 6,
+            "{name}: the load chunk's length does not match the file"
+        );
+
+        let trailer = &xex[xex.len() - 6..];
+        assert_eq!(
+            &trailer[..4],
+            &[0xE0, 0x02, 0xE1, 0x02],
+            "{name}: the file does not end with a RUNAD chunk"
+        );
+        assert_eq!(
+            u16::from_le_bytes([trailer[4], trailer[5]]),
+            linked_address_of_main(&directory),
+            "{name}: the run address is not `main`. The original's linker \
+             prepended a stub to arrange this; the configuration's `runad` is \
+             what replaces it, and it names a symbol rather than an address."
+        );
+    }
+
+    let (_, output) = make(
+        "driver-example-atari-starfield",
+        "examples/k65/atari-xl",
+        "starfield",
+    );
+    assert!(!output.status.success(), "starfield built, and it must not");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches("K816-K65-0002").count(),
+        2,
+        "starfield's two refused `rnd()` calls are not what stopped it:\n{stderr}"
+    );
+}

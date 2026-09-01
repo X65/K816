@@ -956,6 +956,25 @@ fn the_model_and_ca65_size_every_width_transition_alike() {
             // sep(2) + lda(2) + rep(2) + nop(1) + rts(1)
             8,
         ),
+        // A callee whose exit puts back exactly what the bridge to it took
+        // away. The model's state before the call and after it are the same
+        // sixteen bits, and between them the bridge narrowed the accumulator
+        // and told the assembler so. The claim after the call is therefore
+        // load-bearing — without it ca65 keeps the bridge's eight bits and
+        // sizes the immediate below as two bytes while the model counts
+        // three. Nothing caught that until every corpus program was
+        // assembled through the driver (`postmortem.md` §I.2).
+        (
+            "restored",
+            "func fixes_a @a8 {\n    rep #$20\n}\n\n\
+             func w @a16 @i8 {\n\
+             \x20   call fixes_a\n\
+             \x20   lda #$0002\n\
+             }\n"
+            .to_owned(),
+            // fixes_a: rep(2) + rts(1); w: sep(2) + jsr(3) + lda(3) + rts(1)
+            12,
+        ),
     ];
 
     for (name, source, expected) in cases {

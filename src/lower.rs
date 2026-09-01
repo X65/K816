@@ -1428,6 +1428,39 @@ impl<'a> Lowering<'a> {
         self.generated(KOpKind::ModeAssumption(state), span, reason);
     }
 
+    /// The width state the *assembler* is in when `statement`'s own
+    /// operations run.
+    ///
+    /// Not the model's state before the statement: the bridges keyed on it
+    /// have already been emitted by [`Self::statement`], and what they leave
+    /// is what ca65 believes from there on. The two differ exactly where a
+    /// bridge narrows an axis for a callee's entry contract, which is the
+    /// case that made this a function rather than a call to
+    /// [`Self::widths_at`] (`postmortem.md` §I.2).
+    fn state_after_bridges(&mut self, statement: &crate::ast::Statement) -> ModeState {
+        let mut state = self.widths_at(statement);
+        let bridges: Vec<Bridge> = self
+            .widths
+            .map(|analysis| {
+                analysis
+                    .bridges(statement.id)
+                    .iter()
+                    .filter(|bridge| bridge.anchor == BridgeAnchor::Before)
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for bridge in bridges {
+            if bridge.mask & crate::width::P_MASK_M != 0 {
+                state.a = AxisState::Known(bridge.width);
+            }
+            if bridge.mask & crate::width::P_MASK_X != 0 {
+                state.i = AxisState::Known(bridge.width);
+            }
+        }
+        state
+    }
+
     /// Emits the model's own `REP`/`SEP` for `statement` at one anchor.
     fn bridges(&mut self, statement: &crate::ast::Statement, anchor: BridgeAnchor) {
         let bridges: Vec<Bridge> = self
@@ -1906,7 +1939,7 @@ impl<'a> Lowering<'a> {
         let Some(symbol) = self.model.symbols.lookup(&target.text) else {
             return self.skipped(statement.span, "a call to an undeclared function");
         };
-        let before = self.widths_at(statement);
+        let before = self.state_after_bridges(statement);
         // An `inline` is not called: its operations are spliced in where its
         // name appears. The bridge and the exit claim around it are the same
         // ones a `jsr` gets, because the width model treats a use site as a

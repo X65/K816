@@ -760,25 +760,31 @@ func main @a8 {
 /// instruction is identical in all three — so deriving the answer afterwards
 /// from the operations around it is guesswork the moment there is more than
 /// one producer of mode operations.
+///
+/// The callee both needs a bridge *and* moves the axis, which is what puts a
+/// bridge and an exit claim in one function with different reasons. A callee
+/// that merely preserved what the bridge established would get no claim at
+/// all — the bridge already told the assembler, and a second claim saying the
+/// same thing is noise (`postmortem.md` §I.2).
 #[test]
 fn a_generated_operation_says_what_it_is_for() {
     let text = "\
-func widens @a16 {
-    nop
+func narrows @a16 {
+    sep #$20
 }
 
-func main {
-    call widens
+func main @a8 @i8 {
+    call narrows
     lda #$01
 }
 ";
     let dump = dump(text);
     assert!(
-        dump.contains("rep #$20                 ; compiler native.k816:6 — bridge for widens"),
+        dump.contains("rep #$20                 ; compiler native.k816:6 — bridge for narrows"),
         "the bridge names the callee whose contract it satisfies: {dump}"
     );
     assert!(
-        dump.contains("— widens's exit contract"),
+        dump.contains("— narrows's exit contract"),
         "the claim after the call names where the width came from: {dump}"
     );
     assert!(

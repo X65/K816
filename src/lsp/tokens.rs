@@ -45,7 +45,7 @@
 use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
 use crate::parser::{Capture, Query};
-use crate::source::{FileId, Span};
+use crate::source::{FileId, SourceFile, Span};
 use crate::symbol::SymbolKind;
 use crate::{Analysis, AnalyzedUnit};
 
@@ -123,7 +123,7 @@ pub struct Token {
 }
 
 /// The tokens for one document, in source order and never overlapping.
-pub fn tokens(analysis: &Analysis, file: FileId, source: &str) -> Vec<Token> {
+pub fn tokens(analysis: &Analysis, file: FileId, source: &SourceFile) -> Vec<Token> {
     let Some(unit) = analysis.unit(file) else {
         return Vec::new();
     };
@@ -138,7 +138,7 @@ pub fn tokens(analysis: &Analysis, file: FileId, source: &str) -> Vec<Token> {
     // the general `(identifier) @variable` comes first and the specific
     // `(const_entry name: (identifier) @constant)` after it.
     let mut best: std::collections::BTreeMap<Span, Capture> = std::collections::BTreeMap::new();
-    for capture in query.captures(&unit.parse.tree, file, source) {
+    for capture in query.captures(&unit.parse.tree, file, source.text()) {
         match best.get(&capture.span) {
             Some(existing) if existing.pattern >= capture.pattern => {}
             _ => {
@@ -245,24 +245,30 @@ fn index_of(name: &str) -> Option<u32> {
 /// The protocol's encoding is per line, and a block comment is one node
 /// spanning several. Splitting keeps the comment highlighted instead of
 /// dropping it.
-fn per_line(span: Span, source: &str) -> Vec<Span> {
-    let text = &source[span.start as usize..span.end as usize];
-    if !text.contains('\n') {
+///
+/// Asked of [`SourceFile`]'s line index rather than of the text: `src/lsp/`
+/// does not read source text for meaning, and "which line is this byte on"
+/// is a question `line_col` already answers (H10's review item).
+fn per_line(span: Span, source: &SourceFile) -> Vec<Span> {
+    let first = source.line_col(span.start).line;
+    let last = source.line_col(span.end).line;
+    if first == last {
         return vec![span];
     }
     let mut spans = Vec::new();
-    let mut start = span.start;
-    for (offset, character) in text.char_indices() {
-        if character == '\n' {
-            let end = span.start + offset as u32;
-            if end > start {
-                spans.push(Span::new(span.file, start, end));
-            }
-            start = end + 1;
+    for line in first..=last {
+        let start = source
+            .offset(crate::source::LineCol { line, column: 0 })
+            .max(span.start);
+        let end = source
+            .offset(crate::source::LineCol {
+                line,
+                column: source.line_text(line).len() as u32,
+            })
+            .min(span.end);
+        if start < end {
+            spans.push(Span::new(span.file, start, end));
         }
-    }
-    if span.end > start {
-        spans.push(Span::new(span.file, start, span.end));
     }
     spans
 }

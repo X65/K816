@@ -312,6 +312,9 @@ fn answer(
                         let source = workspace.map().file(file);
                         let unit = analysis.unit(file)?;
                         let formatted = crate::parser::format::format(source, &unit.parse.tree)?;
+                        // A byte comparison, not a reading: the question is
+                        // whether an edit is needed, and the answer is
+                        // whether the two strings differ.
                         if formatted == source.text() {
                             return Some(Vec::new());
                         }
@@ -335,7 +338,7 @@ fn answer(
                 .and_then(|params| {
                     let file = workspace.file(&params.text_document.uri.to_string())?;
                     let source = workspace.map().file(file);
-                    let found = tokens::tokens(&analysis, file, source.text());
+                    let found = tokens::tokens(&analysis, file, source);
                     Some(SemanticTokensResult::Tokens(SemanticTokens {
                         result_id: None,
                         data: tokens::encode(&found, source),

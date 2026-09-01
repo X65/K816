@@ -2518,7 +2518,7 @@ fn decoded_tokens(source: &str) -> Vec<(Span, String, Vec<String>)> {
     let types = tokens::token_types();
     let modifiers = tokens::token_modifiers();
 
-    tokens::tokens(&analysis, file, source)
+    tokens::tokens(&analysis, file, workspace.map().file(file))
         .into_iter()
         .map(|token| {
             let named: Vec<String> = modifiers
@@ -2656,7 +2656,7 @@ fn the_encoding_is_relative_and_counts_utf16_units() {
     let analysis = workspace.analyze();
     let file = workspace.file(uri).expect("open");
     let source = workspace.map().file(file);
-    let found = tokens::tokens(&analysis, file, SOURCE);
+    let found = tokens::tokens(&analysis, file, source);
     let encoded = tokens::encode(&found, source);
 
     assert!(!encoded.is_empty());

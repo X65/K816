@@ -1162,3 +1162,75 @@ fn an_exported_const_imports_without_an_address_size_warning() {
         "ld65 disagreed about `ROWS`: {stderr}"
     );
 }
+
+/// The importing golden pair assembles and links, and the contract crossed.
+///
+/// Two units that name each other rather than being named together: nothing
+/// outside the sources says they belong to one program. The bytes are the
+/// claim — `lda #$0002` is three bytes only if `widen`'s declared exit
+/// reached the caller across the boundary, and `lda cursor` is two only if
+/// the sibling's `.importzp` did.
+#[test]
+fn the_import_pair_links_through_ld65() {
+    let dir = common::work_dir("import-pair");
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+
+    let mut map = k816::source::SourceMap::new();
+    let entry_path = golden.join("import-main.k816");
+    map.add_file_at(
+        entry_path.to_string_lossy(),
+        &entry_path,
+        std::fs::read_to_string(&entry_path).expect("read the entry"),
+    );
+    // Nothing names the sibling: the loader reads the source and finds it.
+    let added = k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
+    assert_eq!(added.len(), 1, "the sibling, and only the sibling");
+    // An interface unit is reached the same way, and adds nothing to the
+    // object: an extern nothing references needs no line.
+    let iface_path = golden.join("import-iface.k816");
+    let iface = map.add_file_at(
+        iface_path.to_string_lossy(),
+        &iface_path,
+        std::fs::read_to_string(&iface_path).expect("read the interface unit"),
+    );
+
+    let mut objects = Vec::new();
+    for (index, file) in [map.locate(&entry_path).expect("the entry"), added[0], iface]
+        .into_iter()
+        .enumerate()
+    {
+        let result = compile_to_ca65(&map, file, &Options::default());
+        assert_diagnostics(&result.diagnostics, false);
+        let assembly = result.assembly.expect("compiles");
+        if file == iface {
+            assert!(
+                !assembly.contains(".import") && !assembly.contains("        lda"),
+                "an interface unit emits no code and imports nothing:\n{assembly}"
+            );
+        }
+        let asm = dir.join(format!("unit{index}.s"));
+        let obj = dir.join(format!("unit{index}.o"));
+        std::fs::write(&asm, &assembly).expect("write assembly");
+        common::run_ok(
+            std::process::Command::new(common::tool("CA65", "ca65"))
+                .arg(&asm)
+                .args(["-o".as_ref(), obj.as_os_str()]),
+            "ca65",
+        );
+        objects.push(obj);
+    }
+
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/driver.cfg");
+    let bin = dir.join("out.bin");
+    let mut link = std::process::Command::new(common::tool("LD65", "ld65"));
+    link.args(["-C".as_ref(), config.as_os_str()])
+        .args(["-o".as_ref(), bin.as_os_str()]);
+    for object in &objects {
+        link.arg(object);
+    }
+    common::run_ok(&mut link, "ld65");
+    assert!(
+        std::fs::metadata(&bin).expect("the linked image").len() > 0,
+        "the pair links"
+    );
+}

@@ -1,0 +1,24 @@
+// The entry half of an importing pair.  Sub-plan K.
+//
+// What is different from `unit-a.k816` beside it is one line: this unit
+// *names* the sibling it may see, so `k816 compile import-main.k816` with
+// no other argument is the whole command.  What it may name is exactly what
+// it imported; the derivation of `.import`/`.export` from the symbol tables
+// is unchanged, and so is every byte.
+import "import-lib.k816"
+
+var flag = $0300
+
+func entry @a8 @i8 {
+    // A callee whose declared exit widens the accumulator, so the immediate
+    // after the call is three bytes and not two.  The contract crossed the
+    // unit boundary, which is the claim a linked pair is here to make.
+    call widen
+    lda #$0002
+    sep #$20
+    // A direct-page symbol the sibling declares: one operand byte, because
+    // its `.importzp` says so.
+    lda cursor
+    call plain
+    rts
+}

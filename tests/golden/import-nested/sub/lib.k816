@@ -1,0 +1,7 @@
+// One directory down, importing one further down still.
+import "deeper/data.k816"
+
+func helper @a8 @i8 {
+    lda glyphs
+    rts
+}

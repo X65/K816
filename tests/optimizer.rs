@@ -55,9 +55,39 @@ fn lowered(text: &str) -> (SourceMap, FileId, SemanticModel, KProgram) {
 fn lowered_as(name: &str, text: &str) -> (SourceMap, FileId, SemanticModel, KProgram) {
     let mut map = SourceMap::new();
     let id = map.add_file(name, text);
+    lowered_in(map, id)
+}
+
+/// The same, for a golden that `import`s: read from `tests/golden/` so the
+/// paths resolve, with the closure loaded and the workspace resolved.
+///
+/// The fixture still describes its own program — that is what makes it
+/// self-contained — but the description is a line in the source rather than
+/// the absence of one, so the harness has to read it.
+fn lowered_from_golden(name: &str) -> (SourceMap, FileId, SemanticModel, KProgram) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(name);
+    let mut map = SourceMap::new();
+    let id = map.add_file_at(
+        path.to_string_lossy(),
+        &path,
+        std::fs::read_to_string(&path).expect("read the golden"),
+    );
+    k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
+    lowered_in(map, id)
+}
+
+fn lowered_in(map: SourceMap, id: FileId) -> (SourceMap, FileId, SemanticModel, KProgram) {
     let parse = parse_source(map.file(id), None);
     assert_eq!(parse.diagnostics, vec![]);
-    let (model, diagnostics) = analyze_file(&parse.file);
+    let (model, diagnostics) = if map.files().count() == 1 {
+        analyze_file(&parse.file)
+    } else {
+        let linkage = k816::linkage::Linkage::resolve(&map, k816::abi::EntryEnvironment::default());
+        assert_eq!(linkage.diagnostics(), &[]);
+        k816::semantic::analyze_unit(&parse.file, map.file(id), &linkage)
+    };
     // Errors only: several fixtures earn a width or damage *warning* on
     // purpose, and the warning is usually the claim the fixture is making.
     assert_eq!(errors(&diagnostics), Vec::<String>::new());
@@ -225,8 +255,8 @@ func f @a16 {
     // And the general claim, over every fixture that compiles on its own:
     // whatever changed, a mode instruction only ever changed under pass 1 or
     // pass 2.
-    for (name, source) in every_self_contained_fixture() {
-        let (_, file, model, mut program) = lowered_as(&name, &source);
+    for name in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_from_golden(&name);
         for change in run(&mut program, &model, file).changes {
             let touched_a_mode =
                 change
@@ -559,8 +589,8 @@ fn a_write_a_branch_leaves_behind_is_dead() {
 /// over the sequence.
 #[test]
 fn optimization_is_idempotent() {
-    for (name, source) in every_self_contained_fixture() {
-        let (_, file, model, mut program) = lowered_as(&name, &source);
+    for name in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_from_golden(&name);
         run(&mut program, &model, file);
         let second = run(&mut program, &model, file);
         assert!(second.is_empty(), "`{name}`: {:?}", second.changes);
@@ -574,7 +604,7 @@ fn optimization_is_idempotent() {
 /// between "idempotent on the cases we thought of" and the claim decision 18
 /// makes. The skipped ones each name why: a unit of a pair has no meaning
 /// alone, and a fixture that pins a *refusal* has no operations to optimize.
-fn every_self_contained_fixture() -> Vec<(String, String)> {
+fn every_self_contained_fixture() -> Vec<String> {
     /// `(fixture, why it cannot be compiled alone)`.
     const SKIPPED: &[(&str, &str)] = &[
         ("contract-unit-b.k816", "one unit of a cross-unit pair"),
@@ -589,14 +619,14 @@ fn every_self_contained_fixture() -> Vec<(String, String)> {
         ),
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    let mut fixtures: Vec<(String, String)> = std::fs::read_dir(&dir)
+    let mut fixtures: Vec<String> = std::fs::read_dir(&dir)
         .expect("read tests/golden")
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().to_string_lossy().into_owned();
             if !name.ends_with(".k816") || SKIPPED.iter().any(|(skip, _)| *skip == name) {
                 return None;
             }
-            Some((name.clone(), std::fs::read_to_string(dir.join(&name)).ok()?))
+            Some(name)
         })
         .collect();
     fixtures.sort();
@@ -1110,8 +1140,8 @@ fn a_branch_over_inline_data_does_not_shrink() {
 /// implements the rewrite without reading the reasoning, a test fails.
 #[test]
 fn no_call_and_return_pair_becomes_a_jump() {
-    for (name, source) in every_self_contained_fixture() {
-        let (_, file, model, mut program) = lowered_as(&name, &source);
+    for name in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_from_golden(&name);
         let before = tail_pairs(&program);
         run(&mut program, &model, file);
         assert_eq!(tail_pairs(&program), before, "`{name}`");
@@ -1158,8 +1188,8 @@ fn tail_pairs(program: &KProgram) -> Vec<(Mnemonic, Mnemonic)> {
 /// nothing can audit.
 #[test]
 fn every_recorded_change_carries_its_streams_and_its_effects() {
-    for (name, source) in every_self_contained_fixture() {
-        let (_, file, model, mut program) = lowered_as(&name, &source);
+    for name in every_self_contained_fixture() {
+        let (_, file, model, mut program) = lowered_from_golden(&name);
         for change in run(&mut program, &model, file).changes {
             assert!(!change.before.is_empty(), "`{name}`: {change:?}");
             assert!(

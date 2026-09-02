@@ -61,11 +61,16 @@ pub const EXAMPLES: &[(&str, &[&str])] = &[
     ("examples/k65/atari-xl/include/defs.k65", &[]),
 ];
 
-/// The goldens that are two units of one program.
+/// The goldens that are two units of one program **and do not say so**.
 ///
 /// `tests/optimizer.rs` skips the second of each pair because it cannot be
 /// compiled alone; here both are compiled, with the sibling in the map, since
 /// a cross-unit call is the case the escape-hatch objection is about.
+///
+/// A pair whose units `import` each other needs no entry: [`import_closure`]
+/// finds it by reading the source, which is the whole point of the
+/// construct. This list is what is left over — the goldens written before
+/// there was a way to say it — and sub-plan K's task K5 empties it.
 pub const GOLDEN_PAIRS: &[[&str; 2]] = &[
     ["contract-unit-a.k816", "contract-unit-b.k816"],
     ["layout-unit-a.k816", "layout-unit-b.k816"],
@@ -133,7 +138,7 @@ fn golden_sets() -> Vec<UnitSet> {
             .find(|pair| pair.contains(&name.as_str()));
         let files: Vec<PathBuf> = match pair {
             Some(pair) => pair.iter().map(|unit| dir.join(unit)).collect(),
-            None => vec![dir.join(name)],
+            None => import_closure(&dir.join(name)),
         };
         let entry = files
             .iter()
@@ -151,6 +156,21 @@ fn golden_sets() -> Vec<UnitSet> {
         }
     }
     sets
+}
+
+/// `entry` and every file it `import`s, transitively, in load order.
+///
+/// The compiler's own loader rather than a second reading of the same
+/// question: a set assembled by a rule of this file's own would be a place
+/// for the corpus and the compiler to disagree about what a program is.
+pub fn import_closure(entry: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(entry) else {
+        return vec![entry.to_path_buf()];
+    };
+    let mut map = k816::source::SourceMap::new();
+    map.add_file_at(entry.to_string_lossy(), entry, text);
+    k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
+    map.files().map(|file| PathBuf::from(file.name())).collect()
 }
 
 /// The imported corpus: every unit of every `tests/compat/*/*/` fixture.

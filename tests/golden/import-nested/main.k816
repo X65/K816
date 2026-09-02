@@ -1,0 +1,10 @@
+// Paths resolve against the *importing* file's directory, not the working
+// directory — the rule `binary` already uses.  So this reaches
+// `sub/lib.k816`, and that file's own `import "deeper/data.k816"` reaches
+// `sub/deeper/data.k816` rather than `deeper/data.k816`.
+import "sub/lib.k816"
+
+func main @a8 @i8 {
+    jsr helper
+    rts
+}

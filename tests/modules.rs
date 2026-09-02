@@ -278,3 +278,132 @@ fn an_imported_unit_does_not_see_its_importer() {
         "an edge points one way"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The claim the whole design rests on
+// ---------------------------------------------------------------------------
+
+/// **A unit means the same thing whichever file is the entry.**
+///
+/// Over every source in the tree that imports anything, and every file in its
+/// closure: compile that file as the entry of a program discovered from
+/// itself, and compile it again as a file something else reached, and require
+/// identical assembly and identical diagnostics.
+///
+/// This is what direct-imports-only visibility buys, and it is checkable
+/// rather than merely intended. Under whole-map visibility it is false: a
+/// name is resolvable in `b.k816` because `a.k816` happened to import
+/// `c.k816`, so `b.k816` compiled alone and `b.k816` compiled as part of
+/// `a.k816`'s program are two different programs — and the second is the one
+/// that ships, since a build compiles each unit as its own entry.
+#[test]
+fn a_unit_means_the_same_whichever_file_is_the_entry() {
+    let mut compared = 0;
+    for root in importing_sources() {
+        let reached = program_from(&root);
+        for name in reached.files().map(|file| file.name().to_owned()) {
+            let alone = program_from(std::path::Path::new(&name));
+            let (Some(in_context), Some(on_its_own)) = (
+                reached.locate(&k816::imports::identity(std::path::Path::new(&name))),
+                alone.locate(&k816::imports::identity(std::path::Path::new(&name))),
+            ) else {
+                panic!("`{name}` is not in one of the two maps");
+            };
+            let from_context = k816::compile_to_ca65(&reached, in_context, &Default::default());
+            let from_itself = k816::compile_to_ca65(&alone, on_its_own, &Default::default());
+            assert_eq!(
+                codes(&from_context.diagnostics),
+                codes(&from_itself.diagnostics),
+                "`{name}` reports differently when it is reached through `{}`",
+                root.display()
+            );
+            assert_eq!(
+                from_context.assembly,
+                from_itself.assembly,
+                "`{name}` compiles differently when it is reached through `{}`",
+                root.display()
+            );
+            compared += 1;
+        }
+    }
+    assert!(
+        compared >= 5,
+        "the sweep found {compared} units; it is meant to walk every closure in the tree"
+    );
+}
+
+/// Only the entry file is emitted: an imported unit contributes names, not
+/// bytes.
+#[test]
+fn only_the_entry_is_emitted() {
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let map = program_from(&golden.join("import-main.k816"));
+    let entry = map
+        .locate(&k816::imports::identity(&golden.join("import-main.k816")))
+        .expect("the entry");
+    let assembly = k816::compile_to_ca65(&map, entry, &Default::default())
+        .assembly
+        .expect("compiles");
+    // `widen` and `plain` are the sibling's sections, and `cursor` its
+    // storage. The entry imports all three and defines none of them.
+    for foreign in ["widen:", "plain:", ".res"] {
+        assert!(
+            !assembly.contains(foreign),
+            "the sibling's `{foreign}` was emitted into the entry:\n{assembly}"
+        );
+    }
+    assert!(assembly.contains(".import widen"), "{assembly}");
+    assert!(assembly.contains(".importzp cursor"), "{assembly}");
+}
+
+/// Every `.k816`/`.k65` in the tree with an `import` item, as a path.
+fn importing_sources() -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+                continue;
+            }
+            let extension = path.extension().and_then(|text| text.to_str());
+            if !matches!(extension, Some("k816" | "k65")) {
+                continue;
+            }
+            // Textual, on purpose: this walk decides what the *test* looks
+            // at, and parsing every source in the tree to choose would make
+            // the sweep depend on the thing it is checking.
+            if std::fs::read_to_string(&path).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| line.trim_start().starts_with("import "))
+            }) {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found = Vec::new();
+    for area in ["tests", "examples"] {
+        walk(&root.join(area), &mut found);
+    }
+    found.sort();
+    found
+}
+
+/// The program `entry` describes: itself, and everything it imports.
+fn program_from(entry: &std::path::Path) -> SourceMap {
+    let mut map = SourceMap::new();
+    let text = std::fs::read_to_string(entry).expect("read the entry");
+    map.add_file_at(entry.to_string_lossy(), entry, text);
+    k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
+    map
+}
+
+fn codes(diagnostics: &[k816::diagnostic::Diagnostic]) -> Vec<&'static str> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code.0)
+        .collect()
+}

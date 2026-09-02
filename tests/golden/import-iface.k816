@@ -1,0 +1,12 @@
+// An interface unit: nothing but declarations of what another object
+// provides.  The K816 side of a `.inc` or a `.h`, and the file every unit
+// that talks to the hardware imports — so the declarations exist once and
+// cannot drift from themselves.
+//
+// Compiled alone it emits no code, no storage and no `.import`: an extern
+// nothing references needs no line in the object file.
+extern var abs COLPF2 : byte
+extern var dp scratch
+extern const ROWS
+extern func _puts
+extern far func rom_entry

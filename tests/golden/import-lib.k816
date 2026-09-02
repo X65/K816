@@ -1,0 +1,19 @@
+// The other half, which imports back.  A cycle of *imports* is legal and is
+// not a cycle of calls: two units that name each other see each other, and
+// the loader stops when nothing new is reached rather than when it runs out
+// of patience.
+import "import-main.k816"
+
+var dp cursor = $12
+
+func widen @a8 @i8 -> @a16 {
+    rep #$20
+    rts
+}
+
+func plain @a8 @i8 {
+    // Reads a variable the importing unit declares, which it may because it
+    // named it.  Without the `import` line above, this is `K816-E0101`.
+    lda flag
+    rts
+}

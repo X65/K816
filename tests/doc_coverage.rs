@@ -1199,6 +1199,9 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
             "width-module.k816",
             "module_defaults_reach_the_encoded_immediate_length",
         ),
+        ("import-main.k816", "the_import_pair_links_through_ld65"),
+        ("import-lib.k816", "the_import_pair_links_through_ld65"),
+        ("import-iface.k816", "the_import_pair_links_through_ld65"),
     ];
 
     /// The fixtures that cannot reach ca65, and why. Every one of them pins a
@@ -1250,14 +1253,18 @@ fn every_golden_fixture_is_assembled_or_says_why_not() {
         );
         assert!(!named.is_empty(), "{fixture} says nothing");
     }
-    let sources = ["tests/compile.rs", "tests/fullstack.rs"]
-        .iter()
-        .map(|path| {
-            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-                .unwrap_or_default()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let sources = [
+        "tests/compile.rs",
+        "tests/fullstack.rs",
+        "tests/emit_ca65.rs",
+    ]
+    .iter()
+    .map(|path| {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+            .unwrap_or_default()
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
     for (fixture, test) in ASSEMBLED {
         assert!(
             sources.contains(&format!("fn {test}(")),

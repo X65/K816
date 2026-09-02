@@ -20,8 +20,8 @@ rather than going uncounted.
 
 | | count |
 |---|---|
-| unit compilations | 152 |
-| of those, compiling | 112 |
+| unit compilations | 155 |
+| of those, compiling | 115 |
 | refusing on purpose | 40 |
 
 A *unit compilation* is one file of one fixture, compiled with the siblings its
@@ -32,11 +32,11 @@ why — either in its own `fixture.txt` or in `REFUSALS`.
 
 | | count |
 |---|---|
-| emitted sections | 256 |
+| emitted sections | 259 |
 | of those, declaring an output | 5 |
 | `inline` sections (no exit to seed) | 13 |
 | of those, declaring an output | 7 |
-| call sites: `call foo` (the escape hatch) | 35 |
+| call sites: `call foo` (the escape hatch) | 37 |
 | call sites: stating a flow (`add a, x -> a, y`) | 3 |
 | call sites: a bare name | 4 |
 | call sites: a hand-written `jsr`/`jsl` | 15 |

@@ -1058,3 +1058,217 @@ fn the_readme_build_line_is_the_examples_own() {
          not run. The README says it is the Makefile's line, so make it be one."
     );
 }
+
+/// A unit that `import`s another needs no flag naming it.
+///
+/// The whole point of the construct: the program is described in the source,
+/// so a build system that compiles one file per invocation has nothing to
+/// compute. Without the line the name is simply not declared — K816 still
+/// does not invent an import to make an unresolved name someone else's
+/// problem.
+#[test]
+fn an_import_loads_its_target_without_a_unit_flag() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-import-loads");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    let a = dir.join("a.k816");
+    let out = dir.join("a.s");
+    std::fs::write(dir.join("b.k816"), "func helper @a8 {\n    nop\n}\n").expect("write b");
+
+    let compile = |text: &str| {
+        std::fs::write(&a, text).expect("write a");
+        Command::new(env!("CARGO_BIN_EXE_k816"))
+            .arg("compile")
+            .arg(&a)
+            .args(["-o".as_ref(), out.as_os_str()])
+            .output()
+            .expect("run k816")
+    };
+
+    let alone = compile("func main @a8 {\n    jsr helper\n}\n");
+    assert!(!alone.status.success());
+    assert!(
+        String::from_utf8_lossy(&alone.stderr).contains("K816-E0101"),
+        "{}",
+        String::from_utf8_lossy(&alone.stderr)
+    );
+
+    let named = compile("import \"b.k816\"\n\nfunc main @a8 {\n    jsr helper\n}\n");
+    assert!(
+        named.status.success(),
+        "{}",
+        String::from_utf8_lossy(&named.stderr)
+    );
+    let assembly = std::fs::read_to_string(&out).expect("read output");
+    assert!(assembly.contains(".import helper "), "{assembly}");
+}
+
+/// An `import` inside a region the preprocessor drops is not a file this
+/// build reads.
+///
+/// Which is why the loader preprocesses rather than scanning for the item.
+/// The half that shows it is the *dependency file*: a path in a dead region
+/// that happens to name a real file would otherwise be opened, listed as a
+/// prerequisite, and rebuild a target that never read it. A path that names
+/// nothing is the easy half and is silent either way, because a loader that
+/// cannot read adds nothing and the compiler resolves its edges from the
+/// preprocessed program regardless.
+#[test]
+fn an_import_inside_a_dead_region_is_not_loaded() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-import-dead");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    std::fs::write(dir.join("unused.k816"), "func unused @a8 {\n    nop\n}\n")
+        .expect("write the file the dead region names");
+    let a = dir.join("a.k816");
+    std::fs::write(
+        &a,
+        "#if 0\n\
+         import \"unused.k816\"\n\
+         #endif\n\
+         #if 1\n\
+         import \"nowhere.k816\"\n\
+         #endif\n\
+         \n\
+         func main @a8 {\n\
+         \x20   nop\n\
+         }\n",
+    )
+    .expect("write a");
+    let dep = dir.join("a.d");
+    // The work directory outlives the run, so a file left by the previous
+    // one would make the assertion below true for the wrong reason.
+    let _ = std::fs::remove_file(&dep);
+    let result = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .arg(&a)
+        .args(["--create-dep".as_ref(), dep.as_os_str()])
+        .args(["-o".as_ref(), dir.join("a.s").as_os_str()])
+        .output()
+        .expect("run k816");
+
+    // The *live* region's import names nothing, so the build is refused --
+    // which is the other half of the same claim: a directive selects which
+    // imports are real, in both directions.
+    assert!(!result.status.success());
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("K816-E0166"), "{stderr}");
+    assert!(
+        !stderr.contains("unused.k816"),
+        "the dead region's path was looked for: {stderr}"
+    );
+    assert!(
+        !dep.exists(),
+        "a failed compilation writes no dependency file"
+    );
+
+    // With the live one gone, the build succeeds and the dead region's file
+    // is not a prerequisite of it.
+    std::fs::write(
+        &a,
+        "#if 0\n\
+         import \"unused.k816\"\n\
+         #endif\n\
+         \n\
+         func main @a8 {\n\
+         \x20   nop\n\
+         }\n",
+    )
+    .expect("rewrite a");
+    let result = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .arg(&a)
+        .args(["--create-dep".as_ref(), dep.as_os_str()])
+        .args(["-o".as_ref(), dir.join("a.s").as_os_str()])
+        .output()
+        .expect("run k816");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let written = std::fs::read_to_string(&dep).expect("read the dependency file");
+    assert!(
+        !written.contains("unused.k816"),
+        "a file the build never read is a prerequisite of it: {written}"
+    );
+}
+
+/// A cycle of imports terminates, and both units compile.
+#[test]
+fn a_cycle_of_imports_terminates_through_the_driver() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-import-cycle");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    std::fs::write(
+        dir.join("a.k816"),
+        "import \"b.k816\"\n\nfunc entry @a8 {\n    jsr other\n}\n",
+    )
+    .expect("write a");
+    std::fs::write(
+        dir.join("b.k816"),
+        "import \"a.k816\"\n\nvar dp shared = $20\n\nfunc other @a8 {\n    nop\n}\n",
+    )
+    .expect("write b");
+    for unit in ["a.k816", "b.k816"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_k816"))
+            .arg("compile")
+            .arg(dir.join(unit))
+            .args(["-o".as_ref(), dir.join("out.s").as_os_str()])
+            .output()
+            .expect("run k816");
+        assert!(
+            result.status.success(),
+            "{unit}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+/// Every file an `import` reached is a dependency, transitively.
+///
+/// The whole closure and not only the direct edges: a unit two imports away
+/// is not visible to the entry, but its body decided a contract the entry
+/// compiled against, so a build that rebuilt only on direct imports would
+/// ship a stale object. And a file named *both* ways is listed once, because
+/// it is one file.
+#[test]
+fn imports_are_dependencies_transitively() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-import-deps");
+    std::fs::create_dir_all(&dir).expect("create work dir");
+    std::fs::write(
+        dir.join("main.k816"),
+        "import \"mid.k816\"\n\nfunc main @a8 {\n    jsr middle\n}\n",
+    )
+    .expect("write main");
+    std::fs::write(
+        dir.join("mid.k816"),
+        "import \"deep.k816\"\n\nfunc middle @a8 {\n    jsr deep\n}\n",
+    )
+    .expect("write mid");
+    std::fs::write(dir.join("deep.k816"), "func deep @a8 {\n    nop\n}\n").expect("write deep");
+
+    let dep = dir.join("main.d");
+    let result = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .arg(dir.join("main.k816"))
+        // The same file named on the command line *and* imported: one file,
+        // so it appears as a prerequisite rather than as two.
+        .args(["--unit".as_ref(), dir.join("mid.k816").as_os_str()])
+        .args(["--create-dep".as_ref(), dep.as_os_str()])
+        .args(["-o".as_ref(), dir.join("main.s").as_os_str()])
+        .output()
+        .expect("run k816");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let written = std::fs::read_to_string(&dep).expect("read the dependency file");
+    let rule = written.lines().next().expect("a rule");
+    for name in ["main.k816", "mid.k816", "deep.k816"] {
+        assert!(rule.contains(name), "`{name}` is missing from: {rule}");
+    }
+    assert_eq!(
+        rule.matches("mid.k816").count(),
+        1,
+        "one file, one prerequisite: {rule}"
+    );
+}

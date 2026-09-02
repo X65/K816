@@ -170,6 +170,70 @@ pub struct CompileResult {
     /// Empty when errors prevented emission: nothing was read that a
     /// dependency could be stated about.
     pub binaries: Vec<PathBuf>,
+    /// Every file an `import` reached, transitively, as K816 resolved it.
+    ///
+    /// The whole closure and not only what this unit named directly: a unit
+    /// two imports away is not *visible* here, but its exit contracts were
+    /// classified from its body, so a change to it can change these bytes.
+    /// A build that rebuilt only on direct imports would ship a stale
+    /// object.
+    ///
+    /// Filled whether or not emission succeeded, unlike `binaries`: the
+    /// files were read, and a build system that learns what a failed
+    /// compilation depended on can re-run it when one of them changes.
+    pub imports: Vec<PathBuf>,
+}
+
+/// Loads every file the map's `import` items reach, transitively.
+///
+/// Returns what it added, in the order it added them.
+///
+/// Library code over an injected reader rather than a routine in the CLI,
+/// because discovering which files a program consists of is a third thing the
+/// CLI and the LSP must agree on (non-negotiable decision 11, as sub-plan K
+/// amends it). The CLI reads the filesystem; the editor reads the filesystem
+/// but lets an open buffer win; a test reads a map it built itself.
+///
+/// The loop is parse, preprocess, collect — no semantic analysis, because
+/// nothing here needs a symbol. Preprocessing is not an optimisation: it is
+/// what makes an `import` inside `#if 0` not a file this build depends on,
+/// and the pass is file-local, so it can run before any unit set is known.
+///
+/// A file it cannot read is added as nothing at all. `Linkage` then finds an
+/// `import` edge that reaches no unit and reports `K816-E0166`, which is what
+/// makes the CLI, the editor and an in-memory test say it the same way.
+pub fn load_imports(
+    map: &mut SourceMap,
+    read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
+) -> Vec<FileId> {
+    let mut pending: Vec<FileId> = map.files().map(source::SourceFile::id).collect();
+    let mut added = Vec::new();
+    while let Some(file) = pending.pop() {
+        let parse = parser::parse_source(map.file(file), None);
+        let applied = preprocess::apply(&parse.file);
+        let importer = map.file(file).name().to_owned();
+        let wanted: Vec<PathBuf> = applied
+            .program
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ast::ItemKind::Import(import) => {
+                    Some(imports::resolve(&importer, &import.file.path))
+                }
+                _ => None,
+            })
+            .collect();
+        for path in wanted {
+            if map.locate(&imports::identity(&path)).is_some() {
+                continue;
+            }
+            let Ok(text) = read(&path) else { continue };
+            let id = map.add_imported_file(path.to_string_lossy(), &path, text);
+            added.push(id);
+            pending.push(id);
+        }
+    }
+    added
 }
 
 /// Reads `path` into `map` and parses it.
@@ -252,6 +316,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
             assembly: None,
             diagnostics,
             binaries: Vec::new(),
+            imports: imported_paths(map),
         };
     }
 
@@ -263,6 +328,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
             assembly: None,
             diagnostics,
             binaries: Vec::new(),
+            imports: imported_paths(map),
         };
     }
 
@@ -295,7 +361,19 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         assembly: Some(assembly),
         diagnostics,
         binaries,
+        imports: imported_paths(map),
     }
+}
+
+/// Every file in `map` that an `import` reached, in a stable order.
+fn imported_paths(map: &SourceMap) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = map
+        .files()
+        .filter(|source| source.origin() == source::Origin::Imported)
+        .map(|source| PathBuf::from(source.name()))
+        .collect();
+    paths.sort();
+    paths
 }
 
 /// Result of dumping a file's IR (`emit-ir`).

@@ -185,8 +185,8 @@ struct CommandLine {
     message_format: render::MessageFormat,
     /// `--create-dep` / `--create-full-dep`: where to write a make dependency
     /// file. Both spellings are accepted and both produce the same list,
-    /// because K816 reads no file the command line did not name — see
-    /// [`write_dependencies`].
+    /// because K816 has no include path to separate a system header from a
+    /// local one — see [`write_dependencies`].
     dep_files: Vec<PathBuf>,
     /// `--dep-target`: the name on the left of the `:`, when the file a build
     /// tracks is not the one `-o` names. `cl65` passes the object here,
@@ -406,7 +406,7 @@ fn load(
     format: render::MessageFormat,
 ) -> Result<k816::source::FileId, ()> {
     match std::fs::read_to_string(input) {
-        Ok(text) => Ok(map.add_file(input.to_string_lossy(), text)),
+        Ok(text) => Ok(map.add_file_at(input.to_string_lossy(), input, text)),
         Err(error) => {
             render::render_tool_error(
                 prog_name,
@@ -416,6 +416,34 @@ fn load(
             Err(())
         }
     }
+}
+
+/// Builds the whole program: the entry file, the units named beside it, and
+/// everything they `import`.
+///
+/// One routine for `compile` and `emit-ir`, so that the program the IR dump
+/// describes is the program the compiler compiles.
+///
+/// A named file that cannot be read is fatal and says so; an *imported* one
+/// is not reported here at all. The loader adds nothing where it cannot
+/// read, and the compiler then reports `K816-E0166` at the string that named
+/// it — which points at the line rather than at a path in a tool message, and
+/// is the same sentence the editor shows.
+fn load_program(
+    prog_name: &str,
+    map: &mut SourceMap,
+    input: &Path,
+    units: &[PathBuf],
+    format: render::MessageFormat,
+) -> Result<k816::source::FileId, ()> {
+    let file = load(prog_name, map, input, format)?;
+    // The sibling units go into the same map, which is the whole workspace
+    // as far as name resolution is concerned. Only `input` is emitted.
+    for unit in units {
+        load(prog_name, map, unit, format)?;
+    }
+    k816::load_imports(map, &mut |path| std::fs::read_to_string(path));
+    Ok(file)
 }
 
 fn lsp(prog_name: &str, args: &[String]) -> ExitCode {
@@ -495,16 +523,15 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     };
     let input = command.inputs[0].clone();
     let mut map = SourceMap::new();
-    let Ok(file) = load(prog_name, &mut map, &input, command.message_format) else {
+    let Ok(file) = load_program(
+        prog_name,
+        &mut map,
+        &input,
+        &command.units,
+        command.message_format,
+    ) else {
         return ExitCode::FAILURE;
     };
-    // The sibling units go into the same map, which is the whole workspace
-    // as far as name resolution is concerned. Only `input` is emitted.
-    for unit in &command.units {
-        if load(prog_name, &mut map, unit, command.message_format).is_err() {
-            return ExitCode::FAILURE;
-        }
-    }
 
     let result = compile_to_ca65(&map, file, &command.options);
     render::render_diagnostics(&map, &result.diagnostics, command.message_format);
@@ -527,6 +554,7 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     let target = command.dep_target.as_ref().unwrap_or(&output);
     let mut inputs = vec![input];
     inputs.extend(command.units);
+    inputs.extend(result.imports);
     inputs.extend(result.binaries);
     for path in &command.dep_files {
         if let Err(error) = write_dependencies(path, target, &inputs) {
@@ -550,11 +578,16 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
 /// stopping when a file named here is deleted rather than edited — it is the
 /// same trick `gcc -MP` plays, and `cc65` plays it too.
 ///
-/// **A K816 compilation reads exactly what the command line named**, plus the
-/// files a `binary` includes. There is no include path and no implicit
-/// prelude, which is why `--create-dep` and `--create-full-dep` produce the
-/// same list: cc65 distinguishes them by whether system headers are listed,
-/// and K816 has no system headers to leave out.
+/// **A K816 compilation reads what the command line named, what those files
+/// `import` transitively, and the files a `binary` includes.** The whole
+/// import closure and not only the direct edges: a unit two imports away is
+/// not *visible*, but its body decided a contract this compilation used, so
+/// a build that rebuilt only on direct imports would ship a stale object.
+///
+/// There is still no include path and no implicit prelude, which is why
+/// `--create-dep` and `--create-full-dep` produce the same list: cc65
+/// distinguishes them by whether system headers are listed, and K816 has no
+/// system headers to leave out.
 fn write_dependencies(path: &Path, target: &Path, inputs: &[PathBuf]) -> std::io::Result<()> {
     fn escaped(path: &Path) -> String {
         // Only spaces, as cc65 escapes them: a make prerequisite is
@@ -573,16 +606,15 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
     };
     let input = command.inputs[0].clone();
     let mut map = SourceMap::new();
-    let Ok(file) = load(prog_name, &mut map, &input, command.message_format) else {
+    let Ok(file) = load_program(
+        prog_name,
+        &mut map,
+        &input,
+        &command.units,
+        command.message_format,
+    ) else {
         return ExitCode::FAILURE;
     };
-    // The sibling units go into the same map, which is the whole workspace
-    // as far as name resolution is concerned. Only `input` is emitted.
-    for unit in &command.units {
-        if load(prog_name, &mut map, unit, command.message_format).is_err() {
-            return ExitCode::FAILURE;
-        }
-    }
 
     let result = k816::emit_ir(&map, file, &command.options);
     render::render_diagnostics(&map, &result.diagnostics, command.message_format);

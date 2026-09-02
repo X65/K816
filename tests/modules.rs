@@ -409,3 +409,56 @@ fn codes(diagnostics: &[k816::diagnostic::Diagnostic]) -> Vec<&'static str> {
         .map(|diagnostic| diagnostic.code.0)
         .collect()
 }
+
+/// A path resolves against the *importing* file's directory, two levels
+/// down.
+///
+/// `tests/golden/import-nested/` is the fixture for it and was asserted by
+/// nothing: `golden_sets` and the doc-coverage scan both read only the top
+/// level of `tests/golden`, so a subdirectory escapes the census, the
+/// idempotence sweep and the format round-trip. The corpus-wide
+/// entry-independence gate did reach it and proves nothing about it — it
+/// compares a file against itself, so a resolution rule that joined against
+/// the wrong directory would make `glyphs` undeclared *both* ways and the
+/// comparison would still hold.
+///
+/// What is checked here is the thing the fixture is for: `main.k816` imports
+/// `sub/lib.k816`, and that file's own `import "deeper/data.k816"` reaches
+/// `sub/deeper/data.k816` rather than `deeper/data.k816`.
+#[test]
+fn a_nested_import_resolves_against_its_own_directory() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/import-nested");
+    let map = program_from(&root.join("main.k816"));
+
+    let names: Vec<String> = map
+        .files()
+        .map(|file| {
+            std::path::Path::new(file.name())
+                .strip_prefix(&root)
+                .unwrap_or_else(|_| std::path::Path::new(file.name()))
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["main.k816", "sub/lib.k816", "sub/deeper/data.k816"],
+        "each path resolved against the file that wrote it"
+    );
+
+    // And it compiles, which is what says the names in it resolved: `helper`
+    // reads `glyphs`, and `glyphs` is two directories from the entry and
+    // one from the file that imports it.
+    let entry = map
+        .locate(&k816::imports::identity(&root.join("main.k816")))
+        .expect("the entry");
+    assert_eq!(codes_for(&map, entry), Vec::<String>::new());
+    let middle = map
+        .locate(&k816::imports::identity(&root.join("sub/lib.k816")))
+        .expect("the middle unit");
+    assert_eq!(
+        codes_for(&map, middle),
+        Vec::<String>::new(),
+        "`glyphs` resolved from `sub/lib.k816`, which named it `deeper/data.k816`"
+    );
+}

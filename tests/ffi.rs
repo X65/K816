@@ -564,3 +564,50 @@ fn an_ordinary_const_still_folds() {
         "{assembly}"
     );
 }
+
+/// One program reports one clash, whichever of its units is the entry.
+///
+/// A workspace is collected in map order and the map's order is the entry
+/// file's, so a rule that reported "every declaration that disagrees with
+/// what was seen first" counts differently depending on which unit is being
+/// compiled — one report when a declaration is seen first, one per
+/// declaration when the body is. That is precisely the property `import`
+/// exists to give (decision 3), and a diagnostic count is part of it.
+#[test]
+fn a_clash_is_reported_once_however_the_program_is_entered() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("ffi-clash-order");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    let files: &[(&str, &str)] = &[
+        (
+            "main.k816",
+            "import \"d1.k816\"\nimport \"d2.k816\"\nimport \"body.k816\"\n\
+             func main @a8 @i8 {\n    call helper\n}\n",
+        ),
+        (
+            "body.k816",
+            "import \"d1.k816\"\nimport \"d2.k816\"\nimport \"main.k816\"\n\
+             func helper @a8 @i8 {\n    nop\n}\n",
+        ),
+        ("d1.k816", "extern func helper\n"),
+        ("d2.k816", "extern func helper\n"),
+    ];
+    for (name, text) in files {
+        std::fs::write(dir.join(name), *text).expect("write a unit");
+    }
+
+    for entry in ["main.k816", "body.k816"] {
+        let mut map = SourceMap::new();
+        let path = dir.join(entry);
+        let file = map.add_file_at(
+            path.to_string_lossy(),
+            &path,
+            std::fs::read_to_string(&path).expect("read the entry"),
+        );
+        k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
+        let clashes = codes_for(&map, file)
+            .iter()
+            .filter(|code| **code == "K816-E0164")
+            .count();
+        assert_eq!(clashes, 1, "entering through `{entry}`");
+    }
+}

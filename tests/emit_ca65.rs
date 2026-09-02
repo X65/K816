@@ -1183,8 +1183,19 @@ fn the_import_pair_links_through_ld65() {
         std::fs::read_to_string(&entry_path).expect("read the entry"),
     );
     // Nothing names the sibling: the loader reads the source and finds it.
-    let added = k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
-    assert_eq!(added.len(), 1, "the sibling, and only the sibling");
+    // Both units are *reached*, because the pair imports each other — a
+    // cycle is legal, and the loader answers what the edges point at rather
+    // than what it happened to open.
+    let reached = k816::load_imports(&mut map, &mut |path| std::fs::read_to_string(path));
+    assert_eq!(
+        reached.len(),
+        2,
+        "each unit is reached by the other's import"
+    );
+    let sibling = *reached
+        .iter()
+        .find(|file| map.file(**file).name().ends_with("import-lib.k816"))
+        .expect("the sibling was loaded");
     // An interface unit is reached the same way, and adds nothing to the
     // object: an extern nothing references needs no line.
     let iface_path = golden.join("import-iface.k816");
@@ -1195,7 +1206,7 @@ fn the_import_pair_links_through_ld65() {
     );
 
     let mut objects = Vec::new();
-    for (index, file) in [map.locate(&entry_path).expect("the entry"), added[0], iface]
+    for (index, file) in [map.locate(&entry_path).expect("the entry"), sibling, iface]
         .into_iter()
         .enumerate()
     {

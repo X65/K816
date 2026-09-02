@@ -3196,12 +3196,26 @@ impl Analysis {
             if symbol.kind.is_addressable() {
                 continue;
             }
+            // A `const` reaching an address operand is the resolver's to
+            // report, and it does — precisely, naming the value/address
+            // distinction. It only reaches here at all because an `extern
+            // const` keeps its symbol where an ordinary one folds to a
+            // number, so before sub-plan K this arm saw nothing but
+            // functions. Reporting it again would be one mistake and two
+            // diagnostics.
+            if matches!(symbol.kind, SymbolKind::Const { .. }) {
+                continue;
+            }
             let name = symbol.name.clone();
             let declaration = symbol.declaration;
+            // The kind it *is*, rather than the kind this check was written
+            // for: a message that names the wrong one sends the reader to
+            // the wrong declaration.
+            let what = symbol.kind.describe();
             self.diagnostics.push(
                 Diagnostic::error(
                     DiagnosticCode::SYMBOL_KIND_MISMATCH,
-                    format!("`{name}` is a function, not a variable"),
+                    format!("`{name}` is {what}, not a variable"),
                     Label::new(site, "cannot be used as a memory operand"),
                 )
                 .with_secondary(Label::new(declaration, "declared here"))

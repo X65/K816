@@ -3138,3 +3138,52 @@ fn hover_on_an_extern_says_another_object_provides_it() {
         hover.markdown
     );
 }
+
+/// Deleting an `import` line drops the file it reached.
+///
+/// The editor keeps its map across edits, and nothing else prunes it — a
+/// close rebuilds, an ordinary edit does not. So a file that was imported
+/// and no longer is would stay a unit of the program for the rest of the
+/// session: still defining what it defines, and still colliding with a
+/// definition the author has just written in its place. The build compiles
+/// the same text cleanly, because the CLI builds its map once per run, and
+/// an editor that disagrees with the build about a name is the failure
+/// sub-plan H's decision 1 exists to prevent.
+#[test]
+fn deleting_an_import_drops_the_unit_it_reached() {
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("lsp-import-dropped");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    std::fs::write(dir.join("b.k816"), "func helper @a8 @i8 {\n    nop\n}\n").expect("write b");
+    let main = dir.join("main.k816");
+    let uri = format!("file://{}", main.display());
+
+    let mut workspace = Workspace::new();
+    workspace.update(
+        &uri,
+        "import \"b.k816\"\n\nfunc main @a8 @i8 {\n    call helper\n}\n",
+    );
+    let analysis = workspace.analyze();
+    assert_eq!(analysis.units.len(), 2);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "{:?}",
+        analysis.diagnostics
+    );
+
+    // The author deletes the import and writes the function here instead.
+    workspace.update(
+        &uri,
+        "func helper @a8 @i8 {\n    nop\n}\n\nfunc main @a8 @i8 {\n    call helper\n}\n",
+    );
+    let analysis = workspace.analyze();
+    assert_eq!(
+        analysis.units.len(),
+        1,
+        "the file nothing imports any more is not a unit"
+    );
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "the editor invented a clash the build does not report: {:?}",
+        analysis.diagnostics
+    );
+}

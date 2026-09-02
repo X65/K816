@@ -186,7 +186,9 @@ pub struct CompileResult {
 
 /// Loads every file the map's `import` items reach, transitively.
 ///
-/// Returns what it added, in the order it added them.
+/// Returns every file an `import` edge reaches — whether this call added it
+/// or it was there already — so a caller that keeps a map across edits can
+/// tell what is still wanted from what merely used to be.
 ///
 /// Library code over an injected reader rather than a routine in the CLI,
 /// because discovering which files a program consists of is a third thing the
@@ -207,7 +209,7 @@ pub fn load_imports(
     read: &mut dyn FnMut(&Path) -> std::io::Result<String>,
 ) -> Vec<FileId> {
     let mut pending: Vec<FileId> = map.files().map(source::SourceFile::id).collect();
-    let mut added = Vec::new();
+    let mut reached = Vec::new();
     while let Some(file) = pending.pop() {
         let parse = parser::parse_source(map.file(file), None);
         let applied = preprocess::apply(&parse.file);
@@ -235,16 +237,19 @@ pub fn load_imports(
             })
             .collect();
         for (path, name) in wanted {
-            if map.locate(&imports::identity(&path)).is_some() {
+            if let Some(found) = map.locate(&imports::identity(&path)) {
+                if !reached.contains(&found) {
+                    reached.push(found);
+                }
                 continue;
             }
             let Ok(text) = read(&path) else { continue };
             let id = map.add_imported_file(name.to_string_lossy(), &path, text);
-            added.push(id);
+            reached.push(id);
             pending.push(id);
         }
     }
-    added
+    reached
 }
 
 /// Reads `path` into `map` and parses it.

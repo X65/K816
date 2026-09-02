@@ -301,10 +301,40 @@ impl Workspace {
                 self.map.replace_file(*file, text);
             }
         }
+        let reached = crate::load_imports(&mut self.map, &mut |path| std::fs::read_to_string(path));
+        // A file the edges no longer reach is not a unit of this program any
+        // more, and leaving it in the map is not merely untidy: it still
+        // defines what it defines, so deleting the `import` line that
+        // reached it leaves the editor reporting a duplicate symbol against
+        // a file the build does not compile. Nothing else prunes it —
+        // `rebuild` runs only on a close — so it is asked here, on the edit
+        // that stopped wanting it.
+        let stale = self
+            .imported
+            .values()
+            .any(|file| !reached.contains(file) && !self.is_document(*file));
+        if !stale {
+            for file in reached {
+                self.imported
+                    .insert(self.map.file(file).path().to_path_buf(), file);
+            }
+            return;
+        }
+        // Dropping one file means rebuilding, because a `FileId` is a
+        // position in the map. Only the documents survive, and the loader
+        // runs again over exactly what they now import.
+        self.rebuild();
         for file in crate::load_imports(&mut self.map, &mut |path| std::fs::read_to_string(path)) {
             self.imported
                 .insert(self.map.file(file).path().to_path_buf(), file);
         }
+    }
+
+    /// Whether `file` is one of the open documents.
+    fn is_document(&self, file: FileId) -> bool {
+        self.documents
+            .values()
+            .any(|document| document.file == file)
     }
 }
 

@@ -90,12 +90,15 @@ fn expected_in(parent: Option<&str>) -> &'static str {
         Some("var_declaration") => "a variable name, type, or initializer",
         Some("const_declaration") | Some("const_entry") => "a constant name or its value",
         Some("segment_declaration") => "a segment name",
-        Some("import_declaration") => "a quoted path to a K816 unit",
+        // Three of sub-plan K's six arms are missing on purpose. Tree-sitter
+        // closes `import_declaration`, `extern_const` and `extern_exit`
+        // cleanly whatever follows them, so the ERROR node is parented to
+        // `source_file` and the generic phrasing is what a reader gets — as
+        // it is for every other item whose shape ends in a leaf. An arm that
+        // cannot fire is a claim nothing checks.
         Some("extern_declaration") => "`func`, `var`, or `const` after `extern`",
         Some("extern_func") => "an extern function name, its widths, or `-> @a8`",
         Some("extern_var") => "an extern variable name or its type",
-        Some("extern_const") => "an extern constant name",
-        Some("extern_exit") => "a width annotation after `->`",
         Some("field_list") | Some("field_declaration") => "a `.field` entry",
         Some("call_contract") | Some("contract_inputs") | Some("contract_outputs") => {
             "a call contract parameter"

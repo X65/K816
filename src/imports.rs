@@ -45,14 +45,26 @@
 //! definition it holds — reported, absurdly, as `K816-E0102`, a name defined
 //! by more than one unit.
 //!
-//! [`identity`] is the comparison key. `std::fs::canonicalize` where the file
-//! is on disk, which resolves `.`, `..`, symlinks and the working directory
-//! in one step; otherwise the lexical normalisation of the same path, which
-//! is what an in-memory map and an unsaved editor buffer get. The fallback is
-//! not a weaker canonicalize — it cannot see symlinks — and it does not need
-//! to be: a map whose files are not on disk has whatever names its builder
-//! gave them, and two of those are the same file only if they are spelled the
-//! same way after `.` and `..` are folded out.
+//! [`identity`] is the comparison key, and it is **purely lexical**: the path
+//! made absolute against the working directory, with `.` dropped and `..`
+//! folded into the component before it. It touches the filesystem not at all.
+//!
+//! That is a deliberate choice against `std::fs::canonicalize`, which is the
+//! obvious answer and is wrong here for two reasons. It fails for a file that
+//! is not on disk — an in-memory map, an editor buffer that has never been
+//! saved — so the key would have to fall back to something else, and a key
+//! computed two ways is two keys: a file gets one identity before it exists
+//! and a different one after, so saving a new file in a symlinked directory
+//! turns one unit into two and earns a duplicate-symbol error about a name
+//! declared once. And it resolves symlinks, which is more than is wanted:
+//! whether two spellings are the same *file* is a question about the paths a
+//! program wrote, and a program that writes both `link/x.k816` and
+//! `real/x.k816` has said something the compiler should not quietly undo.
+//!
+//! The cost is the other side of that last point: two spellings that reach
+//! one file through a symlink are two units here, and the duplicate-symbol
+//! error says so. That failure is visible and is about something the source
+//! actually wrote; the one canonicalize would produce is neither.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -69,14 +81,18 @@ pub fn resolve(importer: &Path, written: &str) -> PathBuf {
 
 /// The comparison key for `path`: which file it is, rather than what it is
 /// called.
+///
+/// A pure function of the path and the working directory. See the module
+/// documentation for why it does not consult the filesystem.
 pub fn identity(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| normalize(path))
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    normalize(&absolute)
 }
 
 /// `path` with `.` dropped and `..` folded into the component before it.
 ///
 /// Purely lexical: `a/../b` is `b` here even where `a` is a symlink pointing
-/// elsewhere, which is why this is the fallback rather than the rule.
+/// somewhere `b` is not.
 fn normalize(path: &Path) -> PathBuf {
     let mut kept: Vec<Component<'_>> = Vec::new();
     for component in path.components() {
@@ -146,6 +162,39 @@ mod tests {
                 "{written}"
             );
         }
+    }
+
+    /// Identity does not change when the file appears.
+    ///
+    /// The property that makes it usable at all in an editor, where a new
+    /// file is imported before it is saved and saved a keystroke later. A
+    /// key that consulted the filesystem would answer differently on either
+    /// side of that, and one unit would become two.
+    #[test]
+    fn identity_does_not_depend_on_whether_the_file_exists() {
+        // `CARGO_TARGET_TMPDIR` is an integration-test variable, so a unit
+        // test builds its own scratch directory under the crate's target.
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp/identity-stability");
+        std::fs::create_dir_all(&dir).expect("create the work dir");
+        let file = dir.join("appears.k816");
+        let _ = std::fs::remove_file(&file);
+
+        let before = identity(&file);
+        std::fs::write(&file, "func f @a8 @i8 {\n    nop\n}\n").expect("create the file");
+        assert_eq!(
+            identity(&file),
+            before,
+            "creating the file moved its identity"
+        );
+
+        // And a symlinked route to it is a different spelling, which the
+        // module documentation says is deliberate: it is a thing the source
+        // wrote, not a thing to be quietly undone.
+        assert_ne!(
+            identity(std::path::Path::new("/tmp/link/appears.k816")),
+            before
+        );
     }
 
     #[test]

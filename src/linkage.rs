@@ -219,6 +219,17 @@ pub struct Linkage {
     /// the program contradicts, two `extern`s that disagree, an `import`
     /// that reaches nothing.
     diagnostics: Vec<Diagnostic>,
+    /// Names already reported as a clash between declarations, or between a
+    /// declaration and a definition.
+    ///
+    /// One complaint per name, however many units join in. Without it the
+    /// *count* depends on which unit was collected first — a body seen first
+    /// makes every later declaration a separate report, and a declaration
+    /// seen first makes the body one — and map order is the entry file's,
+    /// so one program would report differently depending on which of its
+    /// units was being compiled. That is exactly the property `import`
+    /// exists to give (`plans/10-modules-and-ffi.md` decision 3).
+    clashed: BTreeSet<String>,
     /// The state the machine is in when this build's entry point runs.
     ///
     /// It lives here because two passes need it and they must not be able to
@@ -541,23 +552,25 @@ impl Linkage {
                     } else {
                         (existing, &definition)
                     };
-                    self.diagnostics.push(
-                        Diagnostic::error(
-                            DiagnosticCode::EXTERN_COLLIDES_WITH_DEFINITION,
-                            format!(
-                                "`{}` is declared `extern` but this program defines it",
-                                symbol.name
-                            ),
-                            Label::new(declared.declaration, "declared here"),
-                        )
-                        .with_secondary(Label::new(body.declaration, "and defined here"))
-                        .with_note(
-                            "an `extern` describes a symbol another object provides; a \
+                    if self.clashed.insert(symbol.name.clone()) {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticCode::EXTERN_COLLIDES_WITH_DEFINITION,
+                                format!(
+                                    "`{}` is declared `extern` but this program defines it",
+                                    symbol.name
+                                ),
+                                Label::new(declared.declaration, "declared here"),
+                            )
+                            .with_secondary(Label::new(body.declaration, "and defined here"))
+                            .with_note(
+                                "an `extern` describes a symbol another object provides; a \
                              definition in the program is the one ld65 will resolve",
-                        )
-                        .with_help("delete the `extern`, or the definition")
-                        .with_docs("doc/syntax-reference.md#extern-declarations"),
-                    );
+                            )
+                            .with_help("delete the `extern`, or the definition")
+                            .with_docs("doc/syntax-reference.md#extern-declarations"),
+                        );
+                    }
                     // The body wins, so an editor sends a reader to the truth
                     // rather than to the file that disagrees with it.
                     if origin == Origin::Body {
@@ -569,7 +582,9 @@ impl Linkage {
                 // contract would be a silently wrong byte, so the two are
                 // required to be identical and this is where that is asked.
                 Some(existing) if origin == Origin::Declared => {
-                    if let Some(axis) = disagreement(existing, &definition) {
+                    if let Some(axis) = disagreement(existing, &definition)
+                        && self.clashed.insert(symbol.name.clone())
+                    {
                         self.diagnostics.push(
                             Diagnostic::error(
                                 DiagnosticCode::EXTERN_DECLARATIONS_DISAGREE,

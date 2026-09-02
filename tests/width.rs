@@ -1653,3 +1653,90 @@ func pong @a16 {
     assert_eq!(observed(source, "ping").1, (true, false));
     assert_eq!(observed(source, "pong").1, (true, false));
 }
+
+/// A transfer between the two axes is refused where their widths are known
+/// and differ, in either direction and in either spelling.
+///
+/// `TAX` moves as many bytes as the X flag says and `TXA` as many as the M
+/// flag says — the destination's width, both times — so a mismatch moves a
+/// byte the source does not hold or drops the one it does. The legacy
+/// compiler refused it and `tests/compat/legacy-k816` carries the fixture
+/// that says so; K816 accepted it silently until `K816-E0171`.
+#[test]
+fn a_transfer_across_mismatched_known_widths_is_refused() {
+    for (contract, statement) in [
+        ("@a8 @i16", "tax"),
+        ("@a8 @i16", "tay"),
+        ("@a8 @i16", "txa"),
+        ("@a8 @i16", "tya"),
+        ("@a16 @i8", "tax"),
+        ("@a16 @i8", "tay"),
+        ("@a16 @i8", "txa"),
+        ("@a16 @i8", "tya"),
+        // The HLA spellings reach the same classifier, so they answer the
+        // same way — and report once, not once per step.
+        ("@a8 @i16", "x = a"),
+        ("@a8 @i16", "y = a"),
+        ("@a16 @i8", "a = x"),
+        ("@a16 @i8", "a = y"),
+    ] {
+        let text = format!("func f {contract} {{\n    {statement}\n}}\n");
+        let (_, _, diagnostics) = analyze(&text);
+        assert_eq!(
+            error_codes(&diagnostics),
+            vec!["K816-E0171"],
+            "`{statement}` under `{contract}`"
+        );
+    }
+}
+
+/// Two widths that agree, and one that is not known, are both accepted.
+///
+/// The unknown case is the deliberate one: it is how a program says it means
+/// the full-width move, and it is what the legacy compiler's own help line
+/// pointed at.
+#[test]
+fn a_transfer_needs_two_known_widths_that_differ() {
+    for contract in ["@a8 @i8", "@a16 @i16", "@i16", "@a8", ""] {
+        let text = format!("func f {contract} {{\n    tax\n}}\n");
+        let (_, _, diagnostics) = analyze(&text);
+        assert_eq!(
+            error_codes(&diagnostics),
+            Vec::<&str>::new(),
+            "`{contract}`"
+        );
+    }
+}
+
+/// The rule reaches a mid-function width block, because the widths it asks
+/// about are the solver's at that statement and not the function's contract.
+#[test]
+fn a_width_block_can_make_a_transfer_disagree() {
+    let (_, _, diagnostics) =
+        analyze("func f @a8 @i8 {\n    tax\n    @i16 {\n        tay\n    }\n    tax\n}\n");
+    assert_eq!(error_codes(&diagnostics), vec!["K816-E0171"]);
+}
+
+/// Exactly four instructions cross between the two axes — read off the ISA
+/// table rather than off a list someone kept.
+///
+/// A transfer that stays on one axis has no two widths to disagree, and one
+/// whose other end is the stack pointer or the direct-page register answers
+/// to one flag or to none. If a future mnemonic joins the four, this fails
+/// rather than quietly leaving the rule behind.
+#[test]
+fn only_the_four_transfers_that_cross_the_axes_are_checked() {
+    let refused: Vec<&str> = k816::isa::Mnemonic::ALL
+        .iter()
+        // The two block moves are the only mnemonics the grammar refuses to
+        // read without an operand, and neither is a transfer.
+        .filter(|mnemonic| !matches!(mnemonic.ca65(), "mvn" | "mvp"))
+        .filter(|mnemonic| {
+            let text = format!("func f @a8 @i16 {{\n    {}\n}}\n", mnemonic.ca65());
+            let (_, _, diagnostics) = analyze(&text);
+            codes(&diagnostics).contains(&"K816-E0171")
+        })
+        .map(|mnemonic| mnemonic.ca65())
+        .collect();
+    assert_eq!(refused, vec!["tax", "tay", "txa", "tya"]);
+}

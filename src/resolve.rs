@@ -555,6 +555,91 @@ fn datum_axis(mnemonic: Mnemonic) -> Option<Axis> {
     }
 }
 
+/// The axis a set of registers sits on, or `None` when no width flag governs
+/// it.
+///
+/// The stack pointer, the direct-page register and the data-bank register
+/// have widths of their own that neither `M` nor `X` says anything about,
+/// which is why the four transfers through them are width-independent.
+fn register_axis(registers: RegisterSet) -> Option<Axis> {
+    let accumulator = registers.intersects(RegisterSet::A);
+    let index = registers.intersects(RegisterSet::X.union(RegisterSet::Y));
+    match (accumulator, index) {
+        (true, false) => Some(Axis::Accumulator),
+        (false, true) => Some(Axis::Index),
+        _ => None,
+    }
+}
+
+/// The source and destination axes of a transfer that crosses from one to
+/// the other — `TAX`, `TAY`, `TXA`, `TYA`, and nothing else.
+///
+/// Read out of the effect table rather than listed, so a transfer cannot
+/// change what it touches and quietly leave this rule behind. A transfer
+/// within one axis (`TXY`) has no two widths to disagree; one whose other
+/// end is the stack or the direct-page register (`TXS`, `TCD`) moves a width
+/// neither flag governs.
+fn transfer_axes(mnemonic: Mnemonic) -> Option<(Axis, Axis)> {
+    // Only an instruction the CPU writes with no operand at all can be one,
+    // which is also what keeps the effect below a real encoding's rather
+    // than the table's answer for a mode this mnemonic has not got.
+    spec_for_form(mnemonic, OperandForm::Nothing).next()?;
+    let effects = instruction_effects(mnemonic, AddressingMode::Implied, None);
+    let source = register_axis(effects.reads.registers)?;
+    let destination = register_axis(effects.writes.registers)?;
+    (source != destination).then_some((source, destination))
+}
+
+/// A transfer whose two axes are known to be different widths.
+fn transfer_width_mismatch(
+    mnemonic: Mnemonic,
+    site: Span,
+    source: Axis,
+    from: RegisterWidth,
+    destination: Axis,
+    to: RegisterWidth,
+) -> Diagnostic {
+    let bytes = |width: RegisterWidth| match width {
+        RegisterWidth::W8 => 1,
+        RegisterWidth::W16 => 2,
+    };
+    let (moved, held) = (bytes(to), bytes(from));
+    Diagnostic::error(
+        DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
+        format!(
+            "`{}` moves {moved} byte{} here, and the {} holds {held}",
+            mnemonic.ca65(),
+            if moved == 1 { "" } else { "s" },
+            source.name(),
+        ),
+        Label::new(
+            site,
+            format!(
+                "the {} is {moved}-byte wide here, the {} {held}",
+                destination.name(),
+                source.name(),
+            ),
+        ),
+    )
+    .with_note(if moved > held {
+        format!(
+            "the high byte moved is not one the {} holds at this width",
+            source.name()
+        )
+    } else {
+        format!("the high byte of the {} is dropped", source.name())
+    })
+    .with_help(format!(
+        "declare both axes the same width around this transfer \
+         ({} with {}, or {} with {}), or leave one width unstated to mean it",
+        source.annotation(from),
+        destination.annotation(from),
+        source.annotation(to),
+        destination.annotation(to),
+    ))
+    .with_docs("doc/register-width-aware-syntax.md")
+}
+
 /// A `:far` datum in register position: there is no register to put it in.
 fn datum_too_wide(mnemonic: Mnemonic, operand: Span, declaration: Span) -> Diagnostic {
     Diagnostic::error(
@@ -1610,6 +1695,7 @@ impl<'a> Resolver<'a> {
         self.check_offset_marker(source, form);
         let form = accumulator_default(mnemonic, form);
         let mnemonic = aliased(mnemonic, form);
+        self.check_transfer_widths(mnemonic, site);
 
         match form {
             OperandForm::Immediate => {
@@ -1807,12 +1893,8 @@ impl<'a> Resolver<'a> {
             self.report(datum_too_wide(mnemonic, value.span, declaration));
             return;
         }
-        let state = match axis {
-            Axis::Accumulator => self.widths.a,
-            Axis::Index => self.widths.i,
-        };
         // An unknown width makes no claim, so it cannot disagree with one.
-        let AxisState::Known(register) = state else {
+        let AxisState::Known(register) = self.axis_state(axis) else {
             return;
         };
         let held = match register {
@@ -1827,6 +1909,47 @@ impl<'a> Resolver<'a> {
                 width,
                 axis,
                 register,
+            ));
+        }
+    }
+
+    /// The width tracked for one axis here.
+    fn axis_state(&self, axis: Axis) -> AxisState {
+        match axis {
+            Axis::Accumulator => self.widths.a,
+            Axis::Index => self.widths.i,
+        }
+    }
+
+    /// Refuses a transfer between the two axes when their widths are known
+    /// and differ.
+    ///
+    /// The four transfers that cross move the *destination's* width: `TAX`
+    /// moves as many bytes as the X flag says, `TXA` as many as the M flag
+    /// says. So a mismatch either moves a byte the source does not hold —
+    /// under `@a8 @i16` a `tax` moves the accumulator's hidden high half into
+    /// X — or drops the byte it does, and the source shows neither.
+    ///
+    /// Only two *known* widths disagree. An unknown axis makes no claim, so a
+    /// transfer written where one width is deferred is the author's to get
+    /// right, which is also how to write one of these deliberately.
+    fn check_transfer_widths(&mut self, mnemonic: Mnemonic, site: Span) {
+        let Some((source, destination)) = transfer_axes(mnemonic) else {
+            return;
+        };
+        let (AxisState::Known(from), AxisState::Known(to)) =
+            (self.axis_state(source), self.axis_state(destination))
+        else {
+            return;
+        };
+        if from != to {
+            self.report(transfer_width_mismatch(
+                mnemonic,
+                site,
+                source,
+                from,
+                destination,
+                to,
             ));
         }
     }

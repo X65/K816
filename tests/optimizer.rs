@@ -677,27 +677,29 @@ fn a_load_of_a_value_the_register_already_holds_is_coalesced() {
     );
 }
 
-/// The value domain tracks lanes, and the tracker refuses a transfer whose
+/// The value domain tracks lanes, and the tracker refuses a move whose
 /// source does not cover what it moves.
 ///
-/// `lda #0` at `@a8` establishes the low byte and says nothing about the
-/// hidden `B` byte. `tax` at `@i16` moves all sixteen, so X is **not** known
-/// to be zero and the `ldx #$0000` after it stays. With the widths agreeing,
-/// the same shape coalesces.
+/// `lda #$00` at `@a8` establishes the low byte and says nothing about the
+/// hidden `B` byte. `xba` exchanges the two whatever `M` says, so what the
+/// accumulator holds afterwards is a byte nothing wrote: the store after it
+/// stays a `sta`, and the `lda #$00` after *that* is not a no-op. Where
+/// sixteen known bits move into sixteen-bit index registers, the same shape
+/// coalesces.
 #[test]
 fn a_transfer_propagates_only_when_the_source_covers_what_it_moves() {
     let (_, file, model, mut program) = lowered_as("opt-values.k816", VALUES);
     run(&mut program, &model, file);
 
-    // The stores became `stz`: the accumulator is known zero, which is the
-    // zero-store peephole doing its own job on the way past.
+    // Only the second store became `stz`. The first one is a store of the
+    // hidden half, and a domain without lanes would call it a store of zero.
     assert_eq!(
         mnemonics(&program, &model, "lanes"),
         vec![
             Mnemonic::Lda,
-            Mnemonic::Tax,
-            Mnemonic::Stz,
-            Mnemonic::Ldx, // stays: A was known in the low byte only
+            Mnemonic::Xba,
+            Mnemonic::Sta, // stays: A holds the half no instruction wrote
+            Mnemonic::Lda, // stays: and so this load is not redundant
             Mnemonic::Stz,
             Mnemonic::Rts
         ]

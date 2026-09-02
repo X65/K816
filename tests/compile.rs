@@ -2603,9 +2603,10 @@ fn the_folding_fixture_merges_only_what_the_composed_transform_allows() {
 /// A repeated immediate load goes; a `cmp` between two identical loads keeps
 /// the second, because the load reports on N and Z and the comparison rewrote
 /// them. A `clc` after a mask that already cleared the carry goes; the one
-/// after an `adc` stays. `tax` from a low-byte-only accumulator into 16-bit
-/// index registers establishes nothing, so the `ldx` after it stays — and with
-/// the widths agreeing, the same `ldx` goes. Both reads of the hardware
+/// after an `adc` stays. An `xba` over a low-byte-only accumulator leaves a
+/// half the tracker never saw, so neither the store after it nor the load
+/// after that is touched — and where sixteen known bits move into sixteen-bit
+/// index registers, the `ldx` after them goes. Both reads of the hardware
 /// register stay.
 #[test]
 fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
@@ -2626,9 +2627,11 @@ fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
             "lda     #$07",
             "lda     #$07",
             "ldx     #$0000", // lanes_agree, where sixteen known bits moved
-            // …and the four stores of a known-zero accumulator, which the
-            // zero-store peephole rewrites on its way past.
-            "sta     a:CELL,x",
+            // …and the three stores of a known-zero accumulator, which the
+            // zero-store peephole rewrites on its way past. The fourth store
+            // in the fixture is `lanes`, immediately after its `xba`: the
+            // accumulator holds the half no instruction wrote there, so it
+            // stays a `sta`. A tracker without lanes would rewrite it.
             "sta     a:CELL,x",
             "sta     a:CELL,x",
             "sta     a:CELL,x",
@@ -2637,12 +2640,7 @@ fn the_value_fixture_coalesces_only_what_the_lanes_cover() {
     );
     assert_eq!(
         added,
-        vec![
-            "stz     a:CELL,x",
-            "stz     a:CELL,x",
-            "stz     a:CELL,x",
-            "stz     a:CELL,x",
-        ],
+        vec!["stz     a:CELL,x", "stz     a:CELL,x", "stz     a:CELL,x",],
         "{added:?}"
     );
     // `STZ` is the same length as `STA`, so only the deletions cost bytes: a
@@ -2974,10 +2972,10 @@ const FIXTURE_EFFECTS: &[Effect] = &[
             ("clc", 1),
             ("lda     #$07", 3),
             ("ldx     #$0000", 1),
-            ("sta     a:CELL,x", 4),
+            ("sta     a:CELL,x", 3),
         ],
-        &[("stz     a:CELL,x", 4)],
-        "a repeated load, two more that a memory read and an N/Z-writing mask left dead behind them, a redundant `clc`, an `ldx` sixteen known bits made redundant, and four stores of a known-zero accumulator",
+        &[("stz     a:CELL,x", 3)],
+        "a repeated load, two more that a memory read and an N/Z-writing mask left dead behind them, a redundant `clc`, an `ldx` sixteen known bits made redundant, and three stores of a known-zero accumulator — the fourth follows an `xba` over a half nothing wrote, and a tracker with lanes leaves it alone",
     ),
     (
         "opt-zero-store.k816",

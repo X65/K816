@@ -69,7 +69,10 @@ func stack_forms @a8 @i16 {
     per stack_forms
 }
 
-func transfers @a8 @i16 {
+// The one function whose axes agree: the four transfers that cross between
+// them move the *destination's* width, so `@a8 @i16` here would be
+// `K816-E0171` four times rather than a sweep of the transfer table.
+func transfers @a8 @i8 {
     tax
     tay
     txa

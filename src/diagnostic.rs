@@ -452,6 +452,21 @@ impl DiagnosticCode {
     /// would otherwise stop working and ld65 is the one that knows the value.
     pub const IMMEDIATE_PARAMETER_RANGE: Self = Self("K816-E0170");
 
+    /// `tax` where the accumulator and the index registers are known to be
+    /// different widths.
+    ///
+    /// The four transfers between the two axes move the *destination's*
+    /// width: `TAX` moves as many bytes as the X flag says, `TXA` as many as
+    /// the M flag says. When the two axes disagree the transfer either moves
+    /// a high byte the source does not hold — for `tax` under `@a8 @i16`
+    /// that byte is the accumulator's hidden half — or drops the one it does,
+    /// and neither is visible in the source.
+    ///
+    /// Only *known* widths disagree. An unknown axis makes no claim, so a
+    /// transfer written where one width is deferred is the author's to get
+    /// right, exactly as the legacy compiler had it.
+    pub const TRANSFER_WIDTH_MISMATCH: Self = Self("K816-E0171");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a
@@ -745,6 +760,7 @@ mod tests {
         DiagnosticCode::STACK_RELATIVE_OFFSET,
         DiagnosticCode::IMMEDIATE_PARAMETER_WIDTH,
         DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
+        DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

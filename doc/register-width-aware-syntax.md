@@ -57,6 +57,37 @@ Error: `lda` uses a width-dependent immediate but accumulator width is unknown
 ───╯
 ```
 
+### Transfers between the two axes
+
+`TAX`, `TAY`, `TXA` and `TYA` move a value from one width axis to the other,
+and each moves the **destination's** width: `TAX` moves as many bytes as the
+X flag says, `TXA` as many as the M flag says. So when the two axes are known
+to be different widths the transfer either carries a high byte the source does
+not hold — under `@a8 @i16` a `tax` moves the accumulator's hidden `B` half
+into X — or drops the one it does, and the source shows neither:
+
+```
+Error: `tax` moves 2 bytes here, and the accumulator holds 1
+   ╭─[ input.k65:3:5 ]
+   │
+ 3 │     tax
+   │     ─┬─
+   │      ╰─── the index register is 2-byte wide here, the accumulator 1
+   │
+   │ Help: declare both axes the same width around this transfer (@a8 with
+   │       @i8, or @a16 with @i16), or leave one width unstated to mean it
+   │
+   │ Note: the high byte moved is not one the accumulator holds at this width
+───╯
+```
+
+Only two *known* widths can disagree. An axis whose width is unknown makes no
+claim, so a transfer written where one width is deferred is the author's —
+which is also how to write one of these on purpose. The transfers that stay on
+one axis (`TXY`, `TYX`) have no two widths to disagree, and the ones whose
+other end is the stack pointer or the direct-page register (`TXS`, `TSX`,
+`TCD`, `TDC`, `TCS`, `TSC`) answer to one flag, or to none.
+
 ## Function-level mode contracts
 
 A function declares its expected register widths with annotations after the

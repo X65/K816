@@ -106,6 +106,11 @@ const FAMILY: &[Case] = &[
         caret: "slot",
     },
     Case {
+        source: "func work @a8 @i16 { tax }\n",
+        code: DiagnosticCode::TRANSFER_WIDTH_MISMATCH,
+        caret: "tax",
+    },
+    Case {
         source: "inline scale @a8 (a, #by:far) -> a {\n  a & #by\n}\n",
         code: DiagnosticCode::IMMEDIATE_PARAMETER_WIDTH,
         caret: ":far",

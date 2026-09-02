@@ -2,10 +2,10 @@
 // tracker must never do.
 //
 // **The value domain tracks lanes.** `lda #0` in an 8-bit accumulator
-// establishes the low byte and says nothing about the hidden `B` byte, so a
-// following `tax` with 16-bit index registers — which moves all sixteen — must
-// not conclude that X is zero. A domain of `register → value` alone is unsound
-// on this CPU (`plans/05-optimizer.md` decision 15).
+// establishes the low byte and says nothing about the hidden `B` byte, so an
+// `xba` after it — which exchanges the two whatever `M` says — must not leave
+// the tracker claiming the accumulator is zero. A domain of `register → value`
+// alone is unsound on this CPU (`plans/05-optimizer.md` decision 15).
 //
 // **The tracker never reads memory.** A load whose source is memory is never
 // redundant, because a fixed-address `var` is how K65 spells a hardware
@@ -60,14 +60,22 @@ func carry_is_rewritten @a8 @i8 {
     CELL = a
 }
 
-// **Lanes.** `lda #0` at `@a8` establishes the low byte; `tax` at `@i16` moves
-// sixteen. X is not known to be zero, so the `ldx #$0000` below it is not
-// redundant and stays.
-func lanes @a8 @i16 {
+// **Lanes.** `lda #$00` at `@a8` establishes the low byte and says nothing
+// about the hidden `B` half; `xba` exchanges the two whatever `M` says, so
+// what the accumulator holds afterwards is a byte the tracker never saw. The
+// store between them keeps the `xba` alive, and it stays a `sta`: a domain
+// that modelled the accumulator as one eight-bit value would call it a store
+// of zero and write `stz`. The `lda #$00` after it is not redundant either.
+//
+// This was `tax` under `@a8 @i16` until `K816-E0171`, which refuses a transfer
+// between two axes of known and different widths. The claim is the same one:
+// the value domain has to track lanes, because a sixteen-bit move can carry a
+// half no eight-bit instruction ever wrote.
+func lanes @a8 @i8 {
     lda #$00
-    tax
+    xba
     CELL,x = a
-    ldx #$0000
+    lda #$00
     CELL,x = a
 }
 

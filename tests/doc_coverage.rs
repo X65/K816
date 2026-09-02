@@ -96,6 +96,18 @@ const MATRIX: &[Row] = &[
         entry: None,
     },
     Row {
+        section: "Transfers between the two axes",
+        // The listing's own program. `lda #$00` is there to make the point
+        // the note makes — the high byte moved is the one it did not write —
+        // and reports nothing of its own.
+        source: "func scan @a8 @i16 {\n    lda #$00\n    tax\n}\n",
+        stage: Stage::Modelled,
+        difference: "",
+        expected: &[],
+        diagnostic: Some("K816-E0171"),
+        entry: None,
+    },
+    Row {
         section: "Function-level mode contracts",
         source: "\
 func wide_a @a16 {

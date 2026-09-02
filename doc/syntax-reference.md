@@ -3181,6 +3181,8 @@ S|`a=s` TSC|-|-|`x=s` TSX|-|-
 
 `a=s` and `s=a` are `TSC` and `TCS`, which move all sixteen bits regardless of `M` — the accumulator is one register and `a` names it at either width. `DBR` has no transfer: `PHB`/`PLB` are the only instructions that move it, spelled `dbr!!` and `dbr??`.
 
+`x=a`, `y=a`, `a=x` and `a=y` are the four that cross between the accumulator's width and the index registers', and each moves the **destination's** width: `TAX` moves as many bytes as `@i` says, `TXA` as many as `@a` says. Where both widths are known and differ, the transfer carries a high byte the source does not hold or drops the one it does, and K816 refuses it (`K816-E0171`) — declare both axes the same width around the transfer, or leave one width unstated where the full-width move is what you mean. See `doc/register-width-aware-syntax.md`, "Transfers between the two axes".
+
 Unsupported direct transfers (e.g. `s=y`, `d=x`) produce a compile error with a hint suggesting a two-step chain:
 
 ```k65

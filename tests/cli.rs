@@ -1240,14 +1240,21 @@ fn imports_are_dependencies_transitively() {
     .expect("write mid");
     std::fs::write(dir.join("deep.k816"), "func deep @a8 {\n    nop\n}\n").expect("write deep");
 
-    let dep = dir.join("main.d");
+    // Run from the directory with a bare source name, which is what a build
+    // generator does and what makes the naming assertion below meaningful.
     let result = Command::new(env!("CARGO_BIN_EXE_k816"))
-        .arg("compile")
-        .arg(dir.join("main.k816"))
-        .args(["--create-dep".as_ref(), dep.as_os_str()])
-        .args(["-o".as_ref(), dir.join("main.s").as_os_str()])
+        .current_dir(&dir)
+        .args([
+            "compile",
+            "main.k816",
+            "--create-dep",
+            "main.d",
+            "-o",
+            "main.s",
+        ])
         .output()
         .expect("run k816");
+    let dep = dir.join("main.d");
     assert!(
         result.status.success(),
         "{}",
@@ -1257,6 +1264,18 @@ fn imports_are_dependencies_transitively() {
     let rule = written.lines().next().expect("a rule");
     for name in ["main.k816", "mid.k816", "deep.k816"] {
         assert!(rule.contains(name), "`{name}` is missing from: {rule}");
+    }
+    // Named the way the importing source named them, not by the absolute
+    // path the loader opened. A prerequisite is something a person reads and
+    // a build system matches against its own rules, and neither is helped by
+    // a path nobody wrote — the file's *identity* is canonical so that two
+    // spellings are one unit, and its *name* is what it was called.
+    let prerequisites = rule.split_once(":\t").expect("a target and its list").1;
+    for prerequisite in prerequisites.split_whitespace() {
+        assert!(
+            !std::path::Path::new(prerequisite).is_absolute(),
+            "`{prerequisite}` is absolute, and nothing on the command line was: {rule}"
+        );
     }
     assert_eq!(
         rule.matches("mid.k816").count(),

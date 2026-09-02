@@ -211,24 +211,35 @@ pub fn load_imports(
     while let Some(file) = pending.pop() {
         let parse = parser::parse_source(map.file(file), None);
         let applied = preprocess::apply(&parse.file);
-        let importer = map.file(file).path().to_path_buf();
-        let wanted: Vec<PathBuf> = applied
+        // Two resolutions of the same edge, and both are wanted. The
+        // *identity* is taken from the importer's identity, which is
+        // canonical wherever the file is on disk, so two spellings of one
+        // path are one unit — and it is the same arithmetic `Linkage` does,
+        // so an edge that reaches a unit here reaches the same one there.
+        // The *name* is taken from the importer's name, so a file reached
+        // from `main.k816` is called `hw.k816` rather than by an absolute
+        // path nobody wrote: it is what a diagnostic points at, what a
+        // dependency file lists, and what a `.dbg` record names.
+        let identity = map.file(file).path().to_path_buf();
+        let displayed = PathBuf::from(map.file(file).name());
+        let wanted: Vec<(PathBuf, PathBuf)> = applied
             .program
             .items
             .iter()
             .filter_map(|item| match &item.kind {
-                ast::ItemKind::Import(import) => {
-                    Some(imports::resolve(&importer, &import.file.path))
-                }
+                ast::ItemKind::Import(import) => Some((
+                    imports::resolve(&identity, &import.file.path),
+                    imports::resolve(&displayed, &import.file.path),
+                )),
                 _ => None,
             })
             .collect();
-        for path in wanted {
+        for (path, name) in wanted {
             if map.locate(&imports::identity(&path)).is_some() {
                 continue;
             }
             let Ok(text) = read(&path) else { continue };
-            let id = map.add_imported_file(path.to_string_lossy(), &path, text);
+            let id = map.add_imported_file(name.to_string_lossy(), &path, text);
             added.push(id);
             pending.push(id);
         }

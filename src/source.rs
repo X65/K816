@@ -132,12 +132,12 @@ pub struct SourceFile {
     text: String,
     /// The file this is, as opposed to what it is called.
     ///
-    /// A unit can be named twice — `--unit lib.k816` and `import "./lib.k816"`
-    /// once meant two spellings of one file, and an entry that imports a
-    /// sibling which imports it back names it twice again. Loading it twice
-    /// would give one program two sets of the same definitions and a
-    /// duplicate-symbol error about a name declared once, so the loader
-    /// compares *this* rather than the name.
+    /// A unit can be named twice: an entry that imports a sibling which
+    /// imports it back names it once from each side, and `lib.k816`,
+    /// `./lib.k816` and `../dir/lib.k816` are three spellings of one file.
+    /// Loading it twice would give one program two sets of the same
+    /// definitions and a duplicate-symbol error about a name declared once,
+    /// so the loader compares *this* rather than the name.
     path: std::path::PathBuf,
     origin: Origin,
     /// Byte offset of the first byte of every line. `line_starts[0] == 0`.

@@ -599,6 +599,18 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
         "K816-E0166",
         "tests/modules.rs: an_import_that_cannot_be_read_is_e0166_at_the_string",
     ),
+    // The same, and for the same reason: whether the program defines a name
+    // some unit declared `extern`, and whether two units declared it
+    // differently, are questions about a set of units rather than about a
+    // file.
+    (
+        "K816-E0164",
+        "tests/ffi.rs: an_extern_the_program_also_defines_is_refused",
+    ),
+    (
+        "K816-E0165",
+        "tests/ffi.rs: externs_that_disagree_are_refused_and_the_message_says_how",
+    ),
     // And this one no source can reach at all: it reports a `--entry` value,
     // so there is no file for the FAMILY table to compile.
     (

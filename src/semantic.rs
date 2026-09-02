@@ -119,6 +119,14 @@ pub struct SemanticModel {
     /// legacy K65 call declares nothing, and the unchecked form stays the
     /// default.
     pub contracts: BTreeMap<SymbolId, CallFlow>,
+    /// The width contract each `extern func` this unit declares states.
+    ///
+    /// Not a [`FunctionInfo`], because there is no body: every field of one
+    /// describes something derived from statements, and an extern has none
+    /// to derive from. What it has instead is a *promise*, and this is where
+    /// the promise is kept until `Linkage` publishes it to the units that
+    /// call it (`plans/10-modules-and-ffi.md` decision 5).
+    pub externs: BTreeMap<SymbolId, width::CalleeContract>,
     /// The width dataflow's output, per function.
     ///
     /// Stored rather than recomputed: lowering looks a statement's state up
@@ -742,7 +750,12 @@ impl Analysis {
                         FunctionKind::Func,
                     );
                 }
-                // K6/K7 declare an `extern` here; K1 only parses it.
+                // An `extern` is declared here, with the sections, and not
+                // below with the values: a section is forward-declarable and
+                // so is a name another object provides, and a call to one
+                // written above the declaration has to resolve.
+                ItemKind::Extern(declaration) => self.declare_extern(declaration),
+                // K7 declares an `extern const` here.
                 ItemKind::Var(_)
                 | ItemKind::Const(_)
                 | ItemKind::Segment(_)
@@ -752,9 +765,109 @@ impl Analysis {
                 | ItemKind::Reserved(_)
                 | ItemKind::ModuleWidth(_)
                 | ItemKind::Import(_)
-                | ItemKind::Extern(_)
                 | ItemKind::Error => {}
             }
+        }
+    }
+
+    /// Declares an `extern`, and records the contract it promises.
+    ///
+    /// The kind is the declaration's, exactly as a sibling unit's kind would
+    /// have been the sibling's: it is what decides `.import` against
+    /// `.importzp` against `: far`, and what makes a near call to a far
+    /// function `K816-E0138` here rather than a wrong return over there.
+    ///
+    /// The contract is a *promise*. Every other contract in this compiler is
+    /// derived from a body — `classify_exit` walks the reachable returns —
+    /// and there is no body here, which is exactly what an extern is for. So
+    /// the widths written before `->` are the entry the caller bridges to,
+    /// the ones after are what the caller may believe afterwards, and nothing
+    /// checks either. That is the price of the trapdoor and it is the same
+    /// price a C prototype for an assembly routine pays
+    /// (`plans/10-modules-and-ffi.md` decision 5).
+    fn declare_extern(&mut self, declaration: &crate::ast::ExternDeclaration) {
+        use crate::ast::ExternKind;
+        let name = crate::ast::extern_name(&declaration.kind);
+        let kind = match &declaration.kind {
+            ExternKind::Func(function) => SymbolKind::function(function.is_far),
+            ExternKind::Var(variable) => {
+                let size = variable
+                    .storage
+                    .map_or(AddressSize::Absolute, |storage| match storage.kind {
+                        crate::ast::StorageClassKind::DirectPage => AddressSize::DirectPage,
+                        crate::ast::StorageClassKind::Absolute => AddressSize::Absolute,
+                        crate::ast::StorageClassKind::Far => AddressSize::Long,
+                    });
+                let width = variable.width.map(|width| match width.kind {
+                    crate::ast::TypeWidthKind::Byte => crate::symbol::DataWidth::Byte,
+                    crate::ast::TypeWidthKind::Word => crate::symbol::DataWidth::Word,
+                    crate::ast::TypeWidthKind::Far => crate::symbol::DataWidth::Far,
+                });
+                SymbolKind::Var {
+                    // No address, because K816 emits no equate for it: what
+                    // it is worth is ld65's answer and nobody else's. No
+                    // span, count or layout either — those describe storage
+                    // this unit reserves, and it reserves none.
+                    address: None,
+                    size,
+                    width,
+                    element: 1,
+                    repeat: None,
+                    layout: None,
+                }
+            }
+            // K7.
+            ExternKind::Const(_) => return,
+        };
+        if self.reserved(&name.text, name.span) {
+            return;
+        }
+        let result = self
+            .model
+            .symbols
+            .declare_extern(&name.text, kind, name.span);
+        let Some(symbol) = self.declared(&name.text, name.span, result) else {
+            return;
+        };
+        if let ExternKind::Func(function) = &declaration.kind {
+            let entry = width::fold_annotations(&function.width, &mut self.diagnostics);
+            let exit = match &function.exit {
+                Some(clause) => {
+                    let declared = width::fold_annotations(&clause.width, &mut self.diagnostics);
+                    ExitContract {
+                        a: declared
+                            .a
+                            .map_or(crate::op::AxisExit::Preserve, crate::op::AxisExit::Fixed),
+                        i: declared
+                            .i
+                            .map_or(crate::op::AxisExit::Preserve, crate::op::AxisExit::Fixed),
+                        e: crate::op::EmulationExit::Preserve,
+                    }
+                }
+                // No clause is not "nothing is known": it is the statement
+                // that the callee leaves all three axes alone, which is
+                // *stronger* than the fallback an invisible callee gets and
+                // is true of the foreign code that exists. cc65 generates
+                // 6502 code, which has no `REP`, no `SEP` and no `XCE`, so it
+                // cannot move m, x or e. A callee that does declares it.
+                None => ExitContract {
+                    a: crate::op::AxisExit::Preserve,
+                    i: crate::op::AxisExit::Preserve,
+                    e: crate::op::EmulationExit::Preserve,
+                },
+            };
+            self.model.externs.insert(
+                symbol,
+                width::CalleeContract {
+                    entry,
+                    exit,
+                    // Not weakened. A foreign callee that reads the low byte
+                    // of a sixteen-bit accumulator behaves differently under
+                    // M even though it never writes it, so the caller's
+                    // mode-setting instructions stay live.
+                    observes: WidthNeeds::opaque(),
+                },
+            );
         }
     }
 

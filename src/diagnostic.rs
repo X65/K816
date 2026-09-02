@@ -387,6 +387,22 @@ impl DiagnosticCode {
     /// is the documented escape hatch, not a contradiction.
     pub const EMULATION_WIDTH: Self = Self("K816-E0163");
 
+    /// A name one unit declares `extern` and another unit defines.
+    ///
+    /// A program contradicting its own interface file. Which of the two is
+    /// right is not the compiler's to guess, so it refuses rather than
+    /// picking one.
+    pub const EXTERN_COLLIDES_WITH_DEFINITION: Self = Self("K816-E0164");
+
+    /// Two `extern` declarations of one name that are not the same
+    /// declaration.
+    ///
+    /// Identical ones are ordinary — that is how an interface unit imported
+    /// by ten units works. A mismatched address size would be no more than
+    /// an ld65 warning and a mismatched contract would be a silently wrong
+    /// byte, so a difference is an error here.
+    pub const EXTERN_DECLARATIONS_DISAGREE: Self = Self("K816-E0165");
+
     /// An `import` names a file this build could not read.
     ///
     /// Reported from `Linkage` rather than from the loader, so that the CLI,
@@ -682,6 +698,8 @@ mod tests {
         DiagnosticCode::STRICT_K65_CHANGED,
         DiagnosticCode::ENTRY_SPELLING,
         DiagnosticCode::EMULATION_WIDTH,
+        DiagnosticCode::EXTERN_COLLIDES_WITH_DEFINITION,
+        DiagnosticCode::EXTERN_DECLARATIONS_DISAGREE,
         DiagnosticCode::IMPORT_NOT_FOUND,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

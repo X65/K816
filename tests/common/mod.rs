@@ -83,6 +83,10 @@ pub fn toolchain() -> &'static Path {
                 (tool("CA65", "ca65"), "ca65"),
                 (tool("LD65", "ld65"), "ld65"),
                 (tool("CL65", "cl65"), "cl65"),
+                // For the one program that meets another language: `cl65`
+                // finds its tools beside itself, so a C file on the command
+                // line needs cc65 staged here too.
+                (tool("CC65", "cc65"), "cc65"),
             ] {
                 // Copy under a unique name and rename over the destination:
                 // the three test binaries that stage tools share this

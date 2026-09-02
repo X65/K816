@@ -987,3 +987,103 @@ fn the_atari_examples_link_into_loadable_executables() {
         "starfield's two refused `rnd()` calls are not what stopped it:\n{stderr}"
     );
 }
+
+/// One `cl65` command line with a `.k816`, a `.c` and a `.s` on it links.
+///
+/// The claim sub-plan K exists for, and the one no earlier sub-plan could
+/// make: a K816 program that *meets another language*. `main.k816` calls a
+/// function cc65 compiled and one ca65 assembled, and writes a variable the C
+/// file declares — none of which any K816 unit defines, and all of which ld65
+/// resolves because the `extern` declarations said what to ask it for.
+///
+/// The address size is what carries: `_count` is imported absolute and
+/// `zpslot` zeropage, so the two stores are a three-byte and a two-byte
+/// instruction. Getting either wrong would be an assembly error rather than
+/// a wrong byte, which is the property ca65's validation buys.
+#[test]
+fn a_k816_unit_calls_a_c_function_and_a_ca65_module_through_extern() {
+    let directory = work_dir("driver-ffi");
+    let config = root().join("tests/driver.cfg");
+
+    let k816_source = directory.join("main.k816");
+    std::fs::write(
+        &k816_source,
+        "// The K816 side of a three-language program.  Nothing here is\n\
+         // defined by any K816 unit.\n\
+         extern func _blink\n\
+         extern func puts_asm\n\
+         extern var _count\n\
+         extern var dp zpslot\n\
+         \n\
+         func main @a8 @i8 {\n\
+         \x20   call _blink\n\
+         \x20   a = #$07\n\
+         \x20   _count = a\n\
+         \x20   zpslot = a\n\
+         \x20   call puts_asm\n\
+         \x20   rts\n\
+         }\n",
+    )
+    .expect("write the K816 unit");
+
+    let c_source = directory.join("blink.c");
+    std::fs::write(
+        &c_source,
+        "unsigned char count;\nvoid blink(void) { ++count; }\n",
+    )
+    .expect("write the C unit");
+
+    // cc65's mangling is a leading underscore, which is the whole of the
+    // convention a K816 source has to know to name a C symbol.
+    let asm_source = directory.join("puts.s");
+    std::fs::write(
+        &asm_source,
+        ".setcpu \"65816\"\n\
+         .export puts_asm\n\
+         .exportzp zpslot\n\
+         .segment \"ZEROPAGE\": zeropage\n\
+         zpslot: .res 1\n\
+         .segment \"CODE\"\n\
+         puts_asm:\n\
+         \x20       nop\n\
+         \x20       rts\n",
+    )
+    .expect("write the assembly unit");
+
+    let image = directory.join("ffi.bin");
+    run_ok(
+        cl65()
+            .args(TARGET_ARGS)
+            .args(["-C".as_ref(), config.as_os_str()])
+            // cc65's output opens with `.macpack longbranch`, which ca65
+            // finds through its *assembler* include path — a staged tool has
+            // none of its own, since it is not where it was installed.
+            .args([
+                "--asm-include-dir".as_ref(),
+                root().join("../../asminc").as_os_str(),
+            ])
+            .args(["-o".as_ref(), image.as_os_str()])
+            .arg(&k816_source)
+            .arg(&c_source)
+            .arg(&asm_source),
+        "cl65 linking K816, C and assembly together",
+    );
+    assert!(
+        std::fs::metadata(&image).expect("the linked image").len() > 0,
+        "the three objects link"
+    );
+
+    // And the addressing modes the declarations bought.
+    let assembly = directory.join("main.s");
+    run_ok(
+        cl65()
+            .arg("-S")
+            .args(["-o".as_ref(), assembly.as_os_str()])
+            .arg(&k816_source),
+        "cl65 -S on the K816 unit",
+    );
+    let text = std::fs::read_to_string(&assembly).expect("read the assembly");
+    assert!(text.contains("sta     a:_count"), "{text}");
+    assert!(text.contains("sta     z:zpslot"), "{text}");
+    assert!(text.contains(".importzp zpslot"), "{text}");
+}

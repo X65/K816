@@ -475,10 +475,14 @@ pub struct Symbol {
     /// Span of the declaring name, for "declared here" secondary labels.
     /// For an imported symbol this points into the unit that defines it.
     pub declaration: Span,
-    /// True when another unit in the workspace defines this name. K816 emits
-    /// an `.import` for it and ld65 resolves it; the kind and address size
-    /// are the defining unit's, because ca65 validates addressing modes
-    /// against an imported symbol's address size.
+    /// True when this unit does not define the name: another unit of the
+    /// workspace does, or an `extern` here declares that some other object
+    /// does. K816 emits an `.import` for it and ld65 resolves it.
+    ///
+    /// For the first, the kind and address size are the defining unit's; for
+    /// the second they are what the declaration says. Either way ca65
+    /// validates addressing modes against them, so getting one wrong is an
+    /// assembly error rather than a wrong byte.
     pub imported: bool,
 }
 
@@ -519,6 +523,23 @@ impl SymbolTable {
         }
         let id = self.intern(name, kind, None, declaration);
         self.unit.insert(name.to_owned(), id);
+        Ok(id)
+    }
+
+    /// Declares a name this unit states another *object* provides.
+    ///
+    /// An `extern`: it is a declaration the source wrote, so a duplicate is
+    /// reported like any other duplicate — unlike [`Self::declare_imported`],
+    /// which is the compiler filling a table and must lose silently to a
+    /// local name.
+    pub fn declare_extern(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        declaration: Span,
+    ) -> Result<SymbolId, SymbolId> {
+        let id = self.declare(name, kind, declaration)?;
+        self.symbols[id.index()].imported = true;
         Ok(id)
     }
 

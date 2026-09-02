@@ -523,6 +523,44 @@ The 65816 has a linear 16MB address space. K816 does not divide it: `segment` em
 segment my_segment      // select output segment
 ```
 
+## Extern declarations
+
+An `extern` names a symbol **no K816 unit defines**: a function cc65 compiled from C, a routine in a hand-written ca65 module, a variable the linker places, a constant an include file exports. ld65 resolves it, and the declaration is how K816 knows what to ask ld65 for.
+
+```k65
+extern func _puts                    // a C function: cc65 mangles `puts` to `_puts`
+extern far func rom_entry            // reached by JSL, returning with RTL
+extern func setup @a8 @i8 -> @a16    // and what it does to the register widths
+extern var _count                    // absolute, the default
+extern var dp scratch                // a zero-page cell: `.importzp`
+extern var far rom : far             // a 24-bit address, and a 3-byte datum
+```
+
+Each form carries exactly what ld65 cannot infer and ca65 needs. The storage class decides the directive — `.importzp`, plain `.import`, or `.import NAME : far` — and ca65 validates addressing modes against it, so a `dp` variable declared absolute is a wrong *instruction* rather than a wrong name. `far func` decides `JSR`/`RTS` against `JSL`/`RTL`, checked at every call site with the same `K816-E0138` a local `far func` gets.
+
+An extern reserves no storage, emits no equate, and produces no `.import` at all until something references it — an interface unit of nothing but declarations costs the objects that read it nothing.
+
+### The contract is declared, not derived
+
+Every other contract in this compiler is worked out from a body: `classify_exit` walks a section's reachable returns and reports what it finds, and a `->` clause on a `func` is *checked* against that (`K816-E0120`). An extern has no body, which is exactly what it is for — so the widths before `->` are the entry a `call` bridges to, the widths after are what the caller may believe, and **nothing verifies either**.
+
+That is the price of naming something in another language, and it is the same price a C prototype for an assembly routine pays. A wrong `extern` is undetectable until the program runs.
+
+Where no clause is written, the declaration says the callee leaves all three axes alone:
+
+```k65
+extern func quiet                    // preserves the accumulator, the index
+                                     // registers, and the emulation flag
+```
+
+This is *stronger* than what a callee K816 cannot see at all gets — that one is assumed to preserve the two widths and may have moved the emulation flag. It is stated as a fact here because it is true of the foreign code that exists: cc65 generates 6502, which has no `REP`, no `SEP` and no `XCE`, so it cannot move any of the three. A foreign routine that does run one has to say so, and today it can only say so about the widths.
+
+### Two declarations of one name
+
+Identical ones are ordinary — that is how an interface unit imported by ten units works, and it is the reason to write one rather than repeating the declaration. Two that differ are `K816-E0165`, and the message names the axis: a mismatched address size would be no more than an ld65 *warning*, and a mismatched contract would be a silently wrong byte.
+
+A name that one unit declares `extern` and any unit of the program *defines* is `K816-E0164`. The program contradicts its own interface file, and which of the two is right is not the compiler's to guess.
+
 ## Code Sections
 
 Executable code in K65 is specified in sections.

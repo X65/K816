@@ -356,7 +356,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
     binaries.sort();
     binaries.dedup();
 
-    let assembly = emit_ca65::emit(map, file, &model, &program);
+    let assembly = emit_ca65::emit(map, file, &model, &program, &linkage);
     CompileResult {
         assembly: Some(assembly),
         diagnostics,

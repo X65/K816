@@ -454,7 +454,12 @@ pub fn merge_defaults(defaults: WidthContract, declared: WidthContract) -> Width
 }
 
 /// What a call site needs to know about its callee.
-#[derive(Clone, Copy, Debug, Default)]
+///
+/// Comparable because sub-plan K asks two `extern` declarations of one name
+/// whether they promise the same thing, and "the same thing" is this whole
+/// value: the entry a caller bridges to, the exit it may believe, and what
+/// calling it observes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CalleeContract {
     /// The widths the callee's body assumes on entry, which a managed call
     /// bridges to.

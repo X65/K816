@@ -41,6 +41,7 @@ use std::collections::HashMap;
 
 use crate::effects::WidthEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
+use crate::linkage::Linkage;
 use crate::op::{
     AxisState, DataOp, EmulationState, IndexRegister, Instruction, KFunction, KOp, KOpKind,
     KProgram, KProgramItem, ModeState, Operand, Origin, Reason,
@@ -185,11 +186,18 @@ fn splits_cheap_local_scope(symbols: &SymbolTable, function: &KFunction) -> bool
 
 /// Emits the whole lowered `program` as ca65 assembly.
 ///
-/// Takes no `Linkage`: what crosses a unit boundary is decided by this unit's
-/// own symbol table. A name it imported is in that table already, marked, and
-/// what it exports no longer depends on who asked
-/// (`plans/10-modules-and-ffi.md` decision 8).
-pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KProgram) -> String {
+/// The `Linkage` decides one thing only: whether an imported name is a symbol
+/// some unit *defines* or one an `extern` *declares*, which is the difference
+/// between "defined by lib.k816:12" and "declared extern by hw.k816:3" in the
+/// comment beside the `.import`. What this unit *exports* no longer depends on
+/// anyone else (`plans/10-modules-and-ffi.md` decision 8).
+pub fn emit(
+    map: &SourceMap,
+    file: FileId,
+    model: &SemanticModel,
+    program: &KProgram,
+    linkage: &Linkage,
+) -> String {
     let source = map.file(file);
     let mut out = String::new();
 
@@ -255,9 +263,15 @@ pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KPro
             if model.referenced.contains(&id) {
                 let where_from = map.file(symbol.declaration.file);
                 let line = where_from.line_col(symbol.declaration.start).line + 1;
+                let how = match linkage.definition(&symbol.name).map(|found| found.origin) {
+                    // An `extern`: nothing in this program defines it, and
+                    // the line named is the promise rather than the body.
+                    Some(crate::linkage::Origin::Declared) => "declared extern by",
+                    _ => "defined by",
+                };
                 linkage_directives.push_str(&annotated(
                     &linkage_directive("import", &symbol.name, size),
-                    &format!("k816: defined by {}:{line}", where_from.name()),
+                    &format!("k816: {how} {}:{line}", where_from.name()),
                 ));
             }
         } else if crate::linkage::exported(symbol.kind) {

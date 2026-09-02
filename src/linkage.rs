@@ -430,7 +430,20 @@ impl Linkage {
             .collect();
         let observed = width::observation_fixpoint(&seeds, &adjacency);
 
-        let mut contracts: BTreeMap<String, width::CalleeContract> = BTreeMap::new();
+        // Seeded with what the `extern` declarations promise, before any
+        // body is classified. An extern is not a node of this graph — there
+        // is nothing to walk — so the fixpoint above never reaches it and
+        // the loop below never writes it; what a caller needs is the
+        // declaration, and this is where the declaration is published to
+        // the units that call it.
+        let mut contracts: BTreeMap<String, width::CalleeContract> = self
+            .definitions
+            .iter()
+            .filter(|(_, definition)| definition.origin == Origin::Declared)
+            .filter_map(|(name, definition)| {
+                definition.contract.map(|contract| (name.clone(), contract))
+            })
+            .collect();
         for component in width::strongly_connected_components(&adjacency) {
             let recursive = component.len() > 1 || adjacency[component[0]].contains(&component[0]);
             for node in component {
@@ -487,7 +500,7 @@ impl Linkage {
     }
 
     fn collect_definitions(&mut self, file: FileId, model: &semantic::SemanticModel) {
-        for (_, symbol) in model.symbols.iter() {
+        for (id, symbol) in model.symbols.iter() {
             if let Some(bytes) = model.eval.sections().get(&symbol.name)
                 && symbol.is_unit_level()
                 && !symbol.imported
@@ -495,21 +508,90 @@ impl Linkage {
                 self.sections
                     .insert(symbol.name.clone(), (file, bytes.clone()));
             }
-            if symbol.imported || !symbol.is_unit_level() || !is_exportable(symbol.kind) {
+            if !symbol.is_unit_level() || !is_exportable(symbol.kind) {
                 continue;
             }
+            // In this pass, `imported` can only mean one thing: the unit
+            // declared the name `extern`. `declare_imports` is the other way
+            // a symbol gets the flag and it runs in the *second* pass, with
+            // this table already built.
+            let origin = if symbol.imported {
+                Origin::Declared
+            } else {
+                Origin::Body
+            };
             let definition = Definition {
                 file,
                 kind: symbol.kind,
                 declaration: symbol.declaration,
-                // Filled by the third phase, once every callee is known.
-                contract: None,
-                origin: Origin::Body,
+                // A body's contract is filled by the third phase, once every
+                // callee is known. A declaration's is the declaration.
+                contract: model.externs.get(&id).copied(),
+                origin,
             };
             match self.definitions.get(&symbol.name) {
+                Some(existing) if existing.file == file => {}
+                // A definition and a declaration of one name: the program
+                // contradicts its own interface, and which of the two is
+                // right is not the compiler's to guess.
+                Some(existing) if existing.origin != origin => {
+                    let (body, declared) = if origin == Origin::Body {
+                        (&definition, existing)
+                    } else {
+                        (existing, &definition)
+                    };
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            DiagnosticCode::EXTERN_COLLIDES_WITH_DEFINITION,
+                            format!(
+                                "`{}` is declared `extern` but this program defines it",
+                                symbol.name
+                            ),
+                            Label::new(declared.declaration, "declared here"),
+                        )
+                        .with_secondary(Label::new(body.declaration, "and defined here"))
+                        .with_note(
+                            "an `extern` describes a symbol another object provides; a \
+                             definition in the program is the one ld65 will resolve",
+                        )
+                        .with_help("delete the `extern`, or the definition")
+                        .with_docs("doc/syntax-reference.md#extern-declarations"),
+                    );
+                    // The body wins, so an editor sends a reader to the truth
+                    // rather than to the file that disagrees with it.
+                    if origin == Origin::Body {
+                        self.definitions.insert(symbol.name.clone(), definition);
+                    }
+                }
+                // Two declarations that disagree. A mismatched address size
+                // would be no more than an ld65 *warning*, and a mismatched
+                // contract would be a silently wrong byte, so the two are
+                // required to be identical and this is where that is asked.
+                Some(existing) if origin == Origin::Declared => {
+                    if let Some(axis) = disagreement(existing, &definition) {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                DiagnosticCode::EXTERN_DECLARATIONS_DISAGREE,
+                                format!(
+                                    "`{}` is declared `extern` twice, and the \
+                                     declarations disagree",
+                                    symbol.name
+                                ),
+                                Label::new(symbol.declaration, "declared here"),
+                            )
+                            .with_secondary(Label::new(existing.declaration, "and here"))
+                            .with_note(format!("the declarations differ in {axis}"))
+                            .with_help(
+                                "make them identical, or import one interface unit \
+                                 rather than writing the declaration twice",
+                            )
+                            .with_docs("doc/syntax-reference.md#extern-declarations"),
+                        );
+                    }
+                }
                 // One name, two units: an ambiguity ld65 would resolve
                 // arbitrarily, so the frontend reports it instead.
-                Some(existing) if existing.file != file => self.diagnostics.push(
+                Some(existing) => self.diagnostics.push(
                     Diagnostic::error(
                         DiagnosticCode::DUPLICATE_SYMBOL,
                         format!("`{}` is defined by more than one unit", symbol.name),
@@ -518,7 +600,6 @@ impl Linkage {
                     .with_secondary(Label::new(existing.declaration, "and here"))
                     .with_help("rename one of the definitions"),
                 ),
-                Some(_) => {}
                 None => {
                     self.definitions.insert(symbol.name.clone(), definition);
                 }
@@ -964,6 +1045,33 @@ fn is_exportable(kind: SymbolKind) -> bool {
             ..
         } | SymbolKind::AbstractVar { .. }
     )
+}
+
+/// What two `extern` declarations of one name disagree about, if anything.
+///
+/// Named rather than merely detected: "the declarations disagree" sends the
+/// author to compare two lines character by character, and "they differ in
+/// the calling convention" is the answer.
+fn disagreement(left: &Definition, right: &Definition) -> Option<&'static str> {
+    if left.kind == right.kind && left.contract == right.contract {
+        return None;
+    }
+    if std::mem::discriminant(&left.kind) != std::mem::discriminant(&right.kind) {
+        return Some("what kind of thing they declare");
+    }
+    if let (SymbolKind::Function { size: a }, SymbolKind::Function { size: b }) =
+        (left.kind, right.kind)
+        && a != b
+    {
+        return Some("the calling convention: one is `far func` and the other is not");
+    }
+    if left.kind.address_size() != right.kind.address_size() {
+        return Some("the address size");
+    }
+    if left.kind != right.kind {
+        return Some("the declared width");
+    }
+    Some("the width contract")
 }
 
 /// Whether a unit-level definition of this kind leaves the object file.

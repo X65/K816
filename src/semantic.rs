@@ -514,7 +514,7 @@ fn analyze(
         // needs this — its brackets read its own unit's `const`s, and
         // `declare_imports` runs after the brackets have already run.
         for (name, definition) in linkage.visible_definitions(unit) {
-            if let SymbolKind::Const { value } = definition.kind {
+            if let SymbolKind::Const { value: Some(value) } = definition.kind {
                 analysis
                     .model
                     .eval
@@ -753,9 +753,10 @@ impl Analysis {
                 // An `extern` is declared here, with the sections, and not
                 // below with the values: a section is forward-declarable and
                 // so is a name another object provides, and a call to one
-                // written above the declaration has to resolve.
+                // written above the declaration has to resolve. An `extern
+                // const` comes with them for the same reason — it folds to
+                // nothing, so there is no order for it to be folded in.
                 ItemKind::Extern(declaration) => self.declare_extern(declaration),
-                // K7 declares an `extern const` here.
                 ItemKind::Var(_)
                 | ItemKind::Const(_)
                 | ItemKind::Segment(_)
@@ -816,8 +817,10 @@ impl Analysis {
                     layout: None,
                 }
             }
-            // K7.
-            ExternKind::Const(_) => return,
+            // No number, which is the whole difference from a `const`: ld65
+            // decides it. Every use of it stays a symbolic expression, and
+            // every compile-time position refuses it.
+            ExternKind::Const(_) => SymbolKind::Const { value: None },
         };
         if self.reserved(&name.text, name.span) {
             return;
@@ -1709,7 +1712,7 @@ impl Analysis {
         if compat::reserved_name(span, name).is_some() {
             return;
         }
-        self.declare(name, SymbolKind::Const { value }, span);
+        self.declare(name, SymbolKind::Const { value: Some(value) }, span);
     }
 
     /// Refuses a declaration that asks for a register or flag spelling.
@@ -3136,7 +3139,7 @@ impl Analysis {
             if let Some(value) = value {
                 self.declare(
                     &entry.name.text,
-                    SymbolKind::Const { value },
+                    SymbolKind::Const { value: Some(value) },
                     entry.name.span,
                 );
             }

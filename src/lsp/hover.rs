@@ -89,8 +89,11 @@ fn symbol_hover(analysis: &Analysis, context: &Context<'_>) -> Option<Hover> {
     }
 
     match symbol.kind {
-        SymbolKind::Const { value } => {
+        SymbolKind::Const { value: Some(value) } => {
             let _ = writeln!(out, "\nValue `${value:04X}` ({value}).");
+        }
+        SymbolKind::Const { value: None } => {
+            out.push_str("\nValue resolved by the linker (`extern const`).\n");
         }
         SymbolKind::Var {
             address,

@@ -534,6 +534,7 @@ extern func setup @a8 @i8 -> @a16    // and what it does to the register widths
 extern var _count                    // absolute, the default
 extern var dp scratch                // a zero-page cell: `.importzp`
 extern var far rom : far             // a 24-bit address, and a 3-byte datum
+extern const ROWS                    // a value an include file exports
 ```
 
 Each form carries exactly what ld65 cannot infer and ca65 needs. The storage class decides the directive — `.importzp`, plain `.import`, or `.import NAME : far` — and ca65 validates addressing modes against it, so a `dp` variable declared absolute is a wrong *instruction* rather than a wrong name. `far func` decides `JSR`/`RTS` against `JSL`/`RTL`, checked at every call site with the same `K816-E0138` a local `far func` gets.
@@ -554,6 +555,27 @@ extern func quiet                    // preserves the accumulator, the index
 ```
 
 This is *stronger* than what a callee K816 cannot see at all gets — that one is assumed to preserve the two widths and may have moved the emulation flag. It is stated as a fact here because it is true of the foreign code that exists: cc65 generates 6502, which has no `REP`, no `SEP` and no `XCE`, so it cannot move any of the three. A foreign routine that does run one has to say so, and today it can only say so about the widths.
+
+### `extern const`: a value the linker decides
+
+ld65 does not distinguish a constant from an address — a symbol is a name, a link-time expression and an address size — so a ca65 include file can `.export ROWS = 25` and any object may `lda #ROWS`. That is what `extern const` names. (A C `#define` cannot: it never reaches the object file, and neither does an `enum` or a `const int`.)
+
+An `extern const` has **no number**. Every use of it stays a symbolic expression the assembler hands to the linker, which is a path K816 already had for relocatable symbols:
+
+```k65
+extern const ROWS
+
+func main @a8 @i8 {
+    a = #ROWS            // lda #ROWS
+    rts
+}
+
+data table { ROWS }      // .byte ROWS
+```
+
+Every position that needs the number *now* refuses it with `K816-E0167`: a `#if` condition, an evaluator bracket, an array extent, an allocation count, a placement, and another `const`'s value. The refusal is its own code rather than the generic "must be known at compile time" a label's address earns, because the two have different answers — a label's address is ld65's and always will be, and a link-time constant is a number somebody could have written here instead.
+
+It is exported absolute (`.export ROWS : abs = $0019`), which is what an ordinary `const` in another K816 unit exports as, so the two agree without an ld65 address-size warning.
 
 ### Two declarations of one name
 

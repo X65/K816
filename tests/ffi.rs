@@ -471,3 +471,96 @@ fn an_extern_call_does_not_lose_a_known_emulation_state() {
         "an unclassified callee loses the flag, which is what an extern does not: {codes:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `extern const`: a value the linker decides
+// ---------------------------------------------------------------------------
+
+/// A link-time constant reaches an immediate, a data entry and an expression
+/// symbolically.
+///
+/// ld65 does not distinguish a constant from an address — a symbol is a name,
+/// a link-time expression and an address size — so a ca65 include file can
+/// `.export ROWS = 25` and any object may `lda #ROWS`. K816 already emitted
+/// symbolic immediates over relocatable symbols (`golden/native-reloc.k816`
+/// writes `lda #table + 1 & MASK`), so an `extern const` rides that path and
+/// nothing downstream needed a new rule.
+#[test]
+fn a_link_time_const_is_symbolic_wherever_it_may_stay_symbolic() {
+    // Two loads with a store between them, so neither is dead: the first
+    // would otherwise be removed by the optimizer, which is right and is not
+    // what is being checked here.
+    let text = "extern const ROWS\n\
+                var slot = $0400\n\
+                \n\
+                func main @a8 @i8 {\n\
+                \x20   a = #ROWS\n\
+                \x20   slot = a\n\
+                \x20   lda #ROWS + 1\n\
+                \x20   rts\n\
+                }\n\
+                \n\
+                data table { ROWS }\n";
+    let assembly = assembly(text);
+    // Its own name, not a number: nothing folded it, because nothing could.
+    assert!(assembly.contains("lda     #ROWS"), "{assembly}");
+    assert!(assembly.contains("lda     #(ROWS + $01)"), "{assembly}");
+    assert!(assembly.contains(".byte    ROWS"), "{assembly}");
+    // And ld65 is asked for it. Absolute, which is what an exported `const`
+    // is declared as, so the two agree without a size warning.
+    assert!(assembly.contains(".import ROWS"), "{assembly}");
+    assert!(!assembly.contains(".importzp ROWS"), "{assembly}");
+}
+
+/// Every position that needs a number now refuses it, and says why.
+///
+/// The refusal is its own code rather than the generic "must be known at
+/// compile time" a label gets, because the two have different answers: a
+/// label's address is ld65's and always will be, and an `extern const` is a
+/// number somebody could write here instead.
+#[test]
+fn every_compile_time_position_refuses_a_link_time_const() {
+    let positions: &[&str] = &[
+        "var buf[ROWS]\n",
+        "var v:byte * ROWS\n",
+        "var at = ROWS\n",
+        "const J = ROWS + 1\n",
+        "#if ROWS\n#endif\n",
+        "data d { [ ROWS ] }\n",
+        "data e { align ROWS 1 }\n",
+        "data f { repeat ROWS { 1 } }\n",
+    ];
+    for position in positions {
+        let mut map = SourceMap::new();
+        let file = map.add_file("position.k816", format!("extern const ROWS\n{position}"));
+        let diagnostics = k816::compile_to_ca65(&map, file, &k816::Options::default()).diagnostics;
+        let about_rows: Vec<&k816::diagnostic::Diagnostic> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.title.contains("ROWS"))
+            .collect();
+        assert_eq!(
+            about_rows.iter().map(|d| d.code.0).collect::<Vec<_>>(),
+            vec!["K816-E0167"],
+            "{position:?} produced {:?}",
+            diagnostics
+                .iter()
+                .map(|d| (d.code.0, d.title.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A `const` with a value still folds, and still leaves no `.import`.
+///
+/// The half that must not have moved: making the value optional changed what
+/// an *extern* one does and nothing about the ordinary kind.
+#[test]
+fn an_ordinary_const_still_folds() {
+    let assembly = assembly("const ROWS = 25\n\nfunc main @a8 @i8 {\n    a = #ROWS\n    rts\n}\n");
+    assert!(assembly.contains("lda     #$19"), "{assembly}");
+    assert!(!assembly.contains(".import ROWS"), "{assembly}");
+    assert!(
+        assembly.contains(".export ROWS : abs = $0019"),
+        "{assembly}"
+    );
+}

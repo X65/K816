@@ -408,9 +408,23 @@ impl Preprocess {
                 self.brackets_of_item(item);
                 item.kind.clone()
             }
-            // K7 declares an `extern const` here, so that a condition
-            // reading one says "no compile-time value" rather than
-            // "undeclared" — the same reason a `var` is declared above.
+            // An `extern const` is declared, for the reason a `var` is
+            // above: without the name in the table a condition reading it is
+            // "undeclared", which is wrong and less useful than "resolved by
+            // ld65". The other extern forms have no compile-time value
+            // either, and the table already refuses a `var` and a section by
+            // kind, so declaring them would change nothing.
+            ItemKind::Extern(declaration) => {
+                if let crate::ast::ExternKind::Const(name) = &declaration.kind {
+                    let _ = self.symbols.declare(
+                        &name.text,
+                        SymbolKind::Const { value: None },
+                        name.span,
+                    );
+                }
+                self.brackets_of_item(item);
+                item.kind.clone()
+            }
             ItemKind::Segment(_)
             | ItemKind::EvalBlock(_)
             | ItemKind::Preprocessor(_)
@@ -418,7 +432,6 @@ impl Preprocess {
             | ItemKind::Reserved(_)
             | ItemKind::ModuleWidth(_)
             | ItemKind::Import(_)
-            | ItemKind::Extern(_)
             | ItemKind::Error => {
                 self.brackets_of_item(item);
                 item.kind.clone()
@@ -905,7 +918,7 @@ impl Preprocess {
                 let _ = self.symbols.declare(
                     &name,
                     SymbolKind::Const {
-                        value: eval::to_integer(number) as u32,
+                        value: Some(eval::to_integer(number) as u32),
                     },
                     body.span,
                 );
@@ -996,7 +1009,7 @@ impl Preprocess {
             if let Some(value) = value {
                 let _ = self.symbols.declare(
                     &entry.name.text,
-                    SymbolKind::Const { value },
+                    SymbolKind::Const { value: Some(value) },
                     entry.name.span,
                 );
             }

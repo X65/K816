@@ -331,6 +331,34 @@ struct Extent {
     count: Option<u32>,
 }
 
+/// `NAME` read where a number is needed, when what it is is an `extern
+/// const`.
+///
+/// One wording for two callers — the resolver's fold and the evaluator's
+/// error mapper — because they are the same complaint about the same
+/// declaration and two phrasings would be two answers to one question.
+fn link_time_value(name: &str, span: Span, declaration: Option<Span>) -> Diagnostic {
+    let mut diagnostic = Diagnostic::error(
+        DiagnosticCode::LINK_TIME_VALUE,
+        format!("`{name}` has no compile-time value"),
+        Label::new(span, "an `extern const` is resolved by ld65"),
+    )
+    .with_note(
+        "a link-time value is a number the linker decides, long after every \
+         compile-time question has been answered; it reaches an immediate, a data \
+         entry or an address symbolically, and nowhere that needs it now",
+    )
+    .with_help(
+        "write the value here as an ordinary `const`, or `import` the unit that \
+         defines it",
+    )
+    .with_docs("doc/syntax-reference.md#extern-declarations");
+    if let Some(declaration) = declaration {
+        diagnostic = diagnostic.with_secondary(Label::new(declaration, "declared here"));
+    }
+    diagnostic
+}
+
 /// A layout used where a value is needed.
 fn abstract_has_no_storage(name: &str, span: Span, declaration: Span) -> Diagnostic {
     Diagnostic::error(
@@ -898,7 +926,13 @@ impl<'a> Resolver<'a> {
         match self.symbols.kind(id) {
             // A `const` has no storage, so it can only ever be its value;
             // everything else keeps its name for ca65/ld65.
-            SymbolKind::Const { value } => Some(KExpr::number(value)),
+            SymbolKind::Const { value: Some(value) } => Some(KExpr::number(value)),
+            // Except an `extern const`, whose value is ld65's: it keeps its
+            // name, exactly as a relocatable symbol does, and every use of
+            // it reaches ca65 as an expression the linker resolves. That is
+            // a path this compiler already had — `lda #&<table` is one — so
+            // nothing downstream needs to know the difference.
+            SymbolKind::Const { value: None } => Some(KExpr::Symbol(id)),
             // An `abstract var` has neither a value nor a place, so there is
             // nothing for a mention of one to fold to.
             SymbolKind::AbstractVar { .. } => {
@@ -1226,6 +1260,19 @@ impl<'a> Resolver<'a> {
             None => {
                 let mut symbols = Vec::new();
                 folded.symbols(&mut symbols);
+                // An `extern const` is its own answer. "This is not known
+                // until link time" is true of it and of a label alike, but
+                // only one of the two can be *made* known by writing the
+                // number, and saying which is the whole use of the message.
+                if let Some(id) = symbols
+                    .iter()
+                    .find(|id| matches!(self.symbols.kind(**id), SymbolKind::Const { value: None }))
+                {
+                    let name = self.symbols.name(*id).to_owned();
+                    let declaration = self.symbols.symbol(*id).declaration;
+                    self.report(link_time_value(&name, expr.span, Some(declaration)));
+                    return None;
+                }
                 let named = symbols.first().map(|id| self.symbols.name(*id).to_owned());
                 let mut diagnostic = Diagnostic::error(
                     DiagnosticCode::NOT_CONSTANT,
@@ -2551,6 +2598,7 @@ pub fn eval_diagnostic(error: eval::Error) -> Option<Diagnostic> {
              the file a reader has got",
         )
         .with_docs("doc/syntax-reference.md#compile-time-evaluator"),
+        eval::Error::LinkTimeValue { span, name } => link_time_value(&name, span, None),
         eval::Error::Undefined { span, what } => Diagnostic::error(
             DiagnosticCode::NOT_CONSTANT,
             format!("this expression asks for {what}"),

@@ -611,6 +611,13 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
         "K816-E0165",
         "tests/ffi.rs: externs_that_disagree_are_refused_and_the_message_says_how",
     ),
+    // Reachable from one file, but only through a construct `analyze_file`
+    // declares nothing for: `FAMILY` compiles a snippet with no workspace,
+    // and it is `declare_extern` that puts a valueless `const` in the table.
+    (
+        "K816-E0167",
+        "tests/ffi.rs: every_compile_time_position_refuses_a_link_time_const",
+    ),
     // And this one no source can reach at all: it reports a `--entry` value,
     // so there is no file for the FAMILY table to compile.
     (

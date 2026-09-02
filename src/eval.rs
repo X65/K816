@@ -522,6 +522,12 @@ pub enum Error {
     },
     /// Arithmetic with no answer: division or remainder by zero.
     Undefined { span: Span, what: &'static str },
+    /// An `extern const`, read where a number is needed.
+    ///
+    /// Its own kind rather than [`Self::NotAValue`]: it *is* a value, and
+    /// what it is not is a value anyone knows yet. "`ROWS` is a variable"
+    /// would be wrong and "`ROWS` is not declared" would be worse.
+    LinkTimeValue { span: Span, name: String },
     /// A value of the wrong type where a number is needed.
     NotANumber {
         span: Span,
@@ -849,7 +855,14 @@ impl<'a> Interpreter<'a> {
             symbol: id,
         });
         match self.symbols.kind(id) {
-            SymbolKind::Const { value } => Ok(Value::Number(f64::from(value))),
+            SymbolKind::Const { value: Some(value) } => Ok(Value::Number(f64::from(value))),
+            // An `extern const` has no number to give the evaluator, which
+            // is the whole difference: ld65 decides it, long after every
+            // compile-time question has been answered.
+            SymbolKind::Const { value: None } => Err(Error::LinkTimeValue {
+                span: name.span,
+                name: name.text.clone(),
+            }),
             // A data label is the section it names, which is what makes
             // `index(tab, 2)` mean anything at all. Nothing in G4 consumes
             // one, so in practice this value exists to produce a better

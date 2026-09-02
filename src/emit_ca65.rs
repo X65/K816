@@ -282,7 +282,7 @@ pub fn emit(
             // zeropage, which every absolute `.import` of it then disagrees
             // with. Widening is silent; narrowing is the warning.
             let directive = match symbol.kind {
-                SymbolKind::Const { value } => format!(
+                SymbolKind::Const { value: Some(value) } => format!(
                     ".export {} : {} = ${value:04X}",
                     symbol.name,
                     match AddressSize::of_value(value) {
@@ -290,6 +290,10 @@ pub fn emit(
                         _ => "abs",
                     }
                 ),
+                // An `extern const` this unit merely declared is never
+                // reached here: `symbol.imported` sent it to the `.import`
+                // arm above. A *local* `const` always has a value.
+                SymbolKind::Const { value: None } => continue,
                 _ => linkage_directive("export", &symbol.name, size),
             };
             linkage_directives.push_str(&annotated(

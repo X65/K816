@@ -231,7 +231,9 @@ fn const_value(source: &str, name: &str) -> u32 {
         .lookup(name)
         .unwrap_or_else(|| panic!("`{name}` is declared"));
     match model.symbols.symbol(id).kind {
-        k816::symbol::SymbolKind::Const { value } => value,
+        k816::symbol::SymbolKind::Const { value } => {
+            value.expect("an ordinary `const` has a value; only an `extern const` does not")
+        }
         other => panic!("`{name}` is {other:?}, not a const"),
     }
 }

@@ -259,7 +259,14 @@ pub enum SymbolKind {
     /// `const NAME = expr` — a compile-time value with no storage and no
     /// address. Using one in address position is an error: a `const` names
     /// a value, not a memory location.
-    Const { value: u32 },
+    /// `const NAME = expr`, and `extern const NAME`.
+    ///
+    /// `None` is the second: a value ld65 resolves, so there is no number
+    /// here and every use of it stays a symbolic expression the assembler
+    /// hands on. Every *compile-time* position — a `#if`, an evaluator
+    /// bracket, a span, a count, another `const` — needs a number and
+    /// refuses it (`K816-E0167`).
+    Const { value: Option<u32> },
     /// `var NAME [= addr]`. `address` is `None` for a linker-allocated
     /// variable, whose address only ld65 knows.
     Var {

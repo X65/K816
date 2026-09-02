@@ -283,7 +283,8 @@ fn fields(unit: &AnalyzedUnit, kind: &SymbolKind) -> Vec<Outline> {
 /// The one-line suffix an editor shows beside a name.
 fn detail(kind: &SymbolKind) -> Option<String> {
     match kind {
-        SymbolKind::Const { value } => Some(format!("= ${value:04X}")),
+        SymbolKind::Const { value: Some(value) } => Some(format!("= ${value:04X}")),
+        SymbolKind::Const { value: None } => Some("extern".to_owned()),
         SymbolKind::Var {
             address: Some(address),
             ..

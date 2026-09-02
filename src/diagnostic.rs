@@ -403,6 +403,15 @@ impl DiagnosticCode {
     /// byte, so a difference is an error here.
     pub const EXTERN_DECLARATIONS_DISAGREE: Self = Self("K816-E0165");
 
+    /// An `extern const` where a number is needed.
+    ///
+    /// A link-time value has no *compile-time* one, so it is refused at
+    /// every position that must be decided before ld65 runs: a `#if`, an
+    /// evaluator bracket, a span, an allocation count, a placement, and
+    /// another `const`'s value. Where the answer may stay symbolic — an
+    /// immediate, a data word, an address — it is not refused at all.
+    pub const LINK_TIME_VALUE: Self = Self("K816-E0167");
+
     /// An `import` names a file this build could not read.
     ///
     /// Reported from `Linkage` rather than from the loader, so that the CLI,
@@ -701,6 +710,7 @@ mod tests {
         DiagnosticCode::EXTERN_COLLIDES_WITH_DEFINITION,
         DiagnosticCode::EXTERN_DECLARATIONS_DISAGREE,
         DiagnosticCode::IMPORT_NOT_FOUND,
+        DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

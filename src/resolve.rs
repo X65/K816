@@ -1701,9 +1701,21 @@ impl<'a> Resolver<'a> {
             _ => unreachable!("an addressed form always carries an address expression"),
         };
 
-        self.check_const_in_address_position(mnemonic, value, source);
+        // `expr,S` and `(expr,S),Y` take an offset from the stack pointer, not
+        // an address, so the rule below is inverted for them: a `const` is
+        // exactly what belongs there and a memory location is the mistake.
+        let stack_offset = matches!(
+            form,
+            OperandForm::StackRelative | OperandForm::StackRelativeIndirectIndexedY
+        );
+        if !stack_offset {
+            self.check_const_in_address_position(mnemonic, value, source);
+        }
         let spec = self.select_encoding(mnemonic, form, source, site, value, forced)?;
         let expr = self.fold(value)?;
+        if stack_offset {
+            self.check_stack_relative_offset(&expr, value.span);
+        }
         self.check_fits(spec, &expr, value.span);
         self.check_datum_width(mnemonic, form, value);
 
@@ -1880,6 +1892,21 @@ impl<'a> Resolver<'a> {
         if candidates.is_empty() {
             self.report_invalid_form(mnemonic, form, site, source.span(site));
             return None;
+        }
+        // A stack offset has one encoding: it is a byte counted from the stack
+        // pointer, not an address, so there is nothing to size and nothing to
+        // choose. Letting the auto-shrink search below run would ask how wide
+        // an *address* is and answer `K816-E0109` — "cannot reach this address
+        // in any of its forms" — for an offset that is merely out of range.
+        if matches!(
+            form,
+            OperandForm::StackRelative | OperandForm::StackRelativeIndirectIndexedY
+        ) {
+            if let Some(forced) = forced {
+                self.report_invalid_encoding(mnemonic, forced, &candidates);
+                return None;
+            }
+            return Some(candidates[0]);
         }
         // A displacement operand has no encoding to choose.
         if candidates.iter().all(|spec| spec.encoding().is_none()) {
@@ -2092,6 +2119,54 @@ impl<'a> Resolver<'a> {
         }
         if let Some(declaration) = declaration {
             diagnostic = diagnostic.with_secondary(Label::new(declaration, "declared here"));
+        }
+        self.report(diagnostic);
+    }
+
+    /// A stack-relative operand names a place in a frame, not in memory.
+    ///
+    /// The offset is one byte encoded into the instruction, so it has to be
+    /// decided before ld65 runs. A `const` and a literal both are; a `var`, a
+    /// label and an `extern const` are not, and the failure is silent rather
+    /// than loud — ca65 would encode the low byte of whatever address the
+    /// linker picked and the program would index the frame by that number.
+    fn check_stack_relative_offset(&mut self, folded: &KExpr, span: Span) {
+        if folded.value().is_some() {
+            return;
+        }
+        let mut symbols = Vec::new();
+        folded.symbols(&mut symbols);
+        // An `extern const` has its own message, and it is the more useful
+        // one: writing the number is the fix there, and it is not the fix for
+        // a variable.
+        if let Some(id) = symbols
+            .iter()
+            .find(|id| matches!(self.symbols.kind(**id), SymbolKind::Const { value: None }))
+        {
+            let name = self.symbols.name(*id).to_owned();
+            let declaration = self.symbols.symbol(*id).declaration;
+            self.report(link_time_value(&name, span, Some(declaration)));
+            return;
+        }
+        let named = symbols
+            .first()
+            .map(|id| (self.symbols.name(*id).to_owned(), self.symbols.symbol(*id).declaration));
+        let mut diagnostic = Diagnostic::error(
+            DiagnosticCode::STACK_RELATIVE_OFFSET,
+            match &named {
+                Some((name, _)) => format!("`{name}` is a memory location, and a stack offset is a number"),
+                None => "a stack offset must be known at compile time".to_owned(),
+            },
+            Label::new(span, "the stack pointer is the base here, so this is an offset"),
+        )
+        .with_help("write the offset as a literal or a `const`")
+        .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65");
+        if let Some((name, declaration)) = named {
+            diagnostic = diagnostic
+                .with_note(format!(
+                    "ld65 chooses `{name}`'s address, so the frame would be indexed by whatever it picked"
+                ))
+                .with_secondary(Label::new(declaration, "declared here"));
         }
         self.report(diagnostic);
     }

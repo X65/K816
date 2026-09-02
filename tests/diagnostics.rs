@@ -101,6 +101,11 @@ const FAMILY: &[Case] = &[
         caret: "K",
     },
     Case {
+        source: "var slot = $80\nfunc work @a8 { lda slot,s }\n",
+        code: DiagnosticCode::STACK_RELATIVE_OFFSET,
+        caret: "slot",
+    },
+    Case {
         source: "data bad {\n    1 2\n    segment OTHER\n    3\n}\n",
         code: DiagnosticCode::SEGMENT_PLACEMENT,
         caret: "segment OTHER",

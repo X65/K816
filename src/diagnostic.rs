@@ -420,6 +420,17 @@ impl DiagnosticCode {
     /// reaches no unit is what everyone then sees.
     pub const IMPORT_NOT_FOUND: Self = Self("K816-E0166");
 
+    /// A stack-relative operand that is not a number.
+    ///
+    /// `expr,S` and `(expr,S),Y` encode an offset from the stack pointer in
+    /// one byte; the operand is a position in a frame, not a location in
+    /// memory. So the `const` rule is *inverted* here — a `const` is exactly
+    /// what belongs, and a `var` or a label is the mistake. It has to be an
+    /// error rather than a warning because the alternative is silent: ld65
+    /// chooses the variable's address, ca65 encodes its low byte, and the
+    /// program indexes a frame by a number nobody chose.
+    pub const STACK_RELATIVE_OFFSET: Self = Self("K816-E0168");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a
@@ -710,6 +721,7 @@ mod tests {
         DiagnosticCode::EXTERN_COLLIDES_WITH_DEFINITION,
         DiagnosticCode::EXTERN_DECLARATIONS_DISAGREE,
         DiagnosticCode::IMPORT_NOT_FOUND,
+        DiagnosticCode::STACK_RELATIVE_OFFSET,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

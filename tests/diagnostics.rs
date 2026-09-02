@@ -106,6 +106,17 @@ const FAMILY: &[Case] = &[
         caret: "slot",
     },
     Case {
+        source: "inline scale @a8 (a, #by:far) -> a {\n  a & #by\n}\n",
+        code: DiagnosticCode::IMMEDIATE_PARAMETER_WIDTH,
+        caret: ":far",
+    },
+    Case {
+        source: "inline scale @a8 (a, #by:byte) -> a {\n  a & #by\n}\n\n\
+                 func work @a8 {\n  scale a, #$1234 -> a\n}\n",
+        code: DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
+        caret: "$1234",
+    },
+    Case {
         source: "data bad {\n    1 2\n    segment OTHER\n    3\n}\n",
         code: DiagnosticCode::SEGMENT_PLACEMENT,
         caret: "segment OTHER",

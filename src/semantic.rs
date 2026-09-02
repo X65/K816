@@ -893,11 +893,52 @@ impl Analysis {
         for parameter in contract.inputs.iter().flatten() {
             let (name, immediate) = match parameter {
                 ContractParameter::Register(_) => continue,
-                ContractParameter::ImmediateAlias { name, .. } => (name, true),
+                ContractParameter::ImmediateAlias { name, width } => {
+                    self.check_parameter_width(name, width.as_ref());
+                    (name, true)
+                }
                 ContractParameter::Alias(name) => (name, false),
             };
             self.declare_alias(owner, &name.text, immediate, name.span);
         }
+    }
+
+    /// `#name:byte` and `#name:word` are the two narrowings, and `:far` is
+    /// not a third.
+    ///
+    /// The narrowing is a range the bound argument must fit, checked at every
+    /// use site; a 24-bit one would be a range no immediate can carry, since
+    /// the accumulator is eight or sixteen bits wide and nothing else takes an
+    /// immediate. The suffix shares its spelling with a variable's data width,
+    /// where `:far` does mean something, so the grammar reads all three and
+    /// the refusal is here, where it can say which two are available.
+    fn check_parameter_width(
+        &mut self,
+        name: &crate::ast::Name,
+        width: Option<&crate::ast::TypeWidth>,
+    ) {
+        let Some(width) = width else {
+            return;
+        };
+        if width.kind != crate::ast::TypeWidthKind::Far {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::IMMEDIATE_PARAMETER_WIDTH,
+                format!("`#{}` cannot narrow to `far`", name.text),
+                Label::new(
+                    width.span,
+                    "an immediate parameter narrows to `byte` or `word`",
+                ),
+            )
+            .with_note(
+                "the narrowing is the range an argument must fit, and an immediate is \
+                 carried by the accumulator - eight or sixteen bits, never twenty-four",
+            )
+            .with_help("write `:word` for the widest immediate, or drop the narrowing")
+            .with_docs("doc/syntax-reference.md#how-an-alias-is-bound"),
+        );
     }
 
     /// Declares one `inline` parameter, reserved spellings included.

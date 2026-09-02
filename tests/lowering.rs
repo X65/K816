@@ -826,3 +826,54 @@ fn an_invisible_callee_is_recorded_as_assumed_in_both_surfaces() {
         "{assembly}"
     );
 }
+
+/// An immediate parameter narrows to `byte` or `word`, and to nothing else.
+///
+/// The narrowing is a range every argument must fit, so it is checked at each
+/// use site rather than at the declaration — that is where the value is, and
+/// each expansion has a different one. `:far` is not a third narrowing: the
+/// suffix shares its spelling with a variable's data width, where it means
+/// something, and an immediate is carried by the accumulator.
+///
+/// The legacy compiler is the oracle for all three answers
+/// (`crates/core/src/lower.rs`: `Byte => (0..=0xFF)`, `Word => (0..=0xFFFF)`,
+/// and an `ImmediateParamType` with no third member).
+#[test]
+fn an_immediate_parameter_narrows_to_byte_or_word() {
+    const BODY: &str = "inline scale @a16 (a, #by:WIDTH) -> a {\n  a & #by\n}\n\n\
+                        func work @a16 @i8 {\n  a = #$FF\n  scale a, #VALUE -> a\n}\n";
+    let codes = |width: &str, value: &str| -> Vec<String> {
+        let source = BODY.replace("WIDTH", width).replace("VALUE", value);
+        let mut map = SourceMap::new();
+        let id = map.add_file("narrow.k816", &source);
+        let parse = parse_source(map.file(id), None);
+        assert_eq!(parse.diagnostics, vec![], "`{source}` did not parse");
+        let (model, mut diagnostics) = analyze_file(&parse.file);
+        let (_, lowered) = lower(model.program(&parse.file), &model);
+        diagnostics.extend(lowered);
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str().to_owned())
+            .collect()
+    };
+
+    for (width, value) in [("byte", "$FF"), ("word", "$FFFF")] {
+        assert_eq!(
+            codes(width, value),
+            Vec::<String>::new(),
+            "`#by:{width}` accepts its largest value"
+        );
+    }
+    for (width, value) in [("byte", "$100"), ("word", "$10000")] {
+        assert_eq!(
+            codes(width, value),
+            vec!["K816-E0170".to_owned()],
+            "`#by:{width}` refuses one past its largest, and says so once"
+        );
+    }
+    assert_eq!(
+        codes("far", "$FF"),
+        vec!["K816-E0169".to_owned()],
+        "`:far` is not a narrowing an immediate parameter has"
+    );
+}

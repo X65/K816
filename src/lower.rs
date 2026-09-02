@@ -683,6 +683,30 @@ fn at_use_site(diagnostic: Diagnostic, site: Span, name: &str) -> Diagnostic {
     moved
 }
 
+/// A narrowed parameter's range, checked against what this use site passed.
+///
+/// `#count:byte` is a promise about every argument the parameter ever takes,
+/// so the place to keep it is the use site: the declaration has no value to
+/// look at and each expansion has a different one. The caret goes on the
+/// argument for the same reason.
+///
+/// Only a folded value is checked. A link-time symbol has no compile-time
+/// value to compare, and refusing one would take `#<SYMBOL>` away from a
+/// narrowed parameter for no gain — ld65 knows the number and K816 does not.
+fn narrowing(parameter: &crate::ast::ContractParameter) -> Option<(&str, u32, &'static str)> {
+    let crate::ast::ContractParameter::ImmediateAlias { name, width } = parameter else {
+        return None;
+    };
+    let width = width.as_ref()?;
+    match width.kind {
+        crate::ast::TypeWidthKind::Byte => Some((&name.text, 0xFF, "byte")),
+        crate::ast::TypeWidthKind::Word => Some((&name.text, 0xFFFF, "word")),
+        // `:far` is refused where it is written (`K816-E0169`); nothing here
+        // has a range to enforce for it.
+        crate::ast::TypeWidthKind::Far => None,
+    }
+}
+
 /// Every parameter a section declares, in written order.
 fn parameters(func: &crate::ast::Function) -> impl Iterator<Item = &crate::ast::ContractParameter> {
     func.contract
@@ -1992,6 +2016,41 @@ impl<'a> Lowering<'a> {
     /// needs somewhere to put the result, and the result is different at each
     /// use site: the labels become this function's anchors and the aliases
     /// become this use site's arguments. What is *not* different is the
+    /// Reports an argument that does not fit its parameter's narrowing.
+    ///
+    /// See [`narrowing`] for why the check lives at the use site and why a
+    /// value that does not fold is left alone.
+    fn check_argument_fits(
+        &mut self,
+        parameter: &crate::ast::ContractParameter,
+        value: &crate::value::KExpr,
+        span: Span,
+        target: &crate::ast::Name,
+    ) -> bool {
+        let Some((name, maximum, width)) = narrowing(parameter) else {
+            return true;
+        };
+        let Some(number) = value.value().map(|value| value.get()) else {
+            return true;
+        };
+        if number <= maximum {
+            return true;
+        }
+        self.diagnostics.push(
+            Diagnostic::error(
+                DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
+                format!("${number:X} does not fit `#{name}:{width}`"),
+                Label::new(span, format!("maximum here is ${maximum:X}")),
+            )
+            .with_help(format!(
+                "pass a value that fits, or widen `{}`'s parameter",
+                target.text
+            ))
+            .with_docs("doc/syntax-reference.md#how-an-alias-is-bound"),
+        );
+        false
+    }
+
     /// widths — those come from the section's own analysis, which is what the
     /// bridge at the use site is for.
     fn expand(
@@ -2008,6 +2067,7 @@ impl<'a> Lowering<'a> {
             return self.skipped(statement.span, "an `inline` that expands into itself");
         }
         let mut aliases = BTreeMap::new();
+        let mut fits = true;
         let mut resolver = Resolver::new(&self.model.symbols, &self.model.eval)
             .in_function(self.function)
             .with_widths(self.widths_at(statement))
@@ -2028,7 +2088,15 @@ impl<'a> Lowering<'a> {
             ) else {
                 continue;
             };
+            fits &= self.check_argument_fits(parameter, &value, expr.span, target);
             aliases.insert(alias, value);
+        }
+        // An argument outside its parameter's range has been reported; the
+        // body is not expanded with it, because lowering the substituted
+        // operand would report the same number again against the mode's width
+        // and the reader would get two answers to one question.
+        if !fits {
+            return;
         }
         if resolver.has_diagnostics() {
             self.diagnostics.extend(resolver.take_diagnostics());

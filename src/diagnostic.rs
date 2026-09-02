@@ -431,6 +431,27 @@ impl DiagnosticCode {
     /// program indexes a frame by a number nobody chose.
     pub const STACK_RELATIVE_OFFSET: Self = Self("K816-E0168");
 
+    /// `#name:far` — a narrowing an immediate parameter does not have.
+    ///
+    /// An `inline` immediate parameter narrows to `byte` or `word` and to
+    /// nothing else: the narrowing is a range the bound argument must fit,
+    /// and a 24-bit immediate is not a value the accumulator can take. The
+    /// suffix is the same `:byte`/`:word`/`:far` spelling a variable's data
+    /// width uses, which is why the grammar reads all three here and this
+    /// refuses the one that means nothing — the same division of labour the
+    /// reserved spellings take, and for the same reason: a parse error would
+    /// not say what is wrong.
+    pub const IMMEDIATE_PARAMETER_WIDTH: Self = Self("K816-E0169");
+
+    /// An argument that does not fit the narrowing its parameter declares.
+    ///
+    /// `#count:byte` is a promise about every use site, so it is checked at
+    /// each one, where the argument is. Only a value that folds can be
+    /// checked: a link-time symbol passed to a narrowed parameter is left
+    /// alone rather than refused, because `lda #<SYMBOL>` is the idiom that
+    /// would otherwise stop working and ld65 is the one that knows the value.
+    pub const IMMEDIATE_PARAMETER_RANGE: Self = Self("K816-E0170");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a
@@ -722,6 +743,8 @@ mod tests {
         DiagnosticCode::EXTERN_DECLARATIONS_DISAGREE,
         DiagnosticCode::IMPORT_NOT_FOUND,
         DiagnosticCode::STACK_RELATIVE_OFFSET,
+        DiagnosticCode::IMMEDIATE_PARAMETER_WIDTH,
+        DiagnosticCode::IMMEDIATE_PARAMETER_RANGE,
         DiagnosticCode::LINK_TIME_VALUE,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,

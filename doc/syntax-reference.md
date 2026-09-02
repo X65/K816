@@ -807,6 +807,12 @@ func place @a8 @i8 {
 }
 ```
 
+A parameter's name is an identifier, always. `#3` is not a parameter — a number in that position is refused, because there would be nothing to bind and nothing in the body to substitute for. `#3` is *argument* syntax, and the two positions are what the paragraph below separates.
+
+**The narrowing is a range.** `:byte` and `:word` are the two an immediate parameter takes, and they promise that every argument fits — `0 .. $FF` and `0 .. $FFFF`. The promise is kept at each use site, where the argument is, and a value that overruns it is `K816-E0170` with the caret on the argument rather than the declaration. Only an argument that folds is checked: a link-time symbol has no compile-time value to compare, so `scale a, #<SYMBOL> -> a` passes a narrowed parameter untouched and ld65 decides the number.
+
+There is no third narrowing. `:far` shares the spelling a variable's data width uses, where it does mean something, and on an immediate parameter it is `K816-E0169`: the narrowing is a range an *immediate* must fit, and an immediate is carried by the accumulator — eight or sixteen bits, never twenty-four.
+
 The `#` in argument position is *argument syntax*, not a claim about what the substituted expression is used as: it is the only way to write a non-register argument, and it is what keeps `inc_x` on one line from reading as an argument to a call on the line above. Whether the alias stands for a value or a place is decided by how it was *declared* — `#factor` is a value and may only be read, `target` is a place and may be stored to.
 
 What follows from binding at expansion rather than at a call:

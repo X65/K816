@@ -896,13 +896,34 @@ impl Analysis {
                 ContractParameter::ImmediateAlias { name, .. } => (name, true),
                 ContractParameter::Alias(name) => (name, false),
             };
-            self.declare_local(
-                owner,
-                &name.text,
-                SymbolKind::Alias { immediate },
-                name.span,
-            );
+            self.declare_alias(owner, &name.text, immediate, name.span);
         }
+    }
+
+    /// Declares one `inline` parameter, reserved spellings included.
+    ///
+    /// An alias is the one name in the language that is not in a namespace.
+    /// It is bound at the use site and gone again after expansion: nothing
+    /// outside the body can name it, it is never emitted, and
+    /// [`Resolver::resolve`] looks it up before the symbol table, so it
+    /// cannot shadow anything a reader could confuse it with either. The
+    /// register and flag reservation exists because "a name that is also a
+    /// register would mean two things in the same statement" — and an alias
+    /// cannot, because the spellings that *are* two things here are tokens
+    /// (`a x y s p b dpr dbr`) and a parameter name is an identifier. What
+    /// remains are the flag letters, which are identifiers everywhere the
+    /// grammar reads one and flags only in the slots that carry a `+`, `-`,
+    /// `?` or `??` after them.
+    ///
+    /// So `inline lsrx (a, #n) { lsr * n }` is the macro the legacy compiler
+    /// took, and refusing its parameter was reserving a namespace the
+    /// parameter is not in.
+    fn declare_alias(&mut self, owner: SymbolId, name: &str, immediate: bool, span: Span) {
+        let result =
+            self.model
+                .symbols
+                .declare_local(owner, name, SymbolKind::Alias { immediate }, span);
+        self.declared(name, span, result);
     }
 
     /// Refuses an `inline` body that uses one of its own labels as a *value*.

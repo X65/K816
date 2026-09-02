@@ -93,7 +93,7 @@ fn assignment(
     // looks at, and none of them is the answer to `c = s` (decision 33).
     if let Some(diagnostic) = std::iter::once(&assign.source)
         .chain(targets.iter())
-        .find_map(retired_operand)
+        .find_map(|operand| retired_operand(resolver, operand))
     {
         resolver.report(diagnostic);
         return None;
@@ -648,13 +648,22 @@ fn two_step(from: RegisterKind, to: RegisterKind) -> Option<RegisterKind> {
 /// either arrives as an address naming nothing. `resolve` catches the general
 /// case; this catches it one stage earlier, where the statement is rejected
 /// for a different reason before the name is ever looked up.
-fn retired_operand(target: &HlaOperand) -> Option<Diagnostic> {
+///
+/// "Naming nothing" is the condition, so a name that *does* name something
+/// here is not it. An `inline` parameter may be spelled `c` or `d` — it is
+/// bound at the use site and is in no namespace to collide with — and inside
+/// the body that declares one, the letter is that parameter and not a
+/// spelling anybody retired.
+fn retired_operand(resolver: &Resolver, target: &HlaOperand) -> Option<Diagnostic> {
     let HlaOperandKind::Memory(address) = &target.kind else {
         return None;
     };
     let crate::ast::ExprKind::Symbol(name) = &address.value.kind else {
         return None;
     };
+    if resolver.scoped_symbol(&name.text).is_some() {
+        return None;
+    }
     crate::compat::retired_register_spelling(name.span, &name.text)
 }
 

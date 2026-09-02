@@ -1353,7 +1353,6 @@ fn every_reserved_spelling_the_document_lists_is_reserved_and_refused() {
         ("func", "func {name} @a8 @i8 {{\n  return\n}}\n"),
         ("data", "data {name} {{ $01 }}\n"),
         ("inline", "inline {name} @a8 {{ nop }}\n"),
-        ("inline alias", "inline taker @a8 (#{name}) {{ nop }}\n"),
     ];
     for spelling in &reserved {
         for name in [(*spelling).to_owned(), spelling.to_uppercase()] {
@@ -1377,6 +1376,54 @@ fn every_reserved_spelling_the_document_lists_is_reserved_and_refused() {
             }
         }
     }
+
+    // The one exception the sentence names, gated in the same place as the
+    // rule so the two cannot drift: a parameter takes any of the fifteen,
+    // expands to what the use site passed, and does not escape the body.
+    // `nop` after the use is what makes the expansion observable — an alias
+    // that failed to bind would leave `and` naming an undeclared symbol.
+    for spelling in &reserved {
+        for name in [(*spelling).to_owned(), spelling.to_uppercase()] {
+            let source = format!(
+                "inline mask @a8 (a, #{name}) -> a {{\n  a & #{name}\n}}\n\n\
+                 func main @a8 @i8 {{\n  a = #$FF\n  mask a, #$0F -> a\n}}\n"
+            );
+            let mut map = SourceMap::new();
+            let file = map.add_file("alias.k816", &source);
+            let result = compile_to_ca65(&map, file, &Options::default());
+            assert_eq!(
+                result.diagnostics,
+                vec![],
+                "`#{name}` is a parameter, not a declaration"
+            );
+            let assembly = result.assembly.expect("a parameter expands");
+            assert!(
+                assembly.contains("and     #$0F"),
+                "`#{name}` did not bind to what the use site passed:\n{assembly}"
+            );
+        }
+    }
+
+    // And the ambiguity the rule exists to remove still cannot arise inside
+    // such a body: a flag letter is a flag in the slots that carry a marker
+    // after it, and the parameter everywhere else. Both in one statement run.
+    let mut map = SourceMap::new();
+    let file = map.add_file(
+        "both.k816",
+        "inline mask @a8 (a, #c) -> a {\n  c+\n  a & #c\n}\n\n\
+         func main @a8 @i8 {\n  a = #$FF\n  mask a, #$0F -> a\n}\n",
+    );
+    let result = compile_to_ca65(&map, file, &Options::default());
+    assert_eq!(
+        result.diagnostics,
+        vec![],
+        "`c+` is `SEC`, `#c` is the parameter"
+    );
+    let assembly = result.assembly.expect("both readings compile");
+    assert!(
+        assembly.contains("sec") && assembly.contains("and     #$0F"),
+        "one body, two readings of `c`:\n{assembly}"
+    );
 
     // A label is the position that used to be the exception. The eight
     // register spellings are *tokens* — `a = 1` and `x++` need them to be —

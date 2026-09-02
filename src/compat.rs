@@ -206,6 +206,15 @@ pub fn retired_register_spelling(span: Span, spelling: &str) -> Option<Diagnosti
 /// own the same way: `Const -> Ident` excludes the register and flag terminal
 /// classes, which is why `const A` is a syntax error there.
 ///
+/// **An `inline` parameter is not covered** either, and for a reason that is
+/// not a compromise: a parameter is not in a namespace. It binds to what the
+/// use site passed, expands away, is never emitted, and is looked up before
+/// the symbol table, so no spelling is taken and nothing can be shadowed.
+/// The ambiguity this list removes cannot arise there either — the eight
+/// spellings that are two things are *tokens*, so a parameter can never be
+/// one, and a flag letter is a flag only in a slot that carries a `+`, `-`,
+/// `?` or `??` after it. See `Analyzer::declare_alias`.
+///
 /// **The compile-time evaluator is not covered**, and deliberately: the
 /// original's `AllIdent -> Ident | A | X | Y | S | Flag` lets these letters be
 /// names again in an evaluator block and as a `for` variable, `for i = 0..3`

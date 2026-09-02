@@ -179,7 +179,16 @@ pub fn rename(
         return Err(format!("`{current}` is already its name"));
     }
 
-    check_spelling(bare, &replacement)?;
+    // An `inline` parameter may take a register or flag spelling, because it
+    // is in no namespace to collide with one — so the editor must allow what
+    // the compiler allows, here as much as the other way round.
+    let alias = context.symbol().is_some_and(|id| {
+        matches!(
+            context.unit.model.symbols.kind(id),
+            SymbolKind::Alias { .. }
+        )
+    });
+    check_spelling(bare, &replacement, alias)?;
 
     let spans = references(analysis, file, offset, true);
     if spans.is_empty() {
@@ -225,8 +234,12 @@ fn current_text(context: &Context<'_>) -> String {
 /// The words are `compat::reserved_name`'s, not a second set here: a rename
 /// an editor accepts and the next build rejects is worse than one the editor
 /// declined, and the two agreeing has to be a fact rather than a habit.
-fn check_spelling(bare: &str, replacement: &str) -> Result<(), Refusal> {
-    if let Some(refusal) = crate::compat::reserved_name_refusal(bare) {
+///
+/// `alias` is the compiler's one exception, and agreeing means keeping it: an
+/// `inline` parameter is bound at the use site rather than declared into a
+/// namespace, so no spelling is taken.
+fn check_spelling(bare: &str, replacement: &str, alias: bool) -> Result<(), Refusal> {
+    if !alias && let Some(refusal) = crate::compat::reserved_name_refusal(bare) {
         return Err(refusal);
     }
     let mut characters = replacement.trim_start_matches('.').chars();

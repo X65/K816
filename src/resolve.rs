@@ -1298,7 +1298,7 @@ impl<'a> Resolver<'a> {
     /// shadows — but silent, and with no `referenced` entry: a probe must
     /// not report a name the real fold is about to report, nor make a symbol
     /// look used because something asked how wide it is.
-    fn scoped_symbol(&self, name: &str) -> Option<SymbolId> {
+    pub(crate) fn scoped_symbol(&self, name: &str) -> Option<SymbolId> {
         self.function
             .and_then(|owner| self.symbols.lookup_local(owner, name))
             .or_else(|| self.symbols.lookup(name))

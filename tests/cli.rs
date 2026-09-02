@@ -718,6 +718,124 @@ fn every_readme_example_compiles() {
     }
 }
 
+/// `--create-dep` reports what the compilation read, in make's shape.
+///
+/// A build system needs three things a `.s` cannot tell it: the source, the
+/// sibling units it was compiled with, and every file a `binary` includes.
+/// The last is the one nothing else could supply — the emitted `.incbin`
+/// carries the path *as the source wrote it*, and where that resolves to is
+/// K816's answer, not the assembler's.
+#[test]
+fn create_dep_names_the_source_its_units_and_its_binaries() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-create-dep");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture = root.join("tests/compat/k65/binary-inclusion");
+    let dep = dir.join("out.d");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .arg(fixture.join("input.k65"))
+        .args(["--create-dep".as_ref(), dep.as_os_str()])
+        .args(["-o".as_ref(), dir.join("out.s").as_os_str()])
+        .output()
+        .expect("run k816");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(&dep).expect("read the dependency file");
+    let (rule, phony) = text
+        .trim_end()
+        .split_once("\n\n")
+        .expect("a rule, a blank line, and a phony rule");
+    let (target, deps) = rule.split_once(":\t").expect("`target:<tab>deps`");
+
+    assert_eq!(
+        target,
+        dir.join("out.s").to_string_lossy(),
+        "the target is -o"
+    );
+    let deps: Vec<&str> = deps.split(' ').collect();
+    assert!(
+        deps.contains(&fixture.join("input.k65").to_string_lossy().as_ref()),
+        "the source is not a dependency: {deps:?}"
+    );
+    assert!(
+        deps.contains(&fixture.join("table.bin").to_string_lossy().as_ref()),
+        "the included binary is not a dependency: {deps:?}"
+    );
+
+    // The phony half, which is what keeps `make` going when a file named
+    // here is deleted rather than edited — the same rule `gcc -MP` writes.
+    assert_eq!(
+        phony.trim_end(),
+        format!("{}:", deps.join(" ")),
+        "the phony rule does not name every dependency"
+    );
+}
+
+/// `--dep-target` names something other than `-o`, and the units are listed.
+///
+/// `cl65` passes the *object* here, because the intermediate assembly it
+/// names with `-o` is removed after assembly and nothing tracks it.
+#[test]
+fn dep_target_renames_the_rule_and_units_are_dependencies() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-dep-target");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    let golden = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
+    let dep = dir.join("pair.d");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .arg(golden.join("unit-a.k816"))
+        .args(["--unit".as_ref(), golden.join("unit-b.k816").as_os_str()])
+        .args(["--create-dep".as_ref(), dep.as_os_str()])
+        .args(["--dep-target", "pair.o"])
+        .args(["-o".as_ref(), dir.join("pair.s").as_os_str()])
+        .output()
+        .expect("run k816");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let text = std::fs::read_to_string(&dep).expect("read the dependency file");
+    assert!(text.starts_with("pair.o:\t"), "{text}");
+    assert!(text.contains("unit-a.k816"), "{text}");
+    assert!(
+        text.contains("unit-b.k816"),
+        "a sibling unit is a dependency - editing it changes this object:\n{text}"
+    );
+}
+
+/// A compilation that fails writes no dependency file.
+///
+/// One that outlived a failed run would tell the next build the target is
+/// current, which is the one way a dependency file can do harm.
+#[test]
+fn a_failed_compilation_writes_no_dependency_file() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-dep-failure");
+    std::fs::create_dir_all(&dir).expect("create the work dir");
+    let source = dir.join("broken.k816");
+    std::fs::write(&source, BROKEN).expect("write the source");
+    let dep = dir.join("broken.d");
+    let _ = std::fs::remove_file(&dep);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+        .arg("compile")
+        .arg(&source)
+        .args(["--create-dep".as_ref(), dep.as_os_str()])
+        .args(["-o".as_ref(), dir.join("broken.s").as_os_str()])
+        .output()
+        .expect("run k816");
+    assert!(!output.status.success());
+    assert!(!dep.exists(), "a failed compilation left a dependency file");
+}
+
 // ---------------------------------------------------------------------------
 // Two names that must not come back
 // ---------------------------------------------------------------------------

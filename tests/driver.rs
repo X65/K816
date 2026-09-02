@@ -242,6 +242,98 @@ fn dash_c_keeps_the_object_and_removes_the_intermediate() {
     );
 }
 
+/// A K816 file produces a dependency file, as a C or assembly file does.
+///
+/// This is what a generator-driven build needs and the one thing a
+/// transpile-then-assemble pipeline forgets: Ninja treats a declared depfile
+/// that was not written as a hard error, so a `.k816` that produced none
+/// would fail the build rather than merely rebuild too often. cc65 writes a C
+/// file's dependencies and ca65 an assembly file's; k816 writes a K816 file's,
+/// because the sibling units and the files a `binary` includes are known to
+/// nobody else.
+///
+/// The rule's target is the *object*, not the intermediate assembly `cl65`
+/// removes — the same choice `Compile()` makes for C, and the reason
+/// `CompileK816` passes `--dep-target`.
+#[test]
+fn a_k816_source_produces_a_dependency_file_like_any_other() {
+    let directory = work_dir("driver-create-dep");
+    let golden = root().join("tests/golden");
+
+    // The shape CMake generates: one source per invocation, its siblings
+    // named with -Wk, and a depfile the generator reads.
+    let dep = directory.join("unit-a.d");
+    let object = directory.join("unit-a.o");
+    for path in [&dep, &object] {
+        let _ = std::fs::remove_file(path);
+    }
+    run_ok(
+        cl65()
+            .arg("-c")
+            .arg("-Wk")
+            .arg(format!("--unit={}", golden.join("unit-b.k816").display()))
+            .args(["--create-dep".as_ref(), dep.as_os_str()])
+            .args(["-o".as_ref(), object.as_os_str()])
+            .arg(golden.join("unit-a.k816")),
+        "cl65 -c with a dependency file",
+    );
+
+    let text = std::fs::read_to_string(&dep).expect("cl65 wrote no dependency file");
+    let (target, deps) = text
+        .split_once(":\t")
+        .expect("`target:<tab>deps`, as cc65 writes it");
+    assert_eq!(
+        target,
+        object.to_string_lossy(),
+        "the rule names the intermediate rather than the object"
+    );
+    for unit in ["unit-a.k816", "unit-b.k816"] {
+        assert!(deps.contains(unit), "{unit} is not a dependency:\n{text}");
+    }
+
+    // Without `-o`, the object is named after the source and so is the rule.
+    // That is the branch a Makefile with a suffix rule takes, and it is a
+    // different line of `CompileK816` from the one above.
+    let staged = directory.join("staged");
+    std::fs::create_dir_all(&staged).expect("create the staging directory");
+    for unit in ["unit-a.k816", "unit-b.k816"] {
+        std::fs::copy(golden.join(unit), staged.join(unit)).expect("stage a unit");
+    }
+    let implied = staged.join("implied.d");
+    run_ok(
+        cl65()
+            .current_dir(&staged)
+            .arg("-c")
+            .args(["--create-dep".as_ref(), implied.as_os_str()])
+            .args(["unit-a.k816", "unit-b.k816"]),
+        "cl65 -c with no output name",
+    );
+    let implied_text = std::fs::read_to_string(&implied).expect("no dependency file");
+    assert!(
+        implied_text.starts_with("unit-b.o:\t"),
+        "with no -o the rule should name the source's own object:\n{implied_text}"
+    );
+    assert!(staged.join("unit-a.o").exists() && staged.join("unit-b.o").exists());
+
+    // And the same invocation over a hand-written module, so the two are
+    // held to one shape rather than to two descriptions of one.
+    let asm_dep = directory.join("startup.d");
+    let _ = std::fs::remove_file(&asm_dep);
+    run_ok(
+        cl65()
+            .arg("-c")
+            .args(["--create-dep".as_ref(), asm_dep.as_os_str()])
+            .args(["-o".as_ref(), directory.join("startup.o").as_os_str()])
+            .arg(root().join("examples/fullstack/startup.asm")),
+        "cl65 -c on a hand-written module",
+    );
+    let asm_text = std::fs::read_to_string(&asm_dep).expect("ca65 wrote no dependency file");
+    assert!(
+        asm_text.contains(":\t") && asm_text.contains("startup.asm"),
+        "the assembly path's dependency file has a different shape:\n{asm_text}"
+    );
+}
+
 /// The unit pre-scan starts at the first K816 file, and the caveat that costs.
 ///
 /// The scan cannot know which options take a separate value, so a bare token

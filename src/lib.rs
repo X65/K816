@@ -54,7 +54,7 @@ pub mod value;
 pub mod width;
 pub mod workspace;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use diagnostic::Diagnostic;
 use parser::ParseResult;
@@ -157,6 +157,18 @@ pub struct CompileResult {
     /// The emitted ca65 assembly, or `None` when errors prevented emission.
     pub assembly: Option<String>,
     pub diagnostics: Vec<Diagnostic>,
+    /// The files ca65 will read that are not the assembly itself: every
+    /// `binary "path"` this unit includes, as K816 resolved it.
+    ///
+    /// A build system needs them to know when the object is stale, and it
+    /// cannot derive them — the emitted `.incbin` carries the path *as the
+    /// source wrote it*, resolved later against ca65's search list. The
+    /// source and its `--unit` siblings are the caller's own inputs and are
+    /// not repeated here.
+    ///
+    /// Empty when errors prevented emission: nothing was read that a
+    /// dependency could be stated about.
+    pub binaries: Vec<PathBuf>,
 }
 
 /// Reads `path` into `map` and parses it.
@@ -240,6 +252,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         return CompileResult {
             assembly: None,
             diagnostics,
+            binaries: Vec::new(),
         };
     }
 
@@ -250,6 +263,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
         return CompileResult {
             assembly: None,
             diagnostics,
+            binaries: Vec::new(),
         };
     }
 
@@ -263,10 +277,25 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
             },
         );
     }
+    // Collected before emission rather than after, because the optimizer does
+    // not touch data operations and the answer is the same either way — and
+    // collecting from the emitted text would mean re-deriving a path the
+    // emitter deliberately writes as the source wrote it.
+    let mut binaries: Vec<PathBuf> = program
+        .ops()
+        .filter_map(|op| match &op.kind {
+            op::KOpKind::Data(op::DataOp::IncBin { resolved, .. }) => Some(resolved.clone()),
+            _ => None,
+        })
+        .collect();
+    binaries.sort();
+    binaries.dedup();
+
     let assembly = emit_ca65::emit(map, file, &model, &program, &linkage);
     CompileResult {
         assembly: Some(assembly),
         diagnostics,
+        binaries,
     }
 }
 

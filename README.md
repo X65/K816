@@ -153,6 +153,13 @@ Options:
   --unit PATH                          a sibling unit whose names this one may
                                        use; repeatable. K816 derives the
                                        imports and exports from them
+  --create-dep FILE                    write a make dependency file for what
+                                       compile read: the source, its units, and
+                                       every file a `binary` includes.
+                                       --create-full-dep is the same list, as
+                                       K816 reads no file you did not name
+  --dep-target NAME                    the name on the left of the `:`, when the
+                                       file the build tracks is not the -o one
   --message-format FORMAT              diagnostic output of compile and emit-ir:
                                        human, compact, json
   --strict-k65                         report every construct the original K65
@@ -244,6 +251,24 @@ way `k816` spells it. `cl65 -S` leaves exactly the assembly `k816 compile`
 writes, and `cl65 -g` reaches `ca65` so that a hand-written module linked
 beside your K816 one is in the debug database too — K816's own module is there
 either way, because it asks for debug info itself.
+
+**`--create-dep` works, and it is `k816` that writes it.** The dependencies of
+a K816 object are the source, the sibling units it was compiled with, and every
+file a `binary` includes — and only the compiler knows the last two. That is
+what a build generator needs. With CMake, a single-unit program needs one line
+in the toolchain file:
+
+```cmake
+set( CMAKE_ASM_SOURCE_FILE_EXTENSIONS s;asm;k65;k816 )
+```
+
+A program of several K816 units needs more, because a generator compiles one
+source per invocation while the unit rule takes its set from the command line.
+Name the siblings for each source instead:
+
+```bash
+cl65 -c -Wk --unit=sprites.k816 -o main.o main.k816
+```
 
 `doc/cl65.sgml` in the cc65 tree is the driver's reference.
 

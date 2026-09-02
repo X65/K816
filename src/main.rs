@@ -92,6 +92,13 @@ fn usage(prog_name: &str) {
     eprintln!("  --unit PATH                          a sibling unit whose names this one may");
     eprintln!("                                       use; repeatable. K816 derives the");
     eprintln!("                                       imports and exports from them");
+    eprintln!("  --create-dep FILE                    write a make dependency file for what");
+    eprintln!("                                       compile read: the source, its units, and");
+    eprintln!("                                       every file a `binary` includes.");
+    eprintln!("                                       --create-full-dep is the same list, as");
+    eprintln!("                                       K816 reads no file you did not name");
+    eprintln!("  --dep-target NAME                    the name on the left of the `:`, when the");
+    eprintln!("                                       file the build tracks is not the -o one");
     eprintln!("  --message-format FORMAT              diagnostic output of compile and emit-ir:");
     eprintln!("                                       human, compact, json");
     eprintln!("  --strict-k65                         report every construct the original K65");
@@ -150,6 +157,15 @@ impl Command {
     fn takes_many(self) -> bool {
         matches!(self, Self::Fmt)
     }
+
+    /// Whether the command can report what it read as a make dependency file.
+    ///
+    /// `compile` only: a dependency is a statement about what makes an
+    /// *output* stale, and it is the only command that produces one a build
+    /// system tracks.
+    fn takes_deps(self) -> bool {
+        matches!(self, Self::Compile)
+    }
 }
 
 struct CommandLine {
@@ -167,6 +183,16 @@ struct CommandLine {
     output: Option<PathBuf>,
     options: Options,
     message_format: render::MessageFormat,
+    /// `--create-dep` / `--create-full-dep`: where to write a make dependency
+    /// file. Both spellings are accepted and both produce the same list,
+    /// because K816 reads no file the command line did not name — see
+    /// [`write_dependencies`].
+    dep_files: Vec<PathBuf>,
+    /// `--dep-target`: the name on the left of the `:`, when the file a build
+    /// tracks is not the one `-o` names. `cl65` passes the object here,
+    /// because what goes stale is the object and not the intermediate
+    /// assembly it threw away.
+    dep_target: Option<PathBuf>,
 }
 
 /// Parses one subcommand's command line.
@@ -187,6 +213,8 @@ fn parse_command_line(
     let mut output: Option<PathBuf> = None;
     let mut explain = false;
     let mut check = false;
+    let mut dep_files: Vec<PathBuf> = Vec::new();
+    let mut dep_target: Option<PathBuf> = None;
     let mut options = Options {
         // The toggle names the value it sets, so the starting value is the
         // other one; a command with no toggle keeps the default.
@@ -234,6 +262,28 @@ fn parse_command_line(
                 let text = &arg["--message-format=".len()..];
                 set_message_format(prog_name, text, &mut message_format)?;
             }
+            "--create-dep" | "--create-full-dep" if command.takes_deps() => match iter.next() {
+                Some(path) => dep_files.push(PathBuf::from(path)),
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        &format!("`{arg}` needs a file name"),
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
+            "--dep-target" if command.takes_deps() => match iter.next() {
+                Some(path) => dep_target = Some(PathBuf::from(path)),
+                None => {
+                    render::render_tool_error(
+                        prog_name,
+                        "`--dep-target` needs a name",
+                        message_format,
+                    );
+                    return Err(());
+                }
+            },
             "--strict-k65" => options.strict_k65 = true,
             "--entry" => match iter.next() {
                 Some(text) => set_entry(prog_name, text, &mut options, message_format)?,
@@ -292,6 +342,8 @@ fn parse_command_line(
         output,
         options,
         message_format,
+        dep_files,
+        dep_target,
     })
 }
 
@@ -469,7 +521,50 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
+
+    // After the output, and only on success: a dependency file that outlived
+    // a failed compilation would tell the next build the target is current.
+    let target = command.dep_target.as_ref().unwrap_or(&output);
+    let mut inputs = vec![input];
+    inputs.extend(command.units);
+    inputs.extend(result.binaries);
+    for path in &command.dep_files {
+        if let Err(error) = write_dependencies(path, target, &inputs) {
+            render::render_tool_error(
+                prog_name,
+                &format!("cannot write {}: {error}", path.display()),
+                command.message_format,
+            );
+            return ExitCode::FAILURE;
+        }
+    }
     ExitCode::SUCCESS
+}
+
+/// Writes a make dependency file: what `target` is built from.
+///
+/// The shape is cc65's, because a build system that already reads cc65's
+/// output must not need a second parser: the target, a colon and a tab, the
+/// inputs separated by spaces, then a blank line and a *phony* rule naming
+/// each input with no prerequisites. The phony half is what keeps `make` from
+/// stopping when a file named here is deleted rather than edited — it is the
+/// same trick `gcc -MP` plays, and `cc65` plays it too.
+///
+/// **A K816 compilation reads exactly what the command line named**, plus the
+/// files a `binary` includes. There is no include path and no implicit
+/// prelude, which is why `--create-dep` and `--create-full-dep` produce the
+/// same list: cc65 distinguishes them by whether system headers are listed,
+/// and K816 has no system headers to leave out.
+fn write_dependencies(path: &Path, target: &Path, inputs: &[PathBuf]) -> std::io::Result<()> {
+    fn escaped(path: &Path) -> String {
+        // Only spaces, as cc65 escapes them: a make prerequisite is
+        // space-separated and everything else in a path is literal.
+        path.to_string_lossy().replace(' ', "\\ ")
+    }
+
+    let list: Vec<String> = inputs.iter().map(|input| escaped(input)).collect();
+    let list = list.join(" ");
+    std::fs::write(path, format!("{}:\t{list}\n\n{list}:\n\n", escaped(target)))
 }
 
 fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {

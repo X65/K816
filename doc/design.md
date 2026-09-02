@@ -68,6 +68,8 @@ A contract's *inputs* are registers for that reason. Its *outputs* are registers
 
 Read this as a boundary, not a limitation to be fixed later. Adding parameters to `func` would require a compiler-defined runtime convention, which §1 rules out; the available answers are a register, a `var`, or an `inline`.
 
+It is also why an `extern` declaration (sub-plan K, `plans/10-modules-and-ffi.md`) has no calling-convention keyword. cc65's `fastcall` and `cdecl` are about *where the arguments live*, and a K816 call has none: what crosses the jump is the registers and their widths, so that is the whole of what an `extern func` declares. A K816 unit calling a C function passes what it passes in registers and knows the convention itself — the compiler is not asked to marshal anything, because it has nothing to marshal.
+
 ## 2. Repository structure
 
 Use one Cargo package containing one library and one executable:
@@ -615,6 +617,8 @@ it. Which *other* units a source belongs with is the source's own statement —
 command line, which is what makes a build system that compiles one file per
 invocation work without being told anything; `plans/10-modules-and-ffi.md` is
 the sub-plan that landed that.
+
+A K816 program can also *meet* another language rather than merely being built beside one: `extern func _puts` names a symbol no K816 unit defines, and ld65 resolves it from an object cc65 or ca65 produced. That declaration carries what ld65 cannot infer and ca65 needs — the address size, and for a function the register widths — and it is the first contract in this compiler that is trusted rather than derived, because there is no body to derive it from. See `doc/syntax-reference.md`, "Extern declarations".
 
 K816 can be distributed alongside cc65 without being rewritten into the cc65 C codebase. “Part of the cc65 toolchain” should mean one installation and one driver experience, not necessarily one implementation language.
 

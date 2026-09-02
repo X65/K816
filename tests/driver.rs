@@ -82,8 +82,8 @@ fn run(command: &mut Command, what: &str) -> Output {
 ///
 /// This is `examples/fullstack/Makefile` before sub-plan I, and the recipe
 /// `tests/compat.rs` and `tests/fullstack.rs` each carry: every unit compiled
-/// with the others as `--unit` siblings, each assembly assembled, the objects
-/// linked against `config`. It is written out once more here rather than
+/// on its own, each assembly assembled, the objects linked against
+/// `config`. It is written out once more here rather than
 /// shared with those suites because an oracle that runs the thing under test
 /// is not an oracle.
 fn build_by_hand(directory: &Path, units: &[PathBuf], config: &Path, extra: &[&Path]) -> Vec<u8> {
@@ -375,17 +375,17 @@ fn an_output_named_like_a_unit_is_still_an_output() {
     );
 }
 
-/// Two K816 files on one command line are two units of one program.
+/// Two K816 files that import each other link to the manual path's image.
 ///
-/// K65 has no import syntax, so this is the whole mechanism by which a name
-/// one unit defines resolves in another: `cl65` passes each K816 file to the
-/// compiler with the others as `--unit` siblings. `unit-a.k816` calls
-/// `helper` and reads `CURSOR` and `BANKED`, all of which `unit-b.k816`
-/// defines, and the addressing mode of each reference depends on the
-/// sibling's declaration — so an image that links at all is already evidence,
-/// and one that matches the manual path byte for byte is the claim.
+/// `cl65` is handed both and passes the compiler one file at a time with
+/// nothing about the other; the units resolve each other because they say so
+/// in their own text. `unit-a.k816` calls `helper` and reads `CURSOR` and
+/// `BANKED`, all of which `unit-b.k816` defines, and the addressing mode of
+/// each reference depends on the sibling's declaration — so an image that
+/// links at all is already evidence, and one that matches the manual path
+/// byte for byte is the claim.
 #[test]
-fn two_units_on_one_command_line_resolve_each_other() {
+fn two_units_that_import_each_other_link_to_the_manual_image() {
     let directory = work_dir("driver-pair");
     let golden = root().join("tests/golden");
     let units = vec![golden.join("unit-a.k816"), golden.join("unit-b.k816")];

@@ -523,6 +523,38 @@ The 65816 has a linear 16MB address space. K816 does not divide it: `segment` em
 segment my_segment      // select output segment
 ```
 
+## Imports
+
+A program is more than one file, and each file says which of the others it may see.
+
+```k65
+import "sprites.k816"
+import "../shared/defs.k65"
+```
+
+The path is a string, resolved against the directory of the file that wrote it — the same rule `binary "file"` uses. There is no search path, no include directory and no implicit prelude: a compilation reads the file named, what that file names, and nothing else.
+
+A unit sees what it imports **directly**, and nothing further. If `main` imports `lib` and `lib` imports `hw`, `main` cannot name `hw`'s symbols without importing it too. That is what makes a unit mean one thing: `lib.k816` resolves the same names whether it is the file being compiled or a file `main.k816` reached, and what `main.k816` happens to import is not `lib.k816`'s business.
+
+The whole closure is still *read*, because a callee two imports away decides contracts this compilation is built against — so a change to it can change these bytes, and it is a dependency of the object even where it is not visible. `--create-dep` lists it.
+
+Cycles are legal. Two units that name each other see each other, which is ordinary: a program is not a hierarchy.
+
+Only the file being compiled is emitted. An imported unit contributes names, not bytes; it is compiled in its own right, on its own invocation, and the two objects are linked together.
+
+```bash
+k816 compile main.k816 -o main.s   # reads whatever main.k816 imports
+k816 compile lib.k816  -o lib.s
+```
+
+An `import` may sit inside a `#if` region, and one the preprocessor drops is not a file the build reads — so it is not a dependency of the object either.
+
+### What this replaces
+
+The original K65 compiler resolved every name across a project's sources, so a K65 file declares nothing about where a name comes from; K816 reproduced that over whatever the command line named, with a `--unit` option. That option is gone. A build system that compiles one source per invocation cannot produce a sibling list, and a program that says what it is needs no such list — which is why `import` exists and why the option does not.
+
+The cost is that an unmodified multi-unit K65 program does not compile: each of its files needs an `import` line, and `import` is a K816 extension, so a `--strict-k65` program is one file. `doc/k65-compat-manifest.md` records that under `k65-global-namespace`.
+
 ## Extern declarations
 
 An `extern` names a symbol **no K816 unit defines**: a function cc65 compiled from C, a routine in a hand-written ca65 module, a variable the linker places, a constant an include file exports. ld65 resolves it, and the declaration is how K816 knows what to ask ld65 for.

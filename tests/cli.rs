@@ -563,8 +563,10 @@ fn the_lsp_refuses_an_entry_spelling_the_same_way_compile_does() {
 }
 
 /// The options that describe one compilation are not the server's to take:
-/// its documents arrive over the protocol, and naming a unit on its command
-/// line would be a second way to describe the program (decision 2).
+/// its documents arrive over the protocol, and which units they belong with
+/// arrives in their own text. `--unit` is here among the refusals because it
+/// is an option no command takes any more, and a spelling that means nothing
+/// should say so rather than be ignored.
 #[test]
 fn the_lsp_takes_no_input_file_and_no_compilation_options() {
     let (stderr, success) = lsp_refusal(&["some.k816"]);
@@ -714,7 +716,7 @@ fn every_readme_example_compiles() {
 /// `--create-dep` reports what the compilation read, in make's shape.
 ///
 /// A build system needs three things a `.s` cannot tell it: the source, the
-/// sibling units it was compiled with, and every file a `binary` includes.
+/// units it imports, and every file a `binary` includes.
 /// The last is the one nothing else could supply — the emitted `.incbin`
 /// carries the path *as the source wrote it*, and where that resolves to is
 /// K816's answer, not the assembler's.

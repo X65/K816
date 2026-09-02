@@ -801,6 +801,10 @@ impl Linkage {
     }
 
     /// True when a unit other than `file` refers to `name`.
+    ///
+    /// No longer an export decision — sub-plan K made those unconditional —
+    /// but still two other questions' answer: whether a global label may be
+    /// jumped to from outside, and whether `main`'s exit is published.
     pub fn referenced_elsewhere(&self, name: &str, file: FileId) -> bool {
         self.references
             .iter()
@@ -976,30 +980,30 @@ fn is_exportable(kind: SymbolKind) -> bool {
     )
 }
 
-/// Whether a definition is exported unconditionally, or only when another
-/// unit actually asks for it.
+/// Whether a unit-level definition of this kind leaves the object file.
 ///
-/// Functions, global labels, and data-block labels name *places*, and a
-/// place is the only thing another unit can be handed. A `const` or a
-/// fixed-address `var` is a value K816 folds, so exporting one that nobody
-/// reads would put a name in the object file for no reason
-/// (`plans/feature-manifest.md` §3). An `abstract var` has no place and no
-/// value: it is a layout, and there is nothing to hand anyone.
-pub fn always_exported(kind: SymbolKind) -> bool {
+/// **Unconditionally, if at all.** Until sub-plan K a `const` and a
+/// fixed-address `var` were exported only when another unit was seen to
+/// reference them, on the reasoning that a value K816 folds needs no name in
+/// the object file. That reasoning cannot survive per-file compilation: an
+/// exporter cannot see who asks. What replaces it is what cc65 itself does —
+/// `symtab.c::EmitExternals` exports every non-`static` definition and
+/// nothing in a C source marks either direction — so the condition is
+/// *removed* rather than replaced by a marker
+/// (`plans/10-modules-and-ffi.md` decision 8).
+///
+/// What still does not leave: an alias, which is scoped to one `inline` and
+/// vanishes at expansion; an `inline` itself, which has no address to hand
+/// anyone because its body is expanded at each use site; a local label; and
+/// an `abstract var`, which is a layout rather than a place or a value.
+pub fn exported(kind: SymbolKind) -> bool {
     match kind {
-        SymbolKind::Function { .. } | SymbolKind::DataLabel { .. } => true,
-        SymbolKind::Label { scope, .. } => scope == LabelScope::Global,
-        // An alias is scoped to one `inline` and vanishes at expansion, so
-        // there is no place and no value for another unit to be handed.
-        // An `inline` has no address to hand anyone: its body is expanded
-        // at each use site, and a use site in another unit has no body to
-        // expand. Sharing one is a source-level question, not a link-time
-        // one.
-        SymbolKind::Const { .. }
+        SymbolKind::Function { .. }
+        | SymbolKind::DataLabel { .. }
         | SymbolKind::Var { .. }
-        | SymbolKind::AbstractVar { .. }
-        | SymbolKind::Inline
-        | SymbolKind::Alias { .. } => false,
+        | SymbolKind::Const { .. } => true,
+        SymbolKind::Label { scope, .. } => scope == LabelScope::Global,
+        SymbolKind::AbstractVar { .. } | SymbolKind::Inline | SymbolKind::Alias { .. } => false,
         // `AbstractVar` never reaches here — `is_exportable` keeps it out of
         // the workspace — and the arm stays so that adding a kind is a
         // compile error rather than a silent default.

@@ -1104,7 +1104,7 @@ fn the_near_far_convention_is_checked_across_units() {
     assert_eq!(result.diagnostics, vec![], "the matching pair compiles");
     let assembly = result.assembly.expect("compilation succeeds");
     assert!(
-        assembly.contains(".import lib_init: far"),
+        assembly.contains(".import lib_init : far"),
         "the callee's address size crosses the boundary:\n{assembly}"
     );
     assert!(

@@ -6,6 +6,7 @@
 SCREEN          := $0400                ; slice.k816:1: var SCREEN = $0400
 
 .export main                            ; k816: a function defined here, visible to other units
+.export SCREEN                          ; k816: a variable defined here, visible to other units
 
         .segment "CODE"                 ; k816: the unit's default segment
 

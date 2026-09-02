@@ -1015,3 +1015,150 @@ fn the_model_and_ca65_size_every_width_transition_alike() {
         );
     }
 }
+
+/// Every unit-level definition leaves the object file, carrying its address
+/// size, and the four kinds that name nothing do not.
+///
+/// Sub-plan K removed the condition that used to gate a `const` and a
+/// fixed-address `var` on another unit being seen to reference them. It could
+/// not survive per-file compilation: under `import`, the unit being compiled
+/// is the only one the exporter is looking at, so "somebody asks" is not a
+/// question it can answer. What replaces it is what cc65 itself does — export
+/// every non-`static` definition, with no marker in the source either way.
+///
+/// The address size is the point of the assertion rather than a detail. ca65
+/// validates addressing modes against an imported symbol's size, so a `dp`
+/// variable exported as absolute is a wrong instruction in the importing unit
+/// rather than a wrong name.
+#[test]
+fn every_unit_level_definition_is_exported_with_its_address_size() {
+    let source = "const ROWS = 25\n\
+                  const WIDE = $12345\n\
+                  var PORT = $D020\n\
+                  var dp slot = $80\n\
+                  var far rom = $018000\n\
+                  var allocated:word\n\
+                  \n\
+                  data table { 1 2 3 }\n\
+                  \n\
+                  inline twice @a8 @i8 {\n\
+                  \x20   nop\n\
+                  }\n\
+                  \n\
+                  func main @a8 @i8 {\n\
+                  global_label:\n\
+                  \x20   .local_label:\n\
+                  \x20   call twice\n\
+                  \x20   return\n\
+                  }\n";
+    let assembly = emit("exports.k816", source);
+    let exports: Vec<&str> = assembly
+        .lines()
+        .filter(|line| line.starts_with(".export"))
+        .map(|line| line.split("  ").next().unwrap_or(line).trim())
+        .collect();
+
+    // Symbol-table order: the sections and data labels are declared before
+    // the values, because `declare_placed_symbols` runs first.
+    assert_eq!(
+        exports,
+        vec![
+            ".export table",
+            ".export main",
+            ".export global_label",
+            // A `const` has no address, so it crosses as the value it is.
+            // The size is stated because ca65 would otherwise take it from
+            // the value and export a small one as zeropage, which every
+            // absolute import of it then disagrees with.
+            ".export ROWS : abs = $0019",
+            ".export WIDE : far = $12345",
+            // A place, with the size a reference to it must encode.
+            ".export PORT",
+            ".exportzp slot",
+            ".export rom : far",
+            ".export allocated",
+        ],
+    );
+
+    // And the four kinds that name no place and no value stay in. An
+    // `inline` has no address at all — its body is expanded at each use site
+    // — and a local label is scoped to one section.
+    for absent in ["twice", "local_label"] {
+        assert!(
+            !assembly.contains(&format!(".export {absent}")),
+            "`{absent}` has nothing to hand another unit:\n{assembly}"
+        );
+    }
+
+    // ca65 accepts all of it, which is the half a string comparison cannot
+    // assert: a name it reads as a register or an address-size prefix is an
+    // assembly error rather than a wrong byte.
+    let dir = common::work_dir("exports-everything");
+    let asm = dir.join("out.s");
+    std::fs::write(&asm, &assembly).expect("write assembly");
+    common::run_ok(
+        std::process::Command::new(common::tool("CA65", "ca65"))
+            .arg(&asm)
+            .args(["-o".as_ref(), dir.join("out.o").as_os_str()]),
+        "ca65",
+    );
+}
+
+/// A `const` this unit exports links against another module's `.import`
+/// without ld65 warning about the address size.
+///
+/// The two halves have to agree and only one of them is K816's. ca65 derives
+/// an `=`-defined symbol's address size from its *value*, so a bare
+/// `.export ROWS = 25` exports a zeropage symbol; a hand-written module that
+/// writes the ordinary `.import ROWS` then draws "Address size mismatch for
+/// `ROWS`" from ld65 — a warning, so the link succeeds and nobody looks. The
+/// explicit `: abs` is what prevents it, and this is the test that would
+/// notice if it went away.
+#[test]
+fn an_exported_const_imports_without_an_address_size_warning() {
+    let dir = common::work_dir("const-export-size");
+    let assembly = emit(
+        "defs.k816",
+        "const ROWS = 25\n\nfunc main @a8 @i8 {\n    return\n}\n",
+    );
+    assert!(
+        assembly.contains(".export ROWS : abs = $0019"),
+        "the size is stated:\n{assembly}"
+    );
+
+    let k816_asm = dir.join("defs.s");
+    std::fs::write(&k816_asm, &assembly).expect("write the K816 assembly");
+    // A hand-written consumer, spelling the import the ordinary way.
+    let hand_asm = dir.join("user.s");
+    std::fs::write(
+        &hand_asm,
+        // `#<` because an absolute-sized symbol does not fit an eight-bit
+        // immediate, which is cc65's own idiom for a link-time value used as
+        // a byte (`libsrc/common/_heap.s` writes `lda #<__STACKSIZE__`).
+        ".setcpu \"65816\"\n.import ROWS\n.export user\nuser:\n        lda #<ROWS\n        rts\n",
+    )
+    .expect("write the hand-written module");
+
+    for (source, object) in [(&k816_asm, "defs.o"), (&hand_asm, "user.o")] {
+        common::run_ok(
+            std::process::Command::new(common::tool("CA65", "ca65"))
+                .arg(source)
+                .args(["-o".as_ref(), dir.join(object).as_os_str()]),
+            "ca65",
+        );
+    }
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/slice.cfg");
+    let output = std::process::Command::new(common::tool("LD65", "ld65"))
+        .args(["-C".as_ref(), config.as_os_str()])
+        .args(["-o".as_ref(), dir.join("out.bin").as_os_str()])
+        .arg(dir.join("defs.o"))
+        .arg(dir.join("user.o"))
+        .output()
+        .expect("run ld65");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "ld65 failed: {stderr}");
+    assert!(
+        !stderr.contains("Address size mismatch"),
+        "ld65 disagreed about `ROWS`: {stderr}"
+    );
+}

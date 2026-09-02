@@ -886,7 +886,7 @@ mod tests {
             "an `abstract var` reserves nothing, so nothing addresses it"
         );
         assert!(
-            !crate::linkage::always_exported(kind),
+            !crate::linkage::exported(kind),
             "there is no place to export"
         );
         assert_eq!(kind.describe(), "an `abstract var`");

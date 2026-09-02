@@ -41,7 +41,6 @@ use std::collections::HashMap;
 
 use crate::effects::WidthEffect;
 use crate::isa::{ImmediateWidthClass, Mnemonic, RegisterWidth, spec};
-use crate::linkage::Linkage;
 use crate::op::{
     AxisState, DataOp, EmulationState, IndexRegister, Instruction, KFunction, KOp, KOpKind,
     KProgram, KProgramItem, ModeState, Operand, Origin, Reason,
@@ -131,26 +130,6 @@ impl<'a> Names<'a> {
     }
 }
 
-/// True when this unit exports `id`.
-///
-/// A function, a global label, and a data-block label name *places*, and a
-/// place is the only thing another unit can be handed, so they are always
-/// exported. A `const` or a pinned `var` is a value K816 folds; exporting
-/// one nobody reads would put a name in the object file for no reason, so
-/// those wait to be asked for (`plans/feature-manifest.md` §3).
-fn exported(
-    model: &SemanticModel,
-    linkage: &Linkage,
-    file: FileId,
-    id: crate::symbol::SymbolId,
-) -> bool {
-    let symbol = model.symbols.symbol(id);
-    if symbol.imported || !symbol.is_unit_level() {
-        return false;
-    }
-    crate::linkage::always_exported(symbol.kind) || linkage.referenced_elsewhere(&symbol.name, file)
-}
-
 /// One `.import`/`.export` line, qualified by the symbol's address size.
 /// The ca65 segment-type suffix, for a segment whose address size K816 chose.
 ///
@@ -167,11 +146,22 @@ fn segment_type(addressing: Option<AddressSize>) -> &'static str {
     }
 }
 
+/// The space before the colon is load-bearing. ca65's scanner reads a
+/// one-letter identifier followed *immediately* by `:` as an address-size
+/// prefix (`src/ca65/scanner.c`), so `.export F: far` is "expected an
+/// identifier, found `f:`" — a name the source is entitled to use, refused by
+/// the assembler for a reason that has nothing to do with it. A space
+/// separates the two tokens and changes nothing else.
+///
+/// It does not rescue every name: `A`, `S`, `X` and `Y` alone are register
+/// tokens whatever follows them, so ca65 cannot name them at all. That is a
+/// property of the target rather than of this line, and it is unchanged by
+/// the space.
 fn linkage_directive(direction: &str, name: &str, size: Option<AddressSize>) -> String {
     match size {
         // ca65 spells the direct-page forms with their own directive.
         Some(AddressSize::DirectPage) => format!(".{direction}zp {name}"),
-        Some(AddressSize::Long) => format!(".{direction} {name}: far"),
+        Some(AddressSize::Long) => format!(".{direction} {name} : far"),
         Some(AddressSize::Absolute) | None => format!(".{direction} {name}"),
     }
 }
@@ -194,13 +184,12 @@ fn splits_cheap_local_scope(symbols: &SymbolTable, function: &KFunction) -> bool
 }
 
 /// Emits the whole lowered `program` as ca65 assembly.
-pub fn emit(
-    map: &SourceMap,
-    file: FileId,
-    model: &SemanticModel,
-    program: &KProgram,
-    linkage: &Linkage,
-) -> String {
+///
+/// Takes no `Linkage`: what crosses a unit boundary is decided by this unit's
+/// own symbol table. A name it imported is in that table already, marked, and
+/// what it exports no longer depends on who asked
+/// (`plans/10-modules-and-ffi.md` decision 8).
+pub fn emit(map: &SourceMap, file: FileId, model: &SemanticModel, program: &KProgram) -> String {
     let source = map.file(file);
     let mut out = String::new();
 
@@ -250,15 +239,14 @@ pub fn emit(
         out.push_str(&equates);
     }
 
-    // Linkage is derived from the symbol tables, because K65 has no syntax
-    // to declare it. Both directions carry the symbol's address size: ca65
-    // validates addressing modes against an imported symbol's, so a missing
-    // qualifier is an assembly error rather than a wrong byte.
+    // Linkage is derived from the symbol tables where a body exists, and
+    // declared where one does not. Both directions carry the symbol's
+    // address size: ca65 validates addressing modes against an imported
+    // symbol's, so a missing qualifier is an assembly error rather than a
+    // wrong byte.
     let mut linkage_directives = String::new();
     for (id, symbol) in model.symbols.iter() {
-        // A `const` has no address, so it has nothing to link: it folds
-        // into its value wherever it is used, in this unit or another.
-        if !symbol.is_unit_level() || matches!(symbol.kind, SymbolKind::Const { .. }) {
+        if !symbol.is_unit_level() {
             continue;
         }
         let size = symbol.kind.address_size();
@@ -272,9 +260,26 @@ pub fn emit(
                     &format!("k816: defined by {}:{line}", where_from.name()),
                 ));
             }
-        } else if exported(model, linkage, file, id) {
+        } else if crate::linkage::exported(symbol.kind) {
+            // A `const` has no address, so it is exported as the value it
+            // is — with an explicit size, because ca65 derives an
+            // `=`-defined symbol's address size from its *value*
+            // (`src/ca65/symentry.c`) and would export a small one as
+            // zeropage, which every absolute `.import` of it then disagrees
+            // with. Widening is silent; narrowing is the warning.
+            let directive = match symbol.kind {
+                SymbolKind::Const { value } => format!(
+                    ".export {} : {} = ${value:04X}",
+                    symbol.name,
+                    match AddressSize::of_value(value) {
+                        AddressSize::Long => "far",
+                        _ => "abs",
+                    }
+                ),
+                _ => linkage_directive("export", &symbol.name, size),
+            };
             linkage_directives.push_str(&annotated(
-                &linkage_directive("export", &symbol.name, size),
+                &directive,
                 &format!(
                     "k816: {} defined here, visible to other units",
                     symbol.kind.describe()

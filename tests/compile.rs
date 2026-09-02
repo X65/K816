@@ -3597,7 +3597,7 @@ fn a_section_can_be_read_from_another_unit() {
     );
     // The bytes crossed; the linkage is what carried them.
     assert!(
-        linkage.sections().any(|(name, _)| name == "shared"),
+        linkage.sections(reader).any(|(name, _)| name == "shared"),
         "the workspace keeps what each unit assembled"
     );
 

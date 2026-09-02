@@ -388,19 +388,29 @@ pub fn analyze_named(
 /// parameter of its own: the workspace's exit classification already walked
 /// every body from one, and a second one supplied here could disagree with it
 /// silently.
+///
+/// Takes the [`SourceFile`] rather than its name, because *which* unit this
+/// is decides what it may see: names arrive from the units it imports, not
+/// from every unit the workspace holds (`plans/10-modules-and-ffi.md`
+/// decision 3).
 pub fn analyze_unit(
     file: &AstFile,
-    unit: &str,
+    source: &crate::source::SourceFile,
     linkage: &Linkage,
 ) -> (SemanticModel, Vec<Diagnostic>) {
-    analyze(file, unit, linkage.environment(), Some(linkage))
+    analyze(
+        file,
+        source.name(),
+        linkage.environment(),
+        Some((linkage, source.id())),
+    )
 }
 
 fn analyze(
     file: &AstFile,
     unit_name: &str,
     environment: abi::EntryEnvironment,
-    linkage: Option<&Linkage>,
+    workspace: Option<(&Linkage, crate::source::FileId)>,
 ) -> (SemanticModel, Vec<Diagnostic>) {
     // The preprocessor runs first and nothing below it ever sees a
     // directive. It has to run before a single symbol is declared: a `func`
@@ -434,8 +444,8 @@ fn analyze(
     // below with the same line a body that does not compile gets, because
     // that is the same news: the section is here and cannot be expanded.
     let mut unusable: Vec<(String, Span)> = Vec::new();
-    if let Some(linkage) = linkage {
-        let borrowed = linkage.inline_expansions(preprocessed.as_ref().unwrap_or(file));
+    if let Some((linkage, unit)) = workspace {
+        let borrowed = linkage.inline_expansions(unit, preprocessed.as_ref().unwrap_or(file));
         unusable = borrowed.unusable;
         if !borrowed.items.is_empty() {
             borrowed_sections.extend(borrowed.items.iter().filter_map(|item| match &item.kind {
@@ -482,8 +492,8 @@ fn analyze(
     // there and still loses to a local declaration; what is seeded here is
     // only the bytes, which a local `data` of the same name shadows anyway
     // (a section value resolves through the symbol table first).
-    if let Some(linkage) = linkage {
-        for (name, bytes) in linkage.sections() {
+    if let Some((linkage, unit)) = workspace {
+        for (name, bytes) in linkage.sections(unit) {
             analysis
                 .model
                 .eval
@@ -495,7 +505,7 @@ fn analyze(
         // local declaration still wins the name. A *borrowed* `inline` body
         // needs this — its brackets read its own unit's `const`s, and
         // `declare_imports` runs after the brackets have already run.
-        for (name, definition) in linkage.definitions() {
+        for (name, definition) in linkage.visible_definitions(unit) {
             if let SymbolKind::Const { value } = definition.kind {
                 analysis
                     .model
@@ -510,8 +520,8 @@ fn analyze(
     // declaration always wins its name. A `const` or `var` initializer
     // therefore cannot fold a foreign name — which is right anyway: a
     // foreign symbol's address is ld65's, so it could never fold.
-    if let Some(linkage) = linkage {
-        analysis.declare_imports(linkage);
+    if let Some((linkage, unit)) = workspace {
+        analysis.declare_imports(linkage, unit);
         analysis.collect_externally_reachable(linkage);
         analysis.workspace_contracts = analysis.collect_workspace_contracts(linkage);
         analysis.workspace_recursive = analysis
@@ -536,7 +546,7 @@ fn analyze(
     // what *borrowing* revealed: a name the defining unit resolves and this
     // one cannot is the case this filter must not swallow, and it does not,
     // because the owner never made that complaint.
-    if let Some(linkage) = linkage
+    if let Some((linkage, _)) = workspace
         && !borrowed_sections.is_empty()
     {
         let mut silenced: Vec<Span> = Vec::new();
@@ -570,7 +580,7 @@ fn analyze(
             }
         }
     }
-    if let Some(linkage) = linkage {
+    if let Some((linkage, _)) = workspace {
         for (name, declaration) in &unusable {
             analysis.diagnostics.push(borrowed_inline_unusable(
                 name,
@@ -2552,8 +2562,8 @@ impl Analysis {
     ///
     /// Declaring a name does not import it: only the ones this unit goes on
     /// to reference reach the emitted `.import` list.
-    fn declare_imports(&mut self, linkage: &Linkage) {
-        for (name, definition) in linkage.definitions() {
+    fn declare_imports(&mut self, linkage: &Linkage, unit: crate::source::FileId) {
+        for (name, definition) in linkage.visible_definitions(unit) {
             self.model.symbols.declare_imported(
                 name,
                 definition.kind.foreign(),

@@ -140,12 +140,13 @@ const AUDIT: &[Row] = &[
     },
     Row {
         group: "`import \"file.k816\"` (top level)",
-        // The path names a file that does not exist, and at this stage
-        // nothing opens it: K1 parses the item and K4 loads it. When the
-        // loader lands, this row's `Expect` becomes the refusal a missing
-        // import earns.
+        // The snippet is compiled alone, and an `import` alone names a file
+        // that is not there — which is the answer, not a limitation of the
+        // audit: a path reaching no unit is `K816-E0166` wherever it is
+        // written. What an import *does* when the file is there needs two
+        // files, and `tests/modules.rs` is where two files live.
         source: "import \"lib.k816\"\n",
-        expect: Expect::Compiles,
+        expect: Expect::Refuses("K816-E0166"),
         case: "Import declarations name a unit by path",
     },
     Row {
@@ -843,7 +844,13 @@ fn every_manifest_syntax_group_parses() {
             continue;
         }
         if let Expect::Refuses(code) = row.expect {
-            let (_, diagnostics) = k816::semantic::analyze_file(&parsed.file);
+            // The whole pipeline rather than analysis alone: a refusal may
+            // come from resolving the *workspace* — an `import` reaching no
+            // unit is one — and `analyze_file` has no workspace to resolve.
+            // Widened with sub-plan K's `import` row; every row that passed
+            // under analysis alone still passes, because compiling runs it.
+            let diagnostics =
+                k816::compile_to_ca65(&map, id, &k816::Options::default()).diagnostics;
             if !diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code.as_str() == code)

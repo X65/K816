@@ -36,6 +36,7 @@ pub mod emit_ca65;
 pub mod eval;
 pub mod expand;
 pub mod hla;
+pub mod imports;
 pub mod isa;
 pub mod layout;
 pub mod linkage;
@@ -207,8 +208,7 @@ pub fn analyze_parsed(
     let mut units = Vec::new();
     for source in map.files() {
         let mut parse = parse_file(source);
-        let (model, semantic_diagnostics) =
-            semantic::analyze_unit(&parse.file, source.name(), &linkage);
+        let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, source, &linkage);
         diagnostics.append(&mut parse.diagnostics);
         diagnostics.extend(semantic_diagnostics);
         if options.strict_k65 {
@@ -236,8 +236,7 @@ pub fn compile_to_ca65(map: &SourceMap, file: FileId, options: &Options) -> Comp
     let linkage = linkage::Linkage::resolve(map, options.entry);
     let source = map.file(file);
     let parse = parser::parse_source(source, None);
-    let (model, semantic_diagnostics) =
-        semantic::analyze_unit(&parse.file, source.name(), &linkage);
+    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, source, &linkage);
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);
@@ -329,8 +328,7 @@ pub fn emit_ir(map: &SourceMap, file: FileId, options: &Options) -> IrResult {
     let linkage = linkage::Linkage::resolve(map, options.entry);
     let source = map.file(file);
     let parse = parser::parse_source(source, None);
-    let (model, semantic_diagnostics) =
-        semantic::analyze_unit(&parse.file, source.name(), &linkage);
+    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, source, &linkage);
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);

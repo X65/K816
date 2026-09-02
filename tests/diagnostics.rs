@@ -592,6 +592,13 @@ const ACCOUNTED_ELSEWHERE: &[(&str, &str)] = &[
         "K816-W0161",
         "tests/compat.rs: strict_mode_reports_exactly_the_rows_the_manifest_marks",
     ),
+    // Reported while the *workspace* is resolved, which is a stage
+    // `diagnostic_for` does not run: it analyzes one file with no `Linkage`,
+    // and which units a program has is exactly what a `Linkage` knows.
+    (
+        "K816-E0166",
+        "tests/modules.rs: an_import_that_cannot_be_read_is_e0166_at_the_string",
+    ),
     // And this one no source can reach at all: it reports a `--entry` value,
     // so there is no file for the FAMILY table to compile.
     (

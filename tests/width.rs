@@ -1438,7 +1438,7 @@ fn a_cross_unit_recursion_cycle_is_pinned_and_reported() {
     );
 
     let parse = parse_source(map.file(left), None);
-    let (_, diagnostics) = k816::semantic::analyze_unit(&parse.file, "left.k816", &linkage);
+    let (_, diagnostics) = k816::semantic::analyze_unit(&parse.file, map.file(left), &linkage);
     assert_eq!(codes(&diagnostics), ["K816-W0124"]);
 }
 
@@ -1518,7 +1518,7 @@ fn observed(text: &str, name: &str) -> ((bool, bool), (bool, bool)) {
     let id = map.add_file("width.k816", text);
     let linkage = Linkage::resolve(&map, EntryEnvironment::default());
     let parse = parse_source(map.file(id), None);
-    let (model, diagnostics) = analyze_unit(&parse.file, "width.k816", &linkage);
+    let (model, diagnostics) = analyze_unit(&parse.file, map.file(id), &linkage);
     assert_eq!(error_codes(&diagnostics), Vec::<&str>::new());
     let info = model
         .functions

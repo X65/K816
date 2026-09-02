@@ -1909,7 +1909,7 @@ fn strict_mode_reports_exactly_the_rows_the_manifest_marks() {
             let source = map.file(id);
             let parse = k816::parser::parse_source(source, None);
             let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
-            let (model, _) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
+            let (model, _) = k816::semantic::analyze_unit(&parse.file, source, &linkage);
             for (row, _) in k816::compat::classify(model.program(&parse.file), source) {
                 found.entry(row).or_default().insert(name.clone());
             }

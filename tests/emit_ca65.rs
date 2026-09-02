@@ -46,7 +46,7 @@ fn lowered_allowing(name: &str, text: &str, warnings: bool) -> k816::op::KProgra
     let linkage = k816::linkage::Linkage::resolve(&map, k816::abi::EntryEnvironment::default());
     let source = map.file(file);
     let parse = k816::parser::parse_source(source, None);
-    let (model, diagnostics) = k816::semantic::analyze_unit(&parse.file, source.name(), &linkage);
+    let (model, diagnostics) = k816::semantic::analyze_unit(&parse.file, source, &linkage);
     assert_diagnostics(&diagnostics, warnings);
     let (program, lower_diagnostics) =
         k816::lower::lower_unit(model.program(&parse.file), &model, source.name());

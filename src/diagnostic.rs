@@ -387,6 +387,14 @@ impl DiagnosticCode {
     /// is the documented escape hatch, not a contradiction.
     pub const EMULATION_WIDTH: Self = Self("K816-E0163");
 
+    /// An `import` names a file this build could not read.
+    ///
+    /// Reported from `Linkage` rather than from the loader, so that the CLI,
+    /// the editor and a test that builds a map in memory all say it the same
+    /// way: the loader adds nothing where it cannot read, and an edge that
+    /// reaches no unit is what everyone then sees.
+    pub const IMPORT_NOT_FOUND: Self = Self("K816-E0166");
+
     // `K816-E0201` — "recognized but not compiled yet" — was retired in G6,
     // with the last construct that produced it. The range `K816-E02xx` stays
     // reserved for the same meaning: nothing else may take the number, and a
@@ -674,6 +682,7 @@ mod tests {
         DiagnosticCode::STRICT_K65_CHANGED,
         DiagnosticCode::ENTRY_SPELLING,
         DiagnosticCode::EMULATION_WIDTH,
+        DiagnosticCode::IMPORT_NOT_FOUND,
         DiagnosticCode::K65_RESERVED_IMAGE,
         DiagnosticCode::K65_RESERVED_EVAL_FUNCTION,
         DiagnosticCode::K65_REMOVED_BANK,

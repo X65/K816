@@ -274,8 +274,7 @@ fn measure_sources(sources: &[(String, String)], entry: usize) -> Result<Measure
     let linkage = Linkage::resolve(&map, EntryEnvironment::default());
     let source = map.file(file);
     let parse = parser::parse_source(source, None);
-    let (model, semantic_diagnostics) =
-        semantic::analyze_unit(&parse.file, source.name(), &linkage);
+    let (model, semantic_diagnostics) = semantic::analyze_unit(&parse.file, source, &linkage);
     let mut diagnostics = linkage.diagnostics().to_vec();
     diagnostics.extend(parse.diagnostics);
     diagnostics.extend(semantic_diagnostics);

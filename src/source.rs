@@ -109,12 +109,37 @@ pub struct LineCol {
     pub column: u32,
 }
 
+/// How a file entered the program.
+///
+/// Not a permission and not a visibility: which units a unit may see is
+/// `linkage.rs`'s question, and an imported file is an ordinary unit there.
+/// What this decides is bookkeeping the *edges* need — which paths a
+/// dependency file lists, and which files an editor holds open — and it is
+/// the only place either question is answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// The command line named it, or an editor has it open.
+    Named,
+    /// An `import` in another file reached it, and K816 read it from disk.
+    Imported,
+}
+
 /// One source file: its name, unmodified text, and a line-start index.
 #[derive(Debug)]
 pub struct SourceFile {
     id: FileId,
     name: String,
     text: String,
+    /// The file this is, as opposed to what it is called.
+    ///
+    /// A unit can be named twice — `--unit lib.k816` and `import "./lib.k816"`
+    /// once meant two spellings of one file, and an entry that imports a
+    /// sibling which imports it back names it twice again. Loading it twice
+    /// would give one program two sets of the same definitions and a
+    /// duplicate-symbol error about a name declared once, so the loader
+    /// compares *this* rather than the name.
+    path: std::path::PathBuf,
+    origin: Origin,
     /// Byte offset of the first byte of every line. `line_starts[0] == 0`.
     line_starts: Vec<u32>,
 }
@@ -131,9 +156,12 @@ impl SourceFile {
                 line_starts.push(offset as u32 + 1);
             }
         }
+        let path = crate::imports::identity(std::path::Path::new(&name));
         Self {
             id,
             name,
+            path,
+            origin: Origin::Named,
             text,
             line_starts,
         }
@@ -141,6 +169,15 @@ impl SourceFile {
 
     pub fn id(&self) -> FileId {
         self.id
+    }
+
+    /// What file this is, for comparison rather than for display.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    pub fn origin(&self) -> Origin {
+        self.origin
     }
 
     pub fn name(&self) -> &str {
@@ -250,6 +287,50 @@ impl SourceMap {
         id
     }
 
+    /// Registers source text under `name`, with `path` as its identity.
+    ///
+    /// For a caller that knows the file on disk and calls it something else:
+    /// the LSP names a document by its URI, and a test names one whatever
+    /// reads best in a failure message.
+    pub fn add_file_at(
+        &mut self,
+        name: impl Into<String>,
+        path: &std::path::Path,
+        text: impl Into<String>,
+    ) -> FileId {
+        let id = self.add_file(name, text);
+        self.files[id.index()].path = crate::imports::identity(path);
+        id
+    }
+
+    /// Registers a file an `import` reached, under the path that reached it.
+    pub fn add_imported_file(
+        &mut self,
+        name: impl Into<String>,
+        path: &std::path::Path,
+        text: impl Into<String>,
+    ) -> FileId {
+        let id = self.add_file_at(name, path, text);
+        self.files[id.index()].origin = Origin::Imported;
+        id
+    }
+
+    /// The file whose identity is `path`, if this map holds it.
+    pub fn locate(&self, path: &std::path::Path) -> Option<FileId> {
+        self.files
+            .iter()
+            .find(|file| file.path == path)
+            .map(SourceFile::id)
+    }
+
+    /// Marks a file as one the caller named, keeping its [`FileId`].
+    ///
+    /// The editor's case: a file that was reached by an `import` is opened,
+    /// and every span already taken from it must stay valid.
+    pub fn adopt(&mut self, id: FileId) {
+        self.files[id.index()].origin = Origin::Named;
+    }
+
     /// Replaces the text of an already registered file, keeping its
     /// [`FileId`].
     ///
@@ -259,7 +340,11 @@ impl SourceMap {
     /// what identifies the document to the editor.
     pub fn replace_file(&mut self, id: FileId, text: impl Into<String>) {
         let name = std::mem::take(&mut self.files[id.index()].name);
+        let path = std::mem::take(&mut self.files[id.index()].path);
+        let origin = self.files[id.index()].origin;
         self.files[id.index()] = SourceFile::new(id, name, text.into());
+        self.files[id.index()].path = path;
+        self.files[id.index()].origin = origin;
     }
 
     pub fn file(&self, id: FileId) -> &SourceFile {

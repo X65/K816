@@ -84,7 +84,7 @@ fn optimized_workspace(units: &[(&str, &str)]) -> (SemanticModel, KProgram, Opti
     let linkage = Linkage::resolve(&map, EntryEnvironment::default());
     assert_eq!(linkage.diagnostics(), &[]);
     let parse = parse_source(map.file(ids[0]), None);
-    let (model, diagnostics) = analyze_unit(&parse.file, units[0].0, &linkage);
+    let (model, diagnostics) = analyze_unit(&parse.file, map.file(ids[0]), &linkage);
     assert!(
         !diagnostics.iter().any(|d| d.is_error()),
         "{:?}",

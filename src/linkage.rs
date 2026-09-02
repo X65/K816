@@ -20,22 +20,43 @@
 /*                                                                           */
 /*****************************************************************************/
 
-//! Linkage is derived, not declared.
+//! Linkage is derived where a body exists, and declared where one does not.
 //!
-//! K65 has no `import`, `export`, or `extern` syntax: the legacy linker
-//! resolved every name globally across a project's units, so there is
-//! nothing in the source to read. K816 therefore works out what crosses a
-//! unit boundary from the symbol tables themselves
-//! (`plans/feature-manifest.md` §3).
+//! K65 had no `import`, `export`, or `extern` syntax: the legacy linker
+//! resolved every name globally across a project's units, so there was
+//! nothing in the source to read, and K816 worked out what crosses a unit
+//! boundary from the symbol tables themselves. That derivation stands
+//! (`plans/feature-manifest.md` §3): a name one unit defines and another uses
+//! becomes an `.export` in the first and an `.import` in the second, both
+//! carrying the symbol's address size — ca65 validates addressing modes
+//! against an imported symbol's address size, so getting that wrong shows up
+//! as an assembly error rather than a wrong byte. Two units defining one
+//! exported name is a frontend error, rather than an ambiguity handed to
+//! ld65.
 //!
-//! A name one unit defines and another uses becomes an `.export` in the
-//! first and an `.import` in the second, both carrying the symbol's address
-//! size — ca65 validates addressing modes against an imported symbol's
-//! address size, so getting that wrong shows up as an assembly error rather
-//! than a wrong byte. A name *nothing* defines stays an undeclared-symbol
-//! error: the frontend does not invent an import to make an unresolved name
-//! someone else's problem. Two units defining one exported name is a
-//! frontend error too, rather than an ambiguity handed to ld65.
+//! Sub-plan K adds two things the derivation could not reach.
+//!
+//! # Which units a unit may see
+//!
+//! Not all of them. A unit sees itself and the units it `import`s
+//! **directly**, and nothing else. The transitive closure is *loaded* — a
+//! callee's own callees decide its exit contract, so classifying one needs
+//! bodies the entry never names — but it is not *visible*, and that
+//! separation is what makes a unit mean one thing: `b.k816` compiled alone
+//! and `b.k816` reached through `a.k816` resolve the same names, because
+//! what `a.k816` imports is not `b.k816`'s business.
+//!
+//! # Names no unit defines
+//!
+//! A name nothing defines is still an undeclared-symbol error; the frontend
+//! does not invent an import to make an unresolved name someone else's
+//! problem. What it accepts instead is a name someone *declared*: an
+//! `extern` is a [`Definition`] with [`Origin::Declared`], carrying the kind,
+//! the address size and — for a function — a contract that is trusted rather
+//! than derived, because there is no body here to derive it from
+//! (`plans/10-modules-and-ffi.md` decision 5). An `extern` and a real
+//! definition of one name is an error, and so are two `extern`s that
+//! disagree.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -63,6 +84,10 @@ use crate::width;
 struct BorrowedInline {
     item: Item,
     usable: bool,
+    /// The unit that declared it. A body is copied only into a unit that can
+    /// *see* the declaration, so this is compared against the borrower's
+    /// visible set rather than assumed to be reachable.
+    file: FileId,
 }
 
 /// What `inline_expansions` found for one program.
@@ -75,9 +100,24 @@ pub struct BorrowedInlines {
     pub unusable: Vec<(String, Span)>,
 }
 
+/// Where a workspace name came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// A unit of this program defines it: there is a body, or storage, and
+    /// bytes are emitted for it somewhere.
+    Body,
+    /// An `extern` declares it. No unit of this program emits anything for
+    /// it; ld65 resolves it from an object K816 never saw.
+    Declared,
+}
+
 /// One unit-level definition, and the unit that owns it.
 #[derive(Clone, Debug)]
 pub struct Definition {
+    /// The unit that defines it, or — for a `Declared` one — the first unit
+    /// that declared it. Every unit that declares or defines the name is in
+    /// `declared_in`; this is the one an editor is sent to, and a body wins
+    /// over a declaration so that "go to definition" lands on the truth.
     pub file: FileId,
     pub kind: SymbolKind,
     pub declaration: Span,
@@ -85,8 +125,23 @@ pub struct Definition {
     /// may believe afterwards, classified across the whole workspace.
     ///
     /// `None` until the third resolution phase fills it, and for everything
-    /// that is not a function.
+    /// that is not a function. For a `Declared` definition it is filled in
+    /// the *first* phase and from the declaration itself, because there is
+    /// no body to classify.
     pub contract: Option<width::CalleeContract>,
+    pub origin: Origin,
+}
+
+/// One `import` edge, resolved.
+#[derive(Clone, Debug)]
+struct ImportEdge {
+    /// The string that named it, for the diagnostic when nothing is there.
+    span: Span,
+    /// The path it names, relative to the importing file.
+    resolved: std::path::PathBuf,
+    /// The unit it reaches. `None` where no file of that identity is in the
+    /// map, which the loader could not read and this reports.
+    target: Option<FileId>,
 }
 
 /// What every unit in a workspace defines, and which foreign names each one
@@ -94,6 +149,23 @@ pub struct Definition {
 #[derive(Debug, Default)]
 pub struct Linkage {
     definitions: BTreeMap<String, Definition>,
+    /// Every unit that defines *or* declares each name.
+    ///
+    /// Visibility is decided against this rather than against
+    /// [`Definition::file`], because one name may be declared `extern` by
+    /// several interface units and a third unit reaches it through whichever
+    /// one it imported.
+    declared_in: BTreeMap<String, BTreeSet<FileId>>,
+    /// Which units each unit may see, itself included.
+    ///
+    /// `{u} ∪ direct imports of u`, plus — until sub-plan K's task K5
+    /// converts the multi-unit fixtures — every unit the *caller* named, so
+    /// that a program described by a command line keeps working while
+    /// `import` is being landed. That clause is transitional and K5 deletes
+    /// it; the mutation that proves it is gone is in K5's task text.
+    visible: BTreeMap<FileId, BTreeSet<FileId>>,
+    /// Every `import` each unit wrote, resolved.
+    imports: BTreeMap<FileId, Vec<ImportEdge>>,
     /// The assembled bytes of every data section the workspace defines, by
     /// name, from the pass that analyzed each unit alone.
     ///
@@ -108,7 +180,7 @@ pub struct Linkage {
     /// section does not resolve and does not appear. That is a chain the
     /// original has too — it compiles a project's units in order — and it
     /// fails as a refusal rather than as a wrong byte.
-    sections: BTreeMap<String, crate::eval::SectionBytes>,
+    sections: BTreeMap<String, (FileId, crate::eval::SectionBytes)>,
     /// The declaration of every `inline` the workspace defines, by name.
     ///
     /// An `inline` is the one section kind that does not link: it has no
@@ -143,7 +215,10 @@ pub struct Linkage {
     /// Functions the workspace call graph put in a cycle, which have no exit
     /// contract to compute and are pinned to the language rule.
     recursive: BTreeSet<String>,
-    duplicates: Vec<Diagnostic>,
+    /// What resolution itself found: a name two units define, an `extern`
+    /// the program contradicts, two `extern`s that disagree, an `import`
+    /// that reaches nothing.
+    diagnostics: Vec<Diagnostic>,
     /// The state the machine is in when this build's entry point runs.
     ///
     /// It lives here because two passes need it and they must not be able to
@@ -174,21 +249,103 @@ impl Linkage {
             let parse = parser::parse_source(source, None);
             let (model, _) = semantic::analyze_named(&parse.file, source.name(), environment);
             linkage.units.insert(source.id(), source.name().to_owned());
+            linkage.collect_imports(map, source, model.program(&parse.file));
             linkage.collect_definitions(source.id(), &model);
             // From the *first* pass, which analyzes each unit alone: a body
             // copied out of a unit that had already copied bodies in would
             // carry someone else's, and this pass is the one where no unit
             // has.
-            linkage.collect_inlines(model.program(&parse.file), &parse.diagnostics);
+            linkage.collect_inlines(source.id(), model.program(&parse.file), &parse.diagnostics);
         }
+        // Before the second pass, because that pass is the first one that
+        // asks a unit what it may see.
+        linkage.compute_visibility(map);
         for source in map.files() {
             let parse = parser::parse_source(source, None);
-            let (model, diagnostics) = semantic::analyze_unit(&parse.file, source.name(), &linkage);
+            let (model, diagnostics) = semantic::analyze_unit(&parse.file, source, &linkage);
             linkage.collect_references(source.id(), &model);
             linkage.collect_owned_diagnostics(source.id(), &diagnostics);
         }
         linkage.classify_exits(map);
         linkage
+    }
+
+    /// Records every `import` in `program`, and which unit each one reaches.
+    ///
+    /// The edge is resolved here and the file is opened by the loader
+    /// (`crate::load_imports`); both ask [`crate::imports`] which file a
+    /// string names, so an edge that reaches nothing means the loader could
+    /// not read it — never that the two disagreed about what to look for.
+    fn collect_imports(
+        &mut self,
+        map: &SourceMap,
+        source: &crate::source::SourceFile,
+        program: &AstFile,
+    ) {
+        let (file, importer) = (source.id(), source.name());
+        let edges: Vec<ImportEdge> = program
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Import(import) => Some(import),
+                _ => None,
+            })
+            .map(|import| {
+                let resolved = crate::imports::resolve(importer, &import.file.path);
+                ImportEdge {
+                    span: import.file.span,
+                    target: map.locate(&crate::imports::identity(&resolved)),
+                    resolved,
+                }
+            })
+            .collect();
+        for edge in &edges {
+            if edge.target.is_some() {
+                continue;
+            }
+            self.diagnostics.push(
+                Diagnostic::error(
+                    DiagnosticCode::IMPORT_NOT_FOUND,
+                    format!("`import` cannot find `{}`", map.span_text(edge.span)),
+                    Label::new(edge.span, "no such unit"),
+                )
+                .with_note(format!(
+                    "K816 looked for `{}`, relative to the directory of `{importer}`",
+                    edge.resolved.display()
+                ))
+                .with_docs("doc/syntax-reference.md#imports"),
+            );
+        }
+        self.imports.insert(file, edges);
+    }
+
+    /// Which units each unit may see.
+    ///
+    /// Itself and what it imports directly — never what *those* import, which
+    /// is the rule that makes a unit mean one thing however it was reached
+    /// (`plans/10-modules-and-ffi.md` decision 3).
+    ///
+    /// **Transitional, until sub-plan K's task K5.** A file the caller named
+    /// also sees every other file the caller named, which is the whole-map
+    /// visibility every unit had before `import` existed. It keeps a program
+    /// described by a `--unit` list working while `import` is landed, and K5
+    /// deletes it along with the option.
+    fn compute_visibility(&mut self, map: &SourceMap) {
+        let named: BTreeSet<FileId> = map
+            .files()
+            .filter(|source| source.origin() == crate::source::Origin::Named)
+            .map(|source| source.id())
+            .collect();
+        for source in map.files() {
+            let mut visible = BTreeSet::from([source.id()]);
+            if let Some(edges) = self.imports.get(&source.id()) {
+                visible.extend(edges.iter().filter_map(|edge| edge.target));
+            }
+            if named.contains(&source.id()) {
+                visible.extend(named.iter().copied());
+            }
+            self.visible.insert(source.id(), visible);
+        }
     }
 
     /// Classifies every function's exit contract across the whole workspace.
@@ -215,7 +372,7 @@ impl Linkage {
             .files()
             .map(|source| {
                 let parse = parser::parse_source(source, None);
-                let (model, _) = semantic::analyze_unit(&parse.file, source.name(), self);
+                let (model, _) = semantic::analyze_unit(&parse.file, source, self);
                 (source.id(), parse, model)
             })
             .collect();
@@ -349,7 +506,8 @@ impl Linkage {
                 && symbol.is_unit_level()
                 && !symbol.imported
             {
-                self.sections.insert(symbol.name.clone(), bytes.clone());
+                self.sections
+                    .insert(symbol.name.clone(), (file, bytes.clone()));
             }
             if symbol.imported || !symbol.is_unit_level() || !is_exportable(symbol.kind) {
                 continue;
@@ -360,11 +518,12 @@ impl Linkage {
                 declaration: symbol.declaration,
                 // Filled by the third phase, once every callee is known.
                 contract: None,
+                origin: Origin::Body,
             };
             match self.definitions.get(&symbol.name) {
                 // One name, two units: an ambiguity ld65 would resolve
                 // arbitrarily, so the frontend reports it instead.
-                Some(existing) if existing.file != file => self.duplicates.push(
+                Some(existing) if existing.file != file => self.diagnostics.push(
                     Diagnostic::error(
                         DiagnosticCode::DUPLICATE_SYMBOL,
                         format!("`{}` is defined by more than one unit", symbol.name),
@@ -378,6 +537,10 @@ impl Linkage {
                     self.definitions.insert(symbol.name.clone(), definition);
                 }
             }
+            self.declared_in
+                .entry(symbol.name.clone())
+                .or_default()
+                .insert(file);
         }
     }
 
@@ -390,7 +553,12 @@ impl Linkage {
     /// the file-top `@a8` above it — which does not travel with the body.
     /// Writing it onto the copy is what keeps one `inline` one contract
     /// however many units expand it.
-    fn collect_inlines(&mut self, program: &AstFile, parse_diagnostics: &[Diagnostic]) {
+    fn collect_inlines(
+        &mut self,
+        file: FileId,
+        program: &AstFile,
+        parse_diagnostics: &[Diagnostic],
+    ) {
         let defaults = module_defaults(program);
         for item in &program.items {
             let ItemKind::Func(func) = &item.kind else {
@@ -440,7 +608,11 @@ impl Linkage {
             });
             self.inlines.insert(
                 func.name.text.clone(),
-                BorrowedInline { item: copy, usable },
+                BorrowedInline {
+                    file,
+                    item: copy,
+                    usable,
+                },
             );
         }
     }
@@ -455,23 +627,20 @@ impl Linkage {
     /// the defining unit from importing its own body back — and neither is a
     /// name no unit declares as an `inline`, which stays an ordinary call for
     /// the symbol table to resolve or complain about.
-    pub fn inline_expansions(&self, program: &AstFile) -> BorrowedInlines {
+    pub fn inline_expansions(&self, unit: FileId, program: &AstFile) -> BorrowedInlines {
         // "Already declares" is asked of the definitions table rather than of
         // the items, so it covers every kind a name can be: a unit with a
         // `data hop` that calls `hop` must not also be handed a foreign
         // `inline hop` to declare, which would add a duplicate of its own
         // making to a workspace error it already has.
         //
-        // Nothing has been copied in at this point, so every item is this
-        // unit's and the first one names the file. A program with no items
-        // calls nothing, so the `None` arm has no work to skip.
-        let this = program.items.first().map(|item| item.span.file);
+        // `unit` is passed rather than read off the first item's span: a
+        // program with no items has no span to read, and one whose items were
+        // all removed by a directive has someone else's.
         let defined_here = |name: &str| {
-            this.is_some_and(|file| {
-                self.definitions
-                    .get(name)
-                    .is_some_and(|definition| definition.file == file)
-            })
+            self.definitions
+                .get(name)
+                .is_some_and(|definition| definition.file == unit)
         };
         let mut found = BorrowedInlines::default();
         let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -484,6 +653,12 @@ impl Linkage {
             let Some((name, borrowed)) = self.inlines.get_key_value(&name) else {
                 continue;
             };
+            // A body is copied only out of a unit this one can see. An
+            // `inline` two imports away is as invisible as any other name the
+            // unit did not ask for.
+            if !self.sees(unit, borrowed.file) {
+                continue;
+            }
             if !seen.insert(name.as_str()) {
                 continue;
             }
@@ -569,16 +744,60 @@ impl Linkage {
     /// Every definition in the workspace, in name order.
     /// The data sections the workspace defines, by name, with what each
     /// assembled to.
-    pub fn sections(&self) -> impl Iterator<Item = (&str, &crate::eval::SectionBytes)> {
+    /// The data sections `unit` may read, by name, with what each assembled
+    /// to.
+    pub fn sections(
+        &self,
+        unit: FileId,
+    ) -> impl Iterator<Item = (&str, &crate::eval::SectionBytes)> {
         self.sections
             .iter()
-            .map(|(name, bytes)| (name.as_str(), bytes))
+            .filter(move |(_, (owner, _))| self.sees(unit, *owner))
+            .map(|(name, (_, bytes))| (name.as_str(), bytes))
     }
 
+    /// Every name the workspace holds, whoever may see it.
+    ///
+    /// For the callers that ask about a symbol a unit's own table already
+    /// has — the width solver, the optimizer — where visibility was decided
+    /// when the table was built. A caller deciding what a unit *may* name
+    /// wants [`Linkage::visible_definitions`].
     pub fn definitions(&self) -> impl Iterator<Item = (&str, &Definition)> {
         self.definitions
             .iter()
             .map(|(name, definition)| (name.as_str(), definition))
+    }
+
+    /// The names `unit` may refer to: what it defines or declares itself,
+    /// and what the units it imports directly define or declare.
+    pub fn visible_definitions(&self, unit: FileId) -> impl Iterator<Item = (&str, &Definition)> {
+        self.definitions
+            .iter()
+            .filter(move |(name, _)| {
+                self.declared_in
+                    .get(name.as_str())
+                    .is_some_and(|files| files.iter().any(|owner| self.sees(unit, *owner)))
+            })
+            .map(|(name, definition)| (name.as_str(), definition))
+    }
+
+    /// Whether `unit` may see what `owner` declares.
+    fn sees(&self, unit: FileId, owner: FileId) -> bool {
+        unit == owner
+            || self
+                .visible
+                .get(&unit)
+                .is_some_and(|files| files.contains(&owner))
+    }
+
+    /// The units `unit` may see, itself included.
+    ///
+    /// Empty for a file this workspace does not hold. Public because the
+    /// relation is the thing sub-plan K introduced and a reader of a program
+    /// — a test, an editor asking why a name does not resolve — has no other
+    /// way to ask what a unit was allowed to name.
+    pub fn visible_from(&self, unit: FileId) -> BTreeSet<FileId> {
+        self.visible.get(&unit).cloned().unwrap_or_default()
     }
 
     /// True when a unit other than `file` refers to `name`.
@@ -588,15 +807,17 @@ impl Linkage {
             .any(|(referrer, names)| *referrer != file && names.contains(name))
     }
 
-    /// The cross-unit duplicate-definition errors, which are reported before
-    /// anything is emitted.
     /// The entry environment this workspace was resolved for.
     pub fn environment(&self) -> abi::EntryEnvironment {
         self.environment
     }
 
+    /// What resolving the workspace found, which is reported before anything
+    /// is emitted: a name two units define, an `import` that reaches
+    /// nothing, and — once sub-plan K's task K6 lands — an `extern` the
+    /// program contradicts.
     pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.duplicates
+        &self.diagnostics
     }
 }
 

@@ -329,7 +329,7 @@ impl Context<'_> {
     ///
     /// The workspace answer wherever the linkage has one — it saw the callers
     /// and callees this unit cannot — and this unit's own otherwise, which is
-    /// what a file compiled with no `--unit` siblings has.
+    /// what a file that imports nothing has.
     fn callee_contracts(&self) -> BTreeMap<SymbolId, CalleeContract> {
         let mut contracts: BTreeMap<SymbolId, CalleeContract> = self
             .model
@@ -365,7 +365,7 @@ impl Context<'_> {
     ///
     /// This is D's workspace optimism, not a second one: a function every
     /// analyzed unit ignores is treated as having no outside caller, which is
-    /// what `--unit` exists to correct.
+    /// what an `import` exists to correct.
     fn called_in_the_workspace(&self) -> BTreeSet<SymbolId> {
         let mut called: BTreeSet<SymbolId> = self
             .model

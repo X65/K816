@@ -299,13 +299,14 @@ pub fn programs() -> Vec<Program> {
 /// not of a gate over what a build produces.
 pub fn compile_units(directory: &Path, program: &Program) -> Option<Vec<PathBuf>> {
     let mut assemblies = Vec::new();
-    for (index, unit) in program.units.iter().enumerate() {
+    let units = stated_units(directory, &program.units);
+    for (index, unit) in units.iter().enumerate() {
         let assembly = directory.join(format!("unit-{index}.s"));
+        // One file per invocation, and nothing naming the others: a unit
+        // states the program it belongs to, so the harness has nothing to
+        // pass and neither has a build system.
         let mut compile = std::process::Command::new(env!("CARGO_BIN_EXE_k816"));
         compile.arg("compile").arg(unit);
-        for sibling in program.units.iter().filter(|sibling| *sibling != unit) {
-            compile.args(["--unit".as_ref(), sibling.as_os_str()]);
-        }
         compile.args(["-o".as_ref(), assembly.as_os_str()]);
         let output = compile
             .output()
@@ -316,6 +317,92 @@ pub fn compile_units(directory: &Path, program: &Program) -> Option<Vec<PathBuf>
         assemblies.push(assembly);
     }
     Some(assemblies)
+}
+
+/// The units to compile: the originals where they name each other, and
+/// staged copies that do where they do not.
+///
+/// The K65 oracle fixtures are the sources the *original* compiler read,
+/// bound to its output by checksum, so a line the original cannot parse must
+/// never reach them. The original resolved every name across a project and a
+/// K65 file therefore declares nothing about where a name comes from; K816
+/// needs the unit set stated, and one `import` line per file is exactly what
+/// `doc/k65-compat-manifest.md`'s `k65-global-namespace` row says that costs.
+/// Staging it here is the documented migration rather than a way around it,
+/// and the basenames are kept so a `.dbg` record still names the file a
+/// reader would go and open.
+pub fn stated_units(directory: &Path, units: &[PathBuf]) -> Vec<PathBuf> {
+    let texts: Vec<String> = units
+        .iter()
+        .map(|unit| std::fs::read_to_string(unit).unwrap_or_default())
+        .collect();
+    let names: Vec<String> = units
+        .iter()
+        .map(|unit| {
+            unit.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let stated = state_program(&names, &texts);
+    if stated == texts {
+        return units.to_vec();
+    }
+
+    let staged = directory.join("stated");
+    std::fs::create_dir_all(&staged).expect("create the staging directory");
+    let mut out = Vec::new();
+    for (unit, text) in units.iter().zip(&stated) {
+        let destination = staged.join(unit.file_name().expect("a unit has a file name"));
+        std::fs::write(&destination, text).expect("stage a unit");
+        out.push(destination);
+    }
+    // A `binary` in a staged unit resolves against the staged directory, so
+    // whatever the originals sat beside comes along.
+    if let Some(source_dir) = units[0].parent() {
+        for entry in std::fs::read_dir(source_dir)
+            .expect("read the fixture directory")
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_file() && !units.contains(&path) {
+                let _ = std::fs::copy(&path, staged.join(entry.file_name()));
+            }
+        }
+    }
+    out
+}
+
+/// `texts`, each naming the other units, where the set does not already say
+/// so — returned unchanged when it does.
+///
+/// The one reading of "these files are one program" every harness shares.
+/// `names` are what the `import` lines will say, so a caller that compiles
+/// from disk passes basenames and one that builds a map in memory passes
+/// whatever it named its entries.
+pub fn state_program(names: &[String], texts: &[String]) -> Vec<String> {
+    // Asked of the program and not of each unit: one that states itself
+    // states all of it, and an interface unit inside one imports nothing on
+    // purpose.
+    let states_itself = texts
+        .iter()
+        .any(|text| text.contains("\nimport \"") || text.starts_with("import \""));
+    if names.len() < 2 || states_itself {
+        return texts.to_vec();
+    }
+    names
+        .iter()
+        .zip(texts)
+        .map(|(name, text)| {
+            let named: String = names
+                .iter()
+                .filter(|other| *other != name)
+                .map(|other| format!("import \"{other}\"\n"))
+                .collect();
+            format!("{named}{text}")
+        })
+        .collect()
 }
 
 /// Whether every unit of `program` compiles, which is what makes it linkable.

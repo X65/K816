@@ -91,11 +91,12 @@ fn build_by_hand(directory: &Path, units: &[PathBuf], config: &Path, extra: &[&P
     for (index, unit) in units.iter().enumerate() {
         let assembly = directory.join(format!("manual-{index}.s"));
         let object = directory.join(format!("manual-{index}.o"));
+        // One file per invocation, and nothing naming the others: which
+        // units a source belongs with is stated in the source. This is what
+        // the manual path *is* now, so the driver having nothing to compute
+        // is the two paths agreeing rather than one of them cheating.
         let mut compile = Command::new(env!("CARGO_BIN_EXE_k816"));
         compile.arg("compile").arg(unit);
-        for sibling in units.iter().filter(|sibling| *sibling != unit) {
-            compile.args(["--unit".as_ref(), sibling.as_os_str()]);
-        }
         compile.args(["-o".as_ref(), assembly.as_os_str()]);
         run_ok(&mut compile, "k816 compile");
 
@@ -249,8 +250,8 @@ fn dash_c_keeps_the_object_and_removes_the_intermediate() {
 /// that was not written as a hard error, so a `.k816` that produced none
 /// would fail the build rather than merely rebuild too often. cc65 writes a C
 /// file's dependencies and ca65 an assembly file's; k816 writes a K816 file's,
-/// because the sibling units and the files a `binary` includes are known to
-/// nobody else.
+/// because the units it imports and the files a `binary` includes are known
+/// to nobody else.
 ///
 /// The rule's target is the *object*, not the intermediate assembly `cl65`
 /// removes — the same choice `Compile()` makes for C, and the reason
@@ -260,8 +261,10 @@ fn a_k816_source_produces_a_dependency_file_like_any_other() {
     let directory = work_dir("driver-create-dep");
     let golden = root().join("tests/golden");
 
-    // The shape CMake generates: one source per invocation, its siblings
-    // named with -Wk, and a depfile the generator reads.
+    // The shape CMake generates: one source per invocation, nothing naming
+    // the other units, and a depfile the generator reads. That is the whole
+    // integration now — the source says which units it belongs with, so
+    // there is no sibling list for a generator to compute.
     let dep = directory.join("unit-a.d");
     let object = directory.join("unit-a.o");
     for path in [&dep, &object] {
@@ -270,8 +273,6 @@ fn a_k816_source_produces_a_dependency_file_like_any_other() {
     run_ok(
         cl65()
             .arg("-c")
-            .arg("-Wk")
-            .arg(format!("--unit={}", golden.join("unit-b.k816").display()))
             .args(["--create-dep".as_ref(), dep.as_os_str()])
             .args(["-o".as_ref(), object.as_os_str()])
             .arg(golden.join("unit-a.k816")),
@@ -334,22 +335,22 @@ fn a_k816_source_produces_a_dependency_file_like_any_other() {
     );
 }
 
-/// The unit pre-scan starts at the first K816 file, and the caveat that costs.
+/// An option value that happens to be K816-named is just an option value.
 ///
-/// The scan cannot know which options take a separate value, so a bare token
-/// with a K816 extension that is an option's value is counted as a unit too.
-/// It is a *bounded* cost, which is the half worth pinning: the scan begins at
-/// the first K816 file, so an option before it is never seen. `-o out.k65`
-/// written first is an ordinary build; written after the source it is a unit
-/// k816 cannot read, and it says so rather than quietly building something
-/// else.
+/// The pre-scan sub-plan I added had a documented caveat: it could not know
+/// which options take a separate value, so `-o out.k65` after the source was
+/// counted as a unit and the build failed on a file nobody meant. Sub-plan K
+/// deleted the scan along with `--unit`, and this is the case that used to
+/// fail, kept because a caveat that has stopped costing anything is worth a
+/// test rather than a sentence.
 #[test]
-fn the_unit_scan_starts_at_the_first_k816_file() {
+fn an_output_named_like_a_unit_is_still_an_output() {
     let directory = work_dir("driver-prescan");
     let source = root().join("tests/golden/slice.k816");
 
-    // Before the source: not scanned, so this is just an output name.
+    // Before the source, which always worked.
     let before = directory.join("before.k65");
+    let _ = std::fs::remove_file(&before);
     run_ok(
         cl65()
             .arg("-S")
@@ -359,21 +360,18 @@ fn the_unit_scan_starts_at_the_first_k816_file() {
     );
     assert!(before.exists(), "the output was not written");
 
-    // After it: scanned, taken for a unit, and refused by name.
+    // After it, which used to be "cannot read after.k65" because the scan
+    // took the value for a unit. It is an ordinary run now. Where the
+    // assembly lands is cl65's own left-to-right rule and the same for every
+    // language it drives, so the claim here is only that the build succeeds.
     let after = directory.join("after.k65");
     let _ = std::fs::remove_file(&after);
-    let output = run(
+    run_ok(
         cl65()
             .arg("-S")
             .arg(&source)
             .args(["-o".as_ref(), after.as_os_str()]),
         "cl65 -S with a K816-named output after the source",
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("cannot read") && stderr.contains("after.k65"),
-        "the option value was not taken for a unit, or the refusal does not \
-         name it:\n{stderr}"
     );
 }
 
@@ -423,7 +421,15 @@ fn the_two_extensions_mix_on_one_command_line_and_mean_the_same_thing() {
         directory.join("mixed-b.k816"),
     ];
     for (source, destination) in ["unit-a.k816", "unit-b.k816"].iter().zip(&renamed) {
-        std::fs::copy(golden.join(source), destination).expect("stage a renamed unit");
+        // Rewritten rather than copied, because the units name each other in
+        // their own text now: a renamed unit's `import` has to be renamed
+        // with it, which is a property of stating a program in its sources
+        // and not of the extension under test.
+        let text = std::fs::read_to_string(golden.join(source))
+            .expect("read a unit")
+            .replace("unit-a.k816", "mixed-a.k65")
+            .replace("unit-b.k816", "mixed-b.k816");
+        std::fs::write(destination, text).expect("stage a renamed unit");
     }
 
     let by_hand = build_by_hand(&directory, &renamed, &config, &[]);
@@ -714,9 +720,12 @@ fn every_program_in_the_tree_links_to_the_same_bytes_either_way() {
             continue;
         }
         let extra: Vec<&Path> = program.extra.iter().map(PathBuf::as_path).collect();
-        let by_hand = build_by_hand(&directory, &program.units, &program.config, &extra);
-        let through_driver =
-            build_through_driver(&directory, &program.units, &program.config, &extra);
+        // The units as a build would see them: a K65 fixture that names no
+        // siblings is staged with the `import` lines a K816 port of it would
+        // carry, because a program has to say what it is either way.
+        let units = corpus::stated_units(&directory, &program.units);
+        let by_hand = build_by_hand(&directory, &units, &program.config, &extra);
+        let through_driver = build_through_driver(&directory, &units, &program.config, &extra);
         assert_eq!(
             through_driver, by_hand,
             "{}: the driver's image is not the manual path's.\n\
@@ -793,7 +802,7 @@ fn every_committed_compat_image_is_reproduced_through_the_driver() {
 
         let image = without_fill(build_through_driver(
             &directory,
-            &program.units,
+            &corpus::stated_units(&directory, &program.units),
             &program.config,
             &[],
         ));

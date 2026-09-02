@@ -159,55 +159,49 @@ fn both_flag_spellings_and_bad_values_are_handled() {
     assert!(stderr.contains("unknown message format `yaml`"));
 }
 
-/// K65 has no import syntax, so naming the sibling units is how a workspace
-/// is described until sub-plan I gives the driver a project surface.
+/// `--unit` is not an option of any command.
+///
+/// Sub-plan K removed it: a program is stated in its sources, and a flag
+/// that also stated one would be a second place for a build system to get it
+/// wrong. The check is that the spelling is *rejected* rather than quietly
+/// ignored, which is what an unknown option does everywhere else.
 #[test]
-fn the_unit_flag_makes_a_sibling_units_names_resolve() {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-unit-flag");
+fn unit_is_not_an_option_of_any_command() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-no-unit-flag");
     std::fs::create_dir_all(&dir).expect("create work dir");
     let a = dir.join("a.k816");
-    let b = dir.join("b.k816");
-    let out = dir.join("a.s");
-    std::fs::write(&a, "func main @a8 {\n    jsr helper\n}\n").expect("write a");
-    std::fs::write(&b, "func helper @a8 {\n    nop\n}\n").expect("write b");
+    std::fs::write(&a, "func main @a8 {\n    nop\n}\n").expect("write a");
 
-    let k816 = |args: &[&std::ffi::OsStr]| {
-        Command::new(env!("CARGO_BIN_EXE_k816"))
-            .arg("compile")
-            .args(args)
-            .args(["-o".as_ref(), out.as_os_str()])
-            .output()
-            .expect("run k816")
-    };
-
-    // Without the sibling, `helper` is simply not declared: K816 does not
-    // invent an import to make an unresolved name someone else's problem.
-    let alone = k816(&[a.as_os_str()]);
-    assert!(!alone.status.success());
-    let stderr = String::from_utf8_lossy(&alone.stderr).into_owned();
-    assert!(stderr.contains("K816-E0101"), "{stderr}");
-
-    // With it, the reference resolves and the linkage is derived.
-    let together = k816(&["--unit".as_ref(), b.as_os_str(), a.as_os_str()]);
-    assert!(
-        together.status.success(),
-        "{}",
-        String::from_utf8_lossy(&together.stderr)
-    );
-    let assembly = std::fs::read_to_string(&out).expect("read output");
-    assert!(assembly.contains(".import helper "), "{assembly}");
-    assert!(assembly.contains(".export main "), "{assembly}");
+    for command in ["compile", "emit-ir"] {
+        for flag in [
+            vec!["--unit".to_owned(), "b.k816".to_owned()],
+            vec!["--unit=b.k816".to_owned()],
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_k816"))
+                .arg(command)
+                .args(&flag)
+                .arg(&a)
+                .output()
+                .expect("run k816");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{command} {flag:?}: {stderr}");
+            assert!(
+                stderr.contains("unknown option"),
+                "{command} {flag:?}: {stderr}"
+            );
+        }
+    }
 }
 
-/// The `--unit` surface carries width contracts across the boundary too, not
-/// just names.
+/// An `import` carries width contracts across the boundary too, not just
+/// names.
 ///
-/// A callee in a sibling unit that leaves the accumulator 8-bit has to reach
-/// the caller's *encoding*: without the sibling the reference does not
-/// resolve at all, and with it the immediate after the call is the two-byte
-/// form rather than the three-byte one the caller's own `@a16` would imply.
+/// A callee in another unit that leaves the accumulator 8-bit has to reach
+/// the caller's *encoding*: without the line the reference does not resolve
+/// at all, and with it the immediate after the call is the two-byte form
+/// rather than the three-byte one the caller's own `@a16` would imply.
 #[test]
-fn the_unit_flag_carries_width_contracts_across_the_boundary() {
+fn an_import_carries_width_contracts_across_the_boundary() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("cli-unit-contract");
     std::fs::create_dir_all(&dir).expect("create work dir");
     let caller = dir.join("caller.k816");
@@ -215,14 +209,13 @@ fn the_unit_flag_carries_width_contracts_across_the_boundary() {
     let out = dir.join("caller.s");
     std::fs::write(
         &caller,
-        "func caller @a16 {\n    call narrows\n    lda #$01\n}\n",
+        "import \"callee.k816\"\n\nfunc caller @a16 {\n    call narrows\n    lda #$01\n}\n",
     )
     .expect("write caller");
     std::fs::write(&callee, "func narrows @a16 -> @a8 {\n    sep #$20\n}\n").expect("write callee");
 
     let output = Command::new(env!("CARGO_BIN_EXE_k816"))
         .arg("compile")
-        .args(["--unit".as_ref(), callee.as_os_str()])
         .args(["-o".as_ref(), out.as_os_str()])
         .arg(&caller)
         .output()
@@ -791,7 +784,6 @@ fn dep_target_renames_the_rule_and_units_are_dependencies() {
     let output = Command::new(env!("CARGO_BIN_EXE_k816"))
         .arg("compile")
         .arg(golden.join("unit-a.k816"))
-        .args(["--unit".as_ref(), golden.join("unit-b.k816").as_os_str()])
         .args(["--create-dep".as_ref(), dep.as_os_str()])
         .args(["--dep-target", "pair.o"])
         .args(["-o".as_ref(), dir.join("pair.s").as_os_str()])
@@ -808,7 +800,8 @@ fn dep_target_renames_the_rule_and_units_are_dependencies() {
     assert!(text.contains("unit-a.k816"), "{text}");
     assert!(
         text.contains("unit-b.k816"),
-        "a sibling unit is a dependency - editing it changes this object:\n{text}"
+        "an imported unit is a dependency - editing it changes this object, \
+         and nothing on the command line named it:\n{text}"
     );
 }
 
@@ -1249,9 +1242,6 @@ fn imports_are_dependencies_transitively() {
     let result = Command::new(env!("CARGO_BIN_EXE_k816"))
         .arg("compile")
         .arg(dir.join("main.k816"))
-        // The same file named on the command line *and* imported: one file,
-        // so it appears as a prerequisite rather than as two.
-        .args(["--unit".as_ref(), dir.join("mid.k816").as_os_str()])
         .args(["--create-dep".as_ref(), dep.as_os_str()])
         .args(["-o".as_ref(), dir.join("main.s").as_os_str()])
         .output()
@@ -1270,5 +1260,10 @@ fn imports_are_dependencies_transitively() {
         rule.matches("mid.k816").count(),
         1,
         "one file, one prerequisite: {rule}"
+    );
+    assert_eq!(
+        rule.matches("deep.k816").count(),
+        1,
+        "and the transitive one is listed once too: {rule}"
     );
 }

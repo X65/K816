@@ -46,7 +46,7 @@ use common::{run_ok, toolchain, work_dir};
 #[path = "common/corpus.rs"]
 mod corpus;
 
-use corpus::{Program, compile_units, programs, stem};
+use corpus::{Program, compile_units, programs, stated_units, stem};
 
 // ---------------------------------------------------------------------------
 // The database
@@ -189,7 +189,11 @@ fn build(program: &Program) -> Option<Built> {
     for source in &program.extra {
         command.arg(source);
     }
-    for unit in &program.units {
+    // The same units `compile_units` compiled: a K65 fixture that does not
+    // name its own siblings is staged with the `import` lines a K816 port of
+    // it would carry, and the driver has to be handed those rather than the
+    // originals.
+    for unit in stated_units(&directory, &program.units) {
         command.arg(unit);
     }
     run_ok(&mut command, "cl65 -g building a K816 program");

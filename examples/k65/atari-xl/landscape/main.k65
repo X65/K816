@@ -3,6 +3,10 @@
 // https://demozoo.org/productions/280623
 //------------------------------------------------------------------------------
 
+// The definitions this program shares with the others in this directory.
+// Each is its own program: one entry, and the units it names.
+import "../include/defs.k65"
+
 var CURSOR_Y = 0x54
 var CURSOR_X = 0x55
 var PREV_Y   = 0x5A

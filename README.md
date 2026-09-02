@@ -150,14 +150,11 @@ Commands:
                                        initializationOptions or configuration
 
 Options:
-  --unit PATH                          a sibling unit whose names this one may
-                                       use; repeatable. K816 derives the
-                                       imports and exports from them
   --create-dep FILE                    write a make dependency file for what
-                                       compile read: the source, its units, and
-                                       every file a `binary` includes.
-                                       --create-full-dep is the same list, as
-                                       K816 reads no file you did not name
+                                       compile read: the source, every unit it
+                                       imports, and every file a `binary`
+                                       includes. --create-full-dep is the same
+                                       list, as K816 has no include path
   --dep-target NAME                    the name on the left of the `:`, when the
                                        file the build tracks is not the -o one
   --message-format FORMAT              diagnostic output of compile and emit-ir:
@@ -183,14 +180,31 @@ ca65 main.s -o main.o
 ld65 -C fullstack.cfg -o fullstack.bin startup.o main.o
 ```
 
-A unit that uses another unit's names. K816 has no `import` syntax — it reads
-the siblings you name and derives the imports and exports from them, so every
-unit of a program is compiled with the same `--unit` set:
+A unit that uses another unit's names. Each names the units it may see, and
+K816 derives the imports and exports from their symbols — so a compilation
+takes one file and reads the rest itself:
 
 ```bash
-k816 compile main.k816 --unit lib.k816 -o main.s
-k816 compile lib.k816  --unit main.k816 -o lib.s
+k816 compile main.k816 -o main.s   # reads whatever main.k816 imports
+k816 compile lib.k816  -o lib.s    # and whatever lib.k816 imports
 ```
+
+```
+# main.k816
+import "lib.k816"
+
+func main @a8 @i8 {
+    call helper
+}
+```
+
+A unit sees what it imports **directly** and nothing further: if `main`
+imports `lib` and `lib` imports `hw`, then `main` cannot name `hw`'s
+symbols without importing it too. That is what makes a unit mean one thing —
+`lib.k816` resolves the same names whether it is the file being compiled or a
+file `main.k816` reached — and it is why the closure is still a *dependency*
+of the build even where it is not visible: `hw`'s body decides contracts
+`lib`'s object was compiled against.
 
 Inspecting a compilation rather than building it:
 
@@ -226,16 +240,18 @@ configuration but not its library, and there is no `none.lib`. The layout is
 your program's, and you state it. There is no cc65 target for a K816 machine
 and `k816` never sees `-t`.
 
-**Every K816 file on one command line is a unit of one program.** K65 has no
-`import` syntax, so this is where the unit set comes from: `cl65` compiles each
-K816 file with the others as `--unit` siblings, so a name one defines resolves
-in another.
+**Units name each other; `cl65` compiles what it is given.** A K816 file says
+which units it may see, so the driver hands the compiler one file and nothing
+about the others — the same thing it does with a C or an assembler file.
 
 ```bash
 cl65 -t none --no-target-lib -C game.cfg -o game.bin startup.asm main.k816 sprites.k816
 ```
 
-Two programs that share an include are two `cl65` command lines, not one.
+Both K816 files are compiled and both objects are linked, in the order they
+appear. A file that is only imported need not be on the line at all, and an
+interface unit — nothing but `extern` declarations — usually is not, since it
+produces no object.
 
 **`-Wk` forwards one option to `k816`, exactly as written.** Unlike `-Wa`,
 `-Wc` and `-Wl`, it does not split its argument at commas — a comma is data
@@ -253,22 +269,17 @@ beside your K816 one is in the debug database too — K816's own module is there
 either way, because it asks for debug info itself.
 
 **`--create-dep` works, and it is `k816` that writes it.** The dependencies of
-a K816 object are the source, the sibling units it was compiled with, and every
-file a `binary` includes — and only the compiler knows the last two. That is
-what a build generator needs. With CMake, a single-unit program needs one line
-in the toolchain file:
+a K816 object are the source, every unit it imports — transitively — and every
+file a `binary` includes, and only the compiler knows the last two. That is
+what a build generator needs, and with CMake it is the whole integration:
 
 ```cmake
 set( CMAKE_ASM_SOURCE_FILE_EXTENSIONS s;asm;k65;k816 )
 ```
 
-A program of several K816 units needs more, because a generator compiles one
-source per invocation while the unit rule takes its set from the command line.
-Name the siblings for each source instead:
-
-```bash
-cl65 -c -Wk --unit=sprites.k816 -o main.o main.k816
-```
+A program of several units needs nothing more. The generator compiles one
+source per invocation and has nothing to compute, because the source states
+which units it belongs with and the dependency file names them.
 
 `doc/cl65.sgml` in the cc65 tree is the driver's reference.
 

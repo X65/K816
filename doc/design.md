@@ -608,9 +608,13 @@ Integration with the cc65 toolchain should happen in two stages:
 2. Teach the cc65 driver to recognize `.k816`, invoke the K816 frontend, and feed the resulting assembly to ca65.
 
 Both stages are done, and the driver is `cl65`: it recognizes `.k65` and
-`.k816`, compiles every K816 file on one command line with the others as
-`--unit` siblings, and hands the assembly to ca65 exactly as it does a C
-file's. `plans/08-cc65-integration.md` is the sub-plan that landed it.
+`.k816`, compiles each of them, and hands the assembly to ca65 exactly as it
+does a C file's. `plans/08-cc65-integration.md` is the sub-plan that landed
+it. Which *other* units a source belongs with is the source's own statement —
+`import "sprites.k816"` — rather than something the driver computes from its
+command line, which is what makes a build system that compiles one file per
+invocation work without being told anything; `plans/10-modules-and-ffi.md` is
+the sub-plan that landed that.
 
 K816 can be distributed alongside cc65 without being rewritten into the cc65 C codebase. “Part of the cc65 toolchain” should mean one installation and one driver experience, not necessarily one implementation language.
 

@@ -210,9 +210,11 @@ fn visibility_is_the_unit_and_what_it_imports_directly() {
     assert_eq!(linkage.visible_from(b), [b, c].into_iter().collect());
     // C imports nothing, so it sees only itself.
     assert_eq!(linkage.visible_from(c), [c].into_iter().collect());
-    // D was named by the caller, and so was A: the transitional clause K5
-    // removes.
-    assert!(linkage.visible_from(d).contains(&a));
+    // And D, which the caller handed over beside A and which imports
+    // nothing, sees only itself: being compiled together is not a
+    // relationship. That is the clause `--unit` used to rest on, and its
+    // absence is what makes a unit mean one thing.
+    assert_eq!(linkage.visible_from(d), [d].into_iter().collect());
 }
 
 /// The closure is loaded and not visible, and both halves matter.

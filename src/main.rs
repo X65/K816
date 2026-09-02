@@ -89,14 +89,11 @@ fn usage(prog_name: &str) {
     eprintln!("                                       initializationOptions or configuration");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --unit PATH                          a sibling unit whose names this one may");
-    eprintln!("                                       use; repeatable. K816 derives the");
-    eprintln!("                                       imports and exports from them");
     eprintln!("  --create-dep FILE                    write a make dependency file for what");
-    eprintln!("                                       compile read: the source, its units, and");
-    eprintln!("                                       every file a `binary` includes.");
-    eprintln!("                                       --create-full-dep is the same list, as");
-    eprintln!("                                       K816 reads no file you did not name");
+    eprintln!("                                       compile read: the source, every unit it");
+    eprintln!("                                       imports, and every file a `binary`");
+    eprintln!("                                       includes. --create-full-dep is the same");
+    eprintln!("                                       list, as K816 has no include path");
     eprintln!("  --dep-target NAME                    the name on the left of the `:`, when the");
     eprintln!("                                       file the build tracks is not the -o one");
     eprintln!("  --message-format FORMAT              diagnostic output of compile and emit-ir:");
@@ -123,9 +120,9 @@ fn usage(prog_name: &str) {
 /// compilation, because it compiles nothing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Command {
-    /// `compile [--no-opt] [-o OUT] [--unit PATH] FILE`
+    /// `compile [--no-opt] [-o OUT] FILE`
     Compile,
-    /// `emit-ir [--after-opt] [--explain] [--unit PATH] FILE`
+    /// `emit-ir [--after-opt] [--explain] FILE`
     EmitIr,
     /// `lsp [--strict-k65] [--entry AXES]`
     Lsp,
@@ -146,9 +143,9 @@ impl Command {
     /// Whether the command reads source files named on the command line.
     ///
     /// The LSP's documents arrive over the protocol, so it takes no input
-    /// file, no `-o`, and no `--unit`: naming a unit there would be a second
-    /// way to describe the program, and decision 2 keeps the program the set
-    /// of open documents until sub-plan I lands a project file.
+    /// file and no `-o`. Which *other* units a document belongs with is no
+    /// longer a command-line question for anyone: a source names the units
+    /// it may see, and the server reads the same lines the build does.
     fn takes_files(self) -> bool {
         !matches!(self, Self::Lsp)
     }
@@ -176,10 +173,6 @@ struct CommandLine {
     check: bool,
     /// Print what the optimizer did, after the dump (`emit-ir --explain`).
     explain: bool,
-    /// Sibling units, whose definitions this unit may refer to. K65 has no
-    /// import syntax, so naming the other units is how a workspace is
-    /// described until sub-plan I gives the driver a project surface.
-    units: Vec<PathBuf>,
     output: Option<PathBuf>,
     options: Options,
     message_format: render::MessageFormat,
@@ -209,7 +202,6 @@ fn parse_command_line(
 ) -> Result<CommandLine, ()> {
     let opt_flag = command.opt_flag();
     let mut inputs: Vec<PathBuf> = Vec::new();
-    let mut units: Vec<PathBuf> = Vec::new();
     let mut output: Option<PathBuf> = None;
     let mut explain = false;
     let mut check = false;
@@ -233,20 +225,6 @@ fn parse_command_line(
                     return Err(());
                 }
             },
-            "--unit" if command.takes_files() => match iter.next() {
-                Some(path) => units.push(PathBuf::from(path)),
-                None => {
-                    render::render_tool_error(
-                        prog_name,
-                        "`--unit` needs a file name",
-                        message_format,
-                    );
-                    return Err(());
-                }
-            },
-            _ if command.takes_files() && arg.starts_with("--unit=") => {
-                units.push(PathBuf::from(&arg["--unit=".len()..]));
-            }
             "--message-format" => match iter.next() {
                 Some(text) => set_message_format(prog_name, text, &mut message_format)?,
                 None => {
@@ -338,7 +316,6 @@ fn parse_command_line(
         inputs,
         check,
         explain,
-        units,
         output,
         options,
         message_format,
@@ -433,15 +410,9 @@ fn load_program(
     prog_name: &str,
     map: &mut SourceMap,
     input: &Path,
-    units: &[PathBuf],
     format: render::MessageFormat,
 ) -> Result<k816::source::FileId, ()> {
     let file = load(prog_name, map, input, format)?;
-    // The sibling units go into the same map, which is the whole workspace
-    // as far as name resolution is concerned. Only `input` is emitted.
-    for unit in units {
-        load(prog_name, map, unit, format)?;
-    }
     k816::load_imports(map, &mut |path| std::fs::read_to_string(path));
     Ok(file)
 }
@@ -523,13 +494,7 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     };
     let input = command.inputs[0].clone();
     let mut map = SourceMap::new();
-    let Ok(file) = load_program(
-        prog_name,
-        &mut map,
-        &input,
-        &command.units,
-        command.message_format,
-    ) else {
+    let Ok(file) = load_program(prog_name, &mut map, &input, command.message_format) else {
         return ExitCode::FAILURE;
     };
 
@@ -553,7 +518,6 @@ fn compile(prog_name: &str, args: &[String]) -> ExitCode {
     // a failed compilation would tell the next build the target is current.
     let target = command.dep_target.as_ref().unwrap_or(&output);
     let mut inputs = vec![input];
-    inputs.extend(command.units);
     inputs.extend(result.imports);
     inputs.extend(result.binaries);
     for path in &command.dep_files {
@@ -606,13 +570,7 @@ fn emit_ir(prog_name: &str, args: &[String]) -> ExitCode {
     };
     let input = command.inputs[0].clone();
     let mut map = SourceMap::new();
-    let Ok(file) = load_program(
-        prog_name,
-        &mut map,
-        &input,
-        &command.units,
-        command.message_format,
-    ) else {
+    let Ok(file) = load_program(prog_name, &mut map, &input, command.message_format) else {
         return ExitCode::FAILURE;
     };
 

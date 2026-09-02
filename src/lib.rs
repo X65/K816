@@ -164,7 +164,7 @@ pub struct CompileResult {
     /// A build system needs them to know when the object is stale, and it
     /// cannot derive them — the emitted `.incbin` carries the path *as the
     /// source wrote it*, resolved later against ca65's search list. The
-    /// source and its `--unit` siblings are the caller's own inputs and are
+    /// source itself is the caller's own input and is
     /// not repeated here.
     ///
     /// Empty when errors prevented emission: nothing was read that a

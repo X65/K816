@@ -4,6 +4,8 @@
 // K816 can see *elsewhere* in the workspace. Compiled with
 // `opt-crossunit-b.k816` beside it, neither operation below changes.
 
+import "opt-crossunit-b.k816"
+
 var CELL = $0400
 
 // **The bridge that survives because another unit observes.** `main` is the

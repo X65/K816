@@ -5,6 +5,8 @@
 // other's claim - K816 compiles one unit at a time - so what makes the two
 // fit together is ld65's `ZEROPAGE` segment, which the configuration sizes.
 
+import "pool_b.k65"
+
 @a8
 @i8
 

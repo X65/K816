@@ -5,6 +5,8 @@
 // pairing a caller can get wrong.  `wide` states widths a caller has to reach
 // before it may enter.
 
+import "main.k65"
+
 @a8
 @i8
 

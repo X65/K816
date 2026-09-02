@@ -1,6 +1,9 @@
-// One half of the two-unit pair. Nothing here declares that `helper`,
-// `CURSOR`, or `BANKED` come from somewhere else — K65 has no syntax for
-// that — so the imports below are derived from the other unit's symbols.
+// One half of the two-unit pair. The `import` line names the unit this one
+// may see; nothing here declares that `helper`, `CURSOR` or `BANKED` come
+// from it, so the `.import` directives below are still *derived* from the
+// other unit's symbols rather than written out.
+
+import "unit-b.k816"
 
 // Not `main`: it calls a `@i16` function with a bare `jsr`, which K816 does
 // not bridge, so the caller has to be in that width already — and an entry

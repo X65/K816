@@ -2,6 +2,8 @@
 // byte.  The width solver only knows that if it can find `narrow`'s body,
 // which it looks up by the item index the *other* unit's analysis recorded.
 
+import "defs.k65"
+
 func work @a16 @i16 {
   narrow
   a = #1

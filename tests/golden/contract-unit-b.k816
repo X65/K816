@@ -11,6 +11,8 @@
 // The gate is that compiling this unit alone and compiling it with `--unit`
 // naming A must not disagree about `wrapper`'s emitted code.
 
+import "contract-unit-a.k816"
+
 func wrapper @a16 {
     call foreign
 }

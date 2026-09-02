@@ -5,6 +5,8 @@
 // variable by name, which is. What it cannot do is select a field of that
 // variable: those offsets are A's, and B was not told them.
 
+import "layout-unit-a.k816"
+
 abstract var HANDLER[
     .open  :word
     .close :word

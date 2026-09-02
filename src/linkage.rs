@@ -156,13 +156,13 @@ pub struct Linkage {
     /// several interface units and a third unit reaches it through whichever
     /// one it imported.
     declared_in: BTreeMap<String, BTreeSet<FileId>>,
-    /// Which units each unit may see, itself included.
+    /// Which units each unit may see, itself included: `{u}` and the units
+    /// `u` imports **directly**.
     ///
-    /// `{u} ∪ direct imports of u`, plus — until sub-plan K's task K5
-    /// converts the multi-unit fixtures — every unit the *caller* named, so
-    /// that a program described by a command line keeps working while
-    /// `import` is being landed. That clause is transitional and K5 deletes
-    /// it; the mutation that proves it is gone is in K5's task text.
+    /// Nothing else. Not what those import, and not the other files the
+    /// caller happened to hand over — which is what every unit could see
+    /// before sub-plan K, and what made a unit mean whatever the company it
+    /// was compiled in made it mean.
     visible: BTreeMap<FileId, BTreeSet<FileId>>,
     /// Every `import` each unit wrote, resolved.
     imports: BTreeMap<FileId, Vec<ImportEdge>>,
@@ -324,25 +324,11 @@ impl Linkage {
     /// Itself and what it imports directly — never what *those* import, which
     /// is the rule that makes a unit mean one thing however it was reached
     /// (`plans/10-modules-and-ffi.md` decision 3).
-    ///
-    /// **Transitional, until sub-plan K's task K5.** A file the caller named
-    /// also sees every other file the caller named, which is the whole-map
-    /// visibility every unit had before `import` existed. It keeps a program
-    /// described by a `--unit` list working while `import` is landed, and K5
-    /// deletes it along with the option.
     fn compute_visibility(&mut self, map: &SourceMap) {
-        let named: BTreeSet<FileId> = map
-            .files()
-            .filter(|source| source.origin() == crate::source::Origin::Named)
-            .map(|source| source.id())
-            .collect();
         for source in map.files() {
             let mut visible = BTreeSet::from([source.id()]);
             if let Some(edges) = self.imports.get(&source.id()) {
                 visible.extend(edges.iter().filter_map(|edge| edge.target));
-            }
-            if named.contains(&source.id()) {
-                visible.extend(named.iter().copied());
             }
             self.visible.insert(source.id(), visible);
         }

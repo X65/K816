@@ -2,6 +2,8 @@
 // evidence for is that each of them was *checked* against the declaration in
 // the other unit before these bytes existed.
 
+import "callee.k65"
+
 @a8
 @i8
 

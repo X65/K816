@@ -376,12 +376,12 @@ fn a_link_time_multiplication_survives_to_ld65() {
 
 /// Compiles `main`, assembles both units, links them, and returns the bytes.
 ///
-/// K65 has no import syntax, so the two units are handed to the compiler
-/// together and it works out what crosses between them.
+/// Each unit names the other, which is how the compiler is told they belong
+/// together; it still works out what crosses between them.
 fn link_two_units(test: &str, main: (&str, &str), other: (&str, &str)) -> Vec<u8> {
     let mut map = SourceMap::new();
-    let main_file = map.add_file(main.0, main.1);
-    let other_file = map.add_file(other.0, other.1);
+    let main_file = map.add_file(main.0, format!("import \"{}\"\n{}", other.0, main.1));
+    let other_file = map.add_file(other.0, format!("import \"{}\"\n{}", main.0, other.1));
 
     let dir = work_dir(test);
     let mut objects = Vec::new();
@@ -1091,7 +1091,7 @@ fn the_near_far_convention_is_checked_across_units() {
     map.add_file("far-lib.k816", "far func lib_init @a8 @i8 {\n    nop\n}\n");
     let user = map.add_file(
         "far-user.k816",
-        "func main @a8 @i8 {\n    call far lib_init\n}\n",
+        "import \"far-lib.k816\"\nfunc main @a8 @i8 {\n    call far lib_init\n}\n",
     );
     let result = compile_to_ca65(
         &map,
@@ -1118,7 +1118,7 @@ fn the_near_far_convention_is_checked_across_units() {
     map.add_file("far-lib.k816", "far func lib_init @a8 @i8 {\n    nop\n}\n");
     let user = map.add_file(
         "far-user.k816",
-        "func main @a8 @i8 {\n    call lib_init\n}\n",
+        "import \"far-lib.k816\"\nfunc main @a8 @i8 {\n    call lib_init\n}\n",
     );
     let result = compile_to_ca65(
         &map,
@@ -1479,7 +1479,10 @@ fn a_layout_does_not_cross_a_unit_boundary() {
     // than claiming the declaration has no fields, because it has — over
     // there.
     let mut map = SourceMap::new();
-    let user = map.add_file("user.k816", "func main @a8 @i8 {\n    a = TABLE.hi\n}\n");
+    let user = map.add_file(
+        "user.k816",
+        "import \"layout-unit-a.k816\"\nfunc main @a8 @i8 {\n    a = TABLE.hi\n}\n",
+    );
     map.add_file(
         "layout-unit-a.k816",
         include_str!("golden/layout-unit-a.k816"),
@@ -3578,7 +3581,8 @@ fn a_section_can_be_read_from_another_unit() {
     map.add_file("shared-defs.k816", "data shared { 10 20 30 }\n");
     let reader = map.add_file(
         "shared-reader.k816",
-        "data probe {\n  [ index(shared, 1) ]\n  [ size(shared) ]\n}\n",
+        "import \"shared-defs.k816\"\n\
+         data probe {\n  [ index(shared, 1) ]\n  [ size(shared) ]\n}\n",
     );
     let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
     let result = compile_to_ca65(
@@ -3610,7 +3614,7 @@ fn a_section_can_be_read_from_another_unit() {
     );
     let reader = map.add_file(
         "opaque-reader.k816",
-        "data probe {\n  [ index(opaque, 0) ]\n}\n",
+        "import \"opaque-defs.k816\"\ndata probe {\n  [ index(opaque, 0) ]\n}\n",
     );
     let result = compile_to_ca65(
         &map,
@@ -3665,7 +3669,7 @@ fn an_inline_crosses_a_unit_boundary_with_its_body() {
     );
     let user = map.add_file(
         "bump-user.k816",
-        "@a16\n@i16\nfunc main @a8 @i8 {\n    a = 10\n    twice a -> a\n}\n",
+        "import \"bump-defs.k816\"\n@a16\n@i16\nfunc main @a8 @i8 {\n    a = 10\n    twice a -> a\n}\n",
     );
     let result = compile_to_ca65(
         &map,
@@ -3727,7 +3731,7 @@ fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
     );
     let user = map.add_file(
         "twin-user.k816",
-        "func main @a8 @i8 {\n    good\n    bad\n}\n",
+        "import \"twin-defs.k816\"\nfunc main @a8 @i8 {\n    good\n    bad\n}\n",
     );
     let result = compile_to_ca65(
         &map,
@@ -3763,7 +3767,10 @@ fn a_borrowed_body_is_diagnosed_by_the_unit_that_wrote_it() {
         "layout-defs.k816",
         "var slot[ .lo:byte .hi:byte ]\ninline peek @a8 @i8 {\n    a = slot.hi\n}\n",
     );
-    let user = map.add_file("layout-user.k816", "func main @a8 @i8 {\n    peek\n}\n");
+    let user = map.add_file(
+        "layout-user.k816",
+        "import \"layout-defs.k816\"\nfunc main @a8 @i8 {\n    peek\n}\n",
+    );
     let result = compile_to_ca65(
         &map,
         user,
@@ -3840,12 +3847,12 @@ fn a_borrowed_copy_is_not_a_workspace_node() {
         if sibling {
             map.add_file(
                 "graph-sibling.k816",
-                "@a16\n@i16\nfunc sibling {\n    shared\n}\n",
+                "import \"graph-defs.k816\"\n@a16\n@i16\nfunc sibling {\n    shared\n}\n",
             );
         }
         let caller = map.add_file(
             "graph-main.k816",
-            "@a8\n@i8\nmain {\n    call wrapper\n    a = 1\n}\n",
+            "import \"graph-defs.k816\"\n@a8\n@i8\nmain {\n    call wrapper\n    a = 1\n}\n",
         );
         let result = compile_to_ca65(
             &map,
@@ -3885,7 +3892,7 @@ fn a_borrowed_body_does_not_take_the_borrowers_defaults() {
     map.add_file("plain-defs.k816", "inline borrowed {\n    nop\n}\n");
     let user = map.add_file(
         "plain-user.k816",
-        "@a16\n@i16\nfunc user @a8 @i8 {\n    borrowed\n}\n",
+        "import \"plain-defs.k816\"\n@a16\n@i16\nfunc user @a8 @i8 {\n    borrowed\n}\n",
     );
     let result = compile_to_ca65(
         &map,
@@ -3954,7 +3961,10 @@ fn a_borrowed_body_reads_its_own_units_constants() {
     ] {
         let mut map = SourceMap::new();
         map.add_file("const-defs.k816", format!("@a8\n@i8\n{defs}"));
-        let user = map.add_file("const-user.k816", "@a8\n@i8\nmain {\n    borrowed\n}\n");
+        let user = map.add_file(
+            "const-user.k816",
+            "import \"const-defs.k816\"\n@a8\n@i8\nmain {\n    borrowed\n}\n",
+        );
         let result = compile_to_ca65(
             &map,
             user,
@@ -3985,7 +3995,10 @@ fn a_body_the_parser_recovered_inside_is_not_expanded() {
         "broken-defs.k816",
         "@a8\n@i8\ninline broken {\n    =\n}\ninline sound {\n    nop\n}\n",
     );
-    let user = map.add_file("broken-user.k816", "@a8\n@i8\nmain {\n    broken\n}\n");
+    let user = map.add_file(
+        "broken-user.k816",
+        "import \"broken-defs.k816\"\n@a8\n@i8\nmain {\n    broken\n}\n",
+    );
     let result = compile_to_ca65(
         &map,
         user,
@@ -4009,7 +4022,10 @@ fn a_body_the_parser_recovered_inside_is_not_expanded() {
         "broken-defs.k816",
         "@a8\n@i8\ninline broken {\n    =\n}\ninline sound {\n    nop\n}\n",
     );
-    let user = map.add_file("sound-user.k816", "@a8\n@i8\nmain {\n    sound\n}\n");
+    let user = map.add_file(
+        "sound-user.k816",
+        "import \"broken-defs.k816\"\n@a8\n@i8\nmain {\n    sound\n}\n",
+    );
     let result = compile_to_ca65(
         &map,
         user,
@@ -4152,7 +4168,7 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
         );
         let user = map.add_file(
             "carry-user.k816",
-            "@a16\n@i16\nmain @a8 @i8 {\n    borrowed\n}\n",
+            "import \"carry-defs.k816\"\n@a16\n@i16\nmain @a8 @i8 {\n    borrowed\n}\n",
         );
         let result = compile_to_ca65(
             &map,

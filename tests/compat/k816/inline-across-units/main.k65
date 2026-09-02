@@ -3,6 +3,8 @@
 // `sbc`.  `counter` is read by the borrowed body and imported by this unit,
 // because this is where the operations landed.
 
+import "defs.k65"
+
 @a16
 @i16
 

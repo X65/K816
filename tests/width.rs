@@ -1422,11 +1422,11 @@ fn a_cross_unit_recursion_cycle_is_pinned_and_reported() {
     let mut map = SourceMap::new();
     let left = map.add_file(
         "left.k816",
-        "func left @a8 {\n    rep #$20\n    call right\n}\n",
+        "import \"right.k816\"\nfunc left @a8 {\n    rep #$20\n    call right\n}\n",
     );
     map.add_file(
         "right.k816",
-        "func right @a8 {\n    rep #$20\n    call left\n}\n",
+        "import \"left.k816\"\nfunc right @a8 {\n    rep #$20\n    call left\n}\n",
     );
     let linkage = k816::linkage::Linkage::resolve(&map, EntryEnvironment::default());
     assert!(linkage.is_recursive("left"));

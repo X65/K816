@@ -47,6 +47,9 @@
 
 mod common;
 
+#[path = "common/corpus.rs"]
+mod corpus_files;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -156,7 +159,7 @@ fn fixtures() -> Vec<Fixture> {
 }
 
 /// Compiles each of a fixture's units as an entry, with the others as its
-/// siblings — the shape `--unit` gives the command line.
+/// siblings — the shape an `import` gives a program.
 ///
 /// Every unit is compiled, not just the last: a fixture's units are a program,
 /// and a program's second file reports its own diagnostics. Compiling only one
@@ -193,12 +196,13 @@ fn compile_with(
 ) -> (Vec<(String, String)>, Vec<String>) {
     let mut codes = Vec::new();
     let mut assemblies = Vec::new();
+    let sources = &stated_as_one_program(fixture, sources);
     for unit in &fixture.units {
         let mut map = SourceMap::new();
         let mut entry = None;
         for (other, text) in fixture.units.iter().zip(sources) {
             let path = fixture.dir.join(other);
-            let id = map.add_file(path.to_string_lossy(), text.clone());
+            let id = map.add_file_at(path.to_string_lossy(), &path, text.clone());
             if other == unit {
                 entry = Some(id);
             }
@@ -223,6 +227,27 @@ fn compile_with(
         }
     }
     (codes, assemblies)
+}
+
+/// The fixture's units, each naming the others, where the source does not
+/// already.
+///
+/// The original resolved every name across a project's sources and a K65 file
+/// therefore declares nothing about where a name comes from; K816 needs the
+/// unit set stated, and sub-plan K removed the command line as a place to
+/// state it. A K65 program with more than one unit is a K816 program with one
+/// `import` line per file — which is exactly what
+/// `doc/k65-compat-manifest.md`'s `k65-global-namespace` row says it costs,
+/// so supplying them here is the documented migration rather than a way
+/// around it.
+///
+/// **In memory, not on disk.** These sources are the ones the *original*
+/// compiled, bound to its output by checksum (`every_oracle_golden_is_bound_
+/// to_its_inputs_and_its_compiler`), and a line the original cannot parse
+/// must never reach them. K816's own multi-unit fixtures say it in their
+/// sources, and are left alone here.
+fn stated_as_one_program(fixture: &Fixture, sources: &[String]) -> Vec<String> {
+    corpus_files::state_program(&fixture.units, sources)
 }
 
 /// Reads a committed `.hex` golden: `origin AAAA` then hex bytes per line,

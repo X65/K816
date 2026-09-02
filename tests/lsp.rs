@@ -119,10 +119,14 @@ fn ranges_use_utf16_columns() {
 fn closing_a_document_removes_it_from_analysis() {
     let mut workspace = Workspace::new();
     workspace.update("file:///a.k816", BROKEN_SLICE);
-    workspace.update("file:///b.k816", include_str!("golden/slice.k816"));
+    // A second document that neither collides with the first nor is seen by
+    // it: what is being checked is that closing one takes its diagnostics
+    // with it, and a shared name or a shared symbol would put a second
+    // reason in the count.
+    workspace.update("file:///b.k816", "func other @a8 {\n    return\n}\n");
 
     let analysis = workspace.analyze();
-    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(analysis.diagnostics.len(), 1, "{:?}", analysis.diagnostics);
 
     workspace.close("file:///a.k816");
     let analysis = workspace.analyze();
@@ -734,8 +738,11 @@ fn the_node_path_runs_from_the_file_to_the_token() {
 #[test]
 fn the_analysis_carries_every_units_model() {
     let mut workspace = Workspace::new();
-    workspace.update("file:///a.k816", include_str!("golden/unit-a.k816"));
-    workspace.update("file:///b.k816", include_str!("golden/unit-b.k816"));
+    // Named as the sources name each other: a program says which units
+    // it has, so a document store that renamed one would be describing a
+    // different program.
+    workspace.update(UNIT_A, include_str!("golden/unit-a.k816"));
+    workspace.update(UNIT_B, include_str!("golden/unit-b.k816"));
     let analysis = workspace.analyze();
 
     assert_eq!(analysis.units.len(), 2);
@@ -1220,22 +1227,36 @@ fn definition_of_an_imported_symbol_lands_in_the_defining_unit() {
         workspace.file(UNIT_B).expect("open"),
     );
 
-    // `jsr helper` in unit A, at the use on line 8. (Byte offsets: the
-    // comment header holds em dashes, so they are not column counts.)
-    let target = definition(&analysis, a, 476).expect("`helper` resolves");
-    assert_eq!(target.file, b);
-    assert_eq!(workspace.map().span_text(target), "helper");
-    // `lda CURSOR` and `lda BANKED`, the direct-page and far imports.
-    for (offset, name) in [(536, "CURSOR"), (606, "BANKED")] {
-        let target = definition(&analysis, a, offset).expect("resolves");
+    // `jsr helper`, `lda CURSOR` and `lda BANKED` — the three imports, at
+    // their uses. Located rather than counted: an offset written out is a
+    // number that goes stale whenever a line is added above it, and the
+    // fixture is a source somebody may edit.
+    for (use_site, name) in [
+        (at(UNIT_A_TEXT, "jsr helper", 4), "helper"),
+        (at(UNIT_A_TEXT, "lda CURSOR", 4), "CURSOR"),
+        (at(UNIT_A_TEXT, "lda BANKED", 4), "BANKED"),
+    ] {
+        let target = definition(&analysis, a, use_site).expect("resolves");
         assert_eq!(target.file, b, "`{name}`");
         assert_eq!(workspace.map().span_text(target), name);
     }
 
     // A declaration answers with itself, which is what an editor shows when
     // a user asks a declaration where it is declared.
-    let target = definition(&analysis, b, 356).expect("`helper` is declared here");
-    assert_eq!((target.file, target.start), (b, 356));
+    let declaration = at(UNIT_B_TEXT, "func helper", 5);
+    let target = definition(&analysis, b, declaration).expect("`helper` is declared here");
+    assert_eq!((target.file, target.start), (b, declaration));
+}
+
+const UNIT_A_TEXT: &str = include_str!("golden/unit-a.k816");
+const UNIT_B_TEXT: &str = include_str!("golden/unit-b.k816");
+
+/// The offset of `needle` in `text`, plus `skip` bytes into it.
+fn at(text: &str, needle: &str, skip: usize) -> u32 {
+    (text
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` is in the fixture"))
+        + skip) as u32
 }
 
 /// References of an imported symbol span both units, and the declaration is
@@ -1252,7 +1273,8 @@ fn references_of_an_imported_symbol_reach_every_open_unit() {
     );
 
     // From the *use* in unit A.
-    let found = references(&analysis, a, 536, true);
+    let use_site = at(UNIT_A_TEXT, "lda CURSOR", 4);
+    let found = references(&analysis, a, use_site, true);
     let places: Vec<(bool, &str)> = found
         .iter()
         .map(|span| (span.file == b, workspace.map().span_text(*span)))
@@ -1267,13 +1289,15 @@ fn references_of_an_imported_symbol_reach_every_open_unit() {
     );
 
     // Without the declaration, only the uses.
-    let uses = references(&analysis, a, 536, false);
+    let uses = references(&analysis, a, use_site, false);
     assert_eq!(uses.len(), 2);
     assert!(uses.iter().all(|span| span.file == a));
 
-    // From the *declaration* in unit B, the same answer. (Byte 256 is the
-    // `CURSOR` inside that unit's header comment; 307 is the declaration.)
-    assert_eq!(references(&analysis, b, 307, true), found);
+    // From the *declaration* in unit B, the same answer. The `CURSOR`
+    // inside that unit's header comment is not it, which is why the
+    // declaration is located by the line that declares it.
+    let declaration = at(UNIT_B_TEXT, "var dp CURSOR", 7);
+    assert_eq!(references(&analysis, b, declaration, true), found);
 }
 
 /// A local label's references stay inside its own function, even when
@@ -1334,27 +1358,40 @@ fn references_of_a_local_label_are_confined_to_its_function() {
 fn a_field_reference_resolves_to_the_field_declaration() {
     use k816::lsp::navigation::{definition, references};
 
+    const LAYOUT: &str = include_str!("golden/layout-unit-a.k816");
     let mut workspace = Workspace::new();
-    let uri = "file:///layout.k816";
-    workspace.update(uri, include_str!("golden/layout-unit-a.k816"));
+    // Named as the pair names itself: the fixture imports its sibling, and
+    // a document store that called it something else would be describing a
+    // different program.
+    workspace.update(UNIT_A_LAYOUT, LAYOUT);
+    workspace.update(UNIT_B_LAYOUT, include_str!("golden/layout-unit-b.k816"));
     let analysis = workspace.analyze();
-    let file = workspace.file(uri).expect("open");
+    let file = workspace.file(UNIT_A_LAYOUT).expect("open");
 
-    // `TABLE[3].hi = a` — the `.hi` at byte 1135.
-    let target = definition(&analysis, file, 1136).expect("`.hi` resolves");
-    assert_eq!(target.start, 707, "the `.hi :byte` entry of the field list");
+    // `TABLE[3].hi = a` — the `.hi` of the use, and the `.hi :byte` of the
+    // field list it resolves to.
+    let use_site = at(LAYOUT, "TABLE[3].hi", 9);
+    let declaration = at(LAYOUT, ".hi :byte", 0);
+    let target = definition(&analysis, file, use_site).expect("`.hi` resolves");
+    assert_eq!(
+        target.start, declaration,
+        "the `.hi :byte` entry of the field list"
+    );
     assert!(workspace.map().span_text(target).starts_with(".hi"));
 
     // The base name of the same expression resolves to the variable.
-    let base = definition(&analysis, file, 1128).expect("`TABLE` resolves");
+    let base = definition(&analysis, file, at(LAYOUT, "TABLE[3].hi", 1)).expect("`TABLE` resolves");
     assert_eq!(workspace.map().span_text(base), "TABLE");
 
     // Both uses of `.hi` are found; the declaration is the field list entry.
-    let found = references(&analysis, file, 1136, true);
+    let found = references(&analysis, file, use_site, true);
     assert_eq!(found.len(), 2, "the declaration and the one use");
-    assert_eq!(found[0].start, 707);
-    assert_eq!(found[1].start, 1135);
+    assert_eq!(found[0].start, declaration);
+    assert_eq!(found[1].start, use_site - 1);
 }
+
+const UNIT_A_LAYOUT: &str = "file:///layout-unit-a.k816";
+const UNIT_B_LAYOUT: &str = "file:///layout-unit-b.k816";
 
 /// The document outline is the symbol table, with local labels nested under
 /// the function that scopes them and fields under their variable.
@@ -2024,8 +2061,9 @@ fn rename_of_an_imported_symbol_edits_both_units() {
     );
 
     // From the *use* in unit A, at the `lda CURSOR` on its line.
+    let use_site = at(UNIT_A_TEXT, "lda CURSOR", 4);
     let (replacement, spans) =
-        rename_edits(&mut workspace, UNIT_A, 536, "SCRATCH").expect("a rename");
+        rename_edits(&mut workspace, UNIT_A, use_site, "SCRATCH").expect("a rename");
     assert_eq!(replacement, "SCRATCH");
     assert_eq!(spans.len(), 3, "the declaration in B and both uses in A");
     assert_eq!(spans.iter().filter(|span| span.file == b).count(), 1);
@@ -2061,8 +2099,13 @@ fn rename_refuses_what_the_compiler_would_refuse() {
     // A collision with a unit-level name, in the duplicate-declaration
     // wording the build would use.
     let mut cross = cross_unit_workspace();
-    let refusal = rename_edits(&mut cross, UNIT_A, 536, "BANKED")
-        .expect_err("`BANKED` is taken by the other unit");
+    let refusal = rename_edits(
+        &mut cross,
+        UNIT_A,
+        at(UNIT_A_TEXT, "lda CURSOR", 4),
+        "BANKED",
+    )
+    .expect_err("`BANKED` is taken by the other unit");
     assert!(
         refusal.starts_with(&k816::semantic::duplicate_symbol_title("BANKED")),
         "{refusal}"

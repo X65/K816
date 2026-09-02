@@ -6,6 +6,8 @@
 // a variable another unit will reference, and a layout another unit will
 // declare for itself.
 
+import "layout-unit-b.k816"
+
 // Allocated, so the name is really a linker symbol rather than a folded
 // constant, and unit B's reference to it becomes an `.import`. It stays in
 // the unit's own segment: which segment an allocation lands in is E7's

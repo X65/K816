@@ -66,7 +66,7 @@
 //!
 //! `examples/`, `tests/golden/`, and the imported corpus under
 //! `tests/compat/` — every unit of every set, compiled as the entry with its
-//! siblings beside it, which is the shape `--unit` gives the command line.
+//! siblings beside it, which is the shape an `import` gives a program.
 //! A source that does not compile is measured by nobody, so each one has to
 //! say why: a golden or an example names its reason in [`REFUSALS`], and a
 //! compat fixture is held to the `expect` list its own `fixture.txt`
@@ -259,7 +259,10 @@ fn measure(set: &UnitSet) -> Result<Measured, Vec<String>> {
 fn measure_sources(sources: &[(String, String)], entry: usize) -> Result<Measured, Vec<String>> {
     let mut map = SourceMap::new();
     let mut id: Option<FileId> = None;
-    for (index, (name, text)) in sources.iter().enumerate() {
+    let names: Vec<String> = sources.iter().map(|(name, _)| name.clone()).collect();
+    let texts: Vec<String> = sources.iter().map(|(_, text)| text.clone()).collect();
+    let texts = corpus_files::state_program(&names, &texts);
+    for (index, (name, text)) in names.iter().zip(&texts).enumerate() {
         let added = map.add_file(name.clone(), text.clone());
         if index == entry {
             id = Some(added);

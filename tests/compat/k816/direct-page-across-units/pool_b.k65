@@ -2,6 +2,8 @@
 // one as an `.importzp`, so the direct-page encodings are chosen against the
 // address size rather than against a guess.
 
+import "pool_a.k65"
+
 @a8
 @i8
 

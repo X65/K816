@@ -6,6 +6,8 @@
 // and in its own unit that contract includes the `@a8` above it - so `#$01`
 // below has to stay one byte however the borrowing unit is annotated.
 
+import "main.k65"
+
 @a8
 @i8
 

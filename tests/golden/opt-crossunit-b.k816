@@ -1,6 +1,8 @@
 // Sub-plan F fixture, unit B of the cross-unit pair. See
 // `opt-crossunit-a.k816` for what the two of them assert together.
 
+import "opt-crossunit-a.k816"
+
 var OTHER = $0500
 
 // The callee unit A bridges to. It observes neither axis, which is what makes

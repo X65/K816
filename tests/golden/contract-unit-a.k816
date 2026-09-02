@@ -4,6 +4,8 @@
 // what B exports for `wrapper` depends on knowing that — which B cannot work
 // out on its own.
 
+import "contract-unit-b.k816"
+
 func foreign @a16 -> @a8 {
     sep #$20
 }

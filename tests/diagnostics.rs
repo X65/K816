@@ -932,6 +932,58 @@ fn applying_a_fix_leaves_source_its_applicability_promises() {
 /// A fix is only machine-applicable when it cannot make things worse.
 /// `sta #K` is not a store, so the immediate is offered for a load and
 /// withheld for anything that has no immediate form.
+/// A stack-relative operand is a number, and a memory location is refused.
+///
+/// The 65816 encodes `expr,S` as one byte counted from the stack pointer, so
+/// the operand names a place in a frame rather than a location in memory.
+/// That inverts the `const` rule one line above: here a `const` is exactly
+/// what belongs and a `var` is the mistake.
+///
+/// It has to be an *error*. K816 does not choose addresses, so a `var` in the
+/// offset would reach ca65 as a symbol, ld65 would resolve it, and the frame
+/// would be indexed by the low byte of an address nobody picked - a wrong
+/// program with nothing said. The note is where that is spelled out, so it is
+/// asserted rather than left to the wording.
+#[test]
+fn a_memory_location_is_not_a_stack_offset() {
+    for source in [
+        "var slot = $80\nfunc main @a8 @i8 { lda slot,s }\n",
+        "var slot = $80\nfunc main @a8 @i8 { a = (slot,s),y }\n",
+    ] {
+        let (_, diagnostic) = diagnostic_for(source, DiagnosticCode::STACK_RELATIVE_OFFSET);
+        assert!(
+            diagnostic
+                .notes
+                .iter()
+                .any(|note| note.contains("ld65") && note.contains("slot")),
+            "the note has to say why silence would be worse: {diagnostic:?}"
+        );
+    }
+}
+
+/// The other half of the same rule: a `const` offset is not an address error.
+///
+/// `K816-E0110` fires wherever a `const` stands in for a location. A stack
+/// offset is the one position where the opposite holds, and the fixture the
+/// legacy compiler kept for it (`syntax-native-native`) is what says so:
+/// `const nameptr = $12` with `lda nameptr,s` assembles to `A3 12`.
+#[test]
+fn a_const_is_what_a_stack_offset_wants() {
+    let mut map = SourceMap::new();
+    let id = map.add_file(
+        "case.k816",
+        "const nameptr = $12\nfunc main @a8 @i8 { lda nameptr,s }\n",
+    );
+    let parse = parse_source(map.file(id), None);
+    assert_eq!(parse.diagnostics, vec![]);
+    let (_, diagnostics) = analyze_file(&parse.file);
+    assert_eq!(
+        diagnostics,
+        vec![],
+        "a `const` is the offset this mode takes"
+    );
+}
+
 #[test]
 fn the_immediate_fix_is_offered_only_where_an_immediate_exists() {
     let (_, load) = diagnostic_for(

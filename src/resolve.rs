@@ -2148,16 +2148,24 @@ impl<'a> Resolver<'a> {
             self.report(link_time_value(&name, span, Some(declaration)));
             return;
         }
-        let named = symbols
-            .first()
-            .map(|id| (self.symbols.name(*id).to_owned(), self.symbols.symbol(*id).declaration));
+        let named = symbols.first().map(|id| {
+            (
+                self.symbols.name(*id).to_owned(),
+                self.symbols.symbol(*id).declaration,
+            )
+        });
         let mut diagnostic = Diagnostic::error(
             DiagnosticCode::STACK_RELATIVE_OFFSET,
             match &named {
-                Some((name, _)) => format!("`{name}` is a memory location, and a stack offset is a number"),
+                Some((name, _)) => {
+                    format!("`{name}` is a memory location, and a stack offset is a number")
+                }
                 None => "a stack offset must be known at compile time".to_owned(),
             },
-            Label::new(span, "the stack pointer is the base here, so this is an offset"),
+            Label::new(
+                span,
+                "the stack pointer is the base here, so this is an offset",
+            ),
         )
         .with_help("write the offset as a literal or a `const`")
         .with_docs("doc/syntax-reference.md#65816-addressing-modes-in-k65");

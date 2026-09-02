@@ -4195,3 +4195,35 @@ fn a_borrowed_declaration_carries_what_it_depends_on() {
         }
     }
 }
+
+/// A stack offset is a number, and it reaches the object file as one.
+///
+/// `lda off,S` encodes one byte counted from the stack pointer: the operand
+/// is a position in a frame, not a location in memory, so a `const` is what
+/// belongs there. K816 refused one until the legacy corpus was surveyed —
+/// `K816-E0110`, the rule for operands that really are addresses — and
+/// accepted a `var` in its place, which is the same mistake read backwards:
+/// ld65 would have chosen the address and the frame would have been indexed
+/// by its low byte.
+///
+/// The legacy fixture `syntax-native-native` is the oracle for the bytes:
+/// `const nameptr = $12` with `lda nameptr,s` is `A3 12`.
+#[test]
+fn a_stack_offset_links_as_the_number_it_names() {
+    let (bytes, _) = compile_and_link(
+        "stack-offset",
+        "stack.k816",
+        "const nameptr = $12\nconst deep = $04\n\
+         func frame @a8 @i8 {\n    lda nameptr,s\n    a = (deep,s),y\n}\n",
+        &Options {
+            optimize: false,
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(
+        &bytes[..5],
+        &[0xA3, 0x12, 0xB3, 0x04, 0x60],
+        "lda $12,S / lda ($04,S),Y / rts: {bytes:02X?}"
+    );
+}
